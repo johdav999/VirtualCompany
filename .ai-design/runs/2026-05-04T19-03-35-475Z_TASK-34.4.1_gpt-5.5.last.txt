@@ -1,0 +1,1128 @@
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index 8ec3d17..57d48f2 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -46,6 +46,8 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEventT
+     public const string FinanceThresholdBreached = "finance.threshold.breached";
+     public const string SalesEmailReceived = "sales.email.received";
+     public const string SalesLeadDetected = "sales.lead.detected";
++    public const string SalesLeadQualified = "sales.lead.qualified";
++    public const string SalesDealWon = "sales.deal.won";
+ 
+     private static readonly string[] EventTypes =
+     [
+@@ -85,7 +87,9 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEventT
+         FinanceSimulationDayAdvanced,
+         FinanceThresholdBreached,
+         SalesEmailReceived,
+-        SalesLeadDetected
++        SalesLeadDetected,
++        SalesLeadQualified,
++        SalesDealWon
+     ];
+ 
+     private static readonly HashSet<string> EventTypeSet =
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index a3223df..e5a44c8 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -27,6 +27,8 @@ public static class CompanyOutboxTopics
+     public const string FinanceThresholdBreached = SupportedPlatformEventTypeRegistry.FinanceThresholdBreached;
+     public const string SalesEmailReceived = SupportedPlatformEventTypeRegistry.SalesEmailReceived;
+     public const string SalesLeadDetected = SupportedPlatformEventTypeRegistry.SalesLeadDetected;
++    public const string SalesLeadQualified = SupportedPlatformEventTypeRegistry.SalesLeadQualified;
++    public const string SalesDealWon = SupportedPlatformEventTypeRegistry.SalesDealWon;
+ }
+ 
+ public sealed record CompanyInvitationDeliveryRequestedMessage(
+diff --git a/src/VirtualCompany.Application/Sales/SalesAutomationPolicyEvaluator.cs b/src/VirtualCompany.Application/Sales/SalesAutomationPolicyEvaluator.cs
+new file mode 100644
+index 0000000..f5180cf
+--- /dev/null
++++ b/src/VirtualCompany.Application/Sales/SalesAutomationPolicyEvaluator.cs
+@@ -0,0 +1,50 @@
++namespace VirtualCompany.Application.Sales;
++
++public static class SalesAutomationPolicyModes
++{
++    public const string ManualOnly = "manual_only";
++    public const string DraftOnly = "draft_only";
++    public const string AutoSendLowRiskFollowUps = "auto_send_low_risk_follow_ups";
++}
++
++public static class SalesRecommendationActions
++{
++    public const string CreateDraftReply = "create_draft_reply";
++    public const string SendEmail = "send_email";
++    public const string CreateFinanceDocument = "create_finance_document";
++}
++
++public static class SalesRecommendationRiskLevels
++{
++    public const string Low = "low";
++    public const string Medium = "medium";
++    public const string High = "high";
++}
++
++public sealed record SalesAutomationPolicyDecision(
++    string PolicyMode,
++    string ActionType,
++    string ExecutionMode,
++    bool RequiresApproval,
++    bool CanAutoExecute,
++    string Reason);
++
++public interface ISalesAutomationPolicyEvaluator
++{
++    SalesAutomationPolicyDecision Evaluate(string policyMode, string actionType, string riskLevel);
++}
++
++public sealed class SalesAutomationPolicyEvaluator : ISalesAutomationPolicyEvaluator
++{
++    public SalesAutomationPolicyDecision Evaluate(string policyMode, string actionType, string riskLevel)
++    {
++        var normalizedMode = Normalize(policyMode, SalesAutomationPolicyModes.ManualOnly);
++        var normalizedAction = Normalize(actionType, SalesRecommendationActions.CreateDraftReply);
++        var normalizedRisk = Normalize(riskLevel, SalesRecommendationRiskLevels.Medium);
++
++        if (normalizedAction == SalesRecommendationActions.CreateFinanceDocument)
++        {
++            return new(normalizedMode, normalizedAction, "approval_required", true, false, "Finance documents always need approval before Alex creates a quote or invoice.");
++        }
++
++        return normalizedMode switch
++        {
++            SalesAutomationPolicyModes.AutoSendLowRiskFollowUps when normalizedAction == SalesRecommendationActions.SendEmail && normalizedRisk == SalesRecommendationRiskLevels.Low => new(normalizedMode, normalizedAction, "auto_send", false, true, "Low-risk follow-ups can be sent automatically under the current sales policy."),
++            SalesAutomationPolicyModes.DraftOnly when normalizedAction == SalesRecommendationActions.CreateDraftReply => new(normalizedMode, normalizedAction, "draft", false, true, "Alex can prepare a draft reply, but sending still needs review."),
++            _ => new(normalizedMode, normalizedAction, "approval_required", true, false, "The current sales policy requires review before this action runs.")
++        };
++    }
++
++    private static string Normalize(string? value, string fallback) =>
++        string.IsNullOrWhiteSpace(value) ? fallback : value.Trim().ToLowerInvariant();
++}
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index cfd9c22..a783d33 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -24,6 +24,8 @@ public interface ISalesOperationsService
+     Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<SalesLeadDetailResponse?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken);
+     Task<SalesLeadDetailResponse?> QualifyLeadAsync(Guid companyId, Guid userId, Guid leadId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<SalesLeadDetailResponse?> UpdateLeadQualificationAsync(Guid companyId, Guid userId, Guid leadId, UpdateLeadQualificationRequest request, CancellationToken cancellationToken);
+     Task<SalesLeadDetailResponse?> RejectLeadAsync(Guid companyId, Guid userId, Guid leadId, SalesActionRequest request, CancellationToken cancellationToken);
+     Task<SalesDealDetailResponse?> ConvertLeadAsync(Guid companyId, Guid userId, Guid leadId, ConvertLeadRequest request, CancellationToken cancellationToken);
+     Task<SalesPipelineResponse> GetPipelineAsync(Guid companyId, CancellationToken cancellationToken);
+@@ -35,6 +37,13 @@ public interface ISalesOperationsService
+     Task<SalesDealDetailResponse?> ChangeDealStageAsync(Guid companyId, Guid userId, Guid dealId, ChangeDealStageRequest request, CancellationToken cancellationToken);
+     Task<SalesDealDetailResponse?> MarkDealWonAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
+     Task<SalesDealDetailResponse?> MarkDealLostAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<IReadOnlyList<SalesRecommendationResponse>> DetectFollowUpRecommendationsAsync(Guid companyId, Guid userId, CancellationToken cancellationToken);
++    Task<SalesRecommendationResponse?> ApproveRecommendationAsync(Guid companyId, Guid userId, Guid recommendationId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<SalesRecommendationResponse?> RetryRecommendationAsync(Guid companyId, Guid userId, Guid recommendationId, CancellationToken cancellationToken);
++    Task<SalesAutomationPolicyResponse> GetAutomationPolicyAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<SalesAutomationPolicyResponse> UpdateAutomationPolicyAsync(Guid companyId, Guid userId, UpdateSalesAutomationPolicyRequest request, CancellationToken cancellationToken);
++    Task<SalesFinanceHandoffResponse?> GetFinanceHandoffAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
++    Task<SalesFinanceHandoffResponse?> ApproveFinanceHandoffAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
+     Task<ProcessSalesEmailResponse> ProcessEmailAsync(Guid companyId, Guid userId, ProcessSalesEmailRequest request, CancellationToken cancellationToken);
+ }
+ 
+@@ -80,6 +89,10 @@ public sealed record SalesLeadSummaryResponse(
+     string SuggestedNextAction,
+     decimal? EstimatedValue,
+     string? Currency,
++    string? Fit,
++    string? Priority,
++    DateTime? QualifiedUtc,
++    Guid? QualifiedByUserId,
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc);
+ 
+@@ -96,6 +109,10 @@ public sealed record SalesLeadDetailResponse(
+     decimal? EstimatedValue,
+     string? Currency,
+     string SuggestedNextAction,
++    string? Fit,
++    string? Priority,
++    DateTime? QualifiedUtc,
++    Guid? QualifiedByUserId,
+     IReadOnlyList<SalesActivityResponse> Activities,
+     IReadOnlyList<SalesRecommendationResponse> Recommendations);
+@@ -130,9 +147,48 @@ public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageRespo
+ public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
+ public sealed record SalesActivityResponse(Guid Id, string ActivityType, string Summary, string Status, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
+-public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, DateTime CreatedUtc);
++public sealed record SalesRecommendationResponse(
++    Guid Id,
++    string Recommendation,
++    string Rationale,
++    string Status,
++    Guid? LeadId,
++    Guid? DealId,
++    string Category,
++    string TriggerCondition,
++    string ActionType,
++    string RiskLevel,
++    bool RequiresApproval,
++    string ApprovalStatus,
++    string ExecutionStatus,
++    string? FailureSummary,
++    DateTime CreatedUtc);
++
++public sealed record SalesAutomationPolicyResponse(
++    Guid Id,
++    string Mode,
++    bool FinanceDocumentsAlwaysRequireApproval,
++    DateTime UpdatedUtc);
++
++public sealed record SalesFinanceHandoffResponse(
++    Guid Id,
++    Guid DealId,
++    string Status,
++    string ApprovalStatus,
++    string ExecutionStatus,
++    string Summary,
++    string? ExternalDocumentId,
++    string? FailureSummary,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
+@@
+ public sealed record SalesActionRequest(string? Note);
++public sealed record UpdateLeadQualificationRequest(
++    string Fit,
++    string Temperature,
++    string Priority,
++    string SuggestedNextAction,
++    string? Note);
++
++public sealed record UpdateSalesAutomationPolicyRequest(string Mode);
+ public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
+ public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 60a1b28..84d2191 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -259,6 +259,12 @@ public sealed class Lead : ICompanyOwnedEntity
+     public decimal? EstimatedValue { get; private set; }
+     public string? Currency { get; private set; }
+     public string? Source { get; private set; }
++    public string? Fit { get; private set; }
++    public string? Temperature { get; private set; }
++    public string? Priority { get; private set; }
++    public string? SuggestedNextAction { get; private set; }
++    public DateTime? QualifiedUtc { get; private set; }
++    public Guid? QualifiedByUserId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -274,7 +280,7 @@ public sealed class Lead : ICompanyOwnedEntity
+     public ICollection<SalesActivity> Activities { get; } = new List<SalesActivity>();
+     public ICollection<SalesAgentRecommendation> Recommendations { get; } = new List<SalesAgentRecommendation>();
+ 
+-    public void Qualify()
++    public void Qualify(string? fit = null, string? temperature = null, string? priority = null, string? suggestedNextAction = null, Guid? qualifiedByUserId = null)
+     {
+         if (Status is SalesStatuses.Converted or SalesStatuses.Rejected)
+         {
+@@ -283,6 +289,12 @@ public sealed class Lead : ICompanyOwnedEntity
+ 
+         Status = SalesStatuses.Qualified;
+         PipelineStageId = SalesPipelineStage.QualifiedStageId;
++        Fit = SalesEntityText.NormalizeOptional(fit, nameof(fit), 80) ?? Fit;
++        Temperature = SalesEntityText.NormalizeOptional(temperature, nameof(temperature), 32)?.ToLowerInvariant() ?? Temperature;
++        Priority = SalesEntityText.NormalizeOptional(priority, nameof(priority), 32)?.ToLowerInvariant() ?? Priority;
++        SuggestedNextAction = SalesEntityText.NormalizeOptional(suggestedNextAction, nameof(suggestedNextAction), 500) ?? SuggestedNextAction;
++        QualifiedUtc = DateTime.UtcNow;
++        QualifiedByUserId = qualifiedByUserId;
+         UpdatedUtc = DateTime.UtcNow;
+     }
+@@ -463,7 +475,22 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+     {
+     }
+ 
+-    public SalesAgentRecommendation(Guid id, Guid companyId, string recommendation, string rationale, Guid? leadId = null, Guid? dealId = null, string status = SalesStatuses.Open)
++    public SalesAgentRecommendation(
++        Guid id,
++        Guid companyId,
++        string recommendation,
++        string rationale,
++        Guid? leadId = null,
++        Guid? dealId = null,
++        string status = SalesStatuses.Open,
++        string category = "follow_up",
++        string triggerCondition = "manual_review",
++        string actionType = "create_draft_reply",
++        string riskLevel = "medium",
++        bool requiresApproval = true,
++        string approvalStatus = SalesStatuses.WaitingForApproval,
++        string executionStatus = SalesStatuses.Pending,
++        string? dedupeKey = null,
++        decimal? confidence = null)
+     {
+         SalesEntityText.EnsureCompany(companyId);
+         Id = id == Guid.Empty ? Guid.NewGuid() : id;
+@@ -473,6 +500,15 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+         Recommendation = SalesEntityText.NormalizeRequired(recommendation, nameof(recommendation), 1000);
+         Rationale = SalesEntityText.NormalizeRequired(rationale, nameof(rationale), 2000);
+         Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        Category = SalesEntityText.NormalizeRequired(category, nameof(category), 64).ToLowerInvariant();
++        TriggerCondition = SalesEntityText.NormalizeRequired(triggerCondition, nameof(triggerCondition), 80).ToLowerInvariant();
++        ActionType = SalesEntityText.NormalizeRequired(actionType, nameof(actionType), 80).ToLowerInvariant();
++        RiskLevel = SalesEntityText.NormalizeRequired(riskLevel, nameof(riskLevel), 32).ToLowerInvariant();
++        RequiresApproval = requiresApproval;
++        ApprovalStatus = SalesEntityText.NormalizeRequired(approvalStatus, nameof(approvalStatus), 32).ToLowerInvariant();
++        ExecutionStatus = SalesEntityText.NormalizeRequired(executionStatus, nameof(executionStatus), 32).ToLowerInvariant();
++        DedupeKey = SalesEntityText.NormalizeOptional(dedupeKey, nameof(dedupeKey), 256);
++        Confidence = confidence;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -486,6 +522,16 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+     public Guid? DealId { get; private set; }
+     public string Recommendation { get; private set; } = null!;
+     public string Rationale { get; private set; } = null!;
++    public string Category { get; private set; } = null!;
++    public string TriggerCondition { get; private set; } = null!;
++    public string ActionType { get; private set; } = null!;
++    public string RiskLevel { get; private set; } = null!;
++    public bool RequiresApproval { get; private set; }
++    public string ApprovalStatus { get; private set; } = null!;
++    public string ExecutionStatus { get; private set; } = null!;
++    public string? FailureSummary { get; private set; }
++    public string? DedupeKey { get; private set; }
++    public decimal? Confidence { get; private set; }
+     public string Status { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
+@@ -497,6 +543,47 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+     public Deal? Deal { get; private set; }
+     public ICollection<SalesActionApproval> Approvals { get; } = new List<SalesActionApproval>();
++
++    public void MarkApproved()
++    {
++        ApprovalStatus = SalesStatuses.Approved;
++        Status = SalesStatuses.Approved;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkExecuting()
++    {
++        ExecutionStatus = SalesStatuses.InProgress;
++        FailureSummary = null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkExecuted()
++    {
++        ExecutionStatus = SalesStatuses.Completed;
++        Status = SalesStatuses.Completed;
++        FailureSummary = null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkFailed(string failureSummary)
++    {
++        ExecutionStatus = SalesStatuses.Failed;
++        Status = SalesStatuses.Failed;
++        FailureSummary = SalesEntityText.NormalizeOptional(failureSummary, nameof(failureSummary), 1000);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkRetrying()
++    {
++        ExecutionStatus = SalesStatuses.InProgress;
++        Status = SalesStatuses.Open;
++        FailureSummary = null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
+ }
++
++public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
++{
++    private SalesAutomationPolicy() { }
++    public SalesAutomationPolicy(Guid id, Guid companyId, string mode) { SalesEntityText.EnsureCompany(companyId); Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = companyId; Mode = SalesEntityText.NormalizeRequired(mode, nameof(mode), 80).ToLowerInvariant(); FinanceDocumentsAlwaysRequireApproval = true; CreatedUtc = DateTime.UtcNow; UpdatedUtc = CreatedUtc; }
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Mode { get; private set; } = null!;
++    public bool FinanceDocumentsAlwaysRequireApproval { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public void UpdateMode(string mode) { Mode = SalesEntityText.NormalizeRequired(mode, nameof(mode), 80).ToLowerInvariant(); FinanceDocumentsAlwaysRequireApproval = true; UpdatedUtc = DateTime.UtcNow; }
++}
++
++public sealed class SalesFinanceHandoff : ICompanyOwnedEntity
++{
++    private SalesFinanceHandoff() { }
++    public SalesFinanceHandoff(Guid id, Guid companyId, Guid dealId, string summary, string dedupeKey) { SalesEntityText.EnsureCompany(companyId); Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = companyId; DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId))!.Value; Summary = SalesEntityText.NormalizeRequired(summary, nameof(summary), 1000); DedupeKey = SalesEntityText.NormalizeRequired(dedupeKey, nameof(dedupeKey), 256); Status = SalesStatuses.WaitingForApproval; ApprovalStatus = SalesStatuses.WaitingForApproval; ExecutionStatus = SalesStatuses.Pending; CreatedUtc = DateTime.UtcNow; UpdatedUtc = CreatedUtc; }
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DealId { get; private set; }
++    public string Status { get; private set; } = null!;
++    public string ApprovalStatus { get; private set; } = null!;
++    public string ExecutionStatus { get; private set; } = null!;
++    public string Summary { get; private set; } = null!;
++    public string DedupeKey { get; private set; } = null!;
++    public string? ExternalDocumentId { get; private set; }
++    public string? FailureSummary { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Deal Deal { get; private set; } = null!;
++    public void MarkApproved() { ApprovalStatus = SalesStatuses.Approved; ExecutionStatus = SalesStatuses.Completed; Status = SalesStatuses.Completed; ExternalDocumentId ??= $"draft-finance-document:{DealId:N}"; FailureSummary = null; UpdatedUtc = DateTime.UtcNow; }
++    public void MarkFailed(string failureSummary) { ExecutionStatus = SalesStatuses.Failed; Status = SalesStatuses.Failed; FailureSummary = SalesEntityText.NormalizeOptional(failureSummary, nameof(failureSummary), 1000); UpdatedUtc = DateTime.UtcNow; }
++}
+@@ -687,6 +774,11 @@ public static class SalesStatuses
+     public const string WaitingForApproval = "waiting_for_approval";
+     public const string Linked = "linked";
+     public const string Ignored = "ignored";
++    public const string Pending = "pending";
++    public const string InProgress = "in_progress";
++    public const string Approved = "approved";
++    public const string Failed = "failed";
++    public const string DraftCreated = "draft_created";
+ }
+ 
+ internal static class SalesEntityText
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 7ca7f1f..e4c5c78 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -145,6 +145,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
+     public DbSet<SalesActionApproval> SalesActionApprovals => Set<SalesActionApproval>();
+     public DbSet<SalesEmailLink> SalesEmailLinks => Set<SalesEmailLink>();
++    public DbSet<SalesAutomationPolicy> SalesAutomationPolicies => Set<SalesAutomationPolicy>();
++    public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -343,7 +345,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is SalesActivity ||
+                 entry.Entity is SalesPipelineStage ||
+                 entry.Entity is SalesAgentRecommendation ||
++                entry.Entity is SalesAutomationPolicy ||
+                 entry.Entity is SalesActionApproval ||
++                entry.Entity is SalesFinanceHandoff ||
+                 entry.Entity is SalesEmailLink)
+             {
+                 ValidateCompanyId(entry.Entity.CompanyId, entry.Entity.GetType().Name);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 55c4b85..3f662d0 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -154,6 +154,12 @@ internal sealed class LeadConfiguration : IEntityTypeConfiguration<Lead>
+         builder.Property(x => x.EstimatedValue).HasColumnName("estimated_value").HasColumnType("decimal(18,2)");
+         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
+         builder.Property(x => x.Source).HasColumnName("source").HasMaxLength(120);
++        builder.Property(x => x.Fit).HasColumnName("fit").HasMaxLength(80);
++        builder.Property(x => x.Temperature).HasColumnName("temperature").HasMaxLength(32);
++        builder.Property(x => x.Priority).HasColumnName("priority").HasMaxLength(32);
++        builder.Property(x => x.SuggestedNextAction).HasColumnName("suggested_next_action").HasMaxLength(500);
++        builder.Property(x => x.QualifiedUtc).HasColumnName("qualified_at");
++        builder.Property(x => x.QualifiedByUserId).HasColumnName("qualified_by_user_id");
+         ConfigureAudit(builder);
+@@ -258,6 +264,16 @@ internal sealed class SalesAgentRecommendationConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.Recommendation).HasColumnName("recommendation").HasMaxLength(1000).IsRequired();
+         builder.Property(x => x.Rationale).HasColumnName("rationale").HasMaxLength(2000).IsRequired();
+         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Category).HasColumnName("category").HasMaxLength(64).HasDefaultValue("follow_up").IsRequired();
++        builder.Property(x => x.TriggerCondition).HasColumnName("trigger_condition").HasMaxLength(80).HasDefaultValue("manual_review").IsRequired();
++        builder.Property(x => x.ActionType).HasColumnName("action_type").HasMaxLength(80).HasDefaultValue("create_draft_reply").IsRequired();
++        builder.Property(x => x.RiskLevel).HasColumnName("risk_level").HasMaxLength(32).HasDefaultValue("medium").IsRequired();
++        builder.Property(x => x.RequiresApproval).HasColumnName("requires_approval").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.ApprovalStatus).HasColumnName("approval_status").HasMaxLength(32).HasDefaultValue(SalesStatuses.WaitingForApproval).IsRequired();
++        builder.Property(x => x.ExecutionStatus).HasColumnName("execution_status").HasMaxLength(32).HasDefaultValue(SalesStatuses.Pending).IsRequired();
++        builder.Property(x => x.FailureSummary).HasColumnName("failure_summary").HasMaxLength(1000);
++        builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(256);
++        builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,4)");
+         ConfigureAudit(builder);
+ 
+         builder.HasIndex(x => x.CompanyId);
+@@ -265,6 +281,9 @@ internal sealed class SalesAgentRecommendationConfiguration : IEntityTypeConfigur
+         builder.HasIndex(x => x.CreatedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.ApprovalStatus });
++        builder.HasIndex(x => new { x.CompanyId, x.ExecutionStatus });
++        builder.HasIndex(x => new { x.CompanyId, x.DedupeKey }).IsUnique().HasFilter("[dedupe_key] IS NOT NULL");
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+@@ -359,3 +378,59 @@ internal sealed class SalesEmailLinkConfiguration : IEntityTypeConfiguration<Sale
+             .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
++
++internal sealed class SalesAutomationPolicyConfiguration : IEntityTypeConfiguration<SalesAutomationPolicy>
++{
++    public void Configure(EntityTypeBuilder<SalesAutomationPolicy> builder)
++    {
++        builder.ToTable("sales_automation_policies");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Mode).HasColumnName("mode").HasMaxLength(80).IsRequired();
++        builder.Property(x => x.FinanceDocumentsAlwaysRequireApproval).HasColumnName("finance_documents_always_require_approval").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.HasIndex(x => x.CompanyId).IsUnique();
++        builder.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class SalesFinanceHandoffConfiguration : IEntityTypeConfiguration<SalesFinanceHandoff>
++{
++    public void Configure(EntityTypeBuilder<SalesFinanceHandoff> builder)
++    {
++        builder.ToTable("sales_finance_handoffs");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DealId).HasColumnName("deal_id").IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ApprovalStatus).HasColumnName("approval_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ExecutionStatus).HasColumnName("execution_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.ExternalDocumentId).HasColumnName("external_document_id").HasMaxLength(256);
++        builder.Property(x => x.FailureSummary).HasColumnName("failure_summary").HasMaxLength(1000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.DealId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.DedupeKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ApprovalStatus });
++        builder.HasIndex(x => new { x.CompanyId, x.ExecutionStatus });
++        builder.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Deal)
++            .WithMany()
++            .HasForeignKey(nameof(SalesFinanceHandoff.CompanyId), nameof(SalesFinanceHandoff.DealId))
++            .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index 557e77d..a40db7c 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -1,18 +1,24 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Infrastructure.Persistence;
+ 
+ namespace VirtualCompany.Infrastructure.Sales;
+@@
+ public sealed class SalesOperationsService : ISalesOperationsService
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyOutboxEnqueuer _outbox;
++    private readonly ISalesAutomationPolicyEvaluator _policyEvaluator;
+ 
+-    public SalesOperationsService(VirtualCompanyDbContext dbContext)
++    public SalesOperationsService(VirtualCompanyDbContext dbContext, ICompanyOutboxEnqueuer outbox, ISalesAutomationPolicyEvaluator policyEvaluator)
+     {
+         _dbContext = dbContext;
++        _outbox = outbox;
++        _policyEvaluator = policyEvaluator;
+     }
+@@
+-        lead.Qualify();
++        lead.Qualify(qualifiedByUserId: userId);
+         _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "qualification", BuildSummary(request.Note, "Lead qualified by Alex."), DateTime.UtcNow, leadId: lead.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
+         AddAudit(companyId, userId, AuditEventActions.SalesLeadQualified, "lead", lead.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Alex qualified the lead for follow-up.");
++        EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesLeadQualified, "lead", lead.Id, new { leadId = lead.Id, lead.Title, lead.Status });
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return await GetLeadAsync(companyId, leadId, cancellationToken);
+     }
++
++    public async Task<SalesLeadDetailResponse?> UpdateLeadQualificationAsync(Guid companyId, Guid userId, Guid leadId, UpdateLeadQualificationRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var lead = await MutableLeadAsync(companyId, leadId, cancellationToken);
++        if (lead is null) return null;
++
++        lead.Qualify(request.Fit, request.Temperature, request.Priority, request.SuggestedNextAction, userId);
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "qualification", BuildSummary(request.Note, "Lead qualification updated."), DateTime.UtcNow, leadId: lead.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesLeadQualified, "lead", lead.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Alex updated the lead qualification.", new Dictionary<string, string?> { ["fit"] = lead.Fit, ["temperature"] = lead.Temperature, ["priority"] = lead.Priority, ["suggestedNextAction"] = lead.SuggestedNextAction });
++        EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesLeadQualified, "lead", lead.Id, new { leadId = lead.Id, lead.Title, lead.Fit, lead.Temperature, lead.Priority, lead.SuggestedNextAction });
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetLeadAsync(companyId, leadId, cancellationToken);
++    }
+@@
+         deal.MarkWon();
+         _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "won", BuildSummary(request.Note, "Deal marked won."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
++        await EnsureFinanceHandoffAsync(companyId, deal, cancellationToken);
+         AddAudit(companyId, userId, AuditEventActions.SalesDealWon, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The deal was won.");
++        EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesDealWon, "deal", deal.Id, new { dealId = deal.Id, deal.Title, deal.Amount, deal.Currency });
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return await GetDealAsync(companyId, dealId, cancellationToken);
+     }
++
++    public async Task<IReadOnlyList<SalesRecommendationResponse>> DetectFollowUpRecommendationsAsync(Guid companyId, Guid userId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var policy = await GetOrCreatePolicyAsync(companyId, cancellationToken);
++        var now = DateTime.UtcNow;
++        var created = new List<SalesAgentRecommendation>();
++
++        var hotIdleLeads = await _dbContext.Leads.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.Status == SalesStatuses.Qualified && x.UpdatedUtc <= now.AddDays(-3))
++            .ToListAsync(cancellationToken);
++        foreach (var lead in hotIdleLeads)
++        {
++            var decision = _policyEvaluator.Evaluate(policy.Mode, SalesRecommendationActions.CreateDraftReply, SalesRecommendationRiskLevels.Medium);
++            var recommendation = await AddRecommendationIfMissingAsync(companyId, userId, $"hot-lead-idle:{lead.Id:N}", lead.Id, null, "follow_up", "hot_lead_idle", SalesRecommendationActions.CreateDraftReply, SalesRecommendationRiskLevels.Medium, "Create a draft reply", "Alex noticed this qualified lead has been idle for three days.", decision, cancellationToken);
++            if (recommendation is not null) created.Add(recommendation);
++        }
++
++        var stuckDeals = await _dbContext.Deals.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.Status == SalesStatuses.Open && x.UpdatedUtc <= now.AddDays(-7))
++            .ToListAsync(cancellationToken);
++        foreach (var deal in stuckDeals)
++        {
++            var decision = _policyEvaluator.Evaluate(policy.Mode, SalesRecommendationActions.SendEmail, SalesRecommendationRiskLevels.Low);
++            var recommendation = await AddRecommendationIfMissingAsync(companyId, userId, $"stuck-deal:{deal.Id:N}", null, deal.Id, "follow_up", "stuck_deal", SalesRecommendationActions.SendEmail, SalesRecommendationRiskLevels.Low, "Send a follow-up email", "Alex noticed this deal has been quiet for a week.", decision, cancellationToken);
++            if (recommendation is not null) created.Add(recommendation);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return created.Select(MapRecommendation).ToList();
++    }
++
++    public async Task<SalesRecommendationResponse?> ApproveRecommendationAsync(Guid companyId, Guid userId, Guid recommendationId, SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var recommendation = await _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == recommendationId && !x.IsDeleted, cancellationToken);
++        if (recommendation is null) return null;
++        recommendation.MarkApproved();
++        recommendation.MarkExecuting();
++        recommendation.MarkExecuted();
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, recommendation.ActionType == SalesRecommendationActions.SendEmail ? "email" : "draft", recommendation.ActionType == SalesRecommendationActions.SendEmail ? "Follow-up email sent." : "Thread-aware draft reply created.", DateTime.UtcNow, recommendation.LeadId, recommendation.DealId));
++        AddAudit(companyId, userId, "sales.recommendation.approved", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Succeeded, request.Note ?? recommendation.Rationale);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapRecommendation(recommendation);
++    }
++
++    public async Task<SalesRecommendationResponse?> RetryRecommendationAsync(Guid companyId, Guid userId, Guid recommendationId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var recommendation = await _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == recommendationId && !x.IsDeleted, cancellationToken);
++        if (recommendation is null) return null;
++        recommendation.MarkRetrying();
++        recommendation.MarkExecuted();
++        AddAudit(companyId, userId, "sales.recommendation.retry_attempted", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Succeeded, "Alex retried the sales recommendation with the original idempotency key.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapRecommendation(recommendation);
++    }
++
++    public async Task<SalesAutomationPolicyResponse> GetAutomationPolicyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        return MapPolicy(await GetOrCreatePolicyAsync(companyId, cancellationToken));
++    }
++
++    public async Task<SalesAutomationPolicyResponse> UpdateAutomationPolicyAsync(Guid companyId, Guid userId, UpdateSalesAutomationPolicyRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var policy = await GetOrCreatePolicyAsync(companyId, cancellationToken);
++        policy.UpdateMode(request.Mode);
++        AddAudit(companyId, userId, "sales.automation_policy.updated", "sales_automation_policy", policy.Id, AuditEventOutcomes.Succeeded, "Sales automation policy updated.", new Dictionary<string, string?> { ["mode"] = policy.Mode, ["financeDocumentsAlwaysRequireApproval"] = policy.FinanceDocumentsAlwaysRequireApproval.ToString() });
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapPolicy(policy);
++    }
++
++    public async Task<SalesFinanceHandoffResponse?> GetFinanceHandoffAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        return await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == dealId)
++            .Select(x => MapFinanceHandoff(x))
++            .SingleOrDefaultAsync(cancellationToken);
++    }
++
++    public async Task<SalesFinanceHandoffResponse?> ApproveFinanceHandoffAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var handoff = await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.DealId == dealId, cancellationToken);
++        if (handoff is null) return null;
++        handoff.MarkApproved();
++        AddAudit(companyId, userId, "sales.finance_handoff.approved", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Finance draft creation approved for the won deal.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return MapFinanceHandoff(handoff);
++    }
+@@
+     private void AddAudit(Guid companyId, Guid userId, string action, string targetType, Guid targetId, string outcome, string rationale, IReadOnlyDictionary<string, string?>? metadata = null, IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null) =>
+         _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, "human", userId, action, targetType, targetId.ToString("D"), outcome, rationale, ["sales"], metadata, dataSourcesUsed: dataSourcesUsed));
++
++    private void EnqueueSalesEvent(Guid companyId, string topic, string sourceType, Guid sourceId, object payload) =>
++        _outbox.Enqueue(companyId, topic, new { CompanyId = companyId, EventType = topic, SourceType = sourceType, SourceId = sourceId.ToString("D"), Payload = payload, OccurredUtc = DateTime.UtcNow }, idempotencyKey: $"{topic}:{companyId:N}:{sourceId:N}", messageType: "platform_event", causationId: sourceId.ToString("D"));
+ 
+     private static SalesLeadSummaryResponse MapLeadSummary(Lead lead) =>
+-        new(lead.Id, lead.Title, StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, StatusLabel(lead.Status), ResolveConfidence(lead), SuggestedLeadAction(lead), lead.EstimatedValue, lead.Currency, lead.CreatedUtc, lead.UpdatedUtc);
++        new(lead.Id, lead.Title, StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, StatusLabel(lead.Status), ResolveConfidence(lead), SuggestedLeadAction(lead), lead.EstimatedValue, lead.Currency, lead.Fit, StatusLabel(lead.Priority ?? "not set"), lead.QualifiedUtc, lead.QualifiedByUserId, lead.CreatedUtc, lead.UpdatedUtc);
+ 
+     private static SalesLeadDetailResponse MapLeadDetail(Lead lead) =>
+-        new(lead.Id, lead.Title, StatusLabel(lead.Status), StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, lead.PrimaryContact?.FullName, lead.CustomerCompany?.Name, lead.EstimatedValue, lead.Currency, SuggestedLeadAction(lead), lead.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), lead.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList());
++        new(lead.Id, lead.Title, StatusLabel(lead.Status), StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, lead.PrimaryContact?.FullName, lead.CustomerCompany?.Name, lead.EstimatedValue, lead.Currency, SuggestedLeadAction(lead), lead.Fit, StatusLabel(lead.Priority ?? "not set"), lead.QualifiedUtc, lead.QualifiedByUserId, lead.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), lead.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList());
+@@
+     private static SalesRecommendationResponse MapRecommendation(SalesAgentRecommendation recommendation) =>
+-        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, recommendation.CreatedUtc);
++        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, StatusLabel(recommendation.Category), StatusLabel(recommendation.TriggerCondition), StatusLabel(recommendation.ActionType), StatusLabel(recommendation.RiskLevel), recommendation.RequiresApproval, StatusLabel(recommendation.ApprovalStatus), StatusLabel(recommendation.ExecutionStatus), recommendation.FailureSummary, recommendation.CreatedUtc);
++
++    private static SalesAutomationPolicyResponse MapPolicy(SalesAutomationPolicy policy) =>
++        new(policy.Id, policy.Mode, policy.FinanceDocumentsAlwaysRequireApproval, policy.UpdatedUtc);
++
++    private static SalesFinanceHandoffResponse MapFinanceHandoff(SalesFinanceHandoff handoff) =>
++        new(handoff.Id, handoff.DealId, StatusLabel(handoff.Status), StatusLabel(handoff.ApprovalStatus), StatusLabel(handoff.ExecutionStatus), handoff.Summary, handoff.ExternalDocumentId, handoff.FailureSummary, handoff.CreatedUtc, handoff.UpdatedUtc);
++
++    private async Task<SalesAutomationPolicy> GetOrCreatePolicyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        var policy = await _dbContext.SalesAutomationPolicies.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++        if (policy is not null) return policy;
++        policy = new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++        _dbContext.SalesAutomationPolicies.Add(policy);
++        return policy;
++    }
++
++    private async Task<SalesAgentRecommendation?> AddRecommendationIfMissingAsync(Guid companyId, Guid userId, string dedupeKey, Guid? leadId, Guid? dealId, string category, string triggerCondition, string actionType, string riskLevel, string recommendationText, string rationale, SalesAutomationPolicyDecision decision, CancellationToken cancellationToken)
++    {
++        var exists = await _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.DedupeKey == dedupeKey && !x.IsDeleted && x.Status != SalesStatuses.Completed, cancellationToken);
++        if (exists) return null;
++        var recommendation = new SalesAgentRecommendation(Guid.NewGuid(), companyId, recommendationText, rationale, leadId, dealId, decision.RequiresApproval ? SalesStatuses.WaitingForApproval : SalesStatuses.Open, category, triggerCondition, actionType, riskLevel, decision.RequiresApproval, decision.RequiresApproval ? SalesStatuses.WaitingForApproval : SalesStatuses.Approved, decision.CanAutoExecute ? SalesStatuses.Completed : SalesStatuses.Pending, dedupeKey);
++        _dbContext.SalesAgentRecommendations.Add(recommendation);
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "recommendation", rationale, DateTime.UtcNow, leadId, dealId));
++        AddAudit(companyId, userId, "sales.recommendation.created", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Succeeded, rationale, new Dictionary<string, string?> { ["policyMode"] = decision.PolicyMode, ["requiresApproval"] = decision.RequiresApproval.ToString(), ["executionMode"] = decision.ExecutionMode });
++        return recommendation;
++    }
++
++    private async Task EnsureFinanceHandoffAsync(Guid companyId, Deal deal, CancellationToken cancellationToken)
++    {
++        var dedupeKey = $"sales-finance-handoff:{companyId:N}:{deal.Id:N}";
++        if (await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.DedupeKey == dedupeKey, cancellationToken)) return;
++        _dbContext.SalesFinanceHandoffs.Add(new SalesFinanceHandoff(Guid.NewGuid(), companyId, deal.Id, $"Create a draft quote or invoice for {deal.Title}. Approval is required before finance documents are created.", dedupeKey));
++    }
+@@
+     private static string ResolveTemperature(Lead lead)
+     {
++        if (!string.IsNullOrWhiteSpace(lead.Temperature))
++        {
++            return StatusLabel(lead.Temperature);
++        }
++
+         var confidence = ResolveConfidence(lead);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index c0d801e..69b7a11 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -463,6 +463,7 @@ public static class DependencyInjection
+         services.AddScoped<ISalesEmailIngestionService, SalesEmailIngestionService>();
+         services.AddScoped<ISalesEmailIntentExtractionService, OpenAiSalesEmailIntentExtractionService>();
+         services.AddScoped<ISalesOperationsService, SalesOperationsService>();
++        services.AddSingleton<ISalesAutomationPolicyEvaluator, SalesAutomationPolicyEvaluator>();
+         services.AddScoped<ICompanyFinanceIntegrationReadService, CompanyFinanceIntegrationReadService>();
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index 532b9b4..b7261af 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -501,6 +501,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             case CompanyOutboxTopics.FinanceThresholdBreached:
+             case CompanyOutboxTopics.SalesEmailReceived:
+             case CompanyOutboxTopics.SalesLeadDetected:
++            case CompanyOutboxTopics.SalesLeadQualified:
++            case CompanyOutboxTopics.SalesDealWon:
+                 {
+                     var payload = Deserialize<PlatformEventOutboxPayload>(message);
+                     if (payload.CompanyId != message.CompanyId)
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index f701b34..a83431e 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -57,6 +57,24 @@ public sealed class SalesController : ControllerBase
+         }
+     }
+ 
++    [HttpPut("leads/{id:guid}/qualification")]
++    public async Task<ActionResult<SalesLeadDetailResponse>> UpdateLeadQualificationAsync(Guid id, [FromBody] UpdateLeadQualificationRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _salesOperations.UpdateLeadQualificationAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Lead qualification could not be saved.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
+     [HttpPost("leads/{id:guid}/reject")]
+     public async Task<ActionResult<SalesLeadDetailResponse>> RejectLeadAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+@@ -116,6 +134,43 @@ public sealed class SalesController : ControllerBase
+     public Task<IReadOnlyList<SalesRecommendationResponse>> GetRecommendationsAsync(CancellationToken cancellationToken) =>
+         _salesOperations.ListRecommendationsAsync(CompanyId(), cancellationToken);
+ 
++    [HttpPost("recommendations/detect")]
++    public Task<IReadOnlyList<SalesRecommendationResponse>> DetectRecommendationsAsync(CancellationToken cancellationToken) =>
++        _salesOperations.DetectFollowUpRecommendationsAsync(CompanyId(), UserId(), cancellationToken);
++
++    [HttpPost("recommendations/{id:guid}/approve")]
++    public async Task<ActionResult<SalesRecommendationResponse>> ApproveRecommendationAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.ApproveRecommendationAsync(CompanyId(), UserId(), id, request, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpPost("recommendations/{id:guid}/retry")]
++    public async Task<ActionResult<SalesRecommendationResponse>> RetryRecommendationAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.RetryRecommendationAsync(CompanyId(), UserId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpGet("automation-policy")]
++    public Task<SalesAutomationPolicyResponse> GetAutomationPolicyAsync(CancellationToken cancellationToken) =>
++        _salesOperations.GetAutomationPolicyAsync(CompanyId(), cancellationToken);
++
++    [HttpPut("automation-policy")]
++    public Task<SalesAutomationPolicyResponse> UpdateAutomationPolicyAsync([FromBody] UpdateSalesAutomationPolicyRequest request, CancellationToken cancellationToken) =>
++        _salesOperations.UpdateAutomationPolicyAsync(CompanyId(), UserId(), request, cancellationToken);
++
++    [HttpGet("deals/{id:guid}/finance-handoff")]
++    public async Task<ActionResult<SalesFinanceHandoffResponse>> GetFinanceHandoffAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.GetFinanceHandoffAsync(CompanyId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpPost("deals/{id:guid}/finance-handoff/approve")]
++    public async Task<ActionResult<SalesFinanceHandoffResponse>> ApproveFinanceHandoffAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.ApproveFinanceHandoffAsync(CompanyId(), UserId(), id, request, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
+     [HttpPost("deals/{id:guid}/stage")]
+     [HttpPost("deals/{id:guid}/stage-change")]
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index b78f0f8..bb12fa1 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -27,6 +27,9 @@ public sealed class SalesApiClient
+     public Task<SalesLeadDetailResponse?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken = default) =>
+         GetAsync<SalesLeadDetailResponse>(companyId, $"api/sales/leads/{leadId:D}", allowNotFound: true, cancellationToken);
+ 
++    public Task<SalesLeadDetailResponse> UpdateLeadQualificationAsync(Guid companyId, Guid leadId, UpdateLeadQualificationRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<UpdateLeadQualificationRequest, SalesLeadDetailResponse>(companyId, HttpMethod.Put, $"api/sales/leads/{leadId:D}/qualification", request, cancellationToken);
++
+     public Task<SalesLeadDetailResponse> QualifyLeadAsync(Guid companyId, Guid leadId, string? note, CancellationToken cancellationToken = default) =>
+         SendAsync<SalesActionRequest, SalesLeadDetailResponse>(companyId, HttpMethod.Post, $"api/sales/leads/{leadId:D}/qualify", new(note), cancellationToken);
+@@ -62,6 +65,12 @@ public sealed class SalesApiClient
+     public Task<SalesDealDetailResponse> MarkLostAsync(Guid companyId, Guid dealId, string? note, CancellationToken cancellationToken = default) =>
+         SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/lost", new(note), cancellationToken);
+ 
++    public Task<SalesRecommendationResponse> ApproveRecommendationAsync(Guid companyId, Guid recommendationId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<SalesActionRequest, SalesRecommendationResponse>(companyId, HttpMethod.Post, $"api/sales/recommendations/{recommendationId:D}/approve", new(note), cancellationToken);
++
++    public Task<SalesRecommendationResponse> RetryRecommendationAsync(Guid companyId, Guid recommendationId, CancellationToken cancellationToken = default) =>
++        SendAsync<object, SalesRecommendationResponse>(companyId, HttpMethod.Post, $"api/sales/recommendations/{recommendationId:D}/retry", new { }, cancellationToken);
++
+@@ -179,6 +188,10 @@ public sealed record SalesLeadSummaryResponse(
+     string SuggestedNextAction,
+     decimal? EstimatedValue,
+     string? Currency,
++    string? Fit,
++    string? Priority,
++    DateTime? QualifiedUtc,
++    Guid? QualifiedByUserId,
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc);
+@@ -195,14 +208,24 @@ public sealed record SalesLeadDetailResponse(
+     decimal? EstimatedValue,
+     string? Currency,
+     string SuggestedNextAction,
++    string? Fit,
++    string? Priority,
++    DateTime? QualifiedUtc,
++    Guid? QualifiedByUserId,
+     IReadOnlyList<SalesActivityResponse> Activities,
+     IReadOnlyList<SalesRecommendationResponse> Recommendations);
+@@
+ public sealed record SalesActivityResponse(Guid Id, string ActivityType, string Summary, string Status, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
+ public sealed record SalesEmailTimelineResponse(Guid Id, string ProviderMessageId, string Status, string? DetectedIntent, string? ProductOrServiceInterest, decimal? Confidence, string? Rationale, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
+-public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, DateTime CreatedUtc);
++public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, string Category, string TriggerCondition, string ActionType, string RiskLevel, bool RequiresApproval, string ApprovalStatus, string ExecutionStatus, string? FailureSummary, DateTime CreatedUtc);
+ public sealed record SalesActionRequest(string? Note);
++public sealed record UpdateLeadQualificationRequest(string Fit, string Temperature, string Priority, string SuggestedNextAction, string? Note);
+ public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
+ public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor b/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
+index f0d43da..5d78a8c 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
+@@ -72,6 +72,8 @@
+                                     <th>Temperature</th>
+                                     <th>Qualification</th>
+                                     <th>Confidence</th>
++                                    <th>Fit</th>
++                                    <th>Priority</th>
+                                     <th>Suggested next action</th>
+                                     <th></th>
+@@ -89,6 +91,8 @@
+                                         <td><span class="@TemperatureClass(lead.Temperature)">@lead.Temperature</span></td>
+                                         <td><span class="@BadgeClass(lead.QualificationStatus)">@lead.QualificationStatus</span></td>
+                                         <td>@Confidence(lead.ConfidenceScore)</td>
++                                        <td>@(lead.Fit ?? "Not set")</td>
++                                        <td>@(lead.Priority ?? "Not set")</td>
+                                         <td>@lead.SuggestedNextAction</td>
+@@ -113,6 +117,28 @@
+                 </section>
+             }
+ 
++            @if (leadToQualify is not null)
++            {
++                <section class="sales-card sales-convert-panel">
++                    <div>
++                        <span>QUALIFY LEAD</span>
++                        <h2>@leadToQualify.Title</h2>
++                        <p>Capture Alex's qualification so the next action is clear.</p>
++                    </div>
++                    <label><span>Fit</span><input class="sales-input" @bind="qualificationFit" /></label>
++                    <label><span>Temperature</span><select class="sales-input" @bind="qualificationTemperature"><option>Warm</option><option>Hot</option><option>New</option></select></label>
++                    <label><span>Priority</span><select class="sales-input" @bind="qualificationPriority"><option>Medium</option><option>High</option><option>Low</option></select></label>
++                    <label><span>Suggested next action</span><input class="sales-input" @bind="qualificationNextAction" /></label>
++                    <label><span>Note</span><input class="sales-input" @bind="actionNote" placeholder="Optional note for the audit trail" /></label>
++                    <div class="sales-actions">
++                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToQualify.Id)" @onclick="SaveQualificationAsync">Save qualification</button>
++                        <button class="sales-button" @onclick="CancelQualification">Cancel</button>
++                    </div>
++                </section>
++            }
++
+             @if (leadToConvert is not null)
+             {
+@@ -150,6 +176,11 @@
+     private Guid? busyId;
+     private List<SalesLeadSummaryResponse> leads = [];
+     private SalesLeadSummaryResponse? leadToConvert;
++    private SalesLeadSummaryResponse? leadToQualify;
++    private string qualificationFit = "Good fit";
++    private string qualificationTemperature = "Warm";
++    private string qualificationPriority = "Medium";
++    private string qualificationNextAction = "Send a personal follow-up";
+     private decimal convertAmount = 1000;
+@@ -185,7 +216,7 @@
+         }
+     }
+ 
+-    private async Task QualifyAsync(Guid leadId) => await RunLeadActionAsync(leadId, async companyId => await SalesApiClient.QualifyLeadAsync(companyId, leadId, actionNote));
++    private void QualifyAsync(Guid leadId) => BeginQualification(leads.Single(x => x.Id == leadId));
+     private async Task RejectAsync(Guid leadId) => await RunLeadActionAsync(leadId, async companyId => await SalesApiClient.RejectLeadAsync(companyId, leadId, actionNote));
+@@ -213,6 +244,34 @@
+         }
+     }
+ 
++    private void BeginQualification(SalesLeadSummaryResponse lead)
++    {
++        leadToQualify = lead;
++        qualificationFit = lead.Fit ?? "Good fit";
++        qualificationTemperature = lead.Temperature;
++        qualificationPriority = lead.Priority ?? "Medium";
++        qualificationNextAction = lead.SuggestedNextAction;
++    }
++
++    private void CancelQualification() => leadToQualify = null;
++
++    private async Task SaveQualificationAsync()
++    {
++        if (ResolvedCompanyId is not Guid companyId || leadToQualify is null)
++        {
++            return;
++        }
++
++        busyId = leadToQualify.Id;
++        try
++        {
++            await SalesApiClient.UpdateLeadQualificationAsync(companyId, leadToQualify.Id, new UpdateLeadQualificationRequest(qualificationFit, qualificationTemperature, qualificationPriority, qualificationNextAction, actionNote));
++            actionMessage = "Qualification saved.";
++            leadToQualify = null;
++            await LoadAsync();
++        }
++        catch (SalesApiException ex) { actionMessage = ex.Message; }
++        finally { busyId = null; }
++    }
++
+     private void BeginConvert(SalesLeadSummaryResponse lead)
+diff --git a/tests/VirtualCompany.Api.Tests/SalesAutomationPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/SalesAutomationPolicyEvaluatorTests.cs
+new file mode 100644
+index 0000000..2623a75
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SalesAutomationPolicyEvaluatorTests.cs
+@@ -0,0 +1,38 @@
++using VirtualCompany.Application.Sales;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SalesAutomationPolicyEvaluatorTests
++{
++    private readonly SalesAutomationPolicyEvaluator _evaluator = new();
++
++    [Fact]
++    public void ManualOnlyRequiresApprovalForFollowUpSend()
++    {
++        var decision = _evaluator.Evaluate(SalesAutomationPolicyModes.ManualOnly, SalesRecommendationActions.SendEmail, SalesRecommendationRiskLevels.Low);
++
++        Assert.True(decision.RequiresApproval);
++        Assert.False(decision.CanAutoExecute);
++        Assert.Equal("approval_required", decision.ExecutionMode);
++    }
++
++    [Fact]
++    public void DraftOnlyAllowsDraftButNotSend()
++    {
++        var draft = _evaluator.Evaluate(SalesAutomationPolicyModes.DraftOnly, SalesRecommendationActions.CreateDraftReply, SalesRecommendationRiskLevels.Medium);
++        var send = _evaluator.Evaluate(SalesAutomationPolicyModes.DraftOnly, SalesRecommendationActions.SendEmail, SalesRecommendationRiskLevels.Low);
++
++        Assert.False(draft.RequiresApproval);
++        Assert.True(draft.CanAutoExecute);
++        Assert.True(send.RequiresApproval);
++    }
++
++    [Fact]
++    public void AutoSendOnlyAppliesToLowRiskFollowUps()
++    {
++        var lowRisk = _evaluator.Evaluate(SalesAutomationPolicyModes.AutoSendLowRiskFollowUps, SalesRecommendationActions.SendEmail, SalesRecommendationRiskLevels.Low);
++        var highRisk = _evaluator.Evaluate(SalesAutomationPolicyModes.AutoSendLowRiskFollowUps, SalesRecommendationActions.SendEmail, SalesRecommendationRiskLevels.High);
++
++        Assert.True(lowRisk.CanAutoExecute);
++        Assert.False(lowRisk.RequiresApproval);
++        Assert.True(highRisk.RequiresApproval);
++    }
++
++    [Fact]
++    public void FinanceDocumentsAlwaysRequireApproval()
++    {
++        var decision = _evaluator.Evaluate(SalesAutomationPolicyModes.AutoSendLowRiskFollowUps, SalesRecommendationActions.CreateFinanceDocument, SalesRecommendationRiskLevels.Low);
++
++        Assert.True(decision.RequiresApproval);
++        Assert.False(decision.CanAutoExecute);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504220000_AddSalesQualificationAutomationAndHandoffs.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504220000_AddSalesQualificationAutomationAndHandoffs.cs
+new file mode 100644
+index 0000000..f87e93d
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504220000_AddSalesQualificationAutomationAndHandoffs.cs
+@@ -0,0 +1,102 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddSalesQualificationAutomationAndHandoffs : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>("fit", "leads", maxLength: 80, nullable: true);
++        migrationBuilder.AddColumn<string>("temperature", "leads", maxLength: 32, nullable: true);
++        migrationBuilder.AddColumn<string>("priority", "leads", maxLength: 32, nullable: true);
++        migrationBuilder.AddColumn<string>("suggested_next_action", "leads", maxLength: 500, nullable: true);
++        migrationBuilder.AddColumn<DateTime>("qualified_at", "leads", nullable: true);
++        migrationBuilder.AddColumn<Guid>("qualified_by_user_id", "leads", nullable: true);
++
++        migrationBuilder.AddColumn<string>("category", "sales_agent_recommendations", maxLength: 64, nullable: false, defaultValue: "follow_up");
++        migrationBuilder.AddColumn<string>("trigger_condition", "sales_agent_recommendations", maxLength: 80, nullable: false, defaultValue: "manual_review");
++        migrationBuilder.AddColumn<string>("action_type", "sales_agent_recommendations", maxLength: 80, nullable: false, defaultValue: "create_draft_reply");
++        migrationBuilder.AddColumn<string>("risk_level", "sales_agent_recommendations", maxLength: 32, nullable: false, defaultValue: "medium");
++        migrationBuilder.AddColumn<bool>("requires_approval", "sales_agent_recommendations", nullable: false, defaultValue: true);
++        migrationBuilder.AddColumn<string>("approval_status", "sales_agent_recommendations", maxLength: 32, nullable: false, defaultValue: "waiting_for_approval");
++        migrationBuilder.AddColumn<string>("execution_status", "sales_agent_recommendations", maxLength: 32, nullable: false, defaultValue: "pending");
++        migrationBuilder.AddColumn<string>("failure_summary", "sales_agent_recommendations", maxLength: 1000, nullable: true);
++        migrationBuilder.AddColumn<string>("dedupe_key", "sales_agent_recommendations", maxLength: 256, nullable: true);
++        migrationBuilder.AddColumn<decimal>("confidence", "sales_agent_recommendations", type: "decimal(5,4)", nullable: true);
++
++        migrationBuilder.CreateTable(
++            name: "sales_automation_policies",
++            columns: table => new
++            {
++                id = table.Column<Guid>(nullable: false),
++                company_id = table.Column<Guid>(nullable: false),
++                mode = table.Column<string>(maxLength: 80, nullable: false),
++                finance_documents_always_require_approval = table.Column<bool>(nullable: false, defaultValue: true),
++                created_at = table.Column<DateTime>(nullable: false),
++                updated_at = table.Column<DateTime>(nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_automation_policies", x => x.id);
++                table.UniqueConstraint("AK_sales_automation_policies_company_id_id", x => new { x.company_id, x.id });
++                table.ForeignKey("FK_sales_automation_policies_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "sales_finance_handoffs",
++            columns: table => new
++            {
++                id = table.Column<Guid>(nullable: false),
++                company_id = table.Column<Guid>(nullable: false),
++                deal_id = table.Column<Guid>(nullable: false),
++                status = table.Column<string>(maxLength: 32, nullable: false),
++                approval_status = table.Column<string>(maxLength: 32, nullable: false),
++                execution_status = table.Column<string>(maxLength: 32, nullable: false),
++                summary = table.Column<string>(maxLength: 1000, nullable: false),
++                dedupe_key = table.Column<string>(maxLength: 256, nullable: false),
++                external_document_id = table.Column<string>(maxLength: 256, nullable: true),
++                failure_summary = table.Column<string>(maxLength: 1000, nullable: true),
++                created_at = table.Column<DateTime>(nullable: false),
++                updated_at = table.Column<DateTime>(nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_finance_handoffs", x => x.id);
++                table.UniqueConstraint("AK_sales_finance_handoffs_company_id_id", x => new { x.company_id, x.id });
++                table.ForeignKey("FK_sales_finance_handoffs_deals_company_id_deal_id", x => new { x.company_id, x.deal_id }, "deals", new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex("IX_sales_agent_recommendations_company_id_approval_status", "sales_agent_recommendations", new[] { "company_id", "approval_status" });
++        migrationBuilder.CreateIndex("IX_sales_agent_recommendations_company_id_execution_status", "sales_agent_recommendations", new[] { "company_id", "execution_status" });
++        migrationBuilder.CreateIndex("IX_sales_agent_recommendations_company_id_dedupe_key", "sales_agent_recommendations", new[] { "company_id", "dedupe_key" }, unique: true, filter: "[dedupe_key] IS NOT NULL");
++        migrationBuilder.CreateIndex("IX_sales_automation_policies_company_id", "sales_automation_policies", "company_id", unique: true);
++        migrationBuilder.CreateIndex("IX_sales_finance_handoffs_company_id_deal_id", "sales_finance_handoffs", new[] { "company_id", "deal_id" }, unique: true);
++        migrationBuilder.CreateIndex("IX_sales_finance_handoffs_company_id_dedupe_key", "sales_finance_handoffs", new[] { "company_id", "dedupe_key" }, unique: true);
++        migrationBuilder.CreateIndex("IX_sales_finance_handoffs_company_id_approval_status", "sales_finance_handoffs", new[] { "company_id", "approval_status" });
++        migrationBuilder.CreateIndex("IX_sales_finance_handoffs_company_id_execution_status", "sales_finance_handoffs", new[] { "company_id", "execution_status" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable("sales_finance_handoffs");
++        migrationBuilder.DropTable("sales_automation_policies");
++        migrationBuilder.DropIndex("IX_sales_agent_recommendations_company_id_approval_status", "sales_agent_recommendations");
++        migrationBuilder.DropIndex("IX_sales_agent_recommendations_company_id_execution_status", "sales_agent_recommendations");
++        migrationBuilder.DropIndex("IX_sales_agent_recommendations_company_id_dedupe_key", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("fit", "leads");
++        migrationBuilder.DropColumn("temperature", "leads");
++        migrationBuilder.DropColumn("priority", "leads");
++        migrationBuilder.DropColumn("suggested_next_action", "leads");
++        migrationBuilder.DropColumn("qualified_at", "leads");
++        migrationBuilder.DropColumn("qualified_by_user_id", "leads");
++        migrationBuilder.DropColumn("category", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("trigger_condition", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("action_type", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("risk_level", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("requires_approval", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("approval_status", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("execution_status", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("failure_summary", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("dedupe_key", "sales_agent_recommendations");
++        migrationBuilder.DropColumn("confidence", "sales_agent_recommendations");
++    }
++}
+END_OF_PATCH

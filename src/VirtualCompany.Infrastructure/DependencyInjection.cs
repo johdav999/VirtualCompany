@@ -1,3 +1,4 @@
+using VirtualCompany.Application.CustomerMemory;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authorization;
@@ -12,6 +13,7 @@ using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Alerts;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Infrastructure.CustomerMemory;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.Context;
@@ -30,6 +32,7 @@ using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Memory;
 using VirtualCompany.Application.Workflows;
+using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
@@ -48,6 +51,7 @@ using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Mailbox;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Memory;
+using VirtualCompany.Infrastructure.Sales;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -99,15 +103,27 @@ public static class DependencyInjection
             client.BaseAddress = FortnoxApiClient.NormalizeBaseAddress(options.ApiBaseUrl);
         });
         services.AddScoped<IFortnoxOAuthStateProtector, DataProtectionFortnoxOAuthStateProtector>();
-        services.AddScoped<IFortnoxOAuthSessionStore, DistributedCacheFortnoxOAuthSessionStore>();
-        services.AddScoped<IFortnoxOAuthService, FortnoxOAuthService>();
+        services.AddScoped<IFortnoxOAuthSessionStore, EfFortnoxOAuthSessionStore>();
+        services.AddScoped<FortnoxOAuthService>();
+        services.AddScoped<IFortnoxOAuthService>(provider => provider.GetRequiredService<FortnoxOAuthService>());
+        services.AddScoped<FortnoxFinanceIntegrationOAuthService>();
+        services.AddScoped<IFinanceIntegrationOAuthService>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationOAuthService>());
         services.TryAddSingleton<IFortnoxIntegrationDiagnostics, FortnoxIntegrationDiagnostics>();
+        services.TryAddSingleton<IFortnoxErrorTranslator, DefaultFortnoxErrorTranslator>();
         services.AddScoped<IFortnoxTokenStore, FortnoxTokenStore>();
         services.AddScoped<FortnoxOAuthClient>();
-        services.AddScoped<IFortnoxMappingService, FortnoxMappingService>();
-        services.AddScoped<IFortnoxWriteApprovalService, FortnoxWriteApprovalService>();
-        services.AddScoped<IFortnoxWriteCommandService>(provider => (FortnoxWriteApprovalService)provider.GetRequiredService<IFortnoxWriteApprovalService>());
-        services.AddScoped<IFortnoxSyncService, FortnoxSyncService>();
+        services.AddScoped<FortnoxMappingService>();
+        services.AddScoped<IFortnoxMappingService>(provider => provider.GetRequiredService<FortnoxMappingService>());
+        services.AddScoped<FortnoxFinanceIntegrationMapper>();
+        services.AddScoped<IFinanceIntegrationMapper>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationMapper>());
+        services.AddScoped<FinanceIntegrationWriteApprovalService>();
+        services.AddScoped<IFinanceIntegrationWriteApprovalService>(provider => provider.GetRequiredService<FinanceIntegrationWriteApprovalService>());
+        services.AddScoped<IFinanceIntegrationWriteCommandService>(provider => provider.GetRequiredService<FinanceIntegrationWriteApprovalService>());
+        services.AddScoped<IFortnoxOutboundActionExecutor, FortnoxOutboundActionExecutor>();
+        services.AddScoped<FortnoxSyncService>();
+        services.AddScoped<IFortnoxSyncService>(provider => provider.GetRequiredService<FortnoxSyncService>());
+        services.AddScoped<FortnoxFinanceIntegrationSyncService>();
+        services.AddScoped<IFinanceIntegrationSyncService>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationSyncService>());
 
         services.AddOptions<CompanySimulationOptions>()
             .Bind(configuration.GetSection(CompanySimulationOptions.SectionName))
@@ -218,6 +234,13 @@ public static class DependencyInjection
         services.AddOptions<CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions>()
             .Bind(configuration.GetSection(CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions.SectionName));
 
+        services.AddOptions<OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions>()
+            .Bind(configuration.GetSection(OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions.SectionName));
+
+        services.AddOptions<PipelineRiskScoringWorkerOptions>()
+            .Bind(configuration.GetSection(PipelineRiskScoringWorkerOptions.SectionName))
+            .PostConfigure(options => options.RunIntervalHours = Math.Max(1, options.RunIntervalHours));
+
         services.AddOptions<MultiAgentCollaborationOptions>()
             .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
             .PostConfigure(options =>
@@ -262,6 +285,7 @@ public static class DependencyInjection
         services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
+        services.AddHttpClient(OpenAiSalesEmailIntentExtractionService.ClientName);
         services.AddHttpClient(GmailMailboxProviderClient.ClientName);
         services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
@@ -292,6 +316,7 @@ public static class DependencyInjection
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
+        services.AddHostedService<PipelineRiskScoringBackgroundService>();
 
         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
         services.AddSingleton<IBackgroundJobExecutor, BackgroundJobExecutor>();
@@ -426,8 +451,6 @@ public static class DependencyInjection
         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
         services.AddScoped<InternalFinanceToolProvider>();
         services.AddScoped<MockFinanceToolProvider>();
-        services.AddScoped<IFinanceIntegrationProvider, FortnoxFinanceIntegrationProvider>();
-        services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
         services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
         services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
@@ -442,7 +465,32 @@ public static class DependencyInjection
         services.AddScoped<ISignalEngine, CompanySignalEngine>();
         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
         services.AddScoped<FortnoxFinanceIntegrationProvider>();
+        services.AddOptions<SequenceExecutionWorkerOptions>()
+            .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
+        services.AddHostedService<SequenceExecutionBackgroundService>();
+        services.AddOptions<CustomerMemoryOptions>()
+            .Bind(configuration.GetSection(CustomerMemoryOptions.SectionName));
+        services.AddScoped<ICustomerMemoryService, CustomerMemoryService>();
+        services.AddScoped<IOutboundCampaignService, OutboundCampaignService>();
+        services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
+        services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
+        services.AddScoped<IConversionAnalyticsService, ConversionAnalyticsService>();
+        services.AddScoped<RevenueForecastService>();
+        services.AddScoped<IRevenueForecastService>(provider => provider.GetRequiredService<RevenueForecastService>());
+        services.AddScoped<IPipelineRiskScoringJobRunner>(provider => provider.GetRequiredService<RevenueForecastService>());
+        services.AddScoped<IOutboundAutomationEnforcementService, OutboundAutomationEnforcementService>();
+        services.AddScoped<IOutboundReviewQueueService, OutboundReviewQueueService>();
+        services.AddScoped<IWebsiteLeadCaptureService, WebsiteLeadCaptureService>();
+        services.AddScoped<IOutboundEmailSender, MailboxOutboundEmailSender>();
         services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
+        services.AddScoped<ISalesEmailIngestionService, SalesEmailIngestionService>();
+        services.AddScoped<ISalesEmailIntentExtractionService, OpenAiSalesEmailIntentExtractionService>();
+        services.AddScoped<IReplySignalDetectionService, DeterministicReplySignalDetectionService>();
+        services.AddScoped<IReplySignalDetectionPipeline, ReplySignalDetectionPipeline>();
+        services.AddScoped<IDealIntelligenceSignalRepository, DealIntelligenceSignalRepository>();
+        services.AddScoped<ISalesOperationsService, SalesOperationsService>();
+        services.AddSingleton<ISalesAutomationPolicyEvaluator, SalesAutomationPolicyEvaluator>();
+
         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
         services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
         services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
@@ -477,6 +525,7 @@ public static class DependencyInjection
         });
         services.AddSingleton<IFinanceWorkflowTriggerRegistry, StaticFinanceWorkflowTriggerRegistry>();
         services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
+        services.AddScoped<ISalesPersistenceRepository, SalesPersistenceRepository>();
         services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();

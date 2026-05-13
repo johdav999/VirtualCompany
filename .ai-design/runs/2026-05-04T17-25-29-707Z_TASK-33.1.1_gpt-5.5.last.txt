@@ -1,0 +1,1266 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs b/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs
+index 4a3d8cf..f0ddc25 100644
+--- a/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs
++++ b/src/VirtualCompany.Domain/Entities/FortnoxConnection.cs
+@@ -36,16 +36,23 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+     public FortnoxConnectionStatus Status { get; private set; }
+     public string? EncryptedAccessToken { get; private set; }
+     public string? EncryptedRefreshToken { get; private set; }
++    public string? TokenEncryptionKeyId { get; private set; }
++    public string? TokenEncryptionAlgorithm { get; private set; }
+     public DateTime? AccessTokenExpiresUtc { get; private set; }
++    public DateTime? RefreshTokenExpiresUtc { get; private set; }
+     public List<string> GrantedScopes { get; private set; } = [];
+     public string? ProviderTenantId { get; private set; }
++    public string? FortnoxCompanyName { get; private set; }
+     public JsonObject ProviderMetadata { get; private set; } = [];
+     public DateTime? ConnectedUtc { get; private set; }
+     public DateTime? LastRefreshAttemptUtc { get; private set; }
+     public DateTime? LastSuccessfulRefreshUtc { get; private set; }
++    public DateTime? LastValidatedUtc { get; private set; }
++    public DateTime? LastSyncUtc { get; private set; }
+     public string? LastErrorSummary { get; private set; }
++    public DateTime? DisconnectedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+@@ -59,7 +66,11 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+         DateTime? accessTokenExpiresUtc,
+         IReadOnlyCollection<string>? grantedScopes,
+         string? providerTenantId,
+-        DateTime nowUtc)
++        DateTime nowUtc,
++        DateTime? refreshTokenExpiresUtc = null,
++        string? tokenEncryptionKeyId = null,
++        string? tokenEncryptionAlgorithm = null,
++        string? fortnoxCompanyName = null)
+     {
+         EncryptedAccessToken = NormalizeRequired(encryptedAccessToken, nameof(encryptedAccessToken), 4096);
+         EncryptedRefreshToken = NormalizeRequired(encryptedRefreshToken, nameof(encryptedRefreshToken), 4096);
+@@ -67,8 +78,17 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+             ? EntityTimestampNormalizer.NormalizeUtc(accessTokenExpiresUtc.Value, nameof(accessTokenExpiresUtc))
+             : null;
+         GrantedScopes = NormalizeStringList(grantedScopes, nameof(grantedScopes), 256);
++        RefreshTokenExpiresUtc = refreshTokenExpiresUtc.HasValue
++            ? EntityTimestampNormalizer.NormalizeUtc(refreshTokenExpiresUtc.Value, nameof(refreshTokenExpiresUtc))
++            : RefreshTokenExpiresUtc;
++        TokenEncryptionKeyId = NormalizeOptional(tokenEncryptionKeyId, nameof(tokenEncryptionKeyId), 128) ?? TokenEncryptionKeyId;
++        TokenEncryptionAlgorithm = NormalizeOptional(tokenEncryptionAlgorithm, nameof(tokenEncryptionAlgorithm), 64) ?? TokenEncryptionAlgorithm;
+         ProviderTenantId = NormalizeOptional(providerTenantId, nameof(providerTenantId), 256);
++        FortnoxCompanyName = NormalizeOptional(fortnoxCompanyName, nameof(fortnoxCompanyName), 256) ?? FortnoxCompanyName;
+         Status = FortnoxConnectionStatus.Connected;
++        DisconnectedUtc = null;
+         ConnectedUtc ??= EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
++        LastValidatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+         LastErrorSummary = null;
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+     }
+@@ -82,7 +102,10 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+         DateTime? accessTokenExpiresUtc,
+         IReadOnlyCollection<string>? grantedScopes,
+         DateTime nowUtc)
+     {
++        var previousRefreshTokenExpiry = RefreshTokenExpiresUtc;
+         StoreEncryptedTokens(
+             encryptedAccessToken,
+             encryptedRefreshToken,
+             accessTokenExpiresUtc,
+@@ -90,6 +113,7 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+             ProviderTenantId,
+             nowUtc);
++        RefreshTokenExpiresUtc = previousRefreshTokenExpiry;
+         LastRefreshAttemptUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+         LastSuccessfulRefreshUtc = LastRefreshAttemptUtc;
+     }
+@@ -101,6 +125,18 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+         UpdatedUtc = LastRefreshAttemptUtc.Value;
+     }
+ 
++    public void MarkValidated(DateTime nowUtc)
++    {
++        LastValidatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
++        UpdatedUtc = LastValidatedUtc.Value;
++    }
++
++    public void MarkSyncSucceeded(DateTime completedUtc)
++    {
++        LastSyncUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
++        LastErrorSummary = null;
++        UpdatedUtc = LastSyncUtc.Value;
++    }
++
+     public void SetStatus(FortnoxConnectionStatus status, string? safeErrorSummary, DateTime nowUtc)
+     {
+         FortnoxConnectionStatusValues.EnsureSupported(status, nameof(status));
+@@ -108,6 +144,11 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
+         LastErrorSummary = NormalizeOptional(safeErrorSummary, nameof(safeErrorSummary), 1000);
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
++
++        if (status == FortnoxConnectionStatus.Disconnected)
++        {
++            DisconnectedUtc = UpdatedUtc;
++        }
+     }
+ 
+     private static List<string> NormalizeStringList(IReadOnlyCollection<string>? values, string name, int maxLength) =>
+diff --git a/src/VirtualCompany.Domain/Entities/FortnoxPersistenceEntities.cs b/src/VirtualCompany.Domain/Entities/FortnoxPersistenceEntities.cs
+new file mode 100644
+index 0000000..2a999fa
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/FortnoxPersistenceEntities.cs
+@@ -0,0 +1,295 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class FortnoxOAuthState : ICompanyOwnedEntity
++{
++    private FortnoxOAuthState()
++    {
++    }
++
++    public FortnoxOAuthState(
++        Guid id,
++        Guid companyId,
++        Guid userId,
++        string stateHash,
++        DateTime createdUtc,
++        DateTime expiresUtc,
++        string? redirectUri = null,
++        string? codeVerifierCiphertext = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        UserId = userId == Guid.Empty ? throw new ArgumentException("UserId is required.", nameof(userId)) : userId;
++        StateHash = NormalizeRequired(stateHash, nameof(stateHash), 128);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
++        ExpiresUtc = EntityTimestampNormalizer.NormalizeUtc(expiresUtc, nameof(expiresUtc));
++        if (ExpiresUtc <= CreatedUtc)
++        {
++            throw new ArgumentException("OAuth state expiry must be after creation.", nameof(expiresUtc));
++        }
++
++        RedirectUri = NormalizeOptional(redirectUri, nameof(redirectUri), 2048);
++        CodeVerifierCiphertext = NormalizeOptional(codeVerifierCiphertext, nameof(codeVerifierCiphertext), 4096);
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid UserId { get; private set; }
++    public Guid? ConnectionId { get; private set; }
++    public string StateHash { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime ExpiresUtc { get; private set; }
++    public DateTime? ConsumedUtc { get; private set; }
++    public DateTime? CallbackReceivedUtc { get; private set; }
++    public string? RedirectUri { get; private set; }
++    public string? CodeVerifierCiphertext { get; private set; }
++    public string? FailureReason { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public User User { get; private set; } = null!;
++    public FortnoxConnection? Connection { get; private set; }
++
++    public void MarkCallbackReceived(DateTime receivedUtc)
++    {
++        CallbackReceivedUtc = EntityTimestampNormalizer.NormalizeUtc(receivedUtc, nameof(receivedUtc));
++    }
++
++    public void MarkConsumed(Guid? connectionId, DateTime consumedUtc)
++    {
++        if (ConsumedUtc.HasValue)
++        {
++            throw new InvalidOperationException("Fortnox OAuth state has already been consumed.");
++        }
++
++        ConnectionId = connectionId == Guid.Empty ? null : connectionId;
++        ConsumedUtc = EntityTimestampNormalizer.NormalizeUtc(consumedUtc, nameof(consumedUtc));
++        CallbackReceivedUtc ??= ConsumedUtc;
++        FailureReason = null;
++    }
++
++    public void MarkFailed(string failureReason, DateTime receivedUtc)
++    {
++        FailureReason = NormalizeOptional(failureReason, nameof(failureReason), 1000);
++        CallbackReceivedUtc = EntityTimestampNormalizer.NormalizeUtc(receivedUtc, nameof(receivedUtc));
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
++
++public sealed class FortnoxSyncHistory : ICompanyOwnedEntity
++{
++    private FortnoxSyncHistory()
++    {
++    }
++
++    public FortnoxSyncHistory(
++        Guid id,
++        Guid companyId,
++        Guid fortnoxConnectionId,
++        string syncType,
++        string direction,
++        DateTime startedUtc,
++        Guid? triggeredByUserId = null,
++        string? correlationId = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        FortnoxConnectionId = fortnoxConnectionId == Guid.Empty ? throw new ArgumentException("FortnoxConnectionId is required.", nameof(fortnoxConnectionId)) : fortnoxConnectionId;
++        SyncType = NormalizeRequired(syncType, nameof(syncType), 64).ToLowerInvariant();
++        Direction = NormalizeRequired(direction, nameof(direction), 32).ToLowerInvariant();
++        Status = FortnoxSyncStatuses.Running;
++        StartedUtc = EntityTimestampNormalizer.NormalizeUtc(startedUtc, nameof(startedUtc));
++        TriggeredByUserId = triggeredByUserId == Guid.Empty ? null : triggeredByUserId;
++        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
++        Metadata = [];
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid FortnoxConnectionId { get; private set; }
++    public string SyncType { get; private set; } = null!;
++    public string Direction { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime StartedUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public Guid? TriggeredByUserId { get; private set; }
++    public int RecordsProcessed { get; private set; }
++    public int RecordsSucceeded { get; private set; }
++    public int RecordsFailed { get; private set; }
++    public string? CorrelationId { get; private set; }
++    public string? ErrorSummary { get; private set; }
++    public JsonObject Metadata { get; private set; } = [];
++    public Company Company { get; private set; } = null!;
++    public FortnoxConnection FortnoxConnection { get; private set; } = null!;
++    public User? TriggeredByUser { get; private set; }
++
++    public void MarkCompleted(int processed, int succeeded, int failed, DateTime completedUtc, string? errorSummary = null)
++    {
++        RecordsProcessed = NormalizeCount(processed, nameof(processed));
++        RecordsSucceeded = NormalizeCount(succeeded, nameof(succeeded));
++        RecordsFailed = NormalizeCount(failed, nameof(failed));
++        Status = failed == 0 ? FortnoxSyncStatuses.Succeeded : FortnoxSyncStatuses.Failed;
++        CompletedUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
++        ErrorSummary = NormalizeOptional(errorSummary, nameof(errorSummary), 1000);
++    }
++
++    private static int NormalizeCount(int value, string name) =>
++        value < 0 ? throw new ArgumentOutOfRangeException(name, $"{name} cannot be negative.") : value;
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
++
++public sealed class FortnoxExternalReference : ICompanyOwnedEntity
++{
++    private FortnoxExternalReference()
++    {
++    }
++
++    public FortnoxExternalReference(
++        Guid id,
++        Guid companyId,
++        Guid? fortnoxConnectionId,
++        string entityType,
++        Guid internalEntityId,
++        string externalEntityType,
++        string externalId,
++        DateTime createdUtc,
++        string? externalDisplayReference = null,
++        DateTime? lastSyncedUtc = null)
++    {
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++        FortnoxConnectionId = fortnoxConnectionId == Guid.Empty ? null : fortnoxConnectionId;
++        EntityType = NormalizeRequired(entityType, nameof(entityType), 64).ToLowerInvariant();
++        InternalEntityId = internalEntityId == Guid.Empty ? throw new ArgumentException("InternalEntityId is required.", nameof(internalEntityId)) : internalEntityId;
++        ExternalEntityType = NormalizeRequired(externalEntityType, nameof(externalEntityType), 64).ToLowerInvariant();
++        ExternalId = NormalizeRequired(externalId, nameof(externalId), 256);
++        ExternalDisplayReference = NormalizeOptional(externalDisplayReference, nameof(externalDisplayReference), 128);
++        CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
++        UpdatedUtc = CreatedUtc;
++        LastSyncedUtc = lastSyncedUtc.HasValue
++            ? EntityTimestampNormalizer.NormalizeUtc(lastSyncedUtc.Value, nameof(lastSyncedUtc))
++            : null;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? FortnoxConnectionId { get; private set; }
++    public string EntityType { get; private set; } = null!;
++    public Guid InternalEntityId { get; private set; }
++    public string ExternalEntityType { get; private set; } = null!;
++    public string ExternalId { get; private set; } = null!;
++    public string? ExternalDisplayReference { get; private set; }
++    public DateTime? LastSyncedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public FortnoxConnection? FortnoxConnection { get; private set; }
++
++    public void Refresh(string? externalDisplayReference, DateTime syncedUtc)
++    {
++        ExternalDisplayReference = NormalizeOptional(externalDisplayReference, nameof(externalDisplayReference), 128);
++        LastSyncedUtc = EntityTimestampNormalizer.NormalizeUtc(syncedUtc, nameof(syncedUtc));
++        UpdatedUtc = LastSyncedUtc.Value;
++    }
++
++    private static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    private static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length > maxLength ? trimmed[..maxLength] : trimmed;
++    }
++}
++
++public static class FortnoxSyncTypes
++{
++    public const string Full = "full";
++    public const string Incremental = "incremental";
++    public const string Manual = "manual";
++}
++
++public static class FortnoxSyncDirections
++{
++    public const string Import = "import";
++    public const string Export = "export";
++    public const string Bidirectional = "bidirectional";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('import', 'export', 'bidirectional')";
++}
++
++public static class FortnoxSyncStatuses
++{
++    public const string Running = "running";
++    public const string Succeeded = "succeeded";
++    public const string Failed = "failed";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('running', 'succeeded', 'failed')";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FortnoxConnectionEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FortnoxConnectionEntityConfiguration.cs
+index f1c4a95..c62368c 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FortnoxConnectionEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FortnoxConnectionEntityConfiguration.cs
+@@ -28,14 +28,21 @@ internal sealed class FortnoxConnectionEntityConfiguration : IEntityTypeConfigur
+             .HasMaxLength(32)
+             .IsRequired();
+         builder.Property(x => x.EncryptedAccessToken).HasColumnName("encrypted_access_token");
+         builder.Property(x => x.EncryptedRefreshToken).HasColumnName("encrypted_refresh_token");
++        builder.Property(x => x.TokenEncryptionKeyId).HasColumnName("token_encryption_key_id").HasMaxLength(128);
++        builder.Property(x => x.TokenEncryptionAlgorithm).HasColumnName("token_encryption_algorithm").HasMaxLength(64);
+         builder.Property(x => x.AccessTokenExpiresUtc).HasColumnName("access_token_expires_at");
++        builder.Property(x => x.RefreshTokenExpiresUtc).HasColumnName("refresh_token_expires_at");
+         builder.Property(x => x.GrantedScopes)
+             .HasColumnName("granted_scopes_json")
+             .HasJsonConversion<List<string>>()
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
+             .IsRequired();
+         builder.Property(x => x.ProviderTenantId).HasColumnName("provider_tenant_id").HasMaxLength(256);
++        builder.Property(x => x.FortnoxCompanyName).HasColumnName("fortnox_company_name").HasMaxLength(256);
+         HasJsonObjectConversion(builder.Property(x => x.ProviderMetadata).HasColumnName("provider_metadata_json"))
+             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
+             .IsRequired();
+         builder.Property(x => x.ConnectedUtc).HasColumnName("connected_at");
+         builder.Property(x => x.LastRefreshAttemptUtc).HasColumnName("last_refresh_attempt_at");
+         builder.Property(x => x.LastSuccessfulRefreshUtc).HasColumnName("last_successful_refresh_at");
++        builder.Property(x => x.LastValidatedUtc).HasColumnName("last_validated_at");
++        builder.Property(x => x.LastSyncUtc).HasColumnName("last_sync_at");
+         builder.Property(x => x.LastErrorSummary).HasColumnName("last_error_summary").HasMaxLength(1000);
++        builder.Property(x => x.DisconnectedUtc).HasColumnName("disconnected_at");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+ 
+         builder.HasIndex(x => x.CompanyId).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.Status });
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.AccessTokenExpiresUtc);
+ 
+         builder.HasOne(x => x.Company)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FortnoxPersistenceEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FortnoxPersistenceEntityConfiguration.cs
+new file mode 100644
+index 0000000..f11d3d2
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/FortnoxPersistenceEntityConfiguration.cs
+@@ -0,0 +1,142 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class FortnoxOAuthStateEntityConfiguration : IEntityTypeConfiguration<FortnoxOAuthState>
++{
++    public void Configure(EntityTypeBuilder<FortnoxOAuthState> builder)
++    {
++        builder.ToTable("fortnox_oauth_states");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
++        builder.Property(x => x.ConnectionId).HasColumnName("connection_id");
++        builder.Property(x => x.StateHash).HasColumnName("state_hash").HasMaxLength(128).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.ExpiresUtc).HasColumnName("expires_at").IsRequired();
++        builder.Property(x => x.ConsumedUtc).HasColumnName("consumed_at");
++        builder.Property(x => x.CallbackReceivedUtc).HasColumnName("callback_received_at");
++        builder.Property(x => x.RedirectUri).HasColumnName("redirect_uri").HasMaxLength(2048);
++        builder.Property(x => x.CodeVerifierCiphertext).HasColumnName("code_verifier_ciphertext").HasColumnType("nvarchar(max)");
++        builder.Property(x => x.FailureReason).HasColumnName("failure_reason").HasMaxLength(1000);
++
++        builder.HasIndex(x => x.StateHash).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.UserId });
++        builder.HasIndex(x => x.ExpiresUtc);
++        builder.HasIndex(x => x.ConsumedUtc);
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.User).WithMany().HasForeignKey(x => x.UserId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Connection)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.ConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.NoAction);
++    }
++}
++
++internal sealed class FortnoxSyncHistoryEntityConfiguration : IEntityTypeConfiguration<FortnoxSyncHistory>
++{
++    public void Configure(EntityTypeBuilder<FortnoxSyncHistory> builder)
++    {
++        builder.ToTable("fortnox_sync_histories");
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_fortnox_sync_histories_direction", FortnoxSyncDirections.BuildCheckConstraintSql("direction"));
++            t.HasCheckConstraint("CK_fortnox_sync_histories_status", FortnoxSyncStatuses.BuildCheckConstraintSql("status"));
++            t.HasCheckConstraint("CK_fortnox_sync_histories_records_processed_nonnegative", "records_processed >= 0");
++            t.HasCheckConstraint("CK_fortnox_sync_histories_records_succeeded_nonnegative", "records_succeeded >= 0");
++            t.HasCheckConstraint("CK_fortnox_sync_histories_records_failed_nonnegative", "records_failed >= 0");
++        });
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.FortnoxConnectionId).HasColumnName("fortnox_connection_id").IsRequired();
++        builder.Property(x => x.SyncType).HasColumnName("sync_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Direction).HasColumnName("direction").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.TriggeredByUserId).HasColumnName("triggered_by_user_id");
++        builder.Property(x => x.RecordsProcessed).HasColumnName("records_processed").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.RecordsSucceeded).HasColumnName("records_succeeded").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.RecordsFailed).HasColumnName("records_failed").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.ErrorSummary).HasColumnName("error_summary").HasMaxLength(1000);
++        FinanceIntegrationConnectionEntityConfiguration.HasJsonObjectConversion(builder.Property(x => x.Metadata).HasColumnName("metadata_json"))
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.FortnoxConnectionId, x.StartedUtc });
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FortnoxConnection)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.FortnoxConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.TriggeredByUser).WithMany().HasForeignKey(x => x.TriggeredByUserId).OnDelete(DeleteBehavior.SetNull);
++    }
++}
++
++internal sealed class FortnoxExternalReferenceEntityConfiguration : IEntityTypeConfiguration<FortnoxExternalReference>
++{
++    public void Configure(EntityTypeBuilder<FortnoxExternalReference> builder)
++    {
++        builder.ToTable("fortnox_external_references");
++
++        builder.HasKey(x => x.Id);
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.FortnoxConnectionId).HasColumnName("fortnox_connection_id");
++        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.InternalEntityId).HasColumnName("internal_entity_id").IsRequired();
++        builder.Property(x => x.ExternalEntityType).HasColumnName("external_entity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.ExternalDisplayReference).HasColumnName("external_display_reference").HasMaxLength(128);
++        builder.Property(x => x.LastSyncedUtc).HasColumnName("last_synced_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.EntityType, x.InternalEntityId, x.ExternalEntityType }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ExternalEntityType, x.ExternalId });
++        builder.HasIndex(x => new { x.CompanyId, x.FortnoxConnectionId });
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.FortnoxConnection)
++            .WithMany()
++            .HasForeignKey(x => new { x.CompanyId, x.FortnoxConnectionId })
++            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
++            .OnDelete(DeleteBehavior.NoAction);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 1e1e029..aa9c8ef 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -113,6 +113,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
+     public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
+     public DbSet<FortnoxConnection> FortnoxConnections => Set<FortnoxConnection>();
++    public DbSet<FortnoxOAuthState> FortnoxOAuthStates => Set<FortnoxOAuthState>();
++    public DbSet<FortnoxSyncHistory> FortnoxSyncHistories => Set<FortnoxSyncHistory>();
++    public DbSet<FortnoxExternalReference> FortnoxExternalReferences => Set<FortnoxExternalReference>();
+     public DbSet<EmailIngestionRun> EmailIngestionRuns => Set<EmailIngestionRun>();
+     public DbSet<EmailMessageSnapshot> EmailMessageSnapshots => Set<EmailMessageSnapshot>();
+     public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
+@@ -281,6 +284,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinancialStatementSnapshotLine ||
+                 entry.Entity is MailboxConnection ||
+                 entry.Entity is FortnoxConnection ||
++                entry.Entity is FortnoxOAuthState ||
++                entry.Entity is FortnoxSyncHistory ||
++                entry.Entity is FortnoxExternalReference ||
+                 entry.Entity is EmailIngestionRun ||
+                 entry.Entity is EmailMessageSnapshot ||
+                 entry.Entity is BillDuplicateCheck ||
+@@ -460,6 +466,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FortnoxConnection>()
+             .HasQueryFilter(connection =>
+                 CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FortnoxOAuthState>()
++            .HasQueryFilter(state =>
++                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FortnoxSyncHistory>()
++            .HasQueryFilter(history =>
++                CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<FortnoxExternalReference>()
++            .HasQueryFilter(reference =>
++                CurrentCompanyId.HasValue && reference.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<EmailIngestionRun>()
+             .HasQueryFilter(run =>
+                 CurrentCompanyId.HasValue && run.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504120000_AddFortnoxConnectionPersistenceFoundation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504120000_AddFortnoxConnectionPersistenceFoundation.cs
+new file mode 100644
+index 0000000..d6d6d5c
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504120000_AddFortnoxConnectionPersistenceFoundation.cs
+@@ -0,0 +1,241 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[Migration("20260504120000_AddFortnoxConnectionPersistenceFoundation")]
++[DbContext(typeof(VirtualCompanyDbContext))]
++public partial class AddFortnoxConnectionPersistenceFoundation : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider != "Microsoft.EntityFrameworkCore.SqlServer")
++        {
++            return;
++        }
++
++        migrationBuilder.Sql("""
++            IF OBJECT_ID(N'[dbo].[fortnox_connections]', N'U') IS NOT NULL
++            BEGIN
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'token_encryption_key_id') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [token_encryption_key_id] nvarchar(128) NULL;
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'token_encryption_algorithm') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [token_encryption_algorithm] nvarchar(64) NULL;
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'refresh_token_expires_at') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [refresh_token_expires_at] datetime2 NULL;
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'fortnox_company_name') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [fortnox_company_name] nvarchar(256) NULL;
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'last_validated_at') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [last_validated_at] datetime2 NULL;
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'last_sync_at') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [last_sync_at] datetime2 NULL;
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'disconnected_at') IS NULL
++                    ALTER TABLE [fortnox_connections] ADD [disconnected_at] datetime2 NULL;
++                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_fortnox_connections_status' AND object_id = OBJECT_ID(N'[dbo].[fortnox_connections]'))
++                    CREATE INDEX [IX_fortnox_connections_status] ON [fortnox_connections] ([status]);
++                IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_fortnox_connections_access_token_expires_at' AND object_id = OBJECT_ID(N'[dbo].[fortnox_connections]'))
++                    CREATE INDEX [IX_fortnox_connections_access_token_expires_at] ON [fortnox_connections] ([access_token_expires_at]);
++            END
++            """);
++
++        migrationBuilder.Sql("""
++            IF OBJECT_ID(N'[dbo].[fortnox_oauth_states]', N'U') IS NULL
++            BEGIN
++                CREATE TABLE [fortnox_oauth_states] (
++                    [id] uniqueidentifier NOT NULL,
++                    [company_id] uniqueidentifier NOT NULL,
++                    [user_id] uniqueidentifier NOT NULL,
++                    [connection_id] uniqueidentifier NULL,
++                    [state_hash] nvarchar(128) NOT NULL,
++                    [created_at] datetime2 NOT NULL,
++                    [expires_at] datetime2 NOT NULL,
++                    [consumed_at] datetime2 NULL,
++                    [callback_received_at] datetime2 NULL,
++                    [redirect_uri] nvarchar(2048) NULL,
++                    [code_verifier_ciphertext] nvarchar(max) NULL,
++                    [failure_reason] nvarchar(1000) NULL,
++                    CONSTRAINT [PK_fortnox_oauth_states] PRIMARY KEY ([id]),
++                    CONSTRAINT [FK_fortnox_oauth_states_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
++                    CONSTRAINT [FK_fortnox_oauth_states_users_user_id] FOREIGN KEY ([user_id]) REFERENCES [users] ([Id]) ON DELETE NO ACTION,
++                    CONSTRAINT [FK_fortnox_oauth_states_fortnox_connections_company_id_connection_id] FOREIGN KEY ([company_id], [connection_id]) REFERENCES [fortnox_connections] ([company_id], [id]) ON DELETE NO ACTION
++                );
++
++                CREATE UNIQUE INDEX [IX_fortnox_oauth_states_state_hash] ON [fortnox_oauth_states] ([state_hash]);
++                CREATE INDEX [IX_fortnox_oauth_states_company_id_user_id] ON [fortnox_oauth_states] ([company_id], [user_id]);
++                CREATE INDEX [IX_fortnox_oauth_states_expires_at] ON [fortnox_oauth_states] ([expires_at]);
++                CREATE INDEX [IX_fortnox_oauth_states_consumed_at] ON [fortnox_oauth_states] ([consumed_at]);
++                CREATE INDEX [IX_fortnox_oauth_states_user_id] ON [fortnox_oauth_states] ([user_id]);
++                CREATE INDEX [IX_fortnox_oauth_states_company_id_connection_id] ON [fortnox_oauth_states] ([company_id], [connection_id]);
++            END
++            """);
++
++        migrationBuilder.Sql("""
++            IF OBJECT_ID(N'[dbo].[fortnox_sync_histories]', N'U') IS NULL
++            BEGIN
++                CREATE TABLE [fortnox_sync_histories] (
++                    [id] uniqueidentifier NOT NULL,
++                    [company_id] uniqueidentifier NOT NULL,
++                    [fortnox_connection_id] uniqueidentifier NOT NULL,
++                    [sync_type] nvarchar(64) NOT NULL,
++                    [direction] nvarchar(32) NOT NULL,
++                    [status] nvarchar(32) NOT NULL,
++                    [started_at] datetime2 NOT NULL,
++                    [completed_at] datetime2 NULL,
++                    [triggered_by_user_id] uniqueidentifier NULL,
++                    [records_processed] int NOT NULL CONSTRAINT [DF_fortnox_sync_histories_records_processed] DEFAULT 0,
++                    [records_succeeded] int NOT NULL CONSTRAINT [DF_fortnox_sync_histories_records_succeeded] DEFAULT 0,
++                    [records_failed] int NOT NULL CONSTRAINT [DF_fortnox_sync_histories_records_failed] DEFAULT 0,
++                    [correlation_id] nvarchar(128) NULL,
++                    [error_summary] nvarchar(1000) NULL,
++                    [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_fortnox_sync_histories_metadata_json] DEFAULT N'{}',
++                    CONSTRAINT [PK_fortnox_sync_histories] PRIMARY KEY ([id]),
++                    CONSTRAINT [CK_fortnox_sync_histories_direction] CHECK ([direction] IN ('import', 'export', 'bidirectional')),
++                    CONSTRAINT [CK_fortnox_sync_histories_status] CHECK ([status] IN ('running', 'succeeded', 'failed')),
++                    CONSTRAINT [CK_fortnox_sync_histories_records_processed_nonnegative] CHECK ([records_processed] >= 0),
++                    CONSTRAINT [CK_fortnox_sync_histories_records_succeeded_nonnegative] CHECK ([records_succeeded] >= 0),
++                    CONSTRAINT [CK_fortnox_sync_histories_records_failed_nonnegative] CHECK ([records_failed] >= 0),
++                    CONSTRAINT [FK_fortnox_sync_histories_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
++                    CONSTRAINT [FK_fortnox_sync_histories_fortnox_connections_company_id_fortnox_connection_id] FOREIGN KEY ([company_id], [fortnox_connection_id]) REFERENCES [fortnox_connections] ([company_id], [id]) ON DELETE CASCADE,
++                    CONSTRAINT [FK_fortnox_sync_histories_users_triggered_by_user_id] FOREIGN KEY ([triggered_by_user_id]) REFERENCES [users] ([Id]) ON DELETE SET NULL
++                );
++
++                CREATE INDEX [IX_fortnox_sync_histories_company_id_fortnox_connection_id_started_at] ON [fortnox_sync_histories] ([company_id], [fortnox_connection_id], [started_at]);
++                CREATE INDEX [IX_fortnox_sync_histories_status] ON [fortnox_sync_histories] ([status]);
++                CREATE INDEX [IX_fortnox_sync_histories_company_id_correlation_id] ON [fortnox_sync_histories] ([company_id], [correlation_id]);
++                CREATE INDEX [IX_fortnox_sync_histories_triggered_by_user_id] ON [fortnox_sync_histories] ([triggered_by_user_id]);
++            END
++            """);
++
++        migrationBuilder.Sql("""
++            IF OBJECT_ID(N'[dbo].[fortnox_external_references]', N'U') IS NULL
++            BEGIN
++                CREATE TABLE [fortnox_external_references] (
++                    [id] uniqueidentifier NOT NULL,
++                    [company_id] uniqueidentifier NOT NULL,
++                    [fortnox_connection_id] uniqueidentifier NULL,
++                    [entity_type] nvarchar(64) NOT NULL,
++                    [internal_entity_id] uniqueidentifier NOT NULL,
++                    [external_entity_type] nvarchar(64) NOT NULL,
++                    [external_id] nvarchar(256) NOT NULL,
++                    [external_display_reference] nvarchar(128) NULL,
++                    [last_synced_at] datetime2 NULL,
++                    [created_at] datetime2 NOT NULL,
++                    [updated_at] datetime2 NOT NULL,
++                    CONSTRAINT [PK_fortnox_external_references] PRIMARY KEY ([id]),
++                    CONSTRAINT [FK_fortnox_external_references_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
++                    CONSTRAINT [FK_fortnox_external_references_fortnox_connections_company_id_fortnox_connection_id] FOREIGN KEY ([company_id], [fortnox_connection_id]) REFERENCES [fortnox_connections] ([company_id], [id]) ON DELETE NO ACTION
++                );
++
++                CREATE UNIQUE INDEX [IX_fortnox_external_references_company_id_entity_type_internal_entity_id_external_entity_type] ON [fortnox_external_references] ([company_id], [entity_type], [internal_entity_id], [external_entity_type]);
++                CREATE INDEX [IX_fortnox_external_references_company_id_external_entity_type_external_id] ON [fortnox_external_references] ([company_id], [external_entity_type], [external_id]);
++                CREATE INDEX [IX_fortnox_external_references_company_id_fortnox_connection_id] ON [fortnox_external_references] ([company_id], [fortnox_connection_id]);
++            END
++            """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider != "Microsoft.EntityFrameworkCore.SqlServer")
++        {
++            return;
++        }
++
++        migrationBuilder.Sql("""
++            IF OBJECT_ID(N'[dbo].[fortnox_external_references]', N'U') IS NOT NULL
++                DROP TABLE [fortnox_external_references];
++            IF OBJECT_ID(N'[dbo].[fortnox_sync_histories]', N'U') IS NOT NULL
++                DROP TABLE [fortnox_sync_histories];
++            IF OBJECT_ID(N'[dbo].[fortnox_oauth_states]', N'U') IS NOT NULL
++                DROP TABLE [fortnox_oauth_states];
++
++            IF OBJECT_ID(N'[dbo].[fortnox_connections]', N'U') IS NOT NULL
++            BEGIN
++                IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_fortnox_connections_access_token_expires_at' AND object_id = OBJECT_ID(N'[dbo].[fortnox_connections]'))
++                    DROP INDEX [IX_fortnox_connections_access_token_expires_at] ON [fortnox_connections];
++                IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_fortnox_connections_status' AND object_id = OBJECT_ID(N'[dbo].[fortnox_connections]'))
++                    DROP INDEX [IX_fortnox_connections_status] ON [fortnox_connections];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'disconnected_at') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [disconnected_at];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'last_sync_at') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [last_sync_at];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'last_validated_at') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [last_validated_at];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'fortnox_company_name') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [fortnox_company_name];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'refresh_token_expires_at') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [refresh_token_expires_at];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'token_encryption_algorithm') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [token_encryption_algorithm];
++                IF COL_LENGTH(N'[dbo].[fortnox_connections]', N'token_encryption_key_id') IS NOT NULL
++                    ALTER TABLE [fortnox_connections] DROP COLUMN [token_encryption_key_id];
++            END
++            """);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+index 9f2ed29..58cf7c8 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/VirtualCompanyDbContextModelSnapshot.cs
+@@ -11890,6 +11890,446 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.ToTable("company_setup_templates", (string)null);
+                 });
+ 
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxConnection", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("id");
++
++                    b.Property<DateTime?>("AccessTokenExpiresUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("access_token_expires_at");
++
++                    b.Property<Guid>("CompanyId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("company_id");
++
++                    b.Property<DateTime?>("ConnectedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("connected_at");
++
++                    b.Property<Guid>("ConnectedByUserId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("connected_by_user_id");
++
++                    b.Property<DateTime>("CreatedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("created_at");
++
++                    b.Property<DateTime?>("DisconnectedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("disconnected_at");
++
++                    b.Property<string>("EncryptedAccessToken")
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("encrypted_access_token");
++
++                    b.Property<string>("EncryptedRefreshToken")
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("encrypted_refresh_token");
++
++                    b.Property<string>("FortnoxCompanyName")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)")
++                        .HasColumnName("fortnox_company_name");
++
++                    b.Property<string>("GrantedScopes")
++                        .IsRequired()
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("granted_scopes_json")
++                        .HasDefaultValueSql("N'[]'");
++
++                    b.Property<string>("LastErrorSummary")
++                        .HasMaxLength(1000)
++                        .HasColumnType("nvarchar(1000)")
++                        .HasColumnName("last_error_summary");
++
++                    b.Property<DateTime?>("LastRefreshAttemptUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("last_refresh_attempt_at");
++
++                    b.Property<DateTime?>("LastSuccessfulRefreshUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("last_successful_refresh_at");
++
++                    b.Property<DateTime?>("LastSyncUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("last_sync_at");
++
++                    b.Property<DateTime?>("LastValidatedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("last_validated_at");
++
++                    b.Property<string>("ProviderMetadata")
++                        .IsRequired()
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("provider_metadata_json")
++                        .HasDefaultValueSql("N'{}'");
++
++                    b.Property<string>("ProviderTenantId")
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)")
++                        .HasColumnName("provider_tenant_id");
++
++                    b.Property<DateTime?>("RefreshTokenExpiresUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("refresh_token_expires_at");
++
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .HasMaxLength(32)
++                        .HasColumnType("nvarchar(32)")
++                        .HasColumnName("status");
++
++                    b.Property<string>("TokenEncryptionAlgorithm")
++                        .HasMaxLength(64)
++                        .HasColumnType("nvarchar(64)")
++                        .HasColumnName("token_encryption_algorithm");
++
++                    b.Property<string>("TokenEncryptionKeyId")
++                        .HasMaxLength(128)
++                        .HasColumnType("nvarchar(128)")
++                        .HasColumnName("token_encryption_key_id");
++
++                    b.Property<DateTime>("UpdatedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("updated_at");
++
++                    b.HasKey("Id");
++
++                    b.HasAlternateKey("CompanyId", "Id");
++
++                    b.HasIndex("AccessTokenExpiresUtc");
++
++                    b.HasIndex("CompanyId")
++                        .IsUnique();
++
++                    b.HasIndex("CompanyId", "Status");
++
++                    b.HasIndex("ConnectedByUserId");
++
++                    b.HasIndex("Status");
++
++                    b.ToTable("fortnox_connections", (string)null);
++                });
++
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxOAuthState", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("id");
++
++                    b.Property<DateTime?>("CallbackReceivedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("callback_received_at");
++
++                    b.Property<string>("CodeVerifierCiphertext")
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("code_verifier_ciphertext");
++
++                    b.Property<Guid>("CompanyId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("company_id");
++
++                    b.Property<Guid?>("ConnectionId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("connection_id");
++
++                    b.Property<DateTime?>("ConsumedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("consumed_at");
++
++                    b.Property<DateTime>("CreatedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("created_at");
++
++                    b.Property<DateTime>("ExpiresUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("expires_at");
++
++                    b.Property<string>("FailureReason")
++                        .HasMaxLength(1000)
++                        .HasColumnType("nvarchar(1000)")
++                        .HasColumnName("failure_reason");
++
++                    b.Property<string>("RedirectUri")
++                        .HasMaxLength(2048)
++                        .HasColumnType("nvarchar(2048)")
++                        .HasColumnName("redirect_uri");
++
++                    b.Property<string>("StateHash")
++                        .IsRequired()
++                        .HasMaxLength(128)
++                        .HasColumnType("nvarchar(128)")
++                        .HasColumnName("state_hash");
++
++                    b.Property<Guid>("UserId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("user_id");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("CompanyId", "ConnectionId");
++
++                    b.HasIndex("CompanyId", "UserId");
++
++                    b.HasIndex("ConsumedUtc");
++
++                    b.HasIndex("ExpiresUtc");
++
++                    b.HasIndex("StateHash")
++                        .IsUnique();
++
++                    b.HasIndex("UserId");
++
++                    b.ToTable("fortnox_oauth_states", (string)null);
++                });
++
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxSyncHistory", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("id");
++
++                    b.Property<DateTime?>("CompletedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("completed_at");
++
++                    b.Property<Guid>("CompanyId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("company_id");
++
++                    b.Property<string>("CorrelationId")
++                        .HasMaxLength(128)
++                        .HasColumnType("nvarchar(128)")
++                        .HasColumnName("correlation_id");
++
++                    b.Property<string>("Direction")
++                        .IsRequired()
++                        .HasMaxLength(32)
++                        .HasColumnType("nvarchar(32)")
++                        .HasColumnName("direction");
++
++                    b.Property<string>("ErrorSummary")
++                        .HasMaxLength(1000)
++                        .HasColumnType("nvarchar(1000)")
++                        .HasColumnName("error_summary");
++
++                    b.Property<Guid>("FortnoxConnectionId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("fortnox_connection_id");
++
++                    b.Property<string>("Metadata")
++                        .IsRequired()
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("nvarchar(max)")
++                        .HasColumnName("metadata_json")
++                        .HasDefaultValueSql("N'{}'");
++
++                    b.Property<int>("RecordsFailed")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int")
++                        .HasColumnName("records_failed")
++                        .HasDefaultValue(0);
++
++                    b.Property<int>("RecordsProcessed")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int")
++                        .HasColumnName("records_processed")
++                        .HasDefaultValue(0);
++
++                    b.Property<int>("RecordsSucceeded")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("int")
++                        .HasColumnName("records_succeeded")
++                        .HasDefaultValue(0);
++
++                    b.Property<DateTime>("StartedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("started_at");
++
++                    b.Property<string>("Status")
++                        .IsRequired()
++                        .HasMaxLength(32)
++                        .HasColumnType("nvarchar(32)")
++                        .HasColumnName("status");
++
++                    b.Property<string>("SyncType")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("nvarchar(64)")
++                        .HasColumnName("sync_type");
++
++                    b.Property<Guid?>("TriggeredByUserId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("triggered_by_user_id");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("CompanyId", "CorrelationId");
++
++                    b.HasIndex("CompanyId", "FortnoxConnectionId", "StartedUtc");
++
++                    b.HasIndex("Status");
++
++                    b.HasIndex("TriggeredByUserId");
++
++                    b.ToTable("fortnox_sync_histories", (string)null);
++                });
++
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxExternalReference", b =>
++                {
++                    b.Property<Guid>("Id")
++                        .ValueGeneratedOnAdd()
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("id");
++
++                    b.Property<Guid>("CompanyId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("company_id");
++
++                    b.Property<string>("EntityType")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("nvarchar(64)")
++                        .HasColumnName("entity_type");
++
++                    b.Property<string>("ExternalDisplayReference")
++                        .HasMaxLength(128)
++                        .HasColumnType("nvarchar(128)")
++                        .HasColumnName("external_display_reference");
++
++                    b.Property<string>("ExternalEntityType")
++                        .IsRequired()
++                        .HasMaxLength(64)
++                        .HasColumnType("nvarchar(64)")
++                        .HasColumnName("external_entity_type");
++
++                    b.Property<string>("ExternalId")
++                        .IsRequired()
++                        .HasMaxLength(256)
++                        .HasColumnType("nvarchar(256)")
++                        .HasColumnName("external_id");
++
++                    b.Property<Guid?>("FortnoxConnectionId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("fortnox_connection_id");
++
++                    b.Property<Guid>("InternalEntityId")
++                        .HasColumnType("uniqueidentifier")
++                        .HasColumnName("internal_entity_id");
++
++                    b.Property<DateTime?>("LastSyncedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("last_synced_at");
++
++                    b.Property<DateTime>("CreatedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("created_at");
++
++                    b.Property<DateTime>("UpdatedUtc")
++                        .HasColumnType("datetime2")
++                        .HasColumnName("updated_at");
++
++                    b.HasKey("Id");
++
++                    b.HasIndex("CompanyId", "ExternalEntityType", "ExternalId");
++
++                    b.HasIndex("CompanyId", "FortnoxConnectionId");
++
++                    b.HasIndex("CompanyId", "EntityType", "InternalEntityId", "ExternalEntityType")
++                        .IsUnique();
++
++                    b.ToTable("fortnox_external_references", (string)null);
++                });
++
+             modelBuilder.Entity("VirtualCompany.Domain.Entities.User", b =>
+                 {
+                     b.Property<Guid>("Id")
+@@ -12002,6 +12442,92 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     b.Navigation("Company");
+                 });
+ 
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxConnection", b =>
++                {
++                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
++                        .WithMany()
++                        .HasForeignKey("CompanyId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("VirtualCompany.Domain.Entities.User", "ConnectedByUser")
++                        .WithMany()
++                        .HasForeignKey("ConnectedByUserId")
++                        .OnDelete(DeleteBehavior.Restrict)
++                        .IsRequired();
++
++                    b.Navigation("Company");
++
++                    b.Navigation("ConnectedByUser");
++                });
++
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxOAuthState", b =>
++                {
++                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
++                        .WithMany()
++                        .HasForeignKey("CompanyId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("VirtualCompany.Domain.Entities.FortnoxConnection", "Connection")
++                        .WithMany()
++                        .HasForeignKey("CompanyId", "ConnectionId")
++                        .HasPrincipalKey("CompanyId", "Id")
++                        .OnDelete(DeleteBehavior.NoAction);
++
++                    b.HasOne("VirtualCompany.Domain.Entities.User", "User")
++                        .WithMany()
++                        .HasForeignKey("UserId")
++                        .OnDelete(DeleteBehavior.Restrict)
++                        .IsRequired();
++
++                    b.Navigation("Company");
++
++                    b.Navigation("Connection");
++
++                    b.Navigation("User");
++                });
++
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxSyncHistory", b =>
++                {
++                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
++                        .WithMany()
++                        .HasForeignKey("CompanyId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("VirtualCompany.Domain.Entities.FortnoxConnection", "FortnoxConnection")
++                        .WithMany()
++                        .HasForeignKey("CompanyId", "FortnoxConnectionId")
++                        .HasPrincipalKey("CompanyId", "Id")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("VirtualCompany.Domain.Entities.User", "TriggeredByUser")
++                        .WithMany()
++                        .HasForeignKey("TriggeredByUserId")
++                        .OnDelete(DeleteBehavior.SetNull);
++
++                    b.Navigation("Company");
++
++                    b.Navigation("FortnoxConnection");
++
++                    b.Navigation("TriggeredByUser");
++                });
++
++            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxExternalReference", b =>
++                {
++                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
++                        .WithMany()
++                        .HasForeignKey("CompanyId")
++                        .OnDelete(DeleteBehavior.Cascade)
++                        .IsRequired();
++
++                    b.HasOne("VirtualCompany.Domain.Entities.FortnoxConnection", "FortnoxConnection")
++                        .WithMany()
++                        .HasForeignKey("CompanyId", "FortnoxConnectionId")
++                        .HasPrincipalKey("CompanyId", "Id")
++                        .OnDelete(DeleteBehavior.NoAction);
++
++                    b.Navigation("Company");
++
++                    b.Navigation("FortnoxConnection");
++                });
++
+             modelBuilder.Entity("VirtualCompany.Domain.Entities.Company", b =>
+                 {
+                     b.Navigation("Memberships");
+END_OF_PATCH

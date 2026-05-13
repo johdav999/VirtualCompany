@@ -3,7 +3,9 @@ namespace VirtualCompany.Application.Finance;
 public sealed record RunFortnoxSyncCommand(
     Guid CompanyId,
     Guid? ConnectionId = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    Guid? ActorUserId = null,
+    bool FullSync = false);
 
 public sealed record GetFortnoxSyncHistoryQuery(
     Guid CompanyId,
@@ -15,6 +17,8 @@ public sealed record FortnoxEntitySyncResult(
     int Updated,
     int Skipped,
     int Errors,
+    int RetryAttempts = 0,
+    string? RetryOutcome = null,
     string? ErrorSummary = null);
 
 public sealed record FortnoxSyncResult(
@@ -28,7 +32,9 @@ public sealed record FortnoxSyncResult(
     int Skipped,
     int Errors,
     IReadOnlyList<FortnoxEntitySyncResult> Entities,
-    string? ErrorSummary = null);
+    string? ErrorSummary = null,
+    int RetryAttempts = 0,
+    string? RetryOutcome = null);
 
 public sealed record FortnoxSyncHistoryItem(
     Guid Id,
@@ -41,7 +47,10 @@ public sealed record FortnoxSyncHistoryItem(
     int Skipped,
     int Errors,
     string Summary,
-    string? ErrorSummary);
+    string? ErrorSummary,
+    int RetryAttempts = 0,
+    string? RetryOutcome = null,
+    IReadOnlyList<FortnoxEntitySyncResult>? Entities = null);
 
 public sealed record FortnoxSyncHistoryResult(
     Guid CompanyId,

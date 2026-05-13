@@ -1,0 +1,686 @@
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index 7b9e4d2..2f5d1c3 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.CustomerMemory;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -13,11 +14,13 @@ public sealed class SalesController : ControllerBase
+ {
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly ISalesOperationsService _salesOperations;
++    private readonly ICustomerMemoryService _customerMemory;
+ 
+-    public SalesController(ICompanyContextAccessor companyContextAccessor, ISalesOperationsService salesOperations)
++    public SalesController(ICompanyContextAccessor companyContextAccessor, ISalesOperationsService salesOperations, ICustomerMemoryService customerMemory)
+     {
+         _companyContextAccessor = companyContextAccessor;
+         _salesOperations = salesOperations;
++        _customerMemory = customerMemory;
+     }
+ 
+     [HttpGet("dashboard")]
+@@ -132,6 +135,13 @@ public sealed class SalesController : ControllerBase
+     public Task<IReadOnlyList<SalesRecommendationResponse>> GetRecommendationsAsync(CancellationToken cancellationToken) =>
+         _salesOperations.ListRecommendationsAsync(CompanyId(), cancellationToken);
+ 
++    [HttpGet("contacts/{id:guid}/profile")]
++    public async Task<ActionResult<CustomerMemoryContext>> GetContactProfileAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _customerMemory.GetContextAsync(CompanyId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
+     [HttpPost("recommendations/detect")]
+     public Task<IReadOnlyList<SalesRecommendationResponse>> DetectRecommendationsAsync(CancellationToken cancellationToken) =>
+         _salesOperations.DetectFollowUpRecommendationsAsync(CompanyId(), UserId(), cancellationToken);
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 8d9d710..9a12b35 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -69,6 +69,9 @@ public sealed class SalesApiClient
+     public async Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         await GetAsync<List<SalesRecommendationResponse>>(companyId, "api/sales/recommendations", allowNotFound: false, cancellationToken) ?? [];
+ 
++    public Task<CustomerMemoryContext?> GetContactProfileAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken = default) =>
++        GetAsync<CustomerMemoryContext>(companyId, $"api/sales/contacts/{contactId:D}/profile", allowNotFound: true, cancellationToken);
++
+     public Task<SalesDealDetailResponse> ChangeDealStageAsync(Guid companyId, Guid dealId, Guid stageId, string? note, CancellationToken cancellationToken = default) =>
+         SendAsync<ChangeDealStageRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/stage", new(stageId, note), cancellationToken);
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+index 78ac3fd..db4be9a 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+@@ -57,7 +57,17 @@
+                         <dl class="sales-definition-list">
+                             <div>
+                                 <dt>Contact</dt>
+-                                <dd>@(deal.ContactName ?? "No contact linked")</dd>
++                                <dd>
++                                    @if (deal.CustomerMemory is not null)
++                                    {
++                                        <a class="sales-inline-link" href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">@deal.CustomerMemory.ContactName</a>
++                                    }
++                                    else
++                                    {
++                                        @(deal.ContactName ?? "No contact linked")
++                                    }
++                                </dd>
+                             </div>
+                             <div>
+                                 <dt>Email</dt>
+@@ -70,6 +80,114 @@
+                         </dl>
+                     </section>
+ 
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>CUSTOMER MEMORY</span>
++                                <h2>Relationship profile</h2>
++                            </div>
++                            @if (deal.CustomerMemory is not null)
++                            {
++                                <a class="sales-button sales-button--small" href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">Open profile</a>
++                            }
++                        </div>
++                        @if (deal.CustomerMemory is null)
++                        {
++                            <div class="sales-empty">No customer memory is available because this deal has no linked contact.</div>
++                        }
++                        else
++                        {
++                            <div class="sales-memory-layout">
++                                <div class="sales-score-card">
++                                    <span>Engagement score</span>
++                                    <strong>@Score(deal.CustomerMemory.EngagementScore)</strong>
++                                    <small>@EngagementBand(deal.CustomerMemory.EngagementScore) · updated @deal.CustomerMemory.RefreshedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
++                                </div>
++                                <div class="sales-memory-copy">
++                                    <h3>AI summary</h3>
++                                    <p>@EmptyText(deal.CustomerMemory.AiSummary, "No AI summary available")</p>
++                                    <h3>Relationship memory</h3>
++                                    <p>@EmptyText(deal.CustomerMemory.RelationshipMemory, "No relationship memory recorded yet")</p>
++                                    @if (!string.IsNullOrWhiteSpace(deal.CustomerMemory.LastOutreachSummary))
++                                    {
++                                        <h3>Last outreach</h3>
++                                        <p>@deal.CustomerMemory.LastOutreachSummary</p>
++                                    }
++                                </div>
++                            </div>
++
++                            <div class="sales-memory-signal-grid">
++                                <section>
++                                    <h3>Preferences</h3>
++                                    @if (deal.CustomerMemory.Preferences.Count == 0)
++                                    {
++                                        <div class="sales-empty sales-empty--compact">No preferences recorded yet.</div>
++                                    }
++                                    else
++                                    {
++                                        <div class="sales-signal-list">
++                                            @foreach (var signal in deal.CustomerMemory.Preferences.Take(4))
++                                            {
++                                                <div>
++                                                    <strong>@PlainLabel(signal.Key)</strong>
++                                                    <span>@signal.Value</span>
++                                                </div>
++                                            }
++                                        </div>
++                                    }
++                                </section>
++                                <section>
++                                    <h3>Price sensitivity</h3>
++                                    @if (deal.CustomerMemory.PriceSensitivityIndicators.Count == 0)
++                                    {
++                                        <div class="sales-empty sales-empty--compact">No price sensitivity indicators found.</div>
++                                    }
++                                    else
++                                    {
++                                        <div class="sales-signal-list">
++                                            @foreach (var signal in deal.CustomerMemory.PriceSensitivityIndicators.Take(4))
++                                            {
++                                                <div>
++                                                    <strong>@PlainLabel(signal.Key)</strong>
++                                                    <span>@signal.Value</span>
++                                                </div>
++                                            }
++                                        </div>
++                                    }
++                                </section>
++                                <section>
++                                    <h3>Industry signals</h3>
++                                    @if (deal.CustomerMemory.IndustrySignals.Count == 0)
++                                    {
++                                        <div class="sales-empty sales-empty--compact">No industry signals recorded yet.</div>
++                                    }
++                                    else
++                                    {
++                                        <div class="sales-signal-list">
++                                            @foreach (var signal in deal.CustomerMemory.IndustrySignals.Take(4))
++                                            {
++                                                <div>
++                                                    <strong>@PlainLabel(signal.Key)</strong>
++                                                    <span>@signal.Value</span>
++                                                </div>
++                                            }
++                                        </div>
++                                    }
++                                </section>
++                            </div>
++                        }
++                    </section>
++
+                     <section class="sales-card">
+                         <div class="sales-section-heading">
+                             <div>
+@@ -266,6 +384,11 @@
+ 
+     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+     private string BuildFinanceDocumentPath() => ResolvedCompanyId is Guid companyId ? $"/finance/invoices?companyId={companyId:D}&source=sales&dealId={DealId:D}" : "/finance/invoices";
++    private string BuildContactProfilePath(Guid contactId) => BuildPath($"/app/sales/contacts/{contactId:D}");
++    private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
++    private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";
++    private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;
++    private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
+     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
+     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+ 
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor b/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor
+new file mode 100644
+index 0000000..ed92a10
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor
+@@ -0,0 +1,247 @@
++@page "/app/sales/contacts/{ContactId:guid}"
++@rendermode InteractiveServer
++@inherits SalesPageBase
++@using System.Globalization
++@using VirtualCompany.Web.Components.Sales
++
++<PageTitle>Customer profile</PageTitle>
++
++<div class="sales-workspace">
++    <main class="sales-main">
++        <header class="sales-page-header">
++            <span>SALES</span>
++            <h1>@(profile?.ContactName ?? "Customer profile")</h1>
++            <p>Review relationship memory, past interactions, engagement, and deal history before Alex drafts the next message.</p>
++            <nav class="sales-tabs" aria-label="Sales sections">
++                <a href="@BuildPath("/app/sales")">Overview</a>
++                <a href="@BuildPath("/app/sales/leads")">Leads</a>
++                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
++            </nav>
++        </header>
++
++        @if (isLoading)
++        {
++            <section class="sales-card sales-empty">Loading customer profile...</section>
++        }
++        else if (!string.IsNullOrWhiteSpace(errorMessage))
++        {
++            <section class="sales-card sales-error">
++                <h2>Customer profile is unavailable</h2>
++                <p>@errorMessage</p>
++                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
++            </section>
++        }
++        else if (profile is not null)
++        {
++            <section class="sales-detail-hero">
++                <div>
++                    <span class="sales-badge sales-badge--active">@EngagementBand(profile.EngagementScore)</span>
++                    <h2>@profile.ContactName</h2>
++                    <p>@profile.ContactEmail · @(profile.CustomerCompanyName ?? "No company linked")</p>
++                </div>
++                <div class="sales-detail-hero__value">
++                    <span>Engagement score</span>
++                    <strong>@Score(profile.EngagementScore)</strong>
++                </div>
++            </section>
++
++            <section class="sales-card">
++                <div class="sales-section-heading">
++                    <div>
++                        <span>MEMORY</span>
++                        <h2>Relationship profile</h2>
++                    </div>
++                    <span class="sales-badge">Updated @profile.RefreshedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
++                </div>
++                <div class="sales-memory-layout">
++                    <div class="sales-score-card">
++                        <span>Engagement score</span>
++                        <strong>@Score(profile.EngagementScore)</strong>
++                        <small>@EngagementBand(profile.EngagementScore)</small>
++                    </div>
++                    <div class="sales-memory-copy">
++                        <h3>AI summary</h3>
++                        <p>@EmptyText(profile.AiSummary, "No AI summary available")</p>
++                        <h3>Relationship memory</h3>
++                        <p>@EmptyText(profile.RelationshipMemory, "No relationship memory recorded yet")</p>
++                        <h3>Last outreach</h3>
++                        <p>@(string.IsNullOrWhiteSpace(profile.LastOutreachSummary) ? "No outreach has been recorded yet." : profile.LastOutreachSummary)</p>
++                    </div>
++                </div>
++            </section>
++
++            <div class="sales-two-column sales-two-column--detail">
++                <div class="sales-detail-stack">
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>INTERACTIONS</span>
++                                <h2>Historical interactions</h2>
++                            </div>
++                        </div>
++                        @if (profile.PastConversations.Count == 0)
++                        {
++                            <div class="sales-empty">No interactions found for this contact.</div>
++                        }
++                        else
++                        {
++                            <div class="sales-timeline">
++                                @foreach (var item in profile.PastConversations)
++                                {
++                                    <div class="sales-timeline-row">
++                                        <span></span>
++                                        <div>
++                                            <strong>@item.Summary</strong>
++                                            <small>@PlainLabel(item.SourceType) · @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
++                                        </div>
++                                    </div>
++                                }
++                            </div>
++                        }
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>DEALS</span>
++                                <h2>Past deals</h2>
++                            </div>
++                        </div>
++                        @if (profile.PreviousDeals.Count == 0)
++                        {
++                            <div class="sales-empty">No prior deals.</div>
++                        }
++                        else
++                        {
++                            <div class="sales-list">
++                                @foreach (var deal in profile.PreviousDeals)
++                                {
++                                    <a class="sales-list-row sales-list-row--button" href="@BuildPath($"/app/sales/deals/{deal.DealId:D}")">
++                                        <div>
++                                            <strong>@deal.Title</strong>
++                                            <span>@deal.Summary</span>
++                                        </div>
++                                        <div class="sales-list-row__meta">
++                                            <span class="@BadgeClass(deal.Status)">@deal.Status</span>
++                                            <strong>@Money(deal.Amount, deal.Currency)</strong>
++                                        </div>
++                                    </a>
++                                }
++                            </div>
++                        }
++                    </section>
++                </div>
++
++                <aside class="sales-detail-stack">
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>SIGNALS</span>
++                                <h2>Preferences</h2>
++                            </div>
++                        </div>
++                        <SignalList Items="@profile.Preferences" EmptyText="No preferences recorded yet." />
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>SIGNALS</span>
++                                <h2>Price sensitivity</h2>
++                            </div>
++                        </div>
++                        <SignalList Items="@profile.PriceSensitivityIndicators" EmptyText="No price sensitivity indicators found." />
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>SIGNALS</span>
++                                <h2>Industry signals</h2>
++                            </div>
++                        </div>
++                        <SignalList Items="@profile.IndustrySignals" EmptyText="No industry signals recorded yet." />
++                    </section>
++                </aside>
++            </div>
++        }
++    </main>
++
++    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
++</div>
++
++@code {
++    [Parameter] public Guid ContactId { get; set; }
++
++    private bool isLoading = true;
++    private string? errorMessage;
++    private CustomerMemoryContext? profile;
++
++    protected override async Task OnParametersSetAsync() => await LoadAsync();
++
++    private async Task LoadAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        try
++        {
++            if (!await ResolveCompanyAsync())
++            {
++                errorMessage = ShellErrorMessage;
++                return;
++            }
++
++            profile = await SalesApiClient.GetContactProfileAsync(ResolvedCompanyId!.Value, ContactId);
++            if (profile is null)
++            {
++                errorMessage = "This contact was not found for the active company.";
++            }
++
++            await RefreshAgentPanelAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            errorMessage = ex.Message;
++            AgentPanelErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
++    private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";
++    private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;
++    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
++    private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
++    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
++
++    private sealed partial class SignalList : ComponentBase
++    {
++        [Parameter] public IReadOnlyList<CustomerMemorySignal> Items { get; set; } = [];
++        [Parameter] public string EmptyText { get; set; } = "No signals recorded yet.";
++
++        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
++        {
++            var sequence = 0;
++            if (Items.Count == 0)
++            {
++                builder.OpenElement(sequence++, "div");
++                builder.AddAttribute(sequence++, "class", "sales-empty sales-empty--compact");
++                builder.AddContent(sequence++, EmptyText);
++                builder.CloseElement();
++                return;
++            }
++
++            builder.OpenElement(sequence++, "div");
++            builder.AddAttribute(sequence++, "class", "sales-signal-list");
++            foreach (var signal in Items)
++            {
++                builder.OpenElement(sequence++, "div");
++                builder.OpenElement(sequence++, "strong");
++                builder.AddContent(sequence++, PlainLabel(signal.Key));
++                builder.CloseElement();
++                builder.OpenElement(sequence++, "span");
++                builder.AddContent(sequence++, signal.Value);
++                builder.CloseElement();
++                builder.OpenElement(sequence++, "small");
++                builder.AddContent(sequence++, $"{Math.Round(signal.Confidence * 100m, 0)}% confidence · {signal.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
++                builder.CloseElement();
++                builder.CloseElement();
++            }
++            builder.CloseElement();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor b/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+index 14358ed..b51c91f 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+@@ -233,8 +233,8 @@
+                                             <input type="checkbox" checked="@draft.ContactIds.Contains(contact.ContactId)" @onchange="args => ToggleContact(contact.ContactId, args.Value as bool? == true)" />
+                                             <div>
+-                                                <strong>@contact.ContactName</strong>
+-                                                <small>@contact.Email · @(contact.CustomerCompanyName ?? "No company linked")</small>
++                                                <a class="sales-inline-link" href="@BuildPath($"/app/sales/contacts/{contact.ContactId:D}")">@contact.ContactName</a>
++                                                <small>@contact.Email · @(contact.CustomerCompanyName ?? "No company linked")</small>
+                                             </div>
+                                             <span>@string.Join(", ", contact.SourceTypes)</span>
+                                         </label>
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 9ebf547..bce4a8d 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -444,6 +444,15 @@
+     grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.8fr);
+ }
+ 
++.sales-inline-link {
++    color: #2563eb;
++    font-weight: 700;
++    text-decoration: none;
++}
++
++.sales-inline-link:hover {
++    text-decoration: underline;
++}
++
+ .sales-section-heading {
+     align-items: start;
+     display: flex;
+@@ -527,6 +536,11 @@
+     min-width: 0;
+ }
+ 
++.sales-list-row__meta {
++    display: grid;
++    gap: 6px;
++    justify-items: end;
++}
++
+ .sales-badge {
+     background: #f1f5f9;
+     border-radius: 999px;
+@@ -743,6 +757,81 @@
+     padding: 14px;
+ }
+ 
++.sales-memory-layout {
++    display: grid;
++    gap: 16px;
++    grid-template-columns: minmax(180px, 0.35fr) minmax(0, 1fr);
++}
++
++.sales-score-card {
++    background: #eff6ff;
++    border: 1px solid #bfdbfe;
++    border-radius: 14px;
++    display: grid;
++    gap: 8px;
++    padding: 18px;
++}
++
++.sales-score-card span,
++.sales-memory-copy h3,
++.sales-memory-signal-grid h3 {
++    color: #64748b;
++    font-size: 0.85rem;
++    font-weight: 800;
++    margin: 0;
++}
++
++.sales-score-card strong {
++    color: #1d4ed8;
++    font-size: 2rem;
++    line-height: 1;
++}
++
++.sales-score-card small {
++    color: #475569;
++}
++
++.sales-memory-copy {
++    display: grid;
++    gap: 8px;
++}
++
++.sales-memory-copy p {
++    margin: 0 0 8px;
++}
++
++.sales-memory-signal-grid {
++    display: grid;
++    gap: 14px;
++    grid-template-columns: repeat(3, minmax(0, 1fr));
++    margin-top: 18px;
++}
++
++.sales-memory-signal-grid section,
++.sales-signal-list div {
++    background: #f8fafc;
++    border: 1px solid #e5e7eb;
++    border-radius: 12px;
++    padding: 14px;
++}
++
++.sales-memory-signal-grid section {
++    display: grid;
++    gap: 10px;
++}
++
++.sales-signal-list {
++    display: grid;
++    gap: 10px;
++}
++
++.sales-signal-list div {
++    display: grid;
++    gap: 4px;
++}
++
++.sales-signal-list strong {
++    color: #0f172a;
++}
++
++.sales-signal-list span,
++.sales-signal-list small {
++    color: #64748b;
++}
++
+ .sales-agent-panel {
+     display: grid;
+     gap: 18px;
+@@ -1059,6 +1148,15 @@
+         grid-template-columns: 1fr;
+     }
+ 
++    .sales-memory-layout,
++    .sales-memory-signal-grid {
++        grid-template-columns: 1fr;
++    }
++
++    .sales-list-row__meta {
++        justify-items: start;
++    }
++
+     .sales-kpi-grid,
+     .sales-two-column,
+     .sales-filter-card,
+diff --git a/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+index 829c4ac..b31513d 100644
+--- a/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+@@ -120,6 +120,31 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebApp
+         Assert.DoesNotContain(recommendations!, x => x.DealId == seed.DealBId);
+     }
+ 
++    [Fact]
++    public async Task Contact_profile_returns_tenant_scoped_customer_memory()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var profile = await client.GetFromJsonAsync<CustomerMemoryContext>($"/api/sales/contacts/{seed.ContactAId}/profile");
++
++        Assert.NotNull(profile);
++        Assert.Equal(seed.CompanyAId, profile!.CompanyId);
++        Assert.Equal(seed.ContactAId, profile.ContactId);
++        Assert.Contains("Buyer A", profile.AiSummary);
++        Assert.Contains("conversation", profile.RelationshipMemory, StringComparison.OrdinalIgnoreCase);
++        Assert.True(profile.EngagementScore > 0);
++        Assert.NotEmpty(profile.PastConversations);
++        Assert.Contains(profile.PreviousDeals, x => x.DealId == seed.DealAId);
++        Assert.NotEmpty(profile.PriceSensitivityIndicators);
++
++        var crossTenantResponse = await client.GetAsync($"/api/sales/contacts/{seed.ContactBId}/profile");
++        Assert.Equal(HttpStatusCode.NotFound, crossTenantResponse.StatusCode);
++
++        var deal = await client.GetFromJsonAsync<SalesDealDetailResponse>($"/api/sales/deals/{seed.DealAId}");
++        Assert.NotNull(deal?.CustomerMemory);
++        Assert.Equal(seed.ContactAId, deal!.CustomerMemory!.ContactId);
++    }
++
+     [Fact]
+     public async Task Email_processing_validates_persists_lead_and_writes_audit_event()
+     {
+@@ -176,11 +201,11 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebApp
+             dbContext.CompanyMemberships.AddRange(
+                 new CompanyMembership(Guid.NewGuid(), companyAId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                 new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+ 
+-            AddSalesRecords(dbContext, companyAId, leadAId, rejectLeadId, dealAId, "A");
+-            AddSalesRecords(dbContext, companyBId, leadBId, Guid.NewGuid(), dealBId, "B");
++            contactAId = AddSalesRecords(dbContext, companyAId, leadAId, rejectLeadId, dealAId, "A");
++            contactBId = AddSalesRecords(dbContext, companyBId, leadBId, Guid.NewGuid(), dealBId, "B");
+             return Task.CompletedTask;
+         });
+ 
+-        return new SeedIds(companyAId, companyBId, leadAId, rejectLeadId, leadBId, dealAId, dealBId);
++        return new SeedIds(companyAId, companyBId, leadAId, rejectLeadId, leadBId, dealAId, dealBId, contactAId, contactBId);
+     }
+ 
+-    private static void AddSalesRecords(VirtualCompanyDbContext dbContext, Guid companyId, Guid leadId, Guid rejectLeadId, Guid dealId, string suffix)
++    private static Guid AddSalesRecords(VirtualCompanyDbContext dbContext, Guid companyId, Guid leadId, Guid rejectLeadId, Guid dealId, string suffix)
+     {
+         var customerId = Guid.NewGuid();
+         var contactId = Guid.NewGuid();
+-        dbContext.CustomerCompanies.Add(new CustomerCompany(customerId, companyId, $"Customer {suffix}"));
++        dbContext.CustomerCompanies.Add(new CustomerCompany(customerId, companyId, $"Customer {suffix}", industry: "Software"));
+         dbContext.Contacts.Add(new Contact(contactId, companyId, $"Buyer {suffix}", $"buyer-{suffix}@example.com", customerId));
+         dbContext.Leads.Add(new Lead(leadId, companyId, $"Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
+         dbContext.Leads.Add(new Lead(rejectLeadId, companyId, $"Reject Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
+         dbContext.Deals.Add(new Deal(dealId, companyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 1000m, "USD", primaryContactId: contactId, customerCompanyId: customerId));
+-        dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $"message-{suffix}", leadId, dealId, contactId, customerId, SalesStatuses.Linked, detectedIntent: "pricing request", productOrServiceInterest: "Platform", confidence: 0.87m, rationale: $"Buyer {suffix} asked for pricing."));
++        dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $"message-{suffix}", leadId, dealId, contactId, customerId, SalesStatuses.Linked, detectedIntent: "pricing request", productOrServiceInterest: "Platform", confidence: 0.87m, rationale: $"Buyer {suffix} asked for pricing and prefers a concise email summary."));
+         dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "email", $"Email {suffix}", DateTime.UtcNow, leadId: leadId, dealId: dealId, contactId: contactId, customerCompanyId: customerId));
+         dbContext.SalesAgentRecommendations.Add(new SalesAgentRecommendation(Guid.NewGuid(), companyId, $"Follow up {suffix}", "The buyer asked for pricing.", leadId, dealId));
++        return contactId;
+     }
+ 
+-    private sealed record SeedIds(Guid CompanyAId, Guid CompanyBId, Guid LeadAId, Guid RejectLeadId, Guid LeadBId, Guid DealAId, Guid DealBId);
++    private sealed record SeedIds(Guid CompanyAId, Guid CompanyBId, Guid LeadAId, Guid RejectLeadId, Guid LeadBId, Guid DealAId, Guid DealBId, Guid ContactAId, Guid ContactBId);
+ }
+END_OF_PATCH

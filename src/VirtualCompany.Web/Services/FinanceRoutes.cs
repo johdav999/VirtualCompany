@@ -52,7 +52,7 @@ public static class FinanceRoutes
     public const string SandboxAdmin = "/simulation-lab";
     public const string Settings = "/finance/settings";
     public const string EmailSettings = "/finance/settings/email-settings";
-    public const string FortnoxIntegrationSettings = "/finance/settings/integrations/fortnox";
+    public const string FinanceIntegrationSettings = "/finance/settings/integrations";
     public const string AlertDetail = "/finance/alerts/{AlertId:guid}";
 
     public static FinanceRouteDefinition HomePage { get; } =
@@ -71,8 +71,8 @@ public static class FinanceRoutes
             new("Overview", Home, "Review key finance actions and open the operational finance workspace."),
             new("Invoices", Invoices, "Track invoice review and collection workflows."),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
-            new("Payments", Payments, "Inspect incoming and outgoing cash movement records."),
-            new("Activity", Activity, "Review money movements and finance activity.", ActivePathPrefixes: [Activity, Transactions]),
+            new("Payments", Payments, "Track money coming in and going out."),
+            new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity]),
             new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies]),
             new("Settings", Settings, "Configure finance integration settings for the active company.")
         ];
@@ -93,7 +93,7 @@ public static class FinanceRoutes
         ];
 
     public static string BuildTransactionDetailPath(Guid transactionId, Guid? companyId) =>
-        WithCompanyContext($"/finance/activity/{transactionId:D}", companyId);
+        WithCompanyContext($"/finance/transactions/{transactionId:D}", companyId);
 
     public static string BuildPaymentDetailPath(Guid paymentId, Guid? companyId) =>
         WithCompanyContext($"/finance/payments/{paymentId:D}", companyId);
@@ -121,6 +121,9 @@ public static class FinanceRoutes
 
     public static string BuildAlertDetailPath(Guid alertId, Guid? companyId) =>
         WithCompanyContext($"/finance/alerts/{alertId:D}", companyId);
+
+    public static string BuildFinanceIntegrationSettingsPath(string providerKey, Guid? companyId) =>
+        WithCompanyContext($"/finance/settings/integrations/{Uri.EscapeDataString(providerKey)}", companyId);
 
     public static string WithCompanyContext(string path, Guid? companyId)
     {

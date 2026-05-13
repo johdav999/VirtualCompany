@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-34.1.2",
+  "promptPath": ".ai-design/prompts/TASK-34.1.2.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T18:30:16.495Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T18-30-16-495Z_TASK-34.1.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T18-30-16-495Z_TASK-34.1.2.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T18:33:00.719Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "tory.AddLeadAsync(lead, CancellationToken.None));\n+    }\n+\n     [Fact]\n     public async Task Sales_soft_deleted_records_are_hidden_by_query_filters()\n     {\n@@ -161,4 +232,28 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebA\n         dbContext.SalesActionApprovals.Add(new SalesActionApproval(Guid.NewGuid(), companyId, $\"Approval {suffix}\", \"A human should review the outreach.\", recommendationId, leadId, dealId));\n         dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $\"message-{suffix}\", leadId, dealId, contactId, customerId));\n     }\n+\n+    private static void AssertTenantStatusCreatedIndexes<TEntity>(VirtualCompanyDbContext dbContext)\n+    {\n+        AssertIndex<TEntity>(dbContext, nameof(ICompanyOwnedEntity.CompanyId));\n+        AssertIndex<TEntity>(dbContext, \"Status\");\n+        AssertIndex<TEntity>(dbContext, \"CreatedUtc\");\n+    }\n+\n+    private static void AssertIndex<TEntity>(VirtualCompanyDbContext dbContext, params string[] propertyNames)\n+    {\n+        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));\n+        Assert.NotNull(entityType);\n+        Assert.Contains(\n+            entityType!.GetIndexes(),\n+            index => index.Properties.Select(property => property.Name).SequenceEqual(propertyNames));\n+    }\n+\n+    private static void AssertSalesEmailLinkForeignKey<TPrincipal>(VirtualCompanyDbContext dbContext, params string[] propertyNames)\n+    {\n+        var entityType = dbContext.Model.FindEntityType(typeof(SalesEmailLink));\n+        Assert.NotNull(entityType);\n+        Assert.Contains(entityType!.GetForeignKeys(), foreignKey =>\n+            foreignKey.PrincipalEntityType.ClrType == typeof(TPrincipal) &&\n+            foreignKey.Properties.Select(property => property.Name).SequenceEqual(propertyNames) &&\n+            foreignKey.PrincipalKey.Properties.Select(property => property.Name).SequenceEqual([nameof(ICompanyOwnedEntity.CompanyId), \"Id\"]));\n+    }\n }\nEND_OF_PATCH\n",
+  "stderrTail": "ead, CancellationToken.None));\n+    }\n+\n     [Fact]\n     public async Task Sales_soft_deleted_records_are_hidden_by_query_filters()\n     {\n@@ -161,4 +232,28 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebA\n         dbContext.SalesActionApprovals.Add(new SalesActionApproval(Guid.NewGuid(), companyId, $\"Approval {suffix}\", \"A human should review the outreach.\", recommendationId, leadId, dealId));\n         dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $\"message-{suffix}\", leadId, dealId, contactId, customerId));\n     }\n+\n+    private static void AssertTenantStatusCreatedIndexes<TEntity>(VirtualCompanyDbContext dbContext)\n+    {\n+        AssertIndex<TEntity>(dbContext, nameof(ICompanyOwnedEntity.CompanyId));\n+        AssertIndex<TEntity>(dbContext, \"Status\");\n+        AssertIndex<TEntity>(dbContext, \"CreatedUtc\");\n+    }\n+\n+    private static void AssertIndex<TEntity>(VirtualCompanyDbContext dbContext, params string[] propertyNames)\n+    {\n+        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));\n+        Assert.NotNull(entityType);\n+        Assert.Contains(\n+            entityType!.GetIndexes(),\n+            index => index.Properties.Select(property => property.Name).SequenceEqual(propertyNames));\n+    }\n+\n+    private static void AssertSalesEmailLinkForeignKey<TPrincipal>(VirtualCompanyDbContext dbContext, params string[] propertyNames)\n+    {\n+        var entityType = dbContext.Model.FindEntityType(typeof(SalesEmailLink));\n+        Assert.NotNull(entityType);\n+        Assert.Contains(entityType!.GetForeignKeys(), foreignKey =>\n+            foreignKey.PrincipalEntityType.ClrType == typeof(TPrincipal) &&\n+            foreignKey.Properties.Select(property => property.Name).SequenceEqual(propertyNames) &&\n+            foreignKey.PrincipalKey.Properties.Select(property => property.Name).SequenceEqual([nameof(ICompanyOwnedEntity.CompanyId), \"Id\"]));\n+    }\n }\nEND_OF_PATCH\ntokens used\n79,003\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

@@ -1,0 +1,563 @@
+diff --git a/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs b/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs
+index 3f8f0e2..cb4fd91 100644
+--- a/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs
++++ b/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs
+@@ -10,6 +10,7 @@ public interface IConversionAnalyticsService
+     Task<StepPerformanceSummaryDto?> GetStepPerformanceAsync(Guid companyId, Guid sequenceStepId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<ContactPerformanceSummaryDto>> GetContactPerformanceAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<VariantPerformanceSummaryDto>> GetVariantPerformanceAsync(Guid companyId, Guid? campaignId, Guid? sequenceId, Guid? sequenceStepId, CancellationToken cancellationToken);
++    Task<SalesAnalyticsDashboardDto> GetDashboardAnalyticsAsync(Guid companyId, CancellationToken cancellationToken);
+ }
+ 
+ public sealed record RecordMessagePerformanceEventCommand(
+@@ -90,3 +91,16 @@ public sealed record VariantPerformanceSummaryDto(
+     string VariantKey,
+     PerformanceFunnelCounts Counts,
+     PerformanceFunnelRates Rates);
++
++public sealed record CampaignPerformanceListItemDto(
++    Guid CampaignId,
++    string CampaignName,
++    Guid? SequenceId,
++    PerformanceFunnelCounts Counts,
++    PerformanceFunnelRates Rates);
++
++public sealed record SalesAnalyticsDashboardDto(
++    Guid CompanyId,
++    PerformanceFunnelCounts Funnel,
++    PerformanceFunnelRates Rates,
++    IReadOnlyList<CampaignPerformanceListItemDto> Campaigns,
++    IReadOnlyList<VariantPerformanceSummaryDto> Variants);
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index 9d1b75d..7a1cb29 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -15,15 +15,23 @@ public sealed class SalesController : ControllerBase
+     private readonly ISalesOperationsService _salesOperations;
+     private readonly ICustomerMemoryService _customerMemory;
+     private readonly IRevenueForecastService _revenueForecastService;
++    private readonly IConversionAnalyticsService _conversionAnalyticsService;
++    private readonly IDealIntelligenceSignalRepository _dealIntelligenceSignals;
+ 
+-    public SalesController(ICompanyContextAccessor companyContextAccessor, ISalesOperationsService salesOperations, ICustomerMemoryService customerMemory, IRevenueForecastService revenueForecastService)
++    public SalesController(
++        ICompanyContextAccessor companyContextAccessor,
++        ISalesOperationsService salesOperations,
++        ICustomerMemoryService customerMemory,
++        IRevenueForecastService revenueForecastService,
++        IConversionAnalyticsService conversionAnalyticsService,
++        IDealIntelligenceSignalRepository dealIntelligenceSignals)
+     {
+         _companyContextAccessor = companyContextAccessor;
+         _salesOperations = salesOperations;
+         _customerMemory = customerMemory;
+         _revenueForecastService = revenueForecastService;
++        _conversionAnalyticsService = conversionAnalyticsService;
++        _dealIntelligenceSignals = dealIntelligenceSignals;
+     }
+ 
+     [HttpGet("dashboard")]
+@@ -111,6 +119,28 @@ public sealed class SalesController : ControllerBase
+             : Ok(await _revenueForecastService.CalculateAndPersistForecastAsync(companyId, DateTime.UtcNow, cancellationToken));
+     }
+ 
++    [HttpGet("analytics")]
++    public Task<SalesAnalyticsDashboardDto> GetAnalyticsAsync(CancellationToken cancellationToken) =>
++        _conversionAnalyticsService.GetDashboardAnalyticsAsync(CompanyId(), cancellationToken);
++
++    [HttpGet("analytics/campaigns/{campaignId:guid}")]
++    public async Task<ActionResult<CampaignPerformanceSummaryDto>> GetCampaignPerformanceAsync(Guid campaignId, CancellationToken cancellationToken)
++    {
++        var result = await _conversionAnalyticsService.GetCampaignPerformanceAsync(CompanyId(), campaignId, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpGet("analytics/variants")]
++    public Task<IReadOnlyList<VariantPerformanceSummaryDto>> GetVariantPerformanceAsync(
++        [FromQuery] Guid? campaignId,
++        [FromQuery] Guid? sequenceId,
++        [FromQuery] Guid? sequenceStepId,
++        CancellationToken cancellationToken) =>
++        _conversionAnalyticsService.GetVariantPerformanceAsync(CompanyId(), campaignId, sequenceId, sequenceStepId, cancellationToken);
++
++    [HttpGet("deals/{id:guid}/intelligence-signals")]
++    public Task<IReadOnlyList<DealIntelligenceSignalDto>> GetDealIntelligenceSignalsAsync(Guid id, CancellationToken cancellationToken) =>
++        _dealIntelligenceSignals.ListLatestByDealAsync(CompanyId(), id, cancellationToken);
++
+     [HttpGet("deals/{id:guid}")]
+     public async Task<ActionResult<SalesDealDetailResponse>> GetDealAsync(Guid id, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index d624f1d..5a9b258 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -238,8 +238,6 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 continue;
+             }
+ 
+-                entry.Entity is RevenueForecastSnapshot ||
+-                entry.Entity is DealRiskScoreSnapshot ||
+             var sourceProperty = entry.Property("SourceType");
+             var currentSource = sourceProperty.CurrentValue as string;
+             if (!string.IsNullOrWhiteSpace(currentSource) &&
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 0be9244..f01c223 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -73,9 +73,9 @@ internal sealed class DealIntelligenceSignalConfiguration : IEntityTypeConfigurat
+         builder.HasIndex(x => x.CompanyId);
+         builder.HasIndex(x => x.DealId);
+         builder.HasIndex(x => x.ConversationId);
+-        builder.HasIndex(x => x.MessageId);
+-        builder.HasIndex(x => x.SignalType);
+-        builder.HasIndex(x => x.DetectedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SignalType, x.DetectedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.DealId, x.DetectedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceMessageId, x.SignalType })
+             .IsUnique()
+             .HasFilter("[source_message_id] IS NOT NULL");
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs
+index 3e9a4fb..e722577 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs
+@@ -47,6 +47,7 @@ internal sealed class SalesMessagePerformanceConfiguration : IEntityTypeConfigur
+ 
+         builder.HasIndex(x => new { x.CompanyId, x.MessageKey }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.CampaignId });
++        builder.HasIndex(x => new { x.CompanyId, x.CreatedUtc });
+         builder.HasIndex(x => new { x.CompanyId, x.SequenceId });
+         builder.HasIndex(x => new { x.CompanyId, x.SequenceStepId });
+         builder.HasIndex(x => new { x.CompanyId, x.SequenceExecutionStepId }).HasFilter("[sequence_execution_step_id] IS NOT NULL");
+diff --git a/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs b/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs
+index 4c1a728..da76f21 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs
+@@ -271,6 +271,55 @@ public sealed class ConversionAnalyticsService : IConversionAnalyticsService
+             .ToList();
+     }
+ 
++    public async Task<SalesAnalyticsDashboardDto> GetDashboardAnalyticsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++
++        var rows = _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        var counts = await rows.AnyAsync(cancellationToken)
++            ? await BuildCountsAsync(rows, cancellationToken)
++            : new PerformanceFunnelCounts(0, 0, 0, 0, 0, 0, 0);
++
++        var campaigns = await rows
++            .Where(x => x.CampaignId.HasValue)
++            .GroupJoin(
++                _dbContext.SalesCampaigns.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId),
++                performance => performance.CampaignId,
++                campaign => campaign.Id,
++                (performance, campaignRows) => new { performance, campaignRows })
++            .SelectMany(
++                x => x.campaignRows.DefaultIfEmpty(),
++                (x, campaign) => new { x.performance, campaign })
++            .GroupBy(x => new
++            {
++                CampaignId = x.performance.CampaignId!.Value,
++                CampaignName = x.campaign == null ? "Campaign" : x.campaign.Name,
++                x.performance.SequenceId
++            })
++            .Select(x => new
++            {
++                x.Key.CampaignId,
++                x.Key.CampaignName,
++                x.Key.SequenceId,
++                Counts = new PerformanceFunnelCounts(
++                    x.Count(row => row.performance.SentAt.HasValue),
++                    x.Count(row => row.performance.DeliveredAt.HasValue),
++                    x.Count(row => row.performance.BouncedAt.HasValue),
++                    x.Count(row => row.performance.OpenedAt.HasValue),
++                    x.Count(row => row.performance.RepliedAt.HasValue),
++                    x.Count(row => row.performance.DealCreatedAt.HasValue),
++                    x.Count(row => row.performance.ConvertedAt.HasValue))
++            })
++            .OrderByDescending(x => x.Counts.Sent)
++            .Take(10)
++            .ToListAsync(cancellationToken);
++
++        var variants = await GetVariantPerformanceAsync(companyId, null, null, null, cancellationToken);
++        return new SalesAnalyticsDashboardDto(
++            companyId,
++            counts,
++            BuildRates(counts),
++            campaigns.Select(x => new CampaignPerformanceListItemDto(x.CampaignId, x.CampaignName, x.SequenceId, x.Counts, BuildRates(x.Counts))).ToList(),
++            variants.Take(12).ToList());
++    }
++
+     private async Task<ResolvedMessageContext> ResolveContextAsync(RecordMessagePerformanceEventCommand command, CancellationToken cancellationToken)
+     {
+         var contactId = command.ContactId;
+diff --git a/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs b/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs
+index 0119441..cc1c99e 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs
+@@ -208,6 +208,17 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
+             .Take(5)
+             .Select(x => new { x.RiskLevel, x.TriggerCondition, x.CreatedUtc })
+             .ToListAsync(cancellationToken);
++        var intelligenceSignals = await _dbContext.DealIntelligenceSignals
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == deal.Id)
++            .OrderByDescending(x => x.DetectedUtc)
++            .Take(10)
++            .Select(x => new
++            {
++                x.SignalType,
++                x.ConfidenceScore
++            })
++            .ToListAsync(cancellationToken);
+ 
+         var score = 0.20m;
+         var factors = new List<string>();
+@@ -252,6 +263,25 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
+             factors.Add("pricing concern detected");
+         }
+ 
++        if (intelligenceSignals.Any(x => x.SignalType == DealIntelligenceSignalTypes.Ghosting && x.ConfidenceScore >= 0.70m))
++        {
++            score += 0.22m;
++            factors.Add("customer has gone quiet");
++        }
++
++        if (intelligenceSignals.Any(x => x.SignalType == DealIntelligenceSignalTypes.PriceResistance && x.ConfidenceScore >= 0.65m))
++        {
++            score += 0.14m;
++            factors.Add("price resistance detected");
++        }
++
++        if (intelligenceSignals.Any(x => x.SignalType == DealIntelligenceSignalTypes.BuyingIntent && x.ConfidenceScore >= 0.65m))
++        {
++            score -= 0.16m;
++            factors.Add("buying signal detected");
++        }
++
+         if (lastEmail?.Confidence >= 0.75m &&
+             (signalText.Contains("buy", StringComparison.OrdinalIgnoreCase) ||
+              signalText.Contains("proposal", StringComparison.OrdinalIgnoreCase) ||
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 1d7c1f4..f142e77 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -21,6 +21,12 @@ public sealed class SalesApiClient
+     public Task<SalesDashboardResponse> GetDashboardAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         GetAsync<SalesDashboardResponse>(companyId, "api/sales/dashboard", allowNotFound: false, cancellationToken)!;
+ 
++    public Task<SalesAnalyticsDashboardResponse> GetAnalyticsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<SalesAnalyticsDashboardResponse>(companyId, "api/sales/analytics", allowNotFound: false, cancellationToken)!;
++
++    public Task<RevenueForecastSnapshotResponse> GetRevenueForecastAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<RevenueForecastSnapshotResponse>(companyId, "api/sales/forecast", allowNotFound: false, cancellationToken)!;
++
+     public async Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         await GetAsync<List<SalesLeadSummaryResponse>>(companyId, "api/sales/leads", allowNotFound: false, cancellationToken) ?? [];
+ 
+@@ -207,6 +213,20 @@ public sealed record SalesDashboardResponse(
+     IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
+     IReadOnlyList<SalesActivityResponse> RecentActivity);
+ 
++public sealed record PerformanceFunnelCounts(int Sent, int Delivered, int Bounced, int Opened, int Replied, int DealCreated, int Converted);
++public sealed record PerformanceFunnelRates(decimal DeliveryRate, decimal OpenRate, decimal ReplyRate, decimal ConversionRate);
++public sealed record RiskDistributionSummary(int Unknown, int Low, int Medium, int High);
++public sealed record RevenueForecastWindowResponse(int Days, decimal GrossPipelineValue, decimal ExpectedRevenue, int DealCount);
++public sealed record RevenueForecastSnapshotResponse(Guid Id, Guid CompanyId, DateTime AsOfUtc, DateTime CalculatedUtc, string Currency, IReadOnlyList<RevenueForecastWindowResponse> Windows, RiskDistributionSummary RiskDistribution);
++public sealed record CampaignPerformanceListItemResponse(Guid CampaignId, string CampaignName, Guid? SequenceId, PerformanceFunnelCounts Counts, PerformanceFunnelRates Rates);
++public sealed record VariantPerformanceSummaryResponse(Guid? CampaignId, Guid? SequenceId, Guid? SequenceStepId, string VariantKey, PerformanceFunnelCounts Counts, PerformanceFunnelRates Rates);
++public sealed record SalesAnalyticsDashboardResponse(
++    Guid CompanyId,
++    PerformanceFunnelCounts Funnel,
++    PerformanceFunnelRates Rates,
++    IReadOnlyList<CampaignPerformanceListItemResponse> Campaigns,
++    IReadOnlyList<VariantPerformanceSummaryResponse> Variants);
++
+ public sealed record SalesLeadSummaryResponse(
+     Guid Id,
+     string Title,
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
+index 4efbc0a..a73a0c8 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
+@@ -45,8 +45,8 @@
+                 </article>
+                 <article class="sales-kpi-card">
+                     <span>Forecast revenue</span>
+-                    <strong>@Money(dashboard.ForecastRevenue, dashboard.Currency)</strong>
+-                    <small>Weighted by pipeline stage</small>
++                    <strong>@Money(PrimaryForecastValue, PrimaryForecastCurrency)</strong>
++                    <small>Expected in the next 30 days</small>
+                 </article>
+             </section>
+ 
+@@ -81,6 +81,77 @@
+                 </div>
+             </section>
+ 
++            <section class="sales-card">
++                <div class="sales-section-heading">
++                    <div>
++                        <span>REVENUE INSIGHTS</span>
++                        <h2>Conversion and forecast</h2>
++                    </div>
++                </div>
++                @if (analytics is null && forecast is null)
++                {
++                    <div class="sales-empty">Alex has not recorded enough campaign activity for conversion reporting yet.</div>
++                }
++                else
++                {
++                    <div class="sales-kpi-grid sales-kpi-grid--compact">
++                        <article class="sales-kpi-card">
++                            <span>Reply rate</span>
++                            <strong>@Percent(analytics?.Rates.ReplyRate ?? 0m)</strong>
++                            <small>@(analytics?.Funnel.Replied ?? 0) replies from @(analytics?.Funnel.Sent ?? 0) sent messages</small>
++                        </article>
++                        <article class="sales-kpi-card">
++                            <span>Conversion rate</span>
++                            <strong>@Percent(analytics?.Rates.ConversionRate ?? 0m)</strong>
++                            <small>@(analytics?.Funnel.Converted ?? 0) converted opportunities</small>
++                        </article>
++                        <article class="sales-kpi-card">
++                            <span>60 day forecast</span>
++                            <strong>@Money(ForecastValue(60), PrimaryForecastCurrency)</strong>
++                            <small>Risk-adjusted expected revenue</small>
++                        </article>
++                        <article class="sales-kpi-card">
++                            <span>High risk deals</span>
++                            <strong>@(forecast?.RiskDistribution.High ?? 0)</strong>
++                            <small>Need review before the next forecast refresh</small>
++                        </article>
++                    </div>
++                    <div class="sales-two-column sales-two-column--even">
++                        <div class="sales-list">
++                            <h3>Campaign performance</h3>
++                            @if (analytics?.Campaigns.Count > 0)
++                            {
++                                @foreach (var campaign in analytics.Campaigns)
++                                {
++                                    <div class="sales-list-row">
++                                        <div>
++                                            <strong>@campaign.CampaignName</strong>
++                                            <span>@campaign.Counts.Sent sent Aú @campaign.Counts.Replied replies Aú @campaign.Counts.Converted converted</span>
++                                        </div>
++                                        <span class="sales-badge sales-badge--active">@Percent(campaign.Rates.ReplyRate)</span>
++                                    </div>
++                                }
++                            }
++                            else
++                            {
++                                <div class="sales-empty">No campaign sends have been recorded yet.</div>
++                            }
++                        </div>
++                        <div class="sales-list">
++                            <h3>A/B message variants</h3>
++                            @if (analytics?.Variants.Count > 0)
++                            {
++                                @foreach (var variant in analytics.Variants)
++                                {
++                                    <div class="sales-list-row">
++                                        <div>
++                                            <strong>@variant.VariantKey</strong>
++                                            <span>@variant.Counts.Sent sent Aú @variant.Counts.Replied replies Aú @variant.Counts.Converted converted</span>
++                                        </div>
++                                        <span class="sales-badge sales-badge--active">@Percent(variant.Rates.ConversionRate)</span>
++                                    </div>
++                                }
++                            }
++                            else
++                            {
++                                <div class="sales-empty">No variants have enough activity to compare yet.</div>
++                            }
++                        </div>
++                    </div>
++                }
++            </section>
++
+             <div class="sales-two-column">
+                 <section class="sales-card">
+                     <div class="sales-section-heading">
+@@ -155,6 +226,8 @@
+     private bool isLoading = true;
+     private string? errorMessage;
+     private SalesDashboardResponse? dashboard;
++    private SalesAnalyticsDashboardResponse? analytics;
++    private RevenueForecastSnapshotResponse? forecast;
+ 
+     protected override async Task OnParametersSetAsync() => await LoadAsync();
+ 
+@@ -171,6 +244,8 @@
+             }
+ 
+             dashboard = await SalesApiClient.GetDashboardAsync(ResolvedCompanyId!.Value);
++            analytics = await SalesApiClient.GetAnalyticsAsync(ResolvedCompanyId!.Value);
++            forecast = await SalesApiClient.GetRevenueForecastAsync(ResolvedCompanyId!.Value);
+             AgentPanelDashboard = dashboard;
+         }
+         catch (SalesApiException ex)
+@@ -184,8 +259,13 @@
+     }
+ 
+     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private decimal PrimaryForecastValue => ForecastValue(30) > 0m ? ForecastValue(30) : dashboard?.ForecastRevenue ?? 0m;
++    private string PrimaryForecastCurrency => forecast?.Currency ?? dashboard?.Currency ?? "USD";
++    private decimal ForecastValue(int days) => forecast?.Windows.FirstOrDefault(x => x.Days == days)?.ExpectedRevenue ?? 0m;
+     private string RecommendationPath(SalesRecommendationResponse recommendation) => recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
+     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
++    private static string Percent(decimal value) => string.Create(CultureInfo.CurrentCulture, $"{value:P0}");
+     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260507100000_AddSalesAnalyticsDashboardIndexes.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260507100000_AddSalesAnalyticsDashboardIndexes.cs
+new file mode 100644
+index 0000000..69b32bc
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260507100000_AddSalesAnalyticsDashboardIndexes.cs
+@@ -0,0 +1,33 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddSalesAnalyticsDashboardIndexes : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_created_at",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_intelligence_signals_company_id_created_at",
++            table: "deal_intelligence_signals",
++            columns: new[] { "company_id", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_intelligence_signals_company_id_deal_id_detected_at",
++            table: "deal_intelligence_signals",
++            columns: new[] { "company_id", "deal_id", "detected_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(name: "IX_sales_message_performances_company_id_created_at", table: "sales_message_performances");
++        migrationBuilder.DropIndex(name: "IX_deal_intelligence_signals_company_id_created_at", table: "deal_intelligence_signals");
++        migrationBuilder.DropIndex(name: "IX_deal_intelligence_signals_company_id_deal_id_detected_at", table: "deal_intelligence_signals");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SalesAnalyticsDashboardEndpointTests.cs b/tests/VirtualCompany.Api.Tests/SalesAnalyticsDashboardEndpointTests.cs
+new file mode 100644
+index 0000000..9b75a9e
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SalesAnalyticsDashboardEndpointTests.cs
+@@ -0,0 +1,101 @@
++using System.Net.Http.Json;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SalesAnalyticsDashboardEndpointTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public SalesAnalyticsDashboardEndpointTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Dashboard_analytics_are_tenant_scoped_and_include_variants()
++    {
++        var seed = await SeedAsync();
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(seed.CompanyAId);
++        var analytics = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        await analytics.RecordMessagePerformanceEventAsync(Command(seed, "tenant-a-1", "variant-a", ConversionAnalyticsEventType.Sent), CancellationToken.None);
++        await analytics.RecordMessagePerformanceEventAsync(Command(seed, "tenant-a-1", "variant-a", ConversionAnalyticsEventType.Replied, 1), CancellationToken.None);
++        await analytics.RecordMessagePerformanceEventAsync(Command(seed, "tenant-a-2", "variant-b", ConversionAnalyticsEventType.Sent), CancellationToken.None);
++
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add("X-Company-Id", seed.CompanyAId.ToString("D"));
++        var response = await client.GetFromJsonAsync<SalesAnalyticsDashboardResponse>("/api/sales/analytics");
++
++        Assert.NotNull(response);
++        Assert.Equal(seed.CompanyAId, response!.CompanyId);
++        Assert.Equal(2, response.Funnel.Sent);
++        Assert.Equal(1, response.Funnel.Replied);
++        Assert.Contains(response.Variants, x => x.VariantKey == "variant-a" && x.Counts.Replied == 1);
++        Assert.DoesNotContain(response.Campaigns, x => x.CampaignId == seed.CompanyBCampaignId);
++    }
++
++    private async Task<Seed> SeedAsync()
++    {
++        var seed = new Seed(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            new DateTime(2026, 5, 4, 9, 0, 0, DateTimeKind.Utc));
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(seed.CompanyAId, "Analytics API A"));
++            dbContext.Companies.Add(new Company(seed.CompanyBId, "Analytics API B"));
++            dbContext.CustomerCompanies.Add(new CustomerCompany(seed.CustomerCompanyId, seed.CompanyAId, "Customer"));
++            dbContext.Contacts.Add(new Contact(seed.ContactId, seed.CompanyAId, "Buyer", "buyer@example.com", seed.CustomerCompanyId));
++            var sequence = new SalesSequence(seed.SequenceId, seed.CompanyAId, "Sequence");
++            sequence.Steps.Add(new SalesSequenceStep(seed.SequenceStepId, seed.CompanyAId, seed.SequenceId, 1, 0, "Hello", templateSubject: "Hello"));
++            dbContext.SalesSequences.Add(sequence);
++            dbContext.SalesCampaigns.Add(new SalesCampaign(seed.CampaignId, seed.CompanyAId, seed.SequenceId, "Campaign", "contacts"));
++            dbContext.SalesCampaigns.Add(new SalesCampaign(seed.CompanyBCampaignId, seed.CompanyBId, null, "Other tenant campaign", "contacts"));
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private static RecordMessagePerformanceEventCommand Command(Seed seed, string messageKey, string variantKey, ConversionAnalyticsEventType eventType, int hours = 0) =>
++        new(
++            seed.CompanyAId,
++            messageKey,
++            seed.ContactId,
++            eventType,
++            seed.BaseUtc.AddHours(hours),
++            CampaignId: seed.CampaignId,
++            SequenceId: seed.SequenceId,
++            SequenceStepId: seed.SequenceStepId,
++            VariantKey: variantKey,
++            StepOrder: 1);
++
++    private sealed record Seed(
++        Guid CompanyAId,
++        Guid CompanyBId,
++        Guid CustomerCompanyId,
++        Guid ContactId,
++        Guid SequenceId,
++        Guid SequenceStepId,
++        Guid CampaignId,
++        Guid CompanyBCampaignId,
++        Guid DealId,
++        DateTime BaseUtc);
++
++    private sealed record SalesAnalyticsDashboardResponse(Guid CompanyId, PerformanceFunnelCounts Funnel, PerformanceFunnelRates Rates, IReadOnlyList<CampaignPerformanceListItemDto> Campaigns, IReadOnlyList<VariantPerformanceSummaryDto> Variants);
++}
+END_OF_PATCH

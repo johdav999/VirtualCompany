@@ -1,0 +1,1086 @@
+diff --git a/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs b/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs
+new file mode 100644
+index 0000000..bc0f4b7
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs
+@@ -0,0 +1,372 @@
++using System.Text.Json.Nodes;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class CustomerMemoryProfile : ICompanyOwnedEntity
++{
++    private const int SummaryMaxLength = 4000;
++
++    private CustomerMemoryProfile()
++    {
++    }
++
++    public CustomerMemoryProfile(
++        Guid id,
++        Guid companyId,
++        Guid contactId,
++        string? aiSummary = null,
++        string? relationshipMemory = null,
++        string? lastOutreachSummary = null,
++        decimal? engagementScore = null,
++        IDictionary<string, JsonNode?>? metadata = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ContactId = CustomerMemoryProfileText.RequireId(contactId, nameof(contactId));
++        AiSummary = CustomerMemoryProfileText.NormalizeOptional(aiSummary, nameof(aiSummary), SummaryMaxLength);
++        RelationshipMemory = CustomerMemoryProfileText.NormalizeOptional(relationshipMemory, nameof(relationshipMemory), SummaryMaxLength);
++        LastOutreachSummary = CustomerMemoryProfileText.NormalizeOptional(lastOutreachSummary, nameof(lastOutreachSummary), SummaryMaxLength);
++        EngagementScore = NormalizeScore(engagementScore, nameof(engagementScore));
++        Metadata = CustomerMemoryProfileText.CloneNodes(metadata);
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = CustomerMemoryProfileText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid ContactId { get; private set; }
++    public string? AiSummary { get; private set; }
++    public string? RelationshipMemory { get; private set; }
++    public string? LastOutreachSummary { get; private set; }
++    public decimal? EngagementScore { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Contact Contact { get; private set; } = null!;
++    public ICollection<CustomerMemoryProfileConversation> Conversations { get; } = new List<CustomerMemoryProfileConversation>();
++    public ICollection<CustomerMemoryProfileDeal> Deals { get; } = new List<CustomerMemoryProfileDeal>();
++    public ICollection<CustomerMemoryProfileEngagementAttribute> EngagementAttributes { get; } = new List<CustomerMemoryProfileEngagementAttribute>();
++    public ICollection<CustomerMemoryProfilePreference> Preferences { get; } = new List<CustomerMemoryProfilePreference>();
++    public ICollection<CustomerMemoryProfilePriceSignal> PriceSignals { get; } = new List<CustomerMemoryProfilePriceSignal>();
++    public ICollection<CustomerMemoryProfileIndustrySignal> IndustrySignals { get; } = new List<CustomerMemoryProfileIndustrySignal>();
++
++    private static decimal? NormalizeScore(decimal? value, string name)
++    {
++        if (!value.HasValue)
++        {
++            return null;
++        }
++
++        if (value.Value < 0m || value.Value > 100m)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be between 0 and 100.");
++        }
++
++        return decimal.Round(value.Value, 2, MidpointRounding.AwayFromZero);
++    }
++}
++
++public sealed class CustomerMemoryProfileConversation : ICompanyOwnedEntity
++{
++    private CustomerMemoryProfileConversation()
++    {
++    }
++
++    public CustomerMemoryProfileConversation(
++        Guid id,
++        Guid companyId,
++        Guid customerMemoryProfileId,
++        Guid conversationId,
++        string? summary = null,
++        DateTime? lastMessageUtc = null,
++        decimal? relevance = null,
++        IDictionary<string, JsonNode?>? metadata = null,
++        DateTime? createdUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerMemoryProfileId = CustomerMemoryProfileText.RequireId(customerMemoryProfileId, nameof(customerMemoryProfileId));
++        ConversationId = CustomerMemoryProfileText.RequireId(conversationId, nameof(conversationId));
++        Summary = CustomerMemoryProfileText.NormalizeOptional(summary, nameof(summary), 2000);
++        LastMessageUtc = lastMessageUtc.HasValue ? CustomerMemoryProfileText.NormalizeUtc(lastMessageUtc.Value, nameof(lastMessageUtc)) : null;
++        Relevance = CustomerMemoryProfileText.NormalizeRatio(relevance, nameof(relevance));
++        Metadata = CustomerMemoryProfileText.CloneNodes(metadata);
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CustomerMemoryProfileId { get; private set; }
++    public Guid ConversationId { get; private set; }
++    public string? Summary { get; private set; }
++    public DateTime? LastMessageUtc { get; private set; }
++    public decimal? Relevance { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public CustomerMemoryProfile CustomerMemoryProfile { get; private set; } = null!;
++    public Conversation Conversation { get; private set; } = null!;
++}
++
++public sealed class CustomerMemoryProfileDeal : ICompanyOwnedEntity
++{
++    private CustomerMemoryProfileDeal()
++    {
++    }
++
++    public CustomerMemoryProfileDeal(
++        Guid id,
++        Guid companyId,
++        Guid customerMemoryProfileId,
++        Guid dealId,
++        string? dealRole = null,
++        string? outcome = null,
++        DateTime? closedUtc = null,
++        string? summary = null,
++        IDictionary<string, JsonNode?>? metadata = null,
++        DateTime? createdUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerMemoryProfileId = CustomerMemoryProfileText.RequireId(customerMemoryProfileId, nameof(customerMemoryProfileId));
++        DealId = CustomerMemoryProfileText.RequireId(dealId, nameof(dealId));
++        DealRole = CustomerMemoryProfileText.NormalizeOptional(dealRole, nameof(dealRole), 80);
++        Outcome = CustomerMemoryProfileText.NormalizeOptional(outcome, nameof(outcome), 80);
++        ClosedUtc = closedUtc.HasValue ? CustomerMemoryProfileText.NormalizeUtc(closedUtc.Value, nameof(closedUtc)) : null;
++        Summary = CustomerMemoryProfileText.NormalizeOptional(summary, nameof(summary), 2000);
++        Metadata = CustomerMemoryProfileText.CloneNodes(metadata);
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CustomerMemoryProfileId { get; private set; }
++    public Guid DealId { get; private set; }
++    public string? DealRole { get; private set; }
++    public string? Outcome { get; private set; }
++    public DateTime? ClosedUtc { get; private set; }
++    public string? Summary { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public CustomerMemoryProfile CustomerMemoryProfile { get; private set; } = null!;
++    public Deal Deal { get; private set; } = null!;
++}
++
++public sealed class CustomerMemoryProfileEngagementAttribute : ICompanyOwnedEntity
++{
++    private CustomerMemoryProfileEngagementAttribute()
++    {
++    }
++
++    public CustomerMemoryProfileEngagementAttribute(
++        Guid id,
++        Guid companyId,
++        Guid customerMemoryProfileId,
++        string attributeType,
++        string attributeKey,
++        string? attributeValue,
++        decimal? scoreImpact,
++        DateTime observedUtc,
++        IDictionary<string, JsonNode?>? metadata = null,
++        DateTime? createdUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerMemoryProfileId = CustomerMemoryProfileText.RequireId(customerMemoryProfileId, nameof(customerMemoryProfileId));
++        AttributeType = CustomerMemoryProfileText.NormalizeRequired(attributeType, nameof(attributeType), 80).ToLowerInvariant();
++        AttributeKey = CustomerMemoryProfileText.NormalizeRequired(attributeKey, nameof(attributeKey), 120).ToLowerInvariant();
++        AttributeValue = CustomerMemoryProfileText.NormalizeOptional(attributeValue, nameof(attributeValue), 1000);
++        ScoreImpact = NormalizeScoreImpact(scoreImpact, nameof(scoreImpact));
++        ObservedUtc = CustomerMemoryProfileText.NormalizeUtc(observedUtc, nameof(observedUtc));
++        Metadata = CustomerMemoryProfileText.CloneNodes(metadata);
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CustomerMemoryProfileId { get; private set; }
++    public string AttributeType { get; private set; } = null!;
++    public string AttributeKey { get; private set; } = null!;
++    public string? AttributeValue { get; private set; }
++    public decimal? ScoreImpact { get; private set; }
++    public DateTime ObservedUtc { get; private set; }
++    public Dictionary<string, JsonNode?> Metadata { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
++    public DateTime CreatedUtc { get; private set; }
++    public CustomerMemoryProfile CustomerMemoryProfile { get; private set; } = null!;
++
++    private static decimal? NormalizeScoreImpact(decimal? value, string name)
++    {
++        if (!value.HasValue)
++        {
++            return null;
++        }
++
++        if (value.Value < -100m || value.Value > 100m)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be between -100 and 100.");
++        }
++
++        return decimal.Round(value.Value, 3, MidpointRounding.AwayFromZero);
++    }
++}
++
++public sealed class CustomerMemoryProfilePreference : ICompanyOwnedEntity
++{
++    private CustomerMemoryProfilePreference()
++    {
++    }
++
++    public CustomerMemoryProfilePreference(
++        Guid id,
++        Guid companyId,
++        Guid customerMemoryProfileId,
++        string preferenceKey,
++        string preferenceValue,
++        string? sourceSummary = null,
++        decimal? confidence = null,
++        DateTime? observedUtc = null,
++        DateTime? createdUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerMemoryProfileId = CustomerMemoryProfileText.RequireId(customerMemoryProfileId, nameof(customerMemoryProfileId));
++        PreferenceKey = CustomerMemoryProfileText.NormalizeRequired(preferenceKey, nameof(preferenceKey), 120).ToLowerInvariant();
++        PreferenceValue = CustomerMemoryProfileText.NormalizeRequired(preferenceValue, nameof(preferenceValue), 1000);
++        SourceSummary = CustomerMemoryProfileText.NormalizeOptional(sourceSummary, nameof(sourceSummary), 1000);
++        Confidence = CustomerMemoryProfileText.NormalizeRatio(confidence, nameof(confidence));
++        ObservedUtc = CustomerMemoryProfileText.NormalizeUtc(observedUtc ?? DateTime.UtcNow, nameof(observedUtc));
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CustomerMemoryProfileId { get; private set; }
++    public string PreferenceKey { get; private set; } = null!;
++    public string PreferenceValue { get; private set; } = null!;
++    public string? SourceSummary { get; private set; }
++    public decimal? Confidence { get; private set; }
++    public DateTime ObservedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public CustomerMemoryProfile CustomerMemoryProfile { get; private set; } = null!;
++}
++
++public sealed class CustomerMemoryProfilePriceSignal : ICompanyOwnedEntity
++{
++    private CustomerMemoryProfilePriceSignal()
++    {
++    }
++
++    public CustomerMemoryProfilePriceSignal(
++        Guid id,
++        Guid companyId,
++        Guid customerMemoryProfileId,
++        string signalKey,
++        string signalValue,
++        decimal? confidence = null,
++        DateTime? observedUtc = null,
++        string? sourceSummary = null,
++        DateTime? createdUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerMemoryProfileId = CustomerMemoryProfileText.RequireId(customerMemoryProfileId, nameof(customerMemoryProfileId));
++        SignalKey = CustomerMemoryProfileText.NormalizeRequired(signalKey, nameof(signalKey), 120).ToLowerInvariant();
++        SignalValue = CustomerMemoryProfileText.NormalizeRequired(signalValue, nameof(signalValue), 1000);
++        Confidence = CustomerMemoryProfileText.NormalizeRatio(confidence, nameof(confidence));
++        ObservedUtc = CustomerMemoryProfileText.NormalizeUtc(observedUtc ?? DateTime.UtcNow, nameof(observedUtc));
++        SourceSummary = CustomerMemoryProfileText.NormalizeOptional(sourceSummary, nameof(sourceSummary), 1000);
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CustomerMemoryProfileId { get; private set; }
++    public string SignalKey { get; private set; } = null!;
++    public string SignalValue { get; private set; } = null!;
++    public decimal? Confidence { get; private set; }
++    public DateTime ObservedUtc { get; private set; }
++    public string? SourceSummary { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public CustomerMemoryProfile CustomerMemoryProfile { get; private set; } = null!;
++}
++
++public sealed class CustomerMemoryProfileIndustrySignal : ICompanyOwnedEntity
++{
++    private CustomerMemoryProfileIndustrySignal()
++    {
++    }
++
++    public CustomerMemoryProfileIndustrySignal(
++        Guid id,
++        Guid companyId,
++        Guid customerMemoryProfileId,
++        string signalKey,
++        string signalValue,
++        decimal? confidence = null,
++        DateTime? observedUtc = null,
++        string? sourceSummary = null,
++        DateTime? createdUtc = null)
++    {
++        CustomerMemoryProfileText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerMemoryProfileId = CustomerMemoryProfileText.RequireId(customerMemoryProfileId, nameof(customerMemoryProfileId));
++        SignalKey = CustomerMemoryProfileText.NormalizeRequired(signalKey, nameof(signalKey), 120).ToLowerInvariant();
++        SignalValue = CustomerMemoryProfileText.NormalizeRequired(signalValue, nameof(signalValue), 1000);
++        Confidence = CustomerMemoryProfileText.NormalizeRatio(confidence, nameof(confidence));
++        ObservedUtc = CustomerMemoryProfileText.NormalizeUtc(observedUtc ?? DateTime.UtcNow, nameof(observedUtc));
++        SourceSummary = CustomerMemoryProfileText.NormalizeOptional(sourceSummary, nameof(sourceSummary), 1000);
++        CreatedUtc = CustomerMemoryProfileText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid CustomerMemoryProfileId { get; private set; }
++    public string SignalKey { get; private set; } = null!;
++    public string SignalValue { get; private set; } = null!;
++    public decimal? Confidence { get; private set; }
++    public DateTime ObservedUtc { get; private set; }
++    public string? SourceSummary { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public CustomerMemoryProfile CustomerMemoryProfile { get; private set; } = null!;
++}
++
++internal static class CustomerMemoryProfileText
++{
++    public static void EnsureCompany(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++    }
++
++    public static Guid RequireId(Guid value, string name) =>
++        value == Guid.Empty ? throw new ArgumentException($"{name} is required.", name) : value;
++
++    public static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        return trimmed.Length <= maxLength
++            ? trimmed
++            : throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++    }
++
++    public static string? NormalizeOptional(string? value, string name, int maxLength) =>
++        string.IsNullOrWhiteSpace(value) ? null : NormalizeRequired(value, name, maxLength);
++
++    public static decimal? NormalizeRatio(decimal? value, string name)
++    {
++        if (!value.HasValue)
++        {
++            return null;
++        }
++
++        if (value.Value < 0m || value.Value > 1m)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be between 0 and 1.");
++        }
++
++        return decimal.Round(value.Value, 3, MidpointRounding.AwayFromZero);
++    }
++
++    public static DateTime NormalizeUtc(DateTime value, string name) =>
++        value.Kind == DateTimeKind.Utc
++            ? value
++            : value.Kind == DateTimeKind.Unspecified
++                ? DateTime.SpecifyKind(value, DateTimeKind.Utc)
++                : value.ToUniversalTime();
++
++    public static Dictionary<string, JsonNode?> CloneNodes(IDictionary<string, JsonNode?>? nodes) =>
++        nodes is null || nodes.Count == 0
++            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++            : nodes
++                .Where(pair => !string.IsNullOrWhiteSpace(pair.Key))
++                .ToDictionary(pair => pair.Key.Trim(), pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/CustomerMemoryProfileEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/CustomerMemoryProfileEntityConfigurations.cs
+new file mode 100644
+index 0000000..2a7f5e2
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/CustomerMemoryProfileEntityConfigurations.cs
+@@ -0,0 +1,249 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class CustomerMemoryProfileConfiguration : IEntityTypeConfiguration<CustomerMemoryProfile>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfile> builder)
++    {
++        builder.ToTable("customer_memory_profiles");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ContactId).HasColumnName("contact_id").IsRequired();
++        builder.Property(x => x.AiSummary).HasColumnName("ai_summary").HasMaxLength(4000);
++        builder.Property(x => x.RelationshipMemory).HasColumnName("relationship_memory").HasMaxLength(4000);
++        builder.Property(x => x.LastOutreachSummary).HasColumnName("last_outreach_summary").HasMaxLength(4000);
++        builder.Property(x => x.EngagementScore).HasColumnName("engagement_score").HasColumnType("decimal(5,2)");
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_customer_memory_profiles_engagement_score_range", "engagement_score IS NULL OR (engagement_score >= 0 AND engagement_score <= 100)");
++        });
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.ContactId);
++        builder.HasIndex(x => new { x.CompanyId, x.ContactId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Contact)
++            .WithMany()
++            .HasForeignKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.ContactId))
++            .HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class CustomerMemoryProfileConversationConfiguration : IEntityTypeConfiguration<CustomerMemoryProfileConversation>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfileConversation> builder)
++    {
++        builder.ToTable("customer_memory_profile_conversations");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerMemoryProfileId).HasColumnName("customer_memory_profile_id").IsRequired();
++        builder.Property(x => x.ConversationId).HasColumnName("conversation_id").IsRequired();
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(2000);
++        builder.Property(x => x.LastMessageUtc).HasColumnName("last_message_at");
++        builder.Property(x => x.Relevance).HasColumnName("relevance").HasColumnType("decimal(5,3)");
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_customer_memory_profile_conversations_relevance_range", "relevance IS NULL OR (relevance >= 0 AND relevance <= 1)");
++        });
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerMemoryProfileId, x.ConversationId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ConversationId });
++        builder.HasIndex(x => new { x.CompanyId, x.LastMessageUtc });
++        builder.HasOne(x => x.CustomerMemoryProfile)
++            .WithMany(x => x.Conversations)
++            .HasForeignKey(nameof(CustomerMemoryProfileConversation.CompanyId), nameof(CustomerMemoryProfileConversation.CustomerMemoryProfileId))
++            .HasPrincipalKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Conversation)
++            .WithMany()
++            .HasForeignKey(nameof(CustomerMemoryProfileConversation.CompanyId), nameof(CustomerMemoryProfileConversation.ConversationId))
++            .HasPrincipalKey(nameof(Conversation.CompanyId), nameof(Conversation.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class CustomerMemoryProfileDealConfiguration : IEntityTypeConfiguration<CustomerMemoryProfileDeal>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfileDeal> builder)
++    {
++        builder.ToTable("customer_memory_profile_deals");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerMemoryProfileId).HasColumnName("customer_memory_profile_id").IsRequired();
++        builder.Property(x => x.DealId).HasColumnName("deal_id").IsRequired();
++        builder.Property(x => x.DealRole).HasColumnName("deal_role").HasMaxLength(80);
++        builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(80);
++        builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(2000);
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerMemoryProfileId, x.DealId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.DealId });
++        builder.HasIndex(x => new { x.CompanyId, x.Outcome, x.ClosedUtc });
++        builder.HasOne(x => x.CustomerMemoryProfile)
++            .WithMany(x => x.Deals)
++            .HasForeignKey(nameof(CustomerMemoryProfileDeal.CompanyId), nameof(CustomerMemoryProfileDeal.CustomerMemoryProfileId))
++            .HasPrincipalKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Deal)
++            .WithMany()
++            .HasForeignKey(nameof(CustomerMemoryProfileDeal.CompanyId), nameof(CustomerMemoryProfileDeal.DealId))
++            .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class CustomerMemoryProfileEngagementAttributeConfiguration : IEntityTypeConfiguration<CustomerMemoryProfileEngagementAttribute>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfileEngagementAttribute> builder)
++    {
++        builder.ToTable("customer_memory_profile_engagement_attributes");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerMemoryProfileId).HasColumnName("customer_memory_profile_id").IsRequired();
++        builder.Property(x => x.AttributeType).HasColumnName("attribute_type").HasMaxLength(80).IsRequired();
++        builder.Property(x => x.AttributeKey).HasColumnName("attribute_key").HasMaxLength(120).IsRequired();
++        builder.Property(x => x.AttributeValue).HasColumnName("attribute_value").HasMaxLength(1000);
++        builder.Property(x => x.ScoreImpact).HasColumnName("score_impact").HasColumnType("decimal(6,3)");
++        builder.Property(x => x.ObservedUtc).HasColumnName("observed_at").IsRequired();
++        builder.Property(x => x.Metadata)
++            .HasColumnName("metadata_json")
++            .HasJsonConversion<Dictionary<string, JsonNode?>>()
++            .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
++            .IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_customer_memory_profile_engagement_attributes_score_impact_range", "score_impact IS NULL OR (score_impact >= -100 AND score_impact <= 100)");
++        });
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerMemoryProfileId, x.AttributeType, x.AttributeKey });
++        builder.HasIndex(x => new { x.CompanyId, x.AttributeType, x.ObservedUtc });
++        builder.HasOne(x => x.CustomerMemoryProfile)
++            .WithMany(x => x.EngagementAttributes)
++            .HasForeignKey(nameof(CustomerMemoryProfileEngagementAttribute.CompanyId), nameof(CustomerMemoryProfileEngagementAttribute.CustomerMemoryProfileId))
++            .HasPrincipalKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class CustomerMemoryProfilePreferenceConfiguration : IEntityTypeConfiguration<CustomerMemoryProfilePreference>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfilePreference> builder)
++    {
++        builder.ToTable("customer_memory_profile_preferences");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        ConfigureSignalColumns(builder);
++        builder.Property(x => x.PreferenceKey).HasColumnName("preference_key").HasMaxLength(120).IsRequired();
++        builder.Property(x => x.PreferenceValue).HasColumnName("preference_value").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.SourceSummary).HasColumnName("source_summary").HasMaxLength(1000);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerMemoryProfileId, x.PreferenceKey });
++        builder.HasIndex(x => new { x.CompanyId, x.PreferenceKey, x.ObservedUtc });
++        builder.HasOne(x => x.CustomerMemoryProfile)
++            .WithMany(x => x.Preferences)
++            .HasForeignKey(nameof(CustomerMemoryProfilePreference.CompanyId), nameof(CustomerMemoryProfilePreference.CustomerMemoryProfileId))
++            .HasPrincipalKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++
++    private static void ConfigureSignalColumns(EntityTypeBuilder<CustomerMemoryProfilePreference> builder)
++    {
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerMemoryProfileId).HasColumnName("customer_memory_profile_id").IsRequired();
++        builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,3)");
++        builder.Property(x => x.ObservedUtc).HasColumnName("observed_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.ToTable(t => t.HasCheckConstraint("CK_customer_memory_profile_preferences_confidence_range", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)"));
++    }
++}
++
++internal sealed class CustomerMemoryProfilePriceSignalConfiguration : IEntityTypeConfiguration<CustomerMemoryProfilePriceSignal>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfilePriceSignal> builder)
++    {
++        builder.ToTable("customer_memory_profile_price_signals");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        ConfigureSignalColumns(builder);
++        builder.HasOne(x => x.CustomerMemoryProfile)
++            .WithMany(x => x.PriceSignals)
++            .HasForeignKey(nameof(CustomerMemoryProfilePriceSignal.CompanyId), nameof(CustomerMemoryProfilePriceSignal.CustomerMemoryProfileId))
++            .HasPrincipalKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++
++    private static void ConfigureSignalColumns(EntityTypeBuilder<CustomerMemoryProfilePriceSignal> builder)
++    {
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerMemoryProfileId).HasColumnName("customer_memory_profile_id").IsRequired();
++        builder.Property(x => x.SignalKey).HasColumnName("signal_key").HasMaxLength(120).IsRequired();
++        builder.Property(x => x.SignalValue).HasColumnName("signal_value").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,3)");
++        builder.Property(x => x.ObservedUtc).HasColumnName("observed_at").IsRequired();
++        builder.Property(x => x.SourceSummary).HasColumnName("source_summary").HasMaxLength(1000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.ToTable(t => t.HasCheckConstraint("CK_customer_memory_profile_price_signals_confidence_range", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)"));
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerMemoryProfileId, x.SignalKey });
++        builder.HasIndex(x => new { x.CompanyId, x.SignalKey, x.ObservedUtc });
++    }
++}
++
++internal sealed class CustomerMemoryProfileIndustrySignalConfiguration : IEntityTypeConfiguration<CustomerMemoryProfileIndustrySignal>
++{
++    public void Configure(EntityTypeBuilder<CustomerMemoryProfileIndustrySignal> builder)
++    {
++        builder.ToTable("customer_memory_profile_industry_signals");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        ConfigureSignalColumns(builder);
++        builder.HasOne(x => x.CustomerMemoryProfile)
++            .WithMany(x => x.IndustrySignals)
++            .HasForeignKey(nameof(CustomerMemoryProfileIndustrySignal.CompanyId), nameof(CustomerMemoryProfileIndustrySignal.CustomerMemoryProfileId))
++            .HasPrincipalKey(nameof(CustomerMemoryProfile.CompanyId), nameof(CustomerMemoryProfile.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++
++    private static void ConfigureSignalColumns(EntityTypeBuilder<CustomerMemoryProfileIndustrySignal> builder)
++    {
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerMemoryProfileId).HasColumnName("customer_memory_profile_id").IsRequired();
++        builder.Property(x => x.SignalKey).HasColumnName("signal_key").HasMaxLength(120).IsRequired();
++        builder.Property(x => x.SignalValue).HasColumnName("signal_value").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,3)");
++        builder.Property(x => x.ObservedUtc).HasColumnName("observed_at").IsRequired();
++        builder.Property(x => x.SourceSummary).HasColumnName("source_summary").HasMaxLength(1000);
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.ToTable(t => t.HasCheckConstraint("CK_customer_memory_profile_industry_signals_confidence_range", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)"));
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerMemoryProfileId, x.SignalKey });
++        builder.HasIndex(x => new { x.CompanyId, x.SignalKey, x.ObservedUtc });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0dfcc91..4d1c6fe 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -66,6 +66,13 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<ConditionTriggerEvaluation> ConditionTriggerEvaluations => Set<ConditionTriggerEvaluation>();
+     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
++    public DbSet<CustomerMemoryProfile> CustomerMemoryProfiles => Set<CustomerMemoryProfile>();
++    public DbSet<CustomerMemoryProfileConversation> CustomerMemoryProfileConversations => Set<CustomerMemoryProfileConversation>();
++    public DbSet<CustomerMemoryProfileDeal> CustomerMemoryProfileDeals => Set<CustomerMemoryProfileDeal>();
++    public DbSet<CustomerMemoryProfileEngagementAttribute> CustomerMemoryProfileEngagementAttributes => Set<CustomerMemoryProfileEngagementAttribute>();
++    public DbSet<CustomerMemoryProfilePreference> CustomerMemoryProfilePreferences => Set<CustomerMemoryProfilePreference>();
++    public DbSet<CustomerMemoryProfilePriceSignal> CustomerMemoryProfilePriceSignals => Set<CustomerMemoryProfilePriceSignal>();
++    public DbSet<CustomerMemoryProfileIndustrySignal> CustomerMemoryProfileIndustrySignals => Set<CustomerMemoryProfileIndustrySignal>();
+     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
+     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
+     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
+@@ -486,6 +493,27 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<MemoryItem>()
+             .HasQueryFilter(memoryItem =>
+                 CurrentCompanyId.HasValue && memoryItem.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfile>()
++            .HasQueryFilter(profile =>
++                CurrentCompanyId.HasValue && profile.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfileConversation>()
++            .HasQueryFilter(link =>
++                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfileDeal>()
++            .HasQueryFilter(link =>
++                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfileEngagementAttribute>()
++            .HasQueryFilter(attribute =>
++                CurrentCompanyId.HasValue && attribute.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfilePreference>()
++            .HasQueryFilter(preference =>
++                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfilePriceSignal>()
++            .HasQueryFilter(signal =>
++                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<CustomerMemoryProfileIndustrySignal>()
++            .HasQueryFilter(signal =>
++                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<ContextRetrieval>()
+             .HasQueryFilter(retrieval =>
+                 CurrentCompanyId.HasValue && retrieval.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505130000_AddCustomerMemoryProfiles.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505130000_AddCustomerMemoryProfiles.cs
+new file mode 100644
+index 0000000..d0b38ae
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505130000_AddCustomerMemoryProfiles.cs
+@@ -0,0 +1,434 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260505130000_AddCustomerMemoryProfiles")]
++public partial class AddCustomerMemoryProfiles : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profiles",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                ai_summary = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
++                relationship_memory = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
++                last_outreach_summary = table.Column<string>(type: "nvarchar(4000)", maxLength: 4000, nullable: true),
++                engagement_score = table.Column<decimal>(type: "decimal(5,2)", nullable: true),
++                metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profiles", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profiles_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_customer_memory_profiles_engagement_score_range", "engagement_score IS NULL OR (engagement_score >= 0 AND engagement_score <= 100)");
++                table.ForeignKey(
++                    name: "FK_customer_memory_profiles_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_customer_memory_profiles_contacts_company_id_contact_id",
++                    columns: x => new { x.company_id, x.contact_id },
++                    principalTable: "contacts",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profile_conversations",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                customer_memory_profile_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                conversation_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                summary = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
++                last_message_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                relevance = table.Column<decimal>(type: "decimal(5,3)", nullable: true),
++                metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profile_conversations", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profile_conversations_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_customer_memory_profile_conversations_relevance_range", "relevance IS NULL OR (relevance >= 0 AND relevance <= 1)");
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_conversations_conversations_company_id_conversation_id",
++                    columns: x => new { x.company_id, x.conversation_id },
++                    principalTable: "conversations",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_conversations_customer_memory_profiles_company_id_customer_memory_profile_id",
++                    columns: x => new { x.company_id, x.customer_memory_profile_id },
++                    principalTable: "customer_memory_profiles",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profile_deals",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                customer_memory_profile_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                deal_role = table.Column<string>(type: "nvarchar(80)", maxLength: 80, nullable: true),
++                outcome = table.Column<string>(type: "nvarchar(80)", maxLength: 80, nullable: true),
++                closed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                summary = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
++                metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profile_deals", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profile_deals_company_id_id", x => new { x.company_id, x.id });
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_deals_customer_memory_profiles_company_id_customer_memory_profile_id",
++                    columns: x => new { x.company_id, x.customer_memory_profile_id },
++                    principalTable: "customer_memory_profiles",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_deals_deals_company_id_deal_id",
++                    columns: x => new { x.company_id, x.deal_id },
++                    principalTable: "deals",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profile_engagement_attributes",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                customer_memory_profile_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                attribute_type = table.Column<string>(type: "nvarchar(80)", maxLength: 80, nullable: false),
++                attribute_key = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: false),
++                attribute_value = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                score_impact = table.Column<decimal>(type: "decimal(6,3)", nullable: true),
++                observed_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: false, defaultValueSql: "N'{}'"),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profile_engagement_attributes", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profile_engagement_attributes_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_customer_memory_profile_engagement_attributes_score_impact_range", "score_impact IS NULL OR (score_impact >= -100 AND score_impact <= 100)");
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_engagement_attributes_customer_memory_profiles_company_id_customer_memory_profile_id",
++                    columns: x => new { x.company_id, x.customer_memory_profile_id },
++                    principalTable: "customer_memory_profiles",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profile_industry_signals",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                customer_memory_profile_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                signal_key = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: false),
++                signal_value = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                confidence = table.Column<decimal>(type: "decimal(5,3)", nullable: true),
++                observed_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                source_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profile_industry_signals", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profile_industry_signals_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_customer_memory_profile_industry_signals_confidence_range", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)");
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_industry_signals_customer_memory_profiles_company_id_customer_memory_profile_id",
++                    columns: x => new { x.company_id, x.customer_memory_profile_id },
++                    principalTable: "customer_memory_profiles",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profile_preferences",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                customer_memory_profile_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                preference_key = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: false),
++                preference_value = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                source_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                confidence = table.Column<decimal>(type: "decimal(5,3)", nullable: true),
++                observed_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profile_preferences", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profile_preferences_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_customer_memory_profile_preferences_confidence_range", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)");
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_preferences_customer_memory_profiles_company_id_customer_memory_profile_id",
++                    columns: x => new { x.company_id, x.customer_memory_profile_id },
++                    principalTable: "customer_memory_profiles",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "customer_memory_profile_price_signals",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                customer_memory_profile_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                signal_key = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: false),
++                signal_value = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                confidence = table.Column<decimal>(type: "decimal(5,3)", nullable: true),
++                observed_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                source_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_customer_memory_profile_price_signals", x => x.id);
++                table.UniqueConstraint("AK_customer_memory_profile_price_signals_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_customer_memory_profile_price_signals_confidence_range", "confidence IS NULL OR (confidence >= 0 AND confidence <= 1)");
++                table.ForeignKey(
++                    name: "FK_customer_memory_profile_price_signals_customer_memory_profiles_company_id_customer_memory_profile_id",
++                    columns: x => new { x.company_id, x.customer_memory_profile_id },
++                    principalTable: "customer_memory_profiles",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profiles_company_id",
++            table: "customer_memory_profiles",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profiles_contact_id",
++            table: "customer_memory_profiles",
++            column: "contact_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profiles_company_id_contact_id",
++            table: "customer_memory_profiles",
++            columns: new[] { "company_id", "contact_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profiles_company_id_updated_at",
++            table: "customer_memory_profiles",
++            columns: new[] { "company_id", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_conversations_company_id",
++            table: "customer_memory_profile_conversations",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_conversations_company_id_conversation_id",
++            table: "customer_memory_profile_conversations",
++            columns: new[] { "company_id", "conversation_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_conversations_company_id_customer_memory_profile_id_conversation_id",
++            table: "customer_memory_profile_conversations",
++            columns: new[] { "company_id", "customer_memory_profile_id", "conversation_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_conversations_company_id_last_message_at",
++            table: "customer_memory_profile_conversations",
++            columns: new[] { "company_id", "last_message_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_deals_company_id",
++            table: "customer_memory_profile_deals",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_deals_company_id_deal_id",
++            table: "customer_memory_profile_deals",
++            columns: new[] { "company_id", "deal_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_deals_company_id_customer_memory_profile_id_deal_id",
++            table: "customer_memory_profile_deals",
++            columns: new[] { "company_id", "customer_memory_profile_id", "deal_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_deals_company_id_outcome_closed_at",
++            table: "customer_memory_profile_deals",
++            columns: new[] { "company_id", "outcome", "closed_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_engagement_attributes_company_id",
++            table: "customer_memory_profile_engagement_attributes",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_engagement_attributes_company_id_customer_memory_profile_id_attribute_type_attribute_key",
++            table: "customer_memory_profile_engagement_attributes",
++            columns: new[] { "company_id", "customer_memory_profile_id", "attribute_type", "attribute_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_engagement_attributes_company_id_attribute_type_observed_at",
++            table: "customer_memory_profile_engagement_attributes",
++            columns: new[] { "company_id", "attribute_type", "observed_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_industry_signals_company_id",
++            table: "customer_memory_profile_industry_signals",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_industry_signals_company_id_customer_memory_profile_id_signal_key",
++            table: "customer_memory_profile_industry_signals",
++            columns: new[] { "company_id", "customer_memory_profile_id", "signal_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_industry_signals_company_id_signal_key_observed_at",
++            table: "customer_memory_profile_industry_signals",
++            columns: new[] { "company_id", "signal_key", "observed_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_preferences_company_id",
++            table: "customer_memory_profile_preferences",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_preferences_company_id_customer_memory_profile_id_preference_key",
++            table: "customer_memory_profile_preferences",
++            columns: new[] { "company_id", "customer_memory_profile_id", "preference_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_preferences_company_id_preference_key_observed_at",
++            table: "customer_memory_profile_preferences",
++            columns: new[] { "company_id", "preference_key", "observed_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_price_signals_company_id",
++            table: "customer_memory_profile_price_signals",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_price_signals_company_id_customer_memory_profile_id_signal_key",
++            table: "customer_memory_profile_price_signals",
++            columns: new[] { "company_id", "customer_memory_profile_id", "signal_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_customer_memory_profile_price_signals_company_id_signal_key_observed_at",
++            table: "customer_memory_profile_price_signals",
++            columns: new[] { "company_id", "signal_key", "observed_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable("customer_memory_profile_conversations");
++        migrationBuilder.DropTable("customer_memory_profile_deals");
++        migrationBuilder.DropTable("customer_memory_profile_engagement_attributes");
++        migrationBuilder.DropTable("customer_memory_profile_industry_signals");
++        migrationBuilder.DropTable("customer_memory_profile_preferences");
++        migrationBuilder.DropTable("customer_memory_profile_price_signals");
++        migrationBuilder.DropTable("customer_memory_profiles");
++    }
++}
+END_OF_PATCH

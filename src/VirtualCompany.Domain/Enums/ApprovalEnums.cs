@@ -5,7 +5,7 @@ public enum ApprovalTargetEntityType
     Task = 1,
     Workflow = 2,
     Action = 3,
-    FortnoxWrite = 4
+    FinanceIntegrationWrite = 4
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -15,7 +15,7 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.Task] = "task",
         [ApprovalTargetEntityType.Workflow] = "workflow",
         [ApprovalTargetEntityType.Action] = "action",
-        [ApprovalTargetEntityType.FortnoxWrite] = "fortnox_write"
+        [ApprovalTargetEntityType.FinanceIntegrationWrite] = "finance_integration_write"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =
@@ -37,6 +37,12 @@ public static class ApprovalTargetEntityTypeValues
         }
 
         var trimmed = value.Trim();
+        if (string.Equals(trimmed, "fortnox_write", StringComparison.OrdinalIgnoreCase))
+        {
+            type = ApprovalTargetEntityType.FinanceIntegrationWrite;
+            return true;
+        }
+
         if (ReverseValues.TryGetValue(trimmed, out type))
         {
             return true;

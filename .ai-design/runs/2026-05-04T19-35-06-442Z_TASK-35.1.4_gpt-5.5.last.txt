@@ -1,0 +1,693 @@
+diff --git a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+index 6cfcc31..506e585 100644
+--- a/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
++++ b/src/VirtualCompany.Domain/Events/SupportedPlatformEventTypeRegistry.cs
+@@ -48,6 +48,7 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+     public const string SalesLeadDetected = "sales.lead.detected";
+     public const string SalesLeadQualified = "sales.lead.qualified";
+     public const string SalesDealWon = "sales.deal.won";
++    public const string SalesDealCreated = "sales.deal.created";
+ 
+     private static readonly string[] EventTypes =
+     [
+@@ -90,7 +91,8 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
+         SalesEmailReceived,
+         SalesLeadDetected,
+         SalesLeadQualified,
+-        SalesDealWon
++        SalesDealWon,
++        SalesDealCreated
+     ];
+ 
+     private static readonly HashSet<string> EventTypeSet =
+diff --git a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+index bdb80c1..6cd39b0 100644
+--- a/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
++++ b/src/VirtualCompany.Application/Companies/CompanyInvitationDeliveryContracts.cs
+@@ -29,6 +29,7 @@ public static class CompanyOutboxTopics
+     public const string SalesLeadDetected = SupportedPlatformEventTypeRegistry.SalesLeadDetected;
+     public const string SalesLeadQualified = SupportedPlatformEventTypeRegistry.SalesLeadQualified;
+     public const string SalesDealWon = SupportedPlatformEventTypeRegistry.SalesDealWon;
++    public const string SalesDealCreated = SupportedPlatformEventTypeRegistry.SalesDealCreated;
+ }
+ 
+ public sealed record CompanyInvitationDeliveryRequestedMessage(
+diff --git a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+index d995f2d..9990477 100644
+--- a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
++++ b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+@@ -13,8 +13,10 @@ public interface ISequenceExecutionService
+     Task<int> ScheduleExecutionsForCampaignAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken);
+     Task<SequenceProcessingResult> ProcessDueStepsAsync(DateTime dueBeforeUtc, int batchSize, CancellationToken cancellationToken);
+     Task<int> CancelPendingStepsForContactAsync(Guid companyId, Guid contactId, string stopReason, CancellationToken cancellationToken);
++    Task QueueReplyReceivedAsync(Guid companyId, OutboundReplyReceived request, CancellationToken cancellationToken);
+     Task<int> HandleReplyReceivedAsync(Guid companyId, OutboundReplyReceived request, CancellationToken cancellationToken);
+     Task<int> HandleDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken);
++    Task QueueDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken);
+     Task HandleDeliveryStatusAsync(Guid companyId, OutboundDeliveryStatusRequest request, CancellationToken cancellationToken);
+     Task HandleBounceAsync(Guid companyId, OutboundBounceRequest request, CancellationToken cancellationToken);
+ }
+@@ -50,7 +52,8 @@ public sealed record SequenceProcessingResult(int Sent, int Deferred, int Failed
+ public sealed record OutboundReplyReceived(
+     string ProviderMessageId,
+     string? ProviderThreadId,
+     string? InternetMessageId,
+-    string SenderEmail);
++    string SenderEmail,
++    DateTime? OccurredUtc = null);
+ 
+ public sealed record OutboundDeliveryStatusRequest(
+     string ProviderMessageId,
+@@ -111,7 +114,9 @@ public sealed record SequenceExecutionStepResponse(
+     DateTime ScheduledSendUtc,
+     DateTime? SentUtc,
+     string? ProviderMessageId,
+     string DeliveryStatus,
+-    string? BounceStatus);
++    string? BounceStatus,
++    string? CancellationReason = null,
++    string? CancellationSourceReference = null);
+ 
+ public sealed class SalesValidationException : Exception
+ {
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 14a59a8..a20f97c 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -1133,6 +1133,8 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+     public string DeliveryStatus { get; private set; } = null!;
+     public string? BounceStatus { get; private set; }
+     public string? BounceReason { get; private set; }
++    public string? CancellationReason { get; private set; }
++    public string? CancellationSourceReference { get; private set; }
+     public string? Provider { get; private set; }
+     public Guid? MailboxConnectionId { get; private set; }
+     public string? ProviderMessageId { get; private set; }
+@@ -1174,15 +1176,22 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+         UpdatedUtc = SentUtc.Value;
+     }
+ 
+-    public void Cancel()
++    public void Cancel(string? reason = null, string? sourceReference = null, DateTime? cancelledUtc = null)
+     {
+         if (Status is SalesStatuses.Completed or SalesStatuses.Cancelled)
+         {
+             return;
+         }
+ 
++        var effectiveCancelledUtc = SalesEntityText.NormalizeUtc(cancelledUtc ?? DateTime.UtcNow, nameof(cancelledUtc));
+         Status = SalesStatuses.Cancelled;
+-        CancelledUtc = DateTime.UtcNow;
+-        UpdatedUtc = CancelledUtc.Value;
++        DeliveryStatus = SalesStatuses.Cancelled;
++        CancelledUtc = effectiveCancelledUtc;
++        CancellationReason = string.IsNullOrWhiteSpace(reason)
++            ? CancellationReason
++            : SalesEntityText.NormalizeOptional(reason, nameof(reason), 80)?.ToLowerInvariant();
++        CancellationSourceReference = string.IsNullOrWhiteSpace(sourceReference)
++            ? CancellationSourceReference
++            : SalesEntityText.NormalizeOptional(sourceReference, nameof(sourceReference), 256);
++        UpdatedUtc = effectiveCancelledUtc;
+     }
+ 
+     public void MarkDeliveryStatus(string deliveryStatus, DateTime occurredUtc)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 138394d..92fd3a4 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -611,6 +611,8 @@ internal sealed class SalesSequenceExecutionStepConfiguration : IEntityTypeConfi
+         builder.Property(x => x.DeliveryStatus).HasColumnName("delivery_status").HasMaxLength(32).IsRequired();
+         builder.Property(x => x.BounceStatus).HasColumnName("bounce_status").HasMaxLength(32);
+         builder.Property(x => x.BounceReason).HasColumnName("bounce_reason").HasMaxLength(1000);
++        builder.Property(x => x.CancellationReason).HasColumnName("cancellation_reason").HasMaxLength(80);
++        builder.Property(x => x.CancellationSourceReference).HasColumnName("cancellation_source_reference").HasMaxLength(256);
+         builder.Property(x => x.Provider).HasColumnName("provider").HasMaxLength(64);
+         builder.Property(x => x.MailboxConnectionId).HasColumnName("mailbox_connection_id");
+         builder.Property(x => x.ProviderMessageId).HasColumnName("provider_message_id").HasMaxLength(256);
+@@ -625,6 +627,7 @@ internal sealed class SalesSequenceExecutionStepConfiguration : IEntityTypeConfi
+         builder.HasIndex(x => new { x.CompanyId, x.ProviderThreadId }).HasFilter("[provider_thread_id] IS NOT NULL");
+         builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.CancellationReason });
+         builder.HasOne(x => x.SequenceExecution)
+             .WithMany(x => x.Steps)
+             .HasForeignKey(nameof(SalesSequenceExecutionStep.CompanyId), nameof(SalesSequenceExecutionStep.SequenceExecutionId))
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505113000_AddSalesSequenceCancellationMetadata.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505113000_AddSalesSequenceCancellationMetadata.cs
+new file mode 100644
+index 0000000..c8df8be
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505113000_AddSalesSequenceCancellationMetadata.cs
+@@ -0,0 +1,45 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddSalesSequenceCancellationMetadata : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "cancellation_reason",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(80)",
++            maxLength: 80,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "cancellation_source_reference",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(256)",
++            maxLength: 256,
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequence_execution_steps_company_id_contact_id_cancellation_reason",
++            table: "sales_sequence_execution_steps",
++            columns: new[] { "company_id", "contact_id", "cancellation_reason" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(
++            name: "IX_sales_sequence_execution_steps_company_id_contact_id_cancellation_reason",
++            table: "sales_sequence_execution_steps");
++
++        migrationBuilder.DropColumn(
++            name: "cancellation_reason",
++            table: "sales_sequence_execution_steps");
++
++        migrationBuilder.DropColumn(
++            name: "cancellation_source_reference",
++            table: "sales_sequence_execution_steps");
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+index 06a59d6..e590f3c 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+@@ -1,5 +1,8 @@
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Sales;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+ using VirtualCompany.Infrastructure.Mailbox;
+@@ -271,7 +274,7 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
+                 x.StopReason is null ? null : StatusLabel(x.StopReason),
+-                x.Steps.OrderBy(s => s.StepOrder).Select(s => new SequenceExecutionStepResponse(s.Id, s.StepOrder, StatusLabel(s.Status), s.ScheduledSendUtc, s.SentUtc, s.ProviderMessageId, StatusLabel(s.DeliveryStatus), s.BounceStatus is null ? null : StatusLabel(s.BounceStatus))).ToList())).ToList(),
++                x.Steps.OrderBy(s => s.StepOrder).Select(s => new SequenceExecutionStepResponse(s.Id, s.StepOrder, StatusLabel(s.Status), s.ScheduledSendUtc, s.SentUtc, s.ProviderMessageId, StatusLabel(s.DeliveryStatus), s.BounceStatus is null ? null : StatusLabel(s.BounceStatus), s.CancellationReason is null ? null : StatusLabel(s.CancellationReason), s.CancellationSourceReference)).ToList())).ToList(),
+             campaign.CreatedUtc,
+             campaign.UpdatedUtc);
+     }
+@@ -329,15 +332,17 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IOutboundEmailSender _emailSender;
++    private readonly ICompanyOutboxEnqueuer _outbox;
+     private readonly ILogger<SequenceExecutionService> _logger;
+ 
+-    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ILogger<SequenceExecutionService> logger)
++    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, ILogger<SequenceExecutionService> logger)
+     {
+         _dbContext = dbContext;
+         _emailSender = emailSender;
++        _outbox = outbox;
+         _logger = logger;
+     }
+@@ -460,29 +465,74 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     public async Task<int> CancelPendingStepsForContactAsync(Guid companyId, Guid contactId, string stopReason, CancellationToken cancellationToken)
+     {
+         var executions = await _dbContext.SalesSequenceExecutions.IgnoreQueryFilters()
+             .Include(x => x.Steps)
+-            .Where(x => x.CompanyId == companyId && x.ContactId == contactId && x.Status != SalesStatuses.Completed && x.Status != SalesStatuses.Stopped)
++            .Include(x => x.SalesCampaign)
++            .Where(x => x.CompanyId == companyId &&
++                x.ContactId == contactId &&
++                x.SalesCampaign.Status == SalesStatuses.Active &&
++                x.Status != SalesStatuses.Completed &&
++                x.Status != SalesStatuses.Stopped)
+             .ToListAsync(cancellationToken);
+         var cancelled = 0;
++        var cancelledAt = DateTime.UtcNow;
+         foreach (var execution in executions)
+         {
+             execution.Stop(stopReason);
+             foreach (var step in execution.Steps.Where(x => x.Status == SalesStatuses.Pending))
+             {
+-                step.Cancel();
++                step.Cancel(stopReason, $"{stopReason}:{companyId:N}:{contactId:N}", cancelledAt);
+                 cancelled++;
+             }
+@@ -491,15 +541,76 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             audience?.MarkCancelled();
+         }
+ 
++        if (cancelled > 0)
++        {
++            _dbContext.AuditEvents.Add(new AuditEvent(
++                Guid.NewGuid(),
++                companyId,
++                AuditActorTypes.System,
++                "sales-sequence-cancellation",
++                "sales.sequence.pending_steps_cancelled",
++                "contact",
++                contactId.ToString("D"),
++                AuditEventOutcomes.Succeeded,
++                stopReason == SalesStopReasons.ReplyReceived
++                    ? "Alex stopped future campaign emails because the contact replied."
++                    : "Alex stopped future campaign emails because a deal was created for the contact.",
++                DateTime.UtcNow));
++
++            _logger.LogInformation(
++                "Cancelled {CancelledStepCount} pending sales sequence step(s) for contact {ContactId} in company {CompanyId} because {StopReason}.",
++                cancelled,
++                contactId,
++                companyId,
++                stopReason);
++        }
++
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return cancelled;
+     }
+ 
++    public async Task QueueReplyReceivedAsync(Guid companyId, OutboundReplyReceived request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        var occurredUtc = request.OccurredUtc ?? DateTime.UtcNow;
++        var sourceId = FirstNonEmpty(request.ProviderMessageId, request.InternetMessageId, request.ProviderThreadId, request.SenderEmail);
++        var eventId = $"{CompanyOutboxTopics.SalesEmailReceived}:{companyId:N}:{sourceId}";
++        _outbox.Enqueue(
++            companyId,
++            CompanyOutboxTopics.SalesEmailReceived,
++            new PlatformEventEnvelope(
++                eventId,
++                CompanyOutboxTopics.SalesEmailReceived,
++                occurredUtc,
++                companyId,
++                eventId,
++                "sales_email",
++                sourceId,
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["companyId"] = JsonValue.Create(companyId),
++                    ["providerMessageId"] = JsonValue.Create(request.ProviderMessageId),
++                    ["providerThreadId"] = JsonValue.Create(request.ProviderThreadId),
++                    ["internetMessageId"] = JsonValue.Create(request.InternetMessageId),
++                    ["senderEmail"] = JsonValue.Create(request.SenderEmail),
++                    ["occurredUtc"] = JsonValue.Create(occurredUtc)
++                }),
++            eventId,
++            idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
++            causationId: sourceId);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
+     public async Task<int> HandleReplyReceivedAsync(Guid companyId, OutboundReplyReceived request, CancellationToken cancellationToken)
+     {
+         var step = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
+             .AsNoTracking()
+@@ -523,8 +634,42 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             : 0;
+     }
+ 
+     public Task<int> HandleDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken) =>
+         CancelPendingStepsForContactAsync(companyId, contactId, SalesStopReasons.DealCreated, cancellationToken);
+ 
++    public async Task QueueDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        if (contactId == Guid.Empty || dealId == Guid.Empty)
++        {
++            throw new ArgumentException("Contact and deal identifiers are required.");
++        }
++
++        var eventId = $"{CompanyOutboxTopics.SalesDealCreated}:{companyId:N}:{dealId:N}";
++        _outbox.Enqueue(
++            companyId,
++            CompanyOutboxTopics.SalesDealCreated,
++            new PlatformEventEnvelope(
++                eventId,
++                CompanyOutboxTopics.SalesDealCreated,
++                DateTime.UtcNow,
++                companyId,
++                eventId,
++                "deal",
++                dealId.ToString("D"),
++                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                {
++                    ["companyId"] = JsonValue.Create(companyId),
++                    ["dealId"] = JsonValue.Create(dealId),
++                    ["contactId"] = JsonValue.Create(contactId)
++                }),
++            eventId,
++            idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
++            causationId: dealId.ToString("D"));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
+@@ -548,6 +693,15 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     private static void Defer(SalesSequenceExecutionStep step) =>
+         typeof(SalesSequenceExecutionStep).GetProperty(nameof(SalesSequenceExecutionStep.ScheduledSendUtc))!.SetValue(step, DateTime.UtcNow.Date.AddDays(1).AddHours(8));
++
++    private static void EnsureCompany(Guid companyId) =>
++        _ = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++
++    private static string FirstNonEmpty(params string?[] values) =>
++        values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim()
++        ?? throw new ArgumentException("A provider message id, thread id, internet message id, or sender email is required.");
+ }
+ 
+ public sealed class MailboxOutboundEmailSender : IOutboundEmailSender
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+index 8d3ba49..0bfdcf9 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+@@ -117,7 +117,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+                 _dbContext.SalesEmailLinks.Add(CreateIgnoredLink(companyId, connection, threadIdentity, null, null, threadIdentity, detection.IgnoreReason, detection.Rationale, SalesEmailLinkKinds.Thread));
+             }
+ 
+-            EnqueueEmailReceived(companyId, connection, primaryMessage, null, detection, threadIdentity);
++            EnqueueEmailReceived(companyId, connection, primaryMessage, null, null, detection, threadIdentity);
+             await _dbContext.SaveChangesAsync(cancellationToken);
+             await transaction.CommitAsync(cancellationToken);
+             return ToIgnoredResult(ignored, connection);
+@@ -192,7 +192,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+                 confidence: signal.Confidence));
+         }
+ 
+-        EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, detection, threadIdentity);
++        EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, contact?.Id, detection, threadIdentity);
+         EnqueueLeadDetected(companyId, connection, primaryMessage, lead.Id, signal, threadIdentity);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await transaction.CommitAsync(cancellationToken);
+@@ -391,14 +391,14 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         _dbContext.Leads.Add(lead);
+         return lead;
+     }
+ 
+-    private void EnqueueEmailReceived(Guid companyId, MailboxConnection connection, MailboxInboundMessage message, Guid? leadId, DetectionOutcome detection, string? threadIdentity) =>
+-        EnqueuePlatformEvent(companyId, SalesEmailDomainEvents.EmailReceived, "sales_email", message.ProviderMessageId, connection, message, leadId, detection.Signal, threadIdentity, detection.IgnoreReason);
++    private void EnqueueEmailReceived(Guid companyId, MailboxConnection connection, MailboxInboundMessage message, Guid? leadId, Guid? contactId, DetectionOutcome detection, string? threadIdentity) =>
++        EnqueuePlatformEvent(companyId, SalesEmailDomainEvents.EmailReceived, "sales_email", message.ProviderMessageId, connection, message, leadId, contactId, detection.Signal, threadIdentity, detection.IgnoreReason);
+ 
+     private void EnqueueLeadDetected(Guid companyId, MailboxConnection connection, MailboxInboundMessage message, Guid leadId, SalesEmailSignalResult signal, string? threadIdentity) =>
+-        EnqueuePlatformEvent(companyId, SalesEmailDomainEvents.LeadDetected, "lead", leadId.ToString("N"), connection, message, leadId, signal, threadIdentity, null);
++        EnqueuePlatformEvent(companyId, SalesEmailDomainEvents.LeadDetected, "lead", leadId.ToString("N"), connection, message, leadId, null, signal, threadIdentity, null);
+ 
+-    private void EnqueuePlatformEvent(Guid companyId, string eventType, string sourceType, string sourceId, MailboxConnection connection, MailboxInboundMessage message, Guid? leadId, SalesEmailSignalResult? signal, string? threadIdentity, string? ignoreReason)
++    private void EnqueuePlatformEvent(Guid companyId, string eventType, string sourceType, string sourceId, MailboxConnection connection, MailboxInboundMessage message, Guid? leadId, Guid? contactId, SalesEmailSignalResult? signal, string? threadIdentity, string? ignoreReason)
+     {
+         var eventId = $"{eventType}:{companyId:N}:{connection.Provider.ToStorageValue()}:{connection.Id:N}:{message.ProviderMessageId}";
+         var correlationId = eventId;
+@@ -425,6 +425,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+                     ["providerThreadId"] = JsonValue.Create(threadIdentity),
+                     ["internetMessageId"] = JsonValue.Create(message.InternetMessageId),
+                     ["leadId"] = JsonValue.Create(leadId),
++                    ["contactId"] = JsonValue.Create(contactId),
+                     ["senderEmail"] = JsonValue.Create(signal?.SenderEmail ?? message.Sender.Email),
+                     ["intent"] = JsonValue.Create(signal?.Intent),
+                     ["confidence"] = JsonValue.Create(signal?.Confidence),
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index 62dc8cf..ca4e4c3 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -1,4 +1,5 @@
++using System.Text.Json;
+ using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Approvals;
+@@ -8,6 +9,7 @@ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Sales;
++using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Domain.Entities;
+ using VirtualCompany.Domain.Enums;
+@@ -153,6 +155,10 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "conversion", BuildSummary(request.Note, "Lead converted to a sales deal."), DateTime.UtcNow, leadId: lead.Id, dealId: deal.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
+         AddAudit(companyId, userId, AuditEventActions.SalesLeadConverted, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The qualified lead was converted to a deal.");
++        if (deal.PrimaryContactId is Guid contactId)
++        {
++            EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesDealCreated, "deal", deal.Id, new { dealId = deal.Id, contactId, leadId = lead.Id, deal.Title });
++        }
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return await GetDealAsync(companyId, deal.Id, cancellationToken);
+     }
+@@ -590,6 +596,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         var link = new SalesEmailLink(Guid.NewGuid(), companyId, request.ProviderMessageId, lead?.Id, null, contact.Id, customer?.Id, request.CreateLead ? SalesStatuses.Linked : SalesStatuses.Ignored, detectedIntent: request.Intent, productOrServiceInterest: request.ProductOrServiceInterest, confidence: request.Confidence, rationale: request.Body);
+         _dbContext.SalesEmailLinks.Add(link);
+         AddAudit(companyId, userId, AuditEventActions.SalesEmailProcessed, "sales_email", link.Id, AuditEventOutcomes.Succeeded, "Sales email processed.", dataSourcesUsed: [new AuditDataSourceUsed("email", request.ProviderMessageId, request.Subject, request.SenderEmail)]);
++        EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesEmailReceived, "sales_email", link.Id, new { providerMessageId = request.ProviderMessageId, senderEmail = contact.Email, contactId = contact.Id, leadId = lead?.Id });
+         await _dbContext.SaveChangesAsync(cancellationToken);
+ 
+         return new ProcessSalesEmailResponse("processed", lead?.Id, activity?.Id, link.Id);
+@@ -634,8 +641,29 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private void AddAudit(Guid companyId, Guid userId, string action, string targetType, Guid targetId, string outcome, string rationale, IReadOnlyDictionary<string, string?>? metadata = null, IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null) =>
+         _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, "human", userId, action, targetType, targetId.ToString("D"), outcome, rationale, ["sales"], metadata, dataSourcesUsed: dataSourcesUsed));
+ 
+-    private void EnqueueSalesEvent(Guid companyId, string topic, string sourceType, Guid sourceId, object payload) =>
+-        _outbox.Enqueue(companyId, topic, new { CompanyId = companyId, EventType = topic, SourceType = sourceType, SourceId = sourceId.ToString("D"), Payload = payload, OccurredUtc = DateTime.UtcNow }, idempotencyKey: $"{topic}:{companyId:N}:{sourceId:N}", messageType: "platform_event", causationId: sourceId.ToString("D"));
++    private void EnqueueSalesEvent(Guid companyId, string topic, string sourceType, Guid sourceId, object payload)
++    {
++        var eventId = $"{topic}:{companyId:N}:{sourceId:N}";
++        var metadata = JsonSerializer.SerializeToNode(payload)?.AsObject() ?? [];
++        metadata["companyId"] = JsonValue.Create(companyId);
++        _outbox.Enqueue(
++            companyId,
++            topic,
++            new PlatformEventEnvelope(
++                eventId,
++                topic,
++                DateTime.UtcNow,
++                companyId,
++                eventId,
++                sourceType,
++                sourceId.ToString("D"),
++                metadata.ToDictionary(x => x.Key, x => x.Value, StringComparer.OrdinalIgnoreCase)),
++            eventId,
++            idempotencyKey: $"platform-event:{companyId:N}:{eventId}",
++            messageType: "platform_event",
++            causationId: sourceId.ToString("D"));
++    }
+ 
+     private static SalesLeadSummaryResponse MapLeadSummary(Lead lead) =>
+         new(lead.Id, lead.Title, StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, StatusLabel(lead.Status), ResolveConfidence(lead), SuggestedLeadAction(lead), lead.EstimatedValue, lead.Currency, lead.Fit, StatusLabel(lead.Priority ?? "not set"), lead.QualifiedUtc, lead.QualifiedByUserId, lead.CreatedUtc, lead.UpdatedUtc);
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+index b1f320d..df1a1e8 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyOutboxInfrastructure.cs
+@@ -11,6 +11,7 @@ using VirtualCompany.Application.BackgroundExecution;
+ using VirtualCompany.Application.Agents;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
+ using VirtualCompany.Application.Workflows;
+ using VirtualCompany.Infrastructure.BackgroundJobs;
+@@ -156,6 +157,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
+     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
+     private readonly IFinanceWorkflowTriggerService _financeWorkflowTriggerService;
++    private readonly ISequenceExecutionService _sequenceExecutionService;
+     private readonly ITriggerExecutionService _triggerExecutionService;
+@@ -178,6 +180,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         ICompanyNotificationDispatcher notificationDispatcher,
+         ITriggerExecutionService triggerExecutionService,
+         IFinanceWorkflowTriggerService financeWorkflowTriggerService,
++        ISequenceExecutionService sequenceExecutionService,
+         IInternalWorkflowEventTriggerService workflowEventTriggerService,
+         IExecutiveCockpitDashboardCacheInvalidator cockpitCacheInvalidator,
+@@ -199,6 +202,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         _notificationDispatcher = notificationDispatcher;
+         _triggerExecutionService = triggerExecutionService;
+         _financeWorkflowTriggerService = financeWorkflowTriggerService;
++        _sequenceExecutionService = sequenceExecutionService;
+         _workflowEventTriggerService = workflowEventTriggerService;
+         _cockpitCacheInvalidator = cockpitCacheInvalidator;
+@@ -503,6 +507,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             case CompanyOutboxTopics.SalesLeadDetected:
+             case CompanyOutboxTopics.SalesLeadQualified:
+             case CompanyOutboxTopics.SalesDealWon:
++            case CompanyOutboxTopics.SalesDealCreated:
+             {
+                 var payload = Deserialize<PlatformEventEnvelope>(message);
+                 if (payload.CompanyId != message.CompanyId)
+@@ -530,6 +535,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+                         cancellationToken);
+                 }
++                await HandleSalesSequenceStopEventAsync(payload, cancellationToken);
+                 await _workflowEventTriggerService.HandleAsync(
+                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
+                     cancellationToken);
+@@ -631,6 +637,47 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+             sourceMetadata,
+             cancellationToken);
+     }
++
++    private async Task HandleSalesSequenceStopEventAsync(PlatformEventEnvelope payload, CancellationToken cancellationToken)
++    {
++        if (string.Equals(payload.EventType, CompanyOutboxTopics.SalesEmailReceived, StringComparison.OrdinalIgnoreCase))
++        {
++            var contactId = TryReadMetadataGuid(payload.Metadata, "contactId");
++            if (contactId is Guid resolvedContactId)
++            {
++                await _sequenceExecutionService.CancelPendingStepsForContactAsync(
++                    payload.CompanyId,
++                    resolvedContactId,
++                    SalesStopReasons.ReplyReceived,
++                    cancellationToken);
++                return;
++            }
++
++            await _sequenceExecutionService.HandleReplyReceivedAsync(
++                payload.CompanyId,
++                new OutboundReplyReceived(
++                    TryReadMetadataString(payload.Metadata, "providerMessageId") ?? payload.SourceEntityId,
++                    TryReadMetadataString(payload.Metadata, "providerThreadId"),
++                    TryReadMetadataString(payload.Metadata, "internetMessageId"),
++                    TryReadMetadataString(payload.Metadata, "senderEmail") ?? string.Empty,
++                    payload.OccurredAtUtc),
++                cancellationToken);
++        }
++        else if (string.Equals(payload.EventType, CompanyOutboxTopics.SalesDealCreated, StringComparison.OrdinalIgnoreCase))
++        {
++            var dealId = TryReadMetadataGuid(payload.Metadata, "dealId") ?? TryParseGuid(payload.SourceEntityId);
++            var contactId = TryReadMetadataGuid(payload.Metadata, "contactId");
++            if (dealId is Guid resolvedDealId && contactId is Guid resolvedContactId)
++            {
++                await _sequenceExecutionService.HandleDealCreatedAsync(
++                    payload.CompanyId,
++                    resolvedContactId,
++                    resolvedDealId,
++                    cancellationToken);
++            }
++        }
++    }
+ 
+     private async Task EnqueueBriefingJobForNotificationAsync(
+         CompanyOutboxMessage message,
+@@ -679,6 +726,18 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
+         return null;
+     }
++
++    private static Guid? TryReadMetadataGuid(
++        IReadOnlyDictionary<string, JsonNode?> metadata,
++        string key)
++    {
++        var value = TryReadMetadataString(metadata, key);
++        return Guid.TryParse(value, out var parsed) ? parsed : null;
++    }
+ 
+     private async Task InvalidateCockpitAsync(
+         CompanyOutboxMessage message,
+diff --git a/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs b/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
+index 1e47021..fb8715c 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
+@@ -101,17 +101,17 @@ public sealed class SalesCampaignsController : ControllerBase
+     [HttpPost("provider/reply")]
+     public async Task<ActionResult<StopConditionResponse>> ReplyAsync([FromBody] OutboundReplyReceived request, CancellationToken cancellationToken)
+     {
+-        var cancelled = await _sequenceExecution.HandleReplyReceivedAsync(CompanyId(), request, cancellationToken);
+-        return Ok(new StopConditionResponse(cancelled));
++        await _sequenceExecution.QueueReplyReceivedAsync(CompanyId(), request, cancellationToken);
++        return Accepted(new StopConditionResponse(0));
+     }
+ 
+     [HttpPost("contacts/{contactId:guid}/deal-created")]
+     public async Task<ActionResult<StopConditionResponse>> DealCreatedAsync(Guid contactId, [FromBody] DealCreatedStopRequest request, CancellationToken cancellationToken)
+     {
+-        var cancelled = await _sequenceExecution.HandleDealCreatedAsync(CompanyId(), contactId, request.DealId, cancellationToken);
+-        return Ok(new StopConditionResponse(cancelled));
++        await _sequenceExecution.QueueDealCreatedAsync(CompanyId(), contactId, request.DealId, cancellationToken);
++        return Accepted(new StopConditionResponse(0));
+     }
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
+index 30e7422..d75291d 100644
+--- a/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
+@@ -3,6 +3,7 @@ using System.Net.Http.Json;
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Domain.Entities;
+@@ -112,9 +113,11 @@ public sealed class SalesCampaignsIntegrationTests : IClassFixture<TestWebApplic
+         });
+ 
+         var reply = await client.PostAsJsonAsync("/api/sales/campaigns/provider/reply", new OutboundReplyReceived("provider-message-1", "thread-1", null, "buyer-a@example.com"));
+-        Assert.Equal(HttpStatusCode.OK, reply.StatusCode);
++        Assert.Equal(HttpStatusCode.Accepted, reply.StatusCode);
++        await DispatchOutboxAsync();
+         Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, campaign.Id));
++        await AssertCancellationAuditAsync(seed.CompanyAId, seed.ContactAId, SalesStopReasons.ReplyReceived);
+ 
+         var createSecond = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Deal stop campaign"));
+         var second = await createSecond.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
+         await client.PostAsJsonAsync($"/api/sales/campaigns/{second!.Id}/launch", new { });
+         var dealStop = await client.PostAsJsonAsync($"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created", new { DealId = seed.DealAId });
+-        Assert.Equal(HttpStatusCode.OK, dealStop.StatusCode);
++        Assert.Equal(HttpStatusCode.Accepted, dealStop.StatusCode);
++        await DispatchOutboxAsync();
+         Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, second.Id));
++        await AssertCancellationAuditAsync(seed.CompanyAId, seed.ContactAId, SalesStopReasons.DealCreated);
+     }
+ 
+@@ -126,6 +129,45 @@ public sealed class SalesCampaignsIntegrationTests : IClassFixture<TestWebApplic
+                 .CountAsync())
+         == 0;
++
++    private async Task DispatchOutboxAsync() =>
++        await _factory.ExecuteScopeAsync(async scope =>
++        {
++            var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
++            await processor.DispatchPendingAsync(CancellationToken.None);
++        });
++
++    private async Task AssertCancellationAuditAsync(Guid companyId, Guid contactId, string reason)
++    {
++        var state = await _factory.ExecuteDbContextAsync(async dbContext => new
++        {
++            AuditExists = await dbContext.AuditEvents.IgnoreQueryFilters()
++                .AnyAsync(x => x.CompanyId == companyId &&
++                    x.Action == "sales.sequence.pending_steps_cancelled" &&
++                    x.TargetEntityId == contactId.ToString("D")),
++            CancelledSteps = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.ContactId == contactId && x.Status == SalesStatuses.Cancelled)
++                .ToListAsync()
++        });
++
++        Assert.True(state.AuditExists);
++        Assert.Contains(state.CancelledSteps, x => x.CancellationReason == reason && x.CancellationSourceReference != null);
++    }
++
++    [Fact]
++    public async Task Sequence_stop_events_are_idempotent_and_tenant_scoped()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++        var create = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Tenant safe campaign"));
++        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign!.Id}/launch", new { });
++
++        var first = await client.PostAsJsonAsync($"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created", new { DealId = seed.DealAId });
++        var duplicate = await client.PostAsJsonAsync($"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created", new { DealId = seed.DealAId });
++        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);
++        Assert.Equal(HttpStatusCode.Accepted, duplicate.StatusCode);
++        await DispatchOutboxAsync();
++        await DispatchOutboxAsync();
++
++        var pendingOtherTenant = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyBId && x.ContactId == seed.ContactBId && x.Status == SalesStatuses.Pending));
++        Assert.Equal(0, pendingOtherTenant);
++        Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, campaign.Id));
++    }
+ 
+     private static CreateOutboundCampaignRequest ValidCampaign(Guid contactId, string name = "Renewal outreach") =>
+         new(
+END_OF_PATCH

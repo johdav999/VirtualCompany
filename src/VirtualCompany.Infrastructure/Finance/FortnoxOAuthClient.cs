@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Finance;
 
@@ -40,19 +41,25 @@ public sealed class FortnoxOAuthClient
     {
         var options = RequireEnabledOptions();
         var builder = new UriBuilder(options.AuthorizationUrl);
-        var scope = string.Join(" ", options.Scopes.Where(scope => !string.IsNullOrWhiteSpace(scope)).Select(scope => scope.Trim()));
+        var scope = string.Join(" ", FortnoxScopeDefaults.Resolve(options.Scopes));
         var query = new Dictionary<string, string?>
         {
             ["client_id"] = options.ClientId,
             ["redirect_uri"] = options.RedirectUri,
             ["response_type"] = "code",
             ["state"] = state,
-            ["nonce"] = nonce
+            ["nonce"] = nonce,
+            ["access_type"] = "offline"
         };
 
         if (!string.IsNullOrWhiteSpace(scope))
         {
             query["scope"] = scope;
+        }
+
+        if (!string.IsNullOrWhiteSpace(options.AccountType))
+        {
+            query["account_type"] = options.AccountType.Trim();
         }
 
         builder.Query = string.Join("&", query.Select(pair =>
@@ -139,9 +146,21 @@ internal static class FortnoxJson
 
 internal sealed class FortnoxTokenResponse
 {
+    [JsonPropertyName("access_token")]
     public string? AccessToken { get; set; }
+
+    [JsonPropertyName("refresh_token")]
     public string? RefreshToken { get; set; }
+
+    [JsonPropertyName("expires_in")]
     public int ExpiresIn { get; set; }
+
+    [JsonPropertyName("scope")]
     public string? Scope { get; set; }
+
+    [JsonPropertyName("tenant_id")]
     public string? TenantId { get; set; }
+
+    [JsonPropertyName("token_type")]
+    public string? TokenType { get; set; }
 }

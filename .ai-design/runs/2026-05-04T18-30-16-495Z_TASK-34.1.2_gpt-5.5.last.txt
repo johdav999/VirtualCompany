@@ -1,0 +1,192 @@
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -348,8 +348,20 @@ internal sealed class SalesEmailLinkConfiguration : IEntityTypeConfiguration<Sale
+         builder.HasIndex(x => x.Status);
+         builder.HasIndex(x => x.CreatedUtc);
+         builder.HasIndex(x => new { x.CompanyId, x.ExternalMessageId });
++        builder.HasIndex(x => new { x.CompanyId, x.LeadId });
++        builder.HasIndex(x => new { x.CompanyId, x.DealId });
++        builder.HasIndex(x => new { x.CompanyId, x.ContactId });
++        builder.HasIndex(x => new { x.CompanyId, x.CustomerCompanyId });
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne<Lead>().WithMany().HasForeignKey(nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.LeadId)).HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne<Deal>().WithMany().HasForeignKey(nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.DealId)).HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne<Contact>().WithMany().HasForeignKey(nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.ContactId)).HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne<CustomerCompany>()
++            .WithMany()
++            .HasForeignKey(nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.CustomerCompanyId))
++            .HasPrincipalKey(nameof(CustomerCompany.CompanyId), nameof(CustomerCompany.Id))
++            .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
+@@ -347,6 +347,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+                     table.PrimaryKey("PK_sales_email_links", x => x.id);
+                     table.UniqueConstraint("AK_sales_email_links_company_id_id", x => new { x.company_id, x.id });
+                     table.ForeignKey(name: "FK_sales_email_links_companies_company_id", column: x => x.company_id, principalTable: "companies", principalColumn: "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(name: "FK_sales_email_links_leads_company_id_lead_id", columns: x => new { x.company_id, x.lead_id }, principalTable: "leads", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_email_links_deals_company_id_deal_id", columns: x => new { x.company_id, x.deal_id }, principalTable: "deals", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_email_links_contacts_company_id_contact_id", columns: x => new { x.company_id, x.contact_id }, principalTable: "contacts", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_email_links_customer_companies_company_id_customer_company_id", columns: x => new { x.company_id, x.customer_company_id }, principalTable: "customer_companies", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
+                 });
+ 
+             var seededUtc = new DateTime(2026, 5, 4, 0, 0, 0, DateTimeKind.Utc);
+@@ -433,6 +437,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.CreateIndex(name: "IX_sales_email_links_status", table: "sales_email_links", column: "status");
+             migrationBuilder.CreateIndex(name: "IX_sales_email_links_created_at", table: "sales_email_links", column: "created_at");
+             migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id_external_message_id", table: "sales_email_links", columns: new[] { "company_id", "external_message_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id_lead_id", table: "sales_email_links", columns: new[] { "company_id", "lead_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id_deal_id", table: "sales_email_links", columns: new[] { "company_id", "deal_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id_contact_id", table: "sales_email_links", columns: new[] { "company_id", "contact_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id_customer_company_id", table: "sales_email_links", columns: new[] { "company_id", "customer_company_id" });
+         }
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs b/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs
+@@ -100,7 +100,12 @@ public sealed class SalesPersistenceRepository : ISalesPersistenceRepository
+             return;
+         }
+ 
+-        var exists = await set.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && EF.Property<Guid>(x, "Id") == entityId.Value, cancellationToken);
++        var exists = await set
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                x => x.CompanyId == companyId &&
++                     EF.Property<Guid>(x, "Id") == entityId.Value &&
++                     !EF.Property<bool>(x, "IsDeleted"), cancellationToken);
+         if (!exists)
+         {
+             throw new InvalidOperationException($"{name} does not belong to this company.");
+diff --git a/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs b/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
+@@ -31,6 +31,50 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebA
+         });
+     }
+ 
++    [Fact]
++    public void Sales_model_declares_required_sales_indexes()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        AssertIndex<SalesPipelineStage>(dbContext, nameof(SalesPipelineStage.CompanyId));
++        AssertIndex<SalesPipelineStage>(dbContext, nameof(SalesPipelineStage.CreatedUtc));
++        AssertTenantStatusCreatedIndexes<CustomerCompany>(dbContext);
++        AssertTenantStatusCreatedIndexes<Contact>(dbContext);
++        AssertTenantStatusCreatedIndexes<Lead>(dbContext);
++        AssertTenantStatusCreatedIndexes<Deal>(dbContext);
++        AssertTenantStatusCreatedIndexes<SalesActivity>(dbContext);
++        AssertTenantStatusCreatedIndexes<SalesAgentRecommendation>(dbContext);
++        AssertTenantStatusCreatedIndexes<SalesActionApproval>(dbContext);
++        AssertTenantStatusCreatedIndexes<SalesEmailLink>(dbContext);
++    }
++
++    [Fact]
++    public void Sales_email_links_have_tenant_scoped_foreign_keys()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        AssertSalesEmailLinkForeignKey<Lead>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.LeadId));
++        AssertSalesEmailLinkForeignKey<Deal>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.DealId));
++        AssertSalesEmailLinkForeignKey<Contact>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.ContactId));
++        AssertSalesEmailLinkForeignKey<CustomerCompany>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.CustomerCompanyId));
++    }
++
++    [Fact]
++    public async Task Sales_seed_does_not_create_business_records()
++    {
++        var counts = await _factory.ExecuteDbContextAsync(async dbContext => new
++        {
++            Customers = await dbContext.CustomerCompanies.IgnoreQueryFilters().CountAsync(),
++            Contacts = await dbContext.Contacts.IgnoreQueryFilters().CountAsync(),
++            Leads = await dbContext.Leads.IgnoreQueryFilters().CountAsync(),
++            Deals = await dbContext.Deals.IgnoreQueryFilters().CountAsync()
++        });
++
++        Assert.Equal(0, counts.Customers);
++        Assert.Equal(0, counts.Contacts);
++        Assert.Equal(0, counts.Leads);
++        Assert.Equal(0, counts.Deals);
++    }
++
+     [Fact]
+     public async Task Sales_queries_are_scoped_to_active_company_context()
+     {
+@@ -109,6 +153,33 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebA
+         await Assert.ThrowsAsync<InvalidOperationException>(() => repository.AddLeadAsync(lead, CancellationToken.None));
+     }
+ 
++    [Fact]
++    public async Task Sales_repository_rejects_soft_deleted_link_targets()
++    {
++        var companyId = Guid.NewGuid();
++        var deletedContactId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(companyId, "Deleted Contact Company"));
++            var contact = new Contact(deletedContactId, companyId, "Deleted Contact", "deleted@example.com");
++            contact.SoftDelete();
++            dbContext.Contacts.Add(contact);
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyId);
++        var repository = scope.ServiceProvider.GetRequiredService<ISalesPersistenceRepository>();
++        var lead = new Lead(
++            Guid.NewGuid(),
++            companyId,
++            "Lead linked to deleted contact",
++            SalesPipelineStage.NewStageId,
++            primaryContactId: deletedContactId);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.AddLeadAsync(lead, CancellationToken.None));
++    }
++
+     [Fact]
+     public async Task Sales_soft_deleted_records_are_hidden_by_query_filters()
+     {
+@@ -161,4 +232,28 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebA
+         dbContext.SalesActionApprovals.Add(new SalesActionApproval(Guid.NewGuid(), companyId, $"Approval {suffix}", "A human should review the outreach.", recommendationId, leadId, dealId));
+         dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $"message-{suffix}", leadId, dealId, contactId, customerId));
+     }
++
++    private static void AssertTenantStatusCreatedIndexes<TEntity>(VirtualCompanyDbContext dbContext)
++    {
++        AssertIndex<TEntity>(dbContext, nameof(ICompanyOwnedEntity.CompanyId));
++        AssertIndex<TEntity>(dbContext, "Status");
++        AssertIndex<TEntity>(dbContext, "CreatedUtc");
++    }
++
++    private static void AssertIndex<TEntity>(VirtualCompanyDbContext dbContext, params string[] propertyNames)
++    {
++        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));
++        Assert.NotNull(entityType);
++        Assert.Contains(
++            entityType!.GetIndexes(),
++            index => index.Properties.Select(property => property.Name).SequenceEqual(propertyNames));
++    }
++
++    private static void AssertSalesEmailLinkForeignKey<TPrincipal>(VirtualCompanyDbContext dbContext, params string[] propertyNames)
++    {
++        var entityType = dbContext.Model.FindEntityType(typeof(SalesEmailLink));
++        Assert.NotNull(entityType);
++        Assert.Contains(entityType!.GetForeignKeys(), foreignKey =>
++            foreignKey.PrincipalEntityType.ClrType == typeof(TPrincipal) &&
++            foreignKey.Properties.Select(property => property.Name).SequenceEqual(propertyNames) &&
++            foreignKey.PrincipalKey.Properties.Select(property => property.Name).SequenceEqual([nameof(ICompanyOwnedEntity.CompanyId), "Id"]));
++    }
+ }
+END_OF_PATCH

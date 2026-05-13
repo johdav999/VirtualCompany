@@ -1,0 +1,246 @@
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+index 8e8e8e8..9f9f9f9 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+@@ -273,6 +273,10 @@
+                     {
+                         <p class="text-body-secondary mb-0">Loading sync history...</p>
+                     }
++                    else if (!string.IsNullOrWhiteSpace(FinanceIntegrationHistoryErrorMessage))
++                    {
++                        <div class="alert alert-warning mb-0" role="status">@FinanceIntegrationHistoryErrorMessage</div>
++                    }
+                     else if (FinanceIntegrationHistory?.Items.Count > 0)
+                     {
+                         <div class="table-responsive">
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+index 7d7d7d7..0a0a0a0 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+@@ -37,6 +37,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private string? FinanceIntegrationErrorMessage { get; set; }
+     private string? FinanceIntegrationActionErrorMessage { get; set; }
+     private string? FinanceIntegrationSuccessMessage { get; set; }
++    private string? FinanceIntegrationHistoryErrorMessage { get; set; }
+     private string? LoadedSettingsRoute { get; set; }
+ 
+     private bool IsBusy => IsSettingsLoading || IsSaving;
+@@ -83,6 +84,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         FinanceIntegrationStatus = null;
+         FinanceIntegrationHistory = null;
+         ShowFinanceIntegrationHistory = true;
++        FinanceIntegrationHistoryErrorMessage = null;
+ 
+         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
+         {
+@@ -374,11 +376,15 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private async Task LoadFinanceIntegrationHistoryAsync(Guid companyId, bool surfaceErrors)
+     {
+         IsFinanceIntegrationHistoryLoading = true;
++        FinanceIntegrationHistoryErrorMessage = null;
+         try
+         {
+             FinanceIntegrationHistory = await FinanceApiClient.GetFinanceIntegrationSyncHistoryAsync(companyId, SelectedProviderKey);
+         }
+         catch (FinanceApiException ex)
++        {
++            FinanceIntegrationHistory = null;
++            FinanceIntegrationHistoryErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Sync history is unavailable. Please try again.");
++        }
+         {
+             FinanceIntegrationErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Financial integrations are unavailable. Please try again.");
+         }
+@@ -489,7 +495,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     }
+ 
+     private static string FormatSafeErrorSummary(FinanceIntegrationSyncHistoryItemResponse item)
+-        FortnoxIntegrationDisplayMapper.FormatSafeHistoryError(item);
++        => FortnoxIntegrationDisplayMapper.FormatSafeHistoryError(item);
+ 
+     public void Dispose()
+     {
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+index 6a6a6a6..1b1b1b1 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+@@ -166,6 +166,116 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Empty_sync_history_renders_empty_state()
++    {
++        var companyId = Guid.Parse("9f89c3e5-fb89-48f9-8e62-6f5c16e3f31d");
++        using var harness = CreateHarness(companyId, ConnectedStatus(), historyEmpty: true);
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Sync history", cut.Markup);
++            Assert.Contains("No accounting syncs have run yet.", cut.Markup);
++            Assert.DoesNotContain("Imported records", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Sync_history_failure_renders_safe_error_without_hiding_connection_state()
++    {
++        var companyId = Guid.Parse("a326984f-c084-43ce-8f9a-5aa5ef03c82f");
++        using var harness = CreateHarness(
++            companyId,
++            ConnectedStatus(),
++            historyFailureDetail: "System.Net.Http.HttpRequestException: provider_payload access_token secret");
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Connected", cut.Markup);
++            Assert.Contains("Sync history is unavailable. Please try again.", cut.Markup);
++            Assert.DoesNotContain("access_token", cut.Markup);
++            Assert.DoesNotContain("provider_payload", cut.Markup);
++            Assert.DoesNotContain("HttpRequestException", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void OAuth_success_callback_renders_connection_success_feedback()
++    {
++        var companyId = Guid.Parse("f2e67788-4d46-463c-8d08-3ae82efa0f6d");
++        using var harness = CreateHarness(companyId, ConnectedStatus());
++
++        var cut = RenderFortnoxSettings(harness, companyId, "integrationConnection=connected");
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Fortnox is connected.", cut.Markup);
++            Assert.Contains("Connected", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void OAuth_failure_callback_renders_safe_error_feedback()
++    {
++        var companyId = Guid.Parse("c6f3b0ef-c8db-4dc6-a7ef-063fb3128d66");
++        using var harness = CreateHarness(companyId, new FinanceIntegrationConnectionStatusResponse
++        {
++            ProviderKey = "fortnox",
++            IsConnected = false,
++            ConnectionStatus = "disconnected"
++        });
++
++        var cut = RenderFortnoxSettings(
++            harness,
++            companyId,
++            "integrationMessage=System.InvalidOperationException%3A%20access_token%20leaked%0A%20at%20Callback");
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Finance integration authorization could not be completed.", cut.Markup);
++            Assert.DoesNotContain("access_token", cut.Markup);
++            Assert.DoesNotContain("InvalidOperationException", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Token_refresh_failure_state_uses_safe_reconnect_message()
++    {
++        var companyId = Guid.Parse("44e8bb15-976c-4f57-9de3-ff051fb0f692");
++        using var harness = CreateHarness(companyId, new FinanceIntegrationConnectionStatusResponse
++        {
++            ProviderKey = "fortnox",
++            IsConnected = false,
++            ConnectionId = Guid.Parse("8b734fde-2bcf-4a11-bd01-4d13f555b17e"),
++            ConnectionStatus = "needs_reconnect",
++            LastErrorSummary = "System.Security.Authentication.AuthenticationException: refresh_token expired"
++        });
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Needs reconnect", cut.Markup);
++            Assert.Contains("Fortnox needs a fresh authorization before syncing can continue.", cut.Markup);
++            Assert.Contains("Reconnect", cut.Markup);
++            Assert.DoesNotContain("refresh_token", cut.Markup);
++            Assert.DoesNotContain("AuthenticationException", cut.Markup);
++        });
++    }
++
++    [Fact]
++    public void Finance_integration_requests_are_scoped_to_active_tenant()
++    {
++        var companyId = Guid.Parse("59f2b0df-257a-4633-99a2-b3903958be72");
++        using var harness = CreateHarness(companyId, ConnectedStatus());
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Connected", cut.Markup);
++            Assert.All(harness.Requests, request => Assert.Contains($"/api/companies/{companyId:D}/finance/integrations", request.RequestUri!.AbsolutePath, StringComparison.OrdinalIgnoreCase));
++            Assert.All(harness.Requests, request => Assert.Equal(companyId.ToString(), request.Headers.GetValues("X-Company-Id").Single()));
++        });
++    }
++
+     [Fact]
+     public void Sync_history_uses_safe_plain_english_error_summary()
+     {
+@@ -201,9 +311,10 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
+-    private static IRenderedComponent<SettingsPage> RenderFortnoxSettings(FortnoxSettingsHarness harness, Guid companyId)
++    private static IRenderedComponent<SettingsPage> RenderFortnoxSettings(FortnoxSettingsHarness harness, Guid companyId, string? query = null)
+     {
+-        harness.Navigation.NavigateTo($"http://localhost/finance/settings/integrations/fortnox?companyId={companyId:D}");
++        var queryString = string.IsNullOrWhiteSpace(query) ? $"companyId={companyId:D}" : $"companyId={companyId:D}&{query}";
++        harness.Navigation.NavigateTo($"http://localhost/finance/settings/integrations/fortnox?{queryString}");
+         return harness.Context.RenderComponent<SettingsPage>(parameters => parameters.Add(x => x.CompanyId, companyId));
+     }
+ 
+@@ -225,7 +336,9 @@ public sealed class FinanceIntegrationSettingsPageTests
+         string? syncFailureDetail = null,
+         string? historyErrorSummary = null,
+         string historyStatus = "succeeded",
+-        int historyErrors = 0)
++        int historyErrors = 0,
++        bool historyEmpty = false,
++        string? historyFailureDetail = null)
+     {
+         var context = new TestContext();
+         var requests = new List<HttpRequestMessage>();
+@@ -301,6 +414,11 @@ public sealed class FinanceIntegrationSettingsPageTests
+ 
+             if (path.EndsWith("/finance/integrations/fortnox/sync-history", StringComparison.OrdinalIgnoreCase))
+             {
++                if (!string.IsNullOrWhiteSpace(historyFailureDetail))
++                {
++                    return Task.FromResult(CreateProblemResponse(HttpStatusCode.BadGateway, historyFailureDetail));
++                }
++
+                 return Task.FromResult(CreateJsonResponse(new FinanceIntegrationSyncHistoryResponse
+                 {
+                     ProviderKey = "fortnox",
+@@ -308,7 +426,9 @@ public sealed class FinanceIntegrationSettingsPageTests
+                     Items =
+                     [
+                         new FinanceIntegrationSyncHistoryItemResponse
+-                        {
++                        ]
++                    : [
++                        new FinanceIntegrationSyncHistoryItemResponse
++                        {
+                             Id = Guid.NewGuid(),
+                             ConnectionId = status.ConnectionId,
+                             StartedUtc = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+@@ -322,6 +442,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+                             ErrorSummary = historyErrorSummary
+                         }
+                     ]
++                    )
+                 }));
+             }
+ 
+END_OF_PATCH

@@ -14,10 +14,11 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
     private const int DefaultMaxRetries = 3;
     private readonly HttpClient _httpClient;
     private readonly IFortnoxOAuthService _oauthService;
-    private readonly IFortnoxWriteApprovalService _writeApprovalService;
+    private readonly IFinanceIntegrationWriteApprovalService _writeApprovalService;
     private readonly IOptionsMonitor<FortnoxOptions> _options;
     private readonly ILogger<FortnoxApiClient> _logger;
     private readonly TimeProvider _timeProvider;
+    private readonly IFortnoxErrorTranslator _errorTranslator;
 
     public FortnoxApiClient(
         HttpClient httpClient,
@@ -25,14 +26,16 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         IOptionsMonitor<FortnoxOptions> options,
         ILogger<FortnoxApiClient> logger,
         TimeProvider timeProvider,
-        IFortnoxWriteApprovalService? writeApprovalService = null)
+        IFinanceIntegrationWriteApprovalService? writeApprovalService = null,
+        IFortnoxErrorTranslator? errorTranslator = null)
     {
         _httpClient = httpClient;
         _oauthService = oauthService;
         _options = options;
         _logger = logger;
         _timeProvider = timeProvider;
-        _writeApprovalService = writeApprovalService ?? NoOpFortnoxWriteApprovalService.Instance;
+        _writeApprovalService = writeApprovalService ?? NoOpFinanceIntegrationWriteApprovalService.Instance;
+        _errorTranslator = errorTranslator ?? new DefaultFortnoxErrorTranslator();
 
         _httpClient.BaseAddress ??= NormalizeBaseAddress(_options.CurrentValue.ApiBaseUrl);
     }
@@ -169,7 +172,7 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         }
     }
 
-    private async Task<FortnoxWriteApprovalCheck> EnsureWriteApprovedAsync<TPayload>(
+    private async Task<FinanceIntegrationWriteApprovalCheck> EnsureWriteApprovedAsync<TPayload>(
         FortnoxRequestContext context,
         HttpMethod method,
         string path,
@@ -177,19 +180,22 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         CancellationToken cancellationToken)
     {
         var summary = FortnoxWritePayloadSanitizer.CreateSummary(payload);
-        var check = new FortnoxWriteApprovalCheck(
+        var check = new FinanceIntegrationWriteApprovalCheck(
+                FinanceIntegrationProviderKeys.Fortnox,
                 context.CompanyId,
                 context.ConnectionId,
                 context.ActorUserId,
                 context.ApprovedApprovalId,
+                ResolveCommandType(path),
                 method.Method,
                 path,
-                "Fortnox company",
-                ResolveEntityType(path),
+                "Accounting system",
                 summary,
                 FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
-                FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
-                DeterministicWriteRequestId(context, method, path, summary));
+                new FinanceIntegrationWritePayload(
+                    FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
+                    payload?.GetType().Name),
+                context.WriteRequestId ?? DeterministicWriteRequestId(context, method, path, summary));
 
         await _writeApprovalService.EnsureApprovedAsync(check, cancellationToken);
         return check;
@@ -197,6 +203,18 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
 
     private static string ResolveEntityType(string path) =>
         path.Trim('/').Split('/', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? "fortnox_record";
+
+    private static string ResolveCommandType(string path)
+    {
+        var entityType = ResolveEntityType(path);
+        return entityType switch
+        {
+            var value when value.Contains("payment", StringComparison.OrdinalIgnoreCase) => FinanceIntegrationWriteCommandTypes.Payment,
+            var value when value.Contains("invoice", StringComparison.OrdinalIgnoreCase) => FinanceIntegrationWriteCommandTypes.InvoiceExport,
+            var value when value.Contains("voucher", StringComparison.OrdinalIgnoreCase) => FinanceIntegrationWriteCommandTypes.VoucherCreate,
+            _ => FinanceIntegrationWriteCommandTypes.AccountingRecord
+        };
+    }
 
     private async Task<T> GetEnvelopeAsync<T>(
         FortnoxRequestContext context,
@@ -257,10 +275,11 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
             ["CorrelationId"] = context.CorrelationId
         });
 
-        var accessToken = await ResolveAccessTokenAsync(context, cancellationToken);
+        var accessToken = await ResolveAccessTokenAsync(context, forceRefresh: false, cancellationToken);
         var requestUri = BuildUri(path, options);
-        var maxRetries = Math.Max(0, _options.CurrentValue.ApiMaxRetries);
-        if (maxRetries == 0)
+        var maxRetries = context.RetryExternalFailures ? Math.Max(0, _options.CurrentValue.ApiMaxRetries) : 0;
+        var replayedAfterUnauthorized = false;
+        if (context.RetryExternalFailures && maxRetries == 0)
         {
             maxRetries = DefaultMaxRetries;
         }
@@ -293,6 +312,14 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
                 continue;
             }
 
+            if (response.StatusCode == HttpStatusCode.Unauthorized && !replayedAfterUnauthorized)
+            {
+                replayedAfterUnauthorized = true;
+                response.Dispose();
+                accessToken = await ResolveAccessTokenAsync(context, forceRefresh: true, cancellationToken);
+                continue;
+            }
+
             await ThrowTranslatedExceptionAsync(context, response, requestUri, cancellationToken);
         }
     }
@@ -316,7 +343,29 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
             requiresReconnect: tokenResult.NeedsReconnect);
     }
 
-    private HttpRequestMessage CreateRequest(
+    private async Task<string> ResolveAccessTokenAsync(
+        FortnoxRequestContext context,
+        bool forceRefresh,
+        CancellationToken cancellationToken)
+    {
+        var tokenResult = await _oauthService.GetValidAccessTokenAsync(
+            new RefreshFortnoxAccessTokenCommand(context.CompanyId, context.ConnectionId, forceRefresh),
+            cancellationToken);
+
+        if (tokenResult.Succeeded && !string.IsNullOrWhiteSpace(tokenResult.AccessToken))
+        {
+            return tokenResult.AccessToken;
+        }
+
+        throw new FortnoxApiException(
+            tokenResult.SafeFailureMessage ?? "Fortnox connection needs attention.",
+            HttpStatusCode.Unauthorized,
+            "authorization",
+            isTransient: !tokenResult.NeedsReconnect,
+            requiresReconnect: tokenResult.NeedsReconnect);
+    }
+
+    private static HttpRequestMessage CreateRequest(
         HttpMethod method,
         Uri requestUri,
         string accessToken,
@@ -454,25 +503,41 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         throw exception;
     }
 
-    private static FortnoxApiException CreateException(
+    private FortnoxApiException CreateException(
         HttpStatusCode statusCode,
         FortnoxErrorInformation? error,
         TimeSpan? retryAfter)
     {
         var code = error?.Code ?? error?.Error;
         var message = error?.Message;
-
-        return statusCode switch
+        var isScopePermissionError = IsScopePermissionError(code, message);
+        var category = isScopePermissionError
+            ? "permission"
+            : statusCode switch
         {
-            HttpStatusCode.Unauthorized => new FortnoxApiException("Fortnox connection needs attention.", statusCode, "authorization", code, message, requiresReconnect: true),
-            HttpStatusCode.Forbidden => new FortnoxApiException("The connected Fortnox account does not have permission for this data.", statusCode, "permission", code, message),
-            HttpStatusCode.NotFound => new FortnoxApiException("The requested Fortnox data could not be found.", statusCode, "not_found", code, message),
-            HttpStatusCode.UnprocessableEntity or HttpStatusCode.BadRequest => new FortnoxApiException("Fortnox could not process the requested data.", statusCode, "validation", code, message),
-            HttpStatusCode.TooManyRequests => new FortnoxApiException("Fortnox is receiving too many requests. Please try again shortly.", statusCode, "rate_limited", code, message, isTransient: true, retryAfter: retryAfter),
-            _ when (int)statusCode >= 500 => new FortnoxApiException("Fortnox is temporarily unavailable. Please try again shortly.", statusCode, "upstream_unavailable", code, message, isTransient: true),
-            _ => new FortnoxApiException("Fortnox request failed.", statusCode, "upstream_error", code, message)
+            HttpStatusCode.Unauthorized => "authorization",
+            HttpStatusCode.Forbidden => "permission",
+            HttpStatusCode.NotFound => "not_found",
+            HttpStatusCode.UnprocessableEntity or HttpStatusCode.BadRequest => "validation",
+            HttpStatusCode.TooManyRequests => "rate_limited",
+            _ when (int)statusCode >= 500 => "upstream_unavailable",
+            _ => "upstream_error"
         };
+        var safeMessage = _errorTranslator.Translate(new FortnoxErrorTranslationContext(statusCode, category, code, message, retryAfter));
+        return new FortnoxApiException(
+            safeMessage,
+            statusCode,
+            category,
+            code,
+            message,
+            category is "rate_limited" or "upstream_unavailable",
+            statusCode == HttpStatusCode.Unauthorized || isScopePermissionError,
+            retryAfter);
     }
+
+    private static bool IsScopePermissionError(string? code, string? message) =>
+        string.Equals(code, "2000663", StringComparison.OrdinalIgnoreCase) ||
+        message?.Contains("scope", StringComparison.OrdinalIgnoreCase) == true;
 
     private static FortnoxErrorInformation? TryReadError(string body)
     {
@@ -530,21 +595,21 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         return new Guid(bytes.AsSpan(0, 16));
     }
 
-    private sealed class NoOpFortnoxWriteApprovalService : IFortnoxWriteApprovalService
+    private sealed class NoOpFinanceIntegrationWriteApprovalService : IFinanceIntegrationWriteApprovalService
     {
-        public static readonly NoOpFortnoxWriteApprovalService Instance = new();
+        public static readonly NoOpFinanceIntegrationWriteApprovalService Instance = new();
 
-        private NoOpFortnoxWriteApprovalService()
+        private NoOpFinanceIntegrationWriteApprovalService()
         {
         }
 
-        public Task EnsureApprovedAsync(FortnoxWriteApprovalCheck check, CancellationToken cancellationToken) =>
+        public Task EnsureApprovedAsync(FinanceIntegrationWriteApprovalCheck check, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task RecordExecutionSucceededAsync(FortnoxWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken) =>
+        public Task RecordExecutionSucceededAsync(FinanceIntegrationWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken) =>
             Task.CompletedTask;
 
-        public Task RecordExecutionFailedAsync(FortnoxWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken) =>
+        public Task RecordExecutionFailedAsync(FinanceIntegrationWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken) =>
             Task.CompletedTask;
     }
 }

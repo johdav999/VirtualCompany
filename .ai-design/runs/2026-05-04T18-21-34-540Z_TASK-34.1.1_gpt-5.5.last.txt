@@ -1,0 +1,1784 @@
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+new file mode 100644
+index 0000000..5bd89df
+--- /dev/null
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -0,0 +1,18 @@
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Application.Sales;
++
++public interface ISalesPersistenceRepository
++{
++    Task<IReadOnlyList<Lead>> ListLeadsAsync(
++        Guid companyId,
++        string? status,
++        CancellationToken cancellationToken);
++
++    Task<Lead?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken);
++
++    Task AddLeadAsync(Lead lead, CancellationToken cancellationToken);
++
++    Task AddDealAsync(Deal deal, CancellationToken cancellationToken);
++
++    Task SaveChangesAsync(CancellationToken cancellationToken);
++}
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+new file mode 100644
+index 0000000..f1f3d9c
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -0,0 +1,575 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class SalesPipelineStage : ICompanyOwnedEntity
++{
++    public static readonly Guid NewStageId = Guid.Parse("6d305bcb-3d87-40b0-a89d-bbe48b3f1891");
++    public static readonly Guid QualifiedStageId = Guid.Parse("a7c6f0bf-2136-46a5-a82b-73506f91b79a");
++    public static readonly Guid ProposalStageId = Guid.Parse("62e3f3e1-bfc3-4cf7-a24a-92d216d8d859");
++    public static readonly Guid WonStageId = Guid.Parse("cbad0a5d-d5da-4c8e-a414-6fa5ce7d6f43");
++    public static readonly Guid LostStageId = Guid.Parse("5c449a94-81b8-4edc-a0d6-8b42dd8ce47a");
++    public static readonly Guid SystemCompanyId = Guid.Empty;
++
++    private SalesPipelineStage()
++    {
++    }
++
++    public SalesPipelineStage(
++        Guid id,
++        Guid companyId,
++        string name,
++        int displayOrder,
++        bool isSystem = false,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        if (!isSystem && companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required for tenant pipeline stages.", nameof(companyId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = isSystem ? SystemCompanyId : companyId;
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 80);
++        DisplayOrder = displayOrder;
++        IsSystem = isSystem;
++        IsActive = true;
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Name { get; private set; } = null!;
++    public int DisplayOrder { get; private set; }
++    public bool IsSystem { get; private set; }
++    public bool IsActive { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public ICollection<Lead> Leads { get; } = new List<Lead>();
++    public ICollection<Deal> Deals { get; } = new List<Deal>();
++
++    public void Rename(string name, int displayOrder)
++    {
++        if (IsSystem)
++        {
++            throw new InvalidOperationException("System pipeline stages cannot be changed.");
++        }
++
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 80);
++        DisplayOrder = displayOrder;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Deactivate()
++    {
++        if (IsSystem)
++        {
++            throw new InvalidOperationException("System pipeline stages cannot be deactivated.");
++        }
++
++        IsActive = false;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SoftDelete()
++    {
++        if (IsSystem)
++        {
++            throw new InvalidOperationException("System pipeline stages cannot be deleted.");
++        }
++
++        if (IsDeleted)
++        {
++            return;
++        }
++
++        IsDeleted = true;
++        DeletedUtc = DateTime.UtcNow;
++        UpdatedUtc = DeletedUtc.Value;
++    }
++}
++
++public sealed class CustomerCompany : ICompanyOwnedEntity
++{
++    private CustomerCompany()
++    {
++    }
++
++    public CustomerCompany(
++        Guid id,
++        Guid companyId,
++        string name,
++        string status = SalesStatuses.Active,
++        string? website = null,
++        string? industry = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 200);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        Website = SalesEntityText.NormalizeOptional(website, nameof(website), 256);
++        Industry = SalesEntityText.NormalizeOptional(industry, nameof(industry), 120);
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Name { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public string? Website { get; private set; }
++    public string? Industry { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<Contact> Contacts { get; } = new List<Contact>();
++    public ICollection<Lead> Leads { get; } = new List<Lead>();
++    public ICollection<Deal> Deals { get; } = new List<Deal>();
++
++    public void Update(string name, string status, string? website, string? industry)
++    {
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 200);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        Website = SalesEntityText.NormalizeOptional(website, nameof(website), 256);
++        Industry = SalesEntityText.NormalizeOptional(industry, nameof(industry), 120);
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SoftDelete()
++    {
++        if (IsDeleted)
++        {
++            return;
++        }
++
++        IsDeleted = true;
++        DeletedUtc = DateTime.UtcNow;
++        UpdatedUtc = DeletedUtc.Value;
++    }
++}
++
++public sealed class Contact : ICompanyOwnedEntity
++{
++    private Contact()
++    {
++    }
++
++    public Contact(
++        Guid id,
++        Guid companyId,
++        string fullName,
++        string email,
++        Guid? customerCompanyId = null,
++        string status = SalesStatuses.Active,
++        string? title = null,
++        string? phone = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
++        FullName = SalesEntityText.NormalizeRequired(fullName, nameof(fullName), 160);
++        Email = SalesEntityText.NormalizeRequired(email, nameof(email), 256).ToLowerInvariant();
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        Title = SalesEntityText.NormalizeOptional(title, nameof(title), 120);
++        Phone = SalesEntityText.NormalizeOptional(phone, nameof(phone), 64);
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? CustomerCompanyId { get; private set; }
++    public string FullName { get; private set; } = null!;
++    public string Email { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public string? Title { get; private set; }
++    public string? Phone { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public CustomerCompany? CustomerCompany { get; private set; }
++
++    public void SoftDelete()
++    {
++        if (IsDeleted)
++        {
++            return;
++        }
++
++        IsDeleted = true;
++        DeletedUtc = DateTime.UtcNow;
++        UpdatedUtc = DeletedUtc.Value;
++    }
++}
++
++public sealed class Lead : ICompanyOwnedEntity
++{
++    private Lead()
++    {
++    }
++
++    public Lead(
++        Guid id,
++        Guid companyId,
++        string title,
++        Guid pipelineStageId,
++        string status = SalesStatuses.Open,
++        Guid? primaryContactId = null,
++        Guid? customerCompanyId = null,
++        decimal? estimatedValue = null,
++        string? currency = null,
++        string? source = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Title = SalesEntityText.NormalizeRequired(title, nameof(title), 200);
++        PipelineStageId = pipelineStageId == Guid.Empty ? throw new ArgumentException("PipelineStageId is required.", nameof(pipelineStageId)) : pipelineStageId;
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        PrimaryContactId = SalesEntityText.NormalizeOptionalId(primaryContactId, nameof(primaryContactId));
++        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
++        EstimatedValue = estimatedValue;
++        Currency = SalesEntityText.NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
++        Source = SalesEntityText.NormalizeOptional(source, nameof(source), 120);
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? PrimaryContactId { get; private set; }
++    public Guid? CustomerCompanyId { get; private set; }
++    public Guid PipelineStageId { get; private set; }
++    public Guid? ConvertedDealId { get; private set; }
++    public string Title { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public decimal? EstimatedValue { get; private set; }
++    public string? Currency { get; private set; }
++    public string? Source { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Contact? PrimaryContact { get; private set; }
++    public CustomerCompany? CustomerCompany { get; private set; }
++    public SalesPipelineStage PipelineStage { get; private set; } = null!;
++    public Deal? ConvertedDeal { get; private set; }
++    public ICollection<Deal> Deals { get; } = new List<Deal>();
++    public ICollection<SalesActivity> Activities { get; } = new List<SalesActivity>();
++    public ICollection<SalesAgentRecommendation> Recommendations { get; } = new List<SalesAgentRecommendation>();
++
++    public void ConvertToDeal(Guid dealId)
++    {
++        ConvertedDealId = dealId == Guid.Empty ? throw new ArgumentException("DealId is required.", nameof(dealId)) : dealId;
++        Status = SalesStatuses.Converted;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void SoftDelete()
++    {
++        if (IsDeleted)
++        {
++            return;
++        }
++
++        IsDeleted = true;
++        DeletedUtc = DateTime.UtcNow;
++        UpdatedUtc = DeletedUtc.Value;
++    }
++}
++
++public sealed class Deal : ICompanyOwnedEntity
++{
++    private Deal()
++    {
++    }
++
++    public Deal(
++        Guid id,
++        Guid companyId,
++        string title,
++        Guid pipelineStageId,
++        decimal amount,
++        string currency,
++        string status = SalesStatuses.Open,
++        Guid? sourceLeadId = null,
++        Guid? primaryContactId = null,
++        Guid? customerCompanyId = null,
++        DateTime? expectedCloseUtc = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        if (amount < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(amount), "Amount cannot be negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Title = SalesEntityText.NormalizeRequired(title, nameof(title), 200);
++        PipelineStageId = pipelineStageId == Guid.Empty ? throw new ArgumentException("PipelineStageId is required.", nameof(pipelineStageId)) : pipelineStageId;
++        Amount = amount;
++        Currency = SalesEntityText.NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        SourceLeadId = SalesEntityText.NormalizeOptionalId(sourceLeadId, nameof(sourceLeadId));
++        PrimaryContactId = SalesEntityText.NormalizeOptionalId(primaryContactId, nameof(primaryContactId));
++        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
++        ExpectedCloseUtc = expectedCloseUtc.HasValue ? SalesEntityText.NormalizeUtc(expectedCloseUtc.Value, nameof(expectedCloseUtc)) : null;
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? SourceLeadId { get; private set; }
++    public Guid? CustomerCompanyId { get; private set; }
++    public Guid? PrimaryContactId { get; private set; }
++    public Guid PipelineStageId { get; private set; }
++    public string Title { get; private set; } = null!;
++    public decimal Amount { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime? ExpectedCloseUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Lead? SourceLead { get; private set; }
++    public CustomerCompany? CustomerCompany { get; private set; }
++    public Contact? PrimaryContact { get; private set; }
++    public SalesPipelineStage PipelineStage { get; private set; } = null!;
++    public ICollection<SalesActivity> Activities { get; } = new List<SalesActivity>();
++    public ICollection<SalesAgentRecommendation> Recommendations { get; } = new List<SalesAgentRecommendation>();
++
++    public void SoftDelete()
++    {
++        if (IsDeleted)
++        {
++            return;
++        }
++
++        IsDeleted = true;
++        DeletedUtc = DateTime.UtcNow;
++        UpdatedUtc = DeletedUtc.Value;
++    }
++}
++
++public sealed class SalesActivity : ICompanyOwnedEntity
++{
++    private SalesActivity()
++    {
++    }
++
++    public SalesActivity(
++        Guid id,
++        Guid companyId,
++        string activityType,
++        string summary,
++        DateTime occurredUtc,
++        Guid? leadId = null,
++        Guid? dealId = null,
++        Guid? contactId = null,
++        Guid? customerCompanyId = null,
++        string status = SalesStatuses.Completed,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ActivityType = SalesEntityText.NormalizeRequired(activityType, nameof(activityType), 64).ToLowerInvariant();
++        Summary = SalesEntityText.NormalizeRequired(summary, nameof(summary), 500);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        OccurredUtc = SalesEntityText.NormalizeUtc(occurredUtc, nameof(occurredUtc));
++        LeadId = SalesEntityText.NormalizeOptionalId(leadId, nameof(leadId));
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId));
++        ContactId = SalesEntityText.NormalizeOptionalId(contactId, nameof(contactId));
++        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? LeadId { get; private set; }
++    public Guid? DealId { get; private set; }
++    public Guid? ContactId { get; private set; }
++    public Guid? CustomerCompanyId { get; private set; }
++    public string ActivityType { get; private set; } = null!;
++    public string Summary { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime OccurredUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Lead? Lead { get; private set; }
++    public Deal? Deal { get; private set; }
++    public Contact? Contact { get; private set; }
++    public CustomerCompany? CustomerCompany { get; private set; }
++}
++
++public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
++{
++    private SalesAgentRecommendation()
++    {
++    }
++
++    public SalesAgentRecommendation(Guid id, Guid companyId, string recommendation, string rationale, Guid? leadId = null, Guid? dealId = null, string status = SalesStatuses.Open)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        LeadId = SalesEntityText.NormalizeOptionalId(leadId, nameof(leadId));
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId));
++        Recommendation = SalesEntityText.NormalizeRequired(recommendation, nameof(recommendation), 1000);
++        Rationale = SalesEntityText.NormalizeRequired(rationale, nameof(rationale), 2000);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? LeadId { get; private set; }
++    public Guid? DealId { get; private set; }
++    public string Recommendation { get; private set; } = null!;
++    public string Rationale { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Lead? Lead { get; private set; }
++    public Deal? Deal { get; private set; }
++    public ICollection<SalesActionApproval> Approvals { get; } = new List<SalesActionApproval>();
++}
++
++public sealed class SalesActionApproval : ICompanyOwnedEntity
++{
++    private SalesActionApproval()
++    {
++    }
++
++    public SalesActionApproval(Guid id, Guid companyId, string actionSummary, string reason, Guid? recommendationId = null, Guid? leadId = null, Guid? dealId = null, string status = SalesStatuses.WaitingForApproval)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        RecommendationId = SalesEntityText.NormalizeOptionalId(recommendationId, nameof(recommendationId));
++        LeadId = SalesEntityText.NormalizeOptionalId(leadId, nameof(leadId));
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId));
++        ActionSummary = SalesEntityText.NormalizeRequired(actionSummary, nameof(actionSummary), 500);
++        Reason = SalesEntityText.NormalizeRequired(reason, nameof(reason), 1000);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? RecommendationId { get; private set; }
++    public Guid? LeadId { get; private set; }
++    public Guid? DealId { get; private set; }
++    public string ActionSummary { get; private set; } = null!;
++    public string Reason { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public SalesAgentRecommendation? Recommendation { get; private set; }
++    public Lead? Lead { get; private set; }
++    public Deal? Deal { get; private set; }
++}
++
++public sealed class SalesEmailLink : ICompanyOwnedEntity
++{
++    private SalesEmailLink()
++    {
++    }
++
++    public SalesEmailLink(Guid id, Guid companyId, string externalMessageId, Guid? leadId = null, Guid? dealId = null, Guid? contactId = null, Guid? customerCompanyId = null, string status = SalesStatuses.Linked)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        ExternalMessageId = SalesEntityText.NormalizeRequired(externalMessageId, nameof(externalMessageId), 256);
++        LeadId = SalesEntityText.NormalizeOptionalId(leadId, nameof(leadId));
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId));
++        ContactId = SalesEntityText.NormalizeOptionalId(contactId, nameof(contactId));
++        CustomerCompanyId = SalesEntityText.NormalizeOptionalId(customerCompanyId, nameof(customerCompanyId));
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string ExternalMessageId { get; private set; } = null!;
++    public Guid? LeadId { get; private set; }
++    public Guid? DealId { get; private set; }
++    public Guid? ContactId { get; private set; }
++    public Guid? CustomerCompanyId { get; private set; }
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public bool IsDeleted { get; private set; }
++    public DateTime? DeletedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++}
++
++public static class SalesStatuses
++{
++    public const string Active = "active";
++    public const string Open = "open";
++    public const string Converted = "converted";
++    public const string Completed = "completed";
++    public const string WaitingForApproval = "waiting_for_approval";
++    public const string Linked = "linked";
++}
++
++internal static class SalesEntityText
++{
++    public static void EnsureCompany(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++    }
++
++    public static Guid? NormalizeOptionalId(Guid? value, string name) =>
++        value is null ? null : value.Value == Guid.Empty ? throw new ArgumentException($"{name} cannot be empty.", name) : value;
++
++    public static string NormalizeRequired(string value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            throw new ArgumentException($"{name} is required.", name);
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    public static string? NormalizeOptional(string? value, string name, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var trimmed = value.Trim();
++        if (trimmed.Length > maxLength)
++        {
++            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
++        }
++
++        return trimmed;
++    }
++
++    public static DateTime NormalizeUtc(DateTime value, string name) =>
++        value.Kind == DateTimeKind.Utc
++            ? value
++            : value.Kind == DateTimeKind.Unspecified
++                ? DateTime.SpecifyKind(value, DateTimeKind.Utc)
++                : value.ToUniversalTime();
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 8fd2aa1..3186a6b 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -21,6 +21,7 @@ using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Memory;
+ using VirtualCompany.Application.Workflows;
++using VirtualCompany.Application.Sales;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Mobile;
+ using VirtualCompany.Application.Notifications;
+@@ -35,6 +36,7 @@ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Mailbox;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Sales;
+ using VirtualCompany.Infrastructure.Memory;
+ using VirtualCompany.Infrastructure.Observability;
+ using VirtualCompany.Infrastructure.Tenancy;
+@@ -492,6 +494,7 @@ public static class DependencyInjection
+         });
+         services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
+         services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
++        services.AddScoped<ISalesPersistenceRepository, SalesPersistenceRepository>();
+         services.AddScoped<FinanceReadService>();
+         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
+         services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+new file mode 100644
+index 0000000..74b9b6e
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -0,0 +1,380 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class SalesPipelineStageConfiguration : IEntityTypeConfiguration<SalesPipelineStage>
++{
++    public void Configure(EntityTypeBuilder<SalesPipelineStage> builder)
++    {
++        builder.ToTable("sales_pipeline_stages");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(80).IsRequired();
++        builder.Property(x => x.DisplayOrder).HasColumnName("display_order").IsRequired();
++        builder.Property(x => x.IsSystem).HasColumnName("is_system").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.IsActive).HasColumnName("is_active").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.Name }).IsUnique();
++
++        var seededUtc = new DateTime(2026, 5, 4, 0, 0, 0, DateTimeKind.Utc);
++        builder.HasData(
++            new { Id = SalesPipelineStage.NewStageId, CompanyId = SalesPipelineStage.SystemCompanyId, Name = "New", DisplayOrder = 10, IsSystem = true, IsActive = true, CreatedUtc = seededUtc, UpdatedUtc = seededUtc, IsDeleted = false, DeletedUtc = (DateTime?)null },
++            new { Id = SalesPipelineStage.QualifiedStageId, CompanyId = SalesPipelineStage.SystemCompanyId, Name = "Qualified", DisplayOrder = 20, IsSystem = true, IsActive = true, CreatedUtc = seededUtc, UpdatedUtc = seededUtc, IsDeleted = false, DeletedUtc = (DateTime?)null },
++            new { Id = SalesPipelineStage.ProposalStageId, CompanyId = SalesPipelineStage.SystemCompanyId, Name = "Proposal", DisplayOrder = 30, IsSystem = true, IsActive = true, CreatedUtc = seededUtc, UpdatedUtc = seededUtc, IsDeleted = false, DeletedUtc = (DateTime?)null },
++            new { Id = SalesPipelineStage.WonStageId, CompanyId = SalesPipelineStage.SystemCompanyId, Name = "Won", DisplayOrder = 40, IsSystem = true, IsActive = true, CreatedUtc = seededUtc, UpdatedUtc = seededUtc, IsDeleted = false, DeletedUtc = (DateTime?)null },
++            new { Id = SalesPipelineStage.LostStageId, CompanyId = SalesPipelineStage.SystemCompanyId, Name = "Lost", DisplayOrder = 50, IsSystem = true, IsActive = true, CreatedUtc = seededUtc, UpdatedUtc = seededUtc, IsDeleted = false, DeletedUtc = (DateTime?)null });
++    }
++}
++
++internal sealed class CustomerCompanyConfiguration : IEntityTypeConfiguration<CustomerCompany>
++{
++    public void Configure(EntityTypeBuilder<CustomerCompany> builder)
++    {
++        builder.ToTable("customer_companies");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        ConfigureTenantColumns(builder);
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Website).HasColumnName("website").HasMaxLength(256);
++        builder.Property(x => x.Industry).HasColumnName("industry").HasMaxLength(120);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.Name });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++
++    private static void ConfigureTenantColumns(EntityTypeBuilder<CustomerCompany> builder)
++    {
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class ContactConfiguration : IEntityTypeConfiguration<Contact>
++{
++    public void Configure(EntityTypeBuilder<Contact> builder)
++    {
++        builder.ToTable("contacts");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.CustomerCompanyId).HasColumnName("customer_company_id");
++        builder.Property(x => x.FullName).HasColumnName("full_name").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.Email).HasColumnName("email").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(120);
++        builder.Property(x => x.Phone).HasColumnName("phone").HasMaxLength(64);
++        ConfigureAudit(builder);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.Email });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.CustomerCompany)
++            .WithMany(x => x.Contacts)
++            .HasForeignKey(nameof(Contact.CompanyId), nameof(Contact.CustomerCompanyId))
++            .HasPrincipalKey(nameof(CustomerCompany.CompanyId), nameof(CustomerCompany.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++
++    private static void ConfigureAudit(EntityTypeBuilder<Contact> builder)
++    {
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class LeadConfiguration : IEntityTypeConfiguration<Lead>
++{
++    public void Configure(EntityTypeBuilder<Lead> builder)
++    {
++        builder.ToTable("leads");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.PrimaryContactId).HasColumnName("primary_contact_id");
++        builder.Property(x => x.CustomerCompanyId).HasColumnName("customer_company_id");
++        builder.Property(x => x.PipelineStageId).HasColumnName("pipeline_stage_id").IsRequired();
++        builder.Property(x => x.ConvertedDealId).HasColumnName("converted_deal_id");
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.EstimatedValue).HasColumnName("estimated_value").HasColumnType("decimal(18,2)");
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3);
++        builder.Property(x => x.Source).HasColumnName("source").HasMaxLength(120);
++        ConfigureAudit(builder);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.PipelineStage).WithMany(x => x.Leads).HasForeignKey(x => x.PipelineStageId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.PrimaryContact)
++            .WithMany()
++            .HasForeignKey(nameof(Lead.CompanyId), nameof(Lead.PrimaryContactId))
++            .HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.CustomerCompany)
++            .WithMany(x => x.Leads)
++            .HasForeignKey(nameof(Lead.CompanyId), nameof(Lead.CustomerCompanyId))
++            .HasPrincipalKey(nameof(CustomerCompany.CompanyId), nameof(CustomerCompany.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.ConvertedDeal).WithMany().HasForeignKey(x => x.ConvertedDealId).OnDelete(DeleteBehavior.Restrict);
++    }
++
++    private static void ConfigureAudit(EntityTypeBuilder<Lead> builder)
++    {
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class DealConfiguration : IEntityTypeConfiguration<Deal>
++{
++    public void Configure(EntityTypeBuilder<Deal> builder)
++    {
++        builder.ToTable("deals");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SourceLeadId).HasColumnName("source_lead_id");
++        builder.Property(x => x.CustomerCompanyId).HasColumnName("customer_company_id");
++        builder.Property(x => x.PrimaryContactId).HasColumnName("primary_contact_id");
++        builder.Property(x => x.PipelineStageId).HasColumnName("pipeline_stage_id").IsRequired();
++        builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(200).IsRequired();
++        builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ExpectedCloseUtc).HasColumnName("expected_close_at");
++        ConfigureAudit(builder);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.PipelineStage).WithMany(x => x.Deals).HasForeignKey(x => x.PipelineStageId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.SourceLead)
++            .WithMany(x => x.Deals)
++            .HasForeignKey(nameof(Deal.CompanyId), nameof(Deal.SourceLeadId))
++            .HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.CustomerCompany)
++            .WithMany(x => x.Deals)
++            .HasForeignKey(nameof(Deal.CompanyId), nameof(Deal.CustomerCompanyId))
++            .HasPrincipalKey(nameof(CustomerCompany.CompanyId), nameof(CustomerCompany.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.PrimaryContact)
++            .WithMany()
++            .HasForeignKey(nameof(Deal.CompanyId), nameof(Deal.PrimaryContactId))
++            .HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++
++    private static void ConfigureAudit(EntityTypeBuilder<Deal> builder)
++    {
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class SalesActivityConfiguration : IEntityTypeConfiguration<SalesActivity>
++{
++    public void Configure(EntityTypeBuilder<SalesActivity> builder)
++    {
++        builder.ToTable("sales_activities");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.LeadId).HasColumnName("lead_id");
++        builder.Property(x => x.DealId).HasColumnName("deal_id");
++        builder.Property(x => x.ContactId).HasColumnName("contact_id");
++        builder.Property(x => x.CustomerCompanyId).HasColumnName("customer_company_id");
++        builder.Property(x => x.ActivityType).HasColumnName("activity_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(500).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.OccurredUtc).HasColumnName("occurred_at").IsRequired();
++        ConfigureAudit(builder);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Lead).WithMany(x => x.Activities).HasForeignKey(nameof(SalesActivity.CompanyId), nameof(SalesActivity.LeadId)).HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Deal).WithMany(x => x.Activities).HasForeignKey(nameof(SalesActivity.CompanyId), nameof(SalesActivity.DealId)).HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Contact).WithMany().HasForeignKey(nameof(SalesActivity.CompanyId), nameof(SalesActivity.ContactId)).HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.CustomerCompany).WithMany().HasForeignKey(nameof(SalesActivity.CompanyId), nameof(SalesActivity.CustomerCompanyId)).HasPrincipalKey(nameof(CustomerCompany.CompanyId), nameof(CustomerCompany.Id)).OnDelete(DeleteBehavior.Restrict);
++    }
++
++    private static void ConfigureAudit(EntityTypeBuilder<SalesActivity> builder)
++    {
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class SalesAgentRecommendationConfiguration : IEntityTypeConfiguration<SalesAgentRecommendation>
++{
++    public void Configure(EntityTypeBuilder<SalesAgentRecommendation> builder)
++    {
++        builder.ToTable("sales_agent_recommendations");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.LeadId).HasColumnName("lead_id");
++        builder.Property(x => x.DealId).HasColumnName("deal_id");
++        builder.Property(x => x.Recommendation).HasColumnName("recommendation").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.Rationale).HasColumnName("rationale").HasMaxLength(2000).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        ConfigureAudit(builder);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Lead).WithMany(x => x.Recommendations).HasForeignKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.LeadId)).HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Deal).WithMany(x => x.Recommendations).HasForeignKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.DealId)).HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id)).OnDelete(DeleteBehavior.Restrict);
++    }
++
++    private static void ConfigureAudit(EntityTypeBuilder<SalesAgentRecommendation> builder)
++    {
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class SalesActionApprovalConfiguration : IEntityTypeConfiguration<SalesActionApproval>
++{
++    public void Configure(EntityTypeBuilder<SalesActionApproval> builder)
++    {
++        builder.ToTable("sales_action_approvals");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.RecommendationId).HasColumnName("recommendation_id");
++        builder.Property(x => x.LeadId).HasColumnName("lead_id");
++        builder.Property(x => x.DealId).HasColumnName("deal_id");
++        builder.Property(x => x.ActionSummary).HasColumnName("action_summary").HasMaxLength(500).IsRequired();
++        builder.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        ConfigureAudit(builder);
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Recommendation).WithMany(x => x.Approvals).HasForeignKey(nameof(SalesActionApproval.CompanyId), nameof(SalesActionApproval.RecommendationId)).HasPrincipalKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Lead).WithMany().HasForeignKey(nameof(SalesActionApproval.CompanyId), nameof(SalesActionApproval.LeadId)).HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Deal).WithMany().HasForeignKey(nameof(SalesActionApproval.CompanyId), nameof(SalesActionApproval.DealId)).HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id)).OnDelete(DeleteBehavior.Restrict);
++    }
++
++    private static void ConfigureAudit(EntityTypeBuilder<SalesActionApproval> builder)
++    {
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++    }
++}
++
++internal sealed class SalesEmailLinkConfiguration : IEntityTypeConfiguration<SalesEmailLink>
++{
++    public void Configure(EntityTypeBuilder<SalesEmailLink> builder)
++    {
++        builder.ToTable("sales_email_links");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.ExternalMessageId).HasColumnName("external_message_id").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.LeadId).HasColumnName("lead_id");
++        builder.Property(x => x.DealId).HasColumnName("deal_id");
++        builder.Property(x => x.ContactId).HasColumnName("contact_id");
++        builder.Property(x => x.CustomerCompanyId).HasColumnName("customer_company_id");
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.Property(x => x.IsDeleted).HasColumnName("is_deleted").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.DeletedUtc).HasColumnName("deleted_at");
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.Status);
++        builder.HasIndex(x => x.CreatedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.ExternalMessageId });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 7e75d1e..a8f751f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -139,6 +139,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<FinanceIntegrationSyncState> FinanceIntegrationSyncStates => Set<FinanceIntegrationSyncState>();
+     public DbSet<FinanceExternalReference> FinanceExternalReferences => Set<FinanceExternalReference>();
+     public DbSet<FinanceIntegrationAuditEvent> FinanceIntegrationAuditEvents => Set<FinanceIntegrationAuditEvent>();
+     public DbSet<FinanceIntegrationWriteCommandRecord> FinanceIntegrationWriteCommands => Set<FinanceIntegrationWriteCommandRecord>();
++    public DbSet<Lead> Leads => Set<Lead>();
++    public DbSet<Deal> Deals => Set<Deal>();
++    public DbSet<Contact> Contacts => Set<Contact>();
++    public DbSet<CustomerCompany> CustomerCompanies => Set<CustomerCompany>();
++    public DbSet<SalesActivity> SalesActivities => Set<SalesActivity>();
++    public DbSet<SalesPipelineStage> SalesPipelineStages => Set<SalesPipelineStage>();
++    public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
++    public DbSet<SalesActionApproval> SalesActionApprovals => Set<SalesActionApproval>();
++    public DbSet<SalesEmailLink> SalesEmailLinks => Set<SalesEmailLink>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -279,7 +288,16 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceIntegrationToken ||
+                 entry.Entity is FinanceIntegrationSyncState ||
+                 entry.Entity is FinanceIntegrationWriteCommandRecord ||
+                 entry.Entity is FinanceExternalReference ||
+-                entry.Entity is FinanceIntegrationAuditEvent ||
+-                entry.Entity is FinanceIntegrationWriteCommandRecord)
++                entry.Entity is FinanceIntegrationAuditEvent ||
++                entry.Entity is FinanceIntegrationWriteCommandRecord ||
++                entry.Entity is Lead ||
++                entry.Entity is Deal ||
++                entry.Entity is Contact ||
++                entry.Entity is CustomerCompany ||
++                entry.Entity is SalesActivity ||
++                entry.Entity is SalesPipelineStage ||
++                entry.Entity is SalesAgentRecommendation ||
++                entry.Entity is SalesActionApproval ||
++                entry.Entity is SalesEmailLink)
+             .Select(entry =>
+             {
+                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
+@@ -634,5 +652,32 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<FinanceIntegrationWriteCommandRecord>()
+             .HasQueryFilter(command =>
+                 CurrentCompanyId.HasValue && command.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesPipelineStage>()
++            .HasQueryFilter(stage =>
++                !stage.IsDeleted &&
++                (stage.CompanyId == SalesPipelineStage.SystemCompanyId ||
++                 (CurrentCompanyId.HasValue && stage.CompanyId == CurrentCompanyId.Value)));
++        modelBuilder.Entity<Lead>()
++            .HasQueryFilter(lead =>
++                CurrentCompanyId.HasValue && lead.CompanyId == CurrentCompanyId.Value && !lead.IsDeleted);
++        modelBuilder.Entity<Deal>()
++            .HasQueryFilter(deal =>
++                CurrentCompanyId.HasValue && deal.CompanyId == CurrentCompanyId.Value && !deal.IsDeleted);
++        modelBuilder.Entity<Contact>()
++            .HasQueryFilter(contact =>
++                CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value && !contact.IsDeleted);
++        modelBuilder.Entity<CustomerCompany>()
++            .HasQueryFilter(customer =>
++                CurrentCompanyId.HasValue && customer.CompanyId == CurrentCompanyId.Value && !customer.IsDeleted);
++        modelBuilder.Entity<SalesActivity>()
++            .HasQueryFilter(activity =>
++                CurrentCompanyId.HasValue && activity.CompanyId == CurrentCompanyId.Value && !activity.IsDeleted);
++        modelBuilder.Entity<SalesAgentRecommendation>()
++            .HasQueryFilter(recommendation =>
++                CurrentCompanyId.HasValue && recommendation.CompanyId == CurrentCompanyId.Value && !recommendation.IsDeleted);
++        modelBuilder.Entity<SalesActionApproval>()
++            .HasQueryFilter(approval =>
++                CurrentCompanyId.HasValue && approval.CompanyId == CurrentCompanyId.Value && !approval.IsDeleted);
++        modelBuilder.Entity<SalesEmailLink>()
++            .HasQueryFilter(link =>
++                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value && !link.IsDeleted);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs b/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs
+new file mode 100644
+index 0000000..6136d1c
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesPersistenceRepository.cs
+@@ -0,0 +1,108 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class SalesPersistenceRepository : ISalesPersistenceRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public SalesPersistenceRepository(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<IReadOnlyList<Lead>> ListLeadsAsync(Guid companyId, string? status, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++
++        var query = _dbContext.Leads
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted);
++
++        if (!string.IsNullOrWhiteSpace(status))
++        {
++            var normalizedStatus = status.Trim().ToLowerInvariant();
++            query = query.Where(x => x.Status == normalizedStatus);
++        }
++
++        return await query
++            .OrderByDescending(x => x.CreatedUtc)
++            .ThenBy(x => x.Id)
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<Lead?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureId(leadId, nameof(leadId));
++
++        return await _dbContext.Leads
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == leadId && !x.IsDeleted, cancellationToken);
++    }
++
++    public async Task AddLeadAsync(Lead lead, CancellationToken cancellationToken)
++    {
++        EnsureCompany(lead.CompanyId);
++        await ValidateStageAsync(lead.CompanyId, lead.PipelineStageId, cancellationToken);
++        await ValidateOptionalTenantEntityAsync(_dbContext.Contacts, lead.CompanyId, lead.PrimaryContactId, nameof(lead.PrimaryContactId), cancellationToken);
++        await ValidateOptionalTenantEntityAsync(_dbContext.CustomerCompanies, lead.CompanyId, lead.CustomerCompanyId, nameof(lead.CustomerCompanyId), cancellationToken);
++        await _dbContext.Leads.AddAsync(lead, cancellationToken);
++    }
++
++    public async Task AddDealAsync(Deal deal, CancellationToken cancellationToken)
++    {
++        EnsureCompany(deal.CompanyId);
++        await ValidateStageAsync(deal.CompanyId, deal.PipelineStageId, cancellationToken);
++        await ValidateOptionalTenantEntityAsync(_dbContext.Leads, deal.CompanyId, deal.SourceLeadId, nameof(deal.SourceLeadId), cancellationToken);
++        await ValidateOptionalTenantEntityAsync(_dbContext.Contacts, deal.CompanyId, deal.PrimaryContactId, nameof(deal.PrimaryContactId), cancellationToken);
++        await ValidateOptionalTenantEntityAsync(_dbContext.CustomerCompanies, deal.CompanyId, deal.CustomerCompanyId, nameof(deal.CustomerCompanyId), cancellationToken);
++        await _dbContext.Deals.AddAsync(deal, cancellationToken);
++    }
++
++    public Task SaveChangesAsync(CancellationToken cancellationToken) =>
++        _dbContext.SaveChangesAsync(cancellationToken);
++
++    private async Task ValidateStageAsync(Guid companyId, Guid stageId, CancellationToken cancellationToken)
++    {
++        EnsureId(stageId, nameof(stageId));
++
++        var valid = await _dbContext.SalesPipelineStages
++            .IgnoreQueryFilters()
++            .AnyAsync(
++                x => x.Id == stageId &&
++                     !x.IsDeleted &&
++                     x.IsActive &&
++                     (x.CompanyId == SalesPipelineStage.SystemCompanyId || x.CompanyId == companyId),
++                cancellationToken);
++
++        if (!valid)
++        {
++            throw new InvalidOperationException("Sales pipeline stage is not available for this company.");
++        }
++    }
++
++    private static async Task ValidateOptionalTenantEntityAsync<TEntity>(
++        DbSet<TEntity> set,
++        Guid companyId,
++        Guid? entityId,
++        string name,
++        CancellationToken cancellationToken)
++        where TEntity : class, ICompanyOwnedEntity
++    {
++        if (!entityId.HasValue)
++        {
++            return;
++        }
++
++        var exists = await set.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && EF.Property<Guid>(x, "Id") == entityId.Value, cancellationToken);
++        if (!exists)
++        {
++            throw new InvalidOperationException($"{name} does not belong to this company.");
++        }
++    }
++
++    private static void EnsureCompany(Guid companyId) =>
++        _ = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
++
++    private static void EnsureId(Guid id, string name) =>
++        _ = id == Guid.Empty ? throw new ArgumentException($"{name} is required.", name) : id;
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs b/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
+new file mode 100644
+index 0000000..17a6c1a
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
+@@ -0,0 +1,161 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public SalesPersistenceTenantIsolationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Sales_pipeline_stage_seed_contains_only_system_stages_once()
++    {
++        var stages = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.SalesPipelineStages
++                .IgnoreQueryFilters()
++                .OrderBy(x => x.DisplayOrder)
++                .Select(x => new { x.Name, x.CompanyId, x.IsSystem, x.IsDeleted })
++                .ToListAsync());
++
++        Assert.Equal(["New", "Qualified", "Proposal", "Won", "Lost"], stages.Select(x => x.Name).ToArray());
++        Assert.All(stages, stage =>
++        {
++            Assert.Equal(SalesPipelineStage.SystemCompanyId, stage.CompanyId);
++            Assert.True(stage.IsSystem);
++            Assert.False(stage.IsDeleted);
++        });
++    }
++
++    [Fact]
++    public async Task Sales_queries_are_scoped_to_active_company_context()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++
++        await SeedTwoCompaniesAsync(companyAId, companyBId);
++
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyAId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        Assert.All(await dbContext.CustomerCompanies.AsNoTracking().ToListAsync(), customer => Assert.Equal(companyAId, customer.CompanyId));
++        Assert.All(await dbContext.Contacts.AsNoTracking().ToListAsync(), contact => Assert.Equal(companyAId, contact.CompanyId));
++        Assert.All(await dbContext.Leads.AsNoTracking().ToListAsync(), lead => Assert.Equal(companyAId, lead.CompanyId));
++        Assert.All(await dbContext.Deals.AsNoTracking().ToListAsync(), deal => Assert.Equal(companyAId, deal.CompanyId));
++        Assert.All(await dbContext.SalesActivities.AsNoTracking().ToListAsync(), activity => Assert.Equal(companyAId, activity.CompanyId));
++        Assert.All(await dbContext.SalesAgentRecommendations.AsNoTracking().ToListAsync(), recommendation => Assert.Equal(companyAId, recommendation.CompanyId));
++        Assert.All(await dbContext.SalesActionApprovals.AsNoTracking().ToListAsync(), approval => Assert.Equal(companyAId, approval.CompanyId));
++        Assert.All(await dbContext.SalesEmailLinks.AsNoTracking().ToListAsync(), link => Assert.Equal(companyAId, link.CompanyId));
++    }
++
++    [Fact]
++    public async Task Sales_records_from_another_company_cannot_be_mutated()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++
++        await SeedTwoCompaniesAsync(companyAId, companyBId);
++
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyBId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var customerFromCompanyA = await dbContext.CustomerCompanies
++            .IgnoreQueryFilters()
++            .FirstAsync(x => x.CompanyId == companyAId);
++
++        customerFromCompanyA.Update("Cross-tenant rename attempt", SalesStatuses.Active, null, null);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => dbContext.SaveChangesAsync());
++    }
++
++    [Fact]
++    public async Task Sales_repository_rejects_cross_tenant_links()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        Guid companyAContactId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.AddRange(new Company(companyAId, "Sales Company A"), new Company(companyBId, "Sales Company B"));
++            dbContext.Contacts.Add(new Contact(companyAContactId, companyAId, "A Contact", "a@example.com"));
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyBId);
++        var repository = scope.ServiceProvider.GetRequiredService<ISalesPersistenceRepository>();
++        var lead = new Lead(
++            Guid.NewGuid(),
++            companyBId,
++            "Cross tenant lead",
++            SalesPipelineStage.NewStageId,
++            primaryContactId: companyAContactId);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.AddLeadAsync(lead, CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Sales_soft_deleted_records_are_hidden_by_query_filters()
++    {
++        var companyId = Guid.NewGuid();
++        var deletedLeadId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(companyId, "Soft Delete Company"));
++            var lead = new Lead(deletedLeadId, companyId, "Deleted lead", SalesPipelineStage.NewStageId);
++            lead.SoftDelete();
++            dbContext.Leads.Add(lead);
++            return Task.CompletedTask;
++        });
++
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        Assert.Empty(await dbContext.Leads.AsNoTracking().ToListAsync());
++        Assert.Equal(1, await dbContext.Leads.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId && x.IsDeleted));
++    }
++
++    private async Task SeedTwoCompaniesAsync(Guid companyAId, Guid companyBId)
++    {
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.AddRange(
++                new Company(companyAId, "Sales Company A"),
++                new Company(companyBId, "Sales Company B"));
++
++            AddSalesData(dbContext, companyAId, "A");
++            AddSalesData(dbContext, companyBId, "B");
++            return Task.CompletedTask;
++        });
++    }
++
++    private static void AddSalesData(VirtualCompanyDbContext dbContext, Guid companyId, string suffix)
++    {
++        var customerId = Guid.NewGuid();
++        var contactId = Guid.NewGuid();
++        var leadId = Guid.NewGuid();
++        var dealId = Guid.NewGuid();
++        var recommendationId = Guid.NewGuid();
++
++        dbContext.CustomerCompanies.Add(new CustomerCompany(customerId, companyId, $"Customer {suffix}"));
++        dbContext.Contacts.Add(new Contact(contactId, companyId, $"Contact {suffix}", $"{suffix.ToLowerInvariant()}@example.com", customerId));
++        dbContext.Leads.Add(new Lead(leadId, companyId, $"Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
++        dbContext.Deals.Add(new Deal(dealId, companyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 1000m, "USD", sourceLeadId: leadId, primaryContactId: contactId, customerCompanyId: customerId));
++        dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "call", $"Call {suffix}", DateTime.UtcNow, leadId: leadId, dealId: dealId, contactId: contactId, customerCompanyId: customerId));
++        dbContext.SalesAgentRecommendations.Add(new SalesAgentRecommendation(recommendationId, companyId, $"Recommendation {suffix}", "Follow up with the buyer.", leadId, dealId));
++        dbContext.SalesActionApprovals.Add(new SalesActionApproval(Guid.NewGuid(), companyId, $"Approval {suffix}", "A human should review the outreach.", recommendationId, leadId, dealId));
++        dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $"message-{suffix}", leadId, dealId, contactId, customerId));
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
+new file mode 100644
+index 0000000..e8d38b1
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
+@@ -0,0 +1,510 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddSalesPersistenceModel : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateTable(
++                name: "sales_pipeline_stages",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    name = table.Column<string>(type: "nvarchar(80)", maxLength: 80, nullable: false),
++                    display_order = table.Column<int>(type: "int", nullable: false),
++                    is_system = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    is_active = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_sales_pipeline_stages", x => x.id);
++                    table.UniqueConstraint("AK_sales_pipeline_stages_company_id_id", x => new { x.company_id, x.id });
++                });
++
++            migrationBuilder.CreateTable(
++                name: "customer_companies",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    website = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                    industry = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_customer_companies", x => x.id);
++                    table.UniqueConstraint("AK_customer_companies_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_customer_companies_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "contacts",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    customer_company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    full_name = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: false),
++                    email = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    title = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: true),
++                    phone = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_contacts", x => x.id);
++                    table.UniqueConstraint("AK_contacts_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_contacts_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_contacts_customer_companies_company_id_customer_company_id",
++                        columns: x => new { x.company_id, x.customer_company_id },
++                        principalTable: "customer_companies",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "leads",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    primary_contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    customer_company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    pipeline_stage_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    converted_deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    estimated_value = table.Column<decimal>(type: "decimal(18,2)", nullable: true),
++                    currency = table.Column<string>(type: "nvarchar(3)", maxLength: 3, nullable: true),
++                    source = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_leads", x => x.id);
++                    table.UniqueConstraint("AK_leads_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_leads_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_leads_contacts_company_id_primary_contact_id",
++                        columns: x => new { x.company_id, x.primary_contact_id },
++                        principalTable: "contacts",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_leads_customer_companies_company_id_customer_company_id",
++                        columns: x => new { x.company_id, x.customer_company_id },
++                        principalTable: "customer_companies",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_leads_sales_pipeline_stages_pipeline_stage_id",
++                        column: x => x.pipeline_stage_id,
++                        principalTable: "sales_pipeline_stages",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "deals",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    source_lead_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    customer_company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    primary_contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    pipeline_stage_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    title = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: false),
++                    amount = table.Column<decimal>(type: "decimal(18,2)", nullable: false),
++                    currency = table.Column<string>(type: "nvarchar(3)", maxLength: 3, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    expected_close_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_deals", x => x.id);
++                    table.UniqueConstraint("AK_deals_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(
++                        name: "FK_deals_companies_company_id",
++                        column: x => x.company_id,
++                        principalTable: "companies",
++                        principalColumn: "Id",
++                        onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(
++                        name: "FK_deals_contacts_company_id_primary_contact_id",
++                        columns: x => new { x.company_id, x.primary_contact_id },
++                        principalTable: "contacts",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_deals_customer_companies_company_id_customer_company_id",
++                        columns: x => new { x.company_id, x.customer_company_id },
++                        principalTable: "customer_companies",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_deals_leads_company_id_source_lead_id",
++                        columns: x => new { x.company_id, x.source_lead_id },
++                        principalTable: "leads",
++                        principalColumns: new[] { "company_id", "id" },
++                        onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(
++                        name: "FK_deals_sales_pipeline_stages_pipeline_stage_id",
++                        column: x => x.pipeline_stage_id,
++                        principalTable: "sales_pipeline_stages",
++                        principalColumn: "id",
++                        onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.AddForeignKey(
++                name: "FK_leads_deals_converted_deal_id",
++                table: "leads",
++                column: "converted_deal_id",
++                principalTable: "deals",
++                principalColumn: "id",
++                onDelete: ReferentialAction.Restrict);
++
++            migrationBuilder.CreateTable(
++                name: "sales_activities",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    lead_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    customer_company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    activity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    summary = table.Column<string>(type: "nvarchar(500)", maxLength: 500, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    occurred_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_sales_activities", x => x.id);
++                    table.UniqueConstraint("AK_sales_activities_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(name: "FK_sales_activities_companies_company_id", column: x => x.company_id, principalTable: "companies", principalColumn: "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(name: "FK_sales_activities_leads_company_id_lead_id", columns: x => new { x.company_id, x.lead_id }, principalTable: "leads", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_activities_deals_company_id_deal_id", columns: x => new { x.company_id, x.deal_id }, principalTable: "deals", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_activities_contacts_company_id_contact_id", columns: x => new { x.company_id, x.contact_id }, principalTable: "contacts", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_activities_customer_companies_company_id_customer_company_id", columns: x => new { x.company_id, x.customer_company_id }, principalTable: "customer_companies", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "sales_agent_recommendations",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    lead_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    recommendation = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                    rationale = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_sales_agent_recommendations", x => x.id);
++                    table.UniqueConstraint("AK_sales_agent_recommendations_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(name: "FK_sales_agent_recommendations_companies_company_id", column: x => x.company_id, principalTable: "companies", principalColumn: "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(name: "FK_sales_agent_recommendations_leads_company_id_lead_id", columns: x => new { x.company_id, x.lead_id }, principalTable: "leads", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_agent_recommendations_deals_company_id_deal_id", columns: x => new { x.company_id, x.deal_id }, principalTable: "deals", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "sales_action_approvals",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    recommendation_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    lead_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    action_summary = table.Column<string>(type: "nvarchar(500)", maxLength: 500, nullable: false),
++                    reason = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_sales_action_approvals", x => x.id);
++                    table.UniqueConstraint("AK_sales_action_approvals_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(name: "FK_sales_action_approvals_companies_company_id", column: x => x.company_id, principalTable: "companies", principalColumn: "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey(name: "FK_sales_action_approvals_sales_agent_recommendations_company_id_recommendation_id", columns: x => new { x.company_id, x.recommendation_id }, principalTable: "sales_agent_recommendations", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_action_approvals_leads_company_id_lead_id", columns: x => new { x.company_id, x.lead_id }, principalTable: "leads", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey(name: "FK_sales_action_approvals_deals_company_id_deal_id", columns: x => new { x.company_id, x.deal_id }, principalTable: "deals", principalColumns: new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "sales_email_links",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    external_message_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
++                    lead_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    customer_company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    is_deleted = table.Column<bool>(type: "bit", nullable: false, defaultValue: false),
++                    deleted_at = table.Column<DateTime>(type: "datetime2", nullable: true)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_sales_email_links", x => x.id);
++                    table.UniqueConstraint("AK_sales_email_links_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey(name: "FK_sales_email_links_companies_company_id", column: x => x.company_id, principalTable: "companies", principalColumn: "Id", onDelete: ReferentialAction.Cascade);
++                });
++
++            var seededUtc = new DateTime(2026, 5, 4, 0, 0, 0, DateTimeKind.Utc);
++            migrationBuilder.InsertData(
++                table: "sales_pipeline_stages",
++                columns: new[] { "id", "company_id", "name", "display_order", "is_system", "is_active", "created_at", "updated_at", "is_deleted", "deleted_at" },
++                values: new object[,]
++                {
++                    { Guid.Parse("6d305bcb-3d87-40b0-a89d-bbe48b3f1891"), Guid.Empty, "New", 10, true, true, seededUtc, seededUtc, false, null },
++                    { Guid.Parse("a7c6f0bf-2136-46a5-a82b-73506f91b79a"), Guid.Empty, "Qualified", 20, true, true, seededUtc, seededUtc, false, null },
++                    { Guid.Parse("62e3f3e1-bfc3-4cf7-a24a-92d216d8d859"), Guid.Empty, "Proposal", 30, true, true, seededUtc, seededUtc, false, null },
++                    { Guid.Parse("cbad0a5d-d5da-4c8e-a414-6fa5ce7d6f43"), Guid.Empty, "Won", 40, true, true, seededUtc, seededUtc, false, null },
++                    { Guid.Parse("5c449a94-81b8-4edc-a0d6-8b42dd8ce47a"), Guid.Empty, "Lost", 50, true, true, seededUtc, seededUtc, false, null }
++                });
++
++            CreateIndexes(migrationBuilder);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable(name: "sales_action_approvals");
++            migrationBuilder.DropTable(name: "sales_activities");
++            migrationBuilder.DropTable(name: "sales_email_links");
++            migrationBuilder.DropTable(name: "sales_agent_recommendations");
++            migrationBuilder.DropForeignKey(name: "FK_leads_deals_converted_deal_id", table: "leads");
++            migrationBuilder.DropTable(name: "deals");
++            migrationBuilder.DropTable(name: "leads");
++            migrationBuilder.DropTable(name: "contacts");
++            migrationBuilder.DropTable(name: "sales_pipeline_stages");
++            migrationBuilder.DropTable(name: "customer_companies");
++        }
++
++        private static void CreateIndexes(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.CreateIndex(name: "IX_sales_pipeline_stages_company_id", table: "sales_pipeline_stages", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_sales_pipeline_stages_created_at", table: "sales_pipeline_stages", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_sales_pipeline_stages_company_id_name", table: "sales_pipeline_stages", columns: new[] { "company_id", "name" }, unique: true);
++
++            migrationBuilder.CreateIndex(name: "IX_customer_companies_company_id", table: "customer_companies", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_customer_companies_status", table: "customer_companies", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_customer_companies_created_at", table: "customer_companies", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_customer_companies_company_id_name", table: "customer_companies", columns: new[] { "company_id", "name" });
++
++            migrationBuilder.CreateIndex(name: "IX_contacts_company_id", table: "contacts", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_contacts_status", table: "contacts", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_contacts_created_at", table: "contacts", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_contacts_company_id_email", table: "contacts", columns: new[] { "company_id", "email" });
++            migrationBuilder.CreateIndex(name: "IX_contacts_company_id_customer_company_id", table: "contacts", columns: new[] { "company_id", "customer_company_id" });
++
++            migrationBuilder.CreateIndex(name: "IX_leads_company_id", table: "leads", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_leads_status", table: "leads", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_leads_created_at", table: "leads", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_leads_pipeline_stage_id", table: "leads", column: "pipeline_stage_id");
++            migrationBuilder.CreateIndex(name: "IX_leads_converted_deal_id", table: "leads", column: "converted_deal_id");
++            migrationBuilder.CreateIndex(name: "IX_leads_company_id_primary_contact_id", table: "leads", columns: new[] { "company_id", "primary_contact_id" });
++            migrationBuilder.CreateIndex(name: "IX_leads_company_id_customer_company_id", table: "leads", columns: new[] { "company_id", "customer_company_id" });
++
++            migrationBuilder.CreateIndex(name: "IX_deals_company_id", table: "deals", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_deals_status", table: "deals", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_deals_created_at", table: "deals", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_deals_pipeline_stage_id", table: "deals", column: "pipeline_stage_id");
++            migrationBuilder.CreateIndex(name: "IX_deals_company_id_source_lead_id", table: "deals", columns: new[] { "company_id", "source_lead_id" });
++            migrationBuilder.CreateIndex(name: "IX_deals_company_id_customer_company_id", table: "deals", columns: new[] { "company_id", "customer_company_id" });
++            migrationBuilder.CreateIndex(name: "IX_deals_company_id_primary_contact_id", table: "deals", columns: new[] { "company_id", "primary_contact_id" });
++
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_company_id", table: "sales_activities", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_status", table: "sales_activities", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_created_at", table: "sales_activities", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_company_id_lead_id", table: "sales_activities", columns: new[] { "company_id", "lead_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_company_id_deal_id", table: "sales_activities", columns: new[] { "company_id", "deal_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_company_id_contact_id", table: "sales_activities", columns: new[] { "company_id", "contact_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_activities_company_id_customer_company_id", table: "sales_activities", columns: new[] { "company_id", "customer_company_id" });
++
++            migrationBuilder.CreateIndex(name: "IX_sales_agent_recommendations_company_id", table: "sales_agent_recommendations", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_sales_agent_recommendations_status", table: "sales_agent_recommendations", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_sales_agent_recommendations_created_at", table: "sales_agent_recommendations", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_sales_agent_recommendations_company_id_lead_id", table: "sales_agent_recommendations", columns: new[] { "company_id", "lead_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_agent_recommendations_company_id_deal_id", table: "sales_agent_recommendations", columns: new[] { "company_id", "deal_id" });
++
++            migrationBuilder.CreateIndex(name: "IX_sales_action_approvals_company_id", table: "sales_action_approvals", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_sales_action_approvals_status", table: "sales_action_approvals", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_sales_action_approvals_created_at", table: "sales_action_approvals", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_sales_action_approvals_company_id_recommendation_id", table: "sales_action_approvals", columns: new[] { "company_id", "recommendation_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_action_approvals_company_id_lead_id", table: "sales_action_approvals", columns: new[] { "company_id", "lead_id" });
++            migrationBuilder.CreateIndex(name: "IX_sales_action_approvals_company_id_deal_id", table: "sales_action_approvals", columns: new[] { "company_id", "deal_id" });
++
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id", table: "sales_email_links", column: "company_id");
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_status", table: "sales_email_links", column: "status");
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_created_at", table: "sales_email_links", column: "created_at");
++            migrationBuilder.CreateIndex(name: "IX_sales_email_links_company_id_external_message_id", table: "sales_email_links", columns: new[] { "company_id", "external_message_id" });
++        }
++    }
++}
+END_OF_PATCH

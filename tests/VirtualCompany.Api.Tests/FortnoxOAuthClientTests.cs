@@ -22,7 +22,19 @@ public sealed class FortnoxOAuthClientTests
         Assert.Equal("code", query["response_type"]);
         Assert.Equal("state-handle", query["state"]);
         Assert.Equal("nonce-value", query["nonce"]);
+        Assert.Equal("offline", query["access_type"]);
         Assert.Equal("bookkeeping invoice", query["scope"]);
+    }
+
+    [Fact]
+    public void Authorization_url_uses_default_import_scopes_when_no_scopes_are_configured()
+    {
+        var client = CreateClient(new CapturingHandler(new HttpResponseMessage(HttpStatusCode.OK)), scopes: []);
+
+        var uri = client.BuildAuthorizationUrl("state-handle", "nonce-value");
+        var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+
+        Assert.Equal(string.Join(" ", FortnoxScopeDefaults.ImportSync), query["scope"]);
     }
 
     [Fact]
@@ -78,7 +90,7 @@ public sealed class FortnoxOAuthClientTests
         Assert.DoesNotContain("raw provider detail", exception.Message, StringComparison.Ordinal);
     }
 
-    private static FortnoxOAuthClient CreateClient(CapturingHandler handler) =>
+    private static FortnoxOAuthClient CreateClient(CapturingHandler handler, string[]? scopes = null) =>
         new(
             new StaticHttpClientFactory(new HttpClient(handler)),
             TimeProvider.System,
@@ -91,7 +103,7 @@ public sealed class FortnoxOAuthClientTests
                 AuthorizationUrl = "https://apps.fortnox.se/oauth-v1/auth",
                 TokenUrl = "https://apps.fortnox.se/oauth-v1/token",
                 ApiBaseUrl = "https://api.fortnox.se/3",
-                Scopes = [" bookkeeping ", "invoice"]
+                Scopes = scopes ?? [" bookkeeping ", "invoice"]
             }));
 
     private static StringContent Json(string value) =>

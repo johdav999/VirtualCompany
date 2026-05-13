@@ -1,0 +1,1518 @@
+diff --git a/src/VirtualCompany.Domain/Enums/ConversionAnalyticsEventType.cs b/src/VirtualCompany.Domain/Enums/ConversionAnalyticsEventType.cs
+new file mode 100644
+index 0000000..e23efef
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Enums/ConversionAnalyticsEventType.cs
+@@ -0,0 +1,12 @@
++namespace VirtualCompany.Domain.Enums;
++
++public enum ConversionAnalyticsEventType
++{
++    Sent = 0,
++    Delivered = 1,
++    Bounced = 2,
++    Opened = 3,
++    Replied = 4,
++    DealCreated = 5,
++    Converted = 6
++}
+diff --git a/src/VirtualCompany.Domain/Entities/SalesMessagePerformance.cs b/src/VirtualCompany.Domain/Entities/SalesMessagePerformance.cs
+new file mode 100644
+index 0000000..a8c4586
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/SalesMessagePerformance.cs
+@@ -0,0 +1,181 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Domain.Entities;
++
++public sealed class SalesMessagePerformance : ICompanyOwnedEntity
++{
++    private SalesMessagePerformance()
++    {
++    }
++
++    public SalesMessagePerformance(
++        Guid id,
++        Guid companyId,
++        string messageKey,
++        Guid? campaignId,
++        Guid? sequenceId,
++        Guid? sequenceStepId,
++        Guid? sequenceExecutionStepId,
++        Guid contactId,
++        string? provider = null,
++        string? providerMessageId = null,
++        string? providerThreadId = null,
++        string? internetMessageId = null,
++        string? variantKey = null,
++        int? stepOrder = null,
++        DateTime? createdUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        if (contactId == Guid.Empty)
++        {
++            throw new ArgumentException("ContactId is required.", nameof(contactId));
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        MessageKey = NormalizeRequired(messageKey, nameof(messageKey), 512);
++        CampaignId = SalesEntityText.NormalizeOptionalId(campaignId, nameof(campaignId));
++        SequenceId = SalesEntityText.NormalizeOptionalId(sequenceId, nameof(sequenceId));
++        SequenceStepId = SalesEntityText.NormalizeOptionalId(sequenceStepId, nameof(sequenceStepId));
++        SequenceExecutionStepId = SalesEntityText.NormalizeOptionalId(sequenceExecutionStepId, nameof(sequenceExecutionStepId));
++        ContactId = contactId;
++        Provider = SalesEntityText.NormalizeOptional(provider, nameof(provider), 64);
++        ProviderMessageId = SalesEntityText.NormalizeOptional(providerMessageId, nameof(providerMessageId), 256);
++        ProviderThreadId = SalesEntityText.NormalizeOptional(providerThreadId, nameof(providerThreadId), 256);
++        InternetMessageId = SalesEntityText.NormalizeOptional(internetMessageId, nameof(internetMessageId), 512);
++        VariantKey = NormalizeVariantKey(variantKey, sequenceStepId, stepOrder);
++        StepOrder = stepOrder;
++        CreatedUtc = NormalizeUtc(createdUtc ?? DateTime.UtcNow);
++        UpdatedUtc = CreatedUtc;
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string MessageKey { get; private set; } = null!;
++    public Guid? CampaignId { get; private set; }
++    public Guid? SequenceId { get; private set; }
++    public Guid? SequenceStepId { get; private set; }
++    public Guid? SequenceExecutionStepId { get; private set; }
++    public Guid ContactId { get; private set; }
++    public Guid? DealId { get; private set; }
++    public string? Provider { get; private set; }
++    public string? ProviderMessageId { get; private set; }
++    public string? ProviderThreadId { get; private set; }
++    public string? InternetMessageId { get; private set; }
++    public string? VariantKey { get; private set; }
++    public int? StepOrder { get; private set; }
++    public DateTime? SentAt { get; private set; }
++    public DateTime? DeliveredAt { get; private set; }
++    public DateTime? BouncedAt { get; private set; }
++    public DateTime? OpenedAt { get; private set; }
++    public DateTime? RepliedAt { get; private set; }
++    public DateTime? DealCreatedAt { get; private set; }
++    public DateTime? ConvertedAt { get; private set; }
++    public decimal? ExpectedRevenueAmount { get; private set; }
++    public string? ExpectedRevenueCurrency { get; private set; }
++    public DateTime? ExpectedCloseAt { get; private set; }
++    public decimal? PipelineRiskScore { get; private set; }
++    public DateTime? LastRiskCalculatedAt { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++
++    public bool IsSent => SentAt.HasValue;
++    public bool IsDelivered => DeliveredAt.HasValue;
++    public bool IsBounced => BouncedAt.HasValue;
++    public bool IsOpened => OpenedAt.HasValue;
++    public bool IsReplied => RepliedAt.HasValue;
++    public bool IsDealCreated => DealCreatedAt.HasValue;
++    public bool IsConverted => ConvertedAt.HasValue;
++
++    public Company Company { get; private set; } = null!;
++    public SalesCampaign? Campaign { get; private set; }
++    public SalesSequence? Sequence { get; private set; }
++    public SalesSequenceStep? SequenceStep { get; private set; }
++    public SalesSequenceExecutionStep? SequenceExecutionStep { get; private set; }
++    public Contact Contact { get; private set; } = null!;
++    public Deal? Deal { get; private set; }
++
++    public void MergeAttribution(
++        Guid? campaignId,
++        Guid? sequenceId,
++        Guid? sequenceStepId,
++        Guid? sequenceExecutionStepId,
++        Guid? dealId,
++        string? provider,
++        string? providerMessageId,
++        string? providerThreadId,
++        string? internetMessageId,
++        string? variantKey,
++        int? stepOrder)
++    {
++        CampaignId ??= SalesEntityText.NormalizeOptionalId(campaignId, nameof(campaignId));
++        SequenceId ??= SalesEntityText.NormalizeOptionalId(sequenceId, nameof(sequenceId));
++        SequenceStepId ??= SalesEntityText.NormalizeOptionalId(sequenceStepId, nameof(sequenceStepId));
++        SequenceExecutionStepId ??= SalesEntityText.NormalizeOptionalId(sequenceExecutionStepId, nameof(sequenceExecutionStepId));
++        DealId ??= SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId));
++        Provider ??= SalesEntityText.NormalizeOptional(provider, nameof(provider), 64);
++        ProviderMessageId ??= SalesEntityText.NormalizeOptional(providerMessageId, nameof(providerMessageId), 256);
++        ProviderThreadId ??= SalesEntityText.NormalizeOptional(providerThreadId, nameof(providerThreadId), 256);
++        InternetMessageId ??= SalesEntityText.NormalizeOptional(internetMessageId, nameof(internetMessageId), 512);
++        VariantKey ??= NormalizeVariantKey(variantKey, sequenceStepId, stepOrder);
++        StepOrder ??= stepOrder;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void ApplyEvent(ConversionAnalyticsEventType eventType, DateTime occurredUtc)
++    {
++        var normalized = NormalizeUtc(occurredUtc);
++        // Webhooks can be retried or arrive out of order. Keep the earliest provider timestamp
++        // so repeated events cannot inflate downstream funnel counts.
++        switch (eventType)
++        {
++            case ConversionAnalyticsEventType.Sent:
++                SentAt = Earliest(SentAt, normalized);
++                break;
++            case ConversionAnalyticsEventType.Delivered:
++                DeliveredAt = Earliest(DeliveredAt, normalized);
++                break;
++            case ConversionAnalyticsEventType.Bounced:
++                BouncedAt = Earliest(BouncedAt, normalized);
++                break;
++            case ConversionAnalyticsEventType.Opened:
++                OpenedAt = Earliest(OpenedAt, normalized);
++                break;
++            case ConversionAnalyticsEventType.Replied:
++                RepliedAt = Earliest(RepliedAt, normalized);
++                break;
++            case ConversionAnalyticsEventType.DealCreated:
++                DealCreatedAt = Earliest(DealCreatedAt, normalized);
++                break;
++            case ConversionAnalyticsEventType.Converted:
++                ConvertedAt = Earliest(ConvertedAt, normalized);
++                break;
++            default:
++                throw new ArgumentOutOfRangeException(nameof(eventType), eventType, "Unsupported conversion analytics event type.");
++        }
++
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void UpdateRevenueContext(decimal? amount, string? currency, DateTime? expectedCloseAt, decimal? riskScore, DateTime? riskCalculatedAt)
++    {
++        ExpectedRevenueAmount = amount;
++        ExpectedRevenueCurrency = SalesEntityText.NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
++        ExpectedCloseAt = expectedCloseAt.HasValue ? NormalizeUtc(expectedCloseAt.Value) : null;
++        PipelineRiskScore = riskScore;
++        LastRiskCalculatedAt = riskCalculatedAt.HasValue ? NormalizeUtc(riskCalculatedAt.Value) : null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static DateTime? Earliest(DateTime? current, DateTime incoming) =>
++        !current.HasValue || incoming < current.Value ? incoming : current;
++
++    private static string NormalizeRequired(string value, string name, int maxLength) =>
++        string.IsNullOrWhiteSpace(value)
++            ? throw new ArgumentException($"{name} is required.", name)
++            : value.Trim().Length > maxLength
++                ? throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.")
++                : value.Trim();
++
++    private static string? NormalizeVariantKey(string? variantKey, Guid? sequenceStepId, int? stepOrder) =>
++        SalesEntityText.NormalizeOptional(variantKey, nameof(variantKey), 120)
++        ?? (sequenceStepId.HasValue ? $"step:{sequenceStepId.Value:N}" : null)
++        ?? (stepOrder.HasValue ? $"step-order:{stepOrder.Value}" : null);
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
++}
+diff --git a/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs b/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs
+new file mode 100644
+index 0000000..7bb3ec8
+--- /dev/null
++++ b/src/VirtualCompany.Application/Sales/ConversionAnalyticsContracts.cs
+@@ -0,0 +1,113 @@
++using VirtualCompany.Domain.Enums;
++
++namespace VirtualCompany.Application.Sales;
++
++public interface IConversionAnalyticsService
++{
++    Task<SalesMessagePerformanceDto> RecordMessagePerformanceEventAsync(RecordMessagePerformanceEventCommand command, CancellationToken cancellationToken);
++    Task<SalesMessagePerformanceDto?> RecordDealCreatedForContactAsync(Guid companyId, Guid contactId, Guid dealId, DateTime occurredUtc, CancellationToken cancellationToken);
++    Task<CampaignPerformanceSummaryDto?> GetCampaignPerformanceAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken);
++    Task<SequencePerformanceSummaryDto?> GetSequencePerformanceAsync(Guid companyId, Guid sequenceId, CancellationToken cancellationToken);
++    Task<StepPerformanceSummaryDto?> GetStepPerformanceAsync(Guid companyId, Guid sequenceStepId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<ContactPerformanceSummaryDto>> GetContactPerformanceAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<VariantPerformanceSummaryDto>> GetVariantPerformanceAsync(Guid companyId, Guid? campaignId, Guid? sequenceId, Guid? sequenceStepId, CancellationToken cancellationToken);
++}
++
++public sealed record RecordMessagePerformanceEventCommand(
++    Guid CompanyId,
++    string MessageKey,
++    Guid ContactId,
++    ConversionAnalyticsEventType EventType,
++    DateTime OccurredUtc,
++    Guid? CampaignId = null,
++    Guid? SequenceId = null,
++    Guid? SequenceStepId = null,
++    Guid? SequenceExecutionStepId = null,
++    Guid? DealId = null,
++    string? Provider = null,
++    string? ProviderMessageId = null,
++    string? ProviderThreadId = null,
++    string? InternetMessageId = null,
++    string? VariantKey = null,
++    int? StepOrder = null,
++    decimal? ExpectedRevenueAmount = null,
++    string? ExpectedRevenueCurrency = null,
++    DateTime? ExpectedCloseUtc = null,
++    decimal? PipelineRiskScore = null,
++    DateTime? RiskCalculatedUtc = null);
++
++public sealed record SalesMessagePerformanceDto(
++    Guid Id,
++    Guid CompanyId,
++    string MessageKey,
++    Guid? CampaignId,
++    Guid? SequenceId,
++    Guid? SequenceStepId,
++    Guid? SequenceExecutionStepId,
++    Guid ContactId,
++    Guid? DealId,
++    string? VariantKey,
++    DateTime? SentAt,
++    DateTime? DeliveredAt,
++    DateTime? BouncedAt,
++    DateTime? OpenedAt,
++    DateTime? RepliedAt,
++    DateTime? DealCreatedAt,
++    DateTime? ConvertedAt,
++    decimal? ExpectedRevenueAmount,
++    string? ExpectedRevenueCurrency,
++    DateTime? ExpectedCloseAt,
++    decimal? PipelineRiskScore);
++
++public sealed record PerformanceFunnelCounts(
++    int Sent,
++    int Delivered,
++    int Bounced,
++    int Opened,
++    int Replied,
++    int DealCreated,
++    int Converted);
++
++public sealed record PerformanceFunnelRates(
++    decimal DeliveryRate,
++    decimal OpenRate,
++    decimal ReplyRate,
++    decimal ConversionRate);
++
++public sealed record RevenueWindowSummary(
++    decimal ExpectedRevenue30Days,
++    decimal ExpectedRevenue60Days,
++    decimal ExpectedRevenue90Days,
++    string? Currency);
++
++public sealed record RiskDistributionSummary(
++    int Unknown,
++    int Low,
++    int Medium,
++    int High);
++
++public sealed record CampaignPerformanceSummaryDto(
++    Guid CompanyId,
++    Guid CampaignId,
++    PerformanceFunnelCounts Counts,
++    PerformanceFunnelRates Rates,
++    RevenueWindowSummary RevenueWindows,
++    RiskDistributionSummary RiskDistribution);
++
++public sealed record SequencePerformanceSummaryDto(
++    Guid CompanyId,
++    Guid SequenceId,
++    PerformanceFunnelCounts Counts,
++    PerformanceFunnelRates Rates);
++
++public sealed record StepPerformanceSummaryDto(
++    Guid CompanyId,
++    Guid SequenceStepId,
++    PerformanceFunnelCounts Counts,
++    PerformanceFunnelRates Rates);
++
++public sealed record ContactPerformanceSummaryDto(
++    Guid Id,
++    string MessageKey,
++    Guid? CampaignId,
++    Guid? SequenceStepId,
++    string? VariantKey,
++    PerformanceFunnelCounts Counts,
++    DateTime UpdatedUtc);
++
++public sealed record VariantPerformanceSummaryDto(
++    Guid? CampaignId,
++    Guid? SequenceId,
++    Guid? SequenceStepId,
++    string VariantKey,
++    PerformanceFunnelCounts Counts,
++    PerformanceFunnelRates Rates);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 6cdeea8..5e95172 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -162,6 +162,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<SalesAutomationPolicy> SalesAutomationPolicies => Set<SalesAutomationPolicy>();
+     public DbSet<OutboundMessageReview> OutboundMessageReviews => Set<OutboundMessageReview>();
+     public DbSet<WebsiteLeadSubmission> WebsiteLeadSubmissions => Set<WebsiteLeadSubmission>();
++    public DbSet<SalesMessagePerformance> SalesMessagePerformances => Set<SalesMessagePerformance>();
+     public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+@@ -368,6 +369,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is SalesCampaignContact ||
+                 entry.Entity is SalesSequenceExecution ||
+                 entry.Entity is SalesSequenceExecutionStep ||
++                entry.Entity is SalesMessagePerformance ||
+                 entry.Entity is OutboundMessageReview ||
+                 entry.Entity is WebsiteLeadSubmission ||
+                 entry.Entity is SalesActionApproval ||
+@@ -766,6 +768,9 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<OutboundMessageReview>()
+             .HasQueryFilter(review =>
+                 CurrentCompanyId.HasValue && review.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesMessagePerformance>()
++            .HasQueryFilter(performance =>
++                CurrentCompanyId.HasValue && performance.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<WebsiteLeadSubmission>()
+             .HasQueryFilter(submission =>
+                 CurrentCompanyId.HasValue && submission.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs
+new file mode 100644
+index 0000000..7872d9f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesMessagePerformanceEntityConfiguration.cs
+@@ -0,0 +1,104 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class SalesMessagePerformanceConfiguration : IEntityTypeConfiguration<SalesMessagePerformance>
++{
++    public void Configure(EntityTypeBuilder<SalesMessagePerformance> builder)
++    {
++        builder.ToTable("sales_message_performances");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.MessageKey).HasColumnName("message_key").HasMaxLength(512).IsRequired();
++        builder.Property(x => x.CampaignId).HasColumnName("campaign_id");
++        builder.Property(x => x.SequenceId).HasColumnName("sequence_id");
++        builder.Property(x => x.SequenceStepId).HasColumnName("sequence_step_id");
++        builder.Property(x => x.SequenceExecutionStepId).HasColumnName("sequence_execution_step_id");
++        builder.Property(x => x.ContactId).HasColumnName("contact_id").IsRequired();
++        builder.Property(x => x.DealId).HasColumnName("deal_id");
++        builder.Property(x => x.Provider).HasColumnName("provider").HasMaxLength(64);
++        builder.Property(x => x.ProviderMessageId).HasColumnName("provider_message_id").HasMaxLength(256);
++        builder.Property(x => x.ProviderThreadId).HasColumnName("provider_thread_id").HasMaxLength(256);
++        builder.Property(x => x.InternetMessageId).HasColumnName("internet_message_id").HasMaxLength(512);
++        builder.Property(x => x.VariantKey).HasColumnName("variant_key").HasMaxLength(120);
++        builder.Property(x => x.StepOrder).HasColumnName("step_order");
++        builder.Property(x => x.SentAt).HasColumnName("sent_at");
++        builder.Property(x => x.DeliveredAt).HasColumnName("delivered_at");
++        builder.Property(x => x.BouncedAt).HasColumnName("bounced_at");
++        builder.Property(x => x.OpenedAt).HasColumnName("opened_at");
++        builder.Property(x => x.RepliedAt).HasColumnName("replied_at");
++        builder.Property(x => x.DealCreatedAt).HasColumnName("deal_created_at");
++        builder.Property(x => x.ConvertedAt).HasColumnName("converted_at");
++        builder.Property(x => x.ExpectedRevenueAmount).HasColumnName("expected_revenue_amount").HasPrecision(18, 2);
++        builder.Property(x => x.ExpectedRevenueCurrency).HasColumnName("expected_revenue_currency").HasMaxLength(3);
++        builder.Property(x => x.ExpectedCloseAt).HasColumnName("expected_close_at");
++        builder.Property(x => x.PipelineRiskScore).HasColumnName("pipeline_risk_score").HasPrecision(6, 4);
++        builder.Property(x => x.LastRiskCalculatedAt).HasColumnName("last_risk_calculated_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.MessageKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.CampaignId });
++        builder.HasIndex(x => new { x.CompanyId, x.SequenceId });
++        builder.HasIndex(x => new { x.CompanyId, x.SequenceStepId });
++        builder.HasIndex(x => new { x.CompanyId, x.SequenceExecutionStepId }).HasFilter("[sequence_execution_step_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.UpdatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.CampaignId, x.SequenceId, x.SequenceStepId, x.VariantKey });
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderMessageId }).HasFilter("[provider_message_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.ProviderThreadId }).HasFilter("[provider_thread_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.InternetMessageId }).HasFilter("[internet_message_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.DealId }).HasFilter("[deal_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.ExpectedCloseAt });
++        builder.HasIndex(x => new { x.CompanyId, x.PipelineRiskScore });
++
++        builder.HasOne(x => x.Company)
++            .WithMany()
++            .HasForeignKey(x => x.CompanyId)
++            .OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Campaign)
++            .WithMany()
++            .HasForeignKey(nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.CampaignId))
++            .HasPrincipalKey(nameof(SalesCampaign.CompanyId), nameof(SalesCampaign.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Sequence)
++            .WithMany()
++            .HasForeignKey(nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.SequenceId))
++            .HasPrincipalKey(nameof(SalesSequence.CompanyId), nameof(SalesSequence.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.SequenceStep)
++            .WithMany()
++            .HasForeignKey(nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.SequenceStepId))
++            .HasPrincipalKey(nameof(SalesSequenceStep.CompanyId), nameof(SalesSequenceStep.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.SequenceExecutionStep)
++            .WithMany()
++            .HasForeignKey(nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.SequenceExecutionStepId))
++            .HasPrincipalKey(nameof(SalesSequenceExecutionStep.CompanyId), nameof(SalesSequenceExecutionStep.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Contact)
++            .WithMany()
++            .HasForeignKey(nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.ContactId))
++            .HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Deal)
++            .WithMany()
++            .HasForeignKey(nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.DealId))
++            .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_sales_message_performances_step_order_positive", "step_order IS NULL OR step_order > 0");
++            t.HasCheckConstraint("CK_sales_message_performances_pipeline_risk_score_range", "pipeline_risk_score IS NULL OR (pipeline_risk_score >= 0 AND pipeline_risk_score <= 1)");
++        });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs b/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs
+new file mode 100644
+index 0000000..278600f
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/ConversionAnalyticsService.cs
+@@ -0,0 +1,387 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class ConversionAnalyticsService : IConversionAnalyticsService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public ConversionAnalyticsService(VirtualCompanyDbContext dbContext, ICompanyContextAccessor? companyContextAccessor = null)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<SalesMessagePerformanceDto> RecordMessagePerformanceEventAsync(RecordMessagePerformanceEventCommand command, CancellationToken cancellationToken)
++    {
++        EnsureTenant(command.CompanyId);
++        EnsureId(command.ContactId, nameof(command.ContactId));
++        if (string.IsNullOrWhiteSpace(command.MessageKey))
++        {
++            throw new ArgumentException("MessageKey is required.", nameof(command));
++        }
++
++        var context = await ResolveContextAsync(command, cancellationToken);
++        var messageKey = command.MessageKey.Trim();
++        var performance = await _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.MessageKey == messageKey, cancellationToken);
++
++        if (performance is null)
++        {
++            performance = new SalesMessagePerformance(
++                Guid.NewGuid(),
++                command.CompanyId,
++                messageKey,
++                context.CampaignId,
++                context.SequenceId,
++                context.SequenceStepId,
++                context.SequenceExecutionStepId,
++                context.ContactId,
++                context.Provider,
++                context.ProviderMessageId,
++                context.ProviderThreadId,
++                context.InternetMessageId,
++                context.VariantKey,
++                context.StepOrder);
++            _dbContext.SalesMessagePerformances.Add(performance);
++        }
++        else if (performance.CompanyId != command.CompanyId)
++        {
++            throw new InvalidOperationException("Message performance belongs to a different company.");
++        }
++
++        performance.MergeAttribution(
++            context.CampaignId,
++            context.SequenceId,
++            context.SequenceStepId,
++            context.SequenceExecutionStepId,
++            context.DealId,
++            context.Provider,
++            context.ProviderMessageId,
++            context.ProviderThreadId,
++            context.InternetMessageId,
++            context.VariantKey,
++            context.StepOrder);
++        performance.ApplyEvent(command.EventType, command.OccurredUtc);
++
++        if (context.DealId.HasValue || command.ExpectedRevenueAmount.HasValue || command.ExpectedCloseUtc.HasValue || command.PipelineRiskScore.HasValue)
++        {
++            var revenue = await ResolveRevenueContextAsync(command.CompanyId, context.DealId, command, cancellationToken);
++            performance.UpdateRevenueContext(revenue.Amount, revenue.Currency, revenue.ExpectedCloseUtc, revenue.RiskScore, revenue.RiskCalculatedUtc);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Map(performance);
++    }
++
++    public async Task<SalesMessagePerformanceDto?> RecordDealCreatedForContactAsync(Guid companyId, Guid contactId, Guid dealId, DateTime occurredUtc, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        EnsureId(contactId, nameof(contactId));
++        EnsureId(dealId, nameof(dealId));
++
++        var performance = await _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.ContactId == contactId)
++            .OrderByDescending(x => x.RepliedAt ?? x.SentAt ?? x.CreatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        if (performance is null)
++        {
++            return null;
++        }
++
++        var revenue = await ResolveRevenueContextAsync(companyId, dealId, null, cancellationToken);
++        performance.MergeAttribution(
++            performance.CampaignId,
++            performance.SequenceId,
++            performance.SequenceStepId,
++            performance.SequenceExecutionStepId,
++            dealId,
++            performance.Provider,
++            performance.ProviderMessageId,
++            performance.ProviderThreadId,
++            performance.InternetMessageId,
++            performance.VariantKey,
++            performance.StepOrder);
++        performance.ApplyEvent(ConversionAnalyticsEventType.DealCreated, occurredUtc);
++        performance.UpdateRevenueContext(revenue.Amount, revenue.Currency, revenue.ExpectedCloseUtc, revenue.RiskScore, revenue.RiskCalculatedUtc);
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Map(performance);
++    }
++
++    public async Task<CampaignPerformanceSummaryDto?> GetCampaignPerformanceAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        EnsureId(campaignId, nameof(campaignId));
++
++        var rows = _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.CampaignId == campaignId);
++
++        if (!await rows.AnyAsync(cancellationToken))
++        {
++            return null;
++        }
++
++        var counts = await BuildCountsAsync(rows, cancellationToken);
++        var now = DateTime.UtcNow;
++        var revenue = await rows
++            .Where(x => x.ExpectedRevenueAmount.HasValue && x.ExpectedCloseAt.HasValue)
++            .GroupBy(_ => 1)
++            .Select(x => new
++            {
++                Currency = x.Select(row => row.ExpectedRevenueCurrency).FirstOrDefault(),
++                Revenue30 = x.Sum(row => row.ExpectedCloseAt <= now.AddDays(30) ? row.ExpectedRevenueAmount ?? 0m : 0m),
++                Revenue60 = x.Sum(row => row.ExpectedCloseAt <= now.AddDays(60) ? row.ExpectedRevenueAmount ?? 0m : 0m),
++                Revenue90 = x.Sum(row => row.ExpectedCloseAt <= now.AddDays(90) ? row.ExpectedRevenueAmount ?? 0m : 0m)
++            })
++            .SingleOrDefaultAsync(cancellationToken);
++
++        var risk = await rows
++            .GroupBy(_ => 1)
++            .Select(x => new RiskDistributionSummary(
++                x.Count(row => !row.PipelineRiskScore.HasValue),
++                x.Count(row => row.PipelineRiskScore.HasValue && row.PipelineRiskScore.Value < 0.34m),
++                x.Count(row => row.PipelineRiskScore.HasValue && row.PipelineRiskScore.Value >= 0.34m && row.PipelineRiskScore.Value < 0.67m),
++                x.Count(row => row.PipelineRiskScore.HasValue && row.PipelineRiskScore.Value >= 0.67m)))
++            .SingleAsync(cancellationToken);
++
++        return new CampaignPerformanceSummaryDto(
++            companyId,
++            campaignId,
++            counts,
++            BuildRates(counts),
++            new RevenueWindowSummary(revenue?.Revenue30 ?? 0m, revenue?.Revenue60 ?? 0m, revenue?.Revenue90 ?? 0m, revenue?.Currency),
++            risk);
++    }
++
++    public async Task<SequencePerformanceSummaryDto?> GetSequencePerformanceAsync(Guid companyId, Guid sequenceId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        EnsureId(sequenceId, nameof(sequenceId));
++
++        var rows = _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.SequenceId == sequenceId);
++        if (!await rows.AnyAsync(cancellationToken))
++        {
++            return null;
++        }
++
++        var counts = await BuildCountsAsync(rows, cancellationToken);
++        return new SequencePerformanceSummaryDto(companyId, sequenceId, counts, BuildRates(counts));
++    }
++
++    public async Task<StepPerformanceSummaryDto?> GetStepPerformanceAsync(Guid companyId, Guid sequenceStepId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        EnsureId(sequenceStepId, nameof(sequenceStepId));
++
++        var rows = _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.SequenceStepId == sequenceStepId);
++        if (!await rows.AnyAsync(cancellationToken))
++        {
++            return null;
++        }
++
++        var counts = await BuildCountsAsync(rows, cancellationToken);
++        return new StepPerformanceSummaryDto(companyId, sequenceStepId, counts, BuildRates(counts));
++    }
++
++    public async Task<IReadOnlyList<ContactPerformanceSummaryDto>> GetContactPerformanceAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        EnsureId(contactId, nameof(contactId));
++
++        return await _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ContactId == contactId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Select(x => new ContactPerformanceSummaryDto(
++                x.Id,
++                x.MessageKey,
++                x.CampaignId,
++                x.SequenceStepId,
++                x.VariantKey,
++                new PerformanceFunnelCounts(
++                    x.SentAt.HasValue ? 1 : 0,
++                    x.DeliveredAt.HasValue ? 1 : 0,
++                    x.BouncedAt.HasValue ? 1 : 0,
++                    x.OpenedAt.HasValue ? 1 : 0,
++                    x.RepliedAt.HasValue ? 1 : 0,
++                    x.DealCreatedAt.HasValue ? 1 : 0,
++                    x.ConvertedAt.HasValue ? 1 : 0),
++                x.UpdatedUtc))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<VariantPerformanceSummaryDto>> GetVariantPerformanceAsync(Guid companyId, Guid? campaignId, Guid? sequenceId, Guid? sequenceStepId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++
++        var query = _dbContext.SalesMessagePerformances
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.VariantKey != null);
++
++        if (campaignId.HasValue)
++        {
++            query = query.Where(x => x.CampaignId == campaignId.Value);
++        }
++
++        if (sequenceId.HasValue)
++        {
++            query = query.Where(x => x.SequenceId == sequenceId.Value);
++        }
++
++        if (sequenceStepId.HasValue)
++        {
++            query = query.Where(x => x.SequenceStepId == sequenceStepId.Value);
++        }
++
++        var grouped = await query
++            .GroupBy(x => new { x.CampaignId, x.SequenceId, x.SequenceStepId, x.VariantKey })
++            .Select(x => new
++            {
++                x.Key.CampaignId,
++                x.Key.SequenceId,
++                x.Key.SequenceStepId,
++                VariantKey = x.Key.VariantKey!,
++                Counts = new PerformanceFunnelCounts(
++                    x.Count(row => row.SentAt.HasValue),
++                    x.Count(row => row.DeliveredAt.HasValue),
++                    x.Count(row => row.BouncedAt.HasValue),
++                    x.Count(row => row.OpenedAt.HasValue),
++                    x.Count(row => row.RepliedAt.HasValue),
++                    x.Count(row => row.DealCreatedAt.HasValue),
++                    x.Count(row => row.ConvertedAt.HasValue))
++            })
++            .OrderBy(x => x.SequenceStepId)
++            .ThenBy(x => x.VariantKey)
++            .ToListAsync(cancellationToken);
++
++        return grouped
++            .Select(x => new VariantPerformanceSummaryDto(x.CampaignId, x.SequenceId, x.SequenceStepId, x.VariantKey, x.Counts, BuildRates(x.Counts)))
++            .ToList();
++    }
++
++    private async Task<ResolvedMessageContext> ResolveContextAsync(RecordMessagePerformanceEventCommand command, CancellationToken cancellationToken)
++    {
++        var contactId = command.ContactId;
++        var campaignId = command.CampaignId;
++        var sequenceId = command.SequenceId;
++        var sequenceStepId = command.SequenceStepId;
++        var sequenceExecutionStepId = command.SequenceExecutionStepId;
++        var provider = command.Provider;
++        var providerMessageId = command.ProviderMessageId;
++        var providerThreadId = command.ProviderThreadId;
++        var internetMessageId = command.InternetMessageId;
++        var stepOrder = command.StepOrder;
++        var variantKey = command.VariantKey;
++
++        if (sequenceExecutionStepId.HasValue)
++        {
++            var step = await _dbContext.SalesSequenceExecutionSteps
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Include(x => x.SalesSequenceStep)
++                .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == sequenceExecutionStepId.Value, cancellationToken)
++                ?? throw new InvalidOperationException("Sequence execution step does not belong to this company.");
++
++            contactId = step.ContactId;
++            campaignId ??= step.SalesCampaignId;
++            sequenceStepId ??= step.SalesSequenceStepId;
++            sequenceId ??= step.SalesSequenceStep.SalesSequenceId;
++            provider ??= step.Provider;
++            providerMessageId ??= step.ProviderMessageId;
++            providerThreadId ??= step.ProviderThreadId;
++            internetMessageId ??= step.InternetMessageId;
++            stepOrder ??= step.StepOrder;
++            variantKey ??= $"step:{step.SalesSequenceStepId:N}";
++        }
++        else if (sequenceStepId.HasValue && !sequenceId.HasValue)
++        {
++            sequenceId = await _dbContext.SalesSequenceSteps
++                .IgnoreQueryFilters()
++                .AsNoTracking()
++                .Where(x => x.CompanyId == command.CompanyId && x.Id == sequenceStepId.Value)
++                .Select(x => (Guid?)x.SalesSequenceId)
++                .SingleOrDefaultAsync(cancellationToken);
++            if (!sequenceId.HasValue)
++            {
++                throw new InvalidOperationException("Sequence step does not belong to this company.");
++            }
++        }
++
++        return new ResolvedMessageContext(
++            campaignId,
++            sequenceId,
++            sequenceStepId,
++            sequenceExecutionStepId,
++            contactId,
++            command.DealId,
++            provider,
++            providerMessageId,
++            providerThreadId,
++            internetMessageId,
++            variantKey,
++            stepOrder);
++    }
++
++    private async Task<RevenueContext> ResolveRevenueContextAsync(Guid companyId, Guid? dealId, RecordMessagePerformanceEventCommand? command, CancellationToken cancellationToken)
++    {
++        var amount = command?.ExpectedRevenueAmount;
++        var currency = command?.ExpectedRevenueCurrency;
++        var expectedCloseUtc = command?.ExpectedCloseUtc;
++        var riskScore = command?.PipelineRiskScore;
++        var riskCalculatedUtc = command?.RiskCalculatedUtc;
++
++        if (dealId.HasValue)
++        {
++            var deal = await _dbContext.Deals.IgnoreQueryFilters()
++                .AsNoTracking()
++                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == dealId.Value && !x.IsDeleted, cancellationToken);
++            if (deal is null)
++            {
++                throw new InvalidOperationException("Deal does not belong to this company.");
++            }
++
++            amount ??= deal.Amount;
++            currency ??= deal.Currency;
++            expectedCloseUtc ??= deal.ExpectedCloseUtc;
++        }
++
++        return new RevenueContext(amount, currency, expectedCloseUtc, riskScore, riskCalculatedUtc);
++    }
++
++    private static async Task<PerformanceFunnelCounts> BuildCountsAsync(IQueryable<SalesMessagePerformance> rows, CancellationToken cancellationToken) =>
++        await rows
++            .GroupBy(_ => 1)
++            .Select(x => new PerformanceFunnelCounts(
++                x.Count(row => row.SentAt.HasValue),
++                x.Count(row => row.DeliveredAt.HasValue),
++                x.Count(row => row.BouncedAt.HasValue),
++                x.Count(row => row.OpenedAt.HasValue),
++                x.Count(row => row.RepliedAt.HasValue),
++                x.Count(row => row.DealCreatedAt.HasValue),
++                x.Count(row => row.ConvertedAt.HasValue)))
++            .SingleAsync(cancellationToken);
++
++    private static PerformanceFunnelRates BuildRates(PerformanceFunnelCounts counts) =>
++        new(
++            Rate(counts.Delivered, counts.Sent),
++            Rate(counts.Opened, counts.Delivered),
++            Rate(counts.Replied, counts.Sent),
++            Rate(counts.Converted, counts.Sent));
++
++    private static decimal Rate(int numerator, int denominator) =>
++        denominator <= 0 ? 0m : Math.Round((decimal)numerator / denominator, 4, MidpointRounding.AwayFromZero);
++
++    private void EnsureTenant(Guid companyId)
++    {
++        EnsureId(companyId, nameof(companyId));
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new InvalidOperationException("The requested sales analytics data is outside the active company context.");
++        }
++    }
++
++    private static void EnsureId(Guid id, string name) =>
++        _ = id == Guid.Empty ? throw new ArgumentException($"{name} is required.", name) : id;
++
++    private static SalesMessagePerformanceDto Map(SalesMessagePerformance performance) =>
++        new(
++            performance.Id,
++            performance.CompanyId,
++            performance.MessageKey,
++            performance.CampaignId,
++            performance.SequenceId,
++            performance.SequenceStepId,
++            performance.SequenceExecutionStepId,
++            performance.ContactId,
++            performance.DealId,
++            performance.VariantKey,
++            performance.SentAt,
++            performance.DeliveredAt,
++            performance.BouncedAt,
++            performance.OpenedAt,
++            performance.RepliedAt,
++            performance.DealCreatedAt,
++            performance.ConvertedAt,
++            performance.ExpectedRevenueAmount,
++            performance.ExpectedRevenueCurrency,
++            performance.ExpectedCloseAt,
++            performance.PipelineRiskScore);
++
++    private sealed record ResolvedMessageContext(
++        Guid? CampaignId,
++        Guid? SequenceId,
++        Guid? SequenceStepId,
++        Guid? SequenceExecutionStepId,
++        Guid ContactId,
++        Guid? DealId,
++        string? Provider,
++        string? ProviderMessageId,
++        string? ProviderThreadId,
++        string? InternetMessageId,
++        string? VariantKey,
++        int? StepOrder);
++
++    private sealed record RevenueContext(decimal? Amount, string? Currency, DateTime? ExpectedCloseUtc, decimal? RiskScore, DateTime? RiskCalculatedUtc);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2897a10..5507eb0 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -469,6 +469,7 @@ public static class DependencyInjection
+         services.AddScoped<IOutboundCampaignService, OutboundCampaignService>();
+         services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
+         services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
++        services.AddScoped<IConversionAnalyticsService, ConversionAnalyticsService>();
+         services.AddScoped<IOutboundAutomationEnforcementService, OutboundAutomationEnforcementService>();
+         services.AddScoped<IOutboundReviewQueueService, OutboundReviewQueueService>();
+         services.AddScoped<IWebsiteLeadCaptureService, WebsiteLeadCaptureService>();
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+index 554fb7d..cf6381d 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+@@ -361,9 +361,10 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     private readonly ILogger<SequenceExecutionService> _logger;
+     private readonly ICustomerMemoryService _customerMemory;
+     private readonly CustomerMemoryOptions _customerMemoryOptions;
++    private readonly IConversionAnalyticsService _conversionAnalytics;
+ 
+-    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, IOutboundAutomationEnforcementService outboundPolicy, ILogger<SequenceExecutionService> logger, ICustomerMemoryService customerMemory, IOptions<CustomerMemoryOptions> customerMemoryOptions)
++    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, IOutboundAutomationEnforcementService outboundPolicy, ILogger<SequenceExecutionService> logger, ICustomerMemoryService customerMemory, IOptions<CustomerMemoryOptions> customerMemoryOptions, IConversionAnalyticsService conversionAnalytics)
+     {
+         _dbContext = dbContext;
+         _emailSender = emailSender;
+@@ -372,6 +373,7 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+         _logger = logger;
+         _customerMemory = customerMemory;
+         _customerMemoryOptions = customerMemoryOptions.Value;
++        _conversionAnalytics = conversionAnalytics;
+     }
+ 
+     public async Task<int> ScheduleExecutionsForCampaignAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken)
+@@ -490,6 +492,22 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+                 step.MarkSent(result.Provider, result.MailboxConnectionId, result.ProviderMessageId, result.ProviderThreadId, result.InternetMessageId, result.DeliveryStatus, sentUtc, draft.Subject, draft.Body);
+                 var audience = await _dbContext.SalesCampaignContacts.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == step.CompanyId && x.Id == step.SequenceExecution.SalesCampaignContactId, cancellationToken);
+                 audience.MarkSent(step.StepOrder, sentUtc);
++                await _conversionAnalytics.RecordMessagePerformanceEventAsync(
++                    new RecordMessagePerformanceEventCommand(
++                        step.CompanyId,
++                        result.ProviderMessageId,
++                        step.ContactId,
++                        ConversionAnalyticsEventType.Sent,
++                        sentUtc,
++                        CampaignId: step.SalesCampaignId,
++                        SequenceStepId: step.SalesSequenceStepId,
++                        SequenceExecutionStepId: step.Id,
++                        Provider: result.Provider,
++                        ProviderMessageId: result.ProviderMessageId,
++                        ProviderThreadId: result.ProviderThreadId,
++                        InternetMessageId: result.InternetMessageId,
++                        StepOrder: step.StepOrder),
++                    cancellationToken);
+                 sent++;
+             }
+             catch (MailboxProviderExecutionException ex)
+@@ -618,6 +636,22 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             .FirstOrDefaultAsync(cancellationToken);
+ 
+         if (step is not null)
+         {
++            await _conversionAnalytics.RecordMessagePerformanceEventAsync(
++                new RecordMessagePerformanceEventCommand(
++                    companyId,
++                    FirstNonEmpty(step.ProviderMessageId, step.InternetMessageId, step.ProviderThreadId),
++                    step.ContactId,
++                    ConversionAnalyticsEventType.Replied,
++                    request.OccurredUtc ?? DateTime.UtcNow,
++                    CampaignId: step.SalesCampaignId,
++                    SequenceStepId: step.SalesSequenceStepId,
++                    SequenceExecutionStepId: step.Id,
++                    Provider: step.Provider,
++                    ProviderMessageId: step.ProviderMessageId,
++                    ProviderThreadId: step.ProviderThreadId,
++                    InternetMessageId: step.InternetMessageId,
++                    StepOrder: step.StepOrder),
++                cancellationToken);
+             return await CancelPendingStepsForContactAsync(companyId, step.ContactId, SalesStopReasons.ReplyReceived, cancellationToken);
+         }
+ 
+@@ -631,8 +665,13 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             : 0;
+     }
+ 
+-    public Task<int> HandleDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken) =>
+-        CancelPendingStepsForContactAsync(companyId, contactId, SalesStopReasons.DealCreated, cancellationToken);
++    public async Task<int> HandleDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken)
++    {
++        await _conversionAnalytics.RecordDealCreatedForContactAsync(companyId, contactId, dealId, DateTime.UtcNow, cancellationToken);
++        return await CancelPendingStepsForContactAsync(companyId, contactId, SalesStopReasons.DealCreated, cancellationToken);
++    }
+ 
+     public async Task QueueDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken)
+     {
+@@ -678,6 +717,25 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.ProviderMessageId == request.ProviderMessageId, cancellationToken);
+         step?.MarkDeliveryStatus(request.Status, request.OccurredUtc);
++        if (step is not null)
++        {
++            await _conversionAnalytics.RecordMessagePerformanceEventAsync(
++                new RecordMessagePerformanceEventCommand(
++                    companyId,
++                    FirstNonEmpty(step.ProviderMessageId, step.InternetMessageId, step.ProviderThreadId),
++                    step.ContactId,
++                    request.Status.Equals(SalesStatuses.Bounced, StringComparison.OrdinalIgnoreCase)
++                        ? ConversionAnalyticsEventType.Bounced
++                        : ConversionAnalyticsEventType.Delivered,
++                    request.OccurredUtc,
++                    CampaignId: step.SalesCampaignId,
++                    SequenceStepId: step.SalesSequenceStepId,
++                    SequenceExecutionStepId: step.Id,
++                    Provider: step.Provider,
++                    ProviderMessageId: step.ProviderMessageId,
++                    ProviderThreadId: step.ProviderThreadId,
++                    InternetMessageId: step.InternetMessageId,
++                    StepOrder: step.StepOrder),
++                cancellationToken);
++        }
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+ 
+@@ -734,6 +792,21 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+         }
+ 
+         step.MarkBounce(request.BounceStatus, request.Reason, request.OccurredUtc);
++        await _conversionAnalytics.RecordMessagePerformanceEventAsync(
++            new RecordMessagePerformanceEventCommand(
++                companyId,
++                FirstNonEmpty(step.ProviderMessageId, step.InternetMessageId, step.ProviderThreadId),
++                step.ContactId,
++                ConversionAnalyticsEventType.Bounced,
++                request.OccurredUtc,
++                CampaignId: step.SalesCampaignId,
++                SequenceStepId: step.SalesSequenceStepId,
++                SequenceExecutionStepId: step.Id,
++                Provider: step.Provider,
++                ProviderMessageId: step.ProviderMessageId,
++                ProviderThreadId: step.ProviderThreadId,
++                InternetMessageId: step.InternetMessageId,
++                StepOrder: step.StepOrder),
++            cancellationToken);
+         await CancelPendingStepsForContactAsync(companyId, step.ContactId, SalesStopReasons.Bounced, cancellationToken);
+     }
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505153000_AddSalesConversionAnalytics.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505153000_AddSalesConversionAnalytics.cs
+new file mode 100644
+index 0000000..e1ea267
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505153000_AddSalesConversionAnalytics.cs
+@@ -0,0 +1,266 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260505153000_AddSalesConversionAnalytics")]
++public partial class AddSalesConversionAnalytics : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "sales_message_performances",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                message_key = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
++                campaign_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                sequence_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                sequence_step_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                sequence_execution_step_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                provider = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
++                provider_message_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                provider_thread_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                internet_message_id = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true),
++                variant_key = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: true),
++                step_order = table.Column<int>(type: "int", nullable: true),
++                sent_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                delivered_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                bounced_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                opened_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                replied_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                deal_created_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                converted_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                expected_revenue_amount = table.Column<decimal>(type: "decimal(18,2)", nullable: true),
++                expected_revenue_currency = table.Column<string>(type: "nvarchar(3)", maxLength: 3, nullable: true),
++                expected_close_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                pipeline_risk_score = table.Column<decimal>(type: "decimal(6,4)", nullable: true),
++                last_risk_calculated_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_message_performances", x => x.id);
++                table.UniqueConstraint("AK_sales_message_performances_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_sales_message_performances_pipeline_risk_score_range", "pipeline_risk_score IS NULL OR (pipeline_risk_score >= 0 AND pipeline_risk_score <= 1)");
++                table.CheckConstraint("CK_sales_message_performances_step_order_positive", "step_order IS NULL OR step_order > 0");
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_contacts_company_id_contact_id",
++                    columns: x => new { x.company_id, x.contact_id },
++                    principalTable: "contacts",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_deals_company_id_deal_id",
++                    columns: x => new { x.company_id, x.deal_id },
++                    principalTable: "deals",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_sales_campaigns_company_id_campaign_id",
++                    columns: x => new { x.company_id, x.campaign_id },
++                    principalTable: "sales_campaigns",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_sales_sequence_execution_steps_company_id_sequence_execution_step_id",
++                    columns: x => new { x.company_id, x.sequence_execution_step_id },
++                    principalTable: "sales_sequence_execution_steps",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_sales_sequence_steps_company_id_sequence_step_id",
++                    columns: x => new { x.company_id, x.sequence_step_id },
++                    principalTable: "sales_sequence_steps",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_sales_message_performances_sales_sequences_company_id_sequence_id",
++                    columns: x => new { x.company_id, x.sequence_id },
++                    principalTable: "sales_sequences",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_campaign_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "campaign_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_campaign_id_sequence_id_sequence_step_id_variant_key",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "campaign_id", "sequence_id", "sequence_step_id", "variant_key" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_contact_id_updated_at",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "contact_id", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_deal_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "deal_id" },
++            filter: "[deal_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_expected_close_at",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "expected_close_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_internet_message_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "internet_message_id" },
++            filter: "[internet_message_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_message_key",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "message_key" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_pipeline_risk_score",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "pipeline_risk_score" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_provider_message_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "provider_message_id" },
++            filter: "[provider_message_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_provider_thread_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "provider_thread_id" },
++            filter: "[provider_thread_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_sequence_execution_step_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "sequence_execution_step_id" },
++            filter: "[sequence_execution_step_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_sequence_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "sequence_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_message_performances_company_id_sequence_step_id",
++            table: "sales_message_performances",
++            columns: new[] { "company_id", "sequence_step_id" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "sales_message_performances");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/ConversionAnalyticsServiceTests.cs b/tests/VirtualCompany.Api.Tests/ConversionAnalyticsServiceTests.cs
+new file mode 100644
+index 0000000..cdd8f25
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/ConversionAnalyticsServiceTests.cs
+@@ -0,0 +1,262 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class ConversionAnalyticsServiceTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public ConversionAnalyticsServiceTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Recording_first_event_creates_message_performance_row()
++    {
++        var seed = await SeedCampaignAsync("analytics-create");
++        using var scope = CreateCompanyScope(seed.CompanyId);
++        var service = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        var recorded = await service.RecordMessagePerformanceEventAsync(
++            Command(seed, "msg-create", ConversionAnalyticsEventType.Sent, seed.SentAt),
++            CancellationToken.None);
++
++        Assert.Equal(seed.CompanyId, recorded.CompanyId);
++        Assert.Equal(seed.ContactId, recorded.ContactId);
++        Assert.Equal(seed.CampaignId, recorded.CampaignId);
++        Assert.Equal(seed.SequenceId, recorded.SequenceId);
++        Assert.Equal(seed.SequenceStepId, recorded.SequenceStepId);
++        Assert.Equal(seed.SentAt, recorded.SentAt);
++    }
++
++    [Fact]
++    public async Task Duplicate_events_are_idempotent_and_keep_earliest_timestamp()
++    {
++        var seed = await SeedCampaignAsync("analytics-idempotent");
++        using var scope = CreateCompanyScope(seed.CompanyId);
++        var service = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-idempotent", ConversionAnalyticsEventType.Sent, seed.SentAt.AddMinutes(5)), CancellationToken.None);
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-idempotent", ConversionAnalyticsEventType.Sent, seed.SentAt), CancellationToken.None);
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-idempotent", ConversionAnalyticsEventType.Replied, seed.SentAt.AddHours(2)), CancellationToken.None);
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-idempotent", ConversionAnalyticsEventType.Replied, seed.SentAt.AddHours(3)), CancellationToken.None);
++
++        var summary = await service.GetCampaignPerformanceAsync(seed.CompanyId, seed.CampaignId, CancellationToken.None);
++        Assert.NotNull(summary);
++        Assert.Equal(1, summary!.Counts.Sent);
++        Assert.Equal(1, summary.Counts.Replied);
++
++        var row = await scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>().SalesMessagePerformances.SingleAsync(x => x.MessageKey == "msg-idempotent");
++        Assert.Equal(seed.SentAt, row.SentAt);
++        Assert.Equal(seed.SentAt.AddHours(2), row.RepliedAt);
++    }
++
++    [Fact]
++    public async Task Out_of_order_events_still_build_final_funnel_state()
++    {
++        var seed = await SeedCampaignAsync("analytics-out-of-order");
++        using var scope = CreateCompanyScope(seed.CompanyId);
++        var service = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-order", ConversionAnalyticsEventType.Replied, seed.SentAt.AddHours(4)), CancellationToken.None);
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-order", ConversionAnalyticsEventType.Delivered, seed.SentAt.AddMinutes(10)), CancellationToken.None);
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-order", ConversionAnalyticsEventType.Sent, seed.SentAt), CancellationToken.None);
++        await service.RecordMessagePerformanceEventAsync(Command(seed, "msg-order", ConversionAnalyticsEventType.Opened, seed.SentAt.AddHours(1)), CancellationToken.None);
++
++        var summary = await service.GetCampaignPerformanceAsync(seed.CompanyId, seed.CampaignId, CancellationToken.None);
++        Assert.NotNull(summary);
++        Assert.Equal(1, summary!.Counts.Sent);
++        Assert.Equal(1, summary.Counts.Delivered);
++        Assert.Equal(1, summary.Counts.Opened);
++        Assert.Equal(1, summary.Counts.Replied);
++        Assert.Equal(1m, summary.Rates.ReplyRate);
++    }
++
++    [Fact]
++    public async Task Tenant_context_blocks_cross_company_recording_and_queries()
++    {
++        var companyA = await SeedCampaignAsync("analytics-tenant-a");
++        var companyB = await SeedCampaignAsync("analytics-tenant-b");
++        using var scope = CreateCompanyScope(companyA.CompanyId);
++        var service = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.RecordMessagePerformanceEventAsync(Command(companyB, "msg-cross", ConversionAnalyticsEventType.Sent, companyB.SentAt), CancellationToken.None));
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.GetCampaignPerformanceAsync(companyB.CompanyId, companyB.CampaignId, CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Variant_aggregation_returns_reply_and_conversion_rates()
++    {
++        var seed = await SeedCampaignAsync("analytics-variants");
++        using var scope = CreateCompanyScope(seed.CompanyId);
++        var service = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        await RecordVariantAsync(service, seed, "variant-a-1", "variant-a", reply: true, converted: true);
++        await RecordVariantAsync(service, seed, "variant-a-2", "variant-a", reply: false, converted: false);
++        await RecordVariantAsync(service, seed, "variant-b-1", "variant-b", reply: true, converted: false);
++
++        var variants = await service.GetVariantPerformanceAsync(seed.CompanyId, seed.CampaignId, seed.SequenceId, seed.SequenceStepId, CancellationToken.None);
++
++        var variantA = Assert.Single(variants.Where(x => x.VariantKey == "variant-a"));
++        Assert.Equal(2, variantA.Counts.Sent);
++        Assert.Equal(1, variantA.Counts.Replied);
++        Assert.Equal(1, variantA.Counts.Converted);
++        Assert.Equal(0.5m, variantA.Rates.ReplyRate);
++        Assert.Equal(0.5m, variantA.Rates.ConversionRate);
++
++        var variantB = Assert.Single(variants.Where(x => x.VariantKey == "variant-b"));
++        Assert.Equal(1, variantB.Counts.Sent);
++        Assert.Equal(1m, variantB.Rates.ReplyRate);
++        Assert.Equal(0m, variantB.Rates.ConversionRate);
++    }
++
++    [Fact]
++    public async Task Conversion_timestamp_and_revenue_context_are_persisted()
++    {
++        var seed = await SeedCampaignAsync("analytics-conversion");
++        using var scope = CreateCompanyScope(seed.CompanyId);
++        var service = scope.ServiceProvider.GetRequiredService<IConversionAnalyticsService>();
++
++        var convertedAt = seed.SentAt.AddDays(2);
++        await service.RecordMessagePerformanceEventAsync(
++            Command(seed, "msg-converted", ConversionAnalyticsEventType.Converted, convertedAt, dealId: seed.DealId),
++            CancellationToken.None);
++
++        var row = await scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>()
++            .SalesMessagePerformances
++            .SingleAsync(x => x.MessageKey == "msg-converted");
++
++        Assert.Equal(convertedAt, row.ConvertedAt);
++        Assert.Equal(seed.DealId, row.DealId);
++        Assert.Equal(12000m, row.ExpectedRevenueAmount);
++        Assert.Equal("USD", row.ExpectedRevenueCurrency);
++        Assert.Equal(seed.ExpectedCloseAt, row.ExpectedCloseAt);
++    }
++
++    [Fact]
++    public async Task Sales_model_declares_conversion_analytics_indexes()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        AssertIndex<SalesMessagePerformance>(dbContext, nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.MessageKey));
++        AssertIndex<SalesMessagePerformance>(dbContext, nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.CampaignId));
++        AssertIndex<SalesMessagePerformance>(dbContext, nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.SequenceId));
++        AssertIndex<SalesMessagePerformance>(dbContext, nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.SequenceStepId));
++        AssertIndex<SalesMessagePerformance>(dbContext, nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.ContactId), nameof(SalesMessagePerformance.UpdatedUtc));
++        AssertIndex<SalesMessagePerformance>(dbContext, nameof(SalesMessagePerformance.CompanyId), nameof(SalesMessagePerformance.CampaignId), nameof(SalesMessagePerformance.SequenceId), nameof(SalesMessagePerformance.SequenceStepId), nameof(SalesMessagePerformance.VariantKey));
++    }
++
++    private IServiceScope CreateCompanyScope(Guid companyId)
++    {
++        var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyId);
++        return scope;
++    }
++
++    private async Task<AnalyticsSeed> SeedCampaignAsync(string suffix)
++    {
++        var seed = new AnalyticsSeed(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            new DateTime(2026, 5, 4, 9, 0, 0, DateTimeKind.Utc),
++            new DateTime(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc));
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(seed.CompanyId, $"Analytics {suffix}"));
++            dbContext.CustomerCompanies.Add(new CustomerCompany(seed.CustomerCompanyId, seed.CompanyId, $"Customer {suffix}"));
++            dbContext.Contacts.Add(new Contact(seed.ContactId, seed.CompanyId, $"Contact {suffix}", $"{suffix}@example.com", seed.CustomerCompanyId));
++            var sequence = new SalesSequence(seed.SequenceId, seed.CompanyId, $"Sequence {suffix}");
++            sequence.Steps.Add(new SalesSequenceStep(seed.SequenceStepId, seed.CompanyId, seed.SequenceId, 1, 0, "Hello", templateSubject: "Hello"));
++            sequence.Steps.Add(new SalesSequenceStep(Guid.NewGuid(), seed.CompanyId, seed.SequenceId, 2, 3, "Follow up", templateSubject: "Follow up"));
++            sequence.Steps.Add(new SalesSequenceStep(Guid.NewGuid(), seed.CompanyId, seed.SequenceId, 3, 7, "Checking in", templateSubject: "Checking in"));
++            sequence.Steps.Add(new SalesSequenceStep(Guid.NewGuid(), seed.CompanyId, seed.SequenceId, 4, 14, "Last note", templateSubject: "Last note"));
++            dbContext.SalesSequences.Add(sequence);
++            dbContext.SalesCampaigns.Add(new SalesCampaign(seed.CampaignId, seed.CompanyId, seed.SequenceId, $"Campaign {suffix}", "contacts"));
++            dbContext.Deals.Add(new Deal(seed.DealId, seed.CompanyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 12000m, "USD", primaryContactId: seed.ContactId, customerCompanyId: seed.CustomerCompanyId, expectedCloseUtc: seed.ExpectedCloseAt));
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private static RecordMessagePerformanceEventCommand Command(
++        AnalyticsSeed seed,
++        string messageKey,
++        ConversionAnalyticsEventType eventType,
++        DateTime occurredUtc,
++        string? variantKey = "variant-a",
++        Guid? dealId = null) =>
++        new(
++            seed.CompanyId,
++            messageKey,
++            seed.ContactId,
++            eventType,
++            occurredUtc,
++            CampaignId: seed.CampaignId,
++            SequenceId: seed.SequenceId,
++            SequenceStepId: seed.SequenceStepId,
++            DealId: dealId,
++            Provider: "test",
++            ProviderMessageId: messageKey,
++            VariantKey: variantKey,
++            StepOrder: 1);
++
++    private static async Task RecordVariantAsync(IConversionAnalyticsService service, AnalyticsSeed seed, string messageKey, string variantKey, bool reply, bool converted)
++    {
++        await service.RecordMessagePerformanceEventAsync(Command(seed, messageKey, ConversionAnalyticsEventType.Sent, seed.SentAt, variantKey), CancellationToken.None);
++        if (reply)
++        {
++            await service.RecordMessagePerformanceEventAsync(Command(seed, messageKey, ConversionAnalyticsEventType.Replied, seed.SentAt.AddHours(1), variantKey), CancellationToken.None);
++        }
++
++        if (converted)
++        {
++            await service.RecordMessagePerformanceEventAsync(Command(seed, messageKey, ConversionAnalyticsEventType.Converted, seed.SentAt.AddDays(1), variantKey, seed.DealId), CancellationToken.None);
++        }
++    }
++
++    private static void AssertIndex<TEntity>(VirtualCompanyDbContext dbContext, params string[] propertyNames)
++    {
++        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));
++        Assert.NotNull(entityType);
++        Assert.Contains(entityType!.GetIndexes(), index =>
++            index.Properties.Select(property => property.Name).SequenceEqual(propertyNames));
++    }
++
++    private sealed record AnalyticsSeed(
++        Guid CompanyId,
++        Guid CustomerCompanyId,
++        Guid ContactId,
++        Guid SequenceId,
++        Guid SequenceStepId,
++        Guid CampaignId,
++        Guid SequenceExecutionId,
++        Guid SequenceExecutionStepId,
++        Guid DealId,
++        DateTime SentAt,
++        DateTime ExpectedCloseAt);
++}
+END_OF_PATCH

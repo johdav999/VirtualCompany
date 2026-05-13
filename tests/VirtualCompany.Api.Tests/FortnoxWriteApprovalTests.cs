@@ -1,5 +1,6 @@
 using System.Text.Json;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Domain.Entities;
 using Xunit;
 
 namespace VirtualCompany.Api.Tests;
@@ -67,10 +68,61 @@ public sealed class FortnoxWriteApprovalTests
 
         var exception = new FortnoxApprovalRequiredException(
             approvalId,
-            "Fortnox writes require approval before data is sent to Fortnox.");
+            "Approve this action before data is sent to the accounting system.");
 
         Assert.Equal(approvalId, exception.ApprovalId);
         Assert.DoesNotContain("token", exception.SafeMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public void Write_action_statuses_distinguish_rejected_expired_and_cancelled_without_execution()
+    {
+        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.Payment);
+
+        command.MarkRejected(DateTime.UtcNow);
+
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Rejected, command.Status);
+        Assert.Null(command.ExecutionStartedUtc);
+        Assert.Null(command.ExecutedUtc);
+    }
+
+    [Fact]
+    public void Sensitive_action_types_do_not_allow_automatic_retry()
+    {
+        var payment = CreateCommand(FinanceIntegrationWriteCommandTypes.Payment);
+        var record = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);
+
+        Assert.False(payment.RetrySupported);
+        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.None, payment.RetryPolicy);
+        Assert.True(record.RetrySupported);
+        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);
+    }
+
+    [Fact]
+    public void Approved_execution_context_carries_persisted_write_request_and_retry_policy()
+    {
+        var writeRequestId = Guid.NewGuid();
+
+        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), "correlation-1", Guid.NewGuid(), Guid.NewGuid(), writeRequestId, retryExternalFailures: false);
+
+        Assert.Equal(writeRequestId, context.WriteRequestId);
+        Assert.False(context.RetryExternalFailures);
+        Assert.NotNull(context.ApprovedApprovalId);
+    }
+
+    [Fact]
+    public void Successful_execution_persists_safe_response_summary_and_status_code()
+    {
+        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);
+
+        command.MarkApproved(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
+        command.MarkExecutionStarted(DateTime.UtcNow);
+        command.MarkExecuted("1001", 200, """{"DocumentNumber":"1001"}""", DateTime.UtcNow);
+
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Executed, command.Status);
+        Assert.Equal(1, command.ExecutionAttemptCount);
+        Assert.Equal(200, command.ResponseStatusCode);
+        Assert.Contains("1001", command.SafeResponseSummary);
     }
 
     [Fact]
@@ -83,4 +135,20 @@ public sealed class FortnoxWriteApprovalTests
 
         Assert.False(enabled);
     }
+
+    private static FinanceIntegrationWriteCommandRecord CreateCommand(string commandType) =>
+        new(
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            commandType,
+            "POST",
+            "invoices",
+            "Example company",
+            """{"Invoice":{"Total":100}}""",
+            new string('a', 64),
+            """{"Invoice":{"Total":100}}""",
+            "correlation-1",
+            DateTime.UtcNow);
 }

@@ -2,13 +2,17 @@ using System.Globalization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.AspNetCore.WebUtilities;
+using VirtualCompany.Shared;
 using VirtualCompany.Web.Services;
 
 namespace VirtualCompany.Web.Pages.Finance;
 
 public partial class SettingsPage : FinancePageBase, IDisposable
 {
+    private const string DefaultIntegrationProviderKey = "fortnox";
+
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
+    [Parameter] public string? ProviderKey { get; set; }
 
     private FinanceEmailSettingsResponse? Settings { get; set; }
     private bool IsSettingsLoading { get; set; }
@@ -20,26 +24,33 @@ public partial class SettingsPage : FinancePageBase, IDisposable
     private string GmailClientSecret { get; set; } = string.Empty;
     private string Microsoft365ClientId { get; set; } = string.Empty;
     private string Microsoft365ClientSecret { get; set; } = string.Empty;
-    private FortnoxConnectionStatusResponse? FortnoxStatus { get; set; }
-    private FortnoxSyncHistoryResponse? FortnoxHistory { get; set; }
-    private bool IsFortnoxLoading { get; set; }
-    private bool IsFortnoxConnecting { get; set; }
-    private bool IsFortnoxSyncing { get; set; }
-    private bool IsFortnoxDisconnecting { get; set; }
-    private bool IsFortnoxHistoryLoading { get; set; }
-    private bool ShowFortnoxHistory { get; set; }
-    private string? FortnoxErrorMessage { get; set; }
-    private string? FortnoxActionErrorMessage { get; set; }
-    private string? FortnoxSuccessMessage { get; set; }
+    private List<FinanceIntegrationProviderResponse> FinanceIntegrationProviders { get; set; } = [];
+    private FinanceIntegrationProviderResponse? SelectedFinanceIntegrationProvider { get; set; }
+    private FinanceIntegrationConnectionStatusResponse? FinanceIntegrationStatus { get; set; }
+    private FinanceIntegrationSyncHistoryResponse? FinanceIntegrationHistory { get; set; }
+    private bool IsFinanceIntegrationLoading { get; set; }
+    private bool IsFinanceIntegrationConnecting { get; set; }
+    private bool IsFinanceIntegrationSyncing { get; set; }
+    private bool IsFinanceIntegrationDisconnecting { get; set; }
+    private bool IsFinanceIntegrationHistoryLoading { get; set; }
+    private bool ShowFinanceIntegrationHistory { get; set; } = true;
+    private string? FinanceIntegrationErrorMessage { get; set; }
+    private string? FinanceIntegrationActionErrorMessage { get; set; }
+    private string? FinanceIntegrationSuccessMessage { get; set; }
+    private string? FinanceIntegrationHistoryErrorMessage { get; set; }
     private string? LoadedSettingsRoute { get; set; }
 
     private bool IsBusy => IsSettingsLoading || IsSaving;
-    private bool IsFortnoxBusy => IsFortnoxLoading || IsFortnoxConnecting || IsFortnoxSyncing || IsFortnoxDisconnecting;
+    private bool IsFinanceIntegrationBusy => IsFinanceIntegrationLoading || IsFinanceIntegrationConnecting || IsFinanceIntegrationSyncing || IsFinanceIntegrationDisconnecting;
     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
+    private bool CanManageFinanceIntegrations => FinanceAccess.CanManageFinanceIntegrations(AccessState.MembershipRole);
     private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId);
-    private string FortnoxSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.FortnoxIntegrationSettings, AccessState.CompanyId);
+    private string IntegrationSettingsHref => FinanceRoutes.BuildFinanceIntegrationSettingsPath(SelectedProviderKey, AccessState.CompanyId);
     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
-    private bool IsFortnoxSettingsRoute => Navigation.Uri.Contains("/finance/settings/integrations/fortnox", StringComparison.OrdinalIgnoreCase);
+    private bool IsIntegrationSettingsRoute => Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("finance/settings/integrations/", StringComparison.OrdinalIgnoreCase);
+    private string SelectedProviderKey => string.IsNullOrWhiteSpace(ProviderKey) ? DefaultIntegrationProviderKey : ProviderKey.Trim();
+    private string SelectedProviderDisplayName => SelectedFinanceIntegrationProvider?.DisplayName ?? FormatProviderName(SelectedProviderKey);
+    private string LastFailureSummary => FortnoxIntegrationDisplayMapper.FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, "No recent sync issues.");
 
     protected override void OnInitialized()
     {
@@ -83,15 +94,19 @@ public partial class SettingsPage : FinancePageBase, IDisposable
         SuccessMessage = null;
         GmailClientSecret = string.Empty;
         Microsoft365ClientSecret = string.Empty;
+        FinanceIntegrationStatus = null;
+        FinanceIntegrationHistory = null;
+        ShowFinanceIntegrationHistory = true;
+        FinanceIntegrationHistoryErrorMessage = null;
 
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
         {
             return;
         }
 
-        if (IsFortnoxSettingsRoute)
+        if (IsIntegrationSettingsRoute)
         {
-            await LoadFortnoxStatusAsync(companyId);
+            await LoadFinanceIntegrationStatusAsync(companyId);
         }
         else
         {
@@ -190,169 +205,230 @@ public partial class SettingsPage : FinancePageBase, IDisposable
         }
     }
 
-    private async Task ReloadFortnoxAsync()
+    private async Task ReloadFinanceIntegrationsAsync()
     {
-        FortnoxActionErrorMessage = null;
-        FortnoxSuccessMessage = null;
+        FinanceIntegrationActionErrorMessage = null;
+        FinanceIntegrationSuccessMessage = null;
 
         if (AccessState.CompanyId is Guid companyId)
         {
-            await LoadFortnoxStatusAsync(companyId);
+            await LoadFinanceIntegrationStatusAsync(companyId);
         }
     }
 
-    private async Task LoadFortnoxStatusAsync(Guid companyId)
+    private async Task LoadFinanceIntegrationStatusAsync(Guid companyId)
     {
-        IsFortnoxLoading = true;
-        FortnoxErrorMessage = null;
+        IsFinanceIntegrationLoading = true;
+        FinanceIntegrationErrorMessage = null;
 
         try
         {
-            FortnoxStatus = await FinanceApiClient.GetFortnoxConnectionStatusAsync(companyId);
-            ApplyFortnoxCallbackMessage();
-        }
-        catch (FinanceApiException ex)
-        {
-            FortnoxStatus = null;
-            FortnoxErrorMessage = ex.Message;
-        }
-        finally
-        {
-            IsFortnoxLoading = false;
-        }
-    }
+            FinanceIntegrationProviders = await FinanceApiClient.GetFinanceIntegrationProvidersAsync(companyId);
+            SelectedFinanceIntegrationProvider = FinanceIntegrationProviders.FirstOrDefault(provider =>
+                string.Equals(provider.ProviderKey, SelectedProviderKey, StringComparison.OrdinalIgnoreCase));
 
-    private async Task ConnectFortnoxAsync() => await StartFortnoxOAuthAsync(reconnect: false);
-
-    private async Task ReconnectFortnoxAsync() => await StartFortnoxOAuthAsync(reconnect: true);
-
-    private async Task StartFortnoxOAuthAsync(bool reconnect)
-    {
-        if (AccessState.CompanyId is not Guid companyId)
-        {
-            return;
-        }
-
-        IsFortnoxConnecting = true;
-        FortnoxActionErrorMessage = null;
-        FortnoxSuccessMessage = null;
-
-        try
-        {
-            var returnUri = Navigation.ToAbsoluteUri(FortnoxSettingsHref).ToString();
-            var response = await FinanceApiClient.StartFortnoxConnectionAsync(companyId, returnUri, reconnect);
-            Navigation.NavigateTo(response.AuthorizationUrl, forceLoad: true);
-        }
-        catch (FinanceApiException ex)
-        {
-            FortnoxActionErrorMessage = ex.Message;
-        }
-        finally
-        {
-            IsFortnoxConnecting = false;
-        }
-    }
-
-    private async Task SyncFortnoxAsync()
-    {
-        if (AccessState.CompanyId is not Guid companyId)
-        {
-            return;
-        }
-
-        IsFortnoxSyncing = true;
-        FortnoxActionErrorMessage = null;
-        FortnoxSuccessMessage = null;
-
-        try
-        {
-            var result = await FinanceApiClient.SyncFortnoxNowAsync(companyId, FortnoxStatus?.ConnectionId);
-            FortnoxSuccessMessage = $"Fortnox sync finished: {result.Created} created, {result.Updated} updated, {result.Skipped} skipped.";
-            await LoadFortnoxStatusAsync(companyId);
-            if (ShowFortnoxHistory)
+            if (SelectedFinanceIntegrationProvider is null)
             {
-                await LoadFortnoxHistoryAsync();
+                FinanceIntegrationStatus = await FinanceApiClient.GetFinanceIntegrationStatusAsync(companyId, SelectedProviderKey);
+                SelectedFinanceIntegrationProvider = new FinanceIntegrationProviderResponse
+                {
+                    ProviderKey = SelectedProviderKey,
+                    DisplayName = FormatProviderName(SelectedProviderKey),
+                    Status = FinanceIntegrationStatus
+                };
+            }
+            else
+            {
+                FinanceIntegrationStatus = SelectedFinanceIntegrationProvider.Status;
+            }
+
+            ApplyFinanceIntegrationCallbackMessage();
+
+            if (ShowFinanceIntegrationHistory)
+            {
+                await LoadFinanceIntegrationHistoryAsync(companyId, surfaceErrors: false);
             }
         }
         catch (FinanceApiException ex)
         {
-            FortnoxActionErrorMessage = ex.Message;
+            FinanceIntegrationStatus = null;
+            FinanceIntegrationErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Financial integrations are unavailable. Please try again.");
         }
         finally
         {
-            IsFortnoxSyncing = false;
+            IsFinanceIntegrationLoading = false;
         }
     }
 
-    private async Task DisconnectFortnoxAsync()
+    private async Task ConnectFinanceIntegrationAsync() => await StartFinanceIntegrationOAuthAsync(reconnect: false);
+
+    private async Task ReconnectFinanceIntegrationAsync() => await StartFinanceIntegrationOAuthAsync(reconnect: true);
+
+    private async Task StartFinanceIntegrationOAuthAsync(bool reconnect)
+    {
+        if (!CanManageFinanceIntegrations || AccessState.CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        IsFinanceIntegrationConnecting = true;
+        FinanceIntegrationActionErrorMessage = null;
+        FinanceIntegrationSuccessMessage = null;
+        FinanceIntegrationStatus = CreateOptimisticStatus("pending");
+
+        try
+        {
+            var returnUri = Navigation.ToAbsoluteUri(IntegrationSettingsHref).ToString();
+            var response = await FinanceApiClient.StartFinanceIntegrationConnectionAsync(companyId, SelectedProviderKey, returnUri, reconnect);
+            Navigation.NavigateTo(response.AuthorizationUrl, forceLoad: true);
+        }
+        catch (FinanceApiException ex)
+        {
+            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, reconnect ? "Couldn't start Fortnox reconnection. Please try again." : "Couldn't start Fortnox connection. Please try again.");
+            await RefreshFinanceIntegrationStateAsync(companyId);
+        }
+        finally
+        {
+            IsFinanceIntegrationConnecting = false;
+        }
+    }
+
+    private async Task SyncFinanceIntegrationAsync()
+    {
+        if (!CanManageFinanceIntegrations || AccessState.CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        if (FinanceIntegrationState is not "connected" and not "syncing" ||
+            FinanceIntegrationStatus?.ConnectionId is null)
+        {
+            FinanceIntegrationActionErrorMessage = "Fortnox must be connected before syncing.";
+            await RefreshFinanceIntegrationStateAsync(companyId);
+            return;
+        }
+
+        IsFinanceIntegrationSyncing = true;
+        FinanceIntegrationActionErrorMessage = null;
+        FinanceIntegrationSuccessMessage = null;
+
+        try
+        {
+            var result = await FinanceApiClient.SyncFinanceIntegrationNowAsync(companyId, SelectedProviderKey, FinanceIntegrationStatus?.ConnectionId);
+            FinanceIntegrationSuccessMessage = $"Sync finished: {result.Created} created, {result.Updated} updated, {result.Skipped} skipped.";
+            await RefreshFinanceIntegrationStateAsync(companyId);
+        }
+        catch (FinanceApiException ex)
+        {
+            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Sync failed. Review the latest sync history entry for a safe summary.");
+            await RefreshFinanceIntegrationStateAsync(companyId);
+        }
+        finally
+        {
+            IsFinanceIntegrationSyncing = false;
+        }
+    }
+
+    private async Task DisconnectFinanceIntegrationAsync()
+    {
+        if (!CanManageFinanceIntegrations || AccessState.CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        IsFinanceIntegrationDisconnecting = true;
+        FinanceIntegrationActionErrorMessage = null;
+        FinanceIntegrationSuccessMessage = null;
+        FinanceIntegrationStatus = CreateOptimisticStatus("disconnected");
+
+        try
+        {
+            var result = await FinanceApiClient.DisconnectFinanceIntegrationAsync(companyId, SelectedProviderKey);
+            FinanceIntegrationSuccessMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(result.Message, $"{SelectedProviderDisplayName} has been disconnected.");
+            await RefreshFinanceIntegrationStateAsync(companyId);
+        }
+        catch (FinanceApiException ex)
+        {
+            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Couldn't disconnect Fortnox. Please try again.");
+            await RefreshFinanceIntegrationStateAsync(companyId);
+        }
+        finally
+        {
+            IsFinanceIntegrationDisconnecting = false;
+        }
+    }
+
+    private async Task ToggleFinanceIntegrationHistoryAsync()
+    {
+        ShowFinanceIntegrationHistory = !ShowFinanceIntegrationHistory;
+        if (ShowFinanceIntegrationHistory && FinanceIntegrationHistory is null)
+        {
+            await LoadFinanceIntegrationHistoryAsync();
+        }
+    }
+
+    private async Task LoadFinanceIntegrationHistoryAsync()
     {
         if (AccessState.CompanyId is not Guid companyId)
         {
             return;
         }
 
-        IsFortnoxDisconnecting = true;
-        FortnoxActionErrorMessage = null;
-        FortnoxSuccessMessage = null;
+        await LoadFinanceIntegrationHistoryAsync(companyId, surfaceErrors: true);
+    }
 
+    private Task RefreshFinanceIntegrationStateAsync(Guid companyId) =>
+        LoadFinanceIntegrationStatusAsync(companyId);
+
+    private async Task LoadFinanceIntegrationHistoryAsync(Guid companyId, bool surfaceErrors)
+    {
+        IsFinanceIntegrationHistoryLoading = true;
+        FinanceIntegrationHistoryErrorMessage = null;
         try
         {
-            var result = await FinanceApiClient.DisconnectFortnoxAsync(companyId);
-            FortnoxSuccessMessage = result.Message;
-            await LoadFortnoxStatusAsync(companyId);
+            FinanceIntegrationHistory = await FinanceApiClient.GetFinanceIntegrationSyncHistoryAsync(companyId, SelectedProviderKey);
         }
         catch (FinanceApiException ex)
         {
-            FortnoxActionErrorMessage = ex.Message;
+            FinanceIntegrationHistory = null;
+            FinanceIntegrationHistoryErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Sync history is unavailable. Please try again.");
+            if (surfaceErrors)
+            {
+                FinanceIntegrationErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Financial integrations are unavailable. Please try again.");
+            }
         }
         finally
         {
-            IsFortnoxDisconnecting = false;
+            IsFinanceIntegrationHistoryLoading = false;
         }
     }
 
-    private async Task ToggleFortnoxHistoryAsync()
-    {
-        ShowFortnoxHistory = !ShowFortnoxHistory;
-        if (ShowFortnoxHistory && FortnoxHistory is null)
+    private FinanceIntegrationConnectionStatusResponse CreateOptimisticStatus(string connectionStatus) =>
+        new()
         {
-            await LoadFortnoxHistoryAsync();
-        }
-    }
+            ProviderKey = SelectedProviderKey,
+            IsConnected = string.Equals(connectionStatus, "connected", StringComparison.OrdinalIgnoreCase),
+            ConnectionId = FinanceIntegrationStatus?.ConnectionId,
+            ConnectionStatus = connectionStatus,
+            ConnectedAtUtc = FinanceIntegrationStatus?.ConnectedAtUtc,
+            LastSuccessfulSyncUtc = FinanceIntegrationStatus?.LastSuccessfulSyncUtc,
+            LastErrorSummary = FinanceIntegrationStatus?.LastErrorSummary
+        };
 
-    private async Task LoadFortnoxHistoryAsync()
-    {
-        if (AccessState.CompanyId is not Guid companyId)
-        {
-            return;
-        }
-
-        IsFortnoxHistoryLoading = true;
-        try
-        {
-            FortnoxHistory = await FinanceApiClient.GetFortnoxSyncHistoryAsync(companyId);
-        }
-        catch (FinanceApiException ex)
-        {
-            FortnoxActionErrorMessage = ex.Message;
-        }
-        finally
-        {
-            IsFortnoxHistoryLoading = false;
-        }
-    }
-
-    private void ApplyFortnoxCallbackMessage()
+    private void ApplyFinanceIntegrationCallbackMessage()
     {
         var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
         var query = QueryHelpers.ParseQuery(uri.Query);
-        if (query.TryGetValue("fortnoxConnection", out var state) && string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
+        if ((query.TryGetValue("integrationConnection", out var state) ||
+             query.TryGetValue("fortnoxConnection", out state)) &&
+            string.Equals(state, "connected", StringComparison.OrdinalIgnoreCase))
         {
-            FortnoxSuccessMessage = "Fortnox is connected.";
+            FinanceIntegrationSuccessMessage = $"{SelectedProviderDisplayName} is connected.";
         }
-        else if (query.TryGetValue("fortnoxMessage", out var message))
+        else if (query.TryGetValue("integrationMessage", out var message) ||
+                 query.TryGetValue("fortnoxMessage", out message))
         {
-            FortnoxActionErrorMessage = message.ToString();
+            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(message.ToString(), "Finance integration authorization could not be completed.");
         }
     }
 
@@ -371,70 +447,100 @@ public partial class SettingsPage : FinancePageBase, IDisposable
             ? "Already configured. Leave blank to keep existing secret."
             : "Required";
 
-    private string FortnoxState => FortnoxStatus?.ConnectionStatus switch
+    private string FinanceIntegrationState =>
+        FortnoxIntegrationDisplayMapper.NormalizeConnectionState(FinanceIntegrationStatus?.ConnectionStatus, IsFinanceIntegrationSyncing);
+
+    private string FinanceIntegrationStateLabel =>
+        FortnoxIntegrationDisplayMapper.FormatConnectionLabel(FinanceIntegrationState);
+
+    private string FinanceIntegrationStateDescription =>
+        FortnoxIntegrationDisplayMapper.FormatConnectionDescription(
+            SelectedProviderDisplayName,
+            FinanceIntegrationState,
+            FinanceIntegrationStatus?.LastErrorSummary);
+
+    private string FinanceIntegrationConnectionSummary => FinanceIntegrationStatus?.ConnectionId is not null
+        ? FinanceIntegrationStateLabel
+        : "No accounting connection is stored.";
+
+    private string FinanceIntegrationBadgeClass =>
+        FortnoxIntegrationDisplayMapper.GetConnectionBadgeClass(FinanceIntegrationState);
+
+    private bool ShowConnectAction => FinanceIntegrationState is "not_connected";
+    private bool ShowReconnectAction => FinanceIntegrationState is "needs_reconnect" or "error";
+    private bool ShowSyncAction => FinanceIntegrationState is "connected" or "syncing";
+    private bool ShowDisconnectAction => FinanceIntegrationStatus?.ConnectionId is not null && FinanceIntegrationState is not "not_connected";
+    private bool IsFinanceIntegrationSyncDisabled =>
+        IsFinanceIntegrationConnecting ||
+        IsFinanceIntegrationDisconnecting ||
+        IsFinanceIntegrationSyncing ||
+        FinanceIntegrationState is not "connected" and not "syncing" ||
+        FinanceIntegrationStatus?.ConnectionId is null;
+
+    private string FinanceIntegrationSyncDisabledReason
     {
-        null or "" => "not_connected",
-        "pending" => "connecting",
-        "connected" when IsFortnoxSyncing => "syncing",
-        "connected" => "connected",
-        "needs_reconnect" => "needs_reconnect",
-        "error" => "error",
-        "revoked" or "disconnected" => "not_connected",
-        _ => "error"
-    };
+        get
+        {
+            if (IsFinanceIntegrationSyncing)
+            {
+                return "Sync is already running.";
+            }
 
-    private string FortnoxStateLabel => FortnoxState switch
+            if (IsFinanceIntegrationConnecting)
+            {
+                return "Finish connecting Fortnox before syncing.";
+            }
+
+            if (IsFinanceIntegrationDisconnecting)
+            {
+                return "Finish disconnecting Fortnox before syncing.";
+            }
+
+            if (FinanceIntegrationState is not "connected" and not "syncing" ||
+                FinanceIntegrationStatus?.ConnectionId is null)
+            {
+                return "Connect Fortnox before syncing.";
+            }
+
+            return "Sync data from Fortnox.";
+        }
+    }
+
+    private static string FormatProviderName(string providerKey) =>
+        string.IsNullOrWhiteSpace(providerKey)
+            ? "Accounting system"
+            : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(providerKey.Replace("-", " ").Replace("_", " "));
+
+    private static string FormatDateTime(DateTime? value) =>
+        value.HasValue
+            ? value.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
+            : "Not synced yet";
+
+    private static string FormatDuration(DateTime startedUtc, DateTime? completedUtc)
     {
-        "not_connected" => "Not connected",
-        "connecting" => "Connecting",
-        "connected" => "Connected",
-        "syncing" => "Syncing",
-        "needs_reconnect" => "Needs reconnect",
-        "error" => "Error",
-        _ => "Error"
-    };
+        if (!completedUtc.HasValue)
+        {
+            return "Still running";
+        }
 
-    private string FortnoxStateDescription => FortnoxState switch
-    {
-        "not_connected" => "Connect Fortnox to sync customers, suppliers, invoices, bills, accounts, and payments.",
-        "connecting" => "Fortnox authorization has started and is waiting for completion.",
-        "connected" => "Fortnox is connected and ready to sync finance records.",
-        "syncing" => "Fortnox sync is running. You can review history when it completes.",
-        "needs_reconnect" => "Fortnox needs a fresh authorization before syncing can continue.",
-        "error" => FortnoxStatus?.LastErrorSummary ?? "Fortnox reported an error. Reconnect to restore the integration.",
-        _ => "Fortnox state is unavailable."
-    };
+        var duration = completedUtc.Value - startedUtc;
+        if (duration.TotalSeconds < 1)
+        {
+            return "Under 1 second";
+        }
 
-    private string FortnoxConnectionSummary => FortnoxStatus?.ConnectionId is Guid connectionId
-        ? $"{FortnoxStateLabel} ({connectionId:N})"
-        : "No Fortnox connection is stored.";
+        if (duration.TotalMinutes < 1)
+        {
+            return $"{Math.Round(duration.TotalSeconds):0} seconds";
+        }
 
-    private string FortnoxBadgeClass => FortnoxState switch
-    {
-        "connected" => "badge text-bg-success",
-        "syncing" => "badge text-bg-primary",
-        "needs_reconnect" => "badge text-bg-warning",
-        "error" => "badge text-bg-danger",
-        "connecting" => "badge text-bg-info",
-        _ => "badge text-bg-secondary"
-    };
+        return duration.TotalHours < 1
+            ? $"{Math.Round(duration.TotalMinutes):0} minutes"
+            : $"{duration.TotalHours:0.#} hours";
+    }
 
-    private bool ShowConnectAction => FortnoxState is "not_connected";
-    private bool ShowReconnectAction => FortnoxState is "needs_reconnect" or "error";
-    private bool ShowSyncAction => FortnoxState is "connected" or "syncing";
-    private bool ShowDisconnectAction => FortnoxStatus?.ConnectionId is not null && FortnoxState is not "not_connected";
-
-    private static string FormatFortnoxStatus(string status) =>
-        string.IsNullOrWhiteSpace(status)
-            ? "Unknown"
-            : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(status.Replace("_", " "));
-
-    private static string GetHistoryBadgeClass(string status) => status switch
-    {
-        "succeeded" => "badge text-bg-success",
-        "failed" => "badge text-bg-danger",
-        _ => "badge text-bg-secondary"
-    };
+    private static string FormatSafeErrorSummary(FinanceIntegrationSyncHistoryItemResponse item)
+        => FortnoxIntegrationDisplayMapper.FormatSafeHistoryError(item);
 
     public void Dispose()
     {

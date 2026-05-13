@@ -186,6 +186,7 @@ internal sealed class EmailMessageSnapshotEntityConfiguration : IEntityTypeConfi
             .HasColumnName("candidate_decision")
             .HasConversion(decision => decision.ToStorageValue(), value => EmailCandidateDecisionValues.Parse(value))
             .HasMaxLength(32)
+            .HasSentinel((EmailCandidateDecision)0)
             .HasDefaultValue(EmailCandidateDecision.Candidate)
             .IsRequired();
         builder.Property(x => x.MatchedRules)

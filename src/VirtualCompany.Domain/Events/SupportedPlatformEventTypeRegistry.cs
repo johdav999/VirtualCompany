@@ -44,6 +44,11 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
     public const string FinancePaymentCreated = "finance.payment.created";
     public const string FinanceSimulationDayAdvanced = "finance.simulation.day_advanced";
     public const string FinanceThresholdBreached = "finance.threshold.breached";
+    public const string SalesEmailReceived = "sales.email.received";
+    public const string SalesLeadDetected = "sales.lead.detected";
+    public const string SalesLeadQualified = "sales.lead.qualified";
+    public const string SalesDealWon = "sales.deal.won";
+    public const string SalesDealCreated = "sales.deal.created";
 
     private static readonly string[] EventTypes =
     [
@@ -80,7 +85,12 @@ public sealed class SupportedPlatformEventTypeRegistry : ISupportedPlatformEvent
         FinanceBillCreated,
         FinancePaymentCreated,
         FinanceSimulationDayAdvanced,
-        FinanceThresholdBreached
+        FinanceThresholdBreached,
+        SalesEmailReceived,
+        SalesLeadDetected,
+        SalesLeadQualified,
+        SalesDealWon,
+        SalesDealCreated
     ];
 
     private static readonly HashSet<string> EventTypeSet =

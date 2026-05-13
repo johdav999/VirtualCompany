@@ -25,6 +25,11 @@ public static class CompanyOutboxTopics
     public const string FinancePaymentCreated = SupportedPlatformEventTypeRegistry.FinancePaymentCreated;
     public const string FinanceSimulationDayAdvanced = SupportedPlatformEventTypeRegistry.FinanceSimulationDayAdvanced;
     public const string FinanceThresholdBreached = SupportedPlatformEventTypeRegistry.FinanceThresholdBreached;
+    public const string SalesEmailReceived = SupportedPlatformEventTypeRegistry.SalesEmailReceived;
+    public const string SalesLeadDetected = SupportedPlatformEventTypeRegistry.SalesLeadDetected;
+    public const string SalesLeadQualified = SupportedPlatformEventTypeRegistry.SalesLeadQualified;
+    public const string SalesDealWon = SupportedPlatformEventTypeRegistry.SalesDealWon;
+    public const string SalesDealCreated = SupportedPlatformEventTypeRegistry.SalesDealCreated;
 }
 
 public sealed record CompanyInvitationDeliveryRequestedMessage(

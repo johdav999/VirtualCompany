@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.4.1",
+  "promptPath": ".ai-design/prompts/TASK-33.4.1.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T18:07:13.323Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T18-07-13-323Z_TASK-33.4.1_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T18-07-13-323Z_TASK-33.4.1.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T18:11:19.203Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Utc);\n+    }\n+\n+    [Fact]\n+    public void Sensitive_action_types_do_not_allow_automatic_retry()\n+    {\n+        var payment = CreateCommand(FinanceIntegrationWriteCommandTypes.Payment);\n+        var record = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);\n+\n+        Assert.False(payment.RetrySupported);\n+        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.None, payment.RetryPolicy);\n+        Assert.True(record.RetrySupported);\n+        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);\n+    }\n+\n+    [Fact]\n+    public void Successful_execution_persists_safe_response_summary_and_status_code()\n+    {\n+        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);\n+\n+        command.MarkApproved(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);\n+        command.MarkExecutionStarted(DateTime.UtcNow);\n+        command.MarkExecuted(\"1001\", 200, \"\"\"{\"DocumentNumber\":\"1001\"}\"\"\", DateTime.UtcNow);\n+\n+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Executed, command.Status);\n+        Assert.Equal(1, command.ExecutionAttemptCount);\n+        Assert.Equal(200, command.ResponseStatusCode);\n+        Assert.Contains(\"1001\", command.SafeResponseSummary);\n+    }\n+\n     [Fact]\n     public void Real_fortnox_api_tests_are_opt_in_only()\n     {\n@@ -85,4 +126,25 @@ public sealed class FortnoxWriteApprovalTests\n \n         Assert.False(enabled);\n     }\n+\n+    private static FinanceIntegrationWriteCommandRecord CreateCommand(string commandType) =>\n+        new(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            commandType,\n+            \"POST\",\n+            \"invoices\",\n+            \"Example company\",\n+            \"\"\"{\"Invoice\":{\"Total\":100}}\"\"\",\n+            new string('a', 64),\n+            \"\"\"{\"Invoice\":{\"Total\":100}}\"\"\",\n+            \"correlation-1\",\n+            DateTime.UtcNow);\n }\nEND_OF_PATCH\n",
+  "stderrTail": "[Fact]\n+    public void Sensitive_action_types_do_not_allow_automatic_retry()\n+    {\n+        var payment = CreateCommand(FinanceIntegrationWriteCommandTypes.Payment);\n+        var record = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);\n+\n+        Assert.False(payment.RetrySupported);\n+        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.None, payment.RetryPolicy);\n+        Assert.True(record.RetrySupported);\n+        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);\n+    }\n+\n+    [Fact]\n+    public void Successful_execution_persists_safe_response_summary_and_status_code()\n+    {\n+        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);\n+\n+        command.MarkApproved(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);\n+        command.MarkExecutionStarted(DateTime.UtcNow);\n+        command.MarkExecuted(\"1001\", 200, \"\"\"{\"DocumentNumber\":\"1001\"}\"\"\", DateTime.UtcNow);\n+\n+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Executed, command.Status);\n+        Assert.Equal(1, command.ExecutionAttemptCount);\n+        Assert.Equal(200, command.ResponseStatusCode);\n+        Assert.Contains(\"1001\", command.SafeResponseSummary);\n+    }\n+\n     [Fact]\n     public void Real_fortnox_api_tests_are_opt_in_only()\n     {\n@@ -85,4 +126,25 @@ public sealed class FortnoxWriteApprovalTests\n \n         Assert.False(enabled);\n     }\n+\n+    private static FinanceIntegrationWriteCommandRecord CreateCommand(string commandType) =>\n+        new(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            commandType,\n+            \"POST\",\n+            \"invoices\",\n+            \"Example company\",\n+            \"\"\"{\"Invoice\":{\"Total\":100}}\"\"\",\n+            new string('a', 64),\n+            \"\"\"{\"Invoice\":{\"Total\":100}}\"\"\",\n+            \"correlation-1\",\n+            DateTime.UtcNow);\n }\nEND_OF_PATCH\ntokens used\n215,688\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

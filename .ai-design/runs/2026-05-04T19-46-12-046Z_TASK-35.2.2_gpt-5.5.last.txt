@@ -1,0 +1,949 @@
+diff --git a/src/VirtualCompany.Application/CustomerMemory/CustomerMemoryContracts.cs b/src/VirtualCompany.Application/CustomerMemory/CustomerMemoryContracts.cs
+new file mode 100644
+index 0000000..1f6e3a4
+--- /dev/null
++++ b/src/VirtualCompany.Application/CustomerMemory/CustomerMemoryContracts.cs
+@@ -0,0 +1,77 @@
++namespace VirtualCompany.Application.CustomerMemory;
++
++public interface ICustomerMemoryService
++{
++    Task<CustomerMemoryContext?> GetContextAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken);
++    Task<CustomerMemoryContext?> RefreshProfileAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken);
++    Task<OfferEligibilityResult> EvaluateOfferEligibilityAsync(Guid companyId, Guid contactId, string offerKey, TimeSpan lookbackWindow, CancellationToken cancellationToken);
++}
++
++public sealed record CustomerMemoryContext(
++    Guid CompanyId,
++    Guid ContactId,
++    string ContactName,
++    string ContactEmail,
++    string? CustomerCompanyName,
++    string? Industry,
++    string AiSummary,
++    string RelationshipMemory,
++    string? LastOutreachSummary,
++    decimal EngagementScore,
++    IReadOnlyList<CustomerConversationMemory> PastConversations,
++    IReadOnlyList<CustomerDealMemory> PreviousDeals,
++    IReadOnlyList<CustomerMemorySignal> Preferences,
++    IReadOnlyList<CustomerMemorySignal> PriceSensitivityIndicators,
++    IReadOnlyList<CustomerMemorySignal> IndustrySignals,
++    IReadOnlyList<OfferExposureMemory> OfferExposureHistory,
++    DateTime RefreshedUtc);
++
++public sealed record CustomerConversationMemory(
++    Guid? ConversationId,
++    string Summary,
++    DateTime OccurredUtc,
++    string SourceType);
++
++public sealed record CustomerDealMemory(
++    Guid DealId,
++    string Title,
++    string Status,
++    decimal Amount,
++    string Currency,
++    DateTime? ClosedUtc,
++    string Summary);
++
++public sealed record CustomerMemorySignal(
++    string Key,
++    string Value,
++    decimal Confidence,
++    DateTime ObservedUtc,
++    string SourceSummary);
++
++public sealed record OfferExposureMemory(
++    string OfferKey,
++    Guid? CampaignId,
++    Guid? DealId,
++    DateTime OccurredUtc,
++    string SourceType,
++    string Summary);
++
++public sealed record OfferEligibilityResult(
++    bool CanSend,
++    string OfferKey,
++    DateTime LookbackStartUtc,
++    string? BlockReason,
++    IReadOnlyList<OfferExposureMemory> MatchingExposures)
++{
++    public static OfferEligibilityResult Allowed(string offerKey, DateTime lookbackStartUtc) =>
++        new(true, offerKey, lookbackStartUtc, null, []);
++
++    public static OfferEligibilityResult Blocked(string offerKey, DateTime lookbackStartUtc, IReadOnlyList<OfferExposureMemory> exposures)
++    {
++        var reason = exposures.Count == 1
++            ? $"This contact already received or discussed this offer on {exposures[0].OccurredUtc:yyyy-MM-dd}."
++            : $"This contact already received or discussed this offer {exposures.Count} times in the lookback window.";
++
++        return new(false, offerKey, lookbackStartUtc, reason, exposures);
++    }
++}
++
++public sealed class CustomerMemoryOptions
++{
++    public const string SectionName = "CustomerMemory";
++    public int DuplicateOfferLookbackDays { get; set; } = 90;
++}
+diff --git a/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs b/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs
+index 9fdb0cf..4a8d5fa 100644
+--- a/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/CustomerMemoryProfileEntities.cs
+@@ -52,6 +52,19 @@ public sealed class CustomerMemoryProfile : ICompanyOwnedEntity
+     public ICollection<CustomerMemoryProfilePriceSignal> PriceSignals { get; } = new List<CustomerMemoryProfilePriceSignal>();
+     public ICollection<CustomerMemoryProfileIndustrySignal> IndustrySignals { get; } = new List<CustomerMemoryProfileIndustrySignal>();
+ 
++    public void Refresh(
++        string? aiSummary,
++        string? relationshipMemory,
++        string? lastOutreachSummary,
++        decimal? engagementScore,
++        IDictionary<string, JsonNode?>? metadata,
++        DateTime updatedUtc)
++    {
++        AiSummary = CustomerMemoryProfileText.NormalizeOptional(aiSummary, nameof(aiSummary), SummaryMaxLength);
++        RelationshipMemory = CustomerMemoryProfileText.NormalizeOptional(relationshipMemory, nameof(relationshipMemory), SummaryMaxLength);
++        LastOutreachSummary = CustomerMemoryProfileText.NormalizeOptional(lastOutreachSummary, nameof(lastOutreachSummary), SummaryMaxLength);
++        EngagementScore = NormalizeScore(engagementScore, nameof(engagementScore));
++        Metadata = CustomerMemoryProfileText.CloneNodes(metadata);
++        UpdatedUtc = CustomerMemoryProfileText.NormalizeUtc(updatedUtc, nameof(updatedUtc));
++    }
++
+     private static decimal? NormalizeScore(decimal? value, string name)
+     {
+         if (!value.HasValue)
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 7a9f6f1..8cf46be 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -1152,11 +1152,38 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+     public string? ProviderMessageId { get; private set; }
+     public string? ProviderThreadId { get; private set; }
+     public string? InternetMessageId { get; private set; }
++    public string? OriginalGeneratedSubject { get; private set; }
++    public string? OriginalGeneratedBody { get; private set; }
++    public string? CurrentDraftSubject { get; private set; }
++    public string? CurrentDraftBody { get; private set; }
++    public string? FinalSentSubject { get; private set; }
++    public string? FinalSentBody { get; private set; }
++    public DateTime? GeneratedDraftUtc { get; private set; }
++    public DateTime? DraftUpdatedUtc { get; private set; }
+     public string IdempotencyKey { get; private set; } = null!;
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public SalesSequenceExecution SequenceExecution { get; private set; } = null!;
+     public SalesSequenceStep SalesSequenceStep { get; private set; } = null!;
++
++    public void RecordGeneratedDraft(string subject, string body, DateTime generatedUtc)
++    {
++        var effectiveGeneratedUtc = SalesEntityText.NormalizeUtc(generatedUtc, nameof(generatedUtc));
++        var normalizedSubject = SalesEntityText.NormalizeRequired(subject, nameof(subject), 300);
++        var normalizedBody = SalesEntityText.NormalizeRequired(body, nameof(body), 16000);
++
++        OriginalGeneratedSubject ??= normalizedSubject;
++        OriginalGeneratedBody ??= normalizedBody;
++        CurrentDraftSubject = normalizedSubject;
++        CurrentDraftBody = normalizedBody;
++        GeneratedDraftUtc ??= effectiveGeneratedUtc;
++        DraftUpdatedUtc = effectiveGeneratedUtc;
++        UpdatedUtc = effectiveGeneratedUtc;
++    }
++
++    public void UpdateDraftContent(string subject, string body, DateTime updatedUtc)
++    {
++        CurrentDraftSubject = SalesEntityText.NormalizeRequired(subject, nameof(subject), 300);
++        CurrentDraftBody = SalesEntityText.NormalizeRequired(body, nameof(body), 16000);
++        DraftUpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc, nameof(updatedUtc));
++        UpdatedUtc = DraftUpdatedUtc.Value;
++    }
+ 
+     public void MarkSending()
+     {
+@@ -1170,7 +1197,7 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+-    public void MarkSent(string provider, Guid? mailboxConnectionId, string providerMessageId, string? providerThreadId, string? internetMessageId, string deliveryStatus, DateTime sentUtc)
++    public void MarkSent(string provider, Guid? mailboxConnectionId, string providerMessageId, string? providerThreadId, string? internetMessageId, string deliveryStatus, DateTime sentUtc, string? finalSubject = null, string? finalBody = null)
+     {
+         Provider = SalesEntityText.NormalizeRequired(provider, nameof(provider), 64);
+         MailboxConnectionId = mailboxConnectionId;
+@@ -1179,6 +1206,8 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+         InternetMessageId = SalesEntityText.NormalizeOptional(internetMessageId, nameof(internetMessageId), 512);
+         DeliveryStatus = SalesEntityText.NormalizeRequired(deliveryStatus, nameof(deliveryStatus), 32).ToLowerInvariant();
+         Status = SalesStatuses.Completed;
++        FinalSentSubject = SalesEntityText.NormalizeOptional(finalSubject, nameof(finalSubject), 300);
++        FinalSentBody = SalesEntityText.NormalizeOptional(finalBody, nameof(finalBody), 16000);
+         SentUtc = SalesEntityText.NormalizeUtc(sentUtc, nameof(sentUtc));
+         UpdatedUtc = SentUtc.Value;
+     }
+@@ -1544,6 +1573,7 @@ public static class SalesStatuses
+     public const string Cancelled = "cancelled";
+     public const string Delivered = "delivered";
+     public const string Bounced = "bounced";
++    public const string DuplicateOffer = "duplicate_offer";
+     public const string Linked = "linked";
+     public const string Ignored = "ignored";
+ }
+diff --git a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+index 2a0b604..b7c2de8 100644
+--- a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
++++ b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+@@ -43,7 +43,9 @@ public sealed record OutboundEmailSendRequest(
+     string? ToDisplayName,
+     string Subject,
+     string BodyText,
+-    string IdempotencyKey);
++    string IdempotencyKey,
++    string? OriginalGeneratedSubject = null,
++    string? OriginalGeneratedBody = null);
+ 
+ public sealed record OutboundEmailSendResult(
+     string Provider,
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index 3de58e7..00f39a1 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -1,3 +1,4 @@
++using VirtualCompany.Application.CustomerMemory;
+ using VirtualCompany.Domain.Entities;
+ 
+ namespace VirtualCompany.Application.Sales;
+@@ -145,7 +146,8 @@ public sealed record SalesDealDetailResponse(
+     IReadOnlyList<SalesActivityResponse> Activities,
+     IReadOnlyList<SalesRecommendationResponse> Recommendations,
+     IReadOnlyList<string> AvailableActions,
+-    SalesFinanceHandoffResponse? FinanceHandoff);
++    SalesFinanceHandoffResponse? FinanceHandoff,
++    CustomerMemoryContext? CustomerMemory = null);
+ 
+ public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
+ public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
+diff --git a/src/VirtualCompany.Infrastructure/CustomerMemory/CustomerMemoryService.cs b/src/VirtualCompany.Infrastructure/CustomerMemory/CustomerMemoryService.cs
+new file mode 100644
+index 0000000..39e4acd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/CustomerMemory/CustomerMemoryService.cs
+@@ -0,0 +1,298 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.CustomerMemory;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.CustomerMemory;
++
++public sealed class CustomerMemoryService : ICustomerMemoryService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly TimeProvider _timeProvider;
++
++    public CustomerMemoryService(VirtualCompanyDbContext dbContext, TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<CustomerMemoryContext?> GetContextAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken)
++    {
++        EnsureIds(companyId, contactId);
++
++        var contact = await LoadContactAsync(companyId, contactId, cancellationToken);
++        if (contact is null)
++        {
++            return null;
++        }
++
++        var persisted = await _dbContext.CustomerMemoryProfiles.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.Preferences)
++            .Include(x => x.PriceSignals)
++            .Include(x => x.IndustrySignals)
++            .Where(x => x.CompanyId == companyId && x.ContactId == contactId)
++            .SingleOrDefaultAsync(cancellationToken);
++
++        var aggregate = await BuildAggregateAsync(companyId, contact, cancellationToken);
++        if (persisted is null)
++        {
++            return aggregate;
++        }
++
++        return aggregate with
++        {
++            AiSummary = FirstUseful(persisted.AiSummary, aggregate.AiSummary),
++            RelationshipMemory = FirstUseful(persisted.RelationshipMemory, aggregate.RelationshipMemory),
++            LastOutreachSummary = FirstUseful(persisted.LastOutreachSummary, aggregate.LastOutreachSummary),
++            EngagementScore = persisted.EngagementScore ?? aggregate.EngagementScore,
++            Preferences = persisted.Preferences.Count > 0
++                ? persisted.Preferences.OrderByDescending(x => x.ObservedUtc).Select(x => new CustomerMemorySignal(x.PreferenceKey, x.PreferenceValue, x.Confidence ?? 0.7m, x.ObservedUtc, x.SourceSummary ?? "Saved customer preference.")).ToList()
++                : aggregate.Preferences,
++            PriceSensitivityIndicators = persisted.PriceSignals.Count > 0
++                ? persisted.PriceSignals.OrderByDescending(x => x.ObservedUtc).Select(x => new CustomerMemorySignal(x.SignalKey, x.SignalValue, x.Confidence ?? 0.7m, x.ObservedUtc, x.SourceSummary ?? "Saved price signal.")).ToList()
++                : aggregate.PriceSensitivityIndicators,
++            IndustrySignals = persisted.IndustrySignals.Count > 0
++                ? persisted.IndustrySignals.OrderByDescending(x => x.ObservedUtc).Select(x => new CustomerMemorySignal(x.SignalKey, x.SignalValue, x.Confidence ?? 0.7m, x.ObservedUtc, x.SourceSummary ?? "Saved industry signal.")).ToList()
++                : aggregate.IndustrySignals,
++            RefreshedUtc = persisted.UpdatedUtc
++        };
++    }
++
++    public async Task<CustomerMemoryContext?> RefreshProfileAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken)
++    {
++        EnsureIds(companyId, contactId);
++
++        var contact = await LoadContactAsync(companyId, contactId, cancellationToken);
++        if (contact is null)
++        {
++            return null;
++        }
++
++        var context = await BuildAggregateAsync(companyId, contact, cancellationToken);
++        var now = _timeProvider.GetUtcNow().UtcDateTime;
++
++        var profile = await _dbContext.CustomerMemoryProfiles.IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.ContactId == contactId, cancellationToken);
++
++        if (profile is null)
++        {
++            profile = new CustomerMemoryProfile(
++                Guid.NewGuid(),
++                companyId,
++                contactId,
++                context.AiSummary,
++                context.RelationshipMemory,
++                context.LastOutreachSummary,
++                context.EngagementScore,
++                BuildProfileMetadata(context),
++                now,
++                now);
++            _dbContext.CustomerMemoryProfiles.Add(profile);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++        else
++        {
++            profile.Refresh(
++                context.AiSummary,
++                context.RelationshipMemory,
++                context.LastOutreachSummary,
++                context.EngagementScore,
++                BuildProfileMetadata(context),
++                now);
++            await _dbContext.SaveChangesAsync(cancellationToken);
++        }
++
++        await ReplaceProfileDetailsAsync(profile, context, now, cancellationToken);
++        return context with { RefreshedUtc = now };
++    }
++
++    public async Task<OfferEligibilityResult> EvaluateOfferEligibilityAsync(Guid companyId, Guid contactId, string offerKey, TimeSpan lookbackWindow, CancellationToken cancellationToken)
++    {
++        EnsureIds(companyId, contactId);
++        var normalizedOfferKey = NormalizeOfferKey(offerKey);
++        var lookbackStartUtc = _timeProvider.GetUtcNow().UtcDateTime.Subtract(lookbackWindow);
++
++        var campaignExposures = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.SequenceExecution).ThenInclude(x => x.SalesCampaign)
++            .Where(x => x.CompanyId == companyId &&
++                x.ContactId == contactId &&
++                x.SentUtc >= lookbackStartUtc &&
++                x.SequenceExecution.SalesCampaign.Name.ToLower() == normalizedOfferKey)
++            .Select(x => new OfferExposureMemory(
++                normalizedOfferKey,
++                x.SalesCampaignId,
++                null,
++                x.SentUtc!.Value,
++                "campaign",
++                $"Campaign email sent for {x.SequenceExecution.SalesCampaign.Name}."))
++            .ToListAsync(cancellationToken);
++
++        var dealExposures = await _dbContext.Deals.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId &&
++                x.PrimaryContactId == contactId &&
++                !x.IsDeleted &&
++                x.CreatedUtc >= lookbackStartUtc &&
++                x.Title.ToLower() == normalizedOfferKey)
++            .Select(x => new OfferExposureMemory(
++                normalizedOfferKey,
++                null,
++                x.Id,
++                x.CreatedUtc,
++                "deal",
++                $"Deal history already includes {x.Title}."))
++            .ToListAsync(cancellationToken);
++
++        var exposures = campaignExposures.Concat(dealExposures).OrderByDescending(x => x.OccurredUtc).ToList();
++        return exposures.Count == 0
++            ? OfferEligibilityResult.Allowed(normalizedOfferKey, lookbackStartUtc)
++            : OfferEligibilityResult.Blocked(normalizedOfferKey, lookbackStartUtc, exposures);
++    }
++
++    private async Task<Contact?> LoadContactAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken) =>
++        await _dbContext.Contacts.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.CustomerCompany)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == contactId && !x.IsDeleted, cancellationToken);
++
++    private async Task<CustomerMemoryContext> BuildAggregateAsync(Guid companyId, Contact contact, CancellationToken cancellationToken)
++    {
++        var conversations = await LoadConversationMemoryAsync(companyId, contact, cancellationToken);
++        var deals = await LoadDealMemoryAsync(companyId, contact.Id, cancellationToken);
++        var offerExposures = await LoadOfferExposureHistoryAsync(companyId, contact.Id, cancellationToken);
++        var preferences = BuildPreferences(conversations);
++        var priceSignals = BuildPriceSignals(conversations, deals);
++        var industrySignals = BuildIndustrySignals(contact);
++        var lastOutreach = offerExposures.OrderByDescending(x => x.OccurredUtc).FirstOrDefault()?.Summary;
++        var engagementScore = CalculateEngagementScore(conversations, deals, offerExposures);
++
++        return new CustomerMemoryContext(
++            companyId,
++            contact.Id,
++            contact.FullName,
++            contact.Email,
++            contact.CustomerCompany?.Name,
++            contact.CustomerCompany?.Industry,
++            BuildAiSummary(contact, conversations, deals, priceSignals, industrySignals),
++            BuildRelationshipMemory(contact, conversations, deals),
++            lastOutreach,
++            engagementScore,
++            conversations,
++            deals,
++            preferences,
++            priceSignals,
++            industrySignals,
++            offerExposures,
++            _timeProvider.GetUtcNow().UtcDateTime);
++    }
++
++    private async Task<IReadOnlyList<CustomerConversationMemory>> LoadConversationMemoryAsync(Guid companyId, Contact contact, CancellationToken cancellationToken)
++    {
++        var emailLinks = await _dbContext.SalesEmailLinks.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ContactId == contact.Id && !x.IsDeleted)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(10)
++            .Select(x => new CustomerConversationMemory(
++                null,
++                x.Rationale ?? x.DetectedIntent ?? x.ProductOrServiceInterest ?? "Sales email linked to this contact.",
++                x.CreatedUtc,
++                "sales_email"))
++            .ToListAsync(cancellationToken);
++
++        var bodyMatches = await _dbContext.Messages.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.Conversation)
++            .Where(x => x.CompanyId == companyId && (x.Body.Contains(contact.Email) || x.Body.Contains(contact.FullName)))
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(10)
++            .Select(x => new CustomerConversationMemory(
++                x.ConversationId,
++                x.Conversation.Subject ?? Trim(x.Body, 220),
++                x.CreatedUtc,
++                x.Conversation.ChannelType))
++            .ToListAsync(cancellationToken);
++
++        return emailLinks.Concat(bodyMatches)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Take(12)
++            .ToList();
++    }
++
++    private async Task<IReadOnlyList<CustomerDealMemory>> LoadDealMemoryAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken) =>
++        await _dbContext.Deals.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.PrimaryContactId == contactId && !x.IsDeleted)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Take(10)
++            .Select(x => new CustomerDealMemory(
++                x.Id,
++                x.Title,
++                x.Status,
++                x.Amount,
++                x.Currency,
++                x.Status == SalesStatuses.Won || x.Status == SalesStatuses.Lost ? x.UpdatedUtc : null,
++                $"{x.Title} is {x.Status} at {x.Amount} {x.Currency}."))
++            .ToListAsync(cancellationToken);
++
++    private async Task<IReadOnlyList<OfferExposureMemory>> LoadOfferExposureHistoryAsync(Guid companyId, Guid contactId, CancellationToken cancellationToken) =>
++        await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.SequenceExecution).ThenInclude(x => x.SalesCampaign)
++            .Where(x => x.CompanyId == companyId && x.ContactId == contactId && x.SentUtc.HasValue)
++            .OrderByDescending(x => x.SentUtc)
++            .Take(20)
++            .Select(x => new OfferExposureMemory(
++                x.SequenceExecution.SalesCampaign.Name.ToLower(),
++                x.SalesCampaignId,
++                null,
++                x.SentUtc!.Value,
++                "campaign",
++                $"Campaign email sent for {x.SequenceExecution.SalesCampaign.Name}."))
++            .ToListAsync(cancellationToken);
++
++    private async Task ReplaceProfileDetailsAsync(CustomerMemoryProfile profile, CustomerMemoryContext context, DateTime now, CancellationToken cancellationToken)
++    {
++        _dbContext.CustomerMemoryProfileConversations.RemoveRange(_dbContext.CustomerMemoryProfileConversations.IgnoreQueryFilters().Where(x => x.CompanyId == profile.CompanyId && x.CustomerMemoryProfileId == profile.Id));
++        _dbContext.CustomerMemoryProfileDeals.RemoveRange(_dbContext.CustomerMemoryProfileDeals.IgnoreQueryFilters().Where(x => x.CompanyId == profile.CompanyId && x.CustomerMemoryProfileId == profile.Id));
++        _dbContext.CustomerMemoryProfilePreferences.RemoveRange(_dbContext.CustomerMemoryProfilePreferences.IgnoreQueryFilters().Where(x => x.CompanyId == profile.CompanyId && x.CustomerMemoryProfileId == profile.Id));
++        _dbContext.CustomerMemoryProfilePriceSignals.RemoveRange(_dbContext.CustomerMemoryProfilePriceSignals.IgnoreQueryFilters().Where(x => x.CompanyId == profile.CompanyId && x.CustomerMemoryProfileId == profile.Id));
++        _dbContext.CustomerMemoryProfileIndustrySignals.RemoveRange(_dbContext.CustomerMemoryProfileIndustrySignals.IgnoreQueryFilters().Where(x => x.CompanyId == profile.CompanyId && x.CustomerMemoryProfileId == profile.Id));
++
++        foreach (var conversation in context.PastConversations.Where(x => x.ConversationId.HasValue))
++        {
++            _dbContext.CustomerMemoryProfileConversations.Add(new CustomerMemoryProfileConversation(Guid.NewGuid(), profile.CompanyId, profile.Id, conversation.ConversationId!.Value, conversation.Summary, conversation.OccurredUtc, 0.7m, createdUtc: now));
++        }
++
++        foreach (var deal in context.PreviousDeals)
++        {
++            _dbContext.CustomerMemoryProfileDeals.Add(new CustomerMemoryProfileDeal(Guid.NewGuid(), profile.CompanyId, profile.Id, deal.DealId, "primary", deal.Status, deal.ClosedUtc, deal.Summary, createdUtc: now));
++        }
++
++        foreach (var preference in context.Preferences)
++        {
++            _dbContext.CustomerMemoryProfilePreferences.Add(new CustomerMemoryProfilePreference(Guid.NewGuid(), profile.CompanyId, profile.Id, preference.Key, preference.Value, preference.SourceSummary, preference.Confidence, preference.ObservedUtc, now));
++        }
++
++        foreach (var signal in context.PriceSensitivityIndicators)
++        {
++            _dbContext.CustomerMemoryProfilePriceSignals.Add(new CustomerMemoryProfilePriceSignal(Guid.NewGuid(), profile.CompanyId, profile.Id, signal.Key, signal.Value, signal.Confidence, signal.ObservedUtc, signal.SourceSummary, now));
++        }
++
++        foreach (var signal in context.IndustrySignals)
++        {
++            _dbContext.CustomerMemoryProfileIndustrySignals.Add(new CustomerMemoryProfileIndustrySignal(Guid.NewGuid(), profile.CompanyId, profile.Id, signal.Key, signal.Value, signal.Confidence, signal.ObservedUtc, signal.SourceSummary, now));
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private static IReadOnlyList<CustomerMemorySignal> BuildPreferences(IReadOnlyList<CustomerConversationMemory> conversations) =>
++        conversations.Where(x => x.Summary.Contains("prefers", StringComparison.OrdinalIgnoreCase))
++            .Take(5)
++            .Select(x => new CustomerMemorySignal("communication", Trim(x.Summary, 180), 0.6m, x.OccurredUtc, x.SourceType))
++            .ToList();
++
++    private static IReadOnlyList<CustomerMemorySignal> BuildPriceSignals(IReadOnlyList<CustomerConversationMemory> conversations, IReadOnlyList<CustomerDealMemory> deals)
++    {
++        var signals = conversations.Where(x => x.Summary.Contains("price", StringComparison.OrdinalIgnoreCase) || x.Summary.Contains("budget", StringComparison.OrdinalIgnoreCase))
++            .Select(x => new CustomerMemorySignal("price_discussion", Trim(x.Summary, 180), 0.65m, x.OccurredUtc, x.SourceType))
++            .ToList();
++
++        if (deals.Any(x => string.Equals(x.Status, SalesStatuses.Lost, StringComparison.OrdinalIgnoreCase)))
++        {
++            signals.Add(new CustomerMemorySignal("lost_deal", "Prior lost deal may indicate price or timing sensitivity.", 0.45m, deals.Max(x => x.ClosedUtc ?? DateTime.MinValue), "deal_history"));
++        }
++
++        return signals.Take(5).ToList();
++    }
++
++    private static IReadOnlyList<CustomerMemorySignal> BuildIndustrySignals(Contact contact) =>
++        string.IsNullOrWhiteSpace(contact.CustomerCompany?.Industry)
++            ? []
++            : [new CustomerMemorySignal("industry", contact.CustomerCompany.Industry, 0.9m, contact.UpdatedUtc, "customer company profile")];
++
++    private static decimal CalculateEngagementScore(IReadOnlyList<CustomerConversationMemory> conversations, IReadOnlyList<CustomerDealMemory> deals, IReadOnlyList<OfferExposureMemory> offerExposures)
++    {
++        var score = 20m + Math.Min(30m, conversations.Count * 5m) + Math.Min(30m, deals.Count * 8m) + Math.Min(20m, offerExposures.Count * 2m);
++        if (deals.Any(x => string.Equals(x.Status, SalesStatuses.Won, StringComparison.OrdinalIgnoreCase)))
++        {
++            score += 10m;
++        }
++
++        return Math.Clamp(decimal.Round(score, 2), 0m, 100m);
++    }
++
++    private static string BuildAiSummary(Contact contact, IReadOnlyList<CustomerConversationMemory> conversations, IReadOnlyList<CustomerDealMemory> deals, IReadOnlyList<CustomerMemorySignal> priceSignals, IReadOnlyList<CustomerMemorySignal> industrySignals)
++    {
++        var parts = new List<string> { $"{contact.FullName} is a sales contact" };
++        if (!string.IsNullOrWhiteSpace(contact.CustomerCompany?.Name)) parts.Add($"at {contact.CustomerCompany.Name}");
++        if (industrySignals.Count > 0) parts.Add($"in {industrySignals[0].Value}");
++        parts.Add($"with {conversations.Count} recent interaction(s) and {deals.Count} deal record(s)");
++        if (priceSignals.Count > 0) parts.Add("price sensitivity has been observed");
++        return string.Join(" ", parts) + ".";
++    }
++
++    private static string BuildRelationshipMemory(Contact contact, IReadOnlyList<CustomerConversationMemory> conversations, IReadOnlyList<CustomerDealMemory> deals) =>
++        conversations.Count == 0 && deals.Count == 0
++            ? $"{contact.FullName} has no prior recorded sales history yet."
++            : $"Relationship history includes {conversations.Count} conversation item(s) and {deals.Count} previous deal(s).";
++
++    private static Dictionary<string, JsonNode?> BuildProfileMetadata(CustomerMemoryContext context) =>
++        new(StringComparer.OrdinalIgnoreCase)
++        {
++            ["conversationCount"] = JsonValue.Create(context.PastConversations.Count),
++            ["dealCount"] = JsonValue.Create(context.PreviousDeals.Count),
++            ["offerExposureCount"] = JsonValue.Create(context.OfferExposureHistory.Count),
++            ["refreshedUtc"] = JsonValue.Create(context.RefreshedUtc)
++        };
++
++    private static string NormalizeOfferKey(string value) =>
++        string.IsNullOrWhiteSpace(value) ? throw new ArgumentException("Offer key is required.", nameof(value)) : value.Trim().ToLowerInvariant();
++
++    private static string FirstUseful(string? first, string fallback) =>
++        string.IsNullOrWhiteSpace(first) ? fallback : first;
++
++    private static string Trim(string value, int maxLength) =>
++        value.Length <= maxLength ? value : value[..maxLength];
++
++    private static void EnsureIds(Guid companyId, Guid contactId)
++    {
++        if (companyId == Guid.Empty) throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        if (contactId == Guid.Empty) throw new ArgumentException("ContactId is required.", nameof(contactId));
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+index 1a6b747..67fa90d 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+@@ -3,6 +3,8 @@ using Microsoft.EntityFrameworkCore;
+ using Microsoft.Extensions.Logging;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.CustomerMemory;
++using Microsoft.Extensions.Options;
+ using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Application.Workflows;
+@@ -292,15 +294,19 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     private readonly IOutboundEmailSender _emailSender;
+     private readonly ICompanyOutboxEnqueuer _outbox;
+     private readonly ILogger<SequenceExecutionService> _logger;
++    private readonly ICustomerMemoryService _customerMemory;
++    private readonly CustomerMemoryOptions _customerMemoryOptions;
+ 
+-    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, ILogger<SequenceExecutionService> logger)
++    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, ILogger<SequenceExecutionService> logger, ICustomerMemoryService customerMemory, IOptions<CustomerMemoryOptions> customerMemoryOptions)
+     {
+         _dbContext = dbContext;
+         _emailSender = emailSender;
+         _outbox = outbox;
+         _logger = logger;
++        _customerMemory = customerMemory;
++        _customerMemoryOptions = customerMemoryOptions.Value;
+     }
+@@ -358,6 +364,28 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+                 continue;
+             }
+ 
++            var eligibility = await _customerMemory.EvaluateOfferEligibilityAsync(
++                companyId,
++                audience.ContactId,
++                campaign.Name,
++                TimeSpan.FromDays(Math.Clamp(_customerMemoryOptions.DuplicateOfferLookbackDays, 1, 3650)),
++                cancellationToken);
++            if (!eligibility.CanSend)
++            {
++                audience.MarkCancelled();
++                _dbContext.AuditEvents.Add(new AuditEvent(
++                    Guid.NewGuid(),
++                    companyId,
++                    AuditActorTypes.System,
++                    "customer-memory",
++                    "sales.sequence.duplicate_offer_blocked",
++                    "contact",
++                    audience.ContactId.ToString("D"),
++                    AuditEventOutcomes.Succeeded,
++                    eligibility.BlockReason ?? "Alex blocked a duplicate offer for this contact.",
++                    DateTime.UtcNow));
++                continue;
++            }
++
+             var execution = new SalesSequenceExecution(Guid.NewGuid(), companyId, campaign.Id, audience.Id, audience.ContactId);
+             foreach (var sequenceStep in steps)
+             {
+@@ -429,19 +457,24 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             try
+             {
+                 step.MarkSending();
+                 step.SequenceExecution.MarkStarted();
+                 var contact = step.SequenceExecution.Contact;
++                var memory = await _customerMemory.RefreshProfileAsync(step.CompanyId, step.ContactId, cancellationToken);
++                var draft = BuildPersonalizedDraft(step.SalesSequenceStep.TemplateSubject ?? "Following up", step.SalesSequenceStep.TemplateContent, contact, memory, step.SalesSequenceStep.AiPersonalizationEnabled);
++                step.RecordGeneratedDraft(draft.Subject, draft.Body, DateTime.UtcNow);
++
+                 var result = await _emailSender.SendSequenceEmailAsync(new OutboundEmailSendRequest(
+                     step.CompanyId,
+                     step.SalesCampaignId,
+                     step.SequenceExecutionId,
+                     step.Id,
+                     step.ContactId,
+                     contact.Email,
+                     contact.FullName,
+-                    step.SalesSequenceStep.TemplateSubject ?? "Following up",
+-                    step.SalesSequenceStep.TemplateContent,
+-                    step.IdempotencyKey), cancellationToken);
++                    draft.Subject,
++                    draft.Body,
++                    step.IdempotencyKey,
++                    step.OriginalGeneratedSubject,
++                    step.OriginalGeneratedBody), cancellationToken);
+ 
+                 var sentUtc = DateTime.UtcNow;
+-                step.MarkSent(result.Provider, result.MailboxConnectionId, result.ProviderMessageId, result.ProviderThreadId, result.InternetMessageId, result.DeliveryStatus, sentUtc);
++                step.MarkSent(result.Provider, result.MailboxConnectionId, result.ProviderMessageId, result.ProviderThreadId, result.InternetMessageId, result.DeliveryStatus, sentUtc, draft.Subject, draft.Body);
+                 var audience = await _dbContext.SalesCampaignContacts.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == step.CompanyId && x.Id == step.SequenceExecution.SalesCampaignContactId, cancellationToken);
+                 audience.MarkSent(step.StepOrder, sentUtc);
+                 sent++;
+@@ -560,6 +593,33 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+         return sentToday >= maxEmailsPerDay;
+     }
+ 
++    private static PersonalizedDraft BuildPersonalizedDraft(string subject, string body, Contact contact, CustomerMemoryContext? memory, bool aiPersonalizationEnabled)
++    {
++        var firstName = contact.FullName.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? contact.FullName;
++        var effectiveSubject = subject.Replace("{firstName}", firstName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{companyName}", contact.CustomerCompany?.Name ?? "your team", StringComparison.OrdinalIgnoreCase);
++        var effectiveBody = body.Replace("{firstName}", firstName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{companyName}", contact.CustomerCompany?.Name ?? "your team", StringComparison.OrdinalIgnoreCase);
++
++        if (aiPersonalizationEnabled && memory is not null)
++        {
++            var contextLine = memory.PreviousDeals.Count > 0
++                ? $"I also noticed our previous work around {memory.PreviousDeals[0].Title}."
++                : memory.LastOutreachSummary is { Length: > 0 }
++                    ? $"I wanted to follow up with that prior context in mind: {memory.LastOutreachSummary}"
++                    : null;
++
++            if (!string.IsNullOrWhiteSpace(contextLine) && !effectiveBody.Contains(contextLine, StringComparison.OrdinalIgnoreCase))
++            {
++                effectiveBody = $"{effectiveBody.Trim()}\n\n{contextLine}";
++            }
++        }
++
++        return new PersonalizedDraft(effectiveSubject, effectiveBody);
++    }
++
++    private sealed record PersonalizedDraft(string Subject, string Body);
++
+     private static void Defer(SalesSequenceExecutionStep step) =>
+         typeof(SalesSequenceExecutionStep).GetProperty(nameof(SalesSequenceExecutionStep.ScheduledSendUtc))!.SetValue(step, DateTime.UtcNow.Date.AddDays(1).AddHours(8));
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 86ddc08..e8a6a62 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -623,6 +623,14 @@ internal sealed class SalesSequenceExecutionStepConfiguration : IEntityTypeConfig
+         builder.Property(x => x.ProviderMessageId).HasColumnName("provider_message_id").HasMaxLength(256);
+         builder.Property(x => x.ProviderThreadId).HasColumnName("provider_thread_id").HasMaxLength(256);
+         builder.Property(x => x.InternetMessageId).HasColumnName("internet_message_id").HasMaxLength(512);
++        builder.Property(x => x.OriginalGeneratedSubject).HasColumnName("original_generated_subject").HasMaxLength(300);
++        builder.Property(x => x.OriginalGeneratedBody).HasColumnName("original_generated_body").HasMaxLength(16000);
++        builder.Property(x => x.CurrentDraftSubject).HasColumnName("current_draft_subject").HasMaxLength(300);
++        builder.Property(x => x.CurrentDraftBody).HasColumnName("current_draft_body").HasMaxLength(16000);
++        builder.Property(x => x.FinalSentSubject).HasColumnName("final_sent_subject").HasMaxLength(300);
++        builder.Property(x => x.FinalSentBody).HasColumnName("final_sent_body").HasMaxLength(16000);
++        builder.Property(x => x.GeneratedDraftUtc).HasColumnName("generated_draft_at");
++        builder.Property(x => x.DraftUpdatedUtc).HasColumnName("draft_updated_at");
+         builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(256).IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 6d0fc60..e177e71 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -1,5 +1,6 @@
+ using Microsoft.Extensions.DependencyInjection.Extensions;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.CustomerMemory;
+ using VirtualCompany.Application.Documents;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Memory;
+@@ -16,6 +17,7 @@ using VirtualCompany.Infrastructure.Companies;
+ using VirtualCompany.Infrastructure.Context;
+ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Finance;
++using VirtualCompany.Infrastructure.CustomerMemory;
+ using VirtualCompany.Infrastructure.Integrations;
+ using VirtualCompany.Infrastructure.Mailbox;
+ using VirtualCompany.Infrastructure.Memory;
+@@ -458,6 +460,9 @@ public static class DependencyInjection
+         services.AddOptions<SequenceExecutionWorkerOptions>()
+             .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
+         services.AddHostedService<SequenceExecutionBackgroundService>();
++        services.AddOptions<CustomerMemoryOptions>()
++            .Bind(configuration.GetSection(CustomerMemoryOptions.SectionName));
++        services.AddScoped<ICustomerMemoryService, CustomerMemoryService>();
+         services.AddScoped<IOutboundCampaignService, OutboundCampaignService>();
+         services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
+         services.AddScoped<IOutboundEmailSender, MailboxOutboundEmailSender>();
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index c6bd6d2..bdff7ec 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -5,6 +5,7 @@ using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Companies;
+ using VirtualCompany.Application.Finance;
++using VirtualCompany.Application.CustomerMemory;
+ using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Application.Workflows;
+@@ -24,8 +25,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private readonly IFortnoxOutboundActionExecutor _fortnoxOutboundActionExecutor;
+     private readonly ISalesAutomationPolicyEvaluator _policyEvaluator;
+     private readonly TimeProvider _timeProvider;
++    private readonly ICustomerMemoryService _customerMemory;
+ 
+-    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IFieldEncryptionService fieldEncryption, ICompanyOutboxEnqueuer outbox, IFinanceIntegrationWriteCommandService financeWriteCommands, IApprovalRequestService approvalRequestService, IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider)
++    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IFieldEncryptionService fieldEncryption, ICompanyOutboxEnqueuer outbox, IFinanceIntegrationWriteCommandService financeWriteCommands, IApprovalRequestService approvalRequestService, IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider, ICustomerMemoryService customerMemory)
+     {
+         _dbContext = dbContext;
+         _mailboxProviderRegistry = mailboxProviderRegistry;
+@@ -37,6 +39,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         _fortnoxOutboundActionExecutor = fortnoxOutboundActionExecutor;
+         _policyEvaluator = policyEvaluator;
+         _timeProvider = timeProvider;
++        _customerMemory = customerMemory;
+     }
+@@ -203,7 +206,13 @@ public sealed class SalesOperationsService : ISalesOperationsService
+ 
+         var deal = await DealQuery(companyId).SingleOrDefaultAsync(x => x.Id == dealId, cancellationToken);
+-        return deal is null ? null : MapDealDetail(deal);
++        if (deal is null)
++        {
++            return null;
++        }
++
++        var memory = deal.PrimaryContactId.HasValue ? await _customerMemory.GetContextAsync(companyId, deal.PrimaryContactId.Value, cancellationToken) : null;
++        return MapDealDetail(deal, memory);
+     }
+@@ -675,8 +684,8 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private static SalesDealSummaryResponse MapDealSummary(Deal deal) =>
+         new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, deal.CustomerCompany?.Name, deal.PrimaryContact?.FullName, deal.ExpectedCloseUtc, deal.UpdatedUtc);
+ 
+-    private static SalesDealDetailResponse MapDealDetail(Deal deal) =>
+-        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal), null);
++    private static SalesDealDetailResponse MapDealDetail(Deal deal, CustomerMemoryContext? customerMemory = null) =>
++        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal), null, customerMemory);
+ 
+     private static SalesActivityResponse MapActivity(SalesActivity activity) =>
+         new(activity.Id, StatusLabel(activity.ActivityType), activity.Summary, StatusLabel(activity.Status), activity.OccurredUtc, activity.LeadId, activity.DealId);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505143000_AddSalesSequenceDraftAuditColumns.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505143000_AddSalesSequenceDraftAuditColumns.cs
+new file mode 100644
+index 0000000..9fd5895
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505143000_AddSalesSequenceDraftAuditColumns.cs
+@@ -0,0 +1,75 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260505143000_AddSalesSequenceDraftAuditColumns")]
++public partial class AddSalesSequenceDraftAuditColumns : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>(
++            name: "original_generated_subject",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(300)",
++            maxLength: 300,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "original_generated_body",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(max)",
++            maxLength: 16000,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "current_draft_subject",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(300)",
++            maxLength: 300,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "current_draft_body",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(max)",
++            maxLength: 16000,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "final_sent_subject",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(300)",
++            maxLength: 300,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "final_sent_body",
++            table: "sales_sequence_execution_steps",
++            type: "nvarchar(max)",
++            maxLength: 16000,
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "generated_draft_at",
++            table: "sales_sequence_execution_steps",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "draft_updated_at",
++            table: "sales_sequence_execution_steps",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequence_execution_steps_company_id_contact_id_sent_at",
++            table: "sales_sequence_execution_steps",
++            columns: new[] { "company_id", "contact_id", "sent_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(name: "IX_sales_sequence_execution_steps_company_id_contact_id_sent_at", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "original_generated_subject", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "original_generated_body", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "current_draft_subject", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "current_draft_body", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "final_sent_subject", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "final_sent_body", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "generated_draft_at", table: "sales_sequence_execution_steps");
++        migrationBuilder.DropColumn(name: "draft_updated_at", table: "sales_sequence_execution_steps");
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 9b575c0..62ac6ee 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -244,7 +244,21 @@ public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageI
+     string? ContactName,
+     DateTime? ExpectedCloseUtc,
+     DateTime UpdatedUtc);
+-public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff);
++public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff, CustomerMemoryContext? CustomerMemory = null);
++public sealed record CustomerMemoryContext(
++    Guid CompanyId,
++    Guid ContactId,
++    string ContactName,
++    string ContactEmail,
++    string? CustomerCompanyName,
++    string? Industry,
++    string AiSummary,
++    string RelationshipMemory,
++    string? LastOutreachSummary,
++    decimal EngagementScore,
++    IReadOnlyList<CustomerConversationMemory> PastConversations,
++    IReadOnlyList<CustomerDealMemory> PreviousDeals,
++    IReadOnlyList<CustomerMemorySignal> Preferences,
++    IReadOnlyList<CustomerMemorySignal> PriceSensitivityIndicators,
++    IReadOnlyList<CustomerMemorySignal> IndustrySignals,
++    IReadOnlyList<OfferExposureMemory> OfferExposureHistory,
++    DateTime RefreshedUtc);
++public sealed record CustomerConversationMemory(Guid? ConversationId, string Summary, DateTime OccurredUtc, string SourceType);
++public sealed record CustomerDealMemory(Guid DealId, string Title, string Status, decimal Amount, string Currency, DateTime? ClosedUtc, string Summary);
++public sealed record CustomerMemorySignal(string Key, string Value, decimal Confidence, DateTime ObservedUtc, string SourceSummary);
++public sealed record OfferExposureMemory(string OfferKey, Guid? CampaignId, Guid? DealId, DateTime OccurredUtc, string SourceType, string Summary);
+ public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
+ public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
+ END_OF_PATCH

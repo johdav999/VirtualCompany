@@ -9,33 +9,49 @@
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
     Title="Payments"
-    Description="Inspect incoming and outgoing cash movement records for the selected company."
-    LoadingMessage="Loading payments workspace...">
-    <form method="get" class="agent-filter-bar mb-4">
-        <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
-        <div>
-            <label class="form-label" for="payment-filter-type">Direction</label>
-            <select id="payment-filter-type" class="form-select" name="type">
-                <option value="" selected="@string.IsNullOrWhiteSpace(TypeFilterValue)">All payments</option>
-                <option value="incoming" selected="@IsTypeSelected("incoming")">Incoming</option>
-                <option value="outgoing" selected="@IsTypeSelected("outgoing")">Outgoing</option>
-            </select>
+    Description="Track money coming in and going out."
+    LoadingMessage="Loading payments..."
+    ShowShellHeader="false"
+    ShowShellNavigation="false">
+    <section class="payments-dashboard" aria-labelledby="payments-heading">
+        <div class="finance-overview-header">
+            <div>
+                <span class="finance-overview-kicker">Finance module</span>
+                <h1 id="payments-heading" class="finance-overview-title">Payments</h1>
+                <p class="finance-overview-subtitle">Track money coming in and going out.</p>
+            </div>
+            <div class="finance-overview-header__actions">
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+            </div>
         </div>
-        <div class="dashboard-actions">
-            <button class="btn btn-primary" type="submit">Apply filters</button>
-            <a class="btn btn-outline-secondary" href="@ClearFiltersHref">Clear</a>
-        </div>
-    </form>
 
-    <div class="row g-4 align-items-start">
-        <div class="col-lg-7">
-            <div class="wizard-card wizard-card--compact">
-                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+        <form method="get" class="payments-filter-bar">
+            <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
+            <div class="payments-filter-bar__field">
+                <label for="payment-filter-type">Type</label>
+                <select id="payment-filter-type" name="type">
+                    <option value="" selected="@string.IsNullOrWhiteSpace(TypeFilterValue)">All</option>
+                    <option value="incoming" selected="@IsTypeSelected("incoming")">Incoming</option>
+                    <option value="outgoing" selected="@IsTypeSelected("outgoing")">Outgoing</option>
+                </select>
+            </div>
+            <div class="payments-filter-bar__actions">
+                <button class="btn payments-button payments-button--primary" type="submit">Apply filters</button>
+                <a class="btn payments-button payments-button--secondary" href="@ClearFiltersHref">Clear</a>
+            </div>
+        </form>
+
+        <div class="payments-layout">
+            <article class="payment-list-card">
+                <div class="payment-list-card__header">
                     <div>
-                        <h2 class="h5 mb-1">Payment list</h2>
-                        <p class="text-body-secondary mb-0">Incoming and outgoing cash movements are scoped to the active company route.</p>
+                        <h2>Payments</h2>
+                        <p>Review incoming and outgoing payments.</p>
                     </div>
-                    <span class="badge text-bg-light">@Payments.Count item@(Payments.Count == 1 ? string.Empty : "s")</span>
+                    <span>@Payments.Count item@(Payments.Count == 1 ? string.Empty : "s")</span>
                 </div>
 
                 <FinanceDataState
@@ -45,81 +61,88 @@
                     LoadingTitle="Loading payments"
                     LoadingMessage="Fetching payment activity."
                     EmptyTitle="No payments matched the active filter"
-                    EmptyMessage="Adjust the payment direction filter and try again."
+                    EmptyMessage="Adjust the payment type filter and try again."
                     OnRetry="@ReloadAsync">
-                    <div class="list-group">
-                        @foreach (var payment in Payments)
+                    <div class="payment-list">
+                        @foreach (var payment in PaymentItems)
                         {
-                            <a class="@GetPaymentListItemClass(payment.Id)" href="@BuildPaymentHref(payment.Id)">
-                                <div class="d-flex w-100 justify-content-between gap-3">
-                                    <div>
-                                        <strong>@payment.CounterpartyReference</strong>
-                                        <div class="text-body-secondary small mt-1">@FormatDate(payment.PaymentDate) | @FormatLabel(payment.Method)</div>
-                                        <div class="small mt-2">@FormatLabel(payment.PaymentType)</div>
-                                    </div>
-                                    <div class="text-end">
-                                        <div class="fw-semibold">@FormatCurrency(payment.Amount, payment.Currency)</div>
-                                        <div class="mt-2 d-flex gap-2 justify-content-end">
-                                            <span class="badge text-bg-light">@FormatLabel(payment.PaymentType)</span>
-                                            <span class="badge @GetStatusBadgeClass(payment.Status)">@FormatLabel(payment.Status)</span>
-                                        </div>
-                                    </div>
-                                </div>
+                            <a class="@($"payment-list-item {(payment.IsSelected ? "is-selected" : string.Empty)}")" href="@BuildPaymentHref(payment.Id)">
+                                <span class="@($"payment-list-item__icon payment-tone--{payment.IconTone}")" aria-hidden="true">@payment.IconText</span>
+                                <span class="payment-list-item__main">
+                                    <strong>@payment.Reference</strong>
+                                    <span>@payment.MethodLabel <span aria-hidden="true">&middot;</span> @payment.DisplayDate</span>
+                                </span>
+                                <span class="payment-list-item__meta">
+                                    <strong>@payment.DisplayAmount</strong>
+                                    <span class="@($"payment-status-badge payment-status-badge--{payment.StatusTone}")">@payment.StatusLabel</span>
+                                </span>
+                                <span class="payment-list-item__chevron" aria-hidden="true">&rsaquo;</span>
                             </a>
                         }
                     </div>
                 </FinanceDataState>
-            </div>
-        </div>
+            </article>
 
-        <div class="col-lg-5">
-            <div class="wizard-card wizard-card--compact">
-                @if (IsDetailLoading)
-                {
-                    <FinanceLoadingState Title="Loading payment detail" Message="Resolving the selected payment from the current route." />
-                }
-                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
-                {
-                    <FinanceErrorState Title="Payment detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
-                }
-                else if (SelectedPayment is null)
-                {
-                    <FinanceEmptyState Title="No payment selected" Message="Select a payment to inspect its header details." />
-                }
-                else
-                {
-                    <h2 class="h5">Payment detail</h2>
-                    <p class="text-body-secondary mb-4">@SelectedPayment.CounterpartyReference</p>
+            <aside class="payments-side-stack">
+                <div class="payment-detail-card">
+                    @if (IsDetailLoading)
+                    {
+                        <FinanceLoadingState Title="Loading payment detail" Message="Opening the selected payment." />
+                    }
+                    else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                    {
+                        <FinanceErrorState Title="Payment detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    }
+                    else if (SelectedPayment is null)
+                    {
+                        <div class="payment-detail-empty">
+                            <div class="payment-detail-empty__icon" aria-hidden="true">pay</div>
+                            <h2>No payment selected</h2>
+                            <p>Select a payment to see details.</p>
+                        </div>
+                    }
+                    else if (SelectedPaymentDisplay is { } detail)
+                    {
+                        <div class="payment-detail-panel">
+                            <div class="payment-detail-panel__header">
+                                <div>
+                                    <h2>@detail.Reference</h2>
+                                    <p>@detail.PaymentTypeLabel payment</p>
+                                </div>
+                                <span class="@($"payment-status-badge payment-status-badge--{detail.StatusTone}")">@detail.StatusLabel</span>
+                            </div>
 
-                    <dl class="mb-0">
-                        <dt>Status</dt>
-                        <dd><span class="badge @GetStatusBadgeClass(SelectedPayment.Status)">@FormatLabel(SelectedPayment.Status)</span></dd>
-                        <dt>Amount</dt>
-                        <dd>@FormatCurrency(SelectedPayment.Amount, SelectedPayment.Currency)</dd>
-                        <dt>Currency</dt>
-                        <dd>@SelectedPayment.Currency</dd>
-                        <dt>Direction</dt>
-                        <dd>@FormatLabel(SelectedPayment.PaymentType)</dd>
-                        <dt>Payment date</dt>
-                        <dd>@FormatDate(SelectedPayment.PaymentDate)</dd>
-                        <dt>Method</dt>
-                        <dd>@FormatLabel(SelectedPayment.Method)</dd>
-                        <dt>Counterparty reference</dt>
-                        <dd>@SelectedPayment.CounterpartyReference</dd>
-                        <dt>Created</dt>
-                        <dd>@FormatDate(SelectedPayment.CreatedUtc)</dd>
-                    </dl>
+                            <div class="payment-detail-panel__amount">@detail.DisplayAmount</div>
 
-                    <div class="mt-4">
-                        <AgentInsightsPanel
-                            Title="Agent insights"
-                            Subtitle="Persisted finance agent insights linked to this payment."
-                            EmptyMessage="No agent insights are linked to this payment."
-                            TestId="payment-agent-insights-panel"
-                            Items="@SelectedPayment.AgentInsights" />
+                            <dl class="payment-detail-list">
+                                <div><dt>Payment type</dt><dd>@detail.PaymentTypeLabel</dd></div>
+                                <div><dt>Amount</dt><dd>@detail.DisplayAmount</dd></div>
+                                <div><dt>Status</dt><dd>@detail.StatusLabel</dd></div>
+                                <div><dt>Related invoice or bill</dt><dd>@detail.Reference</dd></div>
+                                <div><dt>Payment method</dt><dd>@detail.MethodLabel</dd></div>
+                                <div><dt>Date</dt><dd>@detail.DisplayDate</dd></div>
+                            </dl>
+
+                            <AgentInsightsPanel
+                                Title="Agent insights"
+                                Subtitle="Finance notes linked to this payment."
+                                EmptyMessage="No agent insights are linked to this payment."
+                                TestId="payment-agent-insights-panel"
+                                Items="@SelectedPayment.AgentInsights" />
+                        </div>
+                    }
+                </div>
+
+                <section class="payments-laura-card" aria-label="Finance manager">
+                    <div class="payments-laura-card__avatar" aria-hidden="true">L</div>
+                    <div>
+                        <h2>Laura</h2>
+                        <p class="payments-laura-card__role">Finance Manager</p>
                     </div>
-                }
-            </div>
+                    <p class="payments-laura-card__message">I'm here to watch your finances and let you know what needs attention.</p>
+                    <a class="btn payments-button payments-button--primary" href="@LauraHref">Message Laura</a>
+                </section>
+            </aside>
         </div>
-    </div>
+    </section>
 </FinancePageLayout>

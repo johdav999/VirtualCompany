@@ -168,6 +168,64 @@ public sealed record MailboxMessageSummary(
             .ToArray();
 }
 
+public sealed record MailboxAddress(
+    string? Email,
+    string? DisplayName);
+
+public sealed record MailboxInboundMessage(
+    string ProviderMessageId,
+    string? ProviderThreadId,
+    string? InternetMessageId,
+    string? Subject,
+    string? PlainTextBody,
+    string? HtmlBody,
+    MailboxAddress Sender,
+    IReadOnlyCollection<MailboxAddress> Recipients,
+    DateTime? ReceivedUtc,
+    IReadOnlyDictionary<string, string> Headers);
+
+public sealed record MailboxInboundThread(
+    string ProviderThreadId,
+    IReadOnlyList<MailboxInboundMessage> Messages);
+
+public sealed record MailboxMessageFetchRequest(
+    string MessageId);
+
+public sealed record MailboxThreadFetchRequest(
+    string ThreadId);
+
+public sealed record MailboxReplyExecutionRequest(
+    Guid CompanyId,
+    Guid MailboxConnectionId,
+    string Provider,
+    string OriginalMessageId,
+    string? ProviderThreadId,
+    string? InternetMessageId,
+    string ToEmail,
+    string? ToDisplayName,
+    string Subject,
+    string BodyText,
+    string IdempotencyKey);
+
+public sealed record MailboxReplyExecutionResult(
+    string ProviderMessageId,
+    string? ProviderDraftId,
+    string? ProviderThreadId,
+    string Status);
+
+public sealed class MailboxProviderExecutionException : Exception
+{
+    public MailboxProviderExecutionException(string code, string message, bool isRetryable, Exception? innerException = null)
+        : base(message, innerException)
+    {
+        Code = code;
+        IsRetryable = isRetryable;
+    }
+
+    public string Code { get; }
+    public bool IsRetryable { get; }
+}
+
 public sealed record ManualInboxBillScanJob(
     Guid CompanyId,
     Guid UserId,
@@ -264,6 +322,10 @@ public interface IMailboxProviderClient
     Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken);
     Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken);
     Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken);
+    Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken);
+    Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken);
+    Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
+    Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
 }
 
 public sealed record MailboxAuthorizationRequest(

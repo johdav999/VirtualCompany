@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.1.4",
+  "promptPath": ".ai-design/prompts/TASK-33.1.4.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T17:44:28.388Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T17-44-28-388Z_TASK-33.1.4_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T17-44-28-388Z_TASK-33.1.4.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T17:47:16.494Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "       \"\"\");\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        if (ActiveProvider != \"Npgsql.EntityFrameworkCore.PostgreSQL\")\n+        {\n+            return;\n+        }\n+\n+        migrationBuilder.Sql(\"\"\"\n+            DROP TABLE IF EXISTS fortnox_external_references;\n+            DROP TABLE IF EXISTS fortnox_sync_histories;\n+            DROP TABLE IF EXISTS fortnox_oauth_states;\n+            DROP TABLE IF EXISTS fortnox_connections;\n+            \"\"\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs\nindex 14e0f3e..1bca9de 100644\n--- a/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs\n@@ -34,6 +34,31 @@ public sealed class FortnoxTokenStoreTests\n         Assert.Null(snapshot.RefreshToken);\n     }\n \n+    [Fact]\n+    public async Task GetStatusAsync_returns_safe_snapshot_without_decrypted_tokens()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var userId = Guid.NewGuid();\n+        await using var dbContext = CreateDbContext();\n+        var store = new FortnoxTokenStore(dbContext, CreateEncryption());\n+        await store.UpsertConnectedAsync(\n+            companyId,\n+            userId,\n+            new FortnoxOAuthTokenResult(\n+                \"plain-access-token\",\n+                \"plain-refresh-token\",\n+                DateTime.UtcNow.AddHours(1),\n+                [\"bookkeeping\"],\n+                \"tenant-1\"),\n+            DateTime.UtcNow,\n+            CancellationToken.None);\n+\n+        var snapshot = await store.GetStatusAsync(companyId, null, CancellationToken.None);\n+\n+        Assert.NotNull(snapshot);\n+        Assert.Equal(\"connected\", snapshot!.Status);\n+        Assert.Null(snapshot.AccessToken);\n+        Assert.Null(snapshot.RefreshToken);\n+    }\n+\n     [Fact]\n     public async Task DisconnectAsync_clears_active_token_material()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        if (ActiveProvider != \"Npgsql.EntityFrameworkCore.PostgreSQL\")\n+        {\n+            return;\n+        }\n+\n+        migrationBuilder.Sql(\"\"\"\n+            DROP TABLE IF EXISTS fortnox_external_references;\n+            DROP TABLE IF EXISTS fortnox_sync_histories;\n+            DROP TABLE IF EXISTS fortnox_oauth_states;\n+            DROP TABLE IF EXISTS fortnox_connections;\n+            \"\"\");\n+    }\n+}\ndiff --git a/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs\nindex 14e0f3e..1bca9de 100644\n--- a/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs\n@@ -34,6 +34,31 @@ public sealed class FortnoxTokenStoreTests\n         Assert.Null(snapshot.RefreshToken);\n     }\n \n+    [Fact]\n+    public async Task GetStatusAsync_returns_safe_snapshot_without_decrypted_tokens()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var userId = Guid.NewGuid();\n+        await using var dbContext = CreateDbContext();\n+        var store = new FortnoxTokenStore(dbContext, CreateEncryption());\n+        await store.UpsertConnectedAsync(\n+            companyId,\n+            userId,\n+            new FortnoxOAuthTokenResult(\n+                \"plain-access-token\",\n+                \"plain-refresh-token\",\n+                DateTime.UtcNow.AddHours(1),\n+                [\"bookkeeping\"],\n+                \"tenant-1\"),\n+            DateTime.UtcNow,\n+            CancellationToken.None);\n+\n+        var snapshot = await store.GetStatusAsync(companyId, null, CancellationToken.None);\n+\n+        Assert.NotNull(snapshot);\n+        Assert.Equal(\"connected\", snapshot!.Status);\n+        Assert.Null(snapshot.AccessToken);\n+        Assert.Null(snapshot.RefreshToken);\n+    }\n+\n     [Fact]\n     public async Task DisconnectAsync_clears_active_token_material()\n     {\nEND_OF_PATCH\ntokens used\n103,446\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

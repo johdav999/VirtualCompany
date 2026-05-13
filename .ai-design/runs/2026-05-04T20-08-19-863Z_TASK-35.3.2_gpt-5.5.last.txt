@@ -1,0 +1,734 @@
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -1278,6 +1278,7 @@ public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
+         RequireApprovalPricingDiscussion = true;
+         RequireApprovalFollowUps = true;
+         RequireApprovalReEngagement = true;
++        WebsiteLeadFormKey = GenerateWebsiteLeadFormKey();
+         WebsiteLeadDeduplicationWindowMinutes = 10080;
+         CreatedUtc = DateTime.UtcNow;
+         UpdatedUtc = CreatedUtc;
+@@ -1294,6 +1295,7 @@ public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
+     public bool RequireApprovalFollowUps { get; private set; }
+     public bool RequireApprovalReEngagement { get; private set; }
+     public int WebsiteLeadDeduplicationWindowMinutes { get; private set; }
++    public string WebsiteLeadFormKey { get; private set; } = null!;
+     public Guid? WebsiteLeadFollowUpSequenceId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -1331,6 +1333,13 @@ public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
+         WebsiteLeadFollowUpSequenceId = SalesEntityText.NormalizeOptionalId(websiteLeadFollowUpSequenceId, nameof(websiteLeadFollowUpSequenceId));
+         UpdatedUtc = DateTime.UtcNow;
+     }
++
++    public void EnsureWebsiteLeadFormKey()
++    {
++        WebsiteLeadFormKey = string.IsNullOrWhiteSpace(WebsiteLeadFormKey) ? GenerateWebsiteLeadFormKey() : WebsiteLeadFormKey;
++    }
++
++    private static string GenerateWebsiteLeadFormKey() => $"wlf_{Guid.NewGuid():N}";
+ }
+ 
+ public sealed class OutboundMessageReview : ICompanyOwnedEntity
+diff --git a/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs b/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs
++++ b/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs
+@@ -32,6 +32,7 @@ public sealed record OutboundAutomationPolicyResponse(
+     bool RequireApprovalFollowUps,
+     bool RequireApprovalReEngagement,
+     int WebsiteLeadDeduplicationWindowMinutes,
++    string WebsiteLeadFormKey,
+     Guid? WebsiteLeadFollowUpSequenceId,
+     DateTime UpdatedUtc);
+ 
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -677,10 +677,12 @@ internal sealed class SalesAutomationPolicyConfiguration : IEntityTypeConfigurat
+         builder.Property(x => x.RequireApprovalFollowUps).HasColumnName("require_approval_follow_ups").HasDefaultValue(true).IsRequired();
+         builder.Property(x => x.RequireApprovalReEngagement).HasColumnName("require_approval_re_engagement").HasDefaultValue(true).IsRequired();
+         builder.Property(x => x.WebsiteLeadDeduplicationWindowMinutes).HasColumnName("website_lead_deduplication_window_minutes").HasDefaultValue(10080).IsRequired();
++        builder.Property(x => x.WebsiteLeadFormKey).HasColumnName("website_lead_form_key").HasMaxLength(80).IsRequired();
+         builder.Property(x => x.WebsiteLeadFollowUpSequenceId).HasColumnName("website_lead_follow_up_sequence_id");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.HasIndex(x => x.CompanyId).IsUnique();
++        builder.HasIndex(x => x.WebsiteLeadFormKey).IsUnique();
+         builder.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs
+@@ -86,6 +86,7 @@ public sealed class OutboundAutomationPolicyService : IOutboundAutomationPolicyS
+         }
+ 
+         policy = new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++        policy.EnsureWebsiteLeadFormKey();
+         _dbContext.SalesAutomationPolicies.Add(policy);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return policy;
+@@ -101,6 +102,7 @@ public sealed class OutboundAutomationPolicyService : IOutboundAutomationPolicyS
+             policy.RequireApprovalFollowUps,
+             policy.RequireApprovalReEngagement,
+             policy.WebsiteLeadDeduplicationWindowMinutes,
++            policy.WebsiteLeadFormKey,
+             policy.WebsiteLeadFollowUpSequenceId,
+             policy.UpdatedUtc);
+ 
+@@ -354,13 +356,15 @@ public sealed class WebsiteLeadCaptureService : IWebsiteLeadCaptureService
+ 
+     public async Task<WebsiteLeadSubmissionResponse> SubmitAsync(WebsiteLeadSubmissionRequest request, CancellationToken cancellationToken)
+     {
+-        var companyId = ResolveTenantKey(request.TenantKey);
+         var email = NormalizeEmail(request.Email);
+         var policy = await _dbContext.SalesAutomationPolicies.IgnoreQueryFilters()
+-            .AsNoTracking()
+-            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken)
+-            ?? new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++            .SingleOrDefaultAsync(x => x.WebsiteLeadFormKey == NormalizeTenantKey(request.TenantKey), cancellationToken);
++        if (policy is null)
++        {
++            throw new SalesValidationException(new Dictionary<string, string[]> { [nameof(WebsiteLeadSubmissionRequest.TenantKey)] = ["A valid website form key is required."] });
++        }
+ 
++        var companyId = policy.CompanyId;
+         var cutoff = DateTime.UtcNow.AddMinutes(-policy.WebsiteLeadDeduplicationWindowMinutes);
+         var duplicate = await _dbContext.WebsiteLeadSubmissions.IgnoreQueryFilters()
+             .Where(x => x.CompanyId == companyId && x.NormalizedEmail == email && x.ReceivedUtc >= cutoff && x.Status != "merged")
+@@ -426,14 +430,14 @@ public sealed class WebsiteLeadCaptureService : IWebsiteLeadCaptureService
+         return new WebsiteLeadSubmissionResponse("accepted", submission.ReceivedUtc);
+     }
+ 
+-    private static Guid ResolveTenantKey(string tenantKey)
++    private static string NormalizeTenantKey(string tenantKey)
+     {
+-        if (!Guid.TryParse(tenantKey, out var companyId) || companyId == Guid.Empty)
++        if (string.IsNullOrWhiteSpace(tenantKey))
+         {
+             throw new SalesValidationException(new Dictionary<string, string[]> { [nameof(WebsiteLeadSubmissionRequest.TenantKey)] = ["A valid website form key is required."] });
+         }
+ 
+-        return companyId;
++        return tenantKey.Trim();
+     }
+ 
+     private static string NormalizeEmail(string email)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504223000_AddWebsiteLeadFormKey.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504223000_AddWebsiteLeadFormKey.cs
+new file mode 100644
+index 0000000..1111111
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504223000_AddWebsiteLeadFormKey.cs
+@@ -0,0 +1,35 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddWebsiteLeadFormKey : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<string>(
++                name: "website_lead_form_key",
++                table: "sales_automation_policies",
++                type: "nvarchar(80)",
++                maxLength: 80,
++                nullable: true);
++
++            migrationBuilder.Sql("UPDATE sales_automation_policies SET website_lead_form_key = CONCAT('wlf_', REPLACE(CONVERT(nvarchar(36), NEWID()), '-', '')) WHERE website_lead_form_key IS NULL OR website_lead_form_key = ''");
++
++            migrationBuilder.AlterColumn<string>(
++                name: "website_lead_form_key",
++                table: "sales_automation_policies",
++                type: "nvarchar(80)",
++                maxLength: 80,
++                nullable: false,
++                oldClrType: typeof(string),
++                oldType: "nvarchar(80)",
++                oldMaxLength: 80,
++                oldNullable: true);
++
++            migrationBuilder.CreateIndex("IX_sales_automation_policies_website_lead_form_key", "sales_automation_policies", "website_lead_form_key", unique: true);
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropIndex("IX_sales_automation_policies_website_lead_form_key", "sales_automation_policies");
++            migrationBuilder.DropColumn("website_lead_form_key", "sales_automation_policies");
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/Services/SalesAutomationApiClient.cs b/src/VirtualCompany.Web/Services/SalesAutomationApiClient.cs
+new file mode 100644
+index 0000000..2222222
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/SalesAutomationApiClient.cs
+@@ -0,0 +1,110 @@
++using System.Net.Http.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class SalesAutomationApiClient
++{
++    private readonly HttpClient _httpClient;
++    private readonly bool _offlineMode;
++
++    public SalesAutomationApiClient(HttpClient httpClient, bool offlineMode)
++    {
++        _httpClient = httpClient;
++        _offlineMode = offlineMode;
++    }
++
++    public async Task<OutboundAutomationPolicyViewModel> GetPolicyAsync(CancellationToken cancellationToken = default)
++    {
++        if (_offlineMode)
++        {
++            return new OutboundAutomationPolicyViewModel();
++        }
++
++        return await _httpClient.GetFromJsonAsync<OutboundAutomationPolicyViewModel>("api/automation/outbound-policy", cancellationToken)
++            ?? new OutboundAutomationPolicyViewModel();
++    }
++
++    public async Task<OutboundAutomationPolicyViewModel> UpdatePolicyAsync(UpdateOutboundAutomationPolicyRequest request, CancellationToken cancellationToken = default)
++    {
++        var response = await _httpClient.PutAsJsonAsync("api/automation/outbound-policy", request, cancellationToken);
++        response.EnsureSuccessStatusCode();
++        return await response.Content.ReadFromJsonAsync<OutboundAutomationPolicyViewModel>(cancellationToken: cancellationToken)
++            ?? new OutboundAutomationPolicyViewModel();
++    }
++
++    public async Task<IReadOnlyList<OutboundReviewQueueItemViewModel>> ListReviewQueueAsync(CancellationToken cancellationToken = default)
++    {
++        if (_offlineMode)
++        {
++            return [];
++        }
++
++        return await _httpClient.GetFromJsonAsync<IReadOnlyList<OutboundReviewQueueItemViewModel>>("api/review-queue/outbound", cancellationToken)
++            ?? [];
++    }
++
++    public async Task<OutboundReviewQueueDetailViewModel?> GetReviewAsync(Guid id, CancellationToken cancellationToken = default)
++    {
++        if (_offlineMode)
++        {
++            return null;
++        }
++
++        return await _httpClient.GetFromJsonAsync<OutboundReviewQueueDetailViewModel>($"api/review-queue/outbound/{id:D}", cancellationToken);
++    }
++
++    public Task<OutboundReviewQueueDetailViewModel?> ApproveAsync(Guid id, string? comment, CancellationToken cancellationToken = default) =>
++        DecideAsync(id, "approve", new OutboundReviewDecisionRequest(comment), cancellationToken);
++
++    public Task<OutboundReviewQueueDetailViewModel?> RejectAsync(Guid id, string? comment, CancellationToken cancellationToken = default) =>
++        DecideAsync(id, "reject", new OutboundReviewDecisionRequest(comment), cancellationToken);
++
++    public async Task<OutboundReviewQueueDetailViewModel?> EditAndApproveAsync(Guid id, OutboundEditAndApproveRequest request, CancellationToken cancellationToken = default)
++    {
++        var response = await _httpClient.PostAsJsonAsync($"api/review-queue/outbound/{id:D}/edit-and-approve", request, cancellationToken);
++        response.EnsureSuccessStatusCode();
++        return await response.Content.ReadFromJsonAsync<OutboundReviewQueueDetailViewModel>(cancellationToken: cancellationToken);
++    }
++
++    private async Task<OutboundReviewQueueDetailViewModel?> DecideAsync(Guid id, string action, OutboundReviewDecisionRequest request, CancellationToken cancellationToken)
++    {
++        var response = await _httpClient.PostAsJsonAsync($"api/review-queue/outbound/{id:D}/{action}", request, cancellationToken);
++        response.EnsureSuccessStatusCode();
++        return await response.Content.ReadFromJsonAsync<OutboundReviewQueueDetailViewModel>(cancellationToken: cancellationToken);
++    }
++}
++
++public sealed class OutboundAutomationPolicyViewModel
++{
++    public Guid Id { get; set; }
++    public bool OutboundEnabled { get; set; }
++    public int MaxEmailsPerDay { get; set; } = 25;
++    public bool RequireApprovalFirstContact { get; set; } = true;
++    public bool RequireApprovalPricingDiscussion { get; set; } = true;
++    public bool RequireApprovalFollowUps { get; set; } = true;
++    public bool RequireApprovalReEngagement { get; set; } = true;
++    public int WebsiteLeadDeduplicationWindowMinutes { get; set; } = 10080;
++    public string WebsiteLeadFormKey { get; set; } = string.Empty;
++    public Guid? WebsiteLeadFollowUpSequenceId { get; set; }
++    public DateTime UpdatedUtc { get; set; }
++}
++
++public sealed record UpdateOutboundAutomationPolicyRequest(
++    bool OutboundEnabled,
++    int MaxEmailsPerDay,
++    bool RequireApprovalFirstContact,
++    bool RequireApprovalPricingDiscussion,
++    bool RequireApprovalFollowUps,
++    bool RequireApprovalReEngagement,
++    int WebsiteLeadDeduplicationWindowMinutes,
++    Guid? WebsiteLeadFollowUpSequenceId);
++
++public sealed record OutboundReviewQueueItemViewModel(Guid Id, Guid SequenceExecutionStepId, Guid CampaignId, Guid ContactId, string ContactName, string ContactEmail, string Category, string Status, string Reason, DateTime RequestedUtc);
++
++public sealed record OutboundReviewQueueDetailViewModel(
++    Guid Id, Guid SequenceExecutionStepId, Guid CampaignId, Guid ContactId, string ContactName, string ContactEmail,
++    string Category, string Status, string ReasonCode, string Reason, string Subject, string Body, string? EditedSubject,
++    string? EditedBody, Guid? DecidedByUserId, DateTime? DecidedUtc, string? DecisionComment, DateTime RequestedUtc);
++
++public sealed record OutboundReviewDecisionRequest(string? Comment);
++
++public sealed record OutboundEditAndApproveRequest(string Subject, string Body, string? Comment);
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -121,6 +121,11 @@ builder.Services.AddScoped(sp => new SalesApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new SalesAutomationApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -66,6 +66,11 @@
+                 <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
+             </NavLink>
+         </div>
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="@outboundReviewsHref">
++                <span class="bi bi-send-check" aria-hidden="true"></span> Message review
++            </NavLink>
++        </div>
+         <div class="nav-item px-3">
+             <NavLink class="nav-link" href="@auditHref">
+                 <span class="bi bi-list-check" aria-hidden="true"></span> Audit
+@@ -110,6 +115,7 @@
+     private string activityHref = "/activity-feed";
+     private string approvalsHref = "/approvals";
+     private string auditHref = "/audit";
++    private string outboundReviewsHref = "/outbound-review-queue";
+     private string briefingHref = "/briefing-preferences";
+     private string settingsHref = "/onboarding";
+     private SidebarAgentContext sidebarAgent = SidebarAgentContext.Default("/agents");
+@@ -156,6 +162,7 @@
+         activityHref = DashboardRoutes.EnsureCompanyContext("/activity-feed", currentCompanyId, "/activity-feed");
+         approvalsHref = DashboardRoutes.BuildApprovalsPath(currentCompanyId);
+         auditHref = currentCompanyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit";
++        outboundReviewsHref = currentCompanyId is Guid reviewCompanyId ? $"/outbound-review-queue?companyId={reviewCompanyId:D}" : "/outbound-review-queue";
+         briefingHref = currentCompanyId is Guid briefingCompanyId ? $"/briefing-preferences?companyId={briefingCompanyId:D}" : "/briefing-preferences";
+         settingsHref = currentCompanyId is Guid settingsCompanyId ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Settings, settingsCompanyId) : "/onboarding";
+     }
+diff --git a/src/VirtualCompany.Web/Pages/OutboundAutomationSettings.razor b/src/VirtualCompany.Web/Pages/OutboundAutomationSettings.razor
+new file mode 100644
+index 0000000..3333333
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/OutboundAutomationSettings.razor
+@@ -0,0 +1,137 @@
++@page "/agents/automation"
++@rendermode InteractiveServer
++@using System.ComponentModel.DataAnnotations
++@inject SalesAutomationApiClient AutomationClient
++
++<PageTitle>Agent automation settings</PageTitle>
++
++<section class="py-4 dashboard-hero">
++    <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-end mb-4">
++        <div>
++            <span class="dashboard-kicker">AGENTS</span>
++            <h1 class="mb-2">Automation controls</h1>
++            <p class="text-body-secondary mb-0">Set when Alex can send outbound email, when messages need review, and how website leads enter follow-up.</p>
++        </div>
++        <a class="btn btn-outline-primary" href="/outbound-review-queue">Open review queue</a>
++    </div>
++
++    <div class="row g-4">
++        <div class="col-lg-7">
++            <div class="wizard-card">
++                <h2 class="h4 mb-3">Outbound policy</h2>
++
++                @if (!string.IsNullOrWhiteSpace(statusMessage))
++                {
++                    <div class="alert alert-success">@statusMessage</div>
++                }
++                @if (!string.IsNullOrWhiteSpace(errorMessage))
++                {
++                    <div class="alert alert-danger">@errorMessage</div>
++                }
++
++                @if (isLoading)
++                {
++                    <p class="text-body-secondary mb-0">Loading automation policy...</p>
++                }
++                else
++                {
++                    <EditForm Model="@form" OnValidSubmit="@SaveAsync">
++                        <DataAnnotationsValidator />
++                        <ValidationSummary />
++
++                        <div class="form-check form-switch mb-4">
++                            <InputCheckbox id="outbound-enabled" class="form-check-input" @bind-Value="form.OutboundEnabled" />
++                            <label class="form-check-label fw-semibold" for="outbound-enabled">Allow outbound email automation</label>
++                            <div class="form-text">When this is off, sequence messages are blocked before they reach an email provider.</div>
++                        </div>
++
++                        <div class="mb-4">
++                            <label class="form-label" for="max-emails">Maximum emails per day</label>
++                            <InputNumber id="max-emails" class="form-control" @bind-Value="form.MaxEmailsPerDay" />
++                            <ValidationMessage For="@(() => form.MaxEmailsPerDay)" />
++                        </div>
++
++                        <fieldset class="mb-4">
++                            <legend class="h6">Messages that need review</legend>
++                            <div class="vstack gap-3 mt-3">
++                                <label class="form-check">
++                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalFirstContact" />
++                                    <span class="form-check-label">First contact emails</span>
++                                </label>
++                                <label class="form-check">
++                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalPricingDiscussion" />
++                                    <span class="form-check-label">Pricing discussions</span>
++                                </label>
++                                <label class="form-check">
++                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalFollowUps" />
++                                    <span class="form-check-label">Follow-up emails</span>
++                                </label>
++                                <label class="form-check">
++                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalReEngagement" />
++                                    <span class="form-check-label">Re-engagement emails</span>
++                                </label>
++                            </div>
++                        </fieldset>
++
++                        <div class="mb-4">
++                            <label class="form-label" for="dedupe-window">Website lead duplicate window, minutes</label>
++                            <InputNumber id="dedupe-window" class="form-control" @bind-Value="form.WebsiteLeadDeduplicationWindowMinutes" />
++                            <ValidationMessage For="@(() => form.WebsiteLeadDeduplicationWindowMinutes)" />
++                        </div>
++
++                        <div class="dashboard-actions">
++                            <button class="btn btn-primary" type="submit" disabled="@isSaving">Save settings</button>
++                        </div>
++                    </EditForm>
++                }
++            </div>
++        </div>
++
++        <div class="col-lg-5">
++            <div class="wizard-card">
++                <h2 class="h4 mb-3">Website form key</h2>
++                <p class="text-body-secondary">Use this key from your website form submission code. It resolves the company without exposing or trusting a company ID.</p>
++                <div class="p-3 border rounded bg-light text-break"><code>@(form.WebsiteLeadFormKey.Length == 0 ? "Not generated yet" : form.WebsiteLeadFormKey)</code></div>
++                <p class="text-body-secondary small mt-3 mb-0">Endpoint: <code>POST /api/website/forms/leads</code></p>
++            </div>
++        </div>
++    </div>
++</section>
++
++@code {
++    private AutomationPolicyForm form = new();
++    private bool isLoading = true;
++    private bool isSaving;
++    private string? statusMessage;
++    private string? errorMessage;
++
++    protected override async Task OnInitializedAsync()
++    {
++        try
++        {
++            var policy = await AutomationClient.GetPolicyAsync();
++            form = AutomationPolicyForm.From(policy);
++        }
++        catch (Exception ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task SaveAsync()
++    {
++        isSaving = true;
++        statusMessage = null;
++        errorMessage = null;
++        try
++        {
++            var policy = await AutomationClient.UpdatePolicyAsync(form.ToRequest());
++            form = AutomationPolicyForm.From(policy);
++            statusMessage = "Automation settings were saved.";
++        }
++        catch (Exception ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isSaving = false;
++        }
++    }
++
++    private sealed class AutomationPolicyForm
++    {
++        public bool OutboundEnabled { get; set; }
++        [Range(0, 10000)]
++        public int MaxEmailsPerDay { get; set; } = 25;
++        public bool RequireApprovalFirstContact { get; set; } = true;
++        public bool RequireApprovalPricingDiscussion { get; set; } = true;
++        public bool RequireApprovalFollowUps { get; set; } = true;
++        public bool RequireApprovalReEngagement { get; set; } = true;
++        [Range(1, 43200)]
++        public int WebsiteLeadDeduplicationWindowMinutes { get; set; } = 10080;
++        public string WebsiteLeadFormKey { get; set; } = string.Empty;
++
++        public static AutomationPolicyForm From(OutboundAutomationPolicyViewModel policy) => new()
++        {
++            OutboundEnabled = policy.OutboundEnabled,
++            MaxEmailsPerDay = policy.MaxEmailsPerDay,
++            RequireApprovalFirstContact = policy.RequireApprovalFirstContact,
++            RequireApprovalPricingDiscussion = policy.RequireApprovalPricingDiscussion,
++            RequireApprovalFollowUps = policy.RequireApprovalFollowUps,
++            RequireApprovalReEngagement = policy.RequireApprovalReEngagement,
++            WebsiteLeadDeduplicationWindowMinutes = policy.WebsiteLeadDeduplicationWindowMinutes,
++            WebsiteLeadFormKey = policy.WebsiteLeadFormKey
++        };
++
++        public UpdateOutboundAutomationPolicyRequest ToRequest() => new(
++            OutboundEnabled,
++            MaxEmailsPerDay,
++            RequireApprovalFirstContact,
++            RequireApprovalPricingDiscussion,
++            RequireApprovalFollowUps,
++            RequireApprovalReEngagement,
++            WebsiteLeadDeduplicationWindowMinutes,
++            null);
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/OutboundReviewQueue.razor b/src/VirtualCompany.Web/Pages/OutboundReviewQueue.razor
+new file mode 100644
+index 0000000..4444444
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/OutboundReviewQueue.razor
+@@ -0,0 +1,177 @@
++@page "/outbound-review-queue"
++@rendermode InteractiveServer
++@inject SalesAutomationApiClient AutomationClient
++
++<PageTitle>Message review queue</PageTitle>
++
++<section class="py-4 dashboard-hero">
++    <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-end mb-4">
++        <div>
++            <span class="dashboard-kicker">APPROVALS</span>
++            <h1 class="mb-2">Outbound message review</h1>
++            <p class="text-body-secondary mb-0">Review outbound emails that need approval before Alex sends them.</p>
++        </div>
++        <a class="btn btn-outline-primary" href="/agents/automation">Automation settings</a>
++    </div>
++
++    <div class="row g-4">
++        <div class="col-lg-5">
++            <div class="wizard-card">
++                <div class="d-flex justify-content-between align-items-center mb-3">
++                    <h2 class="h4 mb-0">Waiting for review</h2>
++                    <span class="badge text-bg-light">@items.Count</span>
++                </div>
++
++                @if (isLoading)
++                {
++                    <p class="text-body-secondary mb-0">Loading review queue...</p>
++                }
++                else if (items.Count == 0)
++                {
++                    <div class="text-center py-5">
++                        <h3 class="h5">No messages need review</h3>
++                        <p class="text-body-secondary mb-0">Messages that need approval will appear here.</p>
++                    </div>
++                }
++                else
++                {
++                    <div class="list-group list-group-flush">
++                        @foreach (var item in items)
++                        {
++                            <button type="button" class="list-group-item list-group-item-action @(selected?.Id == item.Id ? "active" : null)" @onclick="@(() => SelectAsync(item.Id))">
++                                <div class="d-flex justify-content-between gap-3">
++                                    <strong>@item.ContactName</strong>
++                                    <span>@item.RequestedUtc.ToLocalTime().ToString("g")</span>
++                                </div>
++                                <div class="small">@item.Category</div>
++                                <div class="small text-body-secondary">@item.Reason</div>
++                            </button>
++                        }
++                    </div>
++                }
++            </div>
++        </div>
++
++        <div class="col-lg-7">
++            <div class="wizard-card">
++                @if (selected is null)
++                {
++                    <div class="text-center py-5">
++                        <h2 class="h4">No message selected</h2>
++                        <p class="text-body-secondary mb-0">Select a message to see the policy reason and take action.</p>
++                    </div>
++                }
++                else
++                {
++                    <div class="d-flex justify-content-between gap-3 mb-3">
++                        <div>
++                            <span class="dashboard-kicker">MESSAGE DETAIL</span>
++                            <h2 class="h4 mb-1">@selected.ContactName</h2>
++                            <p class="text-body-secondary mb-0">@selected.ContactEmail</p>
++                        </div>
++                        <span class="badge text-bg-warning align-self-start">@selected.Status</span>
++                    </div>
++
++                    <div class="alert alert-info">
++                        <strong>Why review is needed:</strong> @selected.Reason
++                    </div>
++
++                    @if (!string.IsNullOrWhiteSpace(actionMessage))
++                    {
++                        <div class="alert alert-success">@actionMessage</div>
++                    }
++                    @if (!string.IsNullOrWhiteSpace(errorMessage))
++                    {
++                        <div class="alert alert-danger">@errorMessage</div>
++                    }
++
++                    <div class="mb-3">
++                        <label class="form-label" for="subject">Subject</label>
++                        <input id="subject" class="form-control" @bind="subject" />
++                    </div>
++                    <div class="mb-3">
++                        <label class="form-label" for="body">Message</label>
++                        <textarea id="body" class="form-control" rows="12" @bind="body"></textarea>
++                    </div>
++                    <div class="mb-3">
++                        <label class="form-label" for="comment">Decision note</label>
++                        <textarea id="comment" class="form-control" rows="3" @bind="comment"></textarea>
++                    </div>
++
++                    <div class="dashboard-actions">
++                        <button class="btn btn-primary" type="button" disabled="@isActing" @onclick="EditAndApproveAsync">Edit and approve</button>
++                        <button class="btn btn-outline-primary" type="button" disabled="@isActing" @onclick="ApproveAsync">Approve original</button>
++                        <button class="btn btn-outline-danger" type="button" disabled="@isActing" @onclick="RejectAsync">Reject</button>
++                    </div>
++                }
++            </div>
++        </div>
++    </div>
++</section>
++
++@code {
++    private IReadOnlyList<OutboundReviewQueueItemViewModel> items = [];
++    private OutboundReviewQueueDetailViewModel? selected;
++    private bool isLoading = true;
++    private bool isActing;
++    private string? subject;
++    private string? body;
++    private string? comment;
++    private string? actionMessage;
++    private string? errorMessage;
++
++    protected override async Task OnInitializedAsync()
++    {
++        await RefreshAsync();
++    }
++
++    private async Task RefreshAsync()
++    {
++        isLoading = true;
++        try
++        {
++            items = await AutomationClient.ListReviewQueueAsync();
++            if (selected is not null && items.All(x => x.Id != selected.Id))
++            {
++                selected = null;
++            }
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task SelectAsync(Guid id)
++    {
++        actionMessage = null;
++        errorMessage = null;
++        selected = await AutomationClient.GetReviewAsync(id);
++        subject = selected?.EditedSubject ?? selected?.Subject;
++        body = selected?.EditedBody ?? selected?.Body;
++        comment = selected?.DecisionComment;
++    }
++
++    private async Task ApproveAsync() => await ActAsync(async () =>
++    {
++        if (selected is null) return;
++        await AutomationClient.ApproveAsync(selected.Id, comment);
++        actionMessage = "Message was approved.";
++    });
++
++    private async Task RejectAsync() => await ActAsync(async () =>
++    {
++        if (selected is null) return;
++        await AutomationClient.RejectAsync(selected.Id, comment);
++        actionMessage = "Message was rejected.";
++    });
++
++    private async Task EditAndApproveAsync() => await ActAsync(async () =>
++    {
++        if (selected is null) return;
++        selected = await AutomationClient.EditAndApproveAsync(selected.Id, new OutboundEditAndApproveRequest(subject ?? string.Empty, body ?? string.Empty, comment));
++        actionMessage = "Edited message was approved.";
++    });
++
++    private async Task ActAsync(Func<Task> action)
++    {
++        isActing = true;
++        errorMessage = null;
++        try
++        {
++            await action();
++            await RefreshAsync();
++        }
++        catch (Exception ex)
++        {
++            errorMessage = ex.Message;
++        }
++        finally
++        {
++            isActing = false;
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs b/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs
++++ b/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs
+@@ -23,6 +23,10 @@ public sealed class WebsiteLeadFormsController : ControllerBase
+         {
+             return ValidationProblem(ex.Errors);
+         }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Website lead submission could not be accepted.", detail: ex.Message, statusCode: StatusCodes.Status409Conflict);
++        }
+     }
+ }
+END_OF_PATCH

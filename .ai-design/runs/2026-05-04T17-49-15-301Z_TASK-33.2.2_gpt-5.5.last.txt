@@ -1,0 +1,386 @@
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+@@ -216,6 +216,7 @@ public sealed class FinanceExternalReference : ICompanyOwnedEntity
+     public DateTime? ExternalUpdatedUtc { get; private set; }
+     public JsonObject Metadata { get; private set; } = [];
+     public DateTime CreatedUtc { get; private set; }
++    public DateTime LastSyncedUtc => UpdatedUtc;
+     public DateTime UpdatedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+     public FinanceIntegrationConnection Connection { get; private set; } = null!;
+@@ -249,12 +250,30 @@ public sealed class FinanceExternalReference : ICompanyOwnedEntity
+         UpdatedUtc = CreatedUtc;
+     }
+ 
++    public void RepointToInternalRecord(Guid internalRecordId, string? externalNumber, DateTime? externalUpdatedUtc, DateTime syncedUtc)
++    {
++        InternalRecordId = internalRecordId == Guid.Empty
++            ? throw new ArgumentException("InternalRecordId is required.", nameof(internalRecordId))
++            : internalRecordId;
++        Refresh(externalNumber, externalUpdatedUtc, syncedUtc);
++    }
++
+     public void Refresh(string? externalNumber, DateTime? externalUpdatedUtc, DateTime updatedUtc)
+     {
+         ExternalNumber = NormalizeOptional(externalNumber, nameof(externalNumber), 128);
+         ExternalUpdatedUtc = externalUpdatedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(externalUpdatedUtc.Value, nameof(externalUpdatedUtc)) : null;
+         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+     }
+ 
++    public void MarkSynced(DateTime syncedUtc)
++    {
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(syncedUtc, nameof(syncedUtc));
++    }
++
+     public bool IsCurrent(DateTime? externalUpdatedUtc) =>
+-        ExternalUpdatedUtc.HasValue &&
+-        externalUpdatedUtc.HasValue &&
+-        ExternalUpdatedUtc.Value >= EntityTimestampNormalizer.NormalizeUtc(externalUpdatedUtc.Value, nameof(externalUpdatedUtc));
++        !externalUpdatedUtc.HasValue ||
++        (ExternalUpdatedUtc.HasValue &&
++         ExternalUpdatedUtc.Value >= EntityTimestampNormalizer.NormalizeUtc(externalUpdatedUtc.Value, nameof(externalUpdatedUtc)));
+ 
+     private static string? NormalizeOptional(string? value, string name, int maxLength)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+@@ -313,34 +313,13 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+             requiresReconnect: tokenResult.NeedsReconnect);
+     }
+ 
+-    private Task<string> ResolveAccessTokenAsync(FortnoxRequestContext context, CancellationToken cancellationToken) =>
+-        ResolveAccessTokenAsync(context, forceRefresh: false, cancellationToken);
+-
+-    private async Task<string> ResolveAccessTokenAsync(FortnoxRequestContext context, CancellationToken cancellationToken)
+-    {
+-        var tokenResult = await _oauthService.GetValidAccessTokenAsync(
+-            new RefreshFortnoxAccessTokenCommand(context.CompanyId, context.ConnectionId, ForceRefresh: false),
++    private static HttpRequestMessage CreateRequest(
++        HttpMethod method,
++        Uri requestUri,
++        string accessToken,
+         string? correlationId,
+         Func<HttpContent>? contentFactory)
+     {
+         var request = new HttpRequestMessage(method, requestUri);
+         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+@@ -201,7 +201,11 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             var safeMessage = exception is FortnoxApiException apiException
+                 ? apiException.SafeMessage
+                 : "Fortnox data could not be synced.";
++            var retrySummary = exception is FortnoxApiException { IsTransient: true }
++                ? " Fortnox reported a temporary issue; retrying later may succeed."
++                : string.Empty;
+ 
+-            state.MarkFailed(safeMessage, completedUtc);
++            state.MarkFailed($"{safeMessage}{retrySummary}", completedUtc);
+             _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
+                 Guid.NewGuid(),
+                 state.CompanyId,
+@@ -216,7 +220,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+                 null,
+                 null,
+                 null,
+-                safeMessage,
++                $"{safeMessage}{retrySummary}",
+                 completedUtc,
+                 createdCount: 0,
+                 updatedCount: 0,
+@@ -397,7 +401,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     private async Task<SyncMutationResult> UpsertCounterpartyAsync(Guid companyId, Guid connectionId, FortnoxCounterpartySyncModel model, CancellationToken cancellationToken)
+     {
+         var existing = await FindReferenceAsync(companyId, connectionId, model.CounterpartyType, model.ExternalId, cancellationToken);
+-        if (existing?.IsCurrent(model.ExternalUpdatedUtc) == true) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
++        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+ 
+         FinanceCounterparty counterparty;
+         if (existing is null)
+@@ -409,7 +413,14 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+         }
+ 
+-        counterparty = await _dbContext.FinanceCounterparties.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        counterparty = await _dbContext.FinanceCounterparties.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        if (counterparty is null)
++        {
++            counterparty = new FinanceCounterparty(Guid.NewGuid(), companyId, model.Name, model.CounterpartyType, model.Email, taxId: model.TaxId);
++            _dbContext.FinanceCounterparties.Add(counterparty);
++            existing.RepointToInternalRecord(counterparty.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++            AttachSource(counterparty, model.CounterpartyType, model.ExternalId, existing.Id);
++            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
++        }
+         counterparty.UpdateMasterData(model.Name, model.CounterpartyType, model.Email, taxId: model.TaxId);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         AttachSource(counterparty, model.CounterpartyType, model.ExternalId, existing.Id);
+@@ -420,7 +431,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     private async Task<SyncMutationResult> UpsertAccountAsync(Guid companyId, Guid connectionId, FortnoxAccountSyncModel model, CancellationToken cancellationToken)
+     {
+         var existing = await FindReferenceAsync(companyId, connectionId, "account", model.ExternalId, cancellationToken);
+-        if (existing?.IsCurrent(model.ExternalUpdatedUtc) == true) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
++        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+ 
+         FinanceAccount account;
+         if (existing is null)
+@@ -432,7 +443,14 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+         }
+ 
+-        account = await _dbContext.FinanceAccounts.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        account = await _dbContext.FinanceAccounts.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        if (account is null)
++        {
++            account = new FinanceAccount(Guid.NewGuid(), companyId, model.Code, model.Name, model.AccountType, "SEK", 0m, _timeProvider.GetUtcNow().UtcDateTime);
++            _dbContext.FinanceAccounts.Add(account);
++            existing.RepointToInternalRecord(account.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++            AttachSource(account, "account", model.ExternalId, existing.Id);
++            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
++        }
+         account.ApplySyncedSnapshot(model.Code, model.Name, model.AccountType, "SEK", account.OpeningBalance, account.OpenedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         AttachSource(account, "account", model.ExternalId, existing.Id);
+@@ -453,7 +471,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     private async Task<SyncMutationResult> UpsertInvoiceAsync(Guid companyId, Guid connectionId, FortnoxInvoiceSyncModel model, CancellationToken cancellationToken)
+     {
+         var existing = await FindReferenceAsync(companyId, connectionId, "invoice", model.ExternalId, cancellationToken);
+-        if (existing?.IsCurrent(model.ExternalUpdatedUtc) == true) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
++        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+ 
+         var counterparty = await EnsureCounterpartyAsync(companyId, connectionId, "customer", model.CustomerNumber, model.CustomerName, cancellationToken);
+         FinanceInvoice invoice;
+@@ -466,7 +484,14 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+         }
+ 
+-        invoice = await _dbContext.FinanceInvoices.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        invoice = await _dbContext.FinanceInvoices.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        if (invoice is null)
++        {
++            invoice = new FinanceInvoice(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
++            _dbContext.FinanceInvoices.Add(invoice);
++            existing.RepointToInternalRecord(invoice.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++            AttachSource(invoice, "invoice", model.ExternalId, existing.Id);
++            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
++        }
+         invoice.ApplySyncedSnapshot(counterparty.Id, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, model.SettlementStatus);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         AttachSource(invoice, "invoice", model.ExternalId, existing.Id);
+@@ -477,7 +502,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     private async Task<SyncMutationResult> UpsertSupplierInvoiceAsync(Guid companyId, Guid connectionId, FortnoxSupplierInvoiceSyncModel model, CancellationToken cancellationToken)
+     {
+         var existing = await FindReferenceAsync(companyId, connectionId, "supplier_invoice", model.ExternalId, cancellationToken);
+-        if (existing?.IsCurrent(model.ExternalUpdatedUtc) == true) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
++        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+ 
+         var counterparty = await EnsureCounterpartyAsync(companyId, connectionId, "supplier", model.SupplierNumber, model.SupplierName, cancellationToken);
+         FinanceBill bill;
+@@ -490,7 +515,14 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+         }
+ 
+-        bill = await _dbContext.FinanceBills.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        bill = await _dbContext.FinanceBills.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        if (bill is null)
++        {
++            bill = new FinanceBill(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
++            _dbContext.FinanceBills.Add(bill);
++            existing.RepointToInternalRecord(bill.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++            AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
++            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
++        }
+         bill.ApplySyncedSnapshot(counterparty.Id, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, model.SettlementStatus);
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
+@@ -499,10 +531,9 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+ 
+     private async Task<SyncMutationResult> UpsertVoucherAsync(Guid companyId, Guid connectionId, FortnoxVoucherSyncModel model, CancellationToken cancellationToken)
+     {
+-        var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Code == "1930", cancellationToken)
+-            ?? await _dbContext.FinanceAccounts.FirstAsync(x => x.CompanyId == companyId, cancellationToken);
++        var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Code == "1930", cancellationToken) ?? await EnsureSystemAccountAsync(companyId, cancellationToken);
+         var existing = await FindReferenceAsync(companyId, connectionId, "voucher", model.ExternalId, cancellationToken);
+-        if (existing?.IsCurrent(model.ExternalUpdatedUtc) == true) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
++        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+ 
+         FinanceTransaction transaction;
+         if (existing is null)
+@@ -514,7 +545,14 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+         }
+ 
+-        transaction = await _dbContext.FinanceTransactions.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        transaction = await _dbContext.FinanceTransactions.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        if (transaction is null)
++        {
++            transaction = new FinanceTransaction(Guid.NewGuid(), companyId, account.Id, null, null, null, model.TransactionUtc, "voucher", model.Amount, "SEK", model.Description, model.ExternalNumber);
++            _dbContext.FinanceTransactions.Add(transaction);
++            existing.RepointToInternalRecord(transaction.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
++            AttachSource(transaction, "voucher", model.ExternalId, existing.Id);
++            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
++        }
+         transaction.ChangeCategory("voucher");
+         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+         AttachSource(transaction, "voucher", model.ExternalId, existing.Id);
+@@ -535,7 +573,12 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             return SyncMutationResult.FromCreated(null);
+         }
+ 
+-        var payment = await _dbContext.Payments.SingleAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        var payment = await _dbContext.Payments.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++        if (payment is null)
++        {
++            _dbContext.Payments.Add(incoming);
++            existing.RepointToInternalRecord(incoming.Id, externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
++            return SyncMutationResult.FromCreated(null);
++        }
++        existing.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
+         AttachSource(payment, "payment", externalId, existing.Id);
+         return SyncMutationResult.FromSkipped(null);
+     }
+@@ -544,7 +587,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+     private async Task<SyncMutationResult> UpsertReferenceOnlyAsync(Guid companyId, Guid connectionId, string entityType, string externalId, string externalNumber, DateTime? externalUpdatedUtc, CancellationToken cancellationToken)
+     {
+         var existing = await FindReferenceAsync(companyId, connectionId, entityType, externalId, cancellationToken);
+-        if (existing?.IsCurrent(externalUpdatedUtc) == true) return SyncMutationResult.FromSkipped(externalUpdatedUtc);
++        if (MarkReferenceSyncedIfCurrent(existing, externalUpdatedUtc)) return SyncMutationResult.FromSkipped(externalUpdatedUtc);
+ 
+         if (existing is null)
+         {
+@@ -568,7 +611,15 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         var reference = await FindReferenceAsync(companyId, connectionId, type, externalNumber, cancellationToken);
+         if (reference is not null)
+         {
+-            return await _dbContext.FinanceCounterparties.SingleAsync(x => x.Id == reference.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++            var existing = await _dbContext.FinanceCounterparties.SingleOrDefaultAsync(x => x.Id == reference.InternalRecordId && x.CompanyId == companyId, cancellationToken);
++            if (existing is not null)
++            {
++                reference.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
++                return existing;
++            }
++
++            var repaired = new FinanceCounterparty(Guid.NewGuid(), companyId, name, type);
++            _dbContext.FinanceCounterparties.Add(repaired);
++            reference.RepointToInternalRecord(repaired.Id, externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
++            return repaired;
+         }
+ 
+         var counterparty = new FinanceCounterparty(Guid.NewGuid(), companyId, name, type);
+@@ -577,6 +628,16 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         return counterparty;
+     }
+ 
++    private bool MarkReferenceSyncedIfCurrent(FinanceExternalReference? reference, DateTime? externalUpdatedUtc)
++    {
++        if (reference?.IsCurrent(externalUpdatedUtc) != true)
++        {
++            return false;
++        }
++
++        reference.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
++        return true;
++    }
++
+     private async Task<FinanceAccount> EnsureSystemAccountAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Code == "FORTNOX", cancellationToken);
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxMappingServiceTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxMappingServiceTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxMappingServiceTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxMappingServiceTests.cs
+@@ -77,4 +77,32 @@ public sealed class FortnoxMappingServiceTests
+         Assert.Equal("Fortnox voucher A-42", result.Description);
+         Assert.Equal(99.95m, result.Amount);
+     }
++
++    [Fact]
++    public void Supplier_invoice_mapping_normalizes_paid_status_and_supplier_identity()
++    {
++        var result = _mapper.MapSupplierInvoice(new FortnoxSupplierInvoice
++        {
++            GivenNumber = "SI-42",
++            SupplierNumber = "S-1",
++            SupplierName = " Office AB ",
++            InvoiceDate = "2026-04-10",
++            DueDate = "2026-05-10",
++            Total = 500m,
++            Balance = 500m,
++            Currency = "eur",
++            Booked = true,
++            LastModified = "2026-04-30T10:00:00Z"
++        });
++
++        Assert.Equal("SI-42", result.ExternalId);
++        Assert.Equal("S-1", result.SupplierNumber);
++        Assert.Equal("Office AB", result.SupplierName);
++        Assert.Equal("EUR", result.Currency);
++        Assert.Equal("approved", result.Status);
++        Assert.Equal(FinanceSettlementStatuses.Unpaid, result.SettlementStatus);
++        Assert.Equal(new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc), result.ExternalUpdatedUtc);
++    }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxExternalReferenceTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxExternalReferenceTests.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FortnoxExternalReferenceTests.cs
+@@ -0,0 +1,48 @@
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FortnoxExternalReferenceTests
++{
++    [Fact]
++    public void Refresh_updates_external_version_and_last_synced_timestamp()
++    {
++        var createdUtc = new DateTime(2026, 4, 30, 8, 0, 0, DateTimeKind.Utc);
++        var refreshedUtc = new DateTime(2026, 4, 30, 9, 0, 0, DateTimeKind.Utc);
++        var reference = new FinanceExternalReference(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            FinanceIntegrationProviderKeys.Fortnox,
++            "invoice",
++            Guid.NewGuid(),
++            "1001",
++            "1001",
++            createdUtc,
++            createdUtc);
++
++        reference.Refresh("1001", refreshedUtc, refreshedUtc);
++
++        Assert.Equal(refreshedUtc, reference.ExternalUpdatedUtc);
++        Assert.Equal(refreshedUtc, reference.LastSyncedUtc);
++        Assert.True(reference.IsCurrent(createdUtc));
++    }
++
++    [Fact]
++    public void Repoint_repairs_mapping_without_changing_tenant_or_provider_identity()
++    {
++        var companyId = Guid.NewGuid();
++        var connectionId = Guid.NewGuid();
++        var replacementId = Guid.NewGuid();
++        var reference = new FinanceExternalReference(Guid.NewGuid(), companyId, connectionId, FinanceIntegrationProviderKeys.Fortnox, "customer", Guid.NewGuid(), "C-1", "C-1", null, DateTime.UtcNow);
++
++        reference.RepointToInternalRecord(replacementId, "C-1", null, new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc));
++
++        Assert.Equal(companyId, reference.CompanyId);
++        Assert.Equal(connectionId, reference.ConnectionId);
++        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, reference.ProviderKey);
++        Assert.Equal("customer", reference.EntityType);
++        Assert.Equal("C-1", reference.ExternalId);
++        Assert.Equal(replacementId, reference.InternalRecordId);
++        Assert.Equal(new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc), reference.LastSyncedUtc);
++    }
++}
+END_OF_PATCH

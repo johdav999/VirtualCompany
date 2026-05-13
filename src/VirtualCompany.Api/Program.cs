@@ -3106,6 +3106,10 @@ static async Task InitializeDatabaseAsync(
 
         if (applyMigrationsOnStartup)
         {
+            var pendingMigrations = (await dbContext.Database.GetPendingMigrationsAsync(app.Lifetime.ApplicationStopping)).ToArray();
+            await EnsureSqlServerFortnoxWriteCommandMigrationPrerequisitesAsync(dbContext, pendingMigrations);
+            await EnsureSqlServerCustomerMemoryMigrationPrerequisitesAsync(dbContext, pendingMigrations);
+
             await dbContext.Database.MigrateAsync(app.Lifetime.ApplicationStopping);
             await EnsureSqlServerFinanceSeedSchemaAsync(dbContext);
             await EnsureSqlServerAgentExecutionSchemaAsync(dbContext);
@@ -3133,6 +3137,259 @@ static async Task InitializeDatabaseAsync(
     await templateSeeder.SeedAsync();
     await workflowDefinitionSeeder.SeedAsync();
     await planningBaselineService.BackfillAllCompaniesAsync(app.Lifetime.ApplicationStopping);
+}
+
+static async Task EnsureSqlServerFortnoxWriteCommandMigrationPrerequisitesAsync(
+    VirtualCompanyDbContext dbContext,
+    IReadOnlyCollection<string> pendingMigrations)
+{
+    if (!string.Equals(dbContext.Database.ProviderName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    const string writeCommandsMigration = "20260430185000_AddFortnoxWriteCommands";
+    const string outboundExecutionStateMigration = "20260504180000_AddFortnoxOutboundActionExecutionState";
+    if (pendingMigrations.Contains(writeCommandsMigration) ||
+        !pendingMigrations.Contains(outboundExecutionStateMigration))
+    {
+        return;
+    }
+
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        if (await SqlServerTableExistsAsync(connection, "fortnox_write_commands"))
+        {
+            return;
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            CREATE TABLE [fortnox_write_commands] (
+                [id] uniqueidentifier NOT NULL,
+                [company_id] uniqueidentifier NOT NULL,
+                [connection_id] uniqueidentifier NULL,
+                [actor_user_id] uniqueidentifier NULL,
+                [approval_id] uniqueidentifier NULL,
+                [approved_by_user_id] uniqueidentifier NULL,
+                [http_method] nvarchar(16) NOT NULL,
+                [path] nvarchar(512) NOT NULL,
+                [target_company] nvarchar(160) NOT NULL,
+                [entity_type] nvarchar(64) NOT NULL,
+                [payload_summary] nvarchar(1000) NOT NULL,
+                [payload_hash] nvarchar(128) NOT NULL,
+                [sanitized_payload_json] nvarchar(max) NOT NULL,
+                [status] nvarchar(32) NOT NULL,
+                [failure_category] nvarchar(64) NULL,
+                [safe_failure_summary] nvarchar(1000) NULL,
+                [external_id] nvarchar(256) NULL,
+                [correlation_id] nvarchar(128) NULL,
+                [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
+                [approved_at] datetime2 NULL,
+                [execution_started_at] datetime2 NULL,
+                [executed_at] datetime2 NULL,
+                [failed_at] datetime2 NULL,
+                CONSTRAINT [PK_fortnox_write_commands] PRIMARY KEY ([id]),
+                CONSTRAINT [FK_fortnox_write_commands_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+            );
+            """);
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF OBJECT_ID(N'[dbo].[finance_integration_connections]', N'U') IS NOT NULL
+               AND OBJECT_ID(N'[dbo].[FK_fortnox_write_commands_finance_integration_connections_company_id_connection_id]', N'F') IS NULL
+            BEGIN
+                ALTER TABLE [fortnox_write_commands]
+                ADD CONSTRAINT [FK_fortnox_write_commands_finance_integration_connections_company_id_connection_id]
+                FOREIGN KEY ([company_id], [connection_id])
+                REFERENCES [finance_integration_connections] ([company_id], [id])
+                ON DELETE NO ACTION;
+            END;
+
+            CREATE UNIQUE INDEX [IX_fortnox_write_commands_company_id_approval_id]
+            ON [fortnox_write_commands] ([company_id], [approval_id])
+            WHERE [approval_id] IS NOT NULL;
+
+            CREATE INDEX [IX_fortnox_write_commands_company_id_connection_id_created_at]
+            ON [fortnox_write_commands] ([company_id], [connection_id], [created_at]);
+
+            CREATE INDEX [IX_fortnox_write_commands_company_id_payload_hash_http_method_path_status]
+            ON [fortnox_write_commands] ([company_id], [payload_hash], [http_method], [path], [status]);
+            """);
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
+}
+
+static async Task EnsureSqlServerCustomerMemoryMigrationPrerequisitesAsync(
+    VirtualCompanyDbContext dbContext,
+    IReadOnlyCollection<string> pendingMigrations)
+{
+    if (!string.Equals(dbContext.Database.ProviderName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    const string salesPersistenceMigration = "20260504190000_AddSalesPersistenceModel";
+    const string customerMemoryMigration = "20260505130000_AddCustomerMemoryProfiles";
+
+    if (!pendingMigrations.Contains(customerMemoryMigration) ||
+        pendingMigrations.Contains(salesPersistenceMigration))
+    {
+        return;
+    }
+
+    var connection = dbContext.Database.GetDbConnection();
+    var shouldCloseConnection = connection.State != System.Data.ConnectionState.Open;
+    if (shouldCloseConnection)
+    {
+        await connection.OpenAsync();
+    }
+
+    try
+    {
+        if (!await SqlServerTableExistsAsync(connection, "customer_companies"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [customer_companies] (
+                    [id] uniqueidentifier NOT NULL,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [name] nvarchar(200) NOT NULL,
+                    [status] nvarchar(32) NOT NULL,
+                    [website] nvarchar(256) NULL,
+                    [industry] nvarchar(120) NULL,
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    [is_deleted] bit NOT NULL CONSTRAINT [DF_customer_companies_is_deleted_startup] DEFAULT CAST(0 AS bit),
+                    [deleted_at] datetime2 NULL,
+                    CONSTRAINT [PK_customer_companies] PRIMARY KEY ([id]),
+                    CONSTRAINT [AK_customer_companies_company_id_id] UNIQUE ([company_id], [id]),
+                    CONSTRAINT [FK_customer_companies_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+                );
+                """);
+        }
+
+        if (!await SqlServerTableExistsAsync(connection, "contacts"))
+        {
+            await dbContext.Database.ExecuteSqlRawAsync(
+                """
+                CREATE TABLE [contacts] (
+                    [id] uniqueidentifier NOT NULL,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [customer_company_id] uniqueidentifier NULL,
+                    [full_name] nvarchar(160) NOT NULL,
+                    [email] nvarchar(256) NOT NULL,
+                    [status] nvarchar(32) NOT NULL,
+                    [title] nvarchar(120) NULL,
+                    [phone] nvarchar(64) NULL,
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    [is_deleted] bit NOT NULL CONSTRAINT [DF_contacts_is_deleted_startup] DEFAULT CAST(0 AS bit),
+                    [deleted_at] datetime2 NULL,
+                    CONSTRAINT [PK_contacts] PRIMARY KEY ([id]),
+                    CONSTRAINT [AK_contacts_company_id_id] UNIQUE ([company_id], [id]),
+                    CONSTRAINT [FK_contacts_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
+                    CONSTRAINT [FK_contacts_customer_companies_company_id_customer_company_id] FOREIGN KEY ([company_id], [customer_company_id]) REFERENCES [customer_companies] ([company_id], [id]) ON DELETE NO ACTION
+                );
+                """);
+        }
+
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_customer_companies_company_id'
+                  AND object_id = OBJECT_ID(N'[customer_companies]'))
+            BEGIN
+                CREATE INDEX [IX_customer_companies_company_id] ON [customer_companies] ([company_id]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_customer_companies_status'
+                  AND object_id = OBJECT_ID(N'[customer_companies]'))
+            BEGIN
+                CREATE INDEX [IX_customer_companies_status] ON [customer_companies] ([status]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_customer_companies_created_at'
+                  AND object_id = OBJECT_ID(N'[customer_companies]'))
+            BEGIN
+                CREATE INDEX [IX_customer_companies_created_at] ON [customer_companies] ([created_at]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_customer_companies_company_id_name'
+                  AND object_id = OBJECT_ID(N'[customer_companies]'))
+            BEGIN
+                CREATE INDEX [IX_customer_companies_company_id_name] ON [customer_companies] ([company_id], [name]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_contacts_company_id'
+                  AND object_id = OBJECT_ID(N'[contacts]'))
+            BEGIN
+                CREATE INDEX [IX_contacts_company_id] ON [contacts] ([company_id]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_contacts_status'
+                  AND object_id = OBJECT_ID(N'[contacts]'))
+            BEGIN
+                CREATE INDEX [IX_contacts_status] ON [contacts] ([status]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_contacts_created_at'
+                  AND object_id = OBJECT_ID(N'[contacts]'))
+            BEGIN
+                CREATE INDEX [IX_contacts_created_at] ON [contacts] ([created_at]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_contacts_company_id_email'
+                  AND object_id = OBJECT_ID(N'[contacts]'))
+            BEGIN
+                CREATE INDEX [IX_contacts_company_id_email] ON [contacts] ([company_id], [email]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_contacts_company_id_customer_company_id'
+                  AND object_id = OBJECT_ID(N'[contacts]'))
+            BEGIN
+                CREATE INDEX [IX_contacts_company_id_customer_company_id] ON [contacts] ([company_id], [customer_company_id]);
+            END;
+            """);
+    }
+    finally
+    {
+        if (shouldCloseConnection)
+        {
+            await connection.CloseAsync();
+        }
+    }
 }
 
 static async Task StopRunningSimulationSessionsAsync(

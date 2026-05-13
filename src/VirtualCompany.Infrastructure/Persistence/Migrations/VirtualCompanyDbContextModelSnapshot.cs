@@ -1001,6 +1001,364 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.ToTable("company_setup_templates", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxConnection", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AccessTokenExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("access_token_expires_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("ConnectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("connected_at");
+
+                    b.Property<Guid>("ConnectedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connected_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("DisconnectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("disconnected_at");
+
+                    b.Property<string>("EncryptedAccessToken")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("encrypted_access_token");
+
+                    b.Property<string>("EncryptedRefreshToken")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("encrypted_refresh_token");
+
+                    b.Property<string>("FortnoxCompanyName")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("fortnox_company_name");
+
+                    b.Property<string>("GrantedScopes")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("granted_scopes_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("LastErrorSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("last_error_summary");
+
+                    b.Property<DateTime?>("LastRefreshAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_refresh_attempt_at");
+
+                    b.Property<DateTime?>("LastSuccessfulRefreshUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_successful_refresh_at");
+
+                    b.Property<DateTime?>("LastSyncUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_sync_at");
+
+                    b.Property<DateTime?>("LastValidatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_validated_at");
+
+                    b.Property<string>("ProviderMetadata")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("provider_metadata_json")
+                        .HasDefaultValueSql("N'{}'");
+
+                    b.Property<string>("ProviderTenantId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_tenant_id");
+
+                    b.Property<DateTime?>("RefreshTokenExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("refresh_token_expires_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TokenEncryptionAlgorithm")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("token_encryption_algorithm");
+
+                    b.Property<string>("TokenEncryptionKeyId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("token_encryption_key_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("AccessTokenExpiresUtc");
+
+                    b.HasIndex("CompanyId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status");
+
+                    b.HasIndex("ConnectedByUserId");
+
+                    b.HasIndex("Status");
+
+                    b.ToTable("fortnox_connections", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxOAuthState", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("CallbackReceivedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("callback_received_at");
+
+                    b.Property<string>("CodeVerifierCiphertext")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("code_verifier_ciphertext");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTime?>("ConsumedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<string>("RedirectUri")
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)")
+                        .HasColumnName("redirect_uri");
+
+                    b.Property<string>("StateHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("state_hash");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ConnectionId");
+
+                    b.HasIndex("CompanyId", "UserId");
+
+                    b.HasIndex("ConsumedUtc");
+
+                    b.HasIndex("ExpiresUtc");
+
+                    b.HasIndex("StateHash")
+                        .IsUnique();
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("fortnox_oauth_states", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxSyncHistory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("Direction")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("direction");
+
+                    b.Property<string>("ErrorSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("error_summary");
+
+                    b.Property<Guid>("FortnoxConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("fortnox_connection_id");
+
+                    b.Property<string>("Metadata")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("metadata_json")
+                        .HasDefaultValueSql("N'{}'");
+
+                    b.Property<int>("RecordsFailed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("records_failed")
+                        .HasDefaultValue(0);
+
+                    b.Property<int>("RecordsProcessed")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("records_processed")
+                        .HasDefaultValue(0);
+
+                    b.Property<int>("RecordsSucceeded")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("int")
+                        .HasColumnName("records_succeeded")
+                        .HasDefaultValue(0);
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("SyncType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("sync_type");
+
+                    b.Property<Guid?>("TriggeredByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("triggered_by_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CorrelationId");
+
+                    b.HasIndex("CompanyId", "FortnoxConnectionId", "StartedUtc");
+
+                    b.HasIndex("Status");
+
+                    b.HasIndex("TriggeredByUserId");
+
+                    b.ToTable("fortnox_sync_histories", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxExternalReference", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EntityType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("entity_type");
+
+                    b.Property<string>("ExternalDisplayReference")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("external_display_reference");
+
+                    b.Property<string>("ExternalEntityType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("external_entity_type");
+
+                    b.Property<string>("ExternalId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("external_id");
+
+                    b.Property<Guid?>("FortnoxConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("fortnox_connection_id");
+
+                    b.Property<Guid>("InternalEntityId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("internal_entity_id");
+
+                    b.Property<DateTime?>("LastSyncedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_synced_at");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ExternalEntityType", "ExternalId");
+
+                    b.HasIndex("CompanyId", "FortnoxConnectionId");
+
+                    b.HasIndex("CompanyId", "EntityType", "InternalEntityId", "ExternalEntityType")
+                        .IsUnique();
+
+                    b.ToTable("fortnox_external_references", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.User", b =>
                 {
                     b.Property<Guid>("Id")
@@ -1129,6 +1487,98 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxConnection", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", "ConnectedByUser")
+                        .WithMany()
+                        .HasForeignKey("ConnectedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("ConnectedByUser");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxOAuthState", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FortnoxConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", "User")
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Connection");
+
+                    b.Navigation("User");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxSyncHistory", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FortnoxConnection", "FortnoxConnection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "FortnoxConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", "TriggeredByUser")
+                        .WithMany()
+                        .HasForeignKey("TriggeredByUserId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
+                    b.Navigation("Company");
+
+                    b.Navigation("FortnoxConnection");
+
+                    b.Navigation("TriggeredByUser");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FortnoxExternalReference", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FortnoxConnection", "FortnoxConnection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "FortnoxConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Company");
+
+                    b.Navigation("FortnoxConnection");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.Company", b =>

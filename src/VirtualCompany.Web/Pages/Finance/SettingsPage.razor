@@ -1,6 +1,6 @@
 @page "/finance/settings"
 @page "/finance/settings/email-settings"
-@page "/finance/settings/integrations/fortnox"
+@page "/finance/settings/integrations/{ProviderKey}"
 @rendermode InteractiveServer
 @inherits FinancePageBase
 @using System.Globalization
@@ -20,10 +20,10 @@
                 <NavLink class="finance-settings-tab" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">Email settings</NavLink>
             </li>
             <li>
-                <NavLink class="finance-settings-tab" href="@FortnoxSettingsHref" Match="NavLinkMatch.Prefix">Integrations</NavLink>
+                <NavLink class="finance-settings-tab" href="@IntegrationSettingsHref" Match="NavLinkMatch.Prefix">Integrations</NavLink>
             </li>
         </ul>
-        @if (!IsFortnoxSettingsRoute)
+        @if (!IsIntegrationSettingsRoute)
         {
         <FinanceDataState
             IsLoading="@IsSettingsLoading"
@@ -34,19 +34,19 @@
             ErrorTitle="Email settings are unavailable"
             OnRetry="@ReloadAsync">
             <section class="finance-settings-integration-callout mb-4">
-                <div class="fortnox-integration-card__identity">
-                    <div class="fortnox-integration-card__mark" aria-hidden="true">Fx</div>
+                <div class="finance-integration-card__identity">
+                    <div class="finance-integration-card__mark" aria-hidden="true">Fi</div>
                     <div>
                         <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
-                            <h2 class="h5 mb-0">Fortnox</h2>
-                            <span class="fortnox-source-badge">Accounting integration</span>
+                            <h2 class="h5 mb-0">Financial integrations</h2>
+                            <span class="finance-integration-source-badge">Accounting integration</span>
                         </div>
                         <p class="text-body-secondary mb-0">
-                            Connect Fortnox to sync customers, suppliers, invoices, bills, accounts, payments, and activity into Finance.
+                            Connect an accounting system to sync customers, suppliers, invoices, bills, accounts, payments, and activity into Finance.
                         </p>
                     </div>
                 </div>
-                <NavLink class="btn btn-primary" href="@FortnoxSettingsHref">Open Fortnox integration</NavLink>
+                <NavLink class="btn btn-primary" href="@IntegrationSettingsHref">Open financial integrations</NavLink>
             </section>
 
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
@@ -149,107 +149,126 @@
         else
         {
         <FinanceDataState
-            IsLoading="@IsFortnoxLoading"
+            IsLoading="@IsFinanceIntegrationLoading"
             IsEmpty="false"
-            ErrorMessage="@FortnoxErrorMessage"
-            LoadingTitle="Loading Fortnox"
-            LoadingMessage="Reading the current Fortnox connection state."
-            ErrorTitle="Fortnox settings are unavailable"
-            OnRetry="@ReloadFortnoxAsync">
+            ErrorMessage="@FinanceIntegrationErrorMessage"
+            LoadingTitle="Loading financial integrations"
+            LoadingMessage="Reading the current accounting connection state."
+            ErrorTitle="Financial integrations are unavailable"
+            OnRetry="@ReloadFinanceIntegrationsAsync">
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                 <div>
-                    <h2 class="h5 mb-1">Integrations</h2>
-                    <p class="text-body-secondary mb-0">Connect Fortnox, run finance syncs, and review recent sync history.</p>
+                    <h2 class="h5 mb-1">Financial integrations</h2>
+                    <p class="text-body-secondary mb-0">Connect accounting systems, run finance syncs, and review recent sync history.</p>
                 </div>
-                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadFortnoxAsync" disabled="@IsFortnoxBusy">Refresh</button>
+                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadFinanceIntegrationsAsync" disabled="@IsFinanceIntegrationBusy">Refresh</button>
             </div>
 
-            <section class="@($"fortnox-integration-card fortnox-integration-card--{FortnoxState}")">
+            <section class="@($"finance-integration-card finance-integration-card--{FinanceIntegrationState}")">
                 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
-                    <div class="fortnox-integration-card__identity">
-                        <div class="fortnox-integration-card__mark" aria-hidden="true">Fx</div>
+                    <div class="finance-integration-card__identity">
+                        <div class="finance-integration-card__mark" aria-hidden="true">Fi</div>
                         <div>
                             <div class="d-flex align-items-center gap-2 mb-1">
-                                <h3 class="h5 mb-0">Fortnox</h3>
-                                <span class="@FortnoxBadgeClass">@FortnoxStateLabel</span>
+                                <h3 class="h5 mb-0">@SelectedProviderDisplayName</h3>
+                                <span class="@FinanceIntegrationBadgeClass">@FinanceIntegrationStateLabel</span>
                             </div>
-                            <p class="text-body-secondary mb-0">@FortnoxStateDescription</p>
+                            <p class="text-body-secondary mb-0">@FinanceIntegrationStateDescription</p>
                         </div>
                     </div>
-                    <div class="d-flex flex-wrap gap-2">
-                        @if (ShowConnectAction)
-                        {
-                            <button class="btn btn-primary" type="button" @onclick="ConnectFortnoxAsync" disabled="@IsFortnoxBusy">
-                                @(IsFortnoxConnecting ? "Connecting..." : "Connect Fortnox")
+                    @if (CanManageFinanceIntegrations)
+                    {
+                        <div class="d-flex flex-wrap gap-2">
+                            @if (ShowConnectAction)
+                            {
+                                <button class="btn btn-primary" type="button" @onclick="ConnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
+                                    @(IsFinanceIntegrationConnecting ? "Connecting..." : "Connect accounting system")
+                                </button>
+                            }
+                            @if (ShowReconnectAction)
+                            {
+                                <button class="btn btn-primary" type="button" @onclick="ReconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
+                                    @(IsFinanceIntegrationConnecting ? "Reconnecting..." : "Reconnect")
+                                </button>
+                            }
+                            @if (ShowSyncAction)
+                            {
+                                <button class="btn btn-outline-primary" type="button" @onclick="SyncFinanceIntegrationAsync" disabled="@IsFinanceIntegrationSyncDisabled" title="@FinanceIntegrationSyncDisabledReason">
+                                    @(IsFinanceIntegrationSyncing ? "Syncing..." : "Sync data")
+                                </button>
+                            }
+                            @if (ShowDisconnectAction)
+                            {
+                                <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">Disconnect</button>
+                            }
+                            <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
+                                @(ShowFinanceIntegrationHistory ? "Hide sync history" : "View sync history")
                             </button>
-                        }
-                        @if (ShowReconnectAction)
-                        {
-                            <button class="btn btn-primary" type="button" @onclick="ReconnectFortnoxAsync" disabled="@IsFortnoxBusy">
-                                @(IsFortnoxConnecting ? "Reconnecting..." : "Reconnect")
-                            </button>
-                        }
-                        @if (ShowSyncAction)
-                        {
-                            <button class="btn btn-outline-primary" type="button" @onclick="SyncFortnoxAsync" disabled="@IsFortnoxBusy || IsFortnoxSyncing">
-                                @(IsFortnoxSyncing ? "Syncing..." : "Sync now")
-                            </button>
-                        }
-                        @if (ShowDisconnectAction)
-                        {
-                            <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFortnoxAsync" disabled="@IsFortnoxBusy">Disconnect</button>
-                        }
-                        <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFortnoxHistoryAsync" disabled="@IsFortnoxBusy">
-                            View sync history
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="finance-integration-card__readonly" role="status">
+                            Company owner or admin access is required to connect, sync, reconnect, or disconnect Fortnox.
+                        </div>
+                    }
+                    @if (!CanManageFinanceIntegrations)
+                    {
+                        <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
+                            @(ShowFinanceIntegrationHistory ? "Hide sync history" : "View sync history")
                         </button>
-                    </div>
+                    }
                 </div>
 
-                <div class="fortnox-integration-card__metrics">
+                <div class="finance-integration-card__metrics">
                     <div>
                         <span>Connection</span>
-                        <strong>@FortnoxConnectionSummary</strong>
+                        <strong>@FinanceIntegrationConnectionSummary</strong>
                     </div>
                     <div>
-                        <span>Last token refresh</span>
-                        <strong>@(FortnoxStatus?.LastRefreshAttemptUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not refreshed yet")</strong>
+                        <span>Last successful sync</span>
+                        <strong>@FormatDateTime(FinanceIntegrationStatus?.LastSuccessfulSyncUtc)</strong>
                     </div>
                     <div>
-                        <span>Token expiry</span>
-                        <strong>@(FortnoxStatus?.AccessTokenExpiresUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not available")</strong>
+                        <span>Last issue</span>
+                        <strong>@LastFailureSummary</strong>
                     </div>
                 </div>
 
-                <div class="fortnox-integration-card__notice" role="status">
+                <div class="finance-integration-card__notice">
                     <strong>Approval-gated writes</strong>
-                    <span>Outbound Fortnox changes create an approval with company, summary, and payload hash before any Fortnox API call runs.</span>
+                    <span>Laura asks for approval before any change is sent to Fortnox, with a plain summary of what will change.</span>
                 </div>
 
-                @if (!string.IsNullOrWhiteSpace(FortnoxSuccessMessage))
+                @if (!string.IsNullOrWhiteSpace(FinanceIntegrationSuccessMessage))
                 {
-                    <div class="alert alert-success mt-3 mb-0" role="status">@FortnoxSuccessMessage</div>
+                    <div class="alert alert-success mt-3 mb-0" role="status">@FinanceIntegrationSuccessMessage</div>
                 }
-                @if (!string.IsNullOrWhiteSpace(FortnoxActionErrorMessage))
+                @if (!string.IsNullOrWhiteSpace(FinanceIntegrationActionErrorMessage))
                 {
-                    <div class="alert alert-danger mt-3 mb-0" role="alert">@FortnoxActionErrorMessage</div>
+                    <div class="alert alert-danger mt-3 mb-0" role="alert">@FinanceIntegrationActionErrorMessage</div>
                 }
             </section>
 
-            @if (ShowFortnoxHistory)
+            @if (ShowFinanceIntegrationHistory)
             {
-                <section class="fortnox-history-card mt-4">
+                <section class="finance-integration-history-card mt-4">
                     <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
                         <div>
                             <h3 class="h6 mb-1">Sync history</h3>
-                            <p class="small text-body-secondary mb-0">Recent Fortnox sync runs for this company.</p>
+                            <p class="small text-body-secondary mb-0">Recent accounting sync runs for this company.</p>
                         </div>
-                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadFortnoxHistoryAsync" disabled="@IsFortnoxHistoryLoading">Refresh</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationHistoryLoading">Refresh</button>
                     </div>
-                    @if (IsFortnoxHistoryLoading)
+                    @if (IsFinanceIntegrationHistoryLoading)
                     {
                         <p class="text-body-secondary mb-0">Loading sync history...</p>
                     }
-                    else if (FortnoxHistory?.Items.Count > 0)
+                    else if (!string.IsNullOrWhiteSpace(FinanceIntegrationHistoryErrorMessage))
+                    {
+                        <div class="alert alert-warning mb-0" role="status">@FinanceIntegrationHistoryErrorMessage</div>
+                    }
+                    else if (FinanceIntegrationHistory?.Items.Count > 0)
                     {
                         <div class="table-responsive">
                             <table class="table table-sm align-middle mb-0">
@@ -257,24 +276,63 @@
                                     <tr>
                                         <th>Started</th>
                                         <th>Status</th>
-                                        <th>Created</th>
-                                        <th>Updated</th>
-                                        <th>Skipped</th>
-                                        <th>Errors</th>
-                                        <th>Summary</th>
+                                        <th>Imported records</th>
+                                        <th>Duration</th>
+                                        <th>Safe error summary</th>
                                     </tr>
                                 </thead>
                                 <tbody>
-                                    @foreach (var item in FortnoxHistory.Items)
+                                    @foreach (var item in FinanceIntegrationHistory.Items)
                                     {
+                                        var importedCount = item.Created + item.Updated;
                                         <tr>
                                             <td>@item.StartedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
-                                            <td><span class="@GetHistoryBadgeClass(item.Status)">@FormatFortnoxStatus(item.Status)</span></td>
-                                            <td>@item.Created</td>
-                                            <td>@item.Updated</td>
-                                            <td>@item.Skipped</td>
-                                            <td>@item.Errors</td>
-                                            <td>@item.Summary</td>
+                                            <td><span class="@FortnoxIntegrationDisplayMapper.GetHistoryBadgeClass(item.Status)">@FortnoxIntegrationDisplayMapper.FormatSyncStatus(item.Status)</span></td>
+                                            <td>
+                                                <strong>@importedCount</strong>
+                                                <span class="d-block small text-body-secondary">@FortnoxIntegrationDisplayMapper.FormatImportCounts(item.Created, item.Updated, item.Skipped, item.Errors)</span>
+                                            </td>
+                                            <td>@FormatDuration(item.StartedUtc, item.CompletedUtc)</td>
+                                            <td>
+                                                <span>@FormatSafeErrorSummary(item)</span>
+                                                @if (item.Entities.Count > 0)
+                                                {
+                                                    <details class="finance-sync-details mt-2">
+                                                        <summary>View synced records</summary>
+                                                        <div class="table-responsive mt-2">
+                                                            <table class="table table-sm mb-0">
+                                                                <thead>
+                                                                    <tr>
+                                                                        <th>Records</th>
+                                                                        <th>Created</th>
+                                                                        <th>Updated</th>
+                                                                        <th>Skipped</th>
+                                                                        <th>Issues</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody>
+                                                                    @foreach (var entity in item.Entities)
+                                                                    {
+                                                                        <tr>
+                                                                            <td>@FortnoxIntegrationDisplayMapper.FormatEntityType(entity.EntityType)</td>
+                                                                            <td>@entity.Created</td>
+                                                                            <td>@entity.Updated</td>
+                                                                            <td>@entity.Skipped</td>
+                                                                            <td>
+                                                                                @entity.Errors
+                                                                                @if (!string.IsNullOrWhiteSpace(entity.ErrorSummary))
+                                                                                {
+                                                                                    <span class="d-block small text-body-secondary">@FortnoxIntegrationDisplayMapper.FormatSafeText(entity.ErrorSummary, "Review this record type.")</span>
+                                                                                }
+                                                                            </td>
+                                                                        </tr>
+                                                                    }
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    </details>
+                                                }
+                                            </td>
                                         </tr>
                                     }
                                 </tbody>
@@ -283,7 +341,7 @@
                     }
                     else
                     {
-                        <p class="text-body-secondary mb-0">No Fortnox syncs have run yet.</p>
+                        <p class="text-body-secondary mb-0">No accounting syncs have run yet.</p>
                     }
                 </section>
             }

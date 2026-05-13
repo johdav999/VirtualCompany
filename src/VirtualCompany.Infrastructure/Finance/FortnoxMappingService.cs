@@ -41,7 +41,7 @@ public sealed class FortnoxMappingService : IFortnoxMappingService
             number,
             number,
             number,
-            Required(account.Description, "Fortnox account description"),
+            TrimTo(string.IsNullOrWhiteSpace(account.Description) ? $"Account {number}" : account.Description, 160),
             NormalizeAccountType(account.Type, account.Number),
             ParseDateTime(account.LastModified));
     }
@@ -132,6 +132,12 @@ public sealed class FortnoxMappingService : IFortnoxMappingService
 
     private static string Required(string? value, string name) =>
         string.IsNullOrWhiteSpace(value) ? throw new InvalidOperationException($"{name} is required.") : value.Trim();
+
+    private static string TrimTo(string value, int maxLength)
+    {
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
+    }
 
     private static string NormalizeCurrency(string? currency) =>
         string.IsNullOrWhiteSpace(currency) ? "SEK" : currency.Trim().ToUpperInvariant();

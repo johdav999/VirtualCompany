@@ -1,0 +1,2025 @@
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index 1b69a41..4e92c3d 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -136,14 +136,34 @@ public sealed class SalesController : ControllerBase
+     [HttpPost("deals/{id:guid}/mark-won")]
+     public async Task<ActionResult<SalesDealDetailResponse>> MarkWonAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+     {
+-        var result = await _salesOperations.MarkDealWonAsync(CompanyId(), UserId(), id, request, cancellationToken);
+-        return result is null ? NotFound() : Ok(result);
++        try
++        {
++            var result = await _salesOperations.MarkDealWonAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Deal could not be marked won.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
+     }
+ 
+     [HttpPost("deals/{id:guid}/mark-lost")]
+     public async Task<ActionResult<SalesDealDetailResponse>> MarkLostAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+     {
+-        var result = await _salesOperations.MarkDealLostAsync(CompanyId(), UserId(), id, request, cancellationToken);
+-        return result is null ? NotFound() : Ok(result);
++        try
++        {
++            var result = await _salesOperations.MarkDealLostAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Deal could not be marked lost.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
+     }
+ 
+     [HttpPost("email/process")]
+diff --git a/src/VirtualCompany.Web/Program.cs b/src/VirtualCompany.Web/Program.cs
+index 72df9b2..29c9f6a 100644
+--- a/src/VirtualCompany.Web/Program.cs
++++ b/src/VirtualCompany.Web/Program.cs
+@@ -119,6 +119,11 @@ builder.Services.AddScoped(sp => new DashboardSummaryApiClient(
+     ShouldUseOfflineMode(
+         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
++builder.Services.AddScoped(sp => new SalesApiClient(
++    sp.GetRequiredService<HttpClient>(),
++    ShouldUseOfflineMode(
++        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
++        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+ 
+ var app = builder.Build();
+ 
+diff --git a/src/VirtualCompany.Web/Layout/NavMenu.razor b/src/VirtualCompany.Web/Layout/NavMenu.razor
+index 342b1cb..06a928e 100644
+--- a/src/VirtualCompany.Web/Layout/NavMenu.razor
++++ b/src/VirtualCompany.Web/Layout/NavMenu.razor
+@@ -41,6 +41,11 @@
+                 </div>
+             }
+         }
++        <div class="nav-item px-3">
++            <NavLink class="nav-link" href="@salesHref">
++                <span class="bi bi-graph-up-arrow" aria-hidden="true"></span> Sales
++            </NavLink>
++        </div>
+         <div class="nav-item px-3">
+             <NavLink class="nav-link" href="@agentsHref">
+                 <span class="bi bi-people" aria-hidden="true"></span> Agents
+@@ -112,6 +117,7 @@
+     private Guid? currentCompanyId;
+     private CurrentUserContextViewModel? currentUser;
+     private string dashboardHref = "/dashboard";
++    private string salesHref = "/app/sales";
+     private string agentsHref = "/agents";
+     private string workflowsHref = "/workflows";
+     private string inboxHref = "/inbox";
+@@ -161,6 +167,7 @@
+         simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin);
+         systemAdminHref = BuildRestrictedAreaHref(FinanceRoutes.TransparencyToolRegistry);
+         dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
++        salesHref = currentCompanyId is Guid salesCompanyId ? $"/app/sales?companyId={salesCompanyId:D}" : "/app/sales";
+         agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
+         workflowsHref = DashboardRoutes.EnsureCompanyContext("/workflows", currentCompanyId, "/workflows");
+         inboxHref = currentCompanyId is Guid inboxCompanyId ? $"/inbox?companyId={inboxCompanyId:D}" : "/inbox";
+@@ -250,9 +257,9 @@
+                 route),
+             "sales" => new SidebarAgentContext(
+                 "sales",
+-                "Sales agent",
++                "Alex",
+                 "Sales Manager",
+-                null,
++                "/images/paul.png",
+                 "I'm watching your pipeline and surfacing the follow-ups that need attention.",
+                 "Message sales",
+                 route),
+@@ -281,7 +288,7 @@
+             return "finance";
+         }
+ 
+-        if (path.StartsWith("sales", StringComparison.Ordinal))
++        if (path.StartsWith("sales", StringComparison.Ordinal) || path.StartsWith("app/sales", StringComparison.Ordinal))
+         {
+             return "sales";
+         }
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+new file mode 100644
+index 0000000..748f5aa
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -0,0 +1,201 @@
++using System.Net;
++using System.Net.Http.Json;
++using System.Text.Json;
++
++namespace VirtualCompany.Web.Services;
++
++public sealed class SalesApiClient
++{
++    private const string CompanyContextHeaderName = "X-Company-Id";
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private readonly HttpClient _httpClient;
++    private readonly bool _useOfflineMode;
++
++    public SalesApiClient(HttpClient httpClient, bool useOfflineMode = false)
++    {
++        _httpClient = httpClient;
++        _useOfflineMode = useOfflineMode;
++    }
++
++    public Task<SalesDashboardResponse> GetDashboardAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<SalesDashboardResponse>(companyId, "api/sales/dashboard", allowNotFound: false, cancellationToken)!;
++
++    public async Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        await GetAsync<List<SalesLeadSummaryResponse>>(companyId, "api/sales/leads", allowNotFound: false, cancellationToken) ?? [];
++
++    public Task<SalesLeadDetailResponse?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken = default) =>
++        GetAsync<SalesLeadDetailResponse>(companyId, $"api/sales/leads/{leadId:D}", allowNotFound: true, cancellationToken);
++
++    public Task<SalesLeadDetailResponse> QualifyLeadAsync(Guid companyId, Guid leadId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<SalesActionRequest, SalesLeadDetailResponse>(companyId, HttpMethod.Post, $"api/sales/leads/{leadId:D}/qualify", new(note), cancellationToken);
++
++    public Task<SalesLeadDetailResponse> RejectLeadAsync(Guid companyId, Guid leadId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<SalesActionRequest, SalesLeadDetailResponse>(companyId, HttpMethod.Post, $"api/sales/leads/{leadId:D}/reject", new(note), cancellationToken);
++
++    public Task<SalesDealDetailResponse> ConvertLeadAsync(Guid companyId, Guid leadId, ConvertLeadRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<ConvertLeadRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/leads/{leadId:D}/convert", request, cancellationToken);
++
++    public Task<SalesPipelineResponse> GetPipelineAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<SalesPipelineResponse>(companyId, "api/sales/pipeline", allowNotFound: false, cancellationToken)!;
++
++    public Task<SalesDealDetailResponse?> GetDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
++        GetAsync<SalesDealDetailResponse>(companyId, $"api/sales/deals/{dealId:D}", allowNotFound: true, cancellationToken);
++
++    public async Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
++        await GetAsync<List<SalesActivityResponse>>(companyId, $"api/sales/deals/{dealId:D}/activities", allowNotFound: false, cancellationToken) ?? [];
++
++    public async Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        await GetAsync<List<SalesRecommendationResponse>>(companyId, "api/sales/recommendations", allowNotFound: false, cancellationToken) ?? [];
++
++    public Task<SalesDealDetailResponse> ChangeDealStageAsync(Guid companyId, Guid dealId, Guid stageId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<ChangeDealStageRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/stage-change", new(stageId, note), cancellationToken);
++
++    public Task<SalesDealDetailResponse> MarkWonAsync(Guid companyId, Guid dealId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/mark-won", new(note), cancellationToken);
++
++    public Task<SalesDealDetailResponse> MarkLostAsync(Guid companyId, Guid dealId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/mark-lost", new(note), cancellationToken);
++
++    private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
++    {
++        if (_useOfflineMode)
++        {
++            throw new SalesApiException("Sales needs the backend API. Start the API project to review live tenant data.");
++        }
++
++        try
++        {
++            using var request = CreateCompanyRequest(companyId, HttpMethod.Get, uri, null);
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
++            {
++                return default;
++            }
++
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException)
++        {
++            throw new SalesApiException("The sales workspace could not reach the backend API.");
++        }
++    }
++
++    private async Task<TResponse> SendAsync<TRequest, TResponse>(Guid companyId, HttpMethod method, string uri, TRequest payload, CancellationToken cancellationToken)
++    {
++        if (_useOfflineMode)
++        {
++            throw new SalesApiException("Sales actions need the backend API. Start the API project before changing live tenant data.");
++        }
++
++        try
++        {
++            using var request = CreateCompanyRequest(companyId, method, uri, JsonContent.Create(payload, options: SerializerOptions));
++            using var response = await _httpClient.SendAsync(request, cancellationToken);
++            if (response.IsSuccessStatusCode)
++            {
++                return await response.Content.ReadFromJsonAsync<TResponse>(SerializerOptions, cancellationToken)
++                    ?? throw new SalesApiException("The sales API returned an empty response.");
++            }
++
++            throw await CreateExceptionAsync(response, cancellationToken);
++        }
++        catch (HttpRequestException)
++        {
++            throw new SalesApiException("The sales workspace could not reach the backend API.");
++        }
++    }
++
++    private static HttpRequestMessage CreateCompanyRequest(Guid companyId, HttpMethod method, string uri, HttpContent? content)
++    {
++        var request = new HttpRequestMessage(method, uri) { Content = content };
++        request.Headers.TryAddWithoutValidation(CompanyContextHeaderName, companyId.ToString("D"));
++        return request;
++    }
++
++    private static async Task<SalesApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
++    {
++        if (response.Content.Headers.ContentType?.MediaType is not ("application/json" or "application/problem+json"))
++        {
++            return new SalesApiException($"The sales request failed with status code {(int)response.StatusCode}.");
++        }
++
++        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
++        return problem?.Errors is { Count: > 0 }
++            ? new SalesApiException(FormatProblem(problem), problem.Errors)
++            : new SalesApiException(problem?.Detail ?? problem?.Title ?? "The sales request failed.");
++    }
++
++    private static string FormatProblem(ApiProblemResponse problem)
++    {
++        var firstError = problem.Errors?.SelectMany(x => x.Value).FirstOrDefault();
++        return firstError ?? problem.Detail ?? problem.Title ?? "The sales request failed.";
++    }
++
++    private sealed class ApiProblemResponse
++    {
++        public string? Title { get; set; }
++        public string? Detail { get; set; }
++        public Dictionary<string, string[]>? Errors { get; set; }
++    }
++}
++
++public sealed class SalesApiException : Exception
++{
++    public SalesApiException(string message, IReadOnlyDictionary<string, string[]>? errors = null) : base(message)
++    {
++        Errors = errors;
++    }
++
++    public IReadOnlyDictionary<string, string[]>? Errors { get; }
++}
++
++public sealed record SalesDashboardResponse(
++    decimal PipelineValue,
++    string Currency,
++    int NewLeads,
++    int HotLeads,
++    int DealsNeedingAttention,
++    decimal ForecastRevenue,
++    IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
++    IReadOnlyList<SalesActivityResponse> RecentActivity);
++
++public sealed record SalesLeadSummaryResponse(
++    Guid Id,
++    string Title,
++    string Status,
++    string Temperature,
++    string? SourceEmail,
++    string QualificationStatus,
++    decimal? ConfidenceScore,
++    string SuggestedNextAction,
++    decimal? EstimatedValue,
++    string? Currency,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
++public sealed record SalesLeadDetailResponse(
++    Guid Id,
++    string Title,
++    string Status,
++    string QualificationStatus,
++    string Temperature,
++    string? SourceEmail,
++    string? ContactName,
++    string? CustomerCompanyName,
++    decimal? EstimatedValue,
++    string? Currency,
++    string SuggestedNextAction,
++    IReadOnlyList<SalesActivityResponse> Activities,
++    IReadOnlyList<SalesRecommendationResponse> Recommendations);
++
++public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string? CustomerCompanyName, string? ContactName, DateTime? ExpectedCloseUtc, DateTime UpdatedUtc);
++public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions);
++public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
++public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
++public sealed record SalesActivityResponse(Guid Id, string ActivityType, string Summary, string Status, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
++public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, DateTime CreatedUtc);
++public sealed record SalesActionRequest(string? Note);
++public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
++public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
+diff --git a/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor b/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor
+new file mode 100644
+index 0000000..eed7172
+--- /dev/null
++++ b/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor
+@@ -0,0 +1,82 @@
++@using System.Globalization
++
++<aside class="sales-agent-panel" aria-label="Sales agent panel">
++    <div class="sales-agent-panel__identity">
++        <div class="sales-agent-panel__avatar">A</div>
++        <div>
++            <div class="sales-agent-panel__name">Alex</div>
++            <div class="sales-agent-panel__role">Sales Manager</div>
++        </div>
++    </div>
++
++    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
++    {
++        <div class="sales-alert sales-alert--danger">@ErrorMessage</div>
++    }
++    else if (Dashboard is null)
++    {
++        <div class="sales-empty sales-empty--compact">Loading Alex's sales priorities...</div>
++    }
++    else
++    {
++        <section>
++            <h2>Needs attention</h2>
++            <div class="sales-agent-panel__metrics">
++                <a href="@BuildPath("/app/sales/leads")">
++                    <span>@Dashboard.HotLeads</span>
++                    <small>hot leads</small>
++                </a>
++                <a href="@BuildPath("/app/sales/pipeline")">
++                    <span>@Dashboard.DealsNeedingAttention</span>
++                    <small>follow-ups</small>
++                </a>
++            </div>
++        </section>
++
++        <section>
++            <h2>Alex recommends</h2>
++            @if (Dashboard.AgentRecommendations.Count == 0)
++            {
++                <div class="sales-empty sales-empty--compact">No recommendations need review.</div>
++            }
++            else
++            {
++                <div class="sales-agent-panel__list">
++                    @foreach (var recommendation in Dashboard.AgentRecommendations.Take(4))
++                    {
++                        <a class="sales-agent-panel__item" href="@ResolveRecommendationPath(recommendation)">
++                            <strong>@recommendation.Recommendation</strong>
++                            <span>@recommendation.Rationale</span>
++                        </a>
++                    }
++                </div>
++            }
++        </section>
++
++        <section>
++            <h2>Recent sales activity</h2>
++            @if (Dashboard.RecentActivity.Count == 0)
++            {
++                <div class="sales-empty sales-empty--compact">No recent activity yet.</div>
++            }
++            else
++            {
++                <div class="sales-agent-panel__list">
++                    @foreach (var item in Dashboard.RecentActivity.Take(5))
++                    {
++                        <a class="sales-agent-panel__item" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads"))">
++                            <strong>@item.ActivityType</strong>
++                            <span>@item.Summary</span>
++                        </a>
++                    }
++                </div>
++            }
++        </section>
++    }
++</aside>
++
++@code {
++    [Parameter] public Guid? CompanyId { get; set; }
++    [Parameter] public SalesDashboardResponse? Dashboard { get; set; }
++    [Parameter] public string? ErrorMessage { get; set; }
++
++    private string BuildPath(string path) => CompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++
++    private string ResolveRecommendationPath(SalesRecommendationResponse recommendation) =>
++        recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
++}
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesPageBase.cs b/src/VirtualCompany.Web/Pages/Sales/SalesPageBase.cs
+new file mode 100644
+index 0000000..bc4ad12
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesPageBase.cs
+@@ -0,0 +1,55 @@
++using Microsoft.AspNetCore.Components;
++using VirtualCompany.Web.Services;
++
++namespace VirtualCompany.Web.Pages.Sales;
++
++public abstract class SalesPageBase : ComponentBase
++{
++    [Inject] protected OnboardingApiClient OnboardingApiClient { get; set; } = default!;
++    [Inject] protected SalesApiClient SalesApiClient { get; set; } = default!;
++    [Inject] protected NavigationManager Navigation { get; set; } = default!;
++
++    [SupplyParameterFromQuery(Name = "companyId")]
++    public Guid? CompanyId { get; set; }
++
++    protected Guid? ResolvedCompanyId { get; private set; }
++    protected string? ShellErrorMessage { get; private set; }
++    protected SalesDashboardResponse? AgentPanelDashboard { get; private set; }
++    protected string? AgentPanelErrorMessage { get; private set; }
++
++    protected async Task<bool> ResolveCompanyAsync(CancellationToken cancellationToken = default)
++    {
++        ShellErrorMessage = null;
++
++        try
++        {
++            var context = await OnboardingApiClient.GetCurrentUserContextAsync(cancellationToken);
++            ResolvedCompanyId = CompanyId ?? context.ActiveCompany?.CompanyId ?? context.Companies.FirstOrDefault()?.CompanyId;
++            if (ResolvedCompanyId is not Guid companyId)
++            {
++                ShellErrorMessage = "Choose or create a company before opening the sales workspace.";
++                return false;
++            }
++
++            if (CompanyId is null)
++            {
++                Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("companyId", companyId), replace: true);
++            }
++
++            return true;
++        }
++        catch (OnboardingApiException ex)
++        {
++            ShellErrorMessage = ex.Message;
++            return false;
++        }
++    }
++
++    protected async Task RefreshAgentPanelAsync(CancellationToken cancellationToken = default)
++    {
++        if (ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        AgentPanelErrorMessage = null;
++        AgentPanelDashboard = await SalesApiClient.GetDashboardAsync(companyId, cancellationToken);
++    }
++}
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
+new file mode 100644
+index 0000000..1b854f8
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
+@@ -0,0 +1,150 @@
++@page "/app/sales"
++@rendermode InteractiveServer
++@inherits SalesPageBase
++@using System.Globalization
++@using VirtualCompany.Web.Components.Sales
++
++<PageTitle>Sales</PageTitle>
++
++<div class="sales-workspace">
++    <main class="sales-main">
++        <header class="sales-page-header">
++            <span>SALES</span>
++            <h1>Sales review</h1>
++            <p>Review pipeline health, new leads, Alex's recommendations, and the next sales actions.</p>
++            <nav class="sales-tabs" aria-label="Sales sections">
++                <a class="active" href="@BuildPath("/app/sales")">Overview</a>
++                <a href="@BuildPath("/app/sales/leads")">Leads</a>
++                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++            </nav>
++        </header>
++
++        @if (isLoading)
++        {
++            <section class="sales-card sales-empty">Loading live sales data...</section>
++        }
++        else if (!string.IsNullOrWhiteSpace(errorMessage))
++        {
++            <section class="sales-card sales-error">
++                <h2>Sales is unavailable</h2>
++                <p>@errorMessage</p>
++                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
++            </section>
++        }
++        else if (dashboard is not null)
++        {
++            <section class="sales-kpi-grid" aria-label="Sales KPIs">
++                <article class="sales-kpi-card">
++                    <span>Pipeline value</span>
++                    <strong>@Money(dashboard.PipelineValue, dashboard.Currency)</strong>
++                    <small>Open deals in the active pipeline</small>
++                </article>
++                <article class="sales-kpi-card">
++                    <span>New leads</span>
++                    <strong>@dashboard.NewLeads</strong>
++                    <small>Waiting for first review</small>
++                </article>
++                <article class="sales-kpi-card">
++                    <span>Hot leads</span>
++                    <strong>@dashboard.HotLeads</strong>
++                    <small>Alex sees buying intent</small>
++                </article>
++                <article class="sales-kpi-card">
++                    <span>Forecast revenue</span>
++                    <strong>@Money(dashboard.ForecastRevenue, dashboard.Currency)</strong>
++                    <small>Weighted by pipeline stage</small>
++                </article>
++            </section>
++
++            <section class="sales-briefing-card">
++                <div>
++                    <span>Today's briefing</span>
++                    <h2>Alex is watching @dashboard.DealsNeedingAttention deal@(dashboard.DealsNeedingAttention == 1 ? "" : "s") that need follow-up.</h2>
++                    <p>
++                        @if (dashboard.HotLeads > 0)
++                        {
++                            <text>@dashboard.HotLeads hot lead@(dashboard.HotLeads == 1 ? " is" : "s are") ready for review. </text>
++                        }
++                        @if (dashboard.AgentRecommendations.Count > 0)
++                        {
++                            <text>The top recommendation is: @dashboard.AgentRecommendations[0].Recommendation</text>
++                        }
++                        else
++                        {
++                            <text>No urgent sales recommendation is open right now.</text>
++                        }
++                    </p>
++                </div>
++                <div class="sales-actions">
++                    <a class="sales-button sales-button--primary" href="@BuildPath("/app/sales/leads")">Review leads</a>
++                    <a class="sales-button" href="@BuildPath("/app/sales/pipeline")">Open pipeline</a>
++                </div>
++            </section>
++
++            <div class="sales-two-column">
++                <section class="sales-card">
++                    <div class="sales-section-heading">
++                        <div>
++                            <span>AGENT RECOMMENDATIONS</span>
++                            <h2>What Alex recommends</h2>
++                        </div>
++                    </div>
++                    @if (dashboard.AgentRecommendations.Count == 0)
++                    {
++                        <div class="sales-empty">No recommendations need review.</div>
++                    }
++                    else
++                    {
++                        <div class="sales-list">
++                            @foreach (var recommendation in dashboard.AgentRecommendations)
++                            {
++                                <a class="sales-list-row" href="@RecommendationPath(recommendation)">
++                                    <div>
++                                        <strong>@recommendation.Recommendation</strong>
++                                        <span>@recommendation.Rationale</span>
++                                    </div>
++                                    <span class="@BadgeClass(recommendation.Status)">@recommendation.Status</span>
++                                </a>
++                            }
++                        </div>
++                    }
++                </section>
++
++                <section class="sales-card">
++                    <div class="sales-section-heading">
++                        <div>
++                            <span>RECENT ACTIVITY</span>
++                            <h2>Latest sales movement</h2>
++                        </div>
++                    </div>
++                    @if (dashboard.RecentActivity.Count == 0)
++                    {
++                        <div class="sales-empty">No sales activity has been recorded yet.</div>
++                    }
++                    else
++                    {
++                        <div class="sales-timeline">
++                            @foreach (var item in dashboard.RecentActivity)
++                            {
++                                <a class="sales-timeline-row" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads"))">
++                                    <span></span>
++                                    <div>
++                                        <strong>@item.Summary</strong>
++                                        <small>@item.ActivityType · @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
++                                    </div>
++                                </a>
++                            }
++                        </div>
++                    }
++                </section>
++            </div>
++        }
++    </main>
++
++    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@(AgentPanelDashboard ?? dashboard)" ErrorMessage="@AgentPanelErrorMessage" />
++</div>
++
++@code {
++    private bool isLoading = true;
++    private string? errorMessage;
++    private SalesDashboardResponse? dashboard;
++
++    protected override async Task OnParametersSetAsync() => await LoadAsync();
++
++    private async Task LoadAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        try
++        {
++            if (!await ResolveCompanyAsync())
++            {
++                errorMessage = ShellErrorMessage;
++                return;
++            }
++
++            dashboard = await SalesApiClient.GetDashboardAsync(ResolvedCompanyId!.Value);
++            AgentPanelDashboard = dashboard;
++        }
++        catch (SalesApiException ex)
++        {
++            errorMessage = ex.Message;
++            AgentPanelErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private string RecommendationPath(SalesRecommendationResponse recommendation) => recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
++    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
++    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
++}
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor b/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
+new file mode 100644
+index 0000000..fdddf6f
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
+@@ -0,0 +1,201 @@
++@page "/app/sales/leads"
++@rendermode InteractiveServer
++@inherits SalesPageBase
++@using System.Globalization
++@using VirtualCompany.Web.Components.Sales
++
++<PageTitle>Sales leads</PageTitle>
++
++<div class="sales-workspace">
++    <main class="sales-main">
++        <header class="sales-page-header">
++            <span>SALES</span>
++            <h1>Leads</h1>
++            <p>Review inbound opportunities and choose what Alex should do next.</p>
++            <nav class="sales-tabs" aria-label="Sales sections">
++                <a href="@BuildPath("/app/sales")">Overview</a>
++                <a class="active" href="@BuildPath("/app/sales/leads")">Leads</a>
++                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++            </nav>
++        </header>
++
++        @if (isLoading)
++        {
++            <section class="sales-card sales-empty">Loading leads...</section>
++        }
++        else if (!string.IsNullOrWhiteSpace(errorMessage))
++        {
++            <section class="sales-card sales-error">
++                <h2>Leads are unavailable</h2>
++                <p>@errorMessage</p>
++                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
++            </section>
++        }
++        else
++        {
++            <section class="sales-card sales-filter-card">
++                <label>
++                    <span>Search leads</span>
++                    <input class="sales-input" @bind="searchText" @bind:event="oninput" placeholder="Search by lead, email, company, or action" />
++                </label>
++                <label>
++                    <span>Status</span>
++                    <select class="sales-input" @bind="statusFilter">
++                        <option value="">All statuses</option>
++                        <option value="Open">Open</option>
++                        <option value="Qualified">Qualified</option>
++                        <option value="Converted">Converted</option>
++                        <option value="Rejected">Rejected</option>
++                    </select>
++                </label>
++            </section>
++
++            <section class="sales-card">
++                @if (FilteredLeads.Count == 0)
++                {
++                    <div class="sales-empty">
++                        <h2>No leads match this view</h2>
++                        <p>Clear the filters or wait for Alex to process new sales conversations.</p>
++                    </div>
++                }
++                else
++                {
++                    <div class="sales-table-wrap">
++                        <table class="sales-table">
++                            <thead>
++                                <tr>
++                                    <th>Lead</th>
++                                    <th>Source email</th>
++                                    <th>Temperature</th>
++                                    <th>Qualification</th>
++                                    <th>Confidence</th>
++                                    <th>Suggested next action</th>
++                                    <th></th>
++                                </tr>
++                            </thead>
++                            <tbody>
++                                @foreach (var lead in FilteredLeads)
++                                {
++                                    <tr @key="lead.Id">
++                                        <td>
++                                            <strong>@lead.Title</strong>
++                                            <span>@MoneyOrDash(lead.EstimatedValue, lead.Currency)</span>
++                                        </td>
++                                        <td>@(lead.SourceEmail ?? "No email linked")</td>
++                                        <td><span class="@TemperatureClass(lead.Temperature)">@lead.Temperature</span></td>
++                                        <td><span class="@BadgeClass(lead.QualificationStatus)">@lead.QualificationStatus</span></td>
++                                        <td>@Confidence(lead.ConfidenceScore)</td>
++                                        <td>@lead.SuggestedNextAction</td>
++                                        <td>
++                                            <div class="sales-row-actions">
++                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => QualifyAsync(lead.Id)">Qualify</button>
++                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => RejectAsync(lead.Id)">Reject</button>
++                                                <button class="sales-button sales-button--small sales-button--primary" disabled="@IsBusy(lead.Id)" @onclick="() => BeginConvert(lead)">Convert</button>
++                                            </div>
++                                        </td>
++                                    </tr>
++                                }
++                            </tbody>
++                        </table>
++                    </div>
++                }
++            </section>
++
++            @if (leadToConvert is not null)
++            {
++                <section class="sales-card sales-convert-panel">
++                    <div>
++                        <span>CONVERT LEAD</span>
++                        <h2>@leadToConvert.Title</h2>
++                        <p>Create a live deal from this qualified lead.</p>
++                    </div>
++                    <label>
++                        <span>Deal value</span>
++                        <input class="sales-input" type="number" step="0.01" min="1" @bind="convertAmount" />
++                    </label>
++                    <label>
++                        <span>Currency</span>
++                        <input class="sales-input" maxlength="3" @bind="convertCurrency" />
++                    </label>
++                    <label>
++                        <span>Note</span>
++                        <input class="sales-input" @bind="actionNote" placeholder="Optional note for the audit trail" />
++                    </label>
++                    <div class="sales-actions">
++                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToConvert.Id)" @onclick="ConvertAsync">Create deal</button>
++                        <button class="sales-button" @onclick="CancelConvert">Cancel</button>
++                    </div>
++                </section>
++            }
++
++            @if (!string.IsNullOrWhiteSpace(actionMessage))
++            {
++                <div class="sales-toast">@actionMessage</div>
++            }
++        }
++    </main>
++
++    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
++</div>
++
++@code {
++    private bool isLoading = true;
++    private string? errorMessage;
++    private string? actionMessage;
++    private string? searchText;
++    private string? statusFilter;
++    private string? actionNote;
++    private Guid? busyId;
++    private List<SalesLeadSummaryResponse> leads = [];
++    private SalesLeadSummaryResponse? leadToConvert;
++    private decimal convertAmount = 1000;
++    private string convertCurrency = "USD";
++
++    protected override async Task OnParametersSetAsync() => await LoadAsync();
++
++    private IReadOnlyList<SalesLeadSummaryResponse> FilteredLeads => leads
++        .Where(x => string.IsNullOrWhiteSpace(statusFilter) || string.Equals(x.QualificationStatus, statusFilter, StringComparison.OrdinalIgnoreCase))
++        .Where(x => string.IsNullOrWhiteSpace(searchText) ||
++            $"{x.Title} {x.SourceEmail} {x.Temperature} {x.SuggestedNextAction}".Contains(searchText, StringComparison.OrdinalIgnoreCase))
++        .ToList();
++
++    private async Task LoadAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        try
++        {
++            if (!await ResolveCompanyAsync())
++            {
++                errorMessage = ShellErrorMessage;
++                return;
++            }
++
++            leads = (await SalesApiClient.ListLeadsAsync(ResolvedCompanyId!.Value)).ToList();
++            await RefreshAgentPanelAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            errorMessage = ex.Message;
++            AgentPanelErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task QualifyAsync(Guid leadId) => await RunLeadActionAsync(leadId, async companyId => await SalesApiClient.QualifyLeadAsync(companyId, leadId, actionNote));
++    private async Task RejectAsync(Guid leadId) => await RunLeadActionAsync(leadId, async companyId => await SalesApiClient.RejectLeadAsync(companyId, leadId, actionNote));
++
++    private async Task RunLeadActionAsync(Guid leadId, Func<Guid, Task> action)
++    {
++        if (ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        busyId = leadId;
++        actionMessage = null;
++        try
++        {
++            await action(companyId);
++            actionMessage = "Lead updated.";
++            await LoadAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++        finally
++        {
++            busyId = null;
++        }
++    }
++
++    private void BeginConvert(SalesLeadSummaryResponse lead)
++    {
++        leadToConvert = lead;
++        convertAmount = lead.EstimatedValue ?? 1000;
++        convertCurrency = string.IsNullOrWhiteSpace(lead.Currency) ? "USD" : lead.Currency;
++    }
++
++    private void CancelConvert() => leadToConvert = null;
++
++    private async Task ConvertAsync()
++    {
++        if (ResolvedCompanyId is not Guid companyId || leadToConvert is null)
++        {
++            return;
++        }
++
++        busyId = leadToConvert.Id;
++        try
++        {
++            var deal = await SalesApiClient.ConvertLeadAsync(companyId, leadToConvert.Id, new ConvertLeadRequest(convertAmount, convertCurrency, null, actionNote));
++            Navigation.NavigateTo(BuildPath($"/app/sales/deals/{deal.Id:D}"));
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++        finally
++        {
++            busyId = null;
++        }
++    }
++
++    private bool IsBusy(Guid id) => busyId == id;
++    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private static string Confidence(decimal? confidence) => confidence.HasValue ? confidence.Value.ToString("P0", CultureInfo.CurrentCulture) : "Not scored";
++    private static string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? string.Create(CultureInfo.CurrentCulture, $"{value.Value:N0} {currency ?? "USD"}") : "No value yet";
++    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
++    private static string TemperatureClass(string temperature) => $"sales-badge sales-badge--{temperature.ToLowerInvariant()}";
++}
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor b/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+new file mode 100644
+index 0000000..13b656d
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+@@ -0,0 +1,144 @@
++@page "/app/sales/pipeline"
++@rendermode InteractiveServer
++@inherits SalesPageBase
++@using System.Globalization
++@using VirtualCompany.Web.Components.Sales
++
++<PageTitle>Sales pipeline</PageTitle>
++
++<div class="sales-workspace">
++    <main class="sales-main sales-main--wide">
++        <header class="sales-page-header">
++            <span>SALES</span>
++            <h1>Pipeline</h1>
++            <p>Move deals between stages and keep follow-up work current.</p>
++            <nav class="sales-tabs" aria-label="Sales sections">
++                <a href="@BuildPath("/app/sales")">Overview</a>
++                <a href="@BuildPath("/app/sales/leads")">Leads</a>
++                <a class="active" href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++            </nav>
++        </header>
++
++        @if (isLoading)
++        {
++            <section class="sales-card sales-empty">Loading pipeline...</section>
++        }
++        else if (!string.IsNullOrWhiteSpace(errorMessage))
++        {
++            <section class="sales-card sales-error">
++                <h2>Pipeline is unavailable</h2>
++                <p>@errorMessage</p>
++                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
++            </section>
++        }
++        else if (pipeline is not null)
++        {
++            <section class="sales-kanban" aria-label="Sales pipeline board">
++                @foreach (var stage in pipeline.Stages)
++                {
++                    <article class="sales-kanban-column" @key="stage.StageId" @ondrop="() => DropDealAsync(stage.StageId)" @ondragover:preventDefault>
++                        <header>
++                            <div>
++                                <h2>@stage.Name</h2>
++                                <span>@stage.DealCount deal@(stage.DealCount == 1 ? "" : "s")</span>
++                            </div>
++                            <strong>@Money(stage.TotalValue, StageCurrency(stage))</strong>
++                        </header>
++
++                        @if (stage.Deals.Count == 0)
++                        {
++                            <div class="sales-empty sales-empty--compact">No deals in this stage.</div>
++                        }
++                        else
++                        {
++                            <div class="sales-kanban-stack">
++                                @foreach (var deal in stage.Deals)
++                                {
++                                    <a class="sales-deal-card"
++                                       draggable="true"
++                                       @key="deal.Id"
++                                       @ondragstart="() => BeginDrag(deal.Id)"
++                                       href="@BuildPath($"/app/sales/deals/{deal.Id:D}")">
++                                        <span class="@BadgeClass(deal.Status)">@deal.Status</span>
++                                        <strong>@deal.Title</strong>
++                                        <small>@(deal.CustomerCompanyName ?? deal.ContactName ?? "No contact linked")</small>
++                                        <div>
++                                            <span>@Money(deal.Amount, deal.Currency)</span>
++                                            <span>@CloseDate(deal.ExpectedCloseUtc)</span>
++                                        </div>
++                                    </a>
++                                }
++                            </div>
++                        }
++                    </article>
++                }
++            </section>
++        }
++
++        @if (!string.IsNullOrWhiteSpace(actionMessage))
++        {
++            <div class="sales-toast">@actionMessage</div>
++        }
++    </main>
++
++    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
++</div>
++
++@code {
++    private bool isLoading = true;
++    private string? errorMessage;
++    private string? actionMessage;
++    private SalesPipelineResponse? pipeline;
++    private Guid? draggedDealId;
++
++    protected override async Task OnParametersSetAsync() => await LoadAsync();
++
++    private async Task LoadAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        try
++        {
++            if (!await ResolveCompanyAsync())
++            {
++                errorMessage = ShellErrorMessage;
++                return;
++            }
++
++            pipeline = await SalesApiClient.GetPipelineAsync(ResolvedCompanyId!.Value);
++            await RefreshAgentPanelAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            errorMessage = ex.Message;
++            AgentPanelErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private void BeginDrag(Guid dealId) => draggedDealId = dealId;
++
++    private async Task DropDealAsync(Guid stageId)
++    {
++        if (draggedDealId is not Guid dealId || ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        actionMessage = null;
++        try
++        {
++            await SalesApiClient.ChangeDealStageAsync(companyId, dealId, stageId, "Moved from the sales pipeline board.");
++            pipeline = await SalesApiClient.GetPipelineAsync(companyId);
++            await RefreshAgentPanelAsync();
++            actionMessage = "Deal stage updated.";
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++        finally
++        {
++            draggedDealId = null;
++        }
++    }
++
++    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private static string StageCurrency(SalesPipelineStageResponse stage) => stage.Deals.FirstOrDefault()?.Currency ?? "USD";
++    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
++    private static string CloseDate(DateTime? value) => value.HasValue ? value.Value.ToLocalTime().ToString("MMM d", CultureInfo.CurrentCulture) : "No close date";
++    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
++}
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+new file mode 100644
+index 0000000..02a02bb
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+@@ -0,0 +1,209 @@
++@page "/app/sales/deals/{DealId:guid}"
++@rendermode InteractiveServer
++@inherits SalesPageBase
++@using System.Globalization
++@using VirtualCompany.Web.Components.Sales
++
++<PageTitle>Deal details</PageTitle>
++
++<div class="sales-workspace">
++    <main class="sales-main">
++        <header class="sales-page-header">
++            <span>SALES</span>
++            <h1>@(deal?.Title ?? "Deal details")</h1>
++            <p>Review contact context, timeline, Alex's analysis, and the next action.</p>
++            <nav class="sales-tabs" aria-label="Sales sections">
++                <a href="@BuildPath("/app/sales")">Overview</a>
++                <a href="@BuildPath("/app/sales/leads")">Leads</a>
++                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++            </nav>
++        </header>
++
++        @if (isLoading)
++        {
++            <section class="sales-card sales-empty">Loading deal...</section>
++        }
++        else if (!string.IsNullOrWhiteSpace(errorMessage))
++        {
++            <section class="sales-card sales-error">
++                <h2>Deal is unavailable</h2>
++                <p>@errorMessage</p>
++                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
++            </section>
++        }
++        else if (deal is not null)
++        {
++            <section class="sales-detail-hero">
++                <div>
++                    <span class="@BadgeClass(deal.Status)">@deal.Status</span>
++                    <h2>@deal.Title</h2>
++                    <p>@deal.Summary</p>
++                </div>
++                <div class="sales-detail-hero__value">
++                    <span>@deal.StageName</span>
++                    <strong>@Money(deal.Amount, deal.Currency)</strong>
++                </div>
++            </section>
++
++            <div class="sales-two-column sales-two-column--detail">
++                <div class="sales-detail-stack">
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>CONTACT</span>
++                                <h2>Who this involves</h2>
++                            </div>
++                        </div>
++                        <dl class="sales-definition-list">
++                            <div>
++                                <dt>Contact</dt>
++                                <dd>@(deal.ContactName ?? "No contact linked")</dd>
++                            </div>
++                            <div>
++                                <dt>Email</dt>
++                                <dd>@(deal.ContactEmail ?? "No email linked")</dd>
++                            </div>
++                            <div>
++                                <dt>Company</dt>
++                                <dd>@(deal.CustomerCompanyName ?? "No company linked")</dd>
++                            </div>
++                        </dl>
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>EMAIL TIMELINE</span>
++                                <h2>Conversation history</h2>
++                            </div>
++                        </div>
++                        @if (EmailActivities.Count == 0)
++                        {
++                            <div class="sales-empty">No linked sales emails for this deal yet.</div>
++                        }
++                        else
++                        {
++                            <Timeline Items="@EmailActivities" />
++                        }
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>ACTIVITY</span>
++                                <h2>Deal timeline</h2>
++                            </div>
++                        </div>
++                        @if (deal.Activities.Count == 0)
++                        {
++                            <div class="sales-empty">No activity has been recorded yet.</div>
++                        }
++                        else
++                        {
++                            <Timeline Items="@deal.Activities" />
++                        }
++                    </section>
++                </div>
++
++                <aside class="sales-detail-stack">
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>ALEX'S ANALYSIS</span>
++                                <h2>What this means</h2>
++                            </div>
++                        </div>
++                        <p>@deal.AgentAnalysis</p>
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>SUGGESTED REPLY</span>
++                                <h2>Draft response</h2>
++                            </div>
++                        </div>
++                        @if (string.IsNullOrWhiteSpace(deal.SuggestedReply))
++                        {
++                            <div class="sales-empty">No reply is suggested for this closed deal.</div>
++                        }
++                        else
++                        {
++                            <p class="sales-suggested-reply">@deal.SuggestedReply</p>
++                        }
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>NEXT ACTIONS</span>
++                                <h2>Follow-up actions</h2>
++                            </div>
++                        </div>
++                        <div class="sales-actions sales-actions--stacked">
++                            <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="MarkWonAsync">Mark won</button>
++                            <button class="sales-button" disabled="@isSubmitting" @onclick="MarkLostAsync">Mark lost</button>
++                            <a class="sales-button" href="@BuildFinanceDocumentPath()">Create finance document</a>
++                        </div>
++                        @if (!string.IsNullOrWhiteSpace(actionMessage))
++                        {
++                            <div class="sales-toast sales-toast--inline">@actionMessage</div>
++                        }
++                    </section>
++
++                    <section class="sales-card">
++                        <div class="sales-section-heading">
++                            <div>
++                                <span>RECOMMENDATIONS</span>
++                                <h2>Alex recommends</h2>
++                            </div>
++                        </div>
++                        @if (deal.Recommendations.Count == 0)
++                        {
++                            <div class="sales-empty">No recommendations are linked to this deal.</div>
++                        }
++                        else
++                        {
++                            <div class="sales-list">
++                                @foreach (var recommendation in deal.Recommendations)
++                                {
++                                    <div class="sales-list-row">
++                                        <div>
++                                            <strong>@recommendation.Recommendation</strong>
++                                            <span>@recommendation.Rationale</span>
++                                        </div>
++                                        <span class="@BadgeClass(recommendation.Status)">@recommendation.Status</span>
++                                    </div>
++                                }
++                            </div>
++                        }
++                    </section>
++                </aside>
++            </div>
++        }
++    </main>
++
++    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
++</div>
++
++@code {
++    [Parameter] public Guid DealId { get; set; }
++
++    private bool isLoading = true;
++    private bool isSubmitting;
++    private string? errorMessage;
++    private string? actionMessage;
++    private SalesDealDetailResponse? deal;
++
++    private IReadOnlyList<SalesActivityResponse> EmailActivities =>
++        deal?.Activities.Where(x => x.ActivityType.Contains("email", StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
++
++    protected override async Task OnParametersSetAsync() => await LoadAsync();
++
++    private async Task LoadAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        try
++        {
++            if (!await ResolveCompanyAsync())
++            {
++                errorMessage = ShellErrorMessage;
++                return;
++            }
++
++            deal = await SalesApiClient.GetDealAsync(ResolvedCompanyId!.Value, DealId);
++            if (deal is null)
++            {
++                errorMessage = "This deal was not found for the active company.";
++            }
++
++            await RefreshAgentPanelAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            errorMessage = ex.Message;
++            AgentPanelErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private async Task MarkWonAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkWonAsync(companyId, DealId, "Marked won from the sales review screen."), "Deal marked won.");
++    private async Task MarkLostAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkLostAsync(companyId, DealId, "Marked lost from the sales review screen."), "Deal marked lost.");
++
++    private async Task RunDealActionAsync(Func<Guid, Task> action, string successMessage)
++    {
++        if (ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        isSubmitting = true;
++        actionMessage = null;
++        try
++        {
++            await action(companyId);
++            await RefreshAgentPanelAsync();
++            actionMessage = successMessage;
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private string BuildFinanceDocumentPath() => ResolvedCompanyId is Guid companyId ? $"/finance/invoices?companyId={companyId:D}&source=sales&dealId={DealId:D}" : "/finance/invoices";
++    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
++    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
++
++    private sealed partial class Timeline : ComponentBase
++    {
++        [Parameter] public IReadOnlyList<SalesActivityResponse> Items { get; set; } = [];
++
++        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
++        {
++            var sequence = 0;
++            builder.OpenElement(sequence++, "div");
++            builder.AddAttribute(sequence++, "class", "sales-timeline");
++            foreach (var item in Items)
++            {
++                builder.OpenElement(sequence++, "div");
++                builder.AddAttribute(sequence++, "class", "sales-timeline-row");
++                builder.OpenElement(sequence++, "span");
++                builder.CloseElement();
++                builder.OpenElement(sequence++, "div");
++                builder.OpenElement(sequence++, "strong");
++                builder.AddContent(sequence++, item.Summary);
++                builder.CloseElement();
++                builder.OpenElement(sequence++, "small");
++                builder.AddContent(sequence++, $"{item.ActivityType} · {item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
++                builder.CloseElement();
++                builder.CloseElement();
++                builder.CloseElement();
++            }
++            builder.CloseElement();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Web/_Imports.razor b/src/VirtualCompany.Web/_Imports.razor
+index b68a51d..6000739 100644
+--- a/src/VirtualCompany.Web/_Imports.razor
++++ b/src/VirtualCompany.Web/_Imports.razor
+@@ -8,3 +8,4 @@
+ @using VirtualCompany.Web.Components.Dashboard
+ @using VirtualCompany.Web.Components.Finance
+ @using VirtualCompany.Web.Components.Authorization
++@using VirtualCompany.Web.Components.Sales
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 21474df..8131a7e 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -240,3 +240,346 @@ code {
+     border: 1px solid rgba(15, 23, 42, 0.08);
+     border-radius: 1rem;
+     display: grid;
++
++.sales-workspace {
++    align-items: start;
++    background: #f7f9fc;
++    display: grid;
++    gap: 24px;
++    grid-template-columns: minmax(0, 1fr) 320px;
++    margin: 0 auto;
++    max-width: 1280px;
++    min-height: calc(100vh - 2rem);
++    padding: 24px;
++}
++
++.sales-main {
++    display: grid;
++    gap: 20px;
++    min-width: 0;
++}
++
++.sales-main--wide {
++    overflow-x: auto;
++}
++
++.sales-page-header {
++    display: grid;
++    gap: 8px;
++}
++
++.sales-page-header > span,
++.sales-section-heading span,
++.sales-briefing-card > div > span,
++.sales-convert-panel > div > span {
++    color: #2563eb;
++    font-size: 0.75rem;
++    font-weight: 700;
++    letter-spacing: 0;
++}
++
++.sales-page-header h1 {
++    color: #0f172a;
++    font-size: 2rem;
++    font-weight: 700;
++    margin: 0;
++}
++
++.sales-page-header p,
++.sales-section-heading p {
++    color: #64748b;
++    margin: 0;
++}
++
++.sales-tabs {
++    display: flex;
++    gap: 8px;
++    margin-top: 10px;
++    overflow-x: auto;
++    padding-bottom: 2px;
++}
++
++.sales-tabs a {
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 999px;
++    color: #0f172a;
++    flex: 0 0 auto;
++    font-weight: 600;
++    padding: 8px 14px;
++    text-decoration: none;
++}
++
++.sales-tabs a.active {
++    background: #eff6ff;
++    border-color: #2563eb;
++    color: #2563eb;
++}
++
++.sales-card,
++.sales-kpi-card,
++.sales-briefing-card,
++.sales-detail-hero,
++.sales-agent-panel {
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 16px;
++    box-shadow: 0 10px 24px rgba(15, 23, 42, 0.06);
++}
++
++.sales-card {
++    padding: 20px;
++}
++
++.sales-kpi-grid {
++    display: grid;
++    gap: 16px;
++    grid-template-columns: repeat(4, minmax(0, 1fr));
++}
++
++.sales-kpi-card {
++    display: grid;
++    gap: 8px;
++    padding: 18px;
++}
++
++.sales-kpi-card span,
++.sales-detail-hero__value span {
++    color: #64748b;
++    font-size: 0.9rem;
++    font-weight: 600;
++}
++
++.sales-kpi-card strong {
++    color: #0f172a;
++    font-size: 1.7rem;
++    font-weight: 750;
++}
++
++.sales-kpi-card small,
++.sales-list-row span,
++.sales-timeline-row small,
++.sales-deal-card small,
++.sales-agent-panel__item span {
++    color: #64748b;
++}
++
++.sales-briefing-card,
++.sales-detail-hero {
++    align-items: center;
++    display: flex;
++    gap: 18px;
++    justify-content: space-between;
++    padding: 24px;
++}
++
++.sales-briefing-card h2,
++.sales-detail-hero h2,
++.sales-section-heading h2,
++.sales-agent-panel h2 {
++    color: #0f172a;
++    font-size: 1.2rem;
++    font-weight: 700;
++    margin: 0;
++}
++
++.sales-briefing-card p,
++.sales-detail-hero p,
++.sales-card p {
++    color: #475569;
++    margin: 8px 0 0;
++}
++
++.sales-actions {
++    align-items: center;
++    display: flex;
++    flex-wrap: wrap;
++    gap: 10px;
++}
++
++.sales-actions--stacked {
++    align-items: stretch;
++    flex-direction: column;
++}
++
++.sales-button {
++    align-items: center;
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 10px;
++    color: #0f172a;
++    cursor: pointer;
++    display: inline-flex;
++    font-weight: 700;
++    justify-content: center;
++    min-height: 40px;
++    padding: 9px 14px;
++    text-decoration: none;
++}
++
++.sales-button--primary {
++    background: #2563eb;
++    border-color: #2563eb;
++    color: #ffffff;
++}
++
++.sales-button--small {
++    font-size: 0.85rem;
++    min-height: 34px;
++    padding: 6px 10px;
++}
++
++.sales-button:disabled {
++    cursor: not-allowed;
++    opacity: 0.55;
++}
++
++.sales-two-column {
++    display: grid;
++    gap: 20px;
++    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr);
++}
++
++.sales-two-column--detail {
++    align-items: start;
++    grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.8fr);
++}
++
++.sales-section-heading {
++    align-items: start;
++    display: flex;
++    justify-content: space-between;
++    margin-bottom: 16px;
++}
++
++.sales-list,
++.sales-detail-stack,
++.sales-agent-panel__list,
++.sales-kanban-stack {
++    display: grid;
++    gap: 12px;
++}
++
++.sales-list-row,
++.sales-timeline-row,
++.sales-agent-panel__item {
++    align-items: center;
++    border-radius: 12px;
++    color: inherit;
++    display: flex;
++    gap: 12px;
++    justify-content: space-between;
++    padding: 12px;
++    text-decoration: none;
++}
++
++.sales-list-row:hover,
++.sales-timeline-row:hover,
++.sales-agent-panel__item:hover {
++    background: #f8fafc;
++}
++
++.sales-list-row > div,
++.sales-agent-panel__item {
++    display: grid;
++    gap: 4px;
++    min-width: 0;
++}
++
++.sales-badge {
++    background: #f1f5f9;
++    border-radius: 999px;
++    color: #475569;
++    display: inline-flex;
++    font-size: 0.78rem;
++    font-weight: 700;
++    padding: 4px 10px;
++    white-space: nowrap;
++}
++
++.sales-badge--hot,
++.sales-badge--open {
++    background: #fff7ed;
++    color: #c2410c;
++}
++
++.sales-badge--warm,
++.sales-badge--qualified,
++.sales-badge--waiting-for-approval {
++    background: #fffbeb;
++    color: #b45309;
++}
++
++.sales-badge--converted,
++.sales-badge--won,
++.sales-badge--completed {
++    background: #ecfdf5;
++    color: #15803d;
++}
++
++.sales-badge--rejected,
++.sales-badge--lost {
++    background: #fef2f2;
++    color: #b91c1c;
++}
++
++.sales-timeline {
++    display: grid;
++    gap: 10px;
++}
++
++.sales-timeline-row {
++    justify-content: start;
++}
++
++.sales-timeline-row > span:first-child {
++    background: #2563eb;
++    border-radius: 999px;
++    height: 10px;
++    width: 10px;
++}
++
++.sales-empty,
++.sales-error {
++    color: #64748b;
++    padding: 24px;
++    text-align: center;
++}
++
++.sales-empty--compact {
++    background: #f8fafc;
++    border: 1px dashed #cbd5e1;
++    border-radius: 12px;
++    padding: 14px;
++}
++
++.sales-error h2,
++.sales-empty h2 {
++    color: #0f172a;
++    margin-top: 0;
++}
++
++.sales-filter-card,
++.sales-convert-panel {
++    align-items: end;
++    display: grid;
++    gap: 14px;
++    grid-template-columns: minmax(220px, 1fr) 220px;
++}
++
++.sales-convert-panel {
++    grid-template-columns: minmax(260px, 1fr) 160px 110px minmax(220px, 1fr) auto;
++}
++
++.sales-filter-card label,
++.sales-convert-panel label {
++    display: grid;
++    gap: 6px;
++}
++
++.sales-filter-card label span,
++.sales-convert-panel label span {
++    color: #475569;
++    font-size: 0.85rem;
++    font-weight: 700;
++}
++
++.sales-input {
++    border: 1px solid #e5e7eb;
++    border-radius: 10px;
++    color: #0f172a;
++    min-height: 40px;
++    padding: 8px 10px;
++    width: 100%;
++}
++
++.sales-table-wrap {
++    overflow-x: auto;
++}
++
++.sales-table {
++    border-collapse: separate;
++    border-spacing: 0;
++    min-width: 960px;
++    width: 100%;
++}
++
++.sales-table th {
++    color: #64748b;
++    font-size: 0.78rem;
++    font-weight: 800;
++    padding: 0 12px 10px;
++    text-align: left;
++}
++
++.sales-table td {
++    border-top: 1px solid #e5e7eb;
++    color: #0f172a;
++    padding: 14px 12px;
++    vertical-align: middle;
++}
++
++.sales-table td:first-child {
++    display: grid;
++    gap: 4px;
++}
++
++.sales-table td:first-child span {
++    color: #64748b;
++}
++
++.sales-row-actions {
++    display: flex;
++    gap: 8px;
++    justify-content: flex-end;
++}
++
++.sales-kanban {
++    align-items: start;
++    display: grid;
++    gap: 16px;
++    grid-auto-columns: minmax(280px, 1fr);
++    grid-auto-flow: column;
++    min-height: 520px;
++}
++
++.sales-kanban-column {
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 16px;
++    display: grid;
++    gap: 14px;
++    padding: 14px;
++}
++
++.sales-kanban-column header,
++.sales-deal-card div {
++    align-items: center;
++    display: flex;
++    justify-content: space-between;
++}
++
++.sales-kanban-column h2 {
++    color: #0f172a;
++    font-size: 1rem;
++    margin: 0;
++}
++
++.sales-kanban-column header span,
++.sales-kanban-column header strong {
++    color: #64748b;
++    font-size: 0.85rem;
++}
++
++.sales-deal-card {
++    background: #f8fafc;
++    border: 1px solid #e5e7eb;
++    border-radius: 14px;
++    color: inherit;
++    cursor: grab;
++    display: grid;
++    gap: 8px;
++    padding: 14px;
++    text-decoration: none;
++}
++
++.sales-deal-card strong {
++    color: #0f172a;
++}
++
++.sales-detail-hero__value {
++    display: grid;
++    gap: 6px;
++    min-width: 180px;
++    text-align: right;
++}
++
++.sales-detail-hero__value strong {
++    color: #0f172a;
++    font-size: 1.6rem;
++}
++
++.sales-definition-list {
++    display: grid;
++    gap: 12px;
++    margin: 0;
++}
++
++.sales-definition-list div {
++    display: grid;
++    gap: 4px;
++}
++
++.sales-definition-list dt {
++    color: #64748b;
++    font-weight: 700;
++}
++
++.sales-definition-list dd {
++    color: #0f172a;
++    margin: 0;
++}
++
++.sales-suggested-reply {
++    background: #f8fafc;
++    border: 1px solid #e5e7eb;
++    border-radius: 12px;
++    padding: 14px;
++}
++
++.sales-agent-panel {
++    display: grid;
++    gap: 18px;
++    padding: 18px;
++    position: sticky;
++    top: 24px;
++}
++
++.sales-agent-panel__identity {
++    align-items: center;
++    display: flex;
++    gap: 12px;
++}
++
++.sales-agent-panel__avatar {
++    align-items: center;
++    background: #dbeafe;
++    border-radius: 999px;
++    color: #1d4ed8;
++    display: flex;
++    font-weight: 800;
++    height: 48px;
++    justify-content: center;
++    width: 48px;
++}
++
++.sales-agent-panel__name {
++    color: #0f172a;
++    font-weight: 800;
++}
++
++.sales-agent-panel__role {
++    color: #64748b;
++    font-size: 0.9rem;
++}
++
++.sales-agent-panel__metrics {
++    display: grid;
++    gap: 10px;
++    grid-template-columns: 1fr 1fr;
++}
++
++.sales-agent-panel__metrics a {
++    background: #f8fafc;
++    border: 1px solid #e5e7eb;
++    border-radius: 12px;
++    color: #0f172a;
++    display: grid;
++    gap: 2px;
++    padding: 12px;
++    text-decoration: none;
++}
++
++.sales-agent-panel__metrics span {
++    font-size: 1.5rem;
++    font-weight: 800;
++}
++
++.sales-agent-panel__metrics small {
++    color: #64748b;
++}
++
++.sales-alert {
++    border-radius: 12px;
++    padding: 12px;
++}
++
++.sales-alert--danger {
++    background: #fef2f2;
++    color: #b91c1c;
++}
++
++.sales-toast {
++    background: #0f172a;
++    border-radius: 12px;
++    bottom: 24px;
++    color: #ffffff;
++    font-weight: 700;
++    padding: 12px 16px;
++    position: fixed;
++    right: 24px;
++    z-index: 20;
++}
++
++.sales-toast--inline {
++    position: static;
++}
++
++@media (max-width: 1100px) {
++    .sales-workspace {
++        grid-template-columns: minmax(0, 1fr);
++    }
++
++    .sales-agent-panel {
++        position: static;
++    }
++
++    .sales-kpi-grid,
++    .sales-two-column,
++    .sales-two-column--detail {
++        grid-template-columns: repeat(2, minmax(0, 1fr));
++    }
++}
++
++@media (max-width: 760px) {
++    .sales-workspace {
++        padding: 16px;
++    }
++
++    .sales-kpi-grid,
++    .sales-two-column,
++    .sales-two-column--detail,
++    .sales-filter-card,
++    .sales-convert-panel {
++        grid-template-columns: minmax(0, 1fr);
++    }
++
++    .sales-briefing-card,
++    .sales-detail-hero {
++        align-items: stretch;
++        flex-direction: column;
++    }
++
++    .sales-detail-hero__value {
++        text-align: left;
++    }
++}
+END_OF_PATCH

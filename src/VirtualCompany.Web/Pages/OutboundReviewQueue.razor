@@ -1,0 +1,194 @@
+@page "/outbound-review-queue"
+@rendermode InteractiveServer
+@inject SalesAutomationApiClient AutomationClient
+
+<PageTitle>Message review queue</PageTitle>
+
+<section class="py-4 dashboard-hero">
+    <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-end mb-4">
+        <div>
+            <span class="dashboard-kicker">APPROVALS</span>
+            <h1 class="mb-2">Outbound message review</h1>
+            <p class="text-body-secondary mb-0">Review outbound emails that need approval before Alex sends them.</p>
+        </div>
+        <a class="btn btn-outline-primary" href="/agents/automation">Automation settings</a>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-5">
+            <div class="wizard-card">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h2 class="h4 mb-0">Waiting for review</h2>
+                    <span class="badge text-bg-light">@items.Count</span>
+                </div>
+
+                @if (isLoading)
+                {
+                    <p class="text-body-secondary mb-0">Loading review queue...</p>
+                }
+                else if (items.Count == 0)
+                {
+                    <div class="text-center py-5">
+                        <h3 class="h5">No messages need review</h3>
+                        <p class="text-body-secondary mb-0">Messages that need approval will appear here.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="list-group list-group-flush">
+                        @foreach (var item in items)
+                        {
+                            <button type="button" class="list-group-item list-group-item-action @(selected?.Id == item.Id ? "active" : null)" @onclick="@(() => SelectAsync(item.Id))">
+                                <div class="d-flex justify-content-between gap-3">
+                                    <strong>@item.ContactName</strong>
+                                    <span>@item.RequestedUtc.ToLocalTime().ToString("g")</span>
+                                </div>
+                                <div class="small">@item.Category</div>
+                                <div class="small text-body-secondary">@item.Reason</div>
+                            </button>
+                        }
+                    </div>
+                }
+            </div>
+        </div>
+
+        <div class="col-lg-7">
+            <div class="wizard-card">
+                @if (selected is null)
+                {
+                    <div class="text-center py-5">
+                        <h2 class="h4">No message selected</h2>
+                        <p class="text-body-secondary mb-0">Select a message to see the policy reason and take action.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="d-flex justify-content-between gap-3 mb-3">
+                        <div>
+                            <span class="dashboard-kicker">MESSAGE DETAIL</span>
+                            <h2 class="h4 mb-1">@selected.ContactName</h2>
+                            <p class="text-body-secondary mb-0">@selected.ContactEmail</p>
+                        </div>
+                        <span class="badge text-bg-warning align-self-start">@selected.Status</span>
+                    </div>
+
+                    <div class="alert alert-info">
+                        <strong>Why review is needed:</strong> @selected.Reason
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(actionMessage))
+                    {
+                        <div class="alert alert-success">@actionMessage</div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(errorMessage))
+                    {
+                        <div class="alert alert-danger">@errorMessage</div>
+                    }
+
+                    <div class="mb-3">
+                        <label class="form-label" for="subject">Subject</label>
+                        <input id="subject" class="form-control" @bind="subject" />
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="body">Message</label>
+                        <textarea id="body" class="form-control" rows="12" @bind="body"></textarea>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label" for="comment">Decision note</label>
+                        <textarea id="comment" class="form-control" rows="3" @bind="comment"></textarea>
+                    </div>
+
+                    <div class="dashboard-actions">
+                        <button class="btn btn-primary" type="button" disabled="@isActing" @onclick="EditAndApproveAsync">Edit and approve</button>
+                        <button class="btn btn-outline-primary" type="button" disabled="@isActing" @onclick="ApproveAsync">Approve original</button>
+                        <button class="btn btn-outline-danger" type="button" disabled="@isActing" @onclick="RejectAsync">Reject</button>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</section>
+
+@code {
+    private IReadOnlyList<OutboundReviewQueueItemViewModel> items = [];
+    private OutboundReviewQueueDetailViewModel? selected;
+    private bool isLoading = true;
+    private bool isActing;
+    private string? subject;
+    private string? body;
+    private string? comment;
+    private string? actionMessage;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        await RefreshAsync();
+    }
+
+    private async Task RefreshAsync()
+    {
+        isLoading = true;
+        try
+        {
+            items = await AutomationClient.ListReviewQueueAsync();
+            if (selected is not null && items.All(x => x.Id != selected.Id))
+            {
+                selected = null;
+            }
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SelectAsync(Guid id)
+    {
+        actionMessage = null;
+        errorMessage = null;
+        selected = await AutomationClient.GetReviewAsync(id);
+        subject = selected?.EditedSubject ?? selected?.Subject;
+        body = selected?.EditedBody ?? selected?.Body;
+        comment = selected?.DecisionComment;
+    }
+
+    private async Task ApproveAsync() => await ActAsync(async () =>
+    {
+        if (selected is null) return;
+        await AutomationClient.ApproveAsync(selected.Id, comment);
+        actionMessage = "Message was approved.";
+    });
+
+    private async Task RejectAsync() => await ActAsync(async () =>
+    {
+        if (selected is null) return;
+        await AutomationClient.RejectAsync(selected.Id, comment);
+        actionMessage = "Message was rejected.";
+    });
+
+    private async Task EditAndApproveAsync() => await ActAsync(async () =>
+    {
+        if (selected is null) return;
+        selected = await AutomationClient.EditAndApproveAsync(selected.Id, new OutboundEditAndApproveRequest(subject ?? string.Empty, body ?? string.Empty, comment));
+        actionMessage = "Edited message was approved.";
+    });
+
+    private async Task ActAsync(Func<Task> action)
+    {
+        isActing = true;
+        errorMessage = null;
+        try
+        {
+            await action();
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isActing = false;
+        }
+    }
+}

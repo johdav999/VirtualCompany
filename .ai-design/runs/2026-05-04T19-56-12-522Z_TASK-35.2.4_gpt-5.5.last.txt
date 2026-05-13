@@ -1,0 +1,528 @@
+diff --git a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+index 6b9d38a..aeb7a87 100644
+--- a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
++++ b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+@@ -19,6 +19,7 @@ public interface ISequenceExecutionService
+     Task<int> HandleDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken);
+     Task QueueDealCreatedAsync(Guid companyId, Guid contactId, Guid dealId, CancellationToken cancellationToken);
+     Task HandleDeliveryStatusAsync(Guid companyId, OutboundDeliveryStatusRequest request, CancellationToken cancellationToken);
++    Task<SequenceExecutionStepResponse?> SaveDraftAsync(Guid companyId, Guid userId, Guid campaignId, Guid stepId, SaveSequenceDraftRequest request, CancellationToken cancellationToken);
+     Task HandleBounceAsync(Guid companyId, OutboundBounceRequest request, CancellationToken cancellationToken);
+ }
+ 
+@@ -78,6 +79,10 @@ public sealed record OutboundBounceRequest(
+     string? Reason,
+     DateTime OccurredUtc);
+ 
++public sealed record SaveSequenceDraftRequest(
++    string Subject,
++    string Body);
++
+ public sealed record CreateOutboundCampaignRequest(
+     string Name,
+     string? Description,
+@@ -149,4 +154,12 @@ public sealed record SequenceExecutionStepResponse(
+     string? ProviderMessageId,
+     string DeliveryStatus,
+     string? BounceStatus,
+-    string? CancellationReason = null,
+-    string? CancellationSourceReference = null);
++    string? CancellationReason = null,
++    string? CancellationSourceReference = null,
++    string? OriginalGeneratedSubject = null,
++    string? OriginalGeneratedBody = null,
++    string? CurrentDraftSubject = null,
++    string? CurrentDraftBody = null,
++    string? FinalSentSubject = null,
++    string? FinalSentBody = null,
++    DateTime? GeneratedDraftUtc = null,
++    DateTime? DraftUpdatedUtc = null);
+diff --git a/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs b/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
+index a6fb6ce..e6c4acf 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
+@@ -77,6 +77,20 @@ public sealed class SalesCampaignsController : ControllerBase
+         return campaign is null ? NotFound() : Ok(campaign);
+     }
+ 
++    [HttpPut("{id:guid}/steps/{stepId:guid}/draft")]
++    public async Task<ActionResult<SequenceExecutionStepResponse>> SaveDraftAsync(Guid id, Guid stepId, [FromBody] SaveSequenceDraftRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var draft = await _sequenceExecution.SaveDraftAsync(CompanyId(), UserId(), id, stepId, request, cancellationToken);
++            return draft is null ? NotFound() : Ok(draft);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Draft could not be saved.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
+     [HttpPost("provider/delivery")]
+     public async Task<IActionResult> DeliveryAsync([FromBody] OutboundDeliveryStatusRequest request, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 3d0a67b..9dc5f6d 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -1194,8 +1194,8 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+         var normalizedSubject = SalesEntityText.NormalizeRequired(subject, nameof(subject), 300);
+         var normalizedBody = SalesEntityText.NormalizeRequired(body, nameof(body), 16000);
+ 
+-        OriginalGeneratedSubject ??= normalizedSubject;
+-        OriginalGeneratedBody ??= normalizedBody;
++        OriginalGeneratedSubject = string.IsNullOrWhiteSpace(OriginalGeneratedSubject) ? normalizedSubject : OriginalGeneratedSubject;
++        OriginalGeneratedBody = string.IsNullOrWhiteSpace(OriginalGeneratedBody) ? normalizedBody : OriginalGeneratedBody;
+         CurrentDraftSubject = normalizedSubject;
+         CurrentDraftBody = normalizedBody;
+         GeneratedDraftUtc ??= effectiveGeneratedUtc;
+@@ -1229,8 +1229,8 @@ public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
+         InternetMessageId = SalesEntityText.NormalizeOptional(internetMessageId, nameof(internetMessageId), 512);
+         DeliveryStatus = SalesEntityText.NormalizeRequired(deliveryStatus, nameof(deliveryStatus), 32).ToLowerInvariant();
+         Status = SalesStatuses.Completed;
+-        FinalSentSubject = SalesEntityText.NormalizeOptional(finalSubject, nameof(finalSubject), 300);
+-        FinalSentBody = SalesEntityText.NormalizeOptional(finalBody, nameof(finalBody), 16000);
++        FinalSentSubject = SalesEntityText.NormalizeOptional(finalSubject, nameof(finalSubject), 300) ?? CurrentDraftSubject ?? OriginalGeneratedSubject;
++        FinalSentBody = SalesEntityText.NormalizeOptional(finalBody, nameof(finalBody), 16000) ?? CurrentDraftBody ?? OriginalGeneratedBody;
+         SentUtc = SalesEntityText.NormalizeUtc(sentUtc, nameof(sentUtc));
+         UpdatedUtc = SentUtc.Value;
+     }
+@@ -1335,7 +1335,6 @@ public sealed class SalesEmailLink : ICompanyOwnedEntity
+     public decimal? Confidence { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+-    public bool IsDeleted { get; private set; }
+     public const string DuplicateOffer = "duplicate_offer";
++    public bool IsDeleted { get; private set; }
+     public DateTime? DeletedUtc { get; private set; }
+     public Company Company { get; private set; } = null!;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+index 2f0e78a..50c8d1a 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+@@ -268,7 +268,7 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
+         var executions = _dbContext.SalesSequenceExecutions.IgnoreQueryFilters()
+             .AsNoTracking()
+             .Include(x => x.Contact)
+-            .Include(x => x.Steps)
++            .Include(x => x.Steps)
+             .Where(x => x.CompanyId == campaign.CompanyId && x.SalesCampaignId == campaign.Id)
+             .OrderBy(x => x.Contact.FullName)
+             .ToList();
+@@ -288,7 +288,7 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
+                 x.Contact.FullName,
+                 StatusLabel(x.Status),
+                 x.StopReason is null ? null : StatusLabel(x.StopReason),
+-                x.Steps.OrderBy(s => s.StepOrder).Select(s => new SequenceExecutionStepResponse(s.Id, s.StepOrder, StatusLabel(s.Status), s.ScheduledSendUtc, s.SentUtc, s.ProviderMessageId, StatusLabel(s.DeliveryStatus), s.BounceStatus is null ? null : StatusLabel(s.BounceStatus), s.CancellationReason is null ? null : StatusLabel(s.CancellationReason), s.CancellationSourceReference)).ToList())).ToList(),
++                x.Steps.OrderBy(s => s.StepOrder).Select(MapStep).ToList())).ToList(),
+             campaign.CreatedUtc,
+             campaign.UpdatedUtc);
+     }
+@@ -329,6 +329,26 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
+     private void AddAudit(Guid companyId, Guid userId, string action, string targetType, Guid targetId, string outcome, string summary) =>
+         _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.Human, userId.ToString("D"), action, targetType, targetId.ToString("D"), outcome, summary, DateTime.UtcNow));
+ 
++    internal static SequenceExecutionStepResponse MapStep(SalesSequenceExecutionStep step) =>
++        new(
++            step.Id,
++            step.StepOrder,
++            StatusLabel(step.Status),
++            step.ScheduledSendUtc,
++            step.SentUtc,
++            step.ProviderMessageId,
++            StatusLabel(step.DeliveryStatus),
++            step.BounceStatus is null ? null : StatusLabel(step.BounceStatus),
++            step.CancellationReason is null ? null : StatusLabel(step.CancellationReason),
++            step.CancellationSourceReference,
++            step.OriginalGeneratedSubject,
++            step.OriginalGeneratedBody,
++            step.CurrentDraftSubject,
++            step.CurrentDraftBody,
++            step.FinalSentSubject,
++            step.FinalSentBody,
++            step.GeneratedDraftUtc,
++            step.DraftUpdatedUtc);
++
+     private static SalesValidationException Validation(string field, string message) =>
+         new(new Dictionary<string, string[]> { [field] = [message] });
+ 
+@@ -373,7 +393,7 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+ 
+         var campaign = await _dbContext.SalesCampaigns.IgnoreQueryFilters()
+             .Include(x => x.SalesSequence).ThenInclude(x => x.Steps)
+-            .Include(x => x.Contacts).ThenInclude(x => x.Contact)
++            .Include(x => x.Contacts).ThenInclude(x => x.Contact).ThenInclude(x => x.CustomerCompany)
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == campaignId, cancellationToken);
+         if (campaign is null || campaign.Status != SalesStatuses.Active)
+         {
+@@ -416,6 +436,8 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+                 continue;
+             }
+ 
++            var memory = await _customerMemory.RefreshProfileAsync(companyId, audience.ContactId, cancellationToken);
+             var execution = new SalesSequenceExecution(Guid.NewGuid(), companyId, campaign.Id, audience.Id, audience.ContactId);
+             foreach (var sequenceStep in steps)
+             {
+@@ -430,6 +452,9 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+                     sequenceStep.StepOrder,
+                     scheduled,
+                     $"sales-sequence:{companyId:N}:{campaign.Id:N}:{audience.ContactId:N}:{sequenceStep.Id:N}"));
++                var generatedStep = execution.Steps.Last();
++                var draft = BuildPersonalizedDraft(sequenceStep.TemplateSubject ?? "Following up", sequenceStep.TemplateContent, audience.Contact, memory, sequenceStep.AiPersonalizationEnabled);
++                generatedStep.RecordGeneratedDraft(draft.Subject, draft.Body, now);
+             }
+ 
+             audience.MarkScheduled(steps[0].StepOrder, execution.Steps.Min(x => x.ScheduledSendUtc));
+@@ -446,7 +471,7 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+         var dueSteps = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
+             .Include(x => x.SequenceExecution).ThenInclude(x => x.SalesCampaign)
+             .Include(x => x.SequenceExecution).ThenInclude(x => x.Contact)
++            .ThenInclude(x => x.CustomerCompany)
+             .Include(x => x.SalesSequenceStep)
+             .Where(x => x.Status == SalesStatuses.Pending && x.ScheduledSendUtc <= dueBeforeUtc)
+             .OrderBy(x => x.ScheduledSendUtc)
+@@ -480,10 +505,16 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+             {
+                 step.MarkSending();
+                 step.SequenceExecution.MarkStarted();
+-                var contact = step.SequenceExecution.Contact;
+-                var memory = await _customerMemory.RefreshProfileAsync(step.CompanyId, step.ContactId, cancellationToken);
+-                var draft = BuildPersonalizedDraft(step.SalesSequenceStep.TemplateSubject ?? "Following up", step.SalesSequenceStep.TemplateContent, contact, memory, step.SalesSequenceStep.AiPersonalizationEnabled);
+-                step.RecordGeneratedDraft(draft.Subject, draft.Body, DateTime.UtcNow);
++                var contact = step.SequenceExecution.Contact;
++                if (string.IsNullOrWhiteSpace(step.CurrentDraftSubject) || string.IsNullOrWhiteSpace(step.CurrentDraftBody))
++                {
++                    var memory = await _customerMemory.RefreshProfileAsync(step.CompanyId, step.ContactId, cancellationToken);
++                    var generated = BuildPersonalizedDraft(step.SalesSequenceStep.TemplateSubject ?? "Following up", step.SalesSequenceStep.TemplateContent, contact, memory, step.SalesSequenceStep.AiPersonalizationEnabled);
++                    step.RecordGeneratedDraft(generated.Subject, generated.Body, DateTime.UtcNow);
++                }
++
++                var draft = new PersonalizedDraft(step.CurrentDraftSubject!, step.CurrentDraftBody!);
+ 
+                 var result = await _emailSender.SendSequenceEmailAsync(new OutboundEmailSendRequest(
+                     step.CompanyId,
+@@ -644,6 +675,38 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+         await _dbContext.SaveChangesAsync(cancellationToken);
+     }
+ 
++    public async Task<SequenceExecutionStepResponse?> SaveDraftAsync(Guid companyId, Guid userId, Guid campaignId, Guid stepId, SaveSequenceDraftRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        if (userId == Guid.Empty)
++        {
++            throw new ArgumentException("UserId is required.", nameof(userId));
++        }
++
++        var step = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.SalesCampaignId == campaignId && x.Id == stepId, cancellationToken);
++        if (step is null)
++        {
++            return null;
++        }
++
++        if (step.Status is SalesStatuses.Completed or SalesStatuses.Cancelled)
++        {
++            throw new InvalidOperationException("Only unsent campaign drafts can be edited.");
++        }
++
++        if (string.IsNullOrWhiteSpace(step.OriginalGeneratedSubject) || string.IsNullOrWhiteSpace(step.OriginalGeneratedBody))
++        {
++            throw new InvalidOperationException("A generated draft must exist before edits can be saved.");
++        }
++
++        step.UpdateDraftContent(request.Subject, request.Body, DateTime.UtcNow);
++        _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.Human, userId.ToString("D"), "sales.sequence.draft_edited", "sales_sequence_execution_step", step.Id.ToString("D"), AuditEventOutcomes.Succeeded, "A campaign draft was edited before sending.", DateTime.UtcNow));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return OutboundCampaignService.MapStep(step);
++    }
++
+     public async Task HandleBounceAsync(Guid companyId, OutboundBounceRequest request, CancellationToken cancellationToken)
+     {
+         var step = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
+@@ -681,21 +744,37 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     private static PersonalizedDraft BuildPersonalizedDraft(string subject, string body, Contact contact, CustomerMemoryContext? memory, bool aiPersonalizationEnabled)
+     {
+         var firstName = contact.FullName.Split(' ', StringSplitOptions.RemoveEmptyEntries).FirstOrDefault() ?? contact.FullName;
+-        var effectiveSubject = subject.Replace("{firstName}", firstName, StringComparison.OrdinalIgnoreCase)
+-            .Replace("{companyName}", contact.CustomerCompany?.Name ?? "your team", StringComparison.OrdinalIgnoreCase);
+-        var effectiveBody = body.Replace("{firstName}", firstName, StringComparison.OrdinalIgnoreCase)
+-            .Replace("{companyName}", contact.CustomerCompany?.Name ?? "your team", StringComparison.OrdinalIgnoreCase);
++        var companyName = memory?.CustomerCompanyName ?? contact.CustomerCompany?.Name ?? "your team";
++        var effectiveSubject = ApplyTemplateTokens(subject, firstName, companyName);
++        var effectiveBody = ApplyTemplateTokens(body, firstName, companyName);
+ 
+         if (aiPersonalizationEnabled && memory is not null)
+         {
+-            var contextLine = memory.PreviousDeals.Count > 0
+-                ? $"I also noticed our previous work around {memory.PreviousDeals[0].Title}."
+-                : memory.LastOutreachSummary is { Length: > 0 }
+-                    ? $"I wanted to follow up with that prior context in mind: {memory.LastOutreachSummary}"
+-                    : null;
+-
+-            if (!string.IsNullOrWhiteSpace(contextLine) && !effectiveBody.Contains(contextLine, StringComparison.OrdinalIgnoreCase))
++            var memoryLines = new List<string>();
++            if (!string.IsNullOrWhiteSpace(memory.RelationshipMemory))
++            {
++                memoryLines.Add(memory.RelationshipMemory);
++            }
++
++            if (memory.PreviousDeals.Count > 0)
++            {
++                memoryLines.Add($"Previous deal context: {memory.PreviousDeals[0].Summary}");
++            }
++
++            if (memory.PriceSensitivityIndicators.Count > 0)
+             {
+-                effectiveBody = $"{effectiveBody.Trim()}\n\n{contextLine}";
++                memoryLines.Add($"Price context: {memory.PriceSensitivityIndicators[0].Value}");
++            }
++
++            if (!string.IsNullOrWhiteSpace(memory.LastOutreachSummary))
++            {
++                memoryLines.Add($"Last outreach: {memory.LastOutreachSummary}");
++            }
++
++            var contextLine = string.Join(" ", memoryLines.Where(x => !string.IsNullOrWhiteSpace(x)).Take(3));
++            if (!string.IsNullOrWhiteSpace(contextLine) &&
++                !effectiveBody.Contains(contextLine, StringComparison.OrdinalIgnoreCase))
++            {
++                effectiveBody = $"{effectiveBody.Trim()}\n\nPersonal note: {contextLine}";
+             }
+         }
+ 
+@@ -703,6 +782,15 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     }
+ 
+     private sealed record PersonalizedDraft(string Subject, string Body);
++
++    private static string ApplyTemplateTokens(string template, string firstName, string companyName) =>
++        template
++            .Replace("{{first_name}}", firstName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{firstName}", firstName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{first_name}", firstName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{{company_name}}", companyName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{companyName}", companyName, StringComparison.OrdinalIgnoreCase)
++            .Replace("{company_name}", companyName, StringComparison.OrdinalIgnoreCase);
+ 
+     private static void Defer(SalesSequenceExecutionStep step) =>
+         typeof(SalesSequenceExecutionStep).GetProperty(nameof(SalesSequenceExecutionStep.ScheduledSendUtc))!.SetValue(step, DateTime.UtcNow.Date.AddDays(1).AddHours(8));
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 6f8d7df..e3356da 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -109,6 +109,9 @@ public sealed class SalesApiClient
+     public Task<OutboundCampaignDetailResponse> StopCampaignAsync(Guid companyId, Guid campaignId, string? reason, CancellationToken cancellationToken = default) =>
+         SendAsync<StopCampaignRequest, OutboundCampaignDetailResponse>(companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/stop", new(reason), cancellationToken);
+ 
++    public Task<SequenceExecutionStepResponse> SaveCampaignDraftAsync(Guid companyId, Guid campaignId, Guid stepId, SaveSequenceDraftRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<SaveSequenceDraftRequest, SequenceExecutionStepResponse>(companyId, HttpMethod.Put, $"api/sales/campaigns/{campaignId:D}/steps/{stepId:D}/draft", request, cancellationToken);
++
+     private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+     {
+         if (_useOfflineMode)
+@@ -239,8 +242,7 @@ public sealed record SalesLeadDetailResponse(
+     DateTime UpdatedUtc);
+ 
+ public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string? CustomerCompanyName, string? ContactName, DateTime? ExpectedCloseUtc, DateTime UpdatedUtc);
+-public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff);
+ public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff, CustomerMemoryContext? CustomerMemory = null);
+@@ -279,6 +281,7 @@ public sealed record CreateOutboundCampaignRequest(string Name, string? Descript
+ public sealed record OutboundPolicyRequest(bool OutboundEnabled, int MaxEmailsPerDay, bool ApprovalRequired);
+ public sealed record CreateSequenceStepRequest(int StepOrder, int DelayDays, string Subject, string Body, bool AiPersonalizationEnabled);
+ public sealed record StopCampaignRequest(string? Reason);
++public sealed record SaveSequenceDraftRequest(string Subject, string Body);
+ public sealed record OutboundCampaignSummaryResponse(Guid Id, string Name, string Status, int AudienceCount, int PendingSteps, int SentSteps, int BouncedSteps, DateTime UpdatedUtc);
+ public sealed record OutboundCampaignDetailResponse(Guid Id, string Name, string? Description, string Status, string AudienceType, OutboundPolicyResponse Policy, IReadOnlyList<OutboundCampaignContactResponse> Audience, IReadOnlyList<SequenceStepResponse> Steps, IReadOnlyList<SequenceExecutionResponse> Executions, DateTime CreatedUtc, DateTime UpdatedUtc);
+ public sealed record OutboundPolicyResponse(bool OutboundEnabled, int MaxEmailsPerDay, bool ApprovalRequired);
+@@ -286,6 +289,6 @@ public sealed record OutboundCampaignContactResponse(Guid ContactId, string Cont
+ public sealed record SequenceStepResponse(Guid Id, int StepOrder, int DelayDays, string Subject, bool AiPersonalizationEnabled);
+ public sealed record SequenceExecutionResponse(Guid Id, Guid ContactId, string ContactName, string Status, string? StopReason, IReadOnlyList<SequenceExecutionStepResponse> Steps);
+-public sealed record SequenceExecutionStepResponse(Guid Id, int StepOrder, string Status, DateTime ScheduledSendUtc, DateTime? SentUtc, string? ProviderMessageId, string DeliveryStatus, string? BounceStatus);
++public sealed record SequenceExecutionStepResponse(Guid Id, int StepOrder, string Status, DateTime ScheduledSendUtc, DateTime? SentUtc, string? ProviderMessageId, string DeliveryStatus, string? BounceStatus, string? CancellationReason = null, string? CancellationSourceReference = null, string? OriginalGeneratedSubject = null, string? OriginalGeneratedBody = null, string? CurrentDraftSubject = null, string? CurrentDraftBody = null, string? FinalSentSubject = null, string? FinalSentBody = null, DateTime? GeneratedDraftUtc = null, DateTime? DraftUpdatedUtc = null);
+ public sealed record OutboundAudienceOptionsResponse(IReadOnlyList<OutboundAudienceContactResponse> Contacts, IReadOnlyList<OutboundAudienceSourceResponse> Sources);
+ public sealed record OutboundAudienceContactResponse(Guid ContactId, string ContactName, string Email, string? CustomerCompanyName, IReadOnlyList<string> SourceTypes);
+ public sealed record OutboundAudienceSourceResponse(string SourceType, string Label, int ContactCount);
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor b/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+index 2ec2bdc..3207bdb 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+@@ -72,7 +72,7 @@
+                             @foreach (var campaign in campaigns)
+                             {
+                                 <button class="@CampaignRowClass(campaign.Id)" @onclick="() => SelectCampaignAsync(campaign.Id)">
+                                     <div>
+                                         <strong>@campaign.Name</strong>
+-                                        <span>@campaign.AudienceCount contacts Aú @campaign.PendingSteps pending Aú @campaign.SentSteps sent Aú updated @campaign.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
++                                        <span>@campaign.AudienceCount contacts - @campaign.PendingSteps pending - @campaign.SentSteps sent - updated @campaign.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                                     </div>
+                                     <span class="@BadgeClass(campaign.Status)">@campaign.Status</span>
+                                 </button>
+@@ -145,6 +145,22 @@
+                                                 @foreach (var step in execution.Steps)
+                                                 {
+                                                     <span title="@step.ScheduledSendUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)" class="@BadgeClass(step.Status)">Step @step.StepOrder</span>
+                                                 }
+                                             </div>
++                                            @if (execution.Steps.FirstOrDefault(x => x.CurrentDraftSubject is not null) is { } draftStep)
++                                            {
++                                                <div class="sales-draft-audit">
++                                                    <strong>@(draftStep.CurrentDraftSubject ?? draftStep.OriginalGeneratedSubject)</strong>
++                                                    <small>
++                                                        Generated @draftStep.GeneratedDraftUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
++                                                        @if (draftStep.DraftUpdatedUtc is not null && draftStep.DraftUpdatedUtc != draftStep.GeneratedDraftUtc)
++                                                        {
++                                                            <span> - edited @draftStep.DraftUpdatedUtc.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
++                                                        }
++                                                    </small>
++                                                    <p>@TrimDraft(draftStep.CurrentDraftBody ?? draftStep.OriginalGeneratedBody)</p>
++                                                </div>
++                                            }
+                                         </article>
+                                     }
+                                 }
+@@ -225,7 +241,7 @@
+                                             <input type="checkbox" checked="@draft.ContactIds.Contains(contact.ContactId)" @onchange="args => ToggleContact(contact.ContactId, args.Value as bool? == true)" />
+                                             <span>
+                                                 <a class="sales-inline-link" href="@BuildPath($"/app/sales/contacts/{contact.ContactId:D}")">@contact.ContactName</a>
+-                                                <small>@contact.Email Aú @(contact.CustomerCompanyName ?? "No company linked")</small>
++                                                <small>@contact.Email - @(contact.CustomerCompanyName ?? "No company linked")</small>
+                                             </span>
+                                         </label>
+                                     }
+@@ -420,6 +436,7 @@
+     private string CampaignRowClass(Guid campaignId) => $"sales-list-row sales-list-row--button{(selectedCampaign?.Id == campaignId ? " sales-list-row--selected" : "")}";
+     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+     private static string PolicySummary(OutboundPolicyResponse policy) => $"{(policy.OutboundEnabled ? "Outbound enabled" : "Outbound disabled")}, {policy.MaxEmailsPerDay} emails per day, {(policy.ApprovalRequired ? "approval required" : "no launch approval required")}";
++    private static string TrimDraft(string? value) => string.IsNullOrWhiteSpace(value) ? "No draft content recorded yet." : value.Length <= 180 ? value : $"{value[..180]}...";
+ 
+     private sealed class CampaignDraft
+     {
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor b/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor
+index f65d52d..3b12d01 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesContactProfile.razor
+@@ -43,7 +43,7 @@
+                 <div>
+                     <span class="sales-badge sales-badge--active">@EngagementBand(profile.EngagementScore)</span>
+                     <h2>@profile.ContactName</h2>
+-                    <p>@profile.ContactEmail Aú @(profile.CustomerCompanyName ?? "No company linked")</p>
++                    <p>@profile.ContactEmail - @(profile.CustomerCompanyName ?? "No company linked")</p>
+                 </div>
+                 <div class="sales-detail-hero__value">
+                     <span>Engagement score</span>
+@@ -90,7 +90,7 @@
+                                         <span></span>
+                                         <div>
+                                             <strong>@item.Summary</strong>
+-                                            <small>@PlainLabel(item.SourceType) Aú @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
++                                            <small>@PlainLabel(item.SourceType) - @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                         </div>
+                                     </div>
+                                 }
+@@ -222,7 +222,7 @@
+                 builder.AddContent(sequence++, signal.Value);
+                 builder.CloseElement();
+                 builder.OpenElement(sequence++, "small");
+-                builder.AddContent(sequence++, $"{Math.Round(signal.Confidence * 100m, 0)}% confidence Aú {signal.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
++                builder.AddContent(sequence++, $"{Math.Round(signal.Confidence * 100m, 0)}% confidence - {signal.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
+                 builder.CloseElement();
+                 builder.CloseElement();
+             }
+diff --git a/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
+index 35bb2ec..d6ab8c1 100644
+--- a/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
+@@ -90,6 +90,82 @@ public sealed class SalesCampaignsIntegrationTests : IClassFixture<TestWebApplic
+         Assert.Equal(HttpStatusCode.NotFound, (await otherTenantClient.GetAsync($"/api/sales/campaigns/{campaign.Id}")).StatusCode);
+     }
+ 
++    [Fact]
++    public async Task Launch_persists_personalized_drafts_before_send()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var create = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Memory offer"));
++        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++
++        var launch = await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign!.Id}/launch", new { });
++
++        Assert.Equal(HttpStatusCode.OK, launch.StatusCode);
++        var state = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == campaign.Id)
++                .OrderBy(x => x.StepOrder)
++                .Select(x => new
++                {
++                    x.SentUtc,
++                    x.OriginalGeneratedSubject,
++                    x.OriginalGeneratedBody,
++                    x.CurrentDraftSubject,
++                    x.CurrentDraftBody,
++                    x.GeneratedDraftUtc
++                })
++                .FirstAsync());
++
++        Assert.Null(state.SentUtc);
++        Assert.NotNull(state.GeneratedDraftUtc);
++        Assert.Equal(state.OriginalGeneratedSubject, state.CurrentDraftSubject);
++        Assert.Equal(state.OriginalGeneratedBody, state.CurrentDraftBody);
++        Assert.Contains("Personal note:", state.OriginalGeneratedBody);
++        Assert.Contains("Won deal A", state.OriginalGeneratedBody);
++    }
++
++    [Fact]
++    public async Task Draft_edit_preserves_original_generated_content_for_audit()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++        var create = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Editable offer"));
++        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign!.Id}/launch", new { });
++
++        var step = await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == campaign.Id)
++                .OrderBy(x => x.StepOrder)
++                .FirstAsync());
++
++        var originalBody = step.OriginalGeneratedBody;
++        var edit = await client.PutAsJsonAsync($"/api/sales/campaigns/{campaign.Id}/steps/{step.Id}/draft", new SaveSequenceDraftRequest("Edited subject", "Edited body"));
++
++        Assert.Equal(HttpStatusCode.OK, edit.StatusCode);
++        var saved = await edit.Content.ReadFromJsonAsync<SequenceExecutionStepResponse>();
++        Assert.Equal("Edited subject", saved!.CurrentDraftSubject);
++        Assert.Equal("Edited body", saved.CurrentDraftBody);
++        Assert.Equal(originalBody, saved.OriginalGeneratedBody);
++    }
++
++    [Fact]
++    public async Task Launch_blocks_duplicate_offer_when_matching_campaign_was_sent_within_lookback()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++        var first = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Renewal duplicate"));
++        var firstCampaign = await first.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        await client.PostAsJsonAsync($"/api/sales/campaigns/{firstCampaign!.Id}/launch", new { });
++        await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var sent = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().FirstAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == firstCampaign.Id);
++            sent.MarkSent("test", null, "duplicate-provider-message", "duplicate-thread", null, SalesStatuses.Delivered, DateTime.UtcNow, sent.CurrentDraftSubject, sent.CurrentDraftBody);
++            await dbContext.SaveChangesAsync();
++        });
++
++        var second = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Renewal duplicate"));
++        var secondCampaign = await second.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        await client.PostAsJsonAsync($"/api/sales/campaigns/{secondCampaign!.Id}/launch", new { });
++
++        Assert.Equal(0, await _factory.ExecuteDbContextAsync(dbContext => dbContext.SalesSequenceExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == secondCampaign.Id)));
++        Assert.True(await _factory.ExecuteDbContextAsync(dbContext => dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyAId && x.Action == "sales.sequence.duplicate_offer_blocked")));
++    }
++
+     [Fact]
+     public async Task Reply_and_deal_created_cancel_pending_future_steps_for_contact()
+     {
+END_OF_PATCH

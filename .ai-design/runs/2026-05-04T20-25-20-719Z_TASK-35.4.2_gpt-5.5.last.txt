@@ -1,0 +1,1114 @@
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index 5a3fd54..8a9d8e1 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -27,6 +27,18 @@ public interface ISalesOperationsService
+     Task<ProcessSalesEmailResponse> ProcessEmailAsync(Guid companyId, Guid userId, ProcessSalesEmailRequest request, CancellationToken cancellationToken);
+ }
+ 
++public interface IRevenueForecastService
++{
++    Task<RevenueForecastSnapshotDto> CalculateAndPersistForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken);
++    Task<RevenueForecastSnapshotDto?> GetLatestForecastAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<DealRiskScoreDto?> GetLatestDealRiskScoreAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
++}
++
++public interface IPipelineRiskScoringJobRunner
++{
++    Task<PipelineRiskScoringRunResult> RunDailyAsync(DateTime asOfUtc, CancellationToken cancellationToken);
++}
++
+ public sealed class SalesValidationException : Exception
+ {
+     public SalesValidationException(IReadOnlyDictionary<string, string[]> errors)
+@@ -213,6 +225,43 @@ public sealed record ProcessSalesEmailResponse(
+     Guid? LeadId,
+     Guid? ActivityId,
+     Guid EmailLinkId);
++
++public sealed record RevenueForecastSnapshotDto(
++    Guid Id,
++    Guid CompanyId,
++    DateTime AsOfUtc,
++    DateTime CalculatedUtc,
++    string Currency,
++    IReadOnlyList<RevenueForecastWindowDto> Windows,
++    RiskDistributionSummary RiskDistribution);
++
++public sealed record RevenueForecastWindowDto(
++    int Days,
++    decimal GrossPipelineValue,
++    decimal ExpectedRevenue,
++    int DealCount);
++
++public sealed record DealRiskScoreDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid DealId,
++    decimal Score,
++    string Band,
++    DateTime CalculatedUtc,
++    string FactorsSummary);
++
++public sealed record PipelineRiskScoringRunResult(
++    int CompanyCount,
++    int DealCount,
++    int ForecastSnapshotCount);
++
++public static class RevenueForecastWindows
++{
++    public static IReadOnlyList<int> SupportedDays { get; } = [30, 60, 90];
++}
++
++public static class DealRiskBands
++{
++    public const string Low = "low";
++    public const string Medium = "medium";
++    public const string High = "high";
++}
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 0d37e12..b25d5ad 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -351,6 +351,128 @@ public sealed class Deal : ICompanyOwnedEntity
+     }
+ }
+ 
++public sealed class RevenueForecastSnapshot : ICompanyOwnedEntity
++{
++    private RevenueForecastSnapshot()
++    {
++    }
++
++    public RevenueForecastSnapshot(
++        Guid id,
++        Guid companyId,
++        DateTime asOfUtc,
++        string currency,
++        decimal grossPipeline30Days,
++        decimal expectedRevenue30Days,
++        int dealCount30Days,
++        decimal grossPipeline60Days,
++        decimal expectedRevenue60Days,
++        int dealCount60Days,
++        decimal grossPipeline90Days,
++        decimal expectedRevenue90Days,
++        int dealCount90Days,
++        int unknownRiskDeals,
++        int lowRiskDeals,
++        int mediumRiskDeals,
++        int highRiskDeals,
++        DateTime calculatedUtc)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        AsOfUtc = SalesEntityText.NormalizeUtc(asOfUtc, nameof(asOfUtc));
++        Currency = SalesEntityText.NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
++        GrossPipeline30Days = grossPipeline30Days;
++        ExpectedRevenue30Days = expectedRevenue30Days;
++        DealCount30Days = dealCount30Days;
++        GrossPipeline60Days = grossPipeline60Days;
++        ExpectedRevenue60Days = expectedRevenue60Days;
++        DealCount60Days = dealCount60Days;
++        GrossPipeline90Days = grossPipeline90Days;
++        ExpectedRevenue90Days = expectedRevenue90Days;
++        DealCount90Days = dealCount90Days;
++        UnknownRiskDeals = unknownRiskDeals;
++        LowRiskDeals = lowRiskDeals;
++        MediumRiskDeals = mediumRiskDeals;
++        HighRiskDeals = highRiskDeals;
++        CalculatedUtc = SalesEntityText.NormalizeUtc(calculatedUtc, nameof(calculatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public DateTime AsOfUtc { get; private set; }
++    public string Currency { get; private set; } = null!;
++    public decimal GrossPipeline30Days { get; private set; }
++    public decimal ExpectedRevenue30Days { get; private set; }
++    public int DealCount30Days { get; private set; }
++    public decimal GrossPipeline60Days { get; private set; }
++    public decimal ExpectedRevenue60Days { get; private set; }
++    public int DealCount60Days { get; private set; }
++    public decimal GrossPipeline90Days { get; private set; }
++    public decimal ExpectedRevenue90Days { get; private set; }
++    public int DealCount90Days { get; private set; }
++    public int UnknownRiskDeals { get; private set; }
++    public int LowRiskDeals { get; private set; }
++    public int MediumRiskDeals { get; private set; }
++    public int HighRiskDeals { get; private set; }
++    public DateTime CalculatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++}
++
++public sealed class DealRiskScoreSnapshot : ICompanyOwnedEntity
++{
++    private DealRiskScoreSnapshot()
++    {
++    }
++
++    public DealRiskScoreSnapshot(
++        Guid id,
++        Guid companyId,
++        Guid dealId,
++        DateTime scoreDateUtc,
++        decimal score,
++        string band,
++        string factorsSummary,
++        DateTime calculatedUtc)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId))!.Value;
++        ScoreDateUtc = SalesEntityText.NormalizeUtc(scoreDateUtc, nameof(scoreDateUtc)).Date;
++        Score = ClampScore(score);
++        Band = SalesEntityText.NormalizeRequired(band, nameof(band), 32).ToLowerInvariant();
++        FactorsSummary = SalesEntityText.NormalizeRequired(factorsSummary, nameof(factorsSummary), 1000);
++        CalculatedUtc = SalesEntityText.NormalizeUtc(calculatedUtc, nameof(calculatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid DealId { get; private set; }
++    public DateTime ScoreDateUtc { get; private set; }
++    public decimal Score { get; private set; }
++    public string Band { get; private set; } = null!;
++    public string FactorsSummary { get; private set; } = null!;
++    public DateTime CalculatedUtc { get; private set; }
++    public Deal Deal { get; private set; } = null!;
++
++    public void Recalculate(decimal score, string band, string factorsSummary, DateTime calculatedUtc)
++    {
++        Score = ClampScore(score);
++        Band = SalesEntityText.NormalizeRequired(band, nameof(band), 32).ToLowerInvariant();
++        FactorsSummary = SalesEntityText.NormalizeRequired(factorsSummary, nameof(factorsSummary), 1000);
++        CalculatedUtc = SalesEntityText.NormalizeUtc(calculatedUtc, nameof(calculatedUtc));
++    }
++
++    private static decimal ClampScore(decimal score) =>
++        Math.Round(Math.Clamp(score, 0m, 1m), 4, MidpointRounding.AwayFromZero);
++}
++
+ public sealed class SalesActivity : ICompanyOwnedEntity
+ {
+     private SalesActivity()
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index e77d4ab..5b50ef0 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -147,6 +147,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<WebsiteLeadSubmission> WebsiteLeadSubmissions => Set<WebsiteLeadSubmission>();
+     public DbSet<SalesMessagePerformance> SalesMessagePerformances => Set<SalesMessagePerformance>();
+     public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
++    public DbSet<RevenueForecastSnapshot> RevenueForecastSnapshots => Set<RevenueForecastSnapshot>();
++    public DbSet<DealRiskScoreSnapshot> DealRiskScoreSnapshots => Set<DealRiskScoreSnapshot>();
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
+@@ -240,6 +242,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is SalesCampaign ||
+                 entry.Entity is SalesSequenceExecution ||
+                 entry.Entity is SalesSequenceExecutionStep ||
++                entry.Entity is RevenueForecastSnapshot ||
++                entry.Entity is DealRiskScoreSnapshot ||
+                 entry.Entity is SalesMessagePerformance)
+             .Select(entry => ((ICompanyOwnedEntity)entry.Entity).CompanyId)
+             .Distinct()
+@@ -753,5 +757,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<WebsiteLeadSubmission>()
+             .HasQueryFilter(submission =>
+                 CurrentCompanyId.HasValue && submission.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<RevenueForecastSnapshot>()
++            .HasQueryFilter(snapshot =>
++                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<DealRiskScoreSnapshot>()
++            .HasQueryFilter(snapshot =>
++                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesForecastEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesForecastEntityConfigurations.cs
+new file mode 100644
+index 0000000..d87a5ed
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesForecastEntityConfigurations.cs
+@@ -0,0 +1,98 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Metadata.Builders;
++using VirtualCompany.Domain.Entities;
++
++namespace VirtualCompany.Infrastructure.Persistence;
++
++internal sealed class RevenueForecastSnapshotConfiguration : IEntityTypeConfiguration<RevenueForecastSnapshot>
++{
++    public void Configure(EntityTypeBuilder<RevenueForecastSnapshot> builder)
++    {
++        builder.ToTable("revenue_forecast_snapshots");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.AsOfUtc).HasColumnName("as_of_at").IsRequired();
++        builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
++        builder.Property(x => x.GrossPipeline30Days).HasColumnName("gross_pipeline_30_days").HasPrecision(18, 2).IsRequired();
++        builder.Property(x => x.ExpectedRevenue30Days).HasColumnName("expected_revenue_30_days").HasPrecision(18, 2).IsRequired();
++        builder.Property(x => x.DealCount30Days).HasColumnName("deal_count_30_days").IsRequired();
++        builder.Property(x => x.GrossPipeline60Days).HasColumnName("gross_pipeline_60_days").HasPrecision(18, 2).IsRequired();
++        builder.Property(x => x.ExpectedRevenue60Days).HasColumnName("expected_revenue_60_days").HasPrecision(18, 2).IsRequired();
++        builder.Property(x => x.DealCount60Days).HasColumnName("deal_count_60_days").IsRequired();
++        builder.Property(x => x.GrossPipeline90Days).HasColumnName("gross_pipeline_90_days").HasPrecision(18, 2).IsRequired();
++        builder.Property(x => x.ExpectedRevenue90Days).HasColumnName("expected_revenue_90_days").HasPrecision(18, 2).IsRequired();
++        builder.Property(x => x.DealCount90Days).HasColumnName("deal_count_90_days").IsRequired();
++        builder.Property(x => x.UnknownRiskDeals).HasColumnName("unknown_risk_deals").IsRequired();
++        builder.Property(x => x.LowRiskDeals).HasColumnName("low_risk_deals").IsRequired();
++        builder.Property(x => x.MediumRiskDeals).HasColumnName("medium_risk_deals").IsRequired();
++        builder.Property(x => x.HighRiskDeals).HasColumnName("high_risk_deals").IsRequired();
++        builder.Property(x => x.CalculatedUtc).HasColumnName("calculated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.CalculatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.AsOfUtc }).IsUnique();
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_revenue_forecast_snapshots_deal_counts_nonnegative", "deal_count_30_days >= 0 AND deal_count_60_days >= 0 AND deal_count_90_days >= 0");
++            t.HasCheckConstraint("CK_revenue_forecast_snapshots_risk_counts_nonnegative", "unknown_risk_deals >= 0 AND low_risk_deals >= 0 AND medium_risk_deals >= 0 AND high_risk_deals >= 0");
++        });
++    }
++}
++
++internal sealed class DealRiskScoreSnapshotConfiguration : IEntityTypeConfiguration<DealRiskScoreSnapshot>
++{
++    public void Configure(EntityTypeBuilder<DealRiskScoreSnapshot> builder)
++    {
++        builder.ToTable("deal_risk_score_snapshots");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DealId).HasColumnName("deal_id").IsRequired();
++        builder.Property(x => x.ScoreDateUtc).HasColumnName("score_date").IsRequired();
++        builder.Property(x => x.Score).HasColumnName("score").HasPrecision(6, 4).IsRequired();
++        builder.Property(x => x.Band).HasColumnName("band").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.FactorsSummary).HasColumnName("factors_summary").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.CalculatedUtc).HasColumnName("calculated_at").IsRequired();
++
++        builder.HasIndex(x => new { x.CompanyId, x.DealId });
++        builder.HasIndex(x => new { x.CompanyId, x.CalculatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.DealId, x.ScoreDateUtc }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Band, x.ScoreDateUtc });
++        builder.HasOne(x => x.Deal)
++            .WithMany()
++            .HasForeignKey(nameof(DealRiskScoreSnapshot.CompanyId), nameof(DealRiskScoreSnapshot.DealId))
++            .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_deal_risk_score_snapshots_score_range", "score >= 0 AND score <= 1");
++        });
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs b/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs
+new file mode 100644
+index 0000000..8a8a8db
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/RevenueForecastService.cs
+@@ -0,0 +1,352 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using Microsoft.Extensions.Hosting;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class PipelineRiskScoringWorkerOptions
++{
++    public const string SectionName = "PipelineRiskScoringWorker";
++
++    public bool Enabled { get; set; } = true;
++    public int RunIntervalHours { get; set; } = 24;
++}
++
++public sealed class RevenueForecastService : IRevenueForecastService, IPipelineRiskScoringJobRunner
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<RevenueForecastService> _logger;
++
++    public RevenueForecastService(
++        VirtualCompanyDbContext dbContext,
++        TimeProvider timeProvider,
++        ILogger<RevenueForecastService> logger,
++        ICompanyContextAccessor? companyContextAccessor = null)
++    {
++        _dbContext = dbContext;
++        _timeProvider = timeProvider;
++        _logger = logger;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task<RevenueForecastSnapshotDto> CalculateAndPersistForecastAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        asOfUtc = NormalizeUtc(asOfUtc);
++        var calculatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++
++        var deals = await _dbContext.Deals
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                !x.IsDeleted &&
++                x.Status == SalesStatuses.Open &&
++                x.Amount > 0m &&
++                x.ExpectedCloseUtc != null &&
++                x.ExpectedCloseUtc >= asOfUtc &&
++                x.ExpectedCloseUtc <= asOfUtc.AddDays(90))
++            .Select(x => new ForecastDealInput(
++                x.Id,
++                x.Amount,
++                x.Currency,
++                x.PipelineStageId,
++                x.ExpectedCloseUtc!.Value))
++            .ToListAsync(cancellationToken);
++
++        var latestRiskScores = await LoadLatestRiskScoresAsync(companyId, deals.Select(x => x.DealId).ToArray(), cancellationToken);
++        var windows = RevenueForecastWindows.SupportedDays
++            .Select(days => CalculateWindow(days, asOfUtc, deals, latestRiskScores))
++            .ToArray();
++        var currency = deals.Select(x => x.Currency).FirstOrDefault() ?? "USD";
++        var risk = BuildRiskDistribution(latestRiskScores.Values);
++
++        var snapshotDate = asOfUtc.Date;
++        var existing = await _dbContext.RevenueForecastSnapshots
++            .IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.AsOfUtc == snapshotDate, cancellationToken);
++
++        if (existing is not null)
++        {
++            _dbContext.RevenueForecastSnapshots.Remove(existing);
++        }
++
++        var snapshot = new RevenueForecastSnapshot(
++            Guid.NewGuid(),
++            companyId,
++            snapshotDate,
++            currency,
++            windows[0].GrossPipelineValue,
++            windows[0].ExpectedRevenue,
++            windows[0].DealCount,
++            windows[1].GrossPipelineValue,
++            windows[1].ExpectedRevenue,
++            windows[1].DealCount,
++            windows[2].GrossPipelineValue,
++            windows[2].ExpectedRevenue,
++            windows[2].DealCount,
++            risk.Unknown,
++            risk.Low,
++            risk.Medium,
++            risk.High,
++            calculatedUtc);
++        _dbContext.RevenueForecastSnapshots.Add(snapshot);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return Map(snapshot);
++    }
++
++    public async Task<RevenueForecastSnapshotDto?> GetLatestForecastAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        var snapshot = await _dbContext.RevenueForecastSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId)
++            .OrderByDescending(x => x.AsOfUtc)
++            .ThenByDescending(x => x.CalculatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        return snapshot is null ? null : Map(snapshot);
++    }
++
++    public async Task<DealRiskScoreDto?> GetLatestDealRiskScoreAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        var snapshot = await _dbContext.DealRiskScoreSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == dealId)
++            .OrderByDescending(x => x.ScoreDateUtc)
++            .ThenByDescending(x => x.CalculatedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        return snapshot is null ? null : Map(snapshot);
++    }
++
++    public async Task<PipelineRiskScoringRunResult> RunDailyAsync(DateTime asOfUtc, CancellationToken cancellationToken)
++    {
++        asOfUtc = NormalizeUtc(asOfUtc);
++        var companyIds = await _dbContext.Deals
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => !x.IsDeleted && x.Status == SalesStatuses.Open)
++            .Select(x => x.CompanyId)
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        var processedDeals = 0;
++        var snapshots = 0;
++
++        foreach (var companyId in companyIds)
++        {
++            processedDeals += await RecalculateCompanyRiskScoresAsync(companyId, asOfUtc, cancellationToken);
++            await CalculateAndPersistForecastAsync(companyId, asOfUtc, cancellationToken);
++            snapshots++;
++        }
++
++        _logger.LogInformation(
++            "Pipeline risk scoring completed for {CompanyCount} companies and {DealCount} active deals.",
++            companyIds.Count,
++            processedDeals);
++
++        return new PipelineRiskScoringRunResult(companyIds.Count, processedDeals, snapshots);
++    }
++
++    private async Task<int> RecalculateCompanyRiskScoresAsync(Guid companyId, DateTime asOfUtc, CancellationToken cancellationToken)
++    {
++        var deals = await _dbContext.Deals
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.Status == SalesStatuses.Open)
++            .ToListAsync(cancellationToken);
++        var scoreDate = asOfUtc.Date;
++        var calculatedUtc = _timeProvider.GetUtcNow().UtcDateTime;
++        var processed = 0;
++
++        foreach (var deal in deals)
++        {
++            var score = await ScoreDealAsync(companyId, deal, asOfUtc, cancellationToken);
++            var existing = await _dbContext.DealRiskScoreSnapshots
++                .IgnoreQueryFilters()
++                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.DealId == deal.Id && x.ScoreDateUtc == scoreDate, cancellationToken);
++
++            if (existing is null)
++            {
++                _dbContext.DealRiskScoreSnapshots.Add(new DealRiskScoreSnapshot(
++                    Guid.NewGuid(),
++                    companyId,
++                    deal.Id,
++                    scoreDate,
++                    score.Score,
++                    score.Band,
++                    score.FactorsSummary,
++                    calculatedUtc));
++            }
++            else
++            {
++                existing.Recalculate(score.Score, score.Band, score.FactorsSummary, calculatedUtc);
++            }
++
++            processed++;
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return processed;
++    }
++
++    private async Task<DealRiskScore> ScoreDealAsync(Guid companyId, Deal deal, DateTime asOfUtc, CancellationToken cancellationToken)
++    {
++        var lastActivityUtc = await _dbContext.SalesActivities
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == deal.Id && !x.IsDeleted)
++            .MaxAsync(x => (DateTime?)x.OccurredUtc, cancellationToken);
++        var lastEmail = await _dbContext.SalesEmailLinks
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == deal.Id && !x.IsDeleted)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Select(x => new { x.CreatedUtc, x.DetectedIntent, x.ProductOrServiceInterest, x.Confidence })
++            .FirstOrDefaultAsync(cancellationToken);
++        var recommendations = await _dbContext.SalesAgentRecommendations
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == deal.Id && !x.IsDeleted)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(5)
++            .Select(x => new { x.RiskLevel, x.TriggerCondition, x.CreatedUtc })
++            .ToListAsync(cancellationToken);
++
++        var score = 0.20m;
++        var factors = new List<string>();
++        var quietSinceUtc = lastActivityUtc ?? lastEmail?.CreatedUtc ?? deal.UpdatedUtc;
++        var quietDays = Math.Max(0, (asOfUtc.Date - quietSinceUtc.Date).Days);
++
++        if (quietDays >= 21)
++        {
++            score += 0.35m;
++            factors.Add("no activity for three weeks");
++        }
++        else if (quietDays >= 7)
++        {
++            score += 0.18m;
++            factors.Add("quiet for a week");
++        }
++
++        if (deal.ExpectedCloseUtc.HasValue)
++        {
++            var closeDays = (deal.ExpectedCloseUtc.Value.Date - asOfUtc.Date).Days;
++            if (closeDays < 0)
++            {
++                score += 0.25m;
++                factors.Add("close date has slipped");
++            }
++            else if (closeDays <= 7 && quietDays >= 3)
++            {
++                score += 0.12m;
++                factors.Add("near close date with limited activity");
++            }
++        }
++
++        var stageAgeDays = Math.Max(0, (asOfUtc.Date - deal.UpdatedUtc.Date).Days);
++        if (stageAgeDays >= 30)
++        {
++            score += 0.15m;
++            factors.Add("stage has not changed this month");
++        }
++
++        if (recommendations.Any(x => string.Equals(x.RiskLevel, "high", StringComparison.OrdinalIgnoreCase)))
++        {
++            score += 0.15m;
++            factors.Add("Alex has flagged high-risk follow-up");
++        }
++
++        var signalText = $"{lastEmail?.DetectedIntent} {lastEmail?.ProductOrServiceInterest}".ToLowerInvariant();
++        if (signalText.Contains("price", StringComparison.OrdinalIgnoreCase) ||
++            signalText.Contains("budget", StringComparison.OrdinalIgnoreCase) ||
++            signalText.Contains("expensive", StringComparison.OrdinalIgnoreCase))
++        {
++            score += 0.12m;
++            factors.Add("pricing concern detected");
++        }
++
++        if (lastEmail?.Confidence >= 0.75m &&
++            (signalText.Contains("buy", StringComparison.OrdinalIgnoreCase) ||
++             signalText.Contains("proposal", StringComparison.OrdinalIgnoreCase) ||
++             signalText.Contains("contract", StringComparison.OrdinalIgnoreCase)))
++        {
++            score -= 0.12m;
++            factors.Add("positive buying signal");
++        }
++
++        var bounded = Math.Round(Math.Clamp(score, 0m, 1m), 4, MidpointRounding.AwayFromZero);
++        var band = bounded >= 0.67m ? DealRiskBands.High : bounded >= 0.34m ? DealRiskBands.Medium : DealRiskBands.Low;
++        return new DealRiskScore(bounded, band, factors.Count == 0 ? "No material risk signals found." : string.Join("; ", factors));
++    }
++
++    private async Task<Dictionary<Guid, DealRiskScoreDto>> LoadLatestRiskScoresAsync(Guid companyId, IReadOnlyCollection<Guid> dealIds, CancellationToken cancellationToken)
++    {
++        if (dealIds.Count == 0)
++        {
++            return [];
++        }
++
++        var snapshots = await _dbContext.DealRiskScoreSnapshots
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && dealIds.Contains(x.DealId))
++            .OrderByDescending(x => x.ScoreDateUtc)
++            .ThenByDescending(x => x.CalculatedUtc)
++            .ToListAsync(cancellationToken);
++
++        return snapshots
++            .GroupBy(x => x.DealId)
++            .ToDictionary(x => x.Key, x => Map(x.First()));
++    }
++
++    private static RevenueForecastWindowDto CalculateWindow(int days, DateTime asOfUtc, IReadOnlyList<ForecastDealInput> deals, IReadOnlyDictionary<Guid, DealRiskScoreDto> riskScores)
++    {
++        var windowEnd = asOfUtc.AddDays(days);
++        var included = deals.Where(x => x.ExpectedCloseUtc <= windowEnd).ToList();
++        var gross = included.Sum(x => x.Amount);
++        var expected = included.Sum(x =>
++        {
++            var risk = riskScores.TryGetValue(x.DealId, out var score) ? score.Score : 0.50m;
++            // Forecast is expected deal value: stage likelihood dampened by the latest pipeline risk score.
++            return x.Amount * StageProbability(x.PipelineStageId) * (1m - (risk * 0.50m));
++        });
++
++        return new RevenueForecastWindowDto(days, Math.Round(gross, 2), Math.Round(expected, 2), included.Count);
++    }
++
++    private static decimal StageProbability(Guid stageId) =>
++        stageId == SalesPipelineStage.ProposalStageId ? 0.70m :
++        stageId == SalesPipelineStage.QualifiedStageId ? 0.45m :
++        stageId == SalesPipelineStage.WonStageId ? 1m : 0.20m;
++
++    private static RiskDistributionSummary BuildRiskDistribution(IEnumerable<DealRiskScoreDto> scores) =>
++        new(
++            0,
++            scores.Count(x => x.Score < 0.34m),
++            scores.Count(x => x.Score >= 0.34m && x.Score < 0.67m),
++            scores.Count(x => x.Score >= 0.67m));
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new InvalidOperationException("The requested revenue forecast is outside the active company context.");
++        }
++    }
++
++    private static DateTime NormalizeUtc(DateTime value) =>
++        value.Kind == DateTimeKind.Utc ? value : value.Kind == DateTimeKind.Unspecified ? DateTime.SpecifyKind(value, DateTimeKind.Utc) : value.ToUniversalTime();
++
++    private static RevenueForecastSnapshotDto Map(RevenueForecastSnapshot snapshot) =>
++        new(
++            snapshot.Id,
++            snapshot.CompanyId,
++            snapshot.AsOfUtc,
++            snapshot.CalculatedUtc,
++            snapshot.Currency,
++            [
++                new RevenueForecastWindowDto(30, snapshot.GrossPipeline30Days, snapshot.ExpectedRevenue30Days, snapshot.DealCount30Days),
++                new RevenueForecastWindowDto(60, snapshot.GrossPipeline60Days, snapshot.ExpectedRevenue60Days, snapshot.DealCount60Days),
++                new RevenueForecastWindowDto(90, snapshot.GrossPipeline90Days, snapshot.ExpectedRevenue90Days, snapshot.DealCount90Days)
++            ],
++            new RiskDistributionSummary(snapshot.UnknownRiskDeals, snapshot.LowRiskDeals, snapshot.MediumRiskDeals, snapshot.HighRiskDeals));
++
++    private static DealRiskScoreDto Map(DealRiskScoreSnapshot snapshot) =>
++        new(snapshot.Id, snapshot.CompanyId, snapshot.DealId, snapshot.Score, snapshot.Band, snapshot.CalculatedUtc, snapshot.FactorsSummary);
++
++    private sealed record ForecastDealInput(Guid DealId, decimal Amount, string Currency, Guid PipelineStageId, DateTime ExpectedCloseUtc);
++    private sealed record DealRiskScore(decimal Score, string Band, string FactorsSummary);
++}
++
++public sealed class PipelineRiskScoringBackgroundService : BackgroundService
++{
++    private readonly IServiceScopeFactory _scopeFactory;
++    private readonly IOptions<PipelineRiskScoringWorkerOptions> _options;
++    private readonly TimeProvider _timeProvider;
++    private readonly ILogger<PipelineRiskScoringBackgroundService> _logger;
++
++    public PipelineRiskScoringBackgroundService(
++        IServiceScopeFactory scopeFactory,
++        IOptions<PipelineRiskScoringWorkerOptions> options,
++        TimeProvider timeProvider,
++        ILogger<PipelineRiskScoringBackgroundService> logger)
++    {
++        _scopeFactory = scopeFactory;
++        _options = options;
++        _timeProvider = timeProvider;
++        _logger = logger;
++    }
++
++    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
++    {
++        if (!_options.Value.Enabled)
++        {
++            _logger.LogInformation("Pipeline risk scoring worker is disabled.");
++            return;
++        }
++
++        var interval = TimeSpan.FromHours(Math.Max(1, _options.Value.RunIntervalHours));
++        while (!stoppingToken.IsCancellationRequested)
++        {
++            try
++            {
++                using var scope = _scopeFactory.CreateScope();
++                var runner = scope.ServiceProvider.GetRequiredService<IPipelineRiskScoringJobRunner>();
++                await runner.RunDailyAsync(_timeProvider.GetUtcNow().UtcDateTime, stoppingToken);
++            }
++            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested)
++            {
++                break;
++            }
++            catch (Exception ex)
++            {
++                _logger.LogError(ex, "Pipeline risk scoring worker loop failed.");
++            }
++
++            await Task.Delay(interval, stoppingToken);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index a27276b..5ba62da 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -231,6 +231,10 @@ public static class DependencyInjection
+         services.AddOptions<OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions>()
+             .Bind(configuration.GetSection(OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions.SectionName));
+ 
++        services.AddOptions<PipelineRiskScoringWorkerOptions>()
++            .Bind(configuration.GetSection(PipelineRiskScoringWorkerOptions.SectionName))
++            .PostConfigure(options => options.RunIntervalHours = Math.Max(1, options.RunIntervalHours));
++
+         services.AddOptions<MultiAgentCollaborationOptions>()
+             .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
+             .PostConfigure(options =>
+@@ -320,6 +324,7 @@ public static class DependencyInjection
+         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
+         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
+         services.AddHostedService<FinanceSeedBackgroundService>();
++        services.AddHostedService<PipelineRiskScoringBackgroundService>();
+ 
+         services.AddSingleton<IBackgroundJobFailureClassifier, DefaultBackgroundJobFailureClassifier>();
+         services.AddSingleton<IBackgroundExecutionRetryPolicy, DefaultBackgroundExecutionRetryPolicy>();
+@@ -485,6 +490,8 @@ public static class DependencyInjection
+         services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
+         services.AddScoped<IConversionAnalyticsService, ConversionAnalyticsService>();
++        services.AddScoped<RevenueForecastService>();
++        services.AddScoped<IRevenueForecastService>(provider => provider.GetRequiredService<RevenueForecastService>());
++        services.AddScoped<IPipelineRiskScoringJobRunner>(provider => provider.GetRequiredService<RevenueForecastService>());
+         services.AddScoped<IOutboundAutomationEnforcementService, OutboundAutomationEnforcementService>();
+         services.AddScoped<IOutboundReviewQueueService, OutboundReviewQueueService>();
+         services.AddScoped<IWebsiteLeadCaptureService, WebsiteLeadCaptureService>();
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index 5660cf0..7be33d7 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -15,12 +15,14 @@ public sealed class SalesController : ControllerBase
+     private readonly ICompanyContextAccessor _companyContextAccessor;
+     private readonly ISalesOperationsService _salesOperations;
+     private readonly ICustomerMemoryService _customerMemory;
++    private readonly IRevenueForecastService _revenueForecastService;
+ 
+-    public SalesController(ICompanyContextAccessor companyContextAccessor, ISalesOperationsService salesOperations, ICustomerMemoryService customerMemory)
++    public SalesController(ICompanyContextAccessor companyContextAccessor, ISalesOperationsService salesOperations, ICustomerMemoryService customerMemory, IRevenueForecastService revenueForecastService)
+     {
+         _companyContextAccessor = companyContextAccessor;
+         _salesOperations = salesOperations;
+         _customerMemory = customerMemory;
++        _revenueForecastService = revenueForecastService;
+     }
+ 
+     [HttpGet("dashboard")]
+@@ -111,6 +113,15 @@ public sealed class SalesController : ControllerBase
+     public Task<SalesPipelineResponse> GetPipelineAsync(CancellationToken cancellationToken) =>
+         _salesOperations.GetPipelineAsync(CompanyId(), cancellationToken);
+ 
++    [HttpGet("forecast")]
++    public async Task<ActionResult<RevenueForecastSnapshotDto>> GetRevenueForecastAsync(CancellationToken cancellationToken)
++    {
++        var companyId = CompanyId();
++        var latest = await _revenueForecastService.GetLatestForecastAsync(companyId, cancellationToken);
++        return latest is not null
++            ? Ok(latest)
++            : Ok(await _revenueForecastService.CalculateAndPersistForecastAsync(companyId, DateTime.UtcNow, cancellationToken));
++    }
++
+     [HttpGet("deals/{id:guid}")]
+     public async Task<ActionResult<SalesDealDetailResponse>> GetDealAsync(Guid id, CancellationToken cancellationToken)
+     {
+@@ -127,6 +138,12 @@ public sealed class SalesController : ControllerBase
+     public Task<IReadOnlyList<SalesEmailTimelineResponse>> GetDealEmailsAsync(Guid id, CancellationToken cancellationToken) =>
+         _salesOperations.ListDealEmailsAsync(CompanyId(), id, cancellationToken);
+ 
++    [HttpGet("deals/{id:guid}/risk-score")]
++    public async Task<ActionResult<DealRiskScoreDto>> GetDealRiskScoreAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _revenueForecastService.GetLatestDealRiskScoreAsync(CompanyId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
+     [HttpGet("recommendations")]
+     public Task<IReadOnlyList<SalesRecommendationResponse>> GetRecommendationsAsync(CancellationToken cancellationToken) =>
+         _salesOperations.ListRecommendationsAsync(CompanyId(), cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260506100000_AddRevenueForecastAndDealRiskSnapshots.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260506100000_AddRevenueForecastAndDealRiskSnapshots.cs
+new file mode 100644
+index 0000000..15c6d86
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260506100000_AddRevenueForecastAndDealRiskSnapshots.cs
+@@ -0,0 +1,189 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[DbContext(typeof(VirtualCompanyDbContext))]
++[Migration("20260506100000_AddRevenueForecastAndDealRiskSnapshots")]
++public partial class AddRevenueForecastAndDealRiskSnapshots : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "revenue_forecast_snapshots",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                as_of_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                currency = table.Column<string>(type: "nvarchar(3)", maxLength: 3, nullable: false),
++                gross_pipeline_30_days = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
++                expected_revenue_30_days = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
++                deal_count_30_days = table.Column<int>(type: "int", nullable: false),
++                gross_pipeline_60_days = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
++                expected_revenue_60_days = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
++                deal_count_60_days = table.Column<int>(type: "int", nullable: false),
++                gross_pipeline_90_days = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
++                expected_revenue_90_days = table.Column<decimal>(type: "decimal(18,2)", precision: 18, scale: 2, nullable: false),
++                deal_count_90_days = table.Column<int>(type: "int", nullable: false),
++                unknown_risk_deals = table.Column<int>(type: "int", nullable: false),
++                low_risk_deals = table.Column<int>(type: "int", nullable: false),
++                medium_risk_deals = table.Column<int>(type: "int", nullable: false),
++                high_risk_deals = table.Column<int>(type: "int", nullable: false),
++                calculated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_revenue_forecast_snapshots", x => x.id);
++                table.UniqueConstraint("AK_revenue_forecast_snapshots_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_revenue_forecast_snapshots_deal_counts_nonnegative", "deal_count_30_days >= 0 AND deal_count_60_days >= 0 AND deal_count_90_days >= 0");
++                table.CheckConstraint("CK_revenue_forecast_snapshots_risk_counts_nonnegative", "unknown_risk_deals >= 0 AND low_risk_deals >= 0 AND medium_risk_deals >= 0 AND high_risk_deals >= 0");
++                table.ForeignKey(
++                    name: "FK_revenue_forecast_snapshots_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "deal_risk_score_snapshots",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                score_date = table.Column<DateTime>(type: "datetime2", nullable: false),
++                score = table.Column<decimal>(type: "decimal(6,4)", precision: 6, scale: 4, nullable: false),
++                band = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                factors_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                calculated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_deal_risk_score_snapshots", x => x.id);
++                table.UniqueConstraint("AK_deal_risk_score_snapshots_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_deal_risk_score_snapshots_score_range", "score >= 0 AND score <= 1");
++                table.ForeignKey(
++                    name: "FK_deal_risk_score_snapshots_deals_company_id_deal_id",
++                    columns: x => new { x.company_id, x.deal_id },
++                    principalTable: "deals",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_risk_score_snapshots_company_id_band_score_date",
++            table: "deal_risk_score_snapshots",
++            columns: new[] { "company_id", "band", "score_date" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_risk_score_snapshots_company_id_calculated_at",
++            table: "deal_risk_score_snapshots",
++            columns: new[] { "company_id", "calculated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_risk_score_snapshots_company_id_deal_id",
++            table: "deal_risk_score_snapshots",
++            columns: new[] { "company_id", "deal_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_risk_score_snapshots_company_id_deal_id_score_date",
++            table: "deal_risk_score_snapshots",
++            columns: new[] { "company_id", "deal_id", "score_date" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_revenue_forecast_snapshots_company_id_as_of_at",
++            table: "revenue_forecast_snapshots",
++            columns: new[] { "company_id", "as_of_at" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_revenue_forecast_snapshots_company_id_calculated_at",
++            table: "revenue_forecast_snapshots",
++            columns: new[] { "company_id", "calculated_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "deal_risk_score_snapshots");
++        migrationBuilder.DropTable(name: "revenue_forecast_snapshots");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/RevenueForecastServiceTests.cs b/tests/VirtualCompany.Api.Tests/RevenueForecastServiceTests.cs
+new file mode 100644
+index 0000000..7efbbd1
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/RevenueForecastServiceTests.cs
+@@ -0,0 +1,187 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.DependencyInjection;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class RevenueForecastServiceTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public RevenueForecastServiceTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Forecast_uses_active_deals_in_30_60_90_day_windows()
++    {
++        var seed = await SeedForecastAsync("forecast-windows");
++        using var scope = CreateCompanyScope(seed.CompanyAId);
++        var service = scope.ServiceProvider.GetRequiredService<IRevenueForecastService>();
++
++        var result = await service.CalculateAndPersistForecastAsync(seed.CompanyAId, seed.AsOfUtc, CancellationToken.None);
++
++        Assert.Equal(seed.CompanyAId, result.CompanyId);
++        Assert.Equal(3, result.Windows.Single(x => x.Days == 30).DealCount);
++        Assert.Equal(4, result.Windows.Single(x => x.Days == 60).DealCount);
++        Assert.Equal(5, result.Windows.Single(x => x.Days == 90).DealCount);
++        Assert.DoesNotContain(result.Windows, x => x.ExpectedRevenue <= 0);
++    }
++
++    [Fact]
++    public async Task Higher_risk_reduces_expected_revenue()
++    {
++        var seed = await SeedForecastAsync("forecast-risk");
++        using var scope = CreateCompanyScope(seed.CompanyAId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        dbContext.DealRiskScoreSnapshots.Add(new DealRiskScoreSnapshot(Guid.NewGuid(), seed.CompanyAId, seed.LowRiskDealId, seed.AsOfUtc, 0.10m, DealRiskBands.Low, "low risk", seed.AsOfUtc));
++        dbContext.DealRiskScoreSnapshots.Add(new DealRiskScoreSnapshot(Guid.NewGuid(), seed.CompanyAId, seed.HighRiskDealId, seed.AsOfUtc, 0.90m, DealRiskBands.High, "high risk", seed.AsOfUtc));
++        await dbContext.SaveChangesAsync();
++
++        var service = scope.ServiceProvider.GetRequiredService<IRevenueForecastService>();
++        var result = await service.CalculateAndPersistForecastAsync(seed.CompanyAId, seed.AsOfUtc, CancellationToken.None);
++
++        var thirty = result.Windows.Single(x => x.Days == 30);
++        Assert.True(thirty.ExpectedRevenue < thirty.GrossPipelineValue);
++        Assert.Equal(1, result.RiskDistribution.Low);
++        Assert.Equal(1, result.RiskDistribution.High);
++    }
++
++    [Fact]
++    public async Task Forecast_queries_are_tenant_scoped()
++    {
++        var seed = await SeedForecastAsync("forecast-tenant");
++        using var scope = CreateCompanyScope(seed.CompanyAId);
++        var service = scope.ServiceProvider.GetRequiredService<IRevenueForecastService>();
++
++        await service.CalculateAndPersistForecastAsync(seed.CompanyAId, seed.AsOfUtc, CancellationToken.None);
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() =>
++            service.CalculateAndPersistForecastAsync(seed.CompanyBId, seed.AsOfUtc, CancellationToken.None));
++    }
++
++    [Fact]
++    public async Task Daily_risk_job_updates_active_deals_only_and_is_idempotent_per_day()
++    {
++        var seed = await SeedForecastAsync("risk-job");
++        using var scope = CreateCompanyScope(seed.CompanyAId);
++        var runner = scope.ServiceProvider.GetRequiredService<IPipelineRiskScoringJobRunner>();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        var first = await runner.RunDailyAsync(seed.AsOfUtc, CancellationToken.None);
++        var second = await runner.RunDailyAsync(seed.AsOfUtc, CancellationToken.None);
++
++        Assert.True(first.DealCount >= 5);
++        Assert.True(second.DealCount >= 5);
++        var scores = await dbContext.DealRiskScoreSnapshots
++            .IgnoreQueryFilters()
++            .Where(x => x.CompanyId == seed.CompanyAId)
++            .ToListAsync();
++        Assert.Equal(scores.Select(x => x.DealId).Distinct().Count(), scores.Count);
++        Assert.DoesNotContain(scores, x => x.DealId == seed.ClosedDealId);
++        Assert.All(scores, x => Assert.InRange(x.Score, 0m, 1m));
++    }
++
++    [Fact]
++    public async Task Sales_model_declares_forecast_and_risk_indexes()
++    {
++        using var scope = _factory.Services.CreateScope();
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++
++        AssertIndex<RevenueForecastSnapshot>(dbContext, nameof(RevenueForecastSnapshot.CompanyId), nameof(RevenueForecastSnapshot.AsOfUtc));
++        AssertIndex<RevenueForecastSnapshot>(dbContext, nameof(RevenueForecastSnapshot.CompanyId), nameof(RevenueForecastSnapshot.CalculatedUtc));
++        AssertIndex<DealRiskScoreSnapshot>(dbContext, nameof(DealRiskScoreSnapshot.CompanyId), nameof(DealRiskScoreSnapshot.DealId), nameof(DealRiskScoreSnapshot.ScoreDateUtc));
++        AssertIndex<DealRiskScoreSnapshot>(dbContext, nameof(DealRiskScoreSnapshot.CompanyId), nameof(DealRiskScoreSnapshot.Band), nameof(DealRiskScoreSnapshot.ScoreDateUtc));
++    }
++
++    private IServiceScope CreateCompanyScope(Guid companyId)
++    {
++        var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyId);
++        return scope;
++    }
++
++    private async Task<ForecastSeed> SeedForecastAsync(string suffix)
++    {
++        var seed = new ForecastSeed(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            new DateTime(2026, 5, 4, 0, 0, 0, DateTimeKind.Utc));
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Companies.Add(new Company(seed.CompanyAId, $"Forecast A {suffix}"));
++            dbContext.Companies.Add(new Company(seed.CompanyBId, $"Forecast B {suffix}"));
++            dbContext.Deals.AddRange(
++                new Deal(seed.LowRiskDealId, seed.CompanyAId, $"30 day low {suffix}", SalesPipelineStage.ProposalStageId, 10000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(10), updatedUtc: seed.AsOfUtc.AddDays(-1)),
++                new Deal(seed.HighRiskDealId, seed.CompanyAId, $"30 day high {suffix}", SalesPipelineStage.ProposalStageId, 10000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(15), updatedUtc: seed.AsOfUtc.AddDays(-25)),
++                new Deal(Guid.NewGuid(), seed.CompanyAId, $"30 day new {suffix}", SalesPipelineStage.NewStageId, 5000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(25)),
++                new Deal(Guid.NewGuid(), seed.CompanyAId, $"60 day {suffix}", SalesPipelineStage.QualifiedStageId, 8000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(45)),
++                new Deal(Guid.NewGuid(), seed.CompanyAId, $"90 day {suffix}", SalesPipelineStage.QualifiedStageId, 12000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(75)),
++                new Deal(Guid.NewGuid(), seed.CompanyAId, $"too far {suffix}", SalesPipelineStage.QualifiedStageId, 9000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(120)),
++                new Deal(seed.ClosedDealId, seed.CompanyAId, $"closed {suffix}", SalesPipelineStage.WonStageId, 30000m, "USD", SalesStatuses.Won, expectedCloseUtc: seed.AsOfUtc.AddDays(12)),
++                new Deal(Guid.NewGuid(), seed.CompanyBId, $"other tenant {suffix}", SalesPipelineStage.ProposalStageId, 99000m, "USD", expectedCloseUtc: seed.AsOfUtc.AddDays(10)));
++            dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), seed.CompanyAId, "reply", "Customer replied.", seed.AsOfUtc.AddDays(-1), dealId: seed.LowRiskDealId));
++            return Task.CompletedTask;
++        });
++
++        return seed;
++    }
++
++    private static void AssertIndex<TEntity>(VirtualCompanyDbContext dbContext, params string[] propertyNames)
++    {
++        var entityType = dbContext.Model.FindEntityType(typeof(TEntity));
++        Assert.NotNull(entityType);
++        Assert.Contains(entityType!.GetIndexes(), index =>
++            index.Properties.Select(property => property.Name).SequenceEqual(propertyNames));
++    }
++
++    private sealed record ForecastSeed(
++        Guid CompanyAId,
++        Guid CompanyBId,
++        Guid LowRiskDealId,
++        Guid HighRiskDealId,
++        Guid ClosedDealId,
++        Guid ContactId,
++        Guid CustomerCompanyId,
++        DateTime AsOfUtc);
++}
+END_OF_PATCH

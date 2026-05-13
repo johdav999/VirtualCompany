@@ -71,13 +71,15 @@ public sealed class FinancePaymentsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Payment list", cut.Markup);
-            Assert.Contains("Payment detail", cut.Markup);
+            Assert.Contains("Review incoming and outgoing payments.", cut.Markup);
+            Assert.Contains("Related invoice or bill", cut.Markup);
             Assert.Contains("VENDOR-PAYOUT-12", cut.Markup);
             Assert.Contains("EUR 640.10", cut.Markup);
-            Assert.Contains("pending", cut.Markup, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("ach", cut.Markup, StringComparison.OrdinalIgnoreCase);
-            Assert.Contains("outgoing", cut.Markup, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("Pending", cut.Markup);
+            Assert.Contains("ACH", cut.Markup);
+            Assert.Contains("Outgoing", cut.Markup);
+            Assert.Contains("Laura", cut.Markup);
+            Assert.Contains("Message Laura", cut.Markup);
             Assert.Contains("Agent insights", cut.Markup);
             Assert.Contains("Payment requires reconciliation review.", cut.Markup);
             Assert.Contains("Review the linked payment allocations before release.", cut.Markup);

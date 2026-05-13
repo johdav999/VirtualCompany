@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.4.2",
+  "promptPath": ".ai-design/prompts/TASK-33.4.2.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T18:11:20.740Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T18-11-20-740Z_TASK-33.4.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T18-11-20-740Z_TASK-33.4.2.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T18:13:33.705Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Result<FinanceIntegrationOutboundExecutionResult>> ExecuteAsync(\n         Guid companyId,\n@@ -53,4 +102,24 @@ public sealed class FortnoxOutboundActionsController : ControllerBase\n             return NotFound();\n         }\n     }\n+\n+    private Guid ResolveUserId() =>\n+        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty\n+            ? userId\n+            : throw new UnauthorizedAccessException(\"A resolved user is required.\");\n+\n+    public sealed record FortnoxOutboundActionRequest(\n+        string? CommandType,\n+        string HttpMethod,\n+        string Path,\n+        string TargetCompany,\n+        JsonNode? Payload,\n+        Guid? ConnectionId = null,\n+        Guid? WriteRequestId = null,\n+        string? PayloadSummary = null,\n+        string? PayloadHash = null,\n+        string? ProviderPayloadType = null,\n+        string? CorrelationId = null);\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs\nindex 0d07bcf..b38ed4a 100644\n--- a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs\n@@ -86,6 +86,18 @@ public sealed class FortnoxWriteApprovalTests\n         Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);\n     }\n \n+    [Fact]\n+    public void Approved_execution_context_carries_persisted_write_request_and_retry_policy()\n+    {\n+        var writeRequestId = Guid.NewGuid();\n+\n+        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), \"correlation-1\", Guid.NewGuid(), Guid.NewGuid(), writeRequestId, retryExternalFailures: false);\n+\n+        Assert.Equal(writeRequestId, context.WriteRequestId);\n+        Assert.False(context.RetryExternalFailures);\n+        Assert.NotNull(context.ApprovedApprovalId);\n+    }\n+\n     [Fact]\n     public void Successful_execution_persists_safe_response_summary_and_status_code()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "rationOutboundExecutionResult>> ExecuteAsync(\n         Guid companyId,\n@@ -53,4 +102,24 @@ public sealed class FortnoxOutboundActionsController : ControllerBase\n             return NotFound();\n         }\n     }\n+\n+    private Guid ResolveUserId() =>\n+        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty\n+            ? userId\n+            : throw new UnauthorizedAccessException(\"A resolved user is required.\");\n+\n+    public sealed record FortnoxOutboundActionRequest(\n+        string? CommandType,\n+        string HttpMethod,\n+        string Path,\n+        string TargetCompany,\n+        JsonNode? Payload,\n+        Guid? ConnectionId = null,\n+        Guid? WriteRequestId = null,\n+        string? PayloadSummary = null,\n+        string? PayloadHash = null,\n+        string? ProviderPayloadType = null,\n+        string? CorrelationId = null);\n }\ndiff --git a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs\nindex 0d07bcf..b38ed4a 100644\n--- a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs\n+++ b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs\n@@ -86,6 +86,18 @@ public sealed class FortnoxWriteApprovalTests\n         Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);\n     }\n \n+    [Fact]\n+    public void Approved_execution_context_carries_persisted_write_request_and_retry_policy()\n+    {\n+        var writeRequestId = Guid.NewGuid();\n+\n+        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), \"correlation-1\", Guid.NewGuid(), Guid.NewGuid(), writeRequestId, retryExternalFailures: false);\n+\n+        Assert.Equal(writeRequestId, context.WriteRequestId);\n+        Assert.False(context.RetryExternalFailures);\n+        Assert.NotNull(context.ApprovedApprovalId);\n+    }\n+\n     [Fact]\n     public void Successful_execution_persists_safe_response_summary_and_status_code()\n     {\nEND_OF_PATCH\ntokens used\n99,511\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

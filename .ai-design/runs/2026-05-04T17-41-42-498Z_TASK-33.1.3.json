@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.1.3",
+  "promptPath": ".ai-design/prompts/TASK-33.1.3.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T17:41:42.498Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T17-41-42-498Z_TASK-33.1.3_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T17-41-42-498Z_TASK-33.1.3.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T17:44:28.031Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "Comparison.Ordinal);\n+        Assert.Equal(\"tenant-scoped-data-protection\", persisted.TokenEncryptionKeyId);\n+        Assert.Equal(\"aspnet-data-protection-v1\", persisted.TokenEncryptionAlgorithm);\n+        Assert.Null(snapshot.AccessToken);\n+        Assert.Null(snapshot.RefreshToken);\n+    }\n+\n+    [Fact]\n+    public async Task DisconnectAsync_clears_active_token_material()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var userId = Guid.NewGuid();\n+        await using var dbContext = CreateDbContext();\n+        var store = new FortnoxTokenStore(dbContext, CreateEncryption());\n+        await store.UpsertConnectedAsync(\n+            companyId,\n+            userId,\n+            new FortnoxOAuthTokenResult(\n+                \"plain-access-token\",\n+                \"plain-refresh-token\",\n+                DateTime.UtcNow.AddHours(1),\n+                [\"bookkeeping\"]),\n+            DateTime.UtcNow,\n+            CancellationToken.None);\n+\n+        var disconnected = await store.DisconnectAsync(companyId, DateTime.UtcNow, CancellationToken.None);\n+\n+        var persisted = await dbContext.FortnoxConnections.IgnoreQueryFilters().SingleAsync();\n+        Assert.NotNull(disconnected);\n+        Assert.Equal(\"disconnected\", disconnected!.Status);\n+        Assert.Null(persisted.EncryptedAccessToken);\n+        Assert.Null(persisted.EncryptedRefreshToken);\n+        Assert.Null(persisted.AccessTokenExpiresUtc);\n+        Assert.Null(disconnected.AccessToken);\n+        Assert.Null(disconnected.RefreshToken);\n+    }\n+\n+    private static VirtualCompanyDbContext CreateDbContext()\n+    {\n+        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()\n+            .UseInMemoryDatabase(Guid.NewGuid().ToString(\"N\"))\n+            .Options;\n+        return new VirtualCompanyDbContext(options);\n+    }\n+\n+    private static IFieldEncryptionService CreateEncryption() =>\n+        new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());\n+}\nEND_OF_PATCH\n",
+  "stderrTail": ";\n+        Assert.Equal(\"tenant-scoped-data-protection\", persisted.TokenEncryptionKeyId);\n+        Assert.Equal(\"aspnet-data-protection-v1\", persisted.TokenEncryptionAlgorithm);\n+        Assert.Null(snapshot.AccessToken);\n+        Assert.Null(snapshot.RefreshToken);\n+    }\n+\n+    [Fact]\n+    public async Task DisconnectAsync_clears_active_token_material()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var userId = Guid.NewGuid();\n+        await using var dbContext = CreateDbContext();\n+        var store = new FortnoxTokenStore(dbContext, CreateEncryption());\n+        await store.UpsertConnectedAsync(\n+            companyId,\n+            userId,\n+            new FortnoxOAuthTokenResult(\n+                \"plain-access-token\",\n+                \"plain-refresh-token\",\n+                DateTime.UtcNow.AddHours(1),\n+                [\"bookkeeping\"]),\n+            DateTime.UtcNow,\n+            CancellationToken.None);\n+\n+        var disconnected = await store.DisconnectAsync(companyId, DateTime.UtcNow, CancellationToken.None);\n+\n+        var persisted = await dbContext.FortnoxConnections.IgnoreQueryFilters().SingleAsync();\n+        Assert.NotNull(disconnected);\n+        Assert.Equal(\"disconnected\", disconnected!.Status);\n+        Assert.Null(persisted.EncryptedAccessToken);\n+        Assert.Null(persisted.EncryptedRefreshToken);\n+        Assert.Null(persisted.AccessTokenExpiresUtc);\n+        Assert.Null(disconnected.AccessToken);\n+        Assert.Null(disconnected.RefreshToken);\n+    }\n+\n+    private static VirtualCompanyDbContext CreateDbContext()\n+    {\n+        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()\n+            .UseInMemoryDatabase(Guid.NewGuid().ToString(\"N\"))\n+            .Options;\n+        return new VirtualCompanyDbContext(options);\n+    }\n+\n+    private static IFieldEncryptionService CreateEncryption() =>\n+        new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());\n+}\nEND_OF_PATCH\ntokens used\n94,666\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

@@ -1,0 +1,91 @@
+@using System.Globalization
+
+<aside class="sales-agent-panel" aria-label="Sales agent panel">
+    <div class="sales-agent-panel__identity">
+        <div class="sales-agent-panel__avatar">A</div>
+        <div>
+            <div class="sales-agent-panel__name">Alex</div>
+            <div class="sales-agent-panel__role">Sales Manager</div>
+        </div>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="sales-alert sales-alert--danger">@ErrorMessage</div>
+    }
+    else if (Dashboard is null)
+    {
+        <div class="sales-empty sales-empty--compact">Loading Alex's sales priorities...</div>
+    }
+    else
+    {
+        <section>
+            <h2>Needs attention</h2>
+            <div class="sales-agent-panel__metrics">
+                <a href="@BuildPath("/app/sales/leads")">
+                    <span>@Dashboard.HotLeads</span>
+                    <small>hot leads</small>
+                </a>
+                <a href="@BuildPath("/app/sales/pipeline")">
+                    <span>@Dashboard.DealsNeedingAttention</span>
+                    <small>follow-ups</small>
+                </a>
+                <a href="@BuildPath("/app/sales/campaigns")">
+                    <span>@Dashboard.NewLeads</span>
+                    <small>campaign audience</small>
+                </a>
+            </div>
+        </section>
+
+        <section>
+            <h2>Alex recommends</h2>
+            @if (Dashboard.AgentRecommendations.Count == 0)
+            {
+                <div class="sales-empty sales-empty--compact">No recommendations need review.</div>
+            }
+            else
+            {
+                <div class="sales-agent-panel__list">
+                    @foreach (var recommendation in Dashboard.AgentRecommendations.Take(4))
+                    {
+                        <a class="sales-agent-panel__item" href="@ResolveRecommendationPath(recommendation)">
+                            <strong>@recommendation.Recommendation</strong>
+                            <span>@recommendation.Rationale</span>
+                        </a>
+                    }
+                </div>
+            }
+        </section>
+
+        <section>
+            <h2>Recent sales activity</h2>
+            @if (Dashboard.RecentActivity.Count == 0)
+            {
+                <div class="sales-empty sales-empty--compact">No recent activity yet.</div>
+            }
+            else
+            {
+                <div class="sales-agent-panel__list">
+                    @foreach (var item in Dashboard.RecentActivity.Take(5))
+                    {
+                        <a class="sales-agent-panel__item" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads"))">
+                            <strong>@item.ActivityType</strong>
+                            <span>@item.Summary</span>
+                        </a>
+                    }
+                </div>
+            }
+        </section>
+    }
+</aside>
+
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public SalesDashboardResponse? Dashboard { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+
+    private string BuildPath(string path) => CompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+
+    private string ResolveRecommendationPath(SalesRecommendationResponse recommendation) =>
+        recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
+}

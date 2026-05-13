@@ -1,0 +1,314 @@
+@page "/app/sales/leads"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using System.Globalization
+@using VirtualCompany.Web.Components.Sales
+
+<PageTitle>Sales leads</PageTitle>
+
+<div class="sales-workspace">
+    <main class="sales-main">
+        <header class="sales-page-header">
+            <span>SALES</span>
+            <h1>Leads</h1>
+            <p>Review inbound opportunities and choose what Alex should do next.</p>
+            <nav class="sales-tabs" aria-label="Sales sections">
+                <a href="@BuildPath("/app/sales")">Overview</a>
+                <a class="active" href="@BuildPath("/app/sales/leads")">Leads</a>
+                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
+                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            </nav>
+        </header>
+
+        @if (isLoading)
+        {
+            <section class="sales-card sales-empty">Loading leads...</section>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <section class="sales-card sales-error">
+                <h2>Leads are unavailable</h2>
+                <p>@errorMessage</p>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+            </section>
+        }
+        else
+        {
+            <section class="sales-card sales-filter-card">
+                <label>
+                    <span>Search leads</span>
+                    <input class="sales-input" @bind="searchText" @bind:event="oninput" placeholder="Search by lead, email, company, or action" />
+                </label>
+                <label>
+                    <span>Status</span>
+                    <select class="sales-input" @bind="statusFilter">
+                        <option value="">All statuses</option>
+                        <option value="Open">Open</option>
+                        <option value="Qualified">Qualified</option>
+                        <option value="Converted">Converted</option>
+                        <option value="Rejected">Rejected</option>
+                    </select>
+                </label>
+            </section>
+
+            <section class="sales-card">
+                @if (FilteredLeads.Count == 0)
+                {
+                    <div class="sales-empty">
+                        <h2>No leads match this view</h2>
+                        <p>Clear the filters or wait for Alex to process new sales conversations.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="sales-table-wrap">
+                        <table class="sales-table">
+                            <thead>
+                                <tr>
+                                    <th>Lead</th>
+                                    <th>Source email</th>
+                                    <th>Temperature</th>
+                                    <th>Qualification</th>
+                                    <th>Confidence</th>
+                                    <th>Fit</th>
+                                    <th>Priority</th>
+                                    <th>Suggested next action</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var lead in FilteredLeads)
+                                {
+                                    <tr @key="lead.Id">
+                                        <td>
+                                            <strong>@lead.Title</strong>
+                                            <span>@MoneyOrDash(lead.EstimatedValue, lead.Currency)</span>
+                                        </td>
+                                        <td>@(lead.SourceEmail ?? "No email linked")</td>
+                                        <td><span class="@TemperatureClass(lead.Temperature)">@lead.Temperature</span></td>
+                                        <td><span class="@BadgeClass(lead.QualificationStatus)">@lead.QualificationStatus</span></td>
+                                        <td>@Confidence(lead.ConfidenceScore)</td>
+                                        <td>@(lead.Fit ?? "Not set")</td>
+                                        <td>@(lead.Priority ?? "Not set")</td>
+                                        <td>@lead.SuggestedNextAction</td>
+                                        <td>
+                                            <div class="sales-row-actions">
+                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => QualifyAsync(lead.Id)">Qualify</button>
+                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => RejectAsync(lead.Id)">Reject</button>
+                                                <button class="sales-button sales-button--small sales-button--primary" disabled="@IsBusy(lead.Id)" @onclick="() => BeginConvert(lead)">Convert</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </section>
+
+            @if (leadToConvert is not null)
+            {
+                <section class="sales-card sales-convert-panel">
+                    <div>
+                        <span>CONVERT LEAD</span>
+                        <h2>@leadToConvert.Title</h2>
+                        <p>Create a live deal from this qualified lead.</p>
+                    </div>
+                    <label>
+                        <span>Deal value</span>
+                        <input class="sales-input" type="number" step="0.01" min="1" @bind="convertAmount" />
+                    </label>
+                    <label>
+                        <span>Currency</span>
+                        <input class="sales-input" maxlength="3" @bind="convertCurrency" />
+                    </label>
+                    <label>
+                        <span>Note</span>
+                        <input class="sales-input" @bind="actionNote" placeholder="Optional note for the audit trail" />
+                    </label>
+                    <div class="sales-actions">
+                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToConvert.Id)" @onclick="ConvertAsync">Create deal</button>
+                        <button class="sales-button" @onclick="CancelConvert">Cancel</button>
+                    </div>
+                </section>
+            }
+
+            @if (leadToQualify is not null)
+            {
+                <section class="sales-card sales-convert-panel">
+                    <div>
+                        <span>QUALIFY LEAD</span>
+                        <h2>@leadToQualify.Title</h2>
+                        <p>Capture Alex's qualification so the next action is clear.</p>
+                    </div>
+                    <label><span>Fit</span><input class="sales-input" @bind="qualificationFit" /></label>
+                    <label><span>Temperature</span><select class="sales-input" @bind="qualificationTemperature"><option>Warm</option><option>Hot</option><option>New</option></select></label>
+                    <label><span>Priority</span><select class="sales-input" @bind="qualificationPriority"><option>Medium</option><option>High</option><option>Low</option></select></label>
+                    <label><span>Suggested next action</span><input class="sales-input" @bind="qualificationNextAction" /></label>
+                    <label><span>Note</span><input class="sales-input" @bind="actionNote" placeholder="Optional note for the audit trail" /></label>
+                    <div class="sales-actions">
+                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToQualify.Id)" @onclick="SaveQualificationAsync">Save qualification</button>
+                        <button class="sales-button" @onclick="CancelQualification">Cancel</button>
+                    </div>
+                </section>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(actionMessage))
+            {
+                <div class="sales-toast">@actionMessage</div>
+            }
+        }
+    </main>
+
+    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+</div>
+
+@code {
+    private bool isLoading = true;
+    private string? errorMessage;
+    private string? actionMessage;
+    private string? searchText;
+    private string? statusFilter;
+    private string? actionNote;
+    private Guid? busyId;
+    private List<SalesLeadSummaryResponse> leads = [];
+    private SalesLeadSummaryResponse? leadToConvert;
+    private SalesLeadSummaryResponse? leadToQualify;
+    private string qualificationFit = "Good fit";
+    private string qualificationTemperature = "Warm";
+    private string qualificationPriority = "Medium";
+    private string qualificationNextAction = "Send a personal follow-up";
+    private decimal convertAmount = 1000;
+    private string convertCurrency = "USD";
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private IReadOnlyList<SalesLeadSummaryResponse> FilteredLeads => leads
+        .Where(x => string.IsNullOrWhiteSpace(statusFilter) || string.Equals(x.QualificationStatus, statusFilter, StringComparison.OrdinalIgnoreCase))
+        .Where(x => string.IsNullOrWhiteSpace(searchText) ||
+            $"{x.Title} {x.SourceEmail} {x.Temperature} {x.SuggestedNextAction}".Contains(searchText, StringComparison.OrdinalIgnoreCase))
+        .ToList();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            if (!await ResolveCompanyAsync())
+            {
+                errorMessage = ShellErrorMessage;
+                return;
+            }
+
+            leads = (await SalesApiClient.ListLeadsAsync(ResolvedCompanyId!.Value)).ToList();
+            await RefreshAgentPanelAsync();
+        }
+        catch (SalesApiException ex)
+        {
+            errorMessage = ex.Message;
+            AgentPanelErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void QualifyAsync(Guid leadId) => BeginQualification(leads.Single(x => x.Id == leadId));
+    private async Task RejectAsync(Guid leadId) => await RunLeadActionAsync(leadId, async companyId => await SalesApiClient.RejectLeadAsync(companyId, leadId, actionNote));
+
+    private async Task RunLeadActionAsync(Guid leadId, Func<Guid, Task> action)
+    {
+        if (ResolvedCompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        busyId = leadId;
+        actionMessage = null;
+        try
+        {
+            await action(companyId);
+            actionMessage = "Lead updated.";
+            await LoadAsync();
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            busyId = null;
+        }
+    }
+
+    private void BeginQualification(SalesLeadSummaryResponse lead)
+    {
+        leadToQualify = lead;
+        qualificationFit = lead.Fit ?? "Good fit";
+        qualificationTemperature = lead.Temperature;
+        qualificationPriority = lead.Priority ?? "Medium";
+        qualificationNextAction = lead.SuggestedNextAction;
+    }
+
+    private void CancelQualification() => leadToQualify = null;
+
+    private async Task SaveQualificationAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || leadToQualify is null)
+        {
+            return;
+        }
+
+        busyId = leadToQualify.Id;
+        try
+        {
+            await SalesApiClient.UpdateLeadQualificationAsync(companyId, leadToQualify.Id, new UpdateLeadQualificationRequest(qualificationFit, qualificationTemperature, qualificationPriority, qualificationNextAction, actionNote));
+            actionMessage = "Qualification saved.";
+            leadToQualify = null;
+            await LoadAsync();
+        }
+        catch (SalesApiException ex) { actionMessage = ex.Message; }
+        finally { busyId = null; }
+    }
+
+    private void BeginConvert(SalesLeadSummaryResponse lead)
+    {
+        leadToConvert = lead;
+        convertAmount = lead.EstimatedValue ?? 1000;
+        convertCurrency = string.IsNullOrWhiteSpace(lead.Currency) ? "USD" : lead.Currency;
+    }
+
+    private void CancelConvert() => leadToConvert = null;
+
+    private async Task ConvertAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || leadToConvert is null)
+        {
+            return;
+        }
+
+        busyId = leadToConvert.Id;
+        try
+        {
+            var deal = await SalesApiClient.ConvertLeadAsync(companyId, leadToConvert.Id, new ConvertLeadRequest(convertAmount, convertCurrency, null, actionNote));
+            Navigation.NavigateTo(BuildPath($"/app/sales/deals/{deal.Id:D}"));
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            busyId = null;
+        }
+    }
+
+    private bool IsBusy(Guid id) => busyId == id;
+    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private static string Confidence(decimal? confidence) => confidence.HasValue ? confidence.Value.ToString("P0", CultureInfo.CurrentCulture) : "Not scored";
+    private static string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? string.Create(CultureInfo.CurrentCulture, $"{value.Value:N0} {currency ?? "USD"}") : "No value yet";
+    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+    private static string TemperatureClass(string temperature) => $"sales-badge sales-badge--{temperature.ToLowerInvariant()}";
+}

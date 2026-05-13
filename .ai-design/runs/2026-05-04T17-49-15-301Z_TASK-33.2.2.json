@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.2.2",
+  "promptPath": ".ai-design/prompts/TASK-33.2.2.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T17:49:15.301Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T17-49-15-301Z_TASK-33.2.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T17-49-15-301Z_TASK-33.2.2.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T17:52:08.187Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "y.Api.Tests;\n+\n+public sealed class FortnoxExternalReferenceTests\n+{\n+    [Fact]\n+    public void Refresh_updates_external_version_and_last_synced_timestamp()\n+    {\n+        var createdUtc = new DateTime(2026, 4, 30, 8, 0, 0, DateTimeKind.Utc);\n+        var refreshedUtc = new DateTime(2026, 4, 30, 9, 0, 0, DateTimeKind.Utc);\n+        var reference = new FinanceExternalReference(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            FinanceIntegrationProviderKeys.Fortnox,\n+            \"invoice\",\n+            Guid.NewGuid(),\n+            \"1001\",\n+            \"1001\",\n+            createdUtc,\n+            createdUtc);\n+\n+        reference.Refresh(\"1001\", refreshedUtc, refreshedUtc);\n+\n+        Assert.Equal(refreshedUtc, reference.ExternalUpdatedUtc);\n+        Assert.Equal(refreshedUtc, reference.LastSyncedUtc);\n+        Assert.True(reference.IsCurrent(createdUtc));\n+    }\n+\n+    [Fact]\n+    public void Repoint_repairs_mapping_without_changing_tenant_or_provider_identity()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var connectionId = Guid.NewGuid();\n+        var replacementId = Guid.NewGuid();\n+        var reference = new FinanceExternalReference(Guid.NewGuid(), companyId, connectionId, FinanceIntegrationProviderKeys.Fortnox, \"customer\", Guid.NewGuid(), \"C-1\", \"C-1\", null, DateTime.UtcNow);\n+\n+        reference.RepointToInternalRecord(replacementId, \"C-1\", null, new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc));\n+\n+        Assert.Equal(companyId, reference.CompanyId);\n+        Assert.Equal(connectionId, reference.ConnectionId);\n+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, reference.ProviderKey);\n+        Assert.Equal(\"customer\", reference.EntityType);\n+        Assert.Equal(\"C-1\", reference.ExternalId);\n+        Assert.Equal(replacementId, reference.InternalRecordId);\n+        Assert.Equal(new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc), reference.LastSyncedUtc);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "ic sealed class FortnoxExternalReferenceTests\n+{\n+    [Fact]\n+    public void Refresh_updates_external_version_and_last_synced_timestamp()\n+    {\n+        var createdUtc = new DateTime(2026, 4, 30, 8, 0, 0, DateTimeKind.Utc);\n+        var refreshedUtc = new DateTime(2026, 4, 30, 9, 0, 0, DateTimeKind.Utc);\n+        var reference = new FinanceExternalReference(\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            Guid.NewGuid(),\n+            FinanceIntegrationProviderKeys.Fortnox,\n+            \"invoice\",\n+            Guid.NewGuid(),\n+            \"1001\",\n+            \"1001\",\n+            createdUtc,\n+            createdUtc);\n+\n+        reference.Refresh(\"1001\", refreshedUtc, refreshedUtc);\n+\n+        Assert.Equal(refreshedUtc, reference.ExternalUpdatedUtc);\n+        Assert.Equal(refreshedUtc, reference.LastSyncedUtc);\n+        Assert.True(reference.IsCurrent(createdUtc));\n+    }\n+\n+    [Fact]\n+    public void Repoint_repairs_mapping_without_changing_tenant_or_provider_identity()\n+    {\n+        var companyId = Guid.NewGuid();\n+        var connectionId = Guid.NewGuid();\n+        var replacementId = Guid.NewGuid();\n+        var reference = new FinanceExternalReference(Guid.NewGuid(), companyId, connectionId, FinanceIntegrationProviderKeys.Fortnox, \"customer\", Guid.NewGuid(), \"C-1\", \"C-1\", null, DateTime.UtcNow);\n+\n+        reference.RepointToInternalRecord(replacementId, \"C-1\", null, new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc));\n+\n+        Assert.Equal(companyId, reference.CompanyId);\n+        Assert.Equal(connectionId, reference.ConnectionId);\n+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, reference.ProviderKey);\n+        Assert.Equal(\"customer\", reference.EntityType);\n+        Assert.Equal(\"C-1\", reference.ExternalId);\n+        Assert.Equal(replacementId, reference.InternalRecordId);\n+        Assert.Equal(new DateTime(2026, 5, 1, 12, 0, 0, DateTimeKind.Utc), reference.LastSyncedUtc);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n104,592\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

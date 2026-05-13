@@ -1,0 +1,859 @@
+diff --git a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+index 2d4f7c1..b8d9f6a 100644
+--- a/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
++++ b/src/VirtualCompany.Application/Mailbox/MailboxConnectionContracts.cs
+@@ -173,6 +173,33 @@ public sealed record MailboxThreadFetchRequest(
+     string ThreadId);
+ 
++public sealed record MailboxReplyExecutionRequest(
++    Guid CompanyId,
++    Guid MailboxConnectionId,
++    string Provider,
++    string OriginalMessageId,
++    string? ProviderThreadId,
++    string? InternetMessageId,
++    string ToEmail,
++    string? ToDisplayName,
++    string Subject,
++    string BodyText,
++    string IdempotencyKey);
++
++public sealed record MailboxReplyExecutionResult(
++    string ProviderMessageId,
++    string? ProviderDraftId,
++    string? ProviderThreadId,
++    string Status);
++
++public sealed class MailboxProviderExecutionException : Exception
++{
++    public MailboxProviderExecutionException(string code, string message, bool isRetryable, Exception? innerException = null)
++        : base(message, innerException)
++    {
++        Code = code;
++        IsRetryable = isRetryable;
++    }
++
++    public string Code { get; }
++    public bool IsRetryable { get; }
++}
++
+ public sealed record ManualInboxBillScanJob(
+     Guid CompanyId,
+     Guid UserId,
+@@ -288,6 +315,8 @@ public interface IMailboxProviderClient
+     Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken);
+     Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken);
+     Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken);
++    Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
++    Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
+ }
+ 
+ public sealed record MailboxAuthorizationRequest(
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index 59df24c..08a1bc2 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -150,7 +150,16 @@ public sealed record SalesRecommendationResponse(
+     string ApprovalStatus,
+     string ExecutionStatus,
+     string? FailureSummary,
+-    DateTime CreatedUtc);
++    bool CanRetryExecution,
++    int ExecutionAttemptCount,
++    string? LastExecutionErrorCode,
++    string? Provider,
++    Guid? MailboxConnectionId,
++    string? ProviderThreadId,
++    string? ProviderMessageId,
++    string? ProviderDraftId,
++    Guid? ActivityId,
++    DateTime CreatedUtc);
+ 
+ public sealed record SalesAutomationPolicyResponse(
+     Guid Id,
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index b472ad3..643a61f 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -560,6 +560,7 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+         DedupeKey = SalesEntityText.NormalizeOptional(dedupeKey, nameof(dedupeKey), 256);
+         Confidence = confidence;
+         CreatedUtc = DateTime.UtcNow;
++        ExecutionIdempotencyKey = $"sales-recommendation:{CompanyId:N}:{Id:N}:{ActionType}";
+         UpdatedUtc = CreatedUtc;
+     }
+ 
+@@ -582,6 +583,17 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+     public string? DedupeKey { get; private set; }
+     public decimal? Confidence { get; private set; }
+     public string Status { get; private set; } = null!;
++    public int ExecutionAttemptCount { get; private set; }
++    public string? LastExecutionErrorCode { get; private set; }
++    public string? Provider { get; private set; }
++    public Guid? MailboxConnectionId { get; private set; }
++    public string? ProviderThreadId { get; private set; }
++    public string? ProviderMessageId { get; private set; }
++    public string? ProviderDraftId { get; private set; }
++    public Guid? ActivityId { get; private set; }
++    public string ExecutionIdempotencyKey { get; private set; } = null!;
++    public DateTime? ExecutedUtc { get; private set; }
++    public bool CanRetryExecution => ExecutionStatus == SalesStatuses.RetryableFailed;
++    public bool HasSucceeded => ExecutionStatus == SalesStatuses.Completed || ExecutionStatus == SalesStatuses.DraftCreated;
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public bool IsDeleted { get; private set; }
+@@ -597,34 +609,86 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+-    public void MarkExecuting()
++    public void MarkExecuting(Guid mailboxConnectionId, string provider, string? providerThreadId)
+     {
++        if (ApprovalStatus != SalesStatuses.Approved)
++        {
++            throw new InvalidOperationException("Recommendation must be approved before execution.");
++        }
++
++        if (HasSucceeded)
++        {
++            return;
++        }
++
+         ExecutionStatus = SalesStatuses.InProgress;
++        ExecutionAttemptCount++;
++        MailboxConnectionId = SalesEntityText.NormalizeOptionalId(mailboxConnectionId, nameof(mailboxConnectionId));
++        Provider = SalesEntityText.NormalizeOptional(provider, nameof(provider), 64);
++        ProviderThreadId = SalesEntityText.NormalizeOptional(providerThreadId, nameof(providerThreadId), 256) ?? ProviderThreadId;
++        LastExecutionErrorCode = null;
+         FailureSummary = null;
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+-    public void MarkExecuted()
++    public void MarkDraftCreated(string providerDraftId, string? providerThreadId, Guid activityId)
+     {
+-        ExecutionStatus = SalesStatuses.Completed;
++        if (HasSucceeded)
++        {
++            return;
++        }
++
++        ExecutionStatus = SalesStatuses.DraftCreated;
+         Status = SalesStatuses.Completed;
++        ProviderDraftId = SalesEntityText.NormalizeRequired(providerDraftId, nameof(providerDraftId), 256);
++        ProviderThreadId = SalesEntityText.NormalizeOptional(providerThreadId, nameof(providerThreadId), 256) ?? ProviderThreadId;
++        ActivityId = SalesEntityText.NormalizeOptionalId(activityId, nameof(activityId));
++        ExecutedUtc = DateTime.UtcNow;
++        LastExecutionErrorCode = null;
+         FailureSummary = null;
+-        UpdatedUtc = DateTime.UtcNow;
++        UpdatedUtc = ExecutedUtc.Value;
+     }
+ 
+-    public void MarkFailed(string failureSummary)
++    public void MarkSent(string providerMessageId, string? providerThreadId, Guid activityId)
++    {
++        if (HasSucceeded)
++        {
++            return;
++        }
++
++        ExecutionStatus = SalesStatuses.Completed;
++        Status = SalesStatuses.Completed;
++        ProviderMessageId = SalesEntityText.NormalizeRequired(providerMessageId, nameof(providerMessageId), 256);
++        ProviderThreadId = SalesEntityText.NormalizeOptional(providerThreadId, nameof(providerThreadId), 256) ?? ProviderThreadId;
++        ActivityId = SalesEntityText.NormalizeOptionalId(activityId, nameof(activityId));
++        ExecutedUtc = DateTime.UtcNow;
++        LastExecutionErrorCode = null;
++        FailureSummary = null;
++        UpdatedUtc = ExecutedUtc.Value;
++    }
++
++    public void MarkFailed(string errorCode, string failureSummary, bool retryable)
+     {
+-        ExecutionStatus = SalesStatuses.Failed;
++        ExecutionStatus = retryable ? SalesStatuses.RetryableFailed : SalesStatuses.Failed;
+         Status = SalesStatuses.Failed;
++        LastExecutionErrorCode = SalesEntityText.NormalizeOptional(errorCode, nameof(errorCode), 120);
+         FailureSummary = SalesEntityText.NormalizeOptional(failureSummary, nameof(failureSummary), 1000);
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
+     public void MarkRetrying()
+     {
++        if (!CanRetryExecution)
++        {
++            throw new InvalidOperationException("Only retryable failed recommendation executions can be retried.");
++        }
++
+         ExecutionStatus = SalesStatuses.InProgress;
+         Status = SalesStatuses.Open;
++        LastExecutionErrorCode = null;
+         FailureSummary = null;
+         UpdatedUtc = DateTime.UtcNow;
+     }
++
++    public void EnsureExecutionKey()
++    {
++        ExecutionIdempotencyKey = SalesEntityText.NormalizeOptional(ExecutionIdempotencyKey, nameof(ExecutionIdempotencyKey), 256)
++            ?? $"sales-recommendation:{CompanyId:N}:{Id:N}:{ActionType}";
++    }
+ }
+ 
+ public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
+@@ -770,6 +834,7 @@ public static class SalesStatuses
+     public const string Approved = "approved";
+     public const string Failed = "failed";
+     public const string DraftCreated = "draft_created";
++    public const string RetryableFailed = "retryable_failed";
+ }
+ 
+ internal static class SalesEntityText
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs b/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
+index 8a031fc..7df6f6b 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
+@@ -1,5 +1,7 @@
+ using System.Net.Http.Headers;
++using System.Net;
++using System.Text;
+ using System.Text.Json;
+ using Microsoft.AspNetCore.WebUtilities;
+ using Microsoft.Extensions.Options;
+@@ -73,7 +75,9 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
+         "openid",
+         "email",
+         "profile",
+-        "https://www.googleapis.com/auth/gmail.readonly"
++        "https://www.googleapis.com/auth/gmail.readonly",
++        "https://www.googleapis.com/auth/gmail.compose",
++        "https://www.googleapis.com/auth/gmail.send"
+     ];
+@@ -204,6 +208,44 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
+         return new MailboxInboundThread(request.ThreadId, messages);
+     }
+ 
++    public async Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
++    {
++        var raw = BuildGmailRawReply(request);
++        var payload = JsonSerializer.Serialize(new
++        {
++            message = new
++            {
++                raw,
++                threadId = string.IsNullOrWhiteSpace(request.ProviderThreadId) ? null : request.ProviderThreadId
++            }
++        });
++
++        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{Options.MessagesEndpoint.Replace("/messages", "/drafts", StringComparison.Ordinal)}");
++        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        httpRequest.Headers.TryAddWithoutValidation("X-Idempotency-Key", request.IdempotencyKey);
++        httpRequest.Content = new StringContent(payload, Encoding.UTF8, "application/json");
++        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
++        await EnsureProviderSuccessAsync(response, "gmail_create_draft_reply", cancellationToken);
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        var draftId = json.RootElement.GetProperty("id").GetString()!;
++        var message = json.RootElement.TryGetProperty("message", out var messageElement) ? messageElement : default;
++        var messageId = message.ValueKind == JsonValueKind.Object && message.TryGetProperty("id", out var id) ? id.GetString() ?? draftId : draftId;
++        var threadId = message.ValueKind == JsonValueKind.Object && message.TryGetProperty("threadId", out var thread) ? thread.GetString() : request.ProviderThreadId;
++        return new MailboxReplyExecutionResult(messageId, draftId, threadId, "draft_created");
++    }
++
++    public async Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
++    {
++        var payload = JsonSerializer.Serialize(new { raw = BuildGmailRawReply(request), threadId = request.ProviderThreadId });
++        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{Options.MessagesEndpoint}/send");
++        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        httpRequest.Headers.TryAddWithoutValidation("X-Idempotency-Key", request.IdempotencyKey);
++        httpRequest.Content = new StringContent(payload, Encoding.UTF8, "application/json");
++        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
++        await EnsureProviderSuccessAsync(response, "gmail_send_reply", cancellationToken);
++        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        return new MailboxReplyExecutionResult(json.RootElement.GetProperty("id").GetString()!, null, json.RootElement.TryGetProperty("threadId", out var thread) ? thread.GetString() : request.ProviderThreadId, "sent");
++    }
++
+     private async Task<MailboxMessageSummary> FetchMessageSummaryAsync(string accessToken, string messageId, CancellationToken cancellationToken)
+     {
+         var uri = QueryHelpers.AddQueryString($"{Options.MessagesEndpoint}/{Uri.EscapeDataString(messageId)}", "format", "metadata");
+@@ -354,6 +396,29 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
+         return new MailboxOAuthTokenResult(accessToken, refreshToken, expiresUtc, scopes);
+     }
++
++    private static string BuildGmailRawReply(MailboxReplyExecutionRequest request)
++    {
++        var subject = request.Subject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase) ? request.Subject : $"Re: {request.Subject}";
++        var headers = new List<string>
++        {
++            $"To: {FormatAddress(request.ToEmail, request.ToDisplayName)}",
++            $"Subject: {subject}",
++            "MIME-Version: 1.0",
++            "Content-Type: text/plain; charset=utf-8"
++        };
++
++        if (!string.IsNullOrWhiteSpace(request.InternetMessageId))
++        {
++            headers.Add($"In-Reply-To: {request.InternetMessageId}");
++            headers.Add($"References: {request.InternetMessageId}");
++        }
++
++        var mime = string.Join("\r\n", headers) + "\r\n\r\n" + request.BodyText;
++        return Convert.ToBase64String(Encoding.UTF8.GetBytes(mime)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
++    }
++
++    private static string FormatAddress(string email, string? displayName) =>
++        string.IsNullOrWhiteSpace(displayName) ? email : $"\"{displayName.Replace("\"", string.Empty, StringComparison.Ordinal)}\" <{email}>";
+ }
+@@ -386,7 +451,7 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
+     public MailboxProvider Provider => MailboxProvider.Microsoft365;
+ 
+     // Mail.Read reads message and attachment metadata; User.Read binds the signed-in mailbox; offline_access enables refresh tokens.
+-    public IReadOnlyCollection<string> DefaultScopes { get; } = ["offline_access", "User.Read", "Mail.Read"];
++    public IReadOnlyCollection<string> DefaultScopes { get; } = ["offline_access", "User.Read", "Mail.Read", "Mail.ReadWrite", "Mail.Send"];
+@@ -514,6 +579,58 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
+         return new MailboxInboundThread(request.ThreadId, messages);
+     }
+ 
++    public async Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
++    {
++        using var createReply = new HttpRequestMessage(HttpMethod.Post, $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(request.OriginalMessageId)}/createReply");
++        createReply.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        createReply.Headers.TryAddWithoutValidation("client-request-id", request.IdempotencyKey);
++        createReply.Content = new StringContent("{}", Encoding.UTF8, "application/json");
++        using var createResponse = await _httpClientFactory.CreateClient(ClientName).SendAsync(createReply, cancellationToken);
++        await EnsureProviderSuccessAsync(createResponse, "microsoft365_create_reply", cancellationToken);
++        using var stream = await createResponse.Content.ReadAsStreamAsync(cancellationToken);
++        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
++        var draftId = json.RootElement.GetProperty("id").GetString()!;
++        var conversationId = json.RootElement.TryGetProperty("conversationId", out var conversation) ? conversation.GetString() : request.ProviderThreadId;
++
++        var body = JsonSerializer.Serialize(new
++        {
++            body = new { contentType = "Text", content = request.BodyText },
++            toRecipients = new[]
++            {
++                new { emailAddress = new { address = request.ToEmail, name = request.ToDisplayName } }
++            }
++        });
++
++        using var update = new HttpRequestMessage(HttpMethod.Patch, $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(draftId)}");
++        update.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        update.Headers.TryAddWithoutValidation("client-request-id", request.IdempotencyKey);
++        update.Content = new StringContent(body, Encoding.UTF8, "application/json");
++        using var updateResponse = await _httpClientFactory.CreateClient(ClientName).SendAsync(update, cancellationToken);
++        await EnsureProviderSuccessAsync(updateResponse, "microsoft365_update_reply_draft", cancellationToken);
++        return new MailboxReplyExecutionResult(draftId, draftId, conversationId, "draft_created");
++    }
++
++    public async Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
++    {
++        var payload = JsonSerializer.Serialize(new
++        {
++            comment = request.BodyText,
++            toRecipients = new[]
++            {
++                new { emailAddress = new { address = request.ToEmail, name = request.ToDisplayName } }
++            }
++        });
++
++        using var send = new HttpRequestMessage(HttpMethod.Post, $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(request.OriginalMessageId)}/reply");
++        send.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
++        send.Headers.TryAddWithoutValidation("client-request-id", request.IdempotencyKey);
++        send.Content = new StringContent(payload, Encoding.UTF8, "application/json");
++        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(send, cancellationToken);
++        await EnsureProviderSuccessAsync(response, "microsoft365_send_reply", cancellationToken);
++        return new MailboxReplyExecutionResult(
++            $"{request.OriginalMessageId}:reply:{request.IdempotencyKey}",
++            null,
++            request.ProviderThreadId,
++            "sent");
++    }
++
+     private static MailboxInboundMessage ParseMicrosoftInboundMessage(JsonElement root)
+     {
+         var body = root.TryGetProperty("body", out var bodyElement) && bodyElement.TryGetProperty("content", out var content) ? content.GetString() : null;
+@@ -659,3 +776,22 @@ internal static class MailboxOAuthHttpResponse
+         }
+     }
+ }
++
++internal static class MailboxProviderHttpResponse
++{
++    public static async Task EnsureProviderSuccessAsync(HttpResponseMessage response, string code, CancellationToken cancellationToken)
++    {
++        if (response.IsSuccessStatusCode)
++        {
++            return;
++        }
++
++        var body = await response.Content.ReadAsStringAsync(cancellationToken);
++        var retryable = response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout;
++        var detail = string.IsNullOrWhiteSpace(body)
++            ? $"Email provider returned {(int)response.StatusCode} ({response.ReasonPhrase})."
++            : $"Email provider returned {(int)response.StatusCode} ({response.ReasonPhrase}).";
++        throw new MailboxProviderExecutionException(code, detail, retryable);
++    }
++}
++
++file static Task EnsureProviderSuccessAsync(HttpResponseMessage response, string code, CancellationToken cancellationToken) =>
++    MailboxProviderHttpResponse.EnsureProviderSuccessAsync(response, code, cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index d1b6b39..b9fd9ee 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -242,6 +242,17 @@ internal sealed class SalesAgentRecommendationConfiguration : IEntityTypeConfigur
+         builder.Property(x => x.FailureSummary).HasColumnName("failure_summary").HasMaxLength(1000);
+         builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(256);
+         builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,4)");
++        builder.Property(x => x.ExecutionAttemptCount).HasColumnName("execution_attempt_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.LastExecutionErrorCode).HasColumnName("last_execution_error_code").HasMaxLength(120);
++        builder.Property(x => x.Provider).HasColumnName("provider").HasMaxLength(64);
++        builder.Property(x => x.MailboxConnectionId).HasColumnName("mailbox_connection_id");
++        builder.Property(x => x.ProviderThreadId).HasColumnName("provider_thread_id").HasMaxLength(256);
++        builder.Property(x => x.ProviderMessageId).HasColumnName("provider_message_id").HasMaxLength(256);
++        builder.Property(x => x.ProviderDraftId).HasColumnName("provider_draft_id").HasMaxLength(256);
++        builder.Property(x => x.ActivityId).HasColumnName("activity_id");
++        builder.Property(x => x.ExecutionIdempotencyKey).HasColumnName("execution_idempotency_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.ExecutedUtc).HasColumnName("executed_at");
+         ConfigureAudit(builder);
+ 
+         builder.HasIndex(x => x.CompanyId);
+@@ -251,11 +262,19 @@ internal sealed class SalesAgentRecommendationConfiguration : IEntityTypeConfigur
+         builder.HasIndex(x => new { x.CompanyId, x.ApprovalStatus });
+         builder.HasIndex(x => new { x.CompanyId, x.ExecutionStatus });
+         builder.HasIndex(x => new { x.CompanyId, x.DedupeKey }).IsUnique().HasFilter("[dedupe_key] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.ExecutionIdempotencyKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.Provider, x.MailboxConnectionId, x.ProviderMessageId }).HasFilter("[provider_message_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.Provider, x.MailboxConnectionId, x.ProviderDraftId }).HasFilter("[provider_draft_id] IS NOT NULL");
+         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.Lead).WithMany(x => x.Recommendations).HasForeignKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.LeadId)).HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id)).OnDelete(DeleteBehavior.Restrict);
+         builder.HasOne(x => x.Deal).WithMany(x => x.Recommendations).HasForeignKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.DealId)).HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id)).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne<MailboxConnection>()
++            .WithMany()
++            .HasForeignKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.MailboxConnectionId))
++            .HasPrincipalKey(nameof(MailboxConnection.CompanyId), nameof(MailboxConnection.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne<SalesActivity>().WithMany().HasForeignKey(nameof(SalesAgentRecommendation.CompanyId), nameof(SalesAgentRecommendation.ActivityId)).HasPrincipalKey(nameof(SalesActivity.CompanyId), nameof(SalesActivity.Id)).OnDelete(DeleteBehavior.Restrict);
+     }
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index 812ea2f..af8c11b 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -1,16 +1,23 @@
+ using Microsoft.EntityFrameworkCore;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Mailbox;
+ using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Security;
+ 
+ namespace VirtualCompany.Infrastructure.Sales;
+ 
+ public sealed class SalesOperationsService : ISalesOperationsService
+ {
+     private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IMailboxProviderRegistry _mailboxProviderRegistry;
++    private readonly IFieldEncryptionService _fieldEncryption;
+     private readonly ICompanyOutboxEnqueuer _outbox;
+     private readonly ISalesAutomationPolicyEvaluator _policyEvaluator;
++    private readonly TimeProvider _timeProvider;
+ 
+-    public SalesOperationsService(VirtualCompanyDbContext dbContext, ICompanyOutboxEnqueuer outbox, ISalesAutomationPolicyEvaluator policyEvaluator)
++    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IFieldEncryptionService fieldEncryption, ICompanyOutboxEnqueuer outbox, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
++        _mailboxProviderRegistry = mailboxProviderRegistry;
++        _fieldEncryption = fieldEncryption;
+         _outbox = outbox;
+         _policyEvaluator = policyEvaluator;
++        _timeProvider = timeProvider;
+     }
+@@ -306,30 +313,59 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         EnsureCompany(companyId);
+         EnsureUser(userId);
+-        var recommendation = await _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == recommendationId && !x.IsDeleted, cancellationToken);
++        var recommendation = await MutableRecommendationAsync(companyId, recommendationId, cancellationToken);
+         if (recommendation is null) return null;
+         recommendation.MarkApproved();
+-        recommendation.MarkExecuting();
+-        recommendation.MarkExecuted();
+-        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, recommendation.ActionType == SalesRecommendationActions.SendEmail ? "email" : "draft", recommendation.ActionType == SalesRecommendationActions.SendEmail ? "Follow-up email sent." : "Thread-aware draft reply created.", DateTime.UtcNow, recommendation.LeadId, recommendation.DealId));
+         AddAudit(companyId, userId, "sales.recommendation.approved", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Succeeded, request.Note ?? recommendation.Rationale);
++        await ExecuteRecommendationAsync(companyId, userId, recommendation, request.Note, false, cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapRecommendation(recommendation);
+     }
+ 
+@@ -338,13 +374,85 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         EnsureCompany(companyId);
+         EnsureUser(userId);
+-        var recommendation = await _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == recommendationId && !x.IsDeleted, cancellationToken);
++        var recommendation = await MutableRecommendationAsync(companyId, recommendationId, cancellationToken);
+         if (recommendation is null) return null;
+         recommendation.MarkRetrying();
+-        recommendation.MarkExecuted();
+         AddAudit(companyId, userId, "sales.recommendation.retry_attempted", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Succeeded, "Alex retried the sales recommendation with the original idempotency key.");
++        await ExecuteRecommendationAsync(companyId, userId, recommendation, null, true, cancellationToken);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapRecommendation(recommendation);
+     }
++
++    private async Task ExecuteRecommendationAsync(Guid companyId, Guid userId, SalesAgentRecommendation recommendation, string? note, bool isRetry, CancellationToken cancellationToken)
++    {
++        recommendation.EnsureExecutionKey();
++        if (recommendation.HasSucceeded)
++        {
++            return;
++        }
++
++        if (recommendation.ActionType is not SalesRecommendationActions.CreateDraftReply and not SalesRecommendationActions.SendEmail)
++        {
++            throw Validation(nameof(recommendation.ActionType), "Only email draft and email send recommendations can be executed.");
++        }
++
++        var context = await ResolveReplyContextAsync(companyId, recommendation, cancellationToken);
++        recommendation.MarkExecuting(context.MailboxConnection.Id, context.MailboxConnection.Provider.ToStorageValue(), context.ThreadId);
++        AddAudit(companyId, userId, isRetry ? "sales.recommendation.retry_started" : "sales.recommendation.execution_started", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Started, "Alex started the approved follow-up email action.");
++
++        try
++        {
++            var accessToken = _fieldEncryption.Decrypt(
++                companyId,
++                CompanyMailboxConnectionService.BuildTokenPurpose(context.MailboxConnection.Provider, "access_token"),
++                context.MailboxConnection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
++            var provider = _mailboxProviderRegistry.Resolve(context.MailboxConnection.Provider);
++            var request = new MailboxReplyExecutionRequest(
++                companyId,
++                context.MailboxConnection.Id,
++                context.MailboxConnection.Provider.ToStorageValue(),
++                context.OriginalMessageId,
++                context.ThreadId,
++                context.InternetMessageId,
++                context.RecipientEmail,
++                context.RecipientName,
++                context.Subject,
++                BuildFollowUpBody(recommendation, note),
++                recommendation.ExecutionIdempotencyKey);
++
++            var result = recommendation.ActionType == SalesRecommendationActions.SendEmail
++                ? await provider.SendReplyAsync(accessToken, request, cancellationToken)
++                : await provider.CreateDraftReplyAsync(accessToken, request, cancellationToken);
++
++            var existingActivityId = recommendation.ActivityId ??
++                await FindExecutionActivityIdAsync(companyId, recommendation.Id, cancellationToken);
++            var activityId = existingActivityId ?? Guid.NewGuid();
++            if (existingActivityId is null)
++            {
++                var activityType = recommendation.ActionType == SalesRecommendationActions.SendEmail ? "email_sent" : "email_draft_created";
++                var summary = recommendation.ActionType == SalesRecommendationActions.SendEmail
++                    ? "Alex sent the approved follow-up reply."
++                    : "Alex created the approved draft reply.";
++                _dbContext.SalesActivities.Add(new SalesActivity(activityId, companyId, activityType, summary, _timeProvider.GetUtcNow().UtcDateTime, recommendation.LeadId, recommendation.DealId, context.ContactId, context.CustomerCompanyId));
++            }
++
++            if (recommendation.ActionType == SalesRecommendationActions.SendEmail)
++            {
++                recommendation.MarkSent(result.ProviderMessageId, result.ProviderThreadId, activityId);
++            }
++            else
++            {
++                recommendation.MarkDraftCreated(result.ProviderDraftId ?? result.ProviderMessageId, result.ProviderThreadId, activityId);
++            }
++
++            AddAudit(companyId, userId, isRetry ? "sales.recommendation.retry_succeeded" : "sales.recommendation.execution_succeeded", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Succeeded, "The approved follow-up email action completed.", new Dictionary<string, string?> { ["provider"] = context.MailboxConnection.Provider.ToStorageValue(), ["providerThreadId"] = recommendation.ProviderThreadId, ["providerMessageId"] = recommendation.ProviderMessageId, ["providerDraftId"] = recommendation.ProviderDraftId });
++        }
++        catch (MailboxProviderExecutionException ex)
++        {
++            recommendation.MarkFailed(ex.Code, ex.Message, ex.IsRetryable);
++            AddAudit(companyId, userId, isRetry ? "sales.recommendation.retry_failed" : "sales.recommendation.execution_failed", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Failed, ex.Message, new Dictionary<string, string?> { ["errorCode"] = ex.Code, ["retryable"] = ex.IsRetryable.ToString() });
++        }
++        catch (HttpRequestException ex)
++        {
++            recommendation.MarkFailed("email_provider_transient_failure", "Email provider could not be reached. You can retry this action.", true);
++            AddAudit(companyId, userId, "sales.recommendation.execution_failed", "sales_recommendation", recommendation.Id, AuditEventOutcomes.Failed, ex.Message);
++        }
++    }
+@@ -454,6 +562,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
+             status: request.CreateLead ? SalesStatuses.Linked : SalesStatuses.Ignored,
++            provider: null,
++            externalThreadId: null,
++            internetMessageId: null,
+             detectedIntent: request.Intent,
+             productOrServiceInterest: request.ProductOrServiceInterest,
+             confidence: request.Confidence,
+@@ -485,6 +596,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private Task<Deal?> MutableDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken) =>
+         _dbContext.Deals.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == dealId && !x.IsDeleted, cancellationToken);
+ 
++    private Task<SalesAgentRecommendation?> MutableRecommendationAsync(Guid companyId, Guid recommendationId, CancellationToken cancellationToken) =>
++        _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == recommendationId && !x.IsDeleted, cancellationToken);
++
+@@ -515,7 +629,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private static SalesRecommendationResponse MapRecommendation(SalesAgentRecommendation recommendation) =>
+-        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, StatusLabel(recommendation.Category), StatusLabel(recommendation.TriggerCondition), StatusLabel(recommendation.ActionType), StatusLabel(recommendation.RiskLevel), recommendation.RequiresApproval, StatusLabel(recommendation.ApprovalStatus), StatusLabel(recommendation.ExecutionStatus), recommendation.FailureSummary, recommendation.CreatedUtc);
++        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, StatusLabel(recommendation.Category), StatusLabel(recommendation.TriggerCondition), StatusLabel(recommendation.ActionType), StatusLabel(recommendation.RiskLevel), recommendation.RequiresApproval, StatusLabel(recommendation.ApprovalStatus), StatusLabel(recommendation.ExecutionStatus), recommendation.FailureSummary, recommendation.CanRetryExecution, recommendation.ExecutionAttemptCount, recommendation.LastExecutionErrorCode, recommendation.Provider, recommendation.MailboxConnectionId, recommendation.ProviderThreadId, recommendation.ProviderMessageId, recommendation.ProviderDraftId, recommendation.ActivityId, recommendation.CreatedUtc);
+@@ -624,6 +738,89 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private static void EnsureId(Guid id, string field) => SalesValidationException.ThrowIfEmpty(id, field);
++
++    private async Task<SalesReplyContext> ResolveReplyContextAsync(Guid companyId, SalesAgentRecommendation recommendation, CancellationToken cancellationToken)
++    {
++        var linkQuery = _dbContext.SalesEmailLinks.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.MailboxConnectionId != null && x.Provider != null);
++
++        if (recommendation.LeadId.HasValue)
++        {
++            linkQuery = linkQuery.Where(x => x.LeadId == recommendation.LeadId.Value);
++        }
++        else if (recommendation.DealId.HasValue)
++        {
++            linkQuery = linkQuery.Where(x => x.DealId == recommendation.DealId.Value);
++        }
++        else
++        {
++            throw Validation(nameof(recommendation.Id), "Recommendation is not linked to a sales conversation.");
++        }
++
++        var link = await linkQuery.OrderByDescending(x => x.CreatedUtc).FirstOrDefaultAsync(cancellationToken)
++            ?? throw Validation(nameof(recommendation.Id), "No originating email thread was found for this recommendation.");
++        var connection = await _dbContext.MailboxConnections.IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == link.MailboxConnectionId && x.Status == MailboxConnectionStatus.Active, cancellationToken)
++            ?? throw Validation(nameof(recommendation.Id), "The mailbox used for this recommendation is not connected.");
++        var contact = link.ContactId.HasValue
++            ? await _dbContext.Contacts.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == link.ContactId && !x.IsDeleted, cancellationToken)
++            : null;
++        if (contact is null && recommendation.LeadId.HasValue)
++        {
++            contact = await _dbContext.Leads.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.Id == recommendation.LeadId && !x.IsDeleted)
++                .Select(x => x.PrimaryContact)
++                .SingleOrDefaultAsync(cancellationToken);
++        }
++
++        if (contact is null && recommendation.DealId.HasValue)
++        {
++            contact = await _dbContext.Deals.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.Id == recommendation.DealId && !x.IsDeleted)
++                .Select(x => x.PrimaryContact)
++                .SingleOrDefaultAsync(cancellationToken);
++        }
++
++        if (contact is null || string.IsNullOrWhiteSpace(contact.Email))
++        {
++            throw Validation(nameof(recommendation.Id), "No recipient email was found for this recommendation.");
++        }
++
++        var originalMessageId = link.LinkKind == SalesEmailLinkKinds.Message
++            ? link.ExternalMessageId
++            : await _dbContext.SalesEmailLinks.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.Provider == link.Provider && x.MailboxConnectionId == link.MailboxConnectionId && x.ExternalThreadId == link.ExternalThreadId && x.LinkKind == SalesEmailLinkKinds.Message && !x.IsDeleted)
++                .OrderByDescending(x => x.CreatedUtc)
++                .Select(x => x.ExternalMessageId)
++                .FirstOrDefaultAsync(cancellationToken) ?? link.ExternalMessageId;
++
++        return new SalesReplyContext(
++            connection,
++            originalMessageId,
++            link.ExternalThreadId,
++            link.InternetMessageId,
++            contact.Email,
++            contact.FullName,
++            ResolveReplySubject(recommendation),
++            contact.Id,
++            link.CustomerCompanyId);
++    }
++
++    private async Task<Guid?> FindExecutionActivityIdAsync(Guid companyId, Guid recommendationId, CancellationToken cancellationToken) =>
++        await _dbContext.SalesActivities.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.Summary.Contains(recommendationId.ToString("D")))
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync(cancellationToken);
++
++    private static string ResolveReplySubject(SalesAgentRecommendation recommendation) =>
++        recommendation.DealId.HasValue ? "Following up on our conversation" : "Following up";
++
++    private static string BuildFollowUpBody(SalesAgentRecommendation recommendation, string? note)
++    {
++        var baseBody = recommendation.ActionType == SalesRecommendationActions.SendEmail
++            ? "Thanks for the conversation. I wanted to follow up on the next step."
++            : "Thanks for the conversation. Here is a draft follow-up for review.";
++        return string.IsNullOrWhiteSpace(note) ? baseBody : $"{baseBody}\n\n{note.Trim()}";
++    }
++
++    private sealed record SalesReplyContext(MailboxConnection MailboxConnection, string OriginalMessageId, string? ThreadId, string? InternetMessageId, string RecipientEmail, string? RecipientName, string Subject, Guid? ContactId, Guid? CustomerCompanyId);
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504233000_AddSalesRecommendationEmailExecutionState.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504233000_AddSalesRecommendationEmailExecutionState.cs
+new file mode 100644
+index 0000000..c1a6b13
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504233000_AddSalesRecommendationEmailExecutionState.cs
+@@ -0,0 +1,117 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddSalesRecommendationEmailExecutionState : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<int>(
++            name: "execution_attempt_count",
++            table: "sales_agent_recommendations",
++            type: "int",
++            nullable: false,
++            defaultValue: 0);
++
++        migrationBuilder.AddColumn<string>(
++            name: "last_execution_error_code",
++            table: "sales_agent_recommendations",
++            type: "nvarchar(120)",
++            maxLength: 120,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "provider",
++            table: "sales_agent_recommendations",
++            type: "nvarchar(64)",
++            maxLength: 64,
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "mailbox_connection_id",
++            table: "sales_agent_recommendations",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "provider_thread_id",
++            table: "sales_agent_recommendations",
++            type: "nvarchar(256)",
++            maxLength: 256,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "provider_message_id",
++            table: "sales_agent_recommendations",
++            type: "nvarchar(256)",
++            maxLength: 256,
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "provider_draft_id",
++            table: "sales_agent_recommendations",
++            type: "nvarchar(256)",
++            maxLength: 256,
++            nullable: true);
++
++        migrationBuilder.AddColumn<Guid>(
++            name: "activity_id",
++            table: "sales_agent_recommendations",
++            type: "uniqueidentifier",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "execution_idempotency_key",
++            table: "sales_agent_recommendations",
++            type: "nvarchar(256)",
++            maxLength: 256,
++            nullable: false,
++            defaultValue: "");
++
++        migrationBuilder.AddColumn<DateTime>(
++            name: "executed_at",
++            table: "sales_agent_recommendations",
++            type: "datetime2",
++            nullable: true);
++
++        migrationBuilder.Sql("""
++            UPDATE sales_agent_recommendations
++            SET execution_idempotency_key = CONCAT('sales-recommendation:', LOWER(CONVERT(nvarchar(32), company_id, 2)), ':', LOWER(CONVERT(nvarchar(32), id, 2)), ':', action_type)
++            WHERE execution_idempotency_key = '';
++            """);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_agent_recommendations_company_id_execution_idempotency_key",
++            table: "sales_agent_recommendations",
++            columns: new[] { "company_id", "execution_idempotency_key" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_agent_recommendations_company_id_provider_mailbox_connection_id_provider_message_id",
++            table: "sales_agent_recommendations",
++            columns: new[] { "company_id", "provider", "mailbox_connection_id", "provider_message_id" },
++            filter: "[provider_message_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_agent_recommendations_company_id_provider_mailbox_connection_id_provider_draft_id",
++            table: "sales_agent_recommendations",
++            columns: new[] { "company_id", "provider", "mailbox_connection_id", "provider_draft_id" },
++            filter: "[provider_draft_id] IS NOT NULL");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex(name: "IX_sales_agent_recommendations_company_id_execution_idempotency_key", table: "sales_agent_recommendations");
++        migrationBuilder.DropIndex(name: "IX_sales_agent_recommendations_company_id_provider_mailbox_connection_id_provider_message_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropIndex(name: "IX_sales_agent_recommendations_company_id_provider_mailbox_connection_id_provider_draft_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "execution_attempt_count", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "last_execution_error_code", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "provider", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "mailbox_connection_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "provider_thread_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "provider_message_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "provider_draft_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "activity_id", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "execution_idempotency_key", table: "sales_agent_recommendations");
++        migrationBuilder.DropColumn(name: "executed_at", table: "sales_agent_recommendations");
++    }
++}
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index 23b9200..b883f3a 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -134,14 +134,34 @@ public sealed class SalesController : ControllerBase
+     [HttpPost("recommendations/{id:guid}/approve")]
+     public async Task<ActionResult<SalesRecommendationResponse>> ApproveRecommendationAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+     {
+-        var result = await _salesOperations.ApproveRecommendationAsync(CompanyId(), UserId(), id, request, cancellationToken);
+-        return result is null ? NotFound() : Ok(result);
++        try
++        {
++            var result = await _salesOperations.ApproveRecommendationAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Recommendation could not be executed.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
+     }
+ 
+     [HttpPost("recommendations/{id:guid}/retry")]
+     public async Task<ActionResult<SalesRecommendationResponse>> RetryRecommendationAsync(Guid id, CancellationToken cancellationToken)
+     {
+-        var result = await _salesOperations.RetryRecommendationAsync(CompanyId(), UserId(), id, cancellationToken);
+-        return result is null ? NotFound() : Ok(result);
++        try
++        {
++            var result = await _salesOperations.RetryRecommendationAsync(CompanyId(), UserId(), id, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Recommendation retry could not be started.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
+     }
+END_OF_PATCH

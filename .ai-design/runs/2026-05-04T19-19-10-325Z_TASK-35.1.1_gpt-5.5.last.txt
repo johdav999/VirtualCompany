@@ -1,0 +1,657 @@
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -702,6 +702,227 @@ public sealed class SalesAgentRecommendation : ICompanyOwnedEntity
+     }
+ }
+ 
++public sealed class SalesSequence : ICompanyOwnedEntity
++{
++    private SalesSequence()
++    {
++    }
++
++    public SalesSequence(
++        Guid id,
++        Guid companyId,
++        string name,
++        string status = SalesStatuses.Draft,
++        string? description = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 160);
++        Description = SalesEntityText.NormalizeOptional(description, nameof(description), 1000);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public string Name { get; private set; } = null!;
++    public string? Description { get; private set; }
++    public string Status { get; private set; } = null!;
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public ICollection<SalesSequenceStep> Steps { get; } = new List<SalesSequenceStep>();
++    public ICollection<SalesCampaign> Campaigns { get; } = new List<SalesCampaign>();
++
++    public void Update(string name, string? description, string status)
++    {
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 160);
++        Description = SalesEntityText.NormalizeOptional(description, nameof(description), 1000);
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
++
++public sealed class SalesSequenceStep : ICompanyOwnedEntity
++{
++    private SalesSequenceStep()
++    {
++    }
++
++    public SalesSequenceStep(
++        Guid id,
++        Guid companyId,
++        Guid salesSequenceId,
++        int stepOrder,
++        int delayDays,
++        string templateContent,
++        string channel = "email",
++        string? templateSubject = null,
++        bool aiPersonalizationEnabled = true,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        if (stepOrder <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(stepOrder), "Step order must be positive.");
++        }
++
++        if (delayDays < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(delayDays), "Delay days cannot be negative.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SalesSequenceId = salesSequenceId == Guid.Empty ? throw new ArgumentException("SalesSequenceId is required.", nameof(salesSequenceId)) : salesSequenceId;
++        StepOrder = stepOrder;
++        DelayDays = delayDays;
++        Channel = SalesEntityText.NormalizeRequired(channel, nameof(channel), 32).ToLowerInvariant();
++        TemplateSubject = SalesEntityText.NormalizeOptional(templateSubject, nameof(templateSubject), 300);
++        TemplateContent = SalesEntityText.NormalizeRequired(templateContent, nameof(templateContent), 8000);
++        AiPersonalizationEnabled = aiPersonalizationEnabled;
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SalesSequenceId { get; private set; }
++    public int StepOrder { get; private set; }
++    public int DelayDays { get; private set; }
++    public string Channel { get; private set; } = null!;
++    public string? TemplateSubject { get; private set; }
++    public string TemplateContent { get; private set; } = null!;
++    public bool AiPersonalizationEnabled { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public SalesSequence SalesSequence { get; private set; } = null!;
++
++    public void Update(int stepOrder, int delayDays, string channel, string? templateSubject, string templateContent, bool aiPersonalizationEnabled)
++    {
++        if (stepOrder <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(stepOrder), "Step order must be positive.");
++        }
++
++        if (delayDays < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(delayDays), "Delay days cannot be negative.");
++        }
++
++        StepOrder = stepOrder;
++        DelayDays = delayDays;
++        Channel = SalesEntityText.NormalizeRequired(channel, nameof(channel), 32).ToLowerInvariant();
++        TemplateSubject = SalesEntityText.NormalizeOptional(templateSubject, nameof(templateSubject), 300);
++        TemplateContent = SalesEntityText.NormalizeRequired(templateContent, nameof(templateContent), 8000);
++        AiPersonalizationEnabled = aiPersonalizationEnabled;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
++
++public sealed class SalesCampaign : ICompanyOwnedEntity
++{
++    private SalesCampaign()
++    {
++    }
++
++    public SalesCampaign(
++        Guid id,
++        Guid companyId,
++        Guid salesSequenceId,
++        string name,
++        string audienceType,
++        string status = SalesStatuses.Draft,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SalesSequenceId = salesSequenceId == Guid.Empty ? throw new ArgumentException("SalesSequenceId is required.", nameof(salesSequenceId)) : salesSequenceId;
++        Name = SalesEntityText.NormalizeRequired(name, nameof(name), 160);
++        AudienceType = SalesEntityText.NormalizeRequired(audienceType, nameof(audienceType), 64).ToLowerInvariant();
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SalesSequenceId { get; private set; }
++    public string Name { get; private set; } = null!;
++    public string AudienceType { get; private set; } = null!;
++    public string Status { get; private set; } = null!;
++    public DateTime? LaunchRequestedUtc { get; private set; }
++    public DateTime? StartedUtc { get; private set; }
++    public DateTime? PausedUtc { get; private set; }
++    public DateTime? StoppedUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public SalesSequence SalesSequence { get; private set; } = null!;
++    public ICollection<SalesCampaignContact> Contacts { get; } = new List<SalesCampaignContact>();
++}
++
++public sealed class SalesCampaignContact : ICompanyOwnedEntity
++{
++    private SalesCampaignContact()
++    {
++    }
++
++    public SalesCampaignContact(
++        Guid id,
++        Guid companyId,
++        Guid salesCampaignId,
++        Guid contactId,
++        string status = SalesStatuses.Pending,
++        int? currentStepOrder = null,
++        DateTime? enrolledUtc = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        if (currentStepOrder.HasValue && currentStepOrder.Value <= 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(currentStepOrder), "Current step order must be positive when set.");
++        }
++
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SalesCampaignId = salesCampaignId == Guid.Empty ? throw new ArgumentException("SalesCampaignId is required.", nameof(salesCampaignId)) : salesCampaignId;
++        ContactId = contactId == Guid.Empty ? throw new ArgumentException("ContactId is required.", nameof(contactId)) : contactId;
++        Status = SalesEntityText.NormalizeRequired(status, nameof(status), 32).ToLowerInvariant();
++        CurrentStepOrder = currentStepOrder;
++        EnrolledUtc = SalesEntityText.NormalizeUtc(enrolledUtc ?? DateTime.UtcNow, nameof(enrolledUtc));
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? EnrolledUtc, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SalesCampaignId { get; private set; }
++    public Guid ContactId { get; private set; }
++    public string Status { get; private set; } = null!;
++    public int? CurrentStepOrder { get; private set; }
++    public DateTime EnrolledUtc { get; private set; }
++    public DateTime? LastScheduledUtc { get; private set; }
++    public DateTime? LastSentUtc { get; private set; }
++    public DateTime? CancelledUtc { get; private set; }
++    public DateTime? CompletedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public SalesCampaign SalesCampaign { get; private set; } = null!;
++    public Contact Contact { get; private set; } = null!;
++}
++
+ public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
+ {
+     private SalesAutomationPolicy() { }
+@@ -1017,6 +1238,10 @@ public static class SalesStatuses
+     public const string DraftCreated = "draft_created";
+     public const string RetryableFailed = "retryable_failed";
+     public const string Cancelled = "cancelled";
++    public const string Draft = "draft";
++    public const string Paused = "paused";
++    public const string Stopped = "stopped";
++    public const string Bounced = "bounced";
+ }
+ 
+ internal static class SalesEntityText
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -145,6 +145,10 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
+     public DbSet<SalesActionApproval> SalesActionApprovals => Set<SalesActionApproval>();
+     public DbSet<SalesEmailLink> SalesEmailLinks => Set<SalesEmailLink>();
++    public DbSet<SalesSequence> SalesSequences => Set<SalesSequence>();
++    public DbSet<SalesSequenceStep> SalesSequenceSteps => Set<SalesSequenceStep>();
++    public DbSet<SalesCampaign> SalesCampaigns => Set<SalesCampaign>();
++    public DbSet<SalesCampaignContact> SalesCampaignContacts => Set<SalesCampaignContact>();
+     public DbSet<SalesAutomationPolicy> SalesAutomationPolicies => Set<SalesAutomationPolicy>();
+     public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
+ 
+@@ -345,6 +349,10 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is SalesPipelineStage ||
+                 entry.Entity is SalesAgentRecommendation ||
+                 entry.Entity is SalesAutomationPolicy ||
++                entry.Entity is SalesSequence ||
++                entry.Entity is SalesSequenceStep ||
++                entry.Entity is SalesCampaign ||
++                entry.Entity is SalesCampaignContact ||
+                 entry.Entity is SalesActionApproval ||
+                 entry.Entity is SalesFinanceHandoff ||
+                 entry.Entity is SalesEmailLink)
+@@ -692,6 +700,18 @@ public sealed class VirtualCompanyDbContext : DbContext
+         modelBuilder.Entity<SalesAgentRecommendation>()
+             .HasQueryFilter(recommendation =>
+                 CurrentCompanyId.HasValue && recommendation.CompanyId == CurrentCompanyId.Value && !recommendation.IsDeleted);
++        modelBuilder.Entity<SalesSequence>()
++            .HasQueryFilter(sequence =>
++                CurrentCompanyId.HasValue && sequence.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesSequenceStep>()
++            .HasQueryFilter(step =>
++                CurrentCompanyId.HasValue && step.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesCampaign>()
++            .HasQueryFilter(campaign =>
++                CurrentCompanyId.HasValue && campaign.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesCampaignContact>()
++            .HasQueryFilter(contact =>
++                CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<SalesActionApproval>()
+             .HasQueryFilter(approval =>
+                 CurrentCompanyId.HasValue && approval.CompanyId == CurrentCompanyId.Value && !approval.IsDeleted);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -400,6 +400,179 @@ internal sealed class SalesEmailLinkConfiguration : IEntityTypeConfiguration<Sal
+     }
+ }
+ 
++internal sealed class SalesSequenceConfiguration : IEntityTypeConfiguration<SalesSequence>
++{
++    public void Configure(EntityTypeBuilder<SalesSequence> builder)
++    {
++        builder.ToTable("sales_sequences");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(1000);
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(SalesStatuses.Draft).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.Name });
++        builder.HasIndex(x => new { x.CompanyId, x.UpdatedUtc });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class SalesSequenceStepConfiguration : IEntityTypeConfiguration<SalesSequenceStep>
++{
++    public void Configure(EntityTypeBuilder<SalesSequenceStep> builder)
++    {
++        builder.ToTable("sales_sequence_steps");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SalesSequenceId).HasColumnName("sales_sequence_id").IsRequired();
++        builder.Property(x => x.StepOrder).HasColumnName("step_order").IsRequired();
++        builder.Property(x => x.DelayDays).HasColumnName("delay_days").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.Channel).HasColumnName("channel").HasMaxLength(32).HasDefaultValue("email").IsRequired();
++        builder.Property(x => x.TemplateSubject).HasColumnName("template_subject").HasMaxLength(300);
++        builder.Property(x => x.TemplateContent).HasColumnName("template_content").HasMaxLength(8000).IsRequired();
++        builder.Property(x => x.AiPersonalizationEnabled).HasColumnName("ai_personalization_enabled").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_sales_sequence_steps_step_order_positive", "step_order > 0");
++            t.HasCheckConstraint("CK_sales_sequence_steps_delay_days_non_negative", "delay_days >= 0");
++        });
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.SalesSequenceId, x.StepOrder }).IsUnique();
++        builder.HasOne(x => x.SalesSequence)
++            .WithMany(x => x.Steps)
++            .HasForeignKey(nameof(SalesSequenceStep.CompanyId), nameof(SalesSequenceStep.SalesSequenceId))
++            .HasPrincipalKey(nameof(SalesSequence.CompanyId), nameof(SalesSequence.Id))
++            .OnDelete(DeleteBehavior.Cascade);
++    }
++}
++
++internal sealed class SalesCampaignConfiguration : IEntityTypeConfiguration<SalesCampaign>
++{
++    public void Configure(EntityTypeBuilder<SalesCampaign> builder)
++    {
++        builder.ToTable("sales_campaigns");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SalesSequenceId).HasColumnName("sales_sequence_id").IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160).IsRequired();
++        builder.Property(x => x.AudienceType).HasColumnName("audience_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(SalesStatuses.Draft).IsRequired();
++        builder.Property(x => x.LaunchRequestedUtc).HasColumnName("launch_requested_at");
++        builder.Property(x => x.StartedUtc).HasColumnName("started_at");
++        builder.Property(x => x.PausedUtc).HasColumnName("paused_at");
++        builder.Property(x => x.StoppedUtc).HasColumnName("stopped_at");
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SalesSequenceId });
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.SalesSequence)
++            .WithMany(x => x.Campaigns)
++            .HasForeignKey(nameof(SalesCampaign.CompanyId), nameof(SalesCampaign.SalesSequenceId))
++            .HasPrincipalKey(nameof(SalesSequence.CompanyId), nameof(SalesSequence.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class SalesCampaignContactConfiguration : IEntityTypeConfiguration<SalesCampaignContact>
++{
++    public void Configure(EntityTypeBuilder<SalesCampaignContact> builder)
++    {
++        builder.ToTable("sales_campaign_contacts");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SalesCampaignId).HasColumnName("sales_campaign_id").IsRequired();
++        builder.Property(x => x.ContactId).HasColumnName("contact_id").IsRequired();
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(SalesStatuses.Pending).IsRequired();
++        builder.Property(x => x.CurrentStepOrder).HasColumnName("current_step_order");
++        builder.Property(x => x.EnrolledUtc).HasColumnName("enrolled_at").IsRequired();
++        builder.Property(x => x.LastScheduledUtc).HasColumnName("last_scheduled_at");
++        builder.Property(x => x.LastSentUtc).HasColumnName("last_sent_at");
++        builder.Property(x => x.CancelledUtc).HasColumnName("cancelled_at");
++        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_sales_campaign_contacts_current_step_order_positive", "current_step_order IS NULL OR current_step_order > 0");
++        });
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => new { x.CompanyId, x.SalesCampaignId, x.ContactId }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.SalesCampaignId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.Status });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.LastScheduledUtc });
++        builder.HasOne(x => x.SalesCampaign)
++            .WithMany(x => x.Contacts)
++            .HasForeignKey(nameof(SalesCampaignContact.CompanyId), nameof(SalesCampaignContact.SalesCampaignId))
++            .HasPrincipalKey(nameof(SalesCampaign.CompanyId), nameof(SalesCampaign.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Contact)
++            .WithMany()
++            .HasForeignKey(nameof(SalesCampaignContact.CompanyId), nameof(SalesCampaignContact.ContactId))
++            .HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
+ internal sealed class SalesAutomationPolicyConfiguration : IEntityTypeConfiguration<SalesAutomationPolicy>
+ {
+     public void Configure(EntityTypeBuilder<SalesAutomationPolicy> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505020000_AddSalesOutboundCampaignPersistenceFoundation.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505020000_AddSalesOutboundCampaignPersistenceFoundation.cs
+new file mode 100644
+index 0000000..0000000
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505020000_AddSalesOutboundCampaignPersistenceFoundation.cs
+@@ -0,0 +1,275 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddSalesOutboundCampaignPersistenceFoundation : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "sales_sequences",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                name = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: false),
++                description = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "draft"),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_sequences", x => x.id);
++                table.UniqueConstraint("AK_sales_sequences_company_id_id", x => new { x.company_id, x.id });
++                table.ForeignKey(
++                    name: "FK_sales_sequences_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "sales_campaigns",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                sales_sequence_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                name = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: false),
++                audience_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "draft"),
++                launch_requested_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                started_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                paused_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                stopped_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                completed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_campaigns", x => x.id);
++                table.UniqueConstraint("AK_sales_campaigns_company_id_id", x => new { x.company_id, x.id });
++                table.ForeignKey(
++                    name: "FK_sales_campaigns_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "Id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_sales_campaigns_sales_sequences_company_id_sales_sequence_id",
++                    columns: x => new { x.company_id, x.sales_sequence_id },
++                    principalTable: "sales_sequences",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "sales_sequence_steps",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                sales_sequence_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                step_order = table.Column<int>(type: "int", nullable: false),
++                delay_days = table.Column<int>(type: "int", nullable: false, defaultValue: 0),
++                channel = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "email"),
++                template_subject = table.Column<string>(type: "nvarchar(300)", maxLength: 300, nullable: true),
++                template_content = table.Column<string>(type: "nvarchar(8000)", maxLength: 8000, nullable: false),
++                ai_personalization_enabled = table.Column<bool>(type: "bit", nullable: false, defaultValue: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_sequence_steps", x => x.id);
++                table.UniqueConstraint("AK_sales_sequence_steps_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_sales_sequence_steps_delay_days_non_negative", "delay_days >= 0");
++                table.CheckConstraint("CK_sales_sequence_steps_step_order_positive", "step_order > 0");
++                table.ForeignKey(
++                    name: "FK_sales_sequence_steps_sales_sequences_company_id_sales_sequence_id",
++                    columns: x => new { x.company_id, x.sales_sequence_id },
++                    principalTable: "sales_sequences",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Cascade);
++            });
++
++        migrationBuilder.CreateTable(
++            name: "sales_campaign_contacts",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                sales_campaign_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "pending"),
++                current_step_order = table.Column<int>(type: "int", nullable: true),
++                enrolled_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                last_scheduled_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                last_sent_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                cancelled_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                completed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_sales_campaign_contacts", x => x.id);
++                table.UniqueConstraint("AK_sales_campaign_contacts_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_sales_campaign_contacts_current_step_order_positive", "current_step_order IS NULL OR current_step_order > 0");
++                table.ForeignKey(
++                    name: "FK_sales_campaign_contacts_contacts_company_id_contact_id",
++                    columns: x => new { x.company_id, x.contact_id },
++                    principalTable: "contacts",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++                table.ForeignKey(
++                    name: "FK_sales_campaign_contacts_sales_campaigns_company_id_sales_campaign_id",
++                    columns: x => new { x.company_id, x.sales_campaign_id },
++                    principalTable: "sales_campaigns",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequences_company_id",
++            table: "sales_sequences",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequences_company_id_status_name",
++            table: "sales_sequences",
++            columns: new[] { "company_id", "status", "name" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequences_company_id_updated_at",
++            table: "sales_sequences",
++            columns: new[] { "company_id", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaigns_company_id",
++            table: "sales_campaigns",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaigns_company_id_sales_sequence_id",
++            table: "sales_campaigns",
++            columns: new[] { "company_id", "sales_sequence_id" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaigns_company_id_status_created_at",
++            table: "sales_campaigns",
++            columns: new[] { "company_id", "status", "created_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaigns_company_id_status_updated_at",
++            table: "sales_campaigns",
++            columns: new[] { "company_id", "status", "updated_at" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequence_steps_company_id",
++            table: "sales_sequence_steps",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_sequence_steps_company_id_sales_sequence_id_step_order",
++            table: "sales_sequence_steps",
++            columns: new[] { "company_id", "sales_sequence_id", "step_order" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaign_contacts_company_id",
++            table: "sales_campaign_contacts",
++            column: "company_id");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaign_contacts_company_id_contact_id_status",
++            table: "sales_campaign_contacts",
++            columns: new[] { "company_id", "contact_id", "status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaign_contacts_company_id_sales_campaign_id_contact_id",
++            table: "sales_campaign_contacts",
++            columns: new[] { "company_id", "sales_campaign_id", "contact_id" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaign_contacts_company_id_sales_campaign_id_status",
++            table: "sales_campaign_contacts",
++            columns: new[] { "company_id", "sales_campaign_id", "status" });
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_campaign_contacts_company_id_status_last_scheduled_at",
++            table: "sales_campaign_contacts",
++            columns: new[] { "company_id", "status", "last_scheduled_at" });
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable("sales_campaign_contacts");
++        migrationBuilder.DropTable("sales_sequence_steps");
++        migrationBuilder.DropTable("sales_campaigns");
++        migrationBuilder.DropTable("sales_sequences");
++    }
++}
+END_OF_PATCH

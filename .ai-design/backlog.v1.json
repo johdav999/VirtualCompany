@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "generatedAt": "2026-04-30T13:46:00.227Z",
+  "generatedAt": "2026-05-04T18:10:18.308Z",
   "epics": [
     {
       "id": "EP-1",
@@ -7045,6 +7045,694 @@
             "Approved write operations create audit events containing approver, entity type, direction, summary, and payload hash, while excluding tokens and sensitive Fortnox secrets.",
             "UI clearly indicates records sourced from Fortnox and prevents simulation actions from overwriting Fortnox-linked records.",
             "Unit tests cover OAuth URL generation, token refresh, encryption, DTO mapping, duplicate prevention, sync cursor updates, and approval creation; opt-in integration tests can call the real Fortnox API only when explicit environment variables are provided."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-33",
+      "title": "EPIC-33 — Fortnox Finance API Integration Hardening, Approval Controls, and Production Sync Operations",
+      "stories": [
+        {
+          "id": "US-33.1",
+          "title": "Implement Fortnox connection persistence, OAuth security, and token lifecycle management",
+          "tasks": [
+            {
+              "id": "TASK-33.1.1",
+              "title": "Add EF Core migrations and entities for Fortnox connections, OAuth states, sync history, and external references",
+              "tags": [
+                "backend",
+                "database",
+                "efcore",
+                "fortnox"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.1.2",
+              "title": "Implement Fortnox OAuth start, callback, reconnect, refresh, and disconnect application services with tenant-bound state validation",
+              "tags": [
+                "backend",
+                "oauth",
+                "security",
+                "fortnox"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.1.3",
+              "title": "Integrate encrypted token storage and log redaction for Fortnox credentials and callback payloads",
+              "tags": [
+                "security",
+                "encryption",
+                "backend",
+                "observability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.1.4",
+              "title": "Expose tenant-scoped connection status and lifecycle endpoints with permission checks for company admins",
+              "tags": [
+                "api",
+                "auth",
+                "multitenant",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "EF Core migrations create tenant-scoped tables for Fortnox connections, encrypted token storage metadata, OAuth state records, sync history, and external record references.",
+            "OAuth start endpoint creates a single-use state value bound to tenant and user, persists it with expiry, and redirects to the real Fortnox authorization URL.",
+            "OAuth callback rejects missing, expired, reused, or tenant-mismatched state values with HTTP 400 and no tokens persisted.",
+            "Access tokens and refresh tokens are encrypted before database persistence and are never returned by API responses or logs.",
+            "API calls automatically refresh expired access tokens using the stored refresh token and persist the new encrypted token set.",
+            "Failed token refresh marks the connection status as needing attention, stores a safe error summary, and prevents token values from appearing in logs or responses.",
+            "Disconnect removes active Fortnox connection state for the tenant and records an audit event."
+          ]
+        },
+        {
+          "id": "US-33.2",
+          "title": "Build production Fortnox sync pipeline and normalized finance data mapping",
+          "tasks": [
+            {
+              "id": "TASK-33.2.1",
+              "title": "Implement Fortnox API client for finance endpoints with resilient HTTP handling, pagination, and token refresh integration",
+              "tags": [
+                "backend",
+                "api-client",
+                "fortnox",
+                "http"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.2.2",
+              "title": "Build normalized mappers from Fortnox entities into internal finance records and external reference upsert logic",
+              "tags": [
+                "mapping",
+                "backend",
+                "finance",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.2.3",
+              "title": "Create idempotent sync orchestration service with retry policy, audit logging, and sync history persistence",
+              "tags": [
+                "sync",
+                "backend",
+                "reliability",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.2.4",
+              "title": "Add tenant-scoped sync now and sync history endpoints with plain-English error translation",
+              "tags": [
+                "api",
+                "multitenant",
+                "ux",
+                "backend"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Manual sync endpoint fetches real Fortnox data for company information, customers, suppliers, invoices, supplier invoices, vouchers, accounts, articles, and projects using production API endpoints.",
+            "Sync writes normalized records into existing internal finance contracts without storing provider payloads as the system of record.",
+            "Each imported record persists a tenant-scoped external reference containing provider name, external id, internal id, entity type, and last synced timestamp.",
+            "Repeated sync of unchanged Fortnox records does not create duplicate internal records and updates existing mappings idempotently.",
+            "Sync failures retry according to configured policy and record final status, entity counts, duration, and safe error summary in sync history.",
+            "Fortnox API errors are translated into plain-English user-facing messages while preserving detailed internal diagnostics in server logs.",
+            "All sync reads and writes are permission-checked and isolated to the active tenant."
+          ]
+        },
+        {
+          "id": "US-33.3",
+          "title": "Deliver Finance settings UI for Fortnox connection management and sync review",
+          "tasks": [
+            {
+              "id": "TASK-33.3.1",
+              "title": "Implement Finance settings Fortnox section with connection status, action controls, and sync history components",
+              "tags": [
+                "frontend",
+                "ui",
+                "fortnox",
+                "finance-settings"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.3.2",
+              "title": "Wire Fortnox settings UI to backend endpoints with optimistic state refresh and error handling",
+              "tags": [
+                "frontend",
+                "api",
+                "state",
+                "ux"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.3.3",
+              "title": "Apply permission-aware rendering and plain-English messaging aligned to docs/design.md",
+              "tags": [
+                "frontend",
+                "auth",
+                "copy",
+                "design"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Finance settings page follows docs/design.md and displays current Fortnox connection status, last successful sync time, last failure summary, and available actions.",
+            "A company admin can start connect, reconnect, manual sync, and disconnect actions from the UI using backend APIs only.",
+            "Sync history list shows timestamp, status, imported entity counts, duration, and safe plain-English error summaries.",
+            "UI never displays internal enum names, raw provider payloads, or token values.",
+            "Users without required tenant permissions cannot see or execute Fortnox connection actions.",
+            "UI handles loading, success, and failure states for connect, sync, reconnect, and disconnect actions without requiring page refresh."
+          ]
+        },
+        {
+          "id": "US-33.4",
+          "title": "Implement approval-backed outbound Fortnox write operations and end-to-end test coverage",
+          "tasks": [
+            {
+              "id": "TASK-33.4.1",
+              "title": "Implement Fortnox outbound action executor behind approval workflow integration and audit persistence",
+              "tags": [
+                "backend",
+                "approvals",
+                "fortnox",
+                "audit"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.4.2",
+              "title": "Add approval-gated API endpoints and domain handlers for sensitive Fortnox write operations",
+              "tags": [
+                "api",
+                "backend",
+                "workflow",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.4.3",
+              "title": "Create backend integration tests for OAuth, token refresh, sync idempotency, tenant isolation, and outbound approval enforcement",
+              "tags": [
+                "tests",
+                "backend",
+                "integration",
+                "qa"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-33.4.4",
+              "title": "Create frontend tests for Finance settings connection states, sync history rendering, permissions, and error messaging",
+              "tags": [
+                "tests",
+                "frontend",
+                "ui",
+                "qa"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Sensitive outbound Fortnox write requests are persisted as approval-required actions and are not sent to Fortnox before approval completion.",
+            "Approved actions execute through backend services using the tenant's active Fortnox connection and record request, response status, and audit trail.",
+            "Rejected or expired approvals never send a request to Fortnox and remain visible in audit history.",
+            "Outbound execution failures store safe user-facing summaries and retry only when explicitly supported by the action type.",
+            "Automated tests cover OAuth success and failure paths, token refresh success and failure, sync idempotency, tenant isolation, API failure translation, approval gating, and Finance settings UI behavior.",
+            "Integration tests verify all new schema changes apply successfully through EF Core migrations."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-34",
+      "title": "EPIC-34 — Production-Ready Sales Agent MVP with Email Lead Ingestion, Deal Workflow, and Finance Handoff",
+      "stories": [
+        {
+          "id": "US-34.1",
+          "title": "Implement sales domain model, EF Core migration, and tenant-safe persistence",
+          "tasks": [
+            {
+              "id": "TASK-34.1.1",
+              "title": "Add sales entities, relationships, and EF Core configurations for all scoped sales aggregates /goal production-ready tenant-safe persistence model",
+              "tags": [
+                "backend",
+                "efcore",
+                "sales",
+                "domain"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.1.2",
+              "title": "Create and validate EF Core migration with indexes, timestamps, foreign keys, and pipeline stage seed data /goal deployable database upgrade for sales MVP",
+              "tags": [
+                "migration",
+                "database",
+                "efcore",
+                "schema"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.1.3",
+              "title": "Implement tenant-scoped repositories and query filters with integration tests for isolation and soft delete behavior /goal prevent cross-tenant data leakage",
+              "tags": [
+                "backend",
+                "security",
+                "testing",
+                "multitenant"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "EF Core migration creates tables for Leads, Deals, Contacts, CustomerCompanies, SalesActivities, SalesPipelineStages, SalesAgentRecommendations, SalesActionApprovals, and SalesEmailLinks with foreign keys matching the defined relationships.",
+            "All sales tables include tenant-scoped CompanyId, CreatedAt, UpdatedAt, and soft delete columns where global soft delete is enabled.",
+            "Indexes exist on CompanyId, Status, and CreatedAt for all applicable sales tables and are verifiable in the generated migration and target database.",
+            "System pipeline stages New, Qualified, Proposal, Won, and Lost are seeded exactly once per tenant-safe system configuration without seeding leads, deals, or customers.",
+            "Repository and query paths enforce tenant isolation such that cross-tenant reads and writes are rejected by automated tests."
+          ]
+        },
+        {
+          "id": "US-34.2",
+          "title": "Build real sales email ingestion, intent detection, and lead/deal linking workflows",
+          "tasks": [
+            {
+              "id": "TASK-34.2.1",
+              "title": "Implement ISalesEmailIngestionService using existing mailbox OAuth connections and thread-aware message retrieval /goal real inbound email processing for sales detection",
+              "tags": [
+                "backend",
+                "email",
+                "oauth",
+                "integration"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.2.2",
+              "title": "Implement structured LLM-based sales intent extraction with validation, confidence scoring, fail-safe fallback, and ignore classification /goal reliable production lead detection",
+              "tags": [
+                "ai",
+                "llm",
+                "validation",
+                "sales"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.2.3",
+              "title": "Persist lead creation, duplicate prevention, email-thread linking, activity logging, and workflow event publication with idempotency guards /goal deterministic lead ingestion workflow",
+              "tags": [
+                "workflow",
+                "events",
+                "backend",
+                "idempotency"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "POST /api/sales/email/process-message and POST /api/sales/email/process-thread process real mailbox messages from existing Gmail and Microsoft connections without mock providers.",
+            "Inbound emails matching supported sales signals create or update a lead with extracted sender, contact name, company name when available, intent, product or service interest, urgency, and confidence score.",
+            "Newsletters, receipts, invoices, and support tickets without upsell intent are ignored and recorded with an auditable ignore reason.",
+            "Reprocessing the same message or thread is idempotent and does not create duplicate leads for the same email thread.",
+            "Successful lead detection creates a SalesActivity, emits sales.email.received and sales.lead.detected events, and stores SalesEmailLinks to the source message and thread."
+          ]
+        },
+        {
+          "id": "US-34.3",
+          "title": "Deliver sales APIs and real UI for dashboard, leads, pipeline, deal detail, and agent panel",
+          "tasks": [
+            {
+              "id": "TASK-34.3.1",
+              "title": "Implement tenant-authorized sales REST API endpoints with request validation, audit logging, and integration tests /goal complete backend contract for sales operations",
+              "tags": [
+                "api",
+                "backend",
+                "auth",
+                "testing"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.3.2",
+              "title": "Build production UI for sales dashboard and leads page wired to live APIs and design.md styling standards /goal usable sales review and triage experience",
+              "tags": [
+                "frontend",
+                "ui",
+                "sales",
+                "dashboard"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.3.3",
+              "title": "Build production UI for pipeline kanban, deal detail page, and persistent sales agent panel with real-time action flows /goal end-to-end deal management interface",
+              "tags": [
+                "frontend",
+                "pipeline",
+                "deal",
+                "ux"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Sales API endpoints for dashboard, leads, deals, activities, recommendations, qualification, conversion, stage changes, won/lost actions, and email processing are implemented with authorization, validation, audit logging, and structured error responses.",
+            "Route /app/sales displays pipeline value, new leads, hot leads, deals needing attention, forecast revenue, agent recommendations, and recent activity using live tenant data.",
+            "Route /app/sales/leads displays lead list with source email, temperature, qualification status, confidence score, suggested next action, and supports qualify, reject, and convert to deal actions.",
+            "Route /app/sales/pipeline renders a production-styled kanban board backed by real pipeline stages and persists drag-and-drop stage changes to the API.",
+            "Route /app/sales/deals/{id} shows deal summary, contact and company info, email timeline, activity timeline, agent analysis, suggested reply, follow-up actions, and won/lost plus finance document actions.",
+            "A persistent sales agent panel shows active alerts, leads needing review, deals needing follow-up, and links to recommendation execution screens."
+          ]
+        },
+        {
+          "id": "US-34.4",
+          "title": "Implement recommendation approvals, follow-up execution, email sending, and finance handoff on won deals",
+          "tasks": [
+            {
+              "id": "TASK-34.4.1",
+              "title": "Implement qualification, recommendation, approval, and automation policy services with workflow triggers and audit persistence /goal controlled agent decision and execution flow",
+              "tags": [
+                "backend",
+                "workflow",
+                "approvals",
+                "policy"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.4.2",
+              "title": "Implement thread-aware draft and send email execution with provider integration, activity logging, and retry-safe error handling /goal real follow-up delivery from approved recommendations",
+              "tags": [
+                "email",
+                "backend",
+                "integration",
+                "reliability"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-34.4.3",
+              "title": "Implement won-deal finance handoff to Fortnox-backed finance APIs with approval gating, linkage storage, and UI status exposure /goal real quote or invoice draft creation from sales outcomes",
+              "tags": [
+                "finance",
+                "fortnox",
+                "integration",
+                "sales"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Lead qualification stores fit, temperature, priority, and suggested next action, emits sales.lead.qualified, and is available in API and UI.",
+            "Follow-up workflow detects no-response, unanswered proposal, hot lead idle, and stuck deal conditions and creates recommendations with approval requirements based on automation policy.",
+            "Approving a draft or send recommendation creates a thread-aware draft reply or sends an email through the real provider, logs the activity, and records approval and execution state.",
+            "Automation policy supports manual only, draft only, and auto-send low-risk follow-ups, while finance document creation always requires approval in MVP.",
+            "Marking a deal as won triggers finance handoff through the real finance integration, creates a draft quote or invoice linked to the deal, and emits sales.deal.won without auto-creating finance documents before approval.",
+            "Failures in email send or finance handoff are logged, surfaced in UI, and retriable without duplicating activities or finance documents."
+          ]
+        }
+      ]
+    },
+    {
+      "id": "EPIC-35",
+      "title": "EPIC-35 — Autonomous Revenue Engine with Outbound Campaigns, Customer Memory, and Revenue Intelligence",
+      "stories": [
+        {
+          "id": "US-35.1",
+          "title": "Implement outbound campaigns and multi-step sales sequence execution",
+          "tasks": [
+            {
+              "id": "TASK-35.1.1",
+              "title": "Add SalesCampaigns, SalesSequences, SalesSequenceSteps, and SalesCampaignContacts schema with tenant-scoped migrations and indexes",
+              "tags": [
+                "backend",
+                "db",
+                "migration",
+                "sales"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.1.2",
+              "title": "Implement IOutboundCampaignService and ISequenceExecutionService with scheduling, stop conditions, rate limiting, and email provider integration",
+              "tags": [
+                "backend",
+                "email",
+                "automation",
+                "api"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.1.3",
+              "title": "Build /app/sales/campaigns and sequence builder UI with campaign creation, audience selection, preview, and start-pause-stop controls",
+              "tags": [
+                "frontend",
+                "ui",
+                "sales",
+                "workflow"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.1.4",
+              "title": "Wire inbound reply tracking and deal creation events to cancel pending sequence steps for affected contacts",
+              "tags": [
+                "backend",
+                "events",
+                "email",
+                "deals"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A tenant user can create a campaign at /app/sales/campaigns by selecting an audience from existing contacts, past customers, or imported contact lists and save it with validation errors shown for missing required fields.",
+            "A tenant user can define a sequence with at least 4 steps including delay in days, template content, and AI personalization enabled/disabled per step.",
+            "Launching a campaign creates scheduled sequence executions for all eligible contacts and enforces tenant policy constraints including outbound enabled flag, max emails per day, and approval requirements.",
+            "When a reply is received for a contact in an active sequence, all pending future steps for that contact are automatically cancelled within 1 minute.",
+            "When a deal is created for a contact in an active sequence, all pending future steps for that contact are automatically cancelled within 1 minute.",
+            "Email sends use the real email integration with rate limiting, bounce handling, delivery status persistence, and reply correlation to the originating campaign and sequence step.",
+            "A tenant user can start, pause, and stop a campaign from the campaigns page, and state changes are reflected in the database and UI without requiring page reload."
+          ]
+        },
+        {
+          "id": "US-35.2",
+          "title": "Deliver customer memory profiles and personalized message generation",
+          "tasks": [
+            {
+              "id": "TASK-35.2.1",
+              "title": "Add CustomerMemoryProfiles persistence model and migration with links to contacts, deals, conversations, and engagement attributes",
+              "tags": [
+                "backend",
+                "db",
+                "migration",
+                "memory"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.2.2",
+              "title": "Implement ICustomerMemoryService to aggregate conversation history, deal history, preferences, and offer exposure into reusable contact context",
+              "tags": [
+                "backend",
+                "service",
+                "ai",
+                "memory"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.2.3",
+              "title": "Extend customer profile UI to render relationship memory, AI summary, engagement score, and historical interactions",
+              "tags": [
+                "frontend",
+                "ui",
+                "crm",
+                "sales"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.2.4",
+              "title": "Integrate memory-aware personalization into campaign draft generation and duplicate-offer suppression checks",
+              "tags": [
+                "backend",
+                "ai",
+                "personalization",
+                "rules"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "Each contact has a persistent customer memory profile storing past conversations, previous deals, preferences, price sensitivity indicators, industry signals, and last outreach summary.",
+            "The customer profile view displays interaction history, AI summary, relationship memory, past deals, and engagement score using production data for the selected tenant contact.",
+            "Message generation for campaign steps includes customer memory context and produces a stored personalized draft per contact before send.",
+            "The system prevents sending the same offer to the same contact within a configurable lookback window by checking prior campaign and deal history before scheduling a step.",
+            "When a user edits a generated message draft, the final sent content and the original generated variant are both persisted for audit and analytics."
+          ]
+        },
+        {
+          "id": "US-35.3",
+          "title": "Add automation policies, approval controls, and website lead capture entrypoints",
+          "tasks": [
+            {
+              "id": "TASK-35.3.1",
+              "title": "Implement tenant-scoped outbound automation policy model, API endpoints, and enforcement middleware for campaign execution",
+              "tags": [
+                "backend",
+                "policy",
+                "api",
+                "security"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.3.2",
+              "title": "Build agent control panel and review queue UI for approval workflows, outbound limits, and automation settings",
+              "tags": [
+                "frontend",
+                "ui",
+                "approvals",
+                "control"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.3.3",
+              "title": "Create website lead capture API with tenant resolution, validation, deduplication, lead creation, and sequence enrollment",
+              "tags": [
+                "backend",
+                "api",
+                "integration",
+                "leads"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "A tenant admin can configure outbound enabled flag, max emails per day, and approval requirements for first contact, pricing discussion, follow-ups, and re-engagement from the agent control panel.",
+            "Sequence execution blocks sends that violate tenant policy and records a policy decision reason visible in the review queue and audit trail.",
+            "Messages requiring approval appear in a review queue where an authorized user can approve, reject, or edit before send, and the final decision is persisted with actor and timestamp.",
+            "A production website form API endpoint accepts validated lead submissions, creates a lead under the correct tenant, and enrolls the lead into a configured follow-up sequence within 1 minute.",
+            "Duplicate website submissions for the same email within the configured deduplication window update the existing lead instead of creating a second active lead."
+          ]
+        },
+        {
+          "id": "US-35.4",
+          "title": "Implement conversion analytics, deal intelligence signals, and revenue forecasting dashboard",
+          "tasks": [
+            {
+              "id": "TASK-35.4.1",
+              "title": "Implement IConversionAnalyticsService and SalesMessagePerformance persistence for campaign, step, contact, and variant metrics",
+              "tags": [
+                "backend",
+                "analytics",
+                "db",
+                "sales"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.4.2",
+              "title": "Implement IRevenueForecastService with 30-60-90 day forecast calculations and daily pipeline risk scoring jobs",
+              "tags": [
+                "backend",
+                "forecasting",
+                "jobs",
+                "deals"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.4.3",
+              "title": "Add reply signal detection pipeline for ghosting, price resistance, and buying intent with persisted confidence and explanation fields",
+              "tags": [
+                "backend",
+                "ai",
+                "signals",
+                "nlp"
+              ],
+              "status": "todo",
+              "promptPath": null
+            },
+            {
+              "id": "TASK-35.4.4",
+              "title": "Extend sales dashboard with revenue insights, campaign performance, funnel metrics, forecast widgets, and risk distribution visualizations",
+              "tags": [
+                "frontend",
+                "dashboard",
+                "analytics",
+                "ui"
+              ],
+              "status": "todo",
+              "promptPath": null
+            }
+          ],
+          "acceptanceCriteria": [
+            "The system records per-message and per-sequence performance metrics including sent, delivered, bounced, opened when available, replied, deal created, and conversion timestamps.",
+            "The revenue insights dashboard shows campaign performance, conversion funnel, risk distribution, and expected revenue for the next 30, 60, and 90 days using tenant production data.",
+            "The system detects and stores deal intelligence signals for ghosting, price resistance, and buying signals from inbound replies and conversation history with confidence scores.",
+            "For active deals, pipeline risk scores are recalculated at least daily and exposed through the dashboard and deal detail API.",
+            "A/B message variants can be assigned within a sequence step, and the system reports comparative reply rate and conversion rate per variant."
           ]
         }
       ]

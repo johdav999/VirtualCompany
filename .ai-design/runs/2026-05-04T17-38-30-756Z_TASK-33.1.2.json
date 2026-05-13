@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.1.2",
+  "promptPath": ".ai-design/prompts/TASK-33.1.2.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T17:38:30.756Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T17-38-30-756Z_TASK-33.1.2_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T17-38-30-756Z_TASK-33.1.2.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T17:41:42.275Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "e/FortnoxTokenStore.cs\n@@ -118,6 +118,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore\n         connection.SetStatus(\n             FortnoxConnectionStatus.Disconnected,\n             \"Fortnox was disconnected by a company administrator.\",\n             nowUtc);\n+        connection.ClearTokenMaterial(nowUtc);\n \n         // Stored token material is no longer returned by the application after disconnect.\n         await _dbContext.SaveChangesAsync(cancellationToken);\n@@ -128,9 +129,10 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore\n \n     private FortnoxTokenSnapshot ToSnapshot(FortnoxConnection connection, bool includeTokens)\n     {\n-        var accessToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)\n+        var mayReturnTokens = includeTokens && connection.Status is not FortnoxConnectionStatus.Disconnected and not FortnoxConnectionStatus.Revoked and not FortnoxConnectionStatus.NeedsReconnect;\n+        var accessToken = mayReturnTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)\n             ? DecryptAccess(connection.CompanyId, connection.EncryptedAccessToken)\n             : null;\n-        var refreshToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)\n+        var refreshToken = mayReturnTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)\n             ? DecryptRefresh(connection.CompanyId, connection.EncryptedRefreshToken)\n             : null;\n \n@@ -142,7 +144,10 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore\n             refreshToken,\n             connection.AccessTokenExpiresUtc,\n             connection.GrantedScopes,\n-            connection.ProviderTenantId);\n+            connection.ProviderTenantId,\n+            connection.ConnectedUtc,\n+            connection.LastRefreshAttemptUtc,\n+            connection.LastErrorSummary);\n     }\n \n     private string EncryptAccess(Guid companyId, string plaintext) =>\nEND_OF_PATCH\n",
+  "stderrTail": "cs\n@@ -118,6 +118,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore\n         connection.SetStatus(\n             FortnoxConnectionStatus.Disconnected,\n             \"Fortnox was disconnected by a company administrator.\",\n             nowUtc);\n+        connection.ClearTokenMaterial(nowUtc);\n \n         // Stored token material is no longer returned by the application after disconnect.\n         await _dbContext.SaveChangesAsync(cancellationToken);\n@@ -128,9 +129,10 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore\n \n     private FortnoxTokenSnapshot ToSnapshot(FortnoxConnection connection, bool includeTokens)\n     {\n-        var accessToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)\n+        var mayReturnTokens = includeTokens && connection.Status is not FortnoxConnectionStatus.Disconnected and not FortnoxConnectionStatus.Revoked and not FortnoxConnectionStatus.NeedsReconnect;\n+        var accessToken = mayReturnTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)\n             ? DecryptAccess(connection.CompanyId, connection.EncryptedAccessToken)\n             : null;\n-        var refreshToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)\n+        var refreshToken = mayReturnTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)\n             ? DecryptRefresh(connection.CompanyId, connection.EncryptedRefreshToken)\n             : null;\n \n@@ -142,7 +144,10 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore\n             refreshToken,\n             connection.AccessTokenExpiresUtc,\n             connection.GrantedScopes,\n-            connection.ProviderTenantId);\n+            connection.ProviderTenantId,\n+            connection.ConnectedUtc,\n+            connection.LastRefreshAttemptUtc,\n+            connection.LastErrorSummary);\n     }\n \n     private string EncryptAccess(Guid companyId, string plaintext) =>\nEND_OF_PATCH\ntokens used\n103,141\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

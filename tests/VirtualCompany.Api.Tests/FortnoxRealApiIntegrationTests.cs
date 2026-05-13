@@ -66,10 +66,7 @@ public sealed class FortnoxRealApiIntegrationTests
             Task.FromResult(FortnoxAccessTokenResult.Success(accessToken, DateTime.UtcNow.AddMinutes(30)));
 
         public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
-
-        public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
-            Task.CompletedTask;
+            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), DateTime.UtcNow, null, DateTime.UtcNow));
     }
 }
 

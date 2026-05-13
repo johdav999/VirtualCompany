@@ -5,6 +5,8 @@ namespace VirtualCompany.Domain.Entities;
 
 public sealed class FortnoxConnection : ICompanyOwnedEntity
 {
+    private const int MaxEncryptedTokenLength = 65536;
+
     private FortnoxConnection()
     {
     }
@@ -37,14 +39,21 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
     public FortnoxConnectionStatus Status { get; private set; }
     public string? EncryptedAccessToken { get; private set; }
     public string? EncryptedRefreshToken { get; private set; }
+    public string? TokenEncryptionKeyId { get; private set; }
+    public string? TokenEncryptionAlgorithm { get; private set; }
     public DateTime? AccessTokenExpiresUtc { get; private set; }
+    public DateTime? RefreshTokenExpiresUtc { get; private set; }
     public List<string> GrantedScopes { get; private set; } = [];
     public string? ProviderTenantId { get; private set; }
+    public string? FortnoxCompanyName { get; private set; }
     public JsonObject ProviderMetadata { get; private set; } = [];
     public DateTime? ConnectedUtc { get; private set; }
     public DateTime? LastRefreshAttemptUtc { get; private set; }
     public DateTime? LastSuccessfulRefreshUtc { get; private set; }
+    public DateTime? LastValidatedUtc { get; private set; }
+    public DateTime? LastSyncUtc { get; private set; }
     public string? LastErrorSummary { get; private set; }
+    public DateTime? DisconnectedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
@@ -56,17 +65,29 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
         DateTime? accessTokenExpiresUtc,
         IReadOnlyCollection<string>? grantedScopes,
         string? providerTenantId,
-        DateTime nowUtc)
+        DateTime nowUtc,
+        DateTime? refreshTokenExpiresUtc = null,
+        string? tokenEncryptionKeyId = null,
+        string? tokenEncryptionAlgorithm = null,
+        string? fortnoxCompanyName = null)
     {
-        EncryptedAccessToken = NormalizeRequired(encryptedAccessToken, nameof(encryptedAccessToken), 4096);
-        EncryptedRefreshToken = NormalizeRequired(encryptedRefreshToken, nameof(encryptedRefreshToken), 4096);
+        EncryptedAccessToken = NormalizeRequired(encryptedAccessToken, nameof(encryptedAccessToken), MaxEncryptedTokenLength);
+        EncryptedRefreshToken = NormalizeRequired(encryptedRefreshToken, nameof(encryptedRefreshToken), MaxEncryptedTokenLength);
         AccessTokenExpiresUtc = accessTokenExpiresUtc.HasValue
             ? EntityTimestampNormalizer.NormalizeUtc(accessTokenExpiresUtc.Value, nameof(accessTokenExpiresUtc))
             : null;
         GrantedScopes = NormalizeStringList(grantedScopes, nameof(grantedScopes), 256);
+        RefreshTokenExpiresUtc = refreshTokenExpiresUtc.HasValue
+            ? EntityTimestampNormalizer.NormalizeUtc(refreshTokenExpiresUtc.Value, nameof(refreshTokenExpiresUtc))
+            : RefreshTokenExpiresUtc;
+        TokenEncryptionKeyId = NormalizeOptional(tokenEncryptionKeyId, nameof(tokenEncryptionKeyId), 128) ?? TokenEncryptionKeyId;
+        TokenEncryptionAlgorithm = NormalizeOptional(tokenEncryptionAlgorithm, nameof(tokenEncryptionAlgorithm), 64) ?? TokenEncryptionAlgorithm;
         ProviderTenantId = NormalizeOptional(providerTenantId, nameof(providerTenantId), 256);
+        FortnoxCompanyName = NormalizeOptional(fortnoxCompanyName, nameof(fortnoxCompanyName), 256) ?? FortnoxCompanyName;
         Status = FortnoxConnectionStatus.Connected;
+        DisconnectedUtc = null;
         ConnectedUtc ??= EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+        LastValidatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
         LastErrorSummary = null;
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
     }
@@ -78,6 +99,7 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
         IReadOnlyCollection<string>? grantedScopes,
         DateTime nowUtc)
     {
+        var previousRefreshTokenExpiry = RefreshTokenExpiresUtc;
         StoreEncryptedTokens(
             encryptedAccessToken,
             encryptedRefreshToken,
@@ -85,6 +107,7 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
             grantedScopes is null || grantedScopes.Count == 0 ? GrantedScopes : grantedScopes,
             ProviderTenantId,
             nowUtc);
+        RefreshTokenExpiresUtc = previousRefreshTokenExpiry;
         LastRefreshAttemptUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
         LastSuccessfulRefreshUtc = LastRefreshAttemptUtc;
     }
@@ -95,12 +118,39 @@ public sealed class FortnoxConnection : ICompanyOwnedEntity
         UpdatedUtc = LastRefreshAttemptUtc.Value;
     }
 
+    public void MarkValidated(DateTime nowUtc)
+    {
+        LastValidatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+        UpdatedUtc = LastValidatedUtc.Value;
+    }
+
+    public void MarkSyncSucceeded(DateTime completedUtc)
+    {
+        LastSyncUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
+        LastErrorSummary = null;
+        UpdatedUtc = LastSyncUtc.Value;
+    }
+
+    public void ClearTokenMaterial(DateTime nowUtc)
+    {
+        EncryptedAccessToken = null;
+        EncryptedRefreshToken = null;
+        AccessTokenExpiresUtc = null;
+        RefreshTokenExpiresUtc = null;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+    }
+
     public void SetStatus(FortnoxConnectionStatus status, string? safeErrorSummary, DateTime nowUtc)
     {
         FortnoxConnectionStatusValues.EnsureSupported(status, nameof(status));
         Status = status;
         LastErrorSummary = NormalizeOptional(safeErrorSummary, nameof(safeErrorSummary), 1000);
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(nowUtc, nameof(nowUtc));
+
+        if (status == FortnoxConnectionStatus.Disconnected)
+        {
+            DisconnectedUtc = UpdatedUtc;
+        }
     }
 
     private static List<string> NormalizeStringList(IReadOnlyCollection<string>? values, string name, int maxLength) =>

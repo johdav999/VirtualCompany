@@ -1,0 +1,762 @@
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index 5df8b0f..c94e7cb 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -42,6 +42,7 @@ public interface ISalesOperationsService
+     Task<SalesAutomationPolicyResponse> UpdateAutomationPolicyAsync(Guid companyId, Guid userId, UpdateSalesAutomationPolicyRequest request, CancellationToken cancellationToken);
+     Task<SalesFinanceHandoffResponse?> GetFinanceHandoffAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
+     Task<SalesFinanceHandoffResponse?> ApproveFinanceHandoffAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<SalesFinanceHandoffResponse?> RetryFinanceHandoffAsync(Guid companyId, Guid userId, Guid dealId, CancellationToken cancellationToken);
+     Task<ProcessSalesEmailResponse> ProcessEmailAsync(Guid companyId, Guid userId, ProcessSalesEmailRequest request, CancellationToken cancellationToken);
+ }
+ 
+@@ -130,7 +131,8 @@ public sealed record SalesDealDetailResponse(
+     SalesRecommendationResponse,
+     IReadOnlyList<SalesActivityResponse> Activities,
+     IReadOnlyList<SalesRecommendationResponse> Recommendations,
+-    IReadOnlyList<string> AvailableActions);
++    IReadOnlyList<string> AvailableActions,
++    SalesFinanceHandoffResponse? FinanceHandoff);
+ 
+ public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
+ public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
+@@ -182,10 +184,20 @@ public sealed record SalesFinanceHandoffResponse(
+     string ApprovalStatus,
+     string ExecutionStatus,
+     string Summary,
++    string DocumentType,
++    string ExternalSystem,
+     string? ExternalDocumentId,
++    string? ExternalDocumentNumber,
++    Guid? ApprovalId,
++    Guid? WriteRequestId,
++    string IdempotencyKey,
+     string? FailureSummary,
++    bool CanRetry,
+     DateTime CreatedUtc,
+-    DateTime UpdatedUtc);
++    DateTime UpdatedUtc,
++    DateTime? ApprovedUtc,
++    DateTime? ExecutedUtc,
++    DateTime? FailedUtc,
++    DateTime? RetriedUtc);
+ public sealed record SalesEmailTimelineResponse(
+     Guid Id,
+     string ProviderMessageId,
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 4f6c6c2..a2a6b61 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -717,32 +717,169 @@ public sealed class SalesFinanceHandoff : ICompanyOwnedEntity
+ {
+     private SalesFinanceHandoff() { }
+-    public SalesFinanceHandoff(Guid id, Guid companyId, Guid dealId, string summary, string dedupeKey) { SalesEntityText.EnsureCompany(companyId); Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = companyId; DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId))!.Value; Summary = SalesEntityText.NormalizeRequired(summary, nameof(summary), 1000); DedupeKey = SalesEntityText.NormalizeRequired(dedupeKey, nameof(dedupeKey), 256); Status = SalesStatuses.WaitingForApproval; ApprovalStatus = SalesStatuses.WaitingForApproval; ExecutionStatus = SalesStatuses.Pending; CreatedUtc = DateTime.UtcNow; UpdatedUtc = CreatedUtc; }
++
++    public SalesFinanceHandoff(
++        Guid id,
++        Guid companyId,
++        Guid dealId,
++        string summary,
++        string documentType,
++        string dedupeKey,
++        string idempotencyKey)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId))!.Value;
++        Summary = SalesEntityText.NormalizeRequired(summary, nameof(summary), 1000);
++        DocumentType = NormalizeDocumentType(documentType);
++        DedupeKey = SalesEntityText.NormalizeRequired(dedupeKey, nameof(dedupeKey), 256);
++        IdempotencyKey = SalesEntityText.NormalizeRequired(idempotencyKey, nameof(idempotencyKey), 256);
++        ExternalSystem = "Fortnox";
++        Status = SalesStatuses.WaitingForApproval;
++        ApprovalStatus = SalesStatuses.WaitingForApproval;
++        ExecutionStatus = SalesStatuses.Pending;
++        RequestedUtc = DateTime.UtcNow;
++        CreatedUtc = RequestedUtc;
++        UpdatedUtc = CreatedUtc;
++    }
++
+     public Guid Id { get; private set; }
+     public Guid CompanyId { get; private set; }
+     public Guid DealId { get; private set; }
+     public string Status { get; private set; } = null!;
+     public string ApprovalStatus { get; private set; } = null!;
+     public string ExecutionStatus { get; private set; } = null!;
++    public string DocumentType { get; private set; } = null!;
+     public string Summary { get; private set; } = null!;
+     public string DedupeKey { get; private set; } = null!;
++    public string IdempotencyKey { get; private set; } = null!;
++    public Guid? ApprovalId { get; private set; }
++    public Guid? WriteRequestId { get; private set; }
++    public string ExternalSystem { get; private set; } = null!;
+     public string? ExternalDocumentId { get; private set; }
++    public string? ExternalDocumentNumber { get; private set; }
++    public string? LastErrorCode { get; private set; }
+     public string? FailureSummary { get; private set; }
++    public int ExecutionAttemptCount { get; private set; }
++    public DateTime RequestedUtc { get; private set; }
++    public DateTime? ApprovedUtc { get; private set; }
++    public DateTime? ExecutionStartedUtc { get; private set; }
++    public DateTime? ExecutedUtc { get; private set; }
++    public DateTime? FailedUtc { get; private set; }
++    public DateTime? RetriedUtc { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public Deal Deal { get; private set; } = null!;
+-    public void MarkApproved() { ApprovalStatus = SalesStatuses.Approved; ExecutionStatus = SalesStatuses.Completed; Status = SalesStatuses.Completed; ExternalDocumentId ??= $"draft-finance-document:{DealId:N}"; FailureSummary = null; UpdatedUtc = DateTime.UtcNow; }
+-    public void MarkFailed(string failureSummary) { ExecutionStatus = SalesStatuses.Failed; Status = SalesStatuses.Failed; FailureSummary = SalesEntityText.NormalizeOptional(failureSummary, nameof(failureSummary), 1000); UpdatedUtc = DateTime.UtcNow; }
++
++    public bool CanRetry => ExecutionStatus == SalesStatuses.RetryableFailed || ExecutionStatus == SalesStatuses.Failed;
++    public bool HasExternalDocument => !string.IsNullOrWhiteSpace(ExternalDocumentId);
++
++    public void AttachApproval(Guid approvalId, Guid writeRequestId)
++    {
++        if (approvalId == Guid.Empty)
++        {
++            throw new ArgumentException("ApprovalId is required.", nameof(approvalId));
++        }
++
++        if (writeRequestId == Guid.Empty)
++        {
++            throw new ArgumentException("WriteRequestId is required.", nameof(writeRequestId));
++        }
++
++        ApprovalId = approvalId;
++        WriteRequestId = writeRequestId;
++        Status = SalesStatuses.WaitingForApproval;
++        ApprovalStatus = SalesStatuses.WaitingForApproval;
++        ExecutionStatus = SalesStatuses.Pending;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkApproved()
++    {
++        if (HasExternalDocument)
++        {
++            return;
++        }
++
++        ApprovalStatus = SalesStatuses.Approved;
++        Status = SalesStatuses.Approved;
++        ApprovedUtc ??= DateTime.UtcNow;
++        FailureSummary = null;
++        LastErrorCode = null;
++        UpdatedUtc = ApprovedUtc.Value;
++    }
++
++    public void MarkExecutionStarted()
++    {
++        if (HasExternalDocument)
++        {
++            return;
++        }
++
++        ExecutionStatus = SalesStatuses.InProgress;
++        Status = SalesStatuses.InProgress;
++        ExecutionAttemptCount++;
++        ExecutionStartedUtc = DateTime.UtcNow;
++        FailureSummary = null;
++        LastErrorCode = null;
++        UpdatedUtc = ExecutionStartedUtc.Value;
++    }
++
++    public void MarkCompleted(string externalDocumentId, string? externalDocumentNumber)
++    {
++        if (HasExternalDocument)
++        {
++            return;
++        }
++
++        ExternalDocumentId = SalesEntityText.NormalizeRequired(externalDocumentId, nameof(externalDocumentId), 256);
++        ExternalDocumentNumber = SalesEntityText.NormalizeOptional(externalDocumentNumber, nameof(externalDocumentNumber), 128);
++        Status = SalesStatuses.Completed;
++        ApprovalStatus = SalesStatuses.Approved;
++        ExecutionStatus = SalesStatuses.Completed;
++        FailureSummary = null;
++        LastErrorCode = null;
++        ExecutedUtc = DateTime.UtcNow;
++        UpdatedUtc = ExecutedUtc.Value;
++    }
++
++    public void MarkFailed(string errorCode, string failureSummary, bool retryable)
++    {
++        if (HasExternalDocument)
++        {
++            return;
++        }
++
++        ExecutionStatus = retryable ? SalesStatuses.RetryableFailed : SalesStatuses.Failed;
++        Status = SalesStatuses.Failed;
++        LastErrorCode = SalesEntityText.NormalizeOptional(errorCode, nameof(errorCode), 120);
++        FailureSummary = SalesEntityText.NormalizeOptional(failureSummary, nameof(failureSummary), 1000);
++        FailedUtc = DateTime.UtcNow;
++        UpdatedUtc = FailedUtc.Value;
++    }
++
++    public void MarkRetrying()
++    {
++        if (!CanRetry)
++        {
++            throw new InvalidOperationException("Only failed finance handoffs can be retried.");
++        }
++
++        ExecutionStatus = SalesStatuses.InProgress;
++        Status = SalesStatuses.InProgress;
++        RetriedUtc = DateTime.UtcNow;
++        FailureSummary = null;
++        LastErrorCode = null;
++        UpdatedUtc = RetriedUtc.Value;
++    }
++
++    private static string NormalizeDocumentType(string documentType)
++    {
++        var value = SalesEntityText.NormalizeRequired(documentType, nameof(documentType), 32).ToLowerInvariant();
++        return value is "quote" or "invoice"
++            ? value
++            : throw new ArgumentException("Finance handoff document type must be quote or invoice.", nameof(documentType));
++    }
+ }
+ 
+ public sealed class SalesActionApproval : ICompanyOwnedEntity
+@@ -869,6 +1006,7 @@ public static class SalesStatuses
+     public const string Failed = "failed";
+     public const string DraftCreated = "draft_created";
+     public const string RetryableFailed = "retryable_failed";
++    public const string Cancelled = "cancelled";
+ }
+ 
+ internal static class SalesEntityText
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 3af4df4..8fd0216 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -438,16 +438,35 @@ internal sealed class SalesFinanceHandoffConfiguration : IEntityTypeConfiguration
+         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+         builder.Property(x => x.ApprovalStatus).HasColumnName("approval_status").HasMaxLength(32).IsRequired();
+         builder.Property(x => x.ExecutionStatus).HasColumnName("execution_status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.DocumentType).HasColumnName("document_type").HasMaxLength(32).HasDefaultValue("invoice").IsRequired();
+         builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(1000).IsRequired();
+         builder.Property(x => x.DedupeKey).HasColumnName("dedupe_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.ApprovalId).HasColumnName("approval_id");
++        builder.Property(x => x.WriteRequestId).HasColumnName("write_request_id");
++        builder.Property(x => x.ExternalSystem).HasColumnName("external_system").HasMaxLength(64).HasDefaultValue("Fortnox").IsRequired();
+         builder.Property(x => x.ExternalDocumentId).HasColumnName("external_document_id").HasMaxLength(256);
++        builder.Property(x => x.ExternalDocumentNumber).HasColumnName("external_document_number").HasMaxLength(128);
++        builder.Property(x => x.LastErrorCode).HasColumnName("last_error_code").HasMaxLength(120);
+         builder.Property(x => x.FailureSummary).HasColumnName("failure_summary").HasMaxLength(1000);
++        builder.Property(x => x.ExecutionAttemptCount).HasColumnName("execution_attempt_count").HasDefaultValue(0).IsRequired();
++        builder.Property(x => x.RequestedUtc).HasColumnName("requested_at").IsRequired();
++        builder.Property(x => x.ApprovedUtc).HasColumnName("approved_at");
++        builder.Property(x => x.ExecutionStartedUtc).HasColumnName("execution_started_at");
++        builder.Property(x => x.ExecutedUtc).HasColumnName("executed_at");
++        builder.Property(x => x.FailedUtc).HasColumnName("failed_at");
++        builder.Property(x => x.RetriedUtc).HasColumnName("retried_at");
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.HasIndex(x => x.CompanyId);
+         builder.HasIndex(x => new { x.CompanyId, x.DealId }).IsUnique();
+         builder.HasIndex(x => new { x.CompanyId, x.DedupeKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
++        builder.HasIndex(x => new { x.CompanyId, x.ApprovalId }).HasFilter("[approval_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.WriteRequestId }).HasFilter("[write_request_id] IS NOT NULL");
+         builder.HasIndex(x => new { x.CompanyId, x.ApprovalStatus });
+         builder.HasIndex(x => new { x.CompanyId, x.ExecutionStatus });
++        builder.HasIndex(x => new { x.CompanyId, x.ExternalSystem, x.ExternalDocumentId }).IsUnique().HasFilter("[external_document_id] IS NOT NULL");
+         builder.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+         builder.HasOne(x => x.Deal)
+             .WithMany()
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index 81dfb03..4c6806a 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -1,7 +1,10 @@
++using System.Text.Json.Nodes;
+ using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Approvals;
+ using VirtualCompany.Application.Auditing;
+ using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Finance;
+ using VirtualCompany.Application.Mailbox;
+ using VirtualCompany.Application.Sales;
+ using VirtualCompany.Domain.Entities;
+@@ -15,16 +18,27 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private readonly IMailboxProviderRegistry _mailboxProviderRegistry;
+     private readonly IFieldEncryptionService _fieldEncryption;
+     private readonly ICompanyOutboxEnqueuer _outbox;
++    private readonly IFinanceIntegrationWriteCommandService _financeWriteCommands;
++    private readonly IApprovalRequestService _approvalRequestService;
++    private readonly IFortnoxOutboundActionExecutor _fortnoxOutboundActionExecutor;
+     private readonly ISalesAutomationPolicyEvaluator _policyEvaluator;
+     private readonly TimeProvider _timeProvider;
+ 
+-    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IFieldEncryptionService fieldEncryption, ICompanyOutboxEnqueuer outbox, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider)
++    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IFieldEncryptionService fieldEncryption, ICompanyOutboxEnqueuer outbox, IFinanceIntegrationWriteCommandService financeWriteCommands, IApprovalRequestService approvalRequestService, IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+         _mailboxProviderRegistry = mailboxProviderRegistry;
+         _fieldEncryption = fieldEncryption;
+         _outbox = outbox;
++        _financeWriteCommands = financeWriteCommands;
++        _approvalRequestService = approvalRequestService;
++        _fortnoxOutboundActionExecutor = fortnoxOutboundActionExecutor;
+         _policyEvaluator = policyEvaluator;
+         _timeProvider = timeProvider;
+     }
+@@ -445,19 +459,102 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         EnsureCompany(companyId);
+         EnsureUser(userId);
+         var handoff = await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.DealId == dealId, cancellationToken);
+-        if (handoff is null) return null;
++        if (handoff is null)
++        {
++            return null;
++        }
++
++        if (handoff.HasExternalDocument)
++        {
++            return MapFinanceHandoff(handoff);
++        }
++
++        if (handoff.ApprovalId is not Guid approvalId)
++        {
++            throw Validation(nameof(dealId), "No finance approval request was found for this won deal.");
++        }
++
+         handoff.MarkApproved();
+         AddAudit(companyId, userId, "sales.finance_handoff.approved", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Finance draft creation approved for the won deal.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        handoff.MarkExecutionStarted();
++        AddAudit(companyId, userId, "sales.finance_handoff.execution_started", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Started, "Laura started creating the approved Fortnox draft.");
+         await _dbContext.SaveChangesAsync(cancellationToken);
+-            provider: null,
+-            externalThreadId: null,
+-            internetMessageId: null,
++
++        var decision = await _approvalRequestService.DecideAsync(
++            companyId,
++            new ApprovalDecisionCommand(approvalId, "approve", Comment: request.Note),
++            cancellationToken);
++
++        if (!decision.IsFinalized)
++        {
++            return MapFinanceHandoff(handoff);
++        }
++
++        await RefreshFinanceHandoffFromWriteCommandAsync(companyId, userId, handoff, isRetry: false, cancellationToken);
+         return MapFinanceHandoff(handoff);
+     }
+ 
++    public async Task<SalesFinanceHandoffResponse?> RetryFinanceHandoffAsync(Guid companyId, Guid userId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var handoff = await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.DealId == dealId, cancellationToken);
++        if (handoff is null)
++        {
++            return null;
++        }
++
++        if (handoff.HasExternalDocument)
++        {
++            return MapFinanceHandoff(handoff);
++        }
++
++        if (!handoff.CanRetry || handoff.WriteRequestId is not Guid writeRequestId)
++        {
++            throw Validation(nameof(dealId), "Only failed finance handoffs can be retried.");
++        }
++
++        handoff.MarkRetrying();
++        AddAudit(companyId, userId, "sales.finance_handoff.retried", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Started, "Laura retried the approved Fortnox draft creation with the original idempotency key.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        await _fortnoxOutboundActionExecutor.ExecuteApprovedAsync(companyId, writeRequestId, cancellationToken);
++        await RefreshFinanceHandoffFromWriteCommandAsync(companyId, userId, handoff, isRetry: true, cancellationToken);
++        return MapFinanceHandoff(handoff);
++    }
++
+@@ -592,10 +689,21 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private static SalesAutomationPolicyResponse MapPolicy(SalesAutomationPolicy policy) =>
+         new(policy.Id, policy.Mode, policy.FinanceDocumentsAlwaysRequireApproval, policy.UpdatedUtc);
+ 
+     private static SalesFinanceHandoffResponse MapFinanceHandoff(SalesFinanceHandoff handoff) =>
+-        new(handoff.Id, handoff.DealId, StatusLabel(handoff.Status), StatusLabel(handoff.ApprovalStatus), StatusLabel(handoff.ExecutionStatus), handoff.Summary, handoff.ExternalDocumentId, handoff.FailureSummary, handoff.CreatedUtc, handoff.UpdatedUtc);
++        new(handoff.Id, handoff.DealId, StatusLabel(handoff.Status), StatusLabel(handoff.ApprovalStatus), StatusLabel(handoff.ExecutionStatus), handoff.Summary, StatusLabel(handoff.DocumentType), handoff.ExternalSystem, handoff.ExternalDocumentId, handoff.ExternalDocumentNumber, handoff.ApprovalId, handoff.WriteRequestId, handoff.IdempotencyKey, handoff.FailureSummary, handoff.CanRetry, handoff.CreatedUtc, handoff.UpdatedUtc, handoff.ApprovedUtc, handoff.ExecutedUtc, handoff.FailedUtc, handoff.RetriedUtc);
+@@ -618,9 +726,142 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private async Task EnsureFinanceHandoffAsync(Guid companyId, Deal deal, CancellationToken cancellationToken)
+     {
+         var dedupeKey = $"sales-finance-handoff:{companyId:N}:{deal.Id:N}";
+-        if (await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.DedupeKey == dedupeKey, cancellationToken)) return;
+-        _dbContext.SalesFinanceHandoffs.Add(new SalesFinanceHandoff(Guid.NewGuid(), companyId, deal.Id, $"Create a draft quote or invoice for {deal.Title}. Approval is required before finance documents are created.", dedupeKey));
++        var existing = await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.DedupeKey == dedupeKey, cancellationToken);
++        if (existing is not null)
++        {
++            return;
++        }
++
++        var documentType = "invoice";
++        var writeRequestId = DeterministicGuid($"sales-finance-write:{companyId:N}:{deal.Id:N}:{documentType}");
++        var idempotencyKey = $"sales-finance-handoff:{companyId:N}:{deal.Id:N}:{documentType}";
++        var handoff = new SalesFinanceHandoff(
++            Guid.NewGuid(),
++            companyId,
++            deal.Id,
++            $"Create a draft {documentType} in Fortnox for {deal.Title}. Approval is required before finance documents are created.",
++            documentType,
++            dedupeKey,
++            idempotencyKey);
++
++        _dbContext.SalesFinanceHandoffs.Add(handoff);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        var writeResult = await _financeWriteCommands.RequestApprovalAsync(
++            BuildFinanceWriteCommand(companyId, deal, handoff, writeRequestId),
++            cancellationToken);
++
++        if (writeResult.ApprovalId is Guid approvalId)
++        {
++            handoff.AttachApproval(approvalId, writeRequestId);
++        }
++
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "finance_handoff", "Laura prepared a Fortnox draft request. Approval is required before anything is created.", _timeProvider.GetUtcNow().UtcDateTime, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
++        AddAudit(companyId, deal.CompanyId, "sales.finance_handoff.requested", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Laura requested approval to create a Fortnox draft for the won deal.", new Dictionary<string, string?> { ["documentType"] = handoff.DocumentType, ["approvalId"] = handoff.ApprovalId?.ToString("D"), ["writeRequestId"] = handoff.WriteRequestId?.ToString("D") });
++        AddAudit(companyId, deal.CompanyId, "sales.finance_handoff.approval_requested", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Finance approval is required before Fortnox draft creation.", new Dictionary<string, string?> { ["approvalId"] = handoff.ApprovalId?.ToString("D") });
++    }
++
++    private static FinanceIntegrationWriteCommand BuildFinanceWriteCommand(Guid companyId, Deal deal, SalesFinanceHandoff handoff, Guid writeRequestId)
++    {
++        var path = handoff.DocumentType == "quote" ? "offers" : "invoices";
++        var payload = BuildFortnoxDraftPayload(deal, handoff);
++        return new FinanceIntegrationWriteCommand(
++            FinanceIntegrationProviderKeys.Fortnox,
++            companyId,
++            ConnectionId: null,
++            ActorUserId: null,
++            FinanceIntegrationWriteCommandTypes.InvoiceExport,
++            "POST",
++            path,
++            deal.CustomerCompany?.Name ?? deal.Title,
++            FortnoxWritePayloadSanitizer.CreateSummary(payload),
++            FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
++            new FinanceIntegrationWritePayload(FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload), "SalesFinanceHandoffDraft"),
++            writeRequestId,
++            handoff.IdempotencyKey);
++    }
++
++    private static JsonObject BuildFortnoxDraftPayload(Deal deal, SalesFinanceHandoff handoff)
++    {
++        var line = new JsonObject
++        {
++            ["Description"] = deal.Title,
++            ["DeliveredQuantity"] = 1,
++            ["Price"] = deal.Amount,
++            ["VAT"] = 0
++        };
++
++        var document = new JsonObject
++        {
++            ["CustomerName"] = deal.CustomerCompany?.Name ?? deal.Title,
++            ["Currency"] = deal.Currency,
++            ["YourReference"] = deal.PrimaryContact?.FullName,
++            ["Remarks"] = $"Created from won sales deal {deal.Id:D}.",
++            ["InvoiceRows"] = new JsonArray(line)
++        };
++
++        return handoff.DocumentType == "quote"
++            ? new JsonObject { ["Offer"] = document }
++            : new JsonObject { ["Invoice"] = document };
++    }
++
++    private async Task RefreshFinanceHandoffFromWriteCommandAsync(Guid companyId, Guid userId, SalesFinanceHandoff handoff, bool isRetry, CancellationToken cancellationToken)
++    {
++        if (handoff.WriteRequestId is not Guid writeRequestId)
++        {
++            return;
++        }
++
++        var command = await _dbContext.FinanceIntegrationWriteCommands.AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == writeRequestId, cancellationToken);
++        if (command is null)
++        {
++            handoff.MarkFailed("finance_write_missing", "The approved finance request could not be found. You can retry this action.", true);
++            AddAudit(companyId, userId, "sales.finance_handoff.execution_failed", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Failed, handoff.FailureSummary ?? "Finance draft creation failed.");
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return;
++        }
++
++        if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
++        {
++            var externalId = command.ExternalId ?? command.Id.ToString("D");
++            handoff.MarkCompleted(externalId, command.ExternalId);
++            await EnsureFinanceExternalReferenceAsync(companyId, handoff, command, externalId, cancellationToken);
++            AddAudit(companyId, userId, isRetry ? "sales.finance_handoff.retry_succeeded" : "sales.finance_handoff.execution_succeeded", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Fortnox accepted the approved draft finance document.", new Dictionary<string, string?> { ["externalDocumentId"] = handoff.ExternalDocumentId, ["externalDocumentNumber"] = handoff.ExternalDocumentNumber });
++        }
++        else if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Failed)
++        {
++            handoff.MarkFailed(command.FailureCategory ?? "fortnox_write_failed", command.SafeFailureSummary ?? "Fortnox could not create the draft. You can retry this action.", command.RetrySupported);
++            AddAudit(companyId, userId, isRetry ? "sales.finance_handoff.retry_failed" : "sales.finance_handoff.execution_failed", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Failed, handoff.FailureSummary ?? "Finance draft creation failed.", new Dictionary<string, string?> { ["errorCode"] = command.FailureCategory, ["retryable"] = command.RetrySupported.ToString() });
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private async Task EnsureFinanceExternalReferenceAsync(Guid companyId, SalesFinanceHandoff handoff, FinanceIntegrationWriteCommandRecord command, string externalId, CancellationToken cancellationToken)
++    {
++        var connectionId = command.ConnectionId ?? await _dbContext.FinanceIntegrationConnections.AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox && x.Status == FinanceIntegrationConnectionStatuses.Connected)
++            .OrderByDescending(x => x.ConnectedUtc ?? x.UpdatedUtc)
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        if (connectionId is not Guid resolvedConnectionId)
++        {
++            return;
++        }
++
++        var exists = await _dbContext.FinanceExternalReferences.AsNoTracking()
++            .AnyAsync(x => x.CompanyId == companyId && x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox && x.EntityType == "sales_finance_handoff" && x.InternalRecordId == handoff.Id, cancellationToken);
++        if (exists)
++        {
++            return;
++        }
++
++        _dbContext.FinanceExternalReferences.Add(new FinanceExternalReference(Guid.NewGuid(), companyId, resolvedConnectionId, FinanceIntegrationProviderKeys.Fortnox, "sales_finance_handoff", handoff.Id, externalId, handoff.ExternalDocumentNumber, DateTime.UtcNow, DateTime.UtcNow));
+     }
+@@ -572,7 +813,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private static SalesDealDetailResponse MapDealDetail(Deal deal) =>
+-        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal));
++        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal), null);
+ 
+@@ -884,4 +1125,12 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         return $"{baseBody}\n\n{note.Trim()}";
+     }
+ 
++    private static Guid DeterministicGuid(string value)
++    {
++        var bytes = System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(value));
++        Span<byte> guidBytes = stackalloc byte[16];
++        bytes.AsSpan(0, 16).CopyTo(guidBytes);
++        return new Guid(guidBytes);
++    }
++
+     private sealed record SalesReplyContext(MailboxConnection MailboxConnection, string OriginalMessageId, string? ThreadId, string? InternetMessageId, string RecipientEmail, string? RecipientName, string Subject, Guid? ContactId, Guid? CustomerCompanyId);
+ }
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index 7090d83..92b8b37 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -192,8 +192,25 @@ public sealed class SalesController : ControllerBase
+     [HttpPost("deals/{id:guid}/finance-handoff/approve")]
+     public async Task<ActionResult<SalesFinanceHandoffResponse>> ApproveFinanceHandoffAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+     {
+-        var result = await _salesOperations.ApproveFinanceHandoffAsync(CompanyId(), UserId(), id, request, cancellationToken);
+-        return result is null ? NotFound() : Ok(result);
++        try
++        {
++            var result = await _salesOperations.ApproveFinanceHandoffAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++    }
++
++    [HttpPost("deals/{id:guid}/finance-handoff/retry")]
++    public async Task<ActionResult<SalesFinanceHandoffResponse>> RetryFinanceHandoffAsync(Guid id, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _salesOperations.RetryFinanceHandoffAsync(CompanyId(), UserId(), id, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex) { return ValidationProblem(ex.Errors); }
+     }
+ 
+     [HttpPost("deals/{id:guid}/stage")]
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 7ba79b5..15c34ad 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -70,6 +70,15 @@ public sealed class SalesApiClient
+     public Task<SalesRecommendationResponse> RetryRecommendationAsync(Guid companyId, Guid recommendationId, CancellationToken cancellationToken = default) =>
+         SendAsync<object, SalesRecommendationResponse>(companyId, HttpMethod.Post, $"api/sales/recommendations/{recommendationId:D}/retry", new { }, cancellationToken);
+ 
++    public Task<SalesFinanceHandoffResponse?> GetFinanceHandoffAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
++        GetAsync<SalesFinanceHandoffResponse>(companyId, $"api/sales/deals/{dealId:D}/finance-handoff", allowNotFound: true, cancellationToken);
++
++    public Task<SalesFinanceHandoffResponse> ApproveFinanceHandoffAsync(Guid companyId, Guid dealId, string? note, CancellationToken cancellationToken = default) =>
++        SendAsync<SalesActionRequest, SalesFinanceHandoffResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/finance-handoff/approve", new(note), cancellationToken);
++
++    public Task<SalesFinanceHandoffResponse> RetryFinanceHandoffAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
++        SendAsync<object, SalesFinanceHandoffResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/finance-handoff/retry", new { }, cancellationToken);
++
+@@ -217,7 +226,7 @@ public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageI
+-public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions);
++public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff);
+@@ -223,6 +232,7 @@ public sealed record SalesRecommendationResponse(Guid Id, string Recommendation,
+ public sealed record SalesActionRequest(string? Note);
+ public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
++public sealed record SalesFinanceHandoffResponse(Guid Id, Guid DealId, string Status, string ApprovalStatus, string ExecutionStatus, string Summary, string DocumentType, string ExternalSystem, string? ExternalDocumentId, string? ExternalDocumentNumber, Guid? ApprovalId, Guid? WriteRequestId, string IdempotencyKey, string? FailureSummary, bool CanRetry, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? ApprovedUtc, DateTime? ExecutedUtc, DateTime? FailedUtc, DateTime? RetriedUtc);
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+index 62f1808..508b9a0 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+@@ -139,7 +139,34 @@
+                         <div class="sales-actions sales-actions--stacked">
+                             <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="MarkWonAsync">Mark won</button>
+                             <button class="sales-button" disabled="@isSubmitting" @onclick="MarkLostAsync">Mark lost</button>
+-                            <a class="sales-button" href="@BuildFinanceDocumentPath()">Create finance document</a>
++                        </div>
++                        @if (financeHandoff is not null)
++                        {
++                            <div class="sales-finance-handoff">
++                                <span class="@BadgeClass(financeHandoff.Status)">@financeHandoff.Status</span>
++                                <strong>@financeHandoff.DocumentType draft in @financeHandoff.ExternalSystem</strong>
++                                <p>@financeHandoff.Summary</p>
++                                @if (!string.IsNullOrWhiteSpace(financeHandoff.ExternalDocumentNumber) || !string.IsNullOrWhiteSpace(financeHandoff.ExternalDocumentId))
++                                {
++                                    <small>Draft reference: @(financeHandoff.ExternalDocumentNumber ?? financeHandoff.ExternalDocumentId)</small>
++                                }
++                                else if (financeHandoff.ApprovalStatus == "Waiting for approval")
++                                {
++                                    <small>Laura is waiting for approval before any finance document is created.</small>
++                                }
++                                @if (!string.IsNullOrWhiteSpace(financeHandoff.FailureSummary))
++                                {
++                                    <p class="sales-error-text">@financeHandoff.FailureSummary</p>
++                                }
++                                <div class="sales-actions">
++                                    @if (financeHandoff.ApprovalStatus == "Waiting for approval")
++                                    {
++                                        <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="ApproveFinanceHandoffAsync">Approve finance draft</button>
++                                    }
++                                    @if (financeHandoff.CanRetry)
++                                    {
++                                        <button class="sales-button" disabled="@isSubmitting" @onclick="RetryFinanceHandoffAsync">Retry</button>
++                                    }
++                                </div>
++                            </div>
++                        }
+                         </div>
+                         @if (!string.IsNullOrWhiteSpace(actionMessage))
+                         {
+@@ -199,6 +226,7 @@
+     private string? actionMessage;
+     private SalesDealDetailResponse? deal;
+     private IReadOnlyList<SalesEmailTimelineResponse> dealEmails = [];
++    private SalesFinanceHandoffResponse? financeHandoff;
+@@ -214,6 +242,7 @@
+ 
+             deal = await SalesApiClient.GetDealAsync(ResolvedCompanyId!.Value, DealId);
+             dealEmails = await SalesApiClient.ListDealEmailsAsync(ResolvedCompanyId!.Value, DealId);
++            financeHandoff = await SalesApiClient.GetFinanceHandoffAsync(ResolvedCompanyId!.Value, DealId);
+             if (deal is null)
+             {
+                 errorMessage = "This deal was not found for the active company.";
+@@ -231,6 +260,7 @@
+ 
+     private async Task MarkWonAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkWonAsync(companyId, DealId, "Marked won from the sales review screen."), "Deal marked won.");
+     private async Task MarkLostAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkLostAsync(companyId, DealId, "Marked lost from the sales review screen."), "Deal marked lost.");
++    private async Task ApproveFinanceHandoffAsync() => await RunDealActionAsync(async companyId => financeHandoff = await SalesApiClient.ApproveFinanceHandoffAsync(companyId, DealId, "Approved from the deal review screen."), "Finance draft approved.");
++    private async Task RetryFinanceHandoffAsync() => await RunDealActionAsync(async companyId => financeHandoff = await SalesApiClient.RetryFinanceHandoffAsync(companyId, DealId), "Finance draft retry started.");
+ 
+     private async Task RunDealActionAsync(Func<Guid, Task> action, string successMessage)
+@@ -248,6 +278,7 @@
+         {
+             await action(companyId);
+             await RefreshAgentPanelAsync();
++            financeHandoff = await SalesApiClient.GetFinanceHandoffAsync(companyId, DealId);
+             actionMessage = successMessage;
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505010000_AddSalesFinanceHandoffExecutionLinkage.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505010000_AddSalesFinanceHandoffExecutionLinkage.cs
+new file mode 100644
+index 0000000..ea8f765
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505010000_AddSalesFinanceHandoffExecutionLinkage.cs
+@@ -0,0 +1,91 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddSalesFinanceHandoffExecutionLinkage : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<string>("document_type", "sales_finance_handoffs", "nvarchar(32)", maxLength: 32, nullable: false, defaultValue: "invoice");
++        migrationBuilder.AddColumn<string>("external_system", "sales_finance_handoffs", "nvarchar(64)", maxLength: 64, nullable: false, defaultValue: "Fortnox");
++        migrationBuilder.AddColumn<string>("external_document_number", "sales_finance_handoffs", "nvarchar(128)", maxLength: 128, nullable: true);
++        migrationBuilder.AddColumn<string>("idempotency_key", "sales_finance_handoffs", "nvarchar(256)", maxLength: 256, nullable: false, defaultValue: "");
++        migrationBuilder.AddColumn<Guid>("approval_id", "sales_finance_handoffs", "uniqueidentifier", nullable: true);
++        migrationBuilder.AddColumn<Guid>("write_request_id", "sales_finance_handoffs", "uniqueidentifier", nullable: true);
++        migrationBuilder.AddColumn<string>("last_error_code", "sales_finance_handoffs", "nvarchar(120)", maxLength: 120, nullable: true);
++        migrationBuilder.AddColumn<int>("execution_attempt_count", "sales_finance_handoffs", "int", nullable: false, defaultValue: 0);
++        migrationBuilder.AddColumn<DateTime>("requested_at", "sales_finance_handoffs", "datetime2", nullable: false, defaultValueSql: "SYSUTCDATETIME()");
++        migrationBuilder.AddColumn<DateTime>("approved_at", "sales_finance_handoffs", "datetime2", nullable: true);
++        migrationBuilder.AddColumn<DateTime>("execution_started_at", "sales_finance_handoffs", "datetime2", nullable: true);
++        migrationBuilder.AddColumn<DateTime>("executed_at", "sales_finance_handoffs", "datetime2", nullable: true);
++        migrationBuilder.AddColumn<DateTime>("failed_at", "sales_finance_handoffs", "datetime2", nullable: true);
++        migrationBuilder.AddColumn<DateTime>("retried_at", "sales_finance_handoffs", "datetime2", nullable: true);
++
++        migrationBuilder.Sql("""
++            UPDATE [sales_finance_handoffs]
++            SET [idempotency_key] = CONCAT(N'sales-finance-handoff:', LOWER(REPLACE(CONVERT(nvarchar(36), [company_id]), N'-', N'')), N':', LOWER(REPLACE(CONVERT(nvarchar(36), [deal_id]), N'-', N'')), N':invoice')
++            WHERE [idempotency_key] = N'';
++            """);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_finance_handoffs_company_id_idempotency_key",
++            table: "sales_finance_handoffs",
++            columns: new[] { "company_id", "idempotency_key" },
++            unique: true);
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_finance_handoffs_company_id_approval_id",
++            table: "sales_finance_handoffs",
++            columns: new[] { "company_id", "approval_id" },
++            filter: "[approval_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_finance_handoffs_company_id_write_request_id",
++            table: "sales_finance_handoffs",
++            columns: new[] { "company_id", "write_request_id" },
++            filter: "[write_request_id] IS NOT NULL");
++
++        migrationBuilder.CreateIndex(
++            name: "IX_sales_finance_handoffs_company_id_external_system_external_document_id",
++            table: "sales_finance_handoffs",
++            columns: new[] { "company_id", "external_system", "external_document_id" },
++            unique: true,
++            filter: "[external_document_id] IS NOT NULL");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropIndex("IX_sales_finance_handoffs_company_id_idempotency_key", "sales_finance_handoffs");
++        migrationBuilder.DropIndex("IX_sales_finance_handoffs_company_id_approval_id", "sales_finance_handoffs");
++        migrationBuilder.DropIndex("IX_sales_finance_handoffs_company_id_write_request_id", "sales_finance_handoffs");
++        migrationBuilder.DropIndex("IX_sales_finance_handoffs_company_id_external_system_external_document_id", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("document_type", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("external_system", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("external_document_number", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("idempotency_key", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("approval_id", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("write_request_id", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("last_error_code", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("execution_attempt_count", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("requested_at", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("approved_at", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("execution_started_at", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("executed_at", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("failed_at", "sales_finance_handoffs");
++        migrationBuilder.DropColumn("retried_at", "sales_finance_handoffs");
++    }
++}
+END_OF_PATCH

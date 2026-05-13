@@ -1,0 +1,465 @@
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 9fec182..398edc2 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -48,7 +48,6 @@ using VirtualCompany.Infrastructure.Documents;
+ using VirtualCompany.Infrastructure.Finance;
+ using VirtualCompany.Infrastructure.Mailbox;
+ using VirtualCompany.Infrastructure.Persistence;
+-using VirtualCompany.Infrastructure.Sales;
+ using VirtualCompany.Infrastructure.Memory;
+ using VirtualCompany.Infrastructure.Sales;
+ using VirtualCompany.Infrastructure.Observability;
+diff --git a/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs b/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
+index 2d656dc..1efad69 100644
+--- a/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
++++ b/src/VirtualCompany.Infrastructure/Mailbox/MailboxProviderClients.cs
+@@ -626,10 +626,10 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
+     {
+         var body = root.TryGetProperty("body", out var bodyElement) && bodyElement.TryGetProperty("content", out var content) ? content.GetString() : null;
+         var contentType = root.TryGetProperty("body", out bodyElement) && bodyElement.TryGetProperty("contentType", out var type) ? type.GetString() : null;
+-        var sender = ReadMicrosoftAddress(root, "from");
+-        var recipients = ReadMicrosoftRecipients(root, "toRecipients").ToArray();
++        var sender = MicrosoftMailboxJsonReader.ReadAddress(root, "from");
++        var recipients = MicrosoftMailboxJsonReader.ReadRecipients(root, "toRecipients").ToArray();
+         var received = root.TryGetProperty("receivedDateTime", out var receivedElement) && DateTimeOffset.TryParse(receivedElement.GetString(), out var parsed) ? parsed.UtcDateTime : (DateTime?)null;
+-        return new MailboxInboundMessage(root.GetProperty("id").GetString()!, root.TryGetProperty("conversationId", out var conversationId) ? conversationId.GetString() : null, root.TryGetProperty("internetMessageId", out var internetMessageId) ? internetMessageId.GetString() : null, root.TryGetProperty("subject", out var subject) ? subject.GetString() : null, string.Equals(contentType, "html", StringComparison.OrdinalIgnoreCase) ? root.TryGetProperty("bodyPreview", out var preview) ? preview.GetString() : null : body, string.Equals(contentType, "html", StringComparison.OrdinalIgnoreCase) ? body : null, sender, recipients, received, ReadMicrosoftHeaders(root));
++        return new MailboxInboundMessage(root.GetProperty("id").GetString()!, root.TryGetProperty("conversationId", out var conversationId) ? conversationId.GetString() : null, root.TryGetProperty("internetMessageId", out var internetMessageId) ? internetMessageId.GetString() : null, root.TryGetProperty("subject", out var subject) ? subject.GetString() : null, string.Equals(contentType, "html", StringComparison.OrdinalIgnoreCase) ? root.TryGetProperty("bodyPreview", out var preview) ? preview.GetString() : null : body, string.Equals(contentType, "html", StringComparison.OrdinalIgnoreCase) ? body : null, sender, recipients, received, MicrosoftMailboxJsonReader.ReadHeaders(root));
+     }
+ 
+     private async Task<MailboxOAuthTokenResult> SendTokenRequestAsync(Dictionary<string, string> form, CancellationToken cancellationToken)
+@@ -702,52 +702,55 @@ internal static class MailboxEmailAddressParser
+     }
+ }
+ 
+-internal static IEnumerable<MailboxAddress> ReadMicrosoftRecipients(JsonElement root, string propertyName)
++internal static class MicrosoftMailboxJsonReader
+ {
+-    if (!root.TryGetProperty(propertyName, out var recipients) || recipients.ValueKind != JsonValueKind.Array)
++    public static IEnumerable<MailboxAddress> ReadRecipients(JsonElement root, string propertyName)
+     {
+-        yield break;
+-    }
++        if (!root.TryGetProperty(propertyName, out var recipients) || recipients.ValueKind != JsonValueKind.Array)
++        {
++            yield break;
++        }
+ 
+-    foreach (var recipient in recipients.EnumerateArray())
+-    {
+-        if (recipient.TryGetProperty("emailAddress", out var address))
++        foreach (var recipient in recipients.EnumerateArray())
+         {
+-            yield return new MailboxAddress(
+-                address.TryGetProperty("address", out var email) ? email.GetString()?.ToLowerInvariant() : null,
+-                address.TryGetProperty("name", out var name) ? name.GetString() : null);
++            if (recipient.TryGetProperty("emailAddress", out var address))
++            {
++                yield return new MailboxAddress(
++                    address.TryGetProperty("address", out var email) ? email.GetString()?.ToLowerInvariant() : null,
++                    address.TryGetProperty("name", out var name) ? name.GetString() : null);
++            }
+         }
+     }
+-}
+ 
+-internal static MailboxAddress ReadMicrosoftAddress(JsonElement root, string propertyName)
+-{
+-    if (!root.TryGetProperty(propertyName, out var sender) ||
+-        !sender.TryGetProperty("emailAddress", out var address))
++    public static MailboxAddress ReadAddress(JsonElement root, string propertyName)
+     {
+-        return new MailboxAddress(null, null);
++        if (!root.TryGetProperty(propertyName, out var sender) ||
++            !sender.TryGetProperty("emailAddress", out var address))
++        {
++            return new MailboxAddress(null, null);
++        }
++
++        return new MailboxAddress(
++            address.TryGetProperty("address", out var email) ? email.GetString()?.ToLowerInvariant() : null,
++            address.TryGetProperty("name", out var name) ? name.GetString() : null);
+     }
+ 
+-    return new MailboxAddress(
+-        address.TryGetProperty("address", out var email) ? email.GetString()?.ToLowerInvariant() : null,
+-        address.TryGetProperty("name", out var name) ? name.GetString() : null);
+-}
+-
+-internal static IReadOnlyDictionary<string, string> ReadMicrosoftHeaders(JsonElement root)
+-{
+-    var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+-    if (!root.TryGetProperty("internetMessageHeaders", out var headers) || headers.ValueKind != JsonValueKind.Array)
++    public static IReadOnlyDictionary<string, string> ReadHeaders(JsonElement root)
+     {
+-        return result;
+-    }
++        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
++        if (!root.TryGetProperty("internetMessageHeaders", out var headers) || headers.ValueKind != JsonValueKind.Array)
++        {
++            return result;
++        }
+ 
+-    foreach (var header in headers.EnumerateArray())
+-    {
+-        if (header.TryGetProperty("name", out var name) &&
+-            header.TryGetProperty("value", out var value) &&
+-            !string.IsNullOrWhiteSpace(name.GetString()))
++        foreach (var header in headers.EnumerateArray())
+         {
+-            result[name.GetString()!] = value.GetString() ?? string.Empty;
++            if (header.TryGetProperty("name", out var name) &&
++                header.TryGetProperty("value", out var value) &&
++                !string.IsNullOrWhiteSpace(name.GetString()))
++            {
++                result[name.GetString()!] = value.GetString() ?? string.Empty;
++            }
+         }
+-    }
+ 
+-    return result;
++        return result;
++    }
+ }
+ 
+ internal static class MailboxOAuthHttpResponse
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+index 40d44d5..927d980 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+@@ -104,6 +104,8 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         var primaryMessage = messages.Last();
+         var detection = await DetectSalesSignalAsync(companyId, connection, messages, cancellationToken);
+ 
++        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
++
+         if (detection.IgnoreReason is not null)
+         {
+             var ignored = CreateIgnoredLink(companyId, connection, providerMessageId, primaryMessage.InternetMessageId, primaryMessage.ProviderThreadId, threadIdentity, detection.IgnoreReason, detection.Rationale, SalesEmailLinkKinds.Message);
+@@ -118,6 +120,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+ 
+             EnqueueEmailReceived(companyId, connection, primaryMessage, null, detection, threadIdentity);
+             await _dbContext.SaveChangesAsync(cancellationToken);
++            await transaction.CommitAsync(cancellationToken);
+             return ToIgnoredResult(ignored, connection);
+         }
+ 
+@@ -127,7 +130,8 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         var contact = await UpsertContactAsync(companyId, signal, customerCompany?.Id, cancellationToken);
+         var lead = existingLeadLink?.LeadId is { } existingLeadId
+             ? await _dbContext.Leads.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId && x.Id == existingLeadId && !x.IsDeleted, cancellationToken)
+-            : await CreateLeadAsync(companyId, signal, contact?.Id, customerCompany?.Id, cancellationToken);
++            : await FindExistingLeadForSignalAsync(companyId, contact?.Id, customerCompany?.Id, signal, cancellationToken)
++                ?? await CreateLeadAsync(companyId, signal, contact?.Id, customerCompany?.Id, cancellationToken);
+ 
+         lead.ApplyEmailSignal(BuildLeadTitle(signal), contact?.Id, customerCompany?.Id, signal.Confidence, "sales email");
+ 
+@@ -188,6 +192,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, detection, threadIdentity);
+         EnqueueLeadDetected(companyId, connection, primaryMessage, lead.Id, signal, threadIdentity);
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        await transaction.CommitAsync(cancellationToken);
+ 
+         return new SalesEmailIngestionResult(
+             SalesEmailIngestionStatuses.Processed,
+@@ -361,6 +366,26 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         return contact;
+     }
+ 
++    private async Task<Lead?> FindExistingLeadForSignalAsync(
++        Guid companyId,
++        Guid? contactId,
++        Guid? customerCompanyId,
++        SalesEmailSignalResult signal,
++        CancellationToken cancellationToken)
++    {
++        if (contactId is not null)
++        {
++            var contactLead = await _dbContext.Leads.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.PrimaryContactId == contactId)
++                .OrderByDescending(x => x.UpdatedUtc)
++                .FirstOrDefaultAsync(cancellationToken);
++            if (contactLead is not null)
++            {
++                return contactLead;
++            }
++        }
++
++        return customerCompanyId is null ? null : await _dbContext.Leads.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && !x.IsDeleted && x.CustomerCompanyId == customerCompanyId && x.Source == "sales email").OrderByDescending(x => x.UpdatedUtc).FirstOrDefaultAsync(cancellationToken);
++    }
++
+     private async Task<Lead> CreateLeadAsync(Guid companyId, SalesEmailSignalResult signal, Guid? contactId, Guid? customerCompanyId, CancellationToken cancellationToken)
+     {
+         var stageExists = await _dbContext.SalesPipelineStages
+diff --git a/tests/VirtualCompany.Api.Tests/SalesEmailIngestionWorkflowTests.cs b/tests/VirtualCompany.Api.Tests/SalesEmailIngestionWorkflowTests.cs
+new file mode 100644
+index 0000000..dfd6b57
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SalesEmailIngestionWorkflowTests.cs
+@@ -0,0 +1,220 @@
++using Microsoft.Data.Sqlite;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Mailbox;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Sales;
++using VirtualCompany.Infrastructure.Security;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SalesEmailIngestionWorkflowTests
++{
++    [Fact]
++    public async Task Gmail_message_with_sales_intent_creates_lead_activity_links_and_events_once()
++    {
++        await using var fixture = await SalesEmailFixture.CreateAsync();
++        fixture.Provider.AddMessage(new MailboxInboundMessage(
++            "gmail-message-1",
++            "gmail-thread-1",
++            "<gmail-message-1@example.com>",
++            "Pricing request",
++            "Hi, can we get pricing for the enterprise plan this week?",
++            null,
++            new MailboxAddress("buyer@acme.com", "Buyer One"),
++            [],
++            DateTime.UtcNow,
++            new Dictionary<string, string>()));
++
++        var result = await fixture.Service.ProcessMessageAsync(
++            new ProcessSalesEmailMessageCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "gmail-message-1"),
++            CancellationToken.None);
++        var replay = await fixture.Service.ProcessMessageAsync(
++            new ProcessSalesEmailMessageCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "gmail-message-1"),
++            CancellationToken.None);
++
++        Assert.Equal(SalesEmailIngestionStatuses.Processed, result.Status);
++        Assert.Equal(SalesEmailIngestionStatuses.AlreadyProcessed, replay.Status);
++        Assert.True(replay.AlreadyProcessed);
++        Assert.Equal(1, await fixture.DbContext.Leads.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(1, await fixture.DbContext.SalesActivities.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(2, await fixture.DbContext.SalesEmailLinks.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(2, fixture.Outbox.Messages.Count);
++        Assert.Contains(fixture.Outbox.Messages, x => x.Topic == SalesEmailDomainEvents.EmailReceived);
++        Assert.Contains(fixture.Outbox.Messages, x => x.Topic == SalesEmailDomainEvents.LeadDetected);
++    }
++
++    [Fact]
++    public async Task Microsoft_thread_reuses_existing_thread_lead_without_duplicate_activity_or_events()
++    {
++        await using var fixture = await SalesEmailFixture.CreateAsync(MailboxProvider.Microsoft365);
++        fixture.Provider.AddThread("conversation-1",
++        [
++            new MailboxInboundMessage(
++                "microsoft-message-1",
++                "conversation-1",
++                "<microsoft-message-1@example.com>",
++                "Demo request",
++                "We are evaluating your service and would like to book a demo tomorrow.",
++                null,
++                new MailboxAddress("buyer@contoso.com", "Contoso Buyer"),
++                [],
++                DateTime.UtcNow.AddMinutes(-5),
++                new Dictionary<string, string>())
++        ]);
++
++        var first = await fixture.Service.ProcessThreadAsync(
++            new ProcessSalesEmailThreadCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "conversation-1"),
++            CancellationToken.None);
++        var second = await fixture.Service.ProcessThreadAsync(
++            new ProcessSalesEmailThreadCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "conversation-1"),
++            CancellationToken.None);
++
++        Assert.Equal(SalesEmailIngestionStatuses.Processed, first.Status);
++        Assert.Equal(SalesEmailIngestionStatuses.AlreadyProcessed, second.Status);
++        Assert.Equal(1, await fixture.DbContext.Leads.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(1, await fixture.DbContext.SalesActivities.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(2, fixture.Outbox.Messages.Count);
++    }
++
++    [Theory]
++    [InlineData("newsletter-message", "Weekly newsletter", "View in browser. Unsubscribe from this newsletter.", SalesEmailIgnoreReasons.Newsletter)]
++    [InlineData("receipt-message", "Receipt", "Your purchase receipt and order confirmation.", SalesEmailIgnoreReasons.Receipt)]
++    [InlineData("invoice-message", "Invoice due", "Invoice amount due and payment due Friday.", SalesEmailIgnoreReasons.Invoice)]
++    [InlineData("support-message", "Support ticket", "Support ticket case number. The app is not working.", SalesEmailIgnoreReasons.SupportTicket)]
++    public async Task Ignored_messages_persist_auditable_reason(string messageId, string subject, string body, string expectedReason)
++    {
++        await using var fixture = await SalesEmailFixture.CreateAsync();
++        fixture.Provider.AddMessage(new MailboxInboundMessage(
++            messageId,
++            $"thread-{messageId}",
++            $"<{messageId}@example.com>",
++            subject,
++            body,
++            null,
++            new MailboxAddress("sender@example.com", "Sender"),
++            [],
++            DateTime.UtcNow,
++            new Dictionary<string, string>()));
++
++        var result = await fixture.Service.ProcessMessageAsync(
++            new ProcessSalesEmailMessageCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, messageId),
++            CancellationToken.None);
++
++        Assert.Equal(SalesEmailIngestionStatuses.Ignored, result.Status);
++        Assert.Equal(expectedReason, result.IgnoreReason);
++        var link = await fixture.DbContext.SalesEmailLinks.SingleAsync(x => x.CompanyId == fixture.CompanyId && x.ExternalMessageId == messageId);
++        Assert.Equal(SalesStatuses.Ignored, link.Status);
++        Assert.Equal(expectedReason, link.IgnoreReason);
++        Assert.False(await fixture.DbContext.Leads.AnyAsync(x => x.CompanyId == fixture.CompanyId));
++    }
++
++    [Fact]
++    public async Task Message_then_thread_processing_for_same_conversation_keeps_one_lead()
++    {
++        await using var fixture = await SalesEmailFixture.CreateAsync();
++        var message = new MailboxInboundMessage(
++            "message-thread-shared",
++            "shared-thread",
++            "<shared@example.com>",
++            "Quote request",
++            "Please send a quote for your automation service.",
++            null,
++            new MailboxAddress("buyer@sharedco.com", "Shared Buyer"),
++            [],
++            DateTime.UtcNow,
++            new Dictionary<string, string>());
++        fixture.Provider.AddMessage(message);
++        fixture.Provider.AddThread("shared-thread", [message]);
++
++        await fixture.Service.ProcessMessageAsync(
++            new ProcessSalesEmailMessageCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "message-thread-shared"),
++            CancellationToken.None);
++        var threadResult = await fixture.Service.ProcessThreadAsync(
++            new ProcessSalesEmailThreadCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "shared-thread"),
++            CancellationToken.None);
++
++        Assert.Equal(SalesEmailIngestionStatuses.AlreadyProcessed, threadResult.Status);
++        Assert.Equal(1, await fixture.DbContext.Leads.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(1, await fixture.DbContext.SalesActivities.CountAsync(x => x.CompanyId == fixture.CompanyId));
++        Assert.Equal(2, fixture.Outbox.Messages.Count);
++    }
++
++    private sealed class SalesEmailFixture : IAsyncDisposable
++    {
++        private readonly SqliteConnection _connection;
++
++        private SalesEmailFixture(
++            SqliteConnection connection,
++            VirtualCompanyDbContext dbContext,
++            SalesEmailIngestionService service,
++            FakeMailboxProviderRegistry provider,
++            CapturingOutbox outbox,
++            Guid companyId,
++            Guid userId,
++            Guid connectionId)
++        {
++            _connection = connection;
++            DbContext = dbContext;
++            Service = service;
++            Provider = provider;
++            Outbox = outbox;
++            CompanyId = companyId;
++            UserId = userId;
++            ConnectionId = connectionId;
++        }
++
++        public VirtualCompanyDbContext DbContext { get; }
++        public SalesEmailIngestionService Service { get; }
++        public FakeMailboxProviderRegistry Provider { get; }
++        public CapturingOutbox Outbox { get; }
++        public Guid CompanyId { get; }
++        public Guid UserId { get; }
++        public Guid ConnectionId { get; }
++
++        public static async Task<SalesEmailFixture> CreateAsync(MailboxProvider provider = MailboxProvider.Gmail)
++        {
++            var connection = new SqliteConnection("Data Source=:memory:");
++            await connection.OpenAsync();
++            var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options;
++            var dbContext = new VirtualCompanyDbContext(options);
++            await dbContext.Database.EnsureCreatedAsync();
++
++            var companyId = Guid.NewGuid();
++            var userId = Guid.NewGuid();
++            var mailboxConnectionId = Guid.NewGuid();
++            dbContext.Companies.Add(new Company(companyId, "Sales Email Company"));
++            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev", "founder"));
++            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.SalesPipelineStages.Add(new SalesPipelineStage(SalesPipelineStage.NewStageId, SalesPipelineStage.SystemCompanyId, "New", 1, isSystem: true));
++            var mailboxConnection = new MailboxConnection(mailboxConnectionId, companyId, userId, provider, "sales@example.com");
++            mailboxConnection.StoreEncryptedCredentials("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), ["Mail.Read"]);
++            mailboxConnection.MarkActive();
++            dbContext.MailboxConnections.Add(mailboxConnection);
++            await dbContext.SaveChangesAsync();
++
++            var registry = new FakeMailboxProviderRegistry(provider);
++            var outbox = new CapturingOutbox();
++            var service = new SalesEmailIngestionService(dbContext, registry, new PlaintextFieldEncryption(), outbox, new NullIntentExtractionService(), TimeProvider.System);
++            return new SalesEmailFixture(connection, dbContext, service, registry, outbox, companyId, userId, mailboxConnectionId);
++        }
++
++        public async ValueTask DisposeAsync()
++        {
++            await DbContext.DisposeAsync();
++            await _connection.DisposeAsync();
++        }
++    }
++
++    private sealed class CapturingOutbox : ICompanyOutboxEnqueuer
++    {
++        public List<(Guid CompanyId, string Topic, string? IdempotencyKey)> Messages { get; } = [];
++
++        public void Enqueue(Guid companyId, string topic, object payload, string? correlationId = null, DateTime? availableAtUtc = null, string? idempotencyKey = null, string? messageType = null, string? causationId = null, IReadOnlyDictionary<string, string?>? headers = null) =>
++            Messages.Add((companyId, topic, idempotencyKey));
++    }
++
++    private sealed class NullIntentExtractionService : ISalesEmailIntentExtractionService
++    {
++        public Task<SalesEmailIntentExtractionResult?> ExtractAsync(SalesEmailIntentExtractionRequest request, CancellationToken cancellationToken) =>
++            Task.FromResult<SalesEmailIntentExtractionResult?>(null);
++    }
++
++    private sealed class PlaintextFieldEncryption : IFieldEncryptionService
++    {
++        public string Encrypt(Guid companyId, string purpose, string plaintext) => plaintext;
++        public string Decrypt(Guid companyId, string purpose, string ciphertext) => ciphertext;
++    }
++
++    private sealed class FakeMailboxProviderRegistry : IMailboxProviderRegistry
++    {
++        private readonly FakeMailboxProviderClient _client;
++
++        public FakeMailboxProviderRegistry(MailboxProvider provider)
++        {
++            _client = new FakeMailboxProviderClient(provider);
++        }
++
++        public IMailboxProviderClient Resolve(MailboxProvider provider) =>
++            provider == _client.Provider ? _client : throw new InvalidOperationException("Provider is not registered.");
++
++        public void AddMessage(MailboxInboundMessage message) => _client.Messages[message.ProviderMessageId] = message;
++        public void AddThread(string threadId, IReadOnlyList<MailboxInboundMessage> messages) => _client.Threads[threadId] = messages;
++    }
++
++    private sealed class FakeMailboxProviderClient : IMailboxProviderClient
++    {
++        public FakeMailboxProviderClient(MailboxProvider provider) => Provider = provider;
++
++        public MailboxProvider Provider { get; }
++        public Dictionary<string, MailboxInboundMessage> Messages { get; } = new(StringComparer.Ordinal);
++        public Dictionary<string, IReadOnlyList<MailboxInboundMessage>> Threads { get; } = new(StringComparer.Ordinal);
++
++        public Task<MailboxAuthorizationRequest> BuildAuthorizationRequestAsync(MailboxAuthorizationStartRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
++        public Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxCodeExchangeRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
++        public Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
++        public Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken) => throw new NotSupportedException();
++        public Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken) => throw new NotSupportedException();
++        public Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken) => Task.FromResult(Messages[request.MessageId]);
++        public Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken) => Task.FromResult(new MailboxInboundThread(request.ThreadId, Threads[request.ThreadId]));
++    }
++}
+END_OF_PATCH

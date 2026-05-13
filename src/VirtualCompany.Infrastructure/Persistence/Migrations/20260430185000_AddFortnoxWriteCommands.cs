@@ -1,76 +1,88 @@
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations;
 
+[DbContext(typeof(VirtualCompanyDbContext))]
 [Migration("20260430185000_AddFortnoxWriteCommands")]
 public partial class AddFortnoxWriteCommands : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
     {
-        migrationBuilder.CreateTable(
-            name: "fortnox_write_commands",
-            columns: table => new
-            {
-                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
-                connection_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                actor_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                approval_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                approved_by_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
-                http_method = table.Column<string>(type: "nvarchar(16)", maxLength: 16, nullable: false),
-                path = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: false),
-                target_company = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: false),
-                entity_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
-                payload_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
-                payload_hash = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: false),
-                sanitized_payload_json = table.Column<string>(type: "nvarchar(max)", maxLength: 8000, nullable: false),
-                status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
-                failure_category = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: true),
-                safe_failure_summary = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
-                external_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
-                correlation_id = table.Column<string>(type: "nvarchar(128)", maxLength: 128, nullable: true),
-                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
-                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false),
-                approved_at = table.Column<DateTime>(type: "datetime2", nullable: true),
-                execution_started_at = table.Column<DateTime>(type: "datetime2", nullable: true),
-                executed_at = table.Column<DateTime>(type: "datetime2", nullable: true),
-                failed_at = table.Column<DateTime>(type: "datetime2", nullable: true)
-            },
-            constraints: table =>
-            {
-                table.PrimaryKey("PK_fortnox_write_commands", x => x.id);
-                table.ForeignKey(
-                    name: "FK_fortnox_write_commands_companies_company_id",
-                    column: x => x.company_id,
-                    principalTable: "companies",
-                    principalColumn: "Id",
-                    onDelete: ReferentialAction.Cascade);
-                table.ForeignKey(
-                    name: "FK_fortnox_write_commands_finance_integration_connections_company_id_connection_id",
-                    columns: x => new { x.company_id, x.connection_id },
-                    principalTable: "finance_integration_connections",
-                    principalColumns: new[] { "company_id", "id" },
-                    onDelete: ReferentialAction.NoAction);
-            });
+        migrationBuilder.Sql(
+            """
+            IF OBJECT_ID(N'[dbo].[fortnox_write_commands]', N'U') IS NULL
+            BEGIN
+                CREATE TABLE [fortnox_write_commands] (
+                    [id] uniqueidentifier NOT NULL,
+                    [company_id] uniqueidentifier NOT NULL,
+                    [connection_id] uniqueidentifier NULL,
+                    [actor_user_id] uniqueidentifier NULL,
+                    [approval_id] uniqueidentifier NULL,
+                    [approved_by_user_id] uniqueidentifier NULL,
+                    [http_method] nvarchar(16) NOT NULL,
+                    [path] nvarchar(512) NOT NULL,
+                    [target_company] nvarchar(160) NOT NULL,
+                    [entity_type] nvarchar(64) NOT NULL,
+                    [payload_summary] nvarchar(1000) NOT NULL,
+                    [payload_hash] nvarchar(128) NOT NULL,
+                    [sanitized_payload_json] nvarchar(max) NOT NULL,
+                    [status] nvarchar(32) NOT NULL,
+                    [failure_category] nvarchar(64) NULL,
+                    [safe_failure_summary] nvarchar(1000) NULL,
+                    [external_id] nvarchar(256) NULL,
+                    [correlation_id] nvarchar(128) NULL,
+                    [created_at] datetime2 NOT NULL,
+                    [updated_at] datetime2 NOT NULL,
+                    [approved_at] datetime2 NULL,
+                    [execution_started_at] datetime2 NULL,
+                    [executed_at] datetime2 NULL,
+                    [failed_at] datetime2 NULL,
+                    CONSTRAINT [PK_fortnox_write_commands] PRIMARY KEY ([id]),
+                    CONSTRAINT [FK_fortnox_write_commands_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+                );
+            END;
 
-        migrationBuilder.CreateIndex(
-            name: "IX_fortnox_write_commands_company_id_approval_id",
-            table: "fortnox_write_commands",
-            columns: new[] { "company_id", "approval_id" },
-            unique: true,
-            filter: "approval_id IS NOT NULL");
+            IF OBJECT_ID(N'[dbo].[finance_integration_connections]', N'U') IS NOT NULL
+               AND OBJECT_ID(N'[dbo].[FK_fortnox_write_commands_finance_integration_connections_company_id_connection_id]', N'F') IS NULL
+            BEGIN
+                ALTER TABLE [fortnox_write_commands]
+                ADD CONSTRAINT [FK_fortnox_write_commands_finance_integration_connections_company_id_connection_id]
+                FOREIGN KEY ([company_id], [connection_id])
+                REFERENCES [finance_integration_connections] ([company_id], [id])
+                ON DELETE NO ACTION;
+            END;
 
-        migrationBuilder.CreateIndex(
-            name: "IX_fortnox_write_commands_company_id_connection_id_created_at",
-            table: "fortnox_write_commands",
-            columns: new[] { "company_id", "connection_id", "created_at" });
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_fortnox_write_commands_company_id_approval_id'
+                  AND object_id = OBJECT_ID(N'[fortnox_write_commands]'))
+            BEGIN
+                CREATE UNIQUE INDEX [IX_fortnox_write_commands_company_id_approval_id]
+                ON [fortnox_write_commands] ([company_id], [approval_id])
+                WHERE [approval_id] IS NOT NULL;
+            END;
 
-        migrationBuilder.CreateIndex(
-            name: "IX_fortnox_write_commands_company_id_payload_hash_http_method_path_status",
-            table: "fortnox_write_commands",
-            columns: new[] { "company_id", "payload_hash", "http_method", "path", "status" });
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_fortnox_write_commands_company_id_connection_id_created_at'
+                  AND object_id = OBJECT_ID(N'[fortnox_write_commands]'))
+            BEGIN
+                CREATE INDEX [IX_fortnox_write_commands_company_id_connection_id_created_at]
+                ON [fortnox_write_commands] ([company_id], [connection_id], [created_at]);
+            END;
+
+            IF NOT EXISTS (
+                SELECT 1 FROM sys.indexes
+                WHERE name = N'IX_fortnox_write_commands_company_id_payload_hash_http_method_path_status'
+                  AND object_id = OBJECT_ID(N'[fortnox_write_commands]'))
+            BEGIN
+                CREATE INDEX [IX_fortnox_write_commands_company_id_payload_hash_http_method_path_status]
+                ON [fortnox_write_commands] ([company_id], [payload_hash], [http_method], [path], [status]);
+            END;
+            """);
     }
 
     protected override void Down(MigrationBuilder migrationBuilder)

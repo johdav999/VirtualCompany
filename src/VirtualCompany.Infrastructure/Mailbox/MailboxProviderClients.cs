@@ -1,4 +1,6 @@
 using System.Net.Http.Headers;
+using System.Net;
+using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Options;
@@ -73,7 +75,9 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         "openid",
         "email",
         "profile",
-        "https://www.googleapis.com/auth/gmail.readonly"
+        "https://www.googleapis.com/auth/gmail.readonly",
+        "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.send"
     ];
 
     public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request)
@@ -182,6 +186,65 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         return result;
     }
 
+    public async Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken) =>
+        await FetchInboundMessageAsync(accessToken, request.MessageId, cancellationToken);
+
+    public async Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken)
+    {
+        var uri = $"{Options.MessagesEndpoint.Replace("/messages", "/threads", StringComparison.Ordinal)}/{Uri.EscapeDataString(request.ThreadId)}?format=full";
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var messages = json.RootElement.TryGetProperty("messages", out var messagesElement) && messagesElement.ValueKind == JsonValueKind.Array
+            ? messagesElement.EnumerateArray().Select(ParseGmailInboundMessage).OrderBy(x => x.ReceivedUtc ?? DateTime.MinValue).ToArray()
+            : [];
+        return new MailboxInboundThread(request.ThreadId, messages);
+    }
+
+    public async Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
+    {
+        var raw = BuildGmailRawReply(request);
+        var payload = JsonSerializer.Serialize(new
+        {
+            message = new
+            {
+                raw,
+                threadId = string.IsNullOrWhiteSpace(request.ProviderThreadId) ? null : request.ProviderThreadId
+            }
+        });
+
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{Options.MessagesEndpoint.Replace("/messages", "/drafts", StringComparison.Ordinal)}");
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        httpRequest.Headers.TryAddWithoutValidation("X-Idempotency-Key", request.IdempotencyKey);
+        httpRequest.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
+        await MailboxProviderHttpResponse.EnsureProviderSuccessAsync(response, "gmail_create_draft_reply", cancellationToken);
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var draftId = json.RootElement.GetProperty("id").GetString()!;
+        var message = json.RootElement.TryGetProperty("message", out var messageElement) ? messageElement : default;
+        var messageId = message.ValueKind == JsonValueKind.Object && message.TryGetProperty("id", out var id) ? id.GetString() ?? draftId : draftId;
+        var threadId = message.ValueKind == JsonValueKind.Object && message.TryGetProperty("threadId", out var thread) ? thread.GetString() : request.ProviderThreadId;
+        return new MailboxReplyExecutionResult(messageId, draftId, threadId, "draft_created");
+    }
+
+    public async Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Serialize(new { raw = BuildGmailRawReply(request), threadId = request.ProviderThreadId });
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Post, $"{Options.MessagesEndpoint}/send");
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        httpRequest.Headers.TryAddWithoutValidation("X-Idempotency-Key", request.IdempotencyKey);
+        httpRequest.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
+        await MailboxProviderHttpResponse.EnsureProviderSuccessAsync(response, "gmail_send_reply", cancellationToken);
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return new MailboxReplyExecutionResult(json.RootElement.GetProperty("id").GetString()!, null, json.RootElement.TryGetProperty("threadId", out var thread) ? thread.GetString() : request.ProviderThreadId, "sent");
+    }
+
     private async Task<MailboxMessageSummary> FetchMessageSummaryAsync(string accessToken, string messageId, CancellationToken cancellationToken)
     {
         var uri = QueryHelpers.AddQueryString($"{Options.MessagesEndpoint}/{Uri.EscapeDataString(messageId)}", "format", "metadata");
@@ -218,6 +281,25 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
             labels.Length == 0 ? null : string.Join(", ", labels),
             null,
             attachments);
+    }
+
+    private async Task<MailboxInboundMessage> FetchInboundMessageAsync(string accessToken, string messageId, CancellationToken cancellationToken)
+    {
+        var uri = QueryHelpers.AddQueryString($"{Options.MessagesEndpoint}/{Uri.EscapeDataString(messageId)}", "format", "full");
+        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return ParseGmailInboundMessage(json.RootElement);
+    }
+
+    private static MailboxInboundMessage ParseGmailInboundMessage(JsonElement root)
+    {
+        var from = MailboxEmailAddressParser.Parse(TryReadGmailHeader(root, "From"));
+        var recipients = MailboxEmailAddressParser.ParseMany(TryReadGmailHeader(root, "To")).ToArray();
+        return new MailboxInboundMessage(root.GetProperty("id").GetString()!, root.TryGetProperty("threadId", out var threadId) ? threadId.GetString() : null, TryReadGmailHeader(root, "Message-ID"), TryReadGmailHeader(root, "Subject"), DecodeGmailBody(root, "text/plain"), DecodeGmailBody(root, "text/html"), from, recipients, TryParseGmailReceivedUtc(root, TryReadGmailHeader(root, "Date")), ReadGmailHeaders(root));
     }
 
     private async Task<MailboxOAuthTokenResult> SendTokenRequestAsync(Dictionary<string, string> form, CancellationToken cancellationToken)
@@ -288,6 +370,78 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         }
     }
 
+    private static IReadOnlyDictionary<string, string> ReadGmailHeaders(JsonElement root)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!root.TryGetProperty("payload", out var payload) ||
+            !payload.TryGetProperty("headers", out var headers) ||
+            headers.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var header in headers.EnumerateArray())
+        {
+            if (header.TryGetProperty("name", out var name) &&
+                header.TryGetProperty("value", out var value) &&
+                !string.IsNullOrWhiteSpace(name.GetString()))
+            {
+                result[name.GetString()!] = value.GetString() ?? string.Empty;
+            }
+        }
+
+        return result;
+    }
+
+    private static string? DecodeGmailBody(JsonElement root, string mimeType)
+    {
+        if (!root.TryGetProperty("payload", out var payload))
+        {
+            return null;
+        }
+
+        return DecodeGmailBodyPart(payload, mimeType);
+    }
+
+    private static string? DecodeGmailBodyPart(JsonElement part, string mimeType)
+    {
+        if (part.TryGetProperty("mimeType", out var partMimeType) &&
+            string.Equals(partMimeType.GetString(), mimeType, StringComparison.OrdinalIgnoreCase) &&
+            part.TryGetProperty("body", out var body) &&
+            body.TryGetProperty("data", out var data))
+        {
+            return DecodeBase64Url(data.GetString());
+        }
+
+        if (!part.TryGetProperty("parts", out var parts) || parts.ValueKind != JsonValueKind.Array)
+        {
+            return null;
+        }
+
+        foreach (var child in parts.EnumerateArray())
+        {
+            var value = DecodeGmailBodyPart(child, mimeType);
+            if (!string.IsNullOrWhiteSpace(value))
+            {
+                return value;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? DecodeBase64Url(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var padded = value.Replace('-', '+').Replace('_', '/');
+        padded = padded.PadRight(padded.Length + ((4 - padded.Length % 4) % 4), '=');
+        return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(padded));
+    }
+
     private static IEnumerable<MailboxAttachmentSummary> ReadGmailAttachments(JsonElement root)
     {
         if (!root.TryGetProperty("payload", out var payload) ||
@@ -355,6 +509,30 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
             : fallbackScopes;
         return new MailboxOAuthTokenResult(accessToken, refreshToken, expiresUtc, scopes);
     }
+
+    private static string BuildGmailRawReply(MailboxReplyExecutionRequest request)
+    {
+        var subject = request.Subject.StartsWith("Re:", StringComparison.OrdinalIgnoreCase) ? request.Subject : $"Re: {request.Subject}";
+        var headers = new List<string>
+        {
+            $"To: {FormatAddress(request.ToEmail, request.ToDisplayName)}",
+            $"Subject: {subject}",
+            "MIME-Version: 1.0",
+            "Content-Type: text/plain; charset=utf-8"
+        };
+
+        if (!string.IsNullOrWhiteSpace(request.InternetMessageId))
+        {
+            headers.Add($"In-Reply-To: {request.InternetMessageId}");
+            headers.Add($"References: {request.InternetMessageId}");
+        }
+
+        var mime = string.Join("\r\n", headers) + "\r\n\r\n" + request.BodyText;
+        return Convert.ToBase64String(Encoding.UTF8.GetBytes(mime)).TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static string FormatAddress(string email, string? displayName) =>
+        string.IsNullOrWhiteSpace(displayName) ? email : $"\"{displayName.Replace("\"", string.Empty, StringComparison.Ordinal)}\" <{email}>";
 }
 
 public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
@@ -372,7 +550,7 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
     public MailboxProvider Provider => MailboxProvider.Microsoft365;
 
     // Mail.Read reads message and attachment metadata; User.Read binds the signed-in mailbox; offline_access enables refresh tokens.
-    public IReadOnlyCollection<string> DefaultScopes { get; } = ["offline_access", "User.Read", "Mail.Read"];
+    public IReadOnlyCollection<string> DefaultScopes { get; } = ["offline_access", "User.Read", "Mail.Read", "Mail.ReadWrite", "Mail.Send"];
 
     public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request)
     {
@@ -478,6 +656,106 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
         return result;
     }
 
+    public async Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken)
+    {
+        var uri = QueryHelpers.AddQueryString($"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(request.MessageId)}", new Dictionary<string, string?>
+        {
+            ["$select"] = "id,conversationId,internetMessageId,subject,body,bodyPreview,from,toRecipients,receivedDateTime,internetMessageHeaders"
+        });
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        return ParseMicrosoftInboundMessage(json.RootElement);
+    }
+
+    public async Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken)
+    {
+        var uri = QueryHelpers.AddQueryString("https://graph.microsoft.com/v1.0/me/messages", new Dictionary<string, string?>
+        {
+            ["$select"] = "id,conversationId,internetMessageId,subject,body,bodyPreview,from,toRecipients,receivedDateTime,internetMessageHeaders",
+            ["$filter"] = $"conversationId eq '{request.ThreadId.Replace("'", "''", StringComparison.Ordinal)}'",
+            ["$orderby"] = "receivedDateTime asc"
+        });
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var messages = json.RootElement.TryGetProperty("value", out var values) && values.ValueKind == JsonValueKind.Array
+            ? values.EnumerateArray().Select(ParseMicrosoftInboundMessage).OrderBy(x => x.ReceivedUtc ?? DateTime.MinValue).ToArray()
+            : [];
+        return new MailboxInboundThread(request.ThreadId, messages);
+    }
+
+    public async Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
+    {
+        using var createReply = new HttpRequestMessage(HttpMethod.Post, $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(request.OriginalMessageId)}/createReply");
+        createReply.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        createReply.Headers.TryAddWithoutValidation("client-request-id", request.IdempotencyKey);
+        createReply.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        using var createResponse = await _httpClientFactory.CreateClient(ClientName).SendAsync(createReply, cancellationToken);
+        await MailboxProviderHttpResponse.EnsureProviderSuccessAsync(createResponse, "microsoft365_create_reply", cancellationToken);
+        using var stream = await createResponse.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var draftId = json.RootElement.GetProperty("id").GetString()!;
+        var conversationId = json.RootElement.TryGetProperty("conversationId", out var conversation) ? conversation.GetString() : request.ProviderThreadId;
+
+        var body = JsonSerializer.Serialize(new
+        {
+            body = new { contentType = "Text", content = request.BodyText },
+            toRecipients = new[]
+            {
+                new { emailAddress = new { address = request.ToEmail, name = request.ToDisplayName } }
+            }
+        });
+
+        using var update = new HttpRequestMessage(HttpMethod.Patch, $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(draftId)}");
+        update.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        update.Headers.TryAddWithoutValidation("client-request-id", request.IdempotencyKey);
+        update.Content = new StringContent(body, Encoding.UTF8, "application/json");
+        using var updateResponse = await _httpClientFactory.CreateClient(ClientName).SendAsync(update, cancellationToken);
+        await MailboxProviderHttpResponse.EnsureProviderSuccessAsync(updateResponse, "microsoft365_update_reply_draft", cancellationToken);
+        return new MailboxReplyExecutionResult(draftId, draftId, conversationId, "draft_created");
+    }
+
+    public async Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken)
+    {
+        var payload = JsonSerializer.Serialize(new
+        {
+            comment = request.BodyText,
+            toRecipients = new[]
+            {
+                new { emailAddress = new { address = request.ToEmail, name = request.ToDisplayName } }
+            }
+        });
+
+        using var send = new HttpRequestMessage(HttpMethod.Post, $"https://graph.microsoft.com/v1.0/me/messages/{Uri.EscapeDataString(request.OriginalMessageId)}/reply");
+        send.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        send.Headers.TryAddWithoutValidation("client-request-id", request.IdempotencyKey);
+        send.Content = new StringContent(payload, Encoding.UTF8, "application/json");
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(send, cancellationToken);
+        await MailboxProviderHttpResponse.EnsureProviderSuccessAsync(response, "microsoft365_send_reply", cancellationToken);
+        return new MailboxReplyExecutionResult(
+            $"{request.OriginalMessageId}:reply:{request.IdempotencyKey}",
+            null,
+            request.ProviderThreadId,
+            "sent");
+    }
+
+    private static MailboxInboundMessage ParseMicrosoftInboundMessage(JsonElement root)
+    {
+        var body = root.TryGetProperty("body", out var bodyElement) && bodyElement.TryGetProperty("content", out var content) ? content.GetString() : null;
+        var contentType = root.TryGetProperty("body", out bodyElement) && bodyElement.TryGetProperty("contentType", out var type) ? type.GetString() : null;
+        var sender = MicrosoftMailboxJsonReader.ReadAddress(root, "from");
+        var recipients = MicrosoftMailboxJsonReader.ReadRecipients(root, "toRecipients").ToArray();
+        var received = root.TryGetProperty("receivedDateTime", out var receivedElement) && DateTimeOffset.TryParse(receivedElement.GetString(), out var parsed) ? parsed.UtcDateTime : (DateTime?)null;
+        return new MailboxInboundMessage(root.GetProperty("id").GetString()!, root.TryGetProperty("conversationId", out var conversationId) ? conversationId.GetString() : null, root.TryGetProperty("internetMessageId", out var internetMessageId) ? internetMessageId.GetString() : null, root.TryGetProperty("subject", out var subject) ? subject.GetString() : null, string.Equals(contentType, "html", StringComparison.OrdinalIgnoreCase) ? root.TryGetProperty("bodyPreview", out var preview) ? preview.GetString() : null : body, string.Equals(contentType, "html", StringComparison.OrdinalIgnoreCase) ? body : null, sender, recipients, received, MicrosoftMailboxJsonReader.ReadHeaders(root));
+    }
+
     private async Task<MailboxOAuthTokenResult> SendTokenRequestAsync(Dictionary<string, string> form, CancellationToken cancellationToken)
     {
         using var response = await _httpClientFactory.CreateClient(ClientName)
@@ -507,6 +785,114 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
     }
 
     private MailboxIntegrationOptions.OAuthProviderOptions Options => _options.CurrentValue.Microsoft365;
+}
+
+internal static class MailboxEmailAddressParser
+{
+    public static MailboxAddress Parse(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return new MailboxAddress(null, null);
+        }
+
+        var trimmed = value.Trim();
+        var match = System.Text.RegularExpressions.Regex.Match(trimmed, "^(?<name>.*?)\\s*<(?<email>[^>]+)>$");
+        if (!match.Success)
+        {
+            return new MailboxAddress(trimmed.ToLowerInvariant(), null);
+        }
+
+        var display = match.Groups["name"].Value.Trim().Trim('"');
+        var email = match.Groups["email"].Value.Trim().ToLowerInvariant();
+        return new MailboxAddress(email, string.IsNullOrWhiteSpace(display) ? null : display);
+    }
+
+    public static IEnumerable<MailboxAddress> ParseMany(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            yield break;
+        }
+
+        foreach (var part in value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            yield return Parse(part);
+        }
+    }
+}
+
+internal static class MailboxProviderHttpResponse
+{
+    public static async Task EnsureProviderSuccessAsync(HttpResponseMessage response, string code, CancellationToken cancellationToken)
+    {
+        if (response.IsSuccessStatusCode)
+        {
+            return;
+        }
+
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var retryable = response.StatusCode is HttpStatusCode.RequestTimeout or HttpStatusCode.TooManyRequests or HttpStatusCode.BadGateway or HttpStatusCode.ServiceUnavailable or HttpStatusCode.GatewayTimeout;
+        var detail = string.IsNullOrWhiteSpace(body)
+            ? $"Email provider returned {(int)response.StatusCode} ({response.ReasonPhrase})."
+            : $"Email provider returned {(int)response.StatusCode} ({response.ReasonPhrase}).";
+        throw new MailboxProviderExecutionException(code, detail, retryable);
+    }
+}
+
+internal static class MicrosoftMailboxJsonReader
+{
+    public static IEnumerable<MailboxAddress> ReadRecipients(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var recipients) || recipients.ValueKind != JsonValueKind.Array)
+        {
+            yield break;
+        }
+
+        foreach (var recipient in recipients.EnumerateArray())
+        {
+            if (recipient.TryGetProperty("emailAddress", out var address))
+            {
+                yield return new MailboxAddress(
+                    address.TryGetProperty("address", out var email) ? email.GetString()?.ToLowerInvariant() : null,
+                    address.TryGetProperty("name", out var name) ? name.GetString() : null);
+            }
+        }
+    }
+
+    public static MailboxAddress ReadAddress(JsonElement root, string propertyName)
+    {
+        if (!root.TryGetProperty(propertyName, out var sender) ||
+            !sender.TryGetProperty("emailAddress", out var address))
+        {
+            return new MailboxAddress(null, null);
+        }
+
+        return new MailboxAddress(
+            address.TryGetProperty("address", out var email) ? email.GetString()?.ToLowerInvariant() : null,
+            address.TryGetProperty("name", out var name) ? name.GetString() : null);
+    }
+
+    public static IReadOnlyDictionary<string, string> ReadHeaders(JsonElement root)
+    {
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (!root.TryGetProperty("internetMessageHeaders", out var headers) || headers.ValueKind != JsonValueKind.Array)
+        {
+            return result;
+        }
+
+        foreach (var header in headers.EnumerateArray())
+        {
+            if (header.TryGetProperty("name", out var name) &&
+                header.TryGetProperty("value", out var value) &&
+                !string.IsNullOrWhiteSpace(name.GetString()))
+            {
+                result[name.GetString()!] = value.GetString() ?? string.Empty;
+            }
+        }
+
+        return result;
+    }
 }
 
 internal static class MailboxOAuthHttpResponse

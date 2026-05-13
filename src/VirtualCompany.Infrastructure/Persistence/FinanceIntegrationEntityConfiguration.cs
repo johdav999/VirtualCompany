@@ -221,11 +221,17 @@ internal sealed class FinanceIntegrationAuditEventEntityConfiguration : IEntityT
     }
 }
 
-internal sealed class FortnoxWriteCommandEntityConfiguration : IEntityTypeConfiguration<FortnoxWriteCommand>
+internal sealed class FinanceIntegrationWriteCommandRecordEntityConfiguration : IEntityTypeConfiguration<FinanceIntegrationWriteCommandRecord>
 {
-    public void Configure(EntityTypeBuilder<FortnoxWriteCommand> builder)
+    public void Configure(EntityTypeBuilder<FinanceIntegrationWriteCommandRecord> builder)
     {
+        // Keep the original table for backward compatibility; the entity is now provider-neutral.
         builder.ToTable("fortnox_write_commands");
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_fortnox_write_commands_status", FinanceIntegrationWriteCommandRecordStatuses.BuildCheckConstraintSql("status"));
+            t.HasCheckConstraint("CK_fortnox_write_commands_retry_policy", FinanceIntegrationWriteRetryPolicyValues.BuildCheckConstraintSql("retry_policy"));
+        });
         builder.HasKey(x => x.Id);
 
         builder.Property(x => x.Id).HasColumnName("id");
@@ -237,7 +243,7 @@ internal sealed class FortnoxWriteCommandEntityConfiguration : IEntityTypeConfig
         builder.Property(x => x.HttpMethod).HasColumnName("http_method").HasMaxLength(16).IsRequired();
         builder.Property(x => x.Path).HasColumnName("path").HasMaxLength(512).IsRequired();
         builder.Property(x => x.TargetCompany).HasColumnName("target_company").HasMaxLength(160).IsRequired();
-        builder.Property(x => x.EntityType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
+        builder.Property(x => x.CommandType).HasColumnName("entity_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.PayloadSummary).HasColumnName("payload_summary").HasMaxLength(1000).IsRequired();
         builder.Property(x => x.PayloadHash).HasColumnName("payload_hash").HasMaxLength(128).IsRequired();
         builder.Property(x => x.SanitizedPayloadJson).HasColumnName("sanitized_payload_json").HasMaxLength(8000).IsRequired();
@@ -246,6 +252,11 @@ internal sealed class FortnoxWriteCommandEntityConfiguration : IEntityTypeConfig
         builder.Property(x => x.SafeFailureSummary).HasColumnName("safe_failure_summary").HasMaxLength(1000);
         builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256);
         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+        builder.Property(x => x.ResponseStatusCode).HasColumnName("response_status_code");
+        builder.Property(x => x.SafeResponseSummary).HasColumnName("safe_response_summary").HasMaxLength(1000);
+        builder.Property(x => x.RetrySupported).HasColumnName("retry_supported").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.RetryPolicy).HasColumnName("retry_policy").HasMaxLength(32).HasDefaultValue(FinanceIntegrationWriteRetryPolicyValues.None).IsRequired();
+        builder.Property(x => x.ExecutionAttemptCount).HasColumnName("execution_attempt_count").HasDefaultValue(0).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.ApprovedUtc).HasColumnName("approved_at");

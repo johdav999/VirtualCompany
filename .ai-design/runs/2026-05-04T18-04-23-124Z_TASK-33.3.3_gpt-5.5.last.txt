@@ -1,0 +1,551 @@
+diff --git a/src/VirtualCompany.Shared/FinanceAccess.cs b/src/VirtualCompany.Shared/FinanceAccess.cs
+index 0c6a2bc..22e0f33 100644
+--- a/src/VirtualCompany.Shared/FinanceAccess.cs
++++ b/src/VirtualCompany.Shared/FinanceAccess.cs
+@@ -4,6 +4,7 @@ public static class FinancePermissions
+     public const string View = "finance.view";
+     public const string Edit = "finance.edit";
+     public const string Approve = "finance.approve";
++    public const string ManageIntegrations = "finance.integrations.manage";
+     public const string SandboxAdmin = "finance.sandbox_admin";
+ }
+ 
+@@ -21,6 +22,12 @@ public static class FinanceAccess
+         "tester"
+     };
+ 
++    private static readonly HashSet<string> FinanceIntegrationManagerRoleValues = new(StringComparer.OrdinalIgnoreCase)
++    {
++        "owner",
++        "admin"
++    };
++
+     private static readonly HashSet<string> FinanceTransactionEditRoleValues = new(StringComparer.OrdinalIgnoreCase)
+     {
+         "owner",
+@@ -45,6 +52,7 @@ public static class FinanceAccess
+     public static IReadOnlyCollection<string> ViewRoles => FinanceViewRoleValues;
+     public static IReadOnlyCollection<string> SandboxAdminRoles => FinanceSandboxAdminRoleValues;
+     public static IReadOnlyCollection<string> EditRoles => FinanceTransactionEditRoleValues;
++    public static IReadOnlyCollection<string> IntegrationManagerRoles => FinanceIntegrationManagerRoleValues;
+     public static IReadOnlyCollection<string> InvoiceApprovalRoles => FinanceInvoiceApprovalRoleValues;
+ 
+     public static bool CanView(string? membershipRole) =>
+@@ -58,6 +66,10 @@ public static class FinanceAccess
+         !string.IsNullOrWhiteSpace(membershipRole) &&
+         FinanceSandboxAdminRoleValues.Contains(membershipRole.Trim());
+ 
++    public static bool CanManageFinanceIntegrations(string? membershipRole) =>
++        !string.IsNullOrWhiteSpace(membershipRole) &&
++        FinanceIntegrationManagerRoleValues.Contains(membershipRole.Trim());
++
+     public static bool CanManageSimulation(string? membershipRole) =>
+         !string.IsNullOrWhiteSpace(membershipRole) &&
+         FinanceSimulationManagerRoleValues.Contains(membershipRole.Trim());
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+index 88f83c1..541fd2f 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+@@ -209,7 +209,7 @@
+                     else
+                     {
+                         <div class="finance-integration-card__readonly" role="status">
+-                            Company owner or admin access is required to connect, sync, reconnect, or disconnect accounting systems.
++                            Company owner or admin access is required to connect, sync, reconnect, or disconnect Fortnox.
+                         </div>
+                     }
+                     @if (!CanManageFinanceIntegrations)
+@@ -237,8 +237,8 @@
+ 
+                 <div class="finance-integration-card__notice">
+                     <strong>Approval-gated writes</strong>
+-                    <span>Outbound accounting-system changes create an approval with company, summary, and payload hash before any provider API call runs.</span>
++                    <span>Laura asks for approval before any change is sent to Fortnox, with a plain summary of what will change.</span>
+                 </div>
+ 
+                 @if (!string.IsNullOrWhiteSpace(FinanceIntegrationSuccessMessage))
+@@ -282,9 +282,9 @@
+                                         var importedCount = item.Created + item.Updated;
+                                         <tr>
+                                             <td>@item.StartedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+-                                            <td><span class="@GetHistoryBadgeClass(item.Status)">@FormatIntegrationStatus(item.Status)</span></td>
++                                            <td><span class="@FortnoxIntegrationDisplayMapper.GetHistoryBadgeClass(item.Status)">@FortnoxIntegrationDisplayMapper.FormatSyncStatus(item.Status)</span></td>
+                                             <td>
+                                                 <strong>@importedCount</strong>
+-                                                <span class="d-block small text-body-secondary">@FormatImportCounts(item.Created, item.Updated, item.Skipped, item.Errors)</span>
++                                                <span class="d-block small text-body-secondary">@FortnoxIntegrationDisplayMapper.FormatImportCounts(item.Created, item.Updated, item.Skipped, item.Errors)</span>
+                                             </td>
+                                             <td>@FormatDuration(item.StartedUtc, item.CompletedUtc)</td>
+                                             <td>@FormatSafeErrorSummary(item)</td>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+index 3efcf54..184a6c3 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+@@ -42,7 +42,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool IsFinanceIntegrationBusy => IsFinanceIntegrationLoading || IsFinanceIntegrationConnecting || IsFinanceIntegrationSyncing || IsFinanceIntegrationDisconnecting;
+     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
+-    private bool CanManageFinanceIntegrations => FinanceAccess.CanAccessSandboxAdmin(AccessState.MembershipRole);
++    private bool CanManageFinanceIntegrations => FinanceAccess.CanManageFinanceIntegrations(AccessState.MembershipRole);
+     private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId);
+     private string IntegrationSettingsHref => FinanceRoutes.BuildFinanceIntegrationSettingsPath(SelectedProviderKey, AccessState.CompanyId);
+     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
+@@ -51,7 +51,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private string SelectedProviderKey => string.IsNullOrWhiteSpace(ProviderKey) ? DefaultIntegrationProviderKey : ProviderKey.Trim();
+     private string SelectedProviderDisplayName => SelectedFinanceIntegrationProvider?.DisplayName ?? FormatProviderName(SelectedProviderKey);
+-    private string LastFailureSummary => FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, "No recent sync issues.");
++    private string LastFailureSummary => FortnoxIntegrationDisplayMapper.FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, "No recent sync issues.");
+ 
+     protected override void OnInitialized()
+     {
+@@ -282,7 +282,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, reconnect ? "Couldn't start Fortnox reconnection. Please try again." : "Couldn't start Fortnox connection. Please try again.");
++            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, reconnect ? "Couldn't start Fortnox reconnection. Please try again." : "Couldn't start Fortnox connection. Please try again.");
+             await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         finally
+@@ -308,7 +308,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, "Sync failed. Review the latest sync history entry for a safe summary.");
++            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Sync failed. Review the latest sync history entry for a safe summary.");
+             await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         finally
+@@ -334,12 +334,12 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         try
+         {
+             var result = await FinanceApiClient.DisconnectFinanceIntegrationAsync(companyId, SelectedProviderKey);
+-            FinanceIntegrationSuccessMessage = FormatSafeText(result.Message, $"{SelectedProviderDisplayName} has been disconnected.");
++            FinanceIntegrationSuccessMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(result.Message, $"{SelectedProviderDisplayName} has been disconnected.");
+             await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, "Couldn't disconnect Fortnox. Please try again.");
++            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Couldn't disconnect Fortnox. Please try again.");
+             await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         finally
+@@ -383,7 +383,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationErrorMessage = SafeFinanceIntegrationError(ex.Message, "Financial integrations are unavailable. Please try again.");
++            FinanceIntegrationErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(ex.Message, "Financial integrations are unavailable. Please try again.");
+         }
+         finally
+         {
+@@ -420,7 +420,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         }
+         else if (query.TryGetValue("integrationMessage", out var message) ||
+                  query.TryGetValue("fortnoxMessage", out message))
+         {
+-            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(message.ToString(), "Finance integration authorization could not be completed.");
++            FinanceIntegrationActionErrorMessage = FortnoxIntegrationDisplayMapper.FormatSafeText(message.ToString(), "Finance integration authorization could not be completed.");
+         }
+     }
+ 
+@@ -441,54 +441,27 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+             : "Required";
+ 
+-    private string FinanceIntegrationState => FinanceIntegrationStatus?.ConnectionStatus switch
+-    {
+-        null or "" => "not_connected",
+-        "pending" => "connecting",
+-        "connected" when IsFinanceIntegrationSyncing => "syncing",
+-        "connected" => "connected",
+-        "needs_reconnect" => "needs_reconnect",
+-        "error" => "error",
+-        "revoked" or "disconnected" => "not_connected",
+-        _ => "error"
+-    };
++    private string FinanceIntegrationState =>
++        FortnoxIntegrationDisplayMapper.NormalizeConnectionState(FinanceIntegrationStatus?.ConnectionStatus, IsFinanceIntegrationSyncing);
+ 
+-    private string FinanceIntegrationStateLabel => FinanceIntegrationState switch
+-    {
+-        "not_connected" => "Not connected",
+-        "connecting" => "Connecting",
+-        "connected" => "Connected",
+-        "syncing" => "Syncing",
+-        "needs_reconnect" => "Needs reconnect",
+-        "error" => "Error",
+-        _ => "Error"
+-    };
++    private string FinanceIntegrationStateLabel =>
++        FortnoxIntegrationDisplayMapper.FormatConnectionLabel(FinanceIntegrationState);
+ 
+-    private string FinanceIntegrationStateDescription => FinanceIntegrationState switch
+-    {
+-        "not_connected" => $"Connect {SelectedProviderDisplayName} to sync customers, suppliers, invoices, bills, accounts, and payments.",
+-        "connecting" => $"{SelectedProviderDisplayName} authorization has started and is waiting for completion.",
+-        "connected" => $"{SelectedProviderDisplayName} is connected and ready to sync finance records.",
+-        "syncing" => $"{SelectedProviderDisplayName} sync is running. You can review history when it completes.",
+-        "needs_reconnect" => $"{SelectedProviderDisplayName} needs a fresh authorization before syncing can continue.",
+-        "error" => FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, $"{SelectedProviderDisplayName} reported an issue. Reconnect to restore the integration."),
+-        _ => "Provider state is unavailable."
+-    };
++    private string FinanceIntegrationStateDescription =>
++        FortnoxIntegrationDisplayMapper.FormatConnectionDescription(
++            SelectedProviderDisplayName,
++            FinanceIntegrationState,
++            FinanceIntegrationStatus?.LastErrorSummary);
+ 
+     private string FinanceIntegrationConnectionSummary => FinanceIntegrationStatus?.ConnectionId is not null
+         ? FinanceIntegrationStateLabel
+         : "No accounting connection is stored.";
+ 
+-    private string FinanceIntegrationBadgeClass => FinanceIntegrationState switch
+-    {
+-        "connected" => "badge text-bg-success",
+-        "syncing" => "badge text-bg-primary",
+-        "needs_reconnect" => "badge text-bg-warning",
+-        "error" => "badge text-bg-danger",
+-        "connecting" => "badge text-bg-info",
+-        _ => "badge text-bg-secondary"
+-    };
++    private string FinanceIntegrationBadgeClass =>
++        FortnoxIntegrationDisplayMapper.GetConnectionBadgeClass(FinanceIntegrationState);
+ 
+     private bool ShowConnectAction => FinanceIntegrationState is "not_connected";
+     private bool ShowReconnectAction => FinanceIntegrationState is "needs_reconnect" or "error";
+     private bool ShowSyncAction => FinanceIntegrationState is "connected" or "syncing";
+     private bool ShowDisconnectAction => FinanceIntegrationStatus?.ConnectionId is not null && FinanceIntegrationState is not "not_connected";
+-
+-    private static string FormatIntegrationStatus(string status) => status.Trim().ToLowerInvariant() switch
+-    {
+-        "succeeded" or "completed" => "Completed",
+-        "failed" => "Failed",
+-        "partial" or "completed_with_errors" => "Completed with issues",
+-        "running" or "in_progress" => "Running",
+-        "pending" => "Waiting to start",
+-        "" => "Unknown",
+-        _ => "Needs review"
+-    };
+ 
+     private static string FormatProviderName(string providerKey) =>
+         string.IsNullOrWhiteSpace(providerKey)
+             ? "Accounting system"
+             : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(providerKey.Replace("-", " ").Replace("_", " "));
+-
+-    private static string GetHistoryBadgeClass(string status) => status.Trim().ToLowerInvariant() switch
+-    {
+-        "succeeded" or "completed" => "badge text-bg-success",
+-        "failed" => "badge text-bg-danger",
+-        "partial" or "completed_with_errors" => "badge text-bg-warning",
+-        "running" or "in_progress" => "badge text-bg-primary",
+-        _ => "badge text-bg-secondary"
+-    };
+ 
+     private static string FormatDateTime(DateTime? value) =>
+         value.HasValue
+@@ -519,35 +492,10 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+             : $"{duration.TotalHours:0.#} hours";
+     }
+ 
+-    private static string FormatImportCounts(int created, int updated, int skipped, int errors) =>
+-        $"Created {created}, updated {updated}, skipped {skipped}, issues {errors}.";
+-
+     private static string FormatSafeErrorSummary(FinanceIntegrationSyncHistoryItemResponse item)
+-    {
+-        if (!string.IsNullOrWhiteSpace(item.ErrorSummary))
+-        {
+-            return FormatSafeText(item.ErrorSummary, "Review the sync details.");
+-        }
+-
+-        return item.Errors > 0
+-            ? $"{item.Errors} records need attention."
+-            : "No issues reported.";
+-    }
+-
+-    private static string FormatSafeText(string? value, string fallback)
+-    {
+-        var trimmed = value?.Trim();
+-        if (string.IsNullOrWhiteSpace(trimmed) || ContainsUnsafeErrorDetail(trimmed))
+-        {
+-            return fallback;
+-        }
+-
+-        return trimmed.Length <= 180 ? trimmed : $"{trimmed[..177]}...";
+-    }
+-
+-    private static string SafeFinanceIntegrationError(string? value, string fallback) =>
+-        FormatSafeText(value, fallback);
+-
+-    private static bool ContainsUnsafeErrorDetail(string value) =>
+-        value.Contains("access_token", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains("refresh_token", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains("client_secret", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains("authorization:", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains("bearer ", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains(" at ", StringComparison.OrdinalIgnoreCase) ||
+-        value.Contains('\n') ||
+-        value.Contains('\r') ||
+-        (value.Contains('{') && value.Contains('}'));
++        FortnoxIntegrationDisplayMapper.FormatSafeHistoryError(item);
+ 
+     public void Dispose()
+     {
+diff --git a/src/VirtualCompany.Web/Services/FortnoxIntegrationDisplayMapper.cs b/src/VirtualCompany.Web/Services/FortnoxIntegrationDisplayMapper.cs
+new file mode 100644
+index 0000000..f4f5367
+--- /dev/null
++++ b/src/VirtualCompany.Web/Services/FortnoxIntegrationDisplayMapper.cs
+@@ -0,0 +1,123 @@
++namespace VirtualCompany.Web.Services;
++
++public static class FortnoxIntegrationDisplayMapper
++{
++    public static string NormalizeConnectionState(string? connectionStatus, bool isSyncing) =>
++        connectionStatus?.Trim().ToLowerInvariant() switch
++        {
++            null or "" => "not_connected",
++            "pending" => "connecting",
++            "connected" when isSyncing => "syncing",
++            "connected" => "connected",
++            "needs_reconnect" or "needs-reconnect" => "needs_reconnect",
++            "error" => "error",
++            "revoked" or "disconnected" => "not_connected",
++            _ => "error"
++        };
++
++    public static string FormatConnectionLabel(string normalizedState) =>
++        normalizedState switch
++        {
++            "not_connected" => "Not connected",
++            "connecting" => "Connecting",
++            "connected" => "Connected",
++            "syncing" => "Syncing",
++            "needs_reconnect" => "Needs reconnect",
++            "error" => "Needs attention",
++            _ => "Needs attention"
++        };
++
++    public static string FormatConnectionDescription(string providerName, string normalizedState, string? lastErrorSummary) =>
++        normalizedState switch
++        {
++            "not_connected" => $"Connect {providerName} to sync customers, suppliers, invoices, bills, accounts, and payments.",
++            "connecting" => $"{providerName} authorization has started and is waiting for completion.",
++            "connected" => $"{providerName} is connected and ready to sync finance records.",
++            "syncing" => $"{providerName} sync is running. You can review history when it completes.",
++            "needs_reconnect" => $"{providerName} needs a fresh authorization before syncing can continue.",
++            "error" => FormatSafeText(lastErrorSummary, $"{providerName} reported an issue. Reconnect to restore the integration."),
++            _ => "Connection state is unavailable."
++        };
++
++    public static string GetConnectionBadgeClass(string normalizedState) =>
++        normalizedState switch
++        {
++            "connected" => "badge text-bg-success",
++            "syncing" => "badge text-bg-primary",
++            "needs_reconnect" => "badge text-bg-warning",
++            "error" => "badge text-bg-danger",
++            "connecting" => "badge text-bg-info",
++            _ => "badge text-bg-secondary"
++        };
++
++    public static string FormatSyncStatus(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            "succeeded" or "completed" => "Completed",
++            "failed" => "Failed",
++            "partial" or "completed_with_errors" or "completed-with-errors" => "Completed with issues",
++            "running" or "in_progress" or "in-progress" => "Running",
++            "pending" => "Waiting to start",
++            null or "" => "Unknown",
++            _ => "Needs review"
++        };
++
++    public static string GetHistoryBadgeClass(string? status) =>
++        status?.Trim().ToLowerInvariant() switch
++        {
++            "succeeded" or "completed" => "badge text-bg-success",
++            "failed" => "badge text-bg-danger",
++            "partial" or "completed_with_errors" or "completed-with-errors" => "badge text-bg-warning",
++            "running" or "in_progress" or "in-progress" => "badge text-bg-primary",
++            _ => "badge text-bg-secondary"
++        };
++
++    public static string FormatImportCounts(int created, int updated, int skipped, int errors) =>
++        $"Created {created}, updated {updated}, skipped {skipped}, issues {errors}.";
++
++    public static string FormatSafeHistoryError(FinanceIntegrationSyncHistoryItemResponse item)
++    {
++        if (!string.IsNullOrWhiteSpace(item.ErrorSummary))
++        {
++            return FormatSafeText(item.ErrorSummary, "Review the sync details.");
++        }
++
++        return item.Errors > 0
++            ? $"{item.Errors} records need attention."
++            : "No issues reported.";
++    }
++
++    public static string FormatSafeText(string? value, string fallback)
++    {
++        var trimmed = value?.Trim();
++        if (string.IsNullOrWhiteSpace(trimmed) || ContainsUnsafeDetail(trimmed))
++        {
++            return fallback;
++        }
++
++        return trimmed.Length <= 180 ? trimmed : $"{trimmed[..177]}...";
++    }
++
++    private static bool ContainsUnsafeDetail(string value) =>
++        value.Contains("access_token", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("refresh_token", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("client_secret", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("authorization:", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("bearer ", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains(" stack ", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("trace", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains(" at ", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains('\n') ||
++        value.Contains('\r') ||
++        LooksLikeJson(value) ||
++        LooksLikeInternalIdentifier(value);
++
++    private static bool LooksLikeJson(string value) =>
++        (value.Contains('{') && value.Contains('}')) ||
++        (value.Contains('[') && value.Contains(']'));
++
++    private static bool LooksLikeInternalIdentifier(string value)
++    {
++        var words = value.Split([' ', '.', ',', ';', ':', '(', ')', '[', ']'], StringSplitOptions.RemoveEmptyEntries);
++        return words.Any(word =>
++            word.Length > 3 &&
++            word.Contains('_', StringComparison.Ordinal) &&
++            word.Any(char.IsLetter));
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+index 3948cc8..9af9b97 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+@@ -28,7 +28,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Fortnox", cut.Markup);
+             Assert.Contains(label, cut.Markup);
+             Assert.Contains(action, cut.Markup);
+             Assert.Contains("View sync history", cut.Markup);
+             Assert.Contains("Approval-gated writes", cut.Markup);
+-            Assert.Contains("payload hash", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.DoesNotContain("payload hash", cut.Markup, StringComparison.OrdinalIgnoreCase);
+             Assert.DoesNotContain("Token expiry", cut.Markup);
+             Assert.DoesNotContain("Last token refresh", cut.Markup);
+             Assert.DoesNotContain("needs_reconnect", cut.Markup);
+@@ -74,7 +74,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Connected", cut.Markup);
+-            Assert.Contains("Company owner or admin access is required", cut.Markup);
++            Assert.Contains("Company owner or admin access is required to connect, sync, reconnect, or disconnect Fortnox.", cut.Markup);
+             Assert.Contains("View sync history", cut.Markup);
+             Assert.DoesNotContain("Sync data", cut.Markup);
+             Assert.DoesNotContain("Disconnect", cut.Markup);
+@@ -83,6 +83,24 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Tester_cannot_trigger_admin_only_integration_actions()
++    {
++        var companyId = Guid.Parse("822969ac-48b9-46c3-a338-42ea29611f04");
++        using var harness = CreateHarness(companyId, ConnectedStatus(), membershipRole: "tester");
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Connected", cut.Markup);
++            Assert.Contains("View sync history", cut.Markup);
++            Assert.DoesNotContain("Sync data", cut.Markup);
++            Assert.DoesNotContain("Disconnect", cut.Markup);
++            Assert.DoesNotContain(harness.Requests, request =>
++                request.Method == HttpMethod.Post && request.RequestUri!.AbsolutePath.Contains("/finance/integrations/fortnox/", StringComparison.OrdinalIgnoreCase));
++        });
++    }
++
+     [Fact]
+     public void Sync_now_posts_company_scoped_request_and_refreshes_status()
+     {
+@@ -122,6 +140,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+     public void Unsafe_backend_error_details_are_not_rendered()
+     {
+         var companyId = Guid.Parse("af1670d7-c61d-4db4-8277-3a1cb4a32272");
+-        using var harness = CreateHarness(companyId, ConnectedStatus(), syncFailureDetail: "System.InvalidOperationException: access_token leaked\n   at Provider.Raw()");
++        using var harness = CreateHarness(companyId, ConnectedStatus(), syncFailureDetail: "System.InvalidOperationException: access_token leaked\n   at Provider.Raw()");
+         var cut = RenderFortnoxSettings(harness, companyId);
+ 
+         cut.Find("button.btn-outline-primary").Click();
+@@ -134,6 +153,28 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Sync_history_uses_safe_plain_english_error_summary()
++    {
++        var companyId = Guid.Parse("deff246e-b9d1-42f9-a8b4-f0e94b060c5b");
++        using var harness = CreateHarness(
++            companyId,
++            ConnectedStatus(),
++            historyErrorSummary: "{\"status\":\"failed\",\"access_token\":\"secret\",\"provider_payload\":{\"error\":\"bad\"}}",
++            historyStatus: "completed_with_errors",
++            historyErrors: 2);
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Completed with issues", cut.Markup);
++            Assert.Contains("Review the sync details.", cut.Markup);
++            Assert.Contains("issues 2", cut.Markup);
++            Assert.DoesNotContain("access_token", cut.Markup);
++            Assert.DoesNotContain("provider_payload", cut.Markup);
++            Assert.DoesNotContain("completed_with_errors", cut.Markup);
++        });
++    }
++
+     private static IRenderedComponent<SettingsPage> RenderFortnoxSettings(FortnoxSettingsHarness harness, Guid companyId)
+     {
+         harness.Navigation.NavigateTo($"http://localhost/finance/settings/integrations/fortnox?companyId={companyId:D}");
+@@ -159,7 +200,10 @@ public sealed class FinanceIntegrationSettingsPageTests
+         Guid companyId,
+         FinanceIntegrationConnectionStatusResponse status,
+         string membershipRole = "owner",
+-        string? syncFailureDetail = null)
++        string? syncFailureDetail = null,
++        string? historyErrorSummary = null,
++        string historyStatus = "succeeded",
++        int historyErrors = 0)
+     {
+         var context = new TestContext();
+         var requests = new List<HttpRequestMessage>();
+@@ -247,13 +291,14 @@ public sealed class FinanceIntegrationSettingsPageTests
+                             ConnectionId = status.ConnectionId,
+                             StartedUtc = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+                             CompletedUtc = new DateTime(2026, 4, 30, 10, 1, 0, DateTimeKind.Utc),
+-                            Status = "succeeded",
++                            Status = historyStatus,
+                             Created = 2,
+                             Updated = 1,
+                             Skipped = 3,
+-                            Errors = 0,
+-                            Summary = "Created 2, updated 1, skipped 3, errors 0."
++                            Errors = historyErrors,
++                            Summary = $"Created 2, updated 1, skipped 3, errors {historyErrors}.",
++                            ErrorSummary = historyErrorSummary
+                         }
+                     ]
+                 }));
+END_OF_PATCH

@@ -66,6 +66,13 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<WorkflowException> WorkflowExceptions => Set<WorkflowException>();
     public DbSet<ConditionTriggerEvaluation> ConditionTriggerEvaluations => Set<ConditionTriggerEvaluation>();
     public DbSet<MemoryItem> MemoryItems => Set<MemoryItem>();
+    public DbSet<CustomerMemoryProfile> CustomerMemoryProfiles => Set<CustomerMemoryProfile>();
+    public DbSet<CustomerMemoryProfileConversation> CustomerMemoryProfileConversations => Set<CustomerMemoryProfileConversation>();
+    public DbSet<CustomerMemoryProfileDeal> CustomerMemoryProfileDeals => Set<CustomerMemoryProfileDeal>();
+    public DbSet<CustomerMemoryProfileEngagementAttribute> CustomerMemoryProfileEngagementAttributes => Set<CustomerMemoryProfileEngagementAttribute>();
+    public DbSet<CustomerMemoryProfilePreference> CustomerMemoryProfilePreferences => Set<CustomerMemoryProfilePreference>();
+    public DbSet<CustomerMemoryProfilePriceSignal> CustomerMemoryProfilePriceSignals => Set<CustomerMemoryProfilePriceSignal>();
+    public DbSet<CustomerMemoryProfileIndustrySignal> CustomerMemoryProfileIndustrySignals => Set<CustomerMemoryProfileIndustrySignal>();
     public DbSet<Company> CompanyOnboardingDrafts => Set<Company>();
     public DbSet<ContextRetrieval> ContextRetrievals => Set<ContextRetrieval>();
     public DbSet<ContextRetrievalSource> ContextRetrievalSources => Set<ContextRetrievalSource>();
@@ -113,6 +120,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
     public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
     public DbSet<FortnoxConnection> FortnoxConnections => Set<FortnoxConnection>();
+    public DbSet<FortnoxOAuthState> FortnoxOAuthStates => Set<FortnoxOAuthState>();
+    public DbSet<FortnoxSyncHistory> FortnoxSyncHistories => Set<FortnoxSyncHistory>();
+    public DbSet<FortnoxExternalReference> FortnoxExternalReferences => Set<FortnoxExternalReference>();
     public DbSet<EmailIngestionRun> EmailIngestionRuns => Set<EmailIngestionRun>();
     public DbSet<EmailMessageSnapshot> EmailMessageSnapshots => Set<EmailMessageSnapshot>();
     public DbSet<EmailAttachmentSnapshot> EmailAttachmentSnapshots => Set<EmailAttachmentSnapshot>();
@@ -132,9 +142,41 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceIntegrationSyncState> FinanceIntegrationSyncStates => Set<FinanceIntegrationSyncState>();
     public DbSet<FinanceExternalReference> FinanceExternalReferences => Set<FinanceExternalReference>();
     public DbSet<FinanceIntegrationAuditEvent> FinanceIntegrationAuditEvents => Set<FinanceIntegrationAuditEvent>();
-    public DbSet<FortnoxWriteCommand> FortnoxWriteCommands => Set<FortnoxWriteCommand>();
+    public DbSet<FinanceIntegrationWriteCommandRecord> FinanceIntegrationWriteCommands => Set<FinanceIntegrationWriteCommandRecord>();
+    public DbSet<Lead> Leads => Set<Lead>();
+    public DbSet<Deal> Deals => Set<Deal>();
+    public DbSet<Contact> Contacts => Set<Contact>();
+    public DbSet<CustomerCompany> CustomerCompanies => Set<CustomerCompany>();
+    public DbSet<SalesActivity> SalesActivities => Set<SalesActivity>();
+    public DbSet<SalesPipelineStage> SalesPipelineStages => Set<SalesPipelineStage>();
+    public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
+    public DbSet<SalesActionApproval> SalesActionApprovals => Set<SalesActionApproval>();
+    public DbSet<SalesEmailLink> SalesEmailLinks => Set<SalesEmailLink>();
+    public DbSet<SalesSequence> SalesSequences => Set<SalesSequence>();
+    public DbSet<SalesSequenceStep> SalesSequenceSteps => Set<SalesSequenceStep>();
+    public DbSet<SalesCampaign> SalesCampaigns => Set<SalesCampaign>();
+    public DbSet<SalesCampaignContact> SalesCampaignContacts => Set<SalesCampaignContact>();
+    public DbSet<SalesSequenceExecution> SalesSequenceExecutions => Set<SalesSequenceExecution>();
+    public DbSet<SalesSequenceExecutionStep> SalesSequenceExecutionSteps => Set<SalesSequenceExecutionStep>();
+    public DbSet<SalesAutomationPolicy> SalesAutomationPolicies => Set<SalesAutomationPolicy>();
+    public DbSet<OutboundMessageReview> OutboundMessageReviews => Set<OutboundMessageReview>();
+    public DbSet<WebsiteLeadSubmission> WebsiteLeadSubmissions => Set<WebsiteLeadSubmission>();
+    public DbSet<SalesMessagePerformance> SalesMessagePerformances => Set<SalesMessagePerformance>();
+    public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
+    public DbSet<RevenueForecastSnapshot> RevenueForecastSnapshots => Set<RevenueForecastSnapshot>();
+    public DbSet<DealRiskScoreSnapshot> DealRiskScoreSnapshots => Set<DealRiskScoreSnapshot>();
+    public DbSet<DealIntelligenceSignal> DealIntelligenceSignals => Set<DealIntelligenceSignal>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+
+    public override int SaveChanges()
+    {
+        ValidateCompanyOwnedMutations();
+        ApplyFinanceSourceTrackingDefaults();
+        EnsureBankTransactionPostingStates();
+
+        return base.SaveChanges();
+    }
 
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
@@ -293,6 +335,9 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinancialStatementSnapshotLine ||
                 entry.Entity is MailboxConnection ||
                 entry.Entity is FortnoxConnection ||
+                entry.Entity is FortnoxOAuthState ||
+                entry.Entity is FortnoxSyncHistory ||
+                entry.Entity is FortnoxExternalReference ||
                 entry.Entity is EmailIngestionRun ||
                 entry.Entity is EmailMessageSnapshot ||
                 entry.Entity is BillDuplicateCheck ||
@@ -308,9 +353,31 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceIntegrationConnection ||
                 entry.Entity is FinanceIntegrationToken ||
                 entry.Entity is FinanceIntegrationSyncState ||
+                entry.Entity is FinanceIntegrationWriteCommandRecord ||
                 entry.Entity is FinanceExternalReference ||
                 entry.Entity is FinanceIntegrationAuditEvent ||
-                entry.Entity is FortnoxWriteCommand)
+                entry.Entity is FinanceIntegrationWriteCommandRecord ||
+                entry.Entity is Lead ||
+                entry.Entity is Deal ||
+                entry.Entity is Contact ||
+                entry.Entity is CustomerCompany ||
+                entry.Entity is SalesActivity ||
+                entry.Entity is SalesPipelineStage ||
+                entry.Entity is SalesAgentRecommendation ||
+                entry.Entity is SalesAutomationPolicy ||
+                entry.Entity is SalesSequence ||
+                entry.Entity is SalesSequenceStep ||
+                entry.Entity is SalesCampaign ||
+                entry.Entity is SalesCampaignContact ||
+                entry.Entity is SalesSequenceExecution ||
+                entry.Entity is SalesSequenceExecutionStep ||
+                entry.Entity is SalesMessagePerformance ||
+                entry.Entity is OutboundMessageReview ||
+                entry.Entity is WebsiteLeadSubmission ||
+                entry.Entity is SalesActionApproval ||
+                entry.Entity is SalesFinanceHandoff ||
+                entry.Entity is SalesEmailLink ||
+                entry.Entity is DealIntelligenceSignal)
             .Select(entry =>
             {
                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
@@ -436,6 +503,30 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<MemoryItem>()
             .HasQueryFilter(memoryItem =>
                 CurrentCompanyId.HasValue && memoryItem.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfile>()
+            .HasQueryFilter(profile =>
+                CurrentCompanyId.HasValue && profile.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfileConversation>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfileDeal>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfileEngagementAttribute>()
+            .HasQueryFilter(attribute =>
+                CurrentCompanyId.HasValue && attribute.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfilePreference>()
+            .HasQueryFilter(preference =>
+                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfilePriceSignal>()
+            .HasQueryFilter(signal =>
+                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<CustomerMemoryProfileIndustrySignal>()
+            .HasQueryFilter(signal =>
+                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<DealIntelligenceSignal>()
+            .HasQueryFilter(signal =>
+                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<ContextRetrieval>()
             .HasQueryFilter(retrieval =>
                 CurrentCompanyId.HasValue && retrieval.CompanyId == CurrentCompanyId.Value);
@@ -559,6 +650,15 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FortnoxConnection>()
             .HasQueryFilter(connection =>
                 CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FortnoxOAuthState>()
+            .HasQueryFilter(state =>
+                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FortnoxSyncHistory>()
+            .HasQueryFilter(history =>
+                CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<FortnoxExternalReference>()
+            .HasQueryFilter(reference =>
+                CurrentCompanyId.HasValue && reference.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<EmailIngestionRun>()
             .HasQueryFilter(run =>
                 CurrentCompanyId.HasValue && run.CompanyId == CurrentCompanyId.Value);
@@ -619,8 +719,73 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceIntegrationAuditEvent>()
             .HasQueryFilter(auditEvent =>
                 CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
-        modelBuilder.Entity<FortnoxWriteCommand>()
+        modelBuilder.Entity<FinanceIntegrationWriteCommandRecord>()
             .HasQueryFilter(command =>
                 CurrentCompanyId.HasValue && command.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesPipelineStage>()
+            .HasQueryFilter(stage =>
+                !stage.IsDeleted &&
+                (stage.CompanyId == SalesPipelineStage.SystemCompanyId ||
+                 (CurrentCompanyId.HasValue && stage.CompanyId == CurrentCompanyId.Value)));
+        modelBuilder.Entity<Lead>()
+            .HasQueryFilter(lead =>
+                CurrentCompanyId.HasValue && lead.CompanyId == CurrentCompanyId.Value && !lead.IsDeleted);
+        modelBuilder.Entity<Deal>()
+            .HasQueryFilter(deal =>
+                CurrentCompanyId.HasValue && deal.CompanyId == CurrentCompanyId.Value && !deal.IsDeleted);
+        modelBuilder.Entity<Contact>()
+            .HasQueryFilter(contact =>
+                CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value && !contact.IsDeleted);
+        modelBuilder.Entity<CustomerCompany>()
+            .HasQueryFilter(customer =>
+                CurrentCompanyId.HasValue && customer.CompanyId == CurrentCompanyId.Value && !customer.IsDeleted);
+        modelBuilder.Entity<SalesActivity>()
+            .HasQueryFilter(activity =>
+                CurrentCompanyId.HasValue && activity.CompanyId == CurrentCompanyId.Value && !activity.IsDeleted);
+        modelBuilder.Entity<SalesAgentRecommendation>()
+            .HasQueryFilter(recommendation =>
+                CurrentCompanyId.HasValue && recommendation.CompanyId == CurrentCompanyId.Value && !recommendation.IsDeleted);
+        modelBuilder.Entity<SalesSequence>()
+            .HasQueryFilter(sequence =>
+                CurrentCompanyId.HasValue && sequence.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesSequenceStep>()
+            .HasQueryFilter(step =>
+                CurrentCompanyId.HasValue && step.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesCampaign>()
+            .HasQueryFilter(campaign =>
+                CurrentCompanyId.HasValue && campaign.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesCampaignContact>()
+            .HasQueryFilter(contact =>
+                CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesSequenceExecution>()
+            .HasQueryFilter(execution =>
+                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesSequenceExecutionStep>()
+            .HasQueryFilter(step =>
+                CurrentCompanyId.HasValue && step.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesAutomationPolicy>()
+            .HasQueryFilter(policy =>
+                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesActionApproval>()
+            .HasQueryFilter(approval =>
+                CurrentCompanyId.HasValue && approval.CompanyId == CurrentCompanyId.Value && !approval.IsDeleted);
+        modelBuilder.Entity<SalesEmailLink>()
+            .HasQueryFilter(link =>
+                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value && !link.IsDeleted);
+        modelBuilder.Entity<OutboundMessageReview>()
+            .HasQueryFilter(review =>
+                CurrentCompanyId.HasValue && review.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesMessagePerformance>()
+            .HasQueryFilter(performance =>
+                CurrentCompanyId.HasValue && performance.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<WebsiteLeadSubmission>()
+            .HasQueryFilter(submission =>
+                CurrentCompanyId.HasValue && submission.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<RevenueForecastSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<DealRiskScoreSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
     }
 }

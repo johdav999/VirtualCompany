@@ -1,0 +1,775 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+index 4e0ec3d..c39ffbb 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+@@ -200,6 +200,19 @@ public sealed record FinanceIntegrationWriteResult(
+     string Message,
+     bool CanExecute);
+ 
++public sealed record FinanceIntegrationOutboundExecutionResult(
++    string ProviderKey,
++    Guid WriteRequestId,
++    Guid? ApprovalId,
++    string Status,
++    int? ResponseStatusCode,
++    string Summary,
++    bool Executed);
++
++public interface IFortnoxOutboundActionExecutor
++{
++    Task<FinanceIntegrationOutboundExecutionResult> ExecuteApprovedAsync(Guid companyId, Guid writeRequestId, CancellationToken cancellationToken);
++}
++
+ public sealed record FinanceIntegrationWriteApprovalCheck(
+     string ProviderKey,
+     Guid CompanyId,
+@@ -234,11 +247,20 @@ public static class FinanceIntegrationWriteCommandStatuses
+     public const string Approved = "approved";
+     public const string Executing = "executing";
+     public const string Executed = "executed";
+     public const string Failed = "failed";
++    public const string Rejected = "rejected";
++    public const string Expired = "expired";
++    public const string Cancelled = "cancelled";
+ }
+ 
++public static class FinanceIntegrationWriteRetryPolicies
++{
++    public const string None = "none";
++    public const string TransientOnly = "transient_only";
++}
++
+ public interface IFinanceIntegrationWriteApprovalService
+ {
+     Task EnsureApprovedAsync(FinanceIntegrationWriteApprovalCheck check, CancellationToken cancellationToken);
+     Task RecordExecutionSucceededAsync(FinanceIntegrationWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken);
+     Task RecordExecutionFailedAsync(FinanceIntegrationWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+index 9c3a2f1..d41a536 100644
+--- a/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/FinanceIntegrationEntities.cs
+@@ -427,6 +427,8 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
+         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+         Status = FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval;
++        RetryPolicy = FinanceIntegrationWriteRetryPolicies.ForCommandType(CommandType);
++        RetrySupported = RetryPolicy != FinanceIntegrationWriteRetryPolicyValues.None;
+         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
+         UpdatedUtc = CreatedUtc;
+     }
+@@ -449,6 +451,11 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
+     public string? FailureCategory { get; private set; }
+     public string? SafeFailureSummary { get; private set; }
+     public string? ExternalId { get; private set; }
++    public int? ResponseStatusCode { get; private set; }
++    public string? SafeResponseSummary { get; private set; }
++    public bool RetrySupported { get; private set; }
++    public string RetryPolicy { get; private set; } = FinanceIntegrationWriteRetryPolicyValues.None;
++    public int ExecutionAttemptCount { get; private set; }
+     public string? CorrelationId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+@@ -465,6 +472,12 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
+ 
+     public void AttachApproval(Guid approvalId, DateTime updatedUtc)
+     {
++        if (Status != FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval)
++        {
++            return;
++        }
++
+         if (approvalId == Guid.Empty)
+         {
+             throw new ArgumentException("ApprovalId is required.", nameof(approvalId));
+@@ -480,7 +493,7 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
+     {
+         if (Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
+         {
+-            return;
++            throw new InvalidOperationException("Finance integration write command has already executed.");
+         }
+ 
+         ApprovalId = approvalId == Guid.Empty ? ApprovalId : approvalId;
+@@ -498,21 +511,49 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
+ 
+         Status = FinanceIntegrationWriteCommandRecordStatuses.Executing;
+         ExecutionStartedUtc = EntityTimestampNormalizer.NormalizeUtc(startedUtc, nameof(startedUtc));
++        ExecutionAttemptCount++;
+         UpdatedUtc = ExecutionStartedUtc.Value;
+     }
+ 
+-    public void MarkExecuted(string? externalId, DateTime executedUtc)
++    public void MarkExecuted(string? externalId, int? responseStatusCode, string? safeResponseSummary, DateTime executedUtc)
+     {
+         Status = FinanceIntegrationWriteCommandRecordStatuses.Executed;
+         ExternalId = NormalizeOptional(externalId, nameof(externalId), 256);
++        ResponseStatusCode = responseStatusCode;
++        SafeResponseSummary = NormalizeOptional(safeResponseSummary, nameof(safeResponseSummary), 1000);
+         SafeFailureSummary = null;
+         FailureCategory = null;
+         ExecutedUtc = EntityTimestampNormalizer.NormalizeUtc(executedUtc, nameof(executedUtc));
+         UpdatedUtc = ExecutedUtc.Value;
+     }
+ 
+-    public void MarkFailed(string failureCategory, string safeFailureSummary, DateTime failedUtc)
++    public void MarkFailed(string failureCategory, string safeFailureSummary, int? responseStatusCode, DateTime failedUtc)
+     {
+         Status = FinanceIntegrationWriteCommandRecordStatuses.Failed;
++        ResponseStatusCode = responseStatusCode;
+         FailureCategory = NormalizeOptional(failureCategory, nameof(failureCategory), 64);
+         SafeFailureSummary = NormalizeOptional(safeFailureSummary, nameof(safeFailureSummary), 1000);
+         FailedUtc = EntityTimestampNormalizer.NormalizeUtc(failedUtc, nameof(failedUtc));
+         UpdatedUtc = FailedUtc.Value;
+     }
+ 
++    public void MarkRejected(DateTime updatedUtc)
++    {
++        MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Rejected, updatedUtc);
++    }
++
++    public void MarkExpired(DateTime updatedUtc)
++    {
++        MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Expired, updatedUtc);
++    }
++
++    public void MarkCancelled(DateTime updatedUtc)
++    {
++        MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Cancelled, updatedUtc);
++    }
++
++    private void MarkTerminalWithoutExecution(string status, DateTime updatedUtc)
++    {
++        if (Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
++        {
++            return;
++        }
++
++        Status = status;
++        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
++    }
++
+     private static int NormalizeCount(int value, string name)
+     {
+         if (value < 0) throw new ArgumentOutOfRangeException(name, $"{name} cannot be negative.");
+@@ -594,4 +635,26 @@ public static class FinanceIntegrationWriteCommandRecordStatuses
+     public const string Approved = "approved";
+     public const string Executing = "executing";
+     public const string Executed = "executed";
+     public const string Failed = "failed";
++    public const string Rejected = "rejected";
++    public const string Expired = "expired";
++    public const string Cancelled = "cancelled";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('awaiting_approval', 'approved', 'executing', 'executed', 'failed', 'rejected', 'expired', 'cancelled')";
++}
++
++public static class FinanceIntegrationWriteRetryPolicyValues
++{
++    public const string None = "none";
++    public const string TransientOnly = "transient_only";
++
++    public static string BuildCheckConstraintSql(string columnName) =>
++        $"{columnName} IN ('none', 'transient_only')";
++}
++
++public static class FinanceIntegrationWriteRetryPolicies
++{
++    public static string ForCommandType(string commandType) =>
++        commandType is "payment" or "invoice_export" or "voucher_create"
++            ? FinanceIntegrationWriteRetryPolicyValues.None
++            : FinanceIntegrationWriteRetryPolicyValues.TransientOnly;
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+index b6b3d76..5782271 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/FinanceIntegrationEntityConfiguration.cs
+@@ -228,6 +228,10 @@ internal sealed class FinanceIntegrationWriteCommandRecordEntityConfiguration :
+     {
+         // Keep the original table for backward compatibility; the entity is now provider-neutral.
+         builder.ToTable("fortnox_write_commands");
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_fortnox_write_commands_status", FinanceIntegrationWriteCommandRecordStatuses.BuildCheckConstraintSql("status"));
++            t.HasCheckConstraint("CK_fortnox_write_commands_retry_policy", FinanceIntegrationWriteRetryPolicyValues.BuildCheckConstraintSql("retry_policy"));
++        });
+         builder.HasKey(x => x.Id);
+ 
+         builder.Property(x => x.Id).HasColumnName("id");
+@@ -249,6 +253,11 @@ internal sealed class FinanceIntegrationWriteCommandRecordEntityConfiguration :
+         builder.Property(x => x.SafeFailureSummary).HasColumnName("safe_failure_summary").HasMaxLength(1000);
+         builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256);
+         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
++        builder.Property(x => x.ResponseStatusCode).HasColumnName("response_status_code");
++        builder.Property(x => x.SafeResponseSummary).HasColumnName("safe_response_summary").HasMaxLength(1000);
++        builder.Property(x => x.RetrySupported).HasColumnName("retry_supported").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.RetryPolicy).HasColumnName("retry_policy").HasMaxLength(32).HasDefaultValue(FinanceIntegrationWriteRetryPolicyValues.None).IsRequired();
++        builder.Property(x => x.ExecutionAttemptCount).HasColumnName("execution_attempt_count").HasDefaultValue(0).IsRequired();
+         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+         builder.Property(x => x.ApprovedUtc).HasColumnName("approved_at");
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 931f3f2..9fcb3dd 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -316,6 +316,7 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is FinanceIntegrationConnection ||
+                 entry.Entity is FinanceIntegrationToken ||
+                 entry.Entity is FinanceIntegrationSyncState ||
++                entry.Entity is FinanceIntegrationWriteCommandRecord ||
+                 entry.Entity is FinanceExternalReference ||
+                 entry.Entity is FinanceIntegrationAuditEvent ||
+                 entry.Entity is FortnoxOAuthState ||
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationWriteApprovalService.cs b/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationWriteApprovalService.cs
+index 772a0d4..ea8d9ef 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationWriteApprovalService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FinanceIntegrationWriteApprovalService.cs
+@@ -106,6 +106,12 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
+             return new FinanceIntegrationWriteResult(request.ProviderKey, command.Id, command.ApprovalId, command.Status, "This accounting-system action has already completed.", false);
+         }
+ 
++        if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Failed && !command.RetrySupported)
++        {
++            throw new FortnoxApiException(
++                command.SafeFailureSummary ?? "This accounting-system action failed and cannot be retried automatically.",
++                null,
++                "not_retryable");
++        }
+         if (request.ApprovedApprovalId is not Guid approvalId || command.ApprovalId != approvalId)
+         {
+             throw new FortnoxApprovalRequiredException(command.ApprovalId ?? command.Id, "Approve this action before execution.");
+@@ -142,7 +148,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
+         }
+ 
+         var externalId = TryReadExternalId(responsePayload);
+-        command.MarkExecuted(externalId, _timeProvider.GetUtcNow().UtcDateTime);
++        command.MarkExecuted(externalId, 200, CreateSafeResponseSummary(responsePayload), _timeProvider.GetUtcNow().UtcDateTime);
+         if (command.ApprovalId is not Guid approvalId)
+         {
+             await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -206,7 +212,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
+             ? fortnoxException.Category
+             : exception.GetType().Name;
+ 
+-        command.MarkFailed(category, safeMessage, _timeProvider.GetUtcNow().UtcDateTime);
++        command.MarkFailed(category, safeMessage, (exception as FortnoxApiException)?.StatusCode is { } statusCode ? (int)statusCode : null, _timeProvider.GetUtcNow().UtcDateTime);
+         _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
+             Guid.NewGuid(),
+             check.CompanyId,
+@@ -306,6 +312,18 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
+             request.ApprovedApprovalId,
+             request.CommandType,
+             request.HttpMethod,
+@@ -329,4 +347,13 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
+             .FirstOrDefault(x => x.Key.Contains("Number", StringComparison.OrdinalIgnoreCase) || x.Key.Equals("id", StringComparison.OrdinalIgnoreCase))
+             .Value?.ToString();
+     }
++
++    private static string? CreateSafeResponseSummary(object? responsePayload)
++    {
++        if (responsePayload is null)
++        {
++            return "Fortnox accepted the request.";
++        }
++
++        var text = System.Text.Json.JsonSerializer.Serialize(responsePayload, FortnoxJson.Options);
++        return text.Length <= 1000 ? text : string.Concat(text.AsSpan(0, 997), "...");
++    }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs
+new file mode 100644
+index 0000000..51dfbb5
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs
+@@ -0,0 +1,135 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IFortnoxApiClient _fortnoxApiClient;
++    private readonly TimeProvider _timeProvider;
++
++    public FortnoxOutboundActionExecutor(
++        VirtualCompanyDbContext dbContext,
++        IFortnoxApiClient fortnoxApiClient,
++        TimeProvider timeProvider)
++    {
++        _dbContext = dbContext;
++        _fortnoxApiClient = fortnoxApiClient;
++        _timeProvider = timeProvider;
++    }
++
++    public async Task<FinanceIntegrationOutboundExecutionResult> ExecuteApprovedAsync(
++        Guid companyId,
++        Guid writeRequestId,
++        CancellationToken cancellationToken)
++    {
++        var command = await _dbContext.FinanceIntegrationWriteCommands
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == writeRequestId, cancellationToken)
++            ?? throw new KeyNotFoundException("Accounting-system action was not found.");
++
++        if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
++        {
++            return ToResult(command, "This accounting-system action has already completed.", executed: false);
++        }
++
++        if (command.Status is FinanceIntegrationWriteCommandRecordStatuses.Rejected or
++            FinanceIntegrationWriteCommandRecordStatuses.Expired or
++            FinanceIntegrationWriteCommandRecordStatuses.Cancelled)
++        {
++            await WriteAuditAsync(command, "write_skipped", FinanceIntegrationAuditOutcomes.Skipped, "This accounting-system action was not approved and was not sent to Fortnox.", cancellationToken);
++            return ToResult(command, "This accounting-system action was not approved and was not sent to Fortnox.", executed: false);
++        }
++
++        if (command.ApprovalId is not Guid approvalId)
++        {
++            throw new FortnoxApprovalRequiredException(command.Id, "Approve this action before data is sent to the accounting system.");
++        }
++
++        var approval = await _dbContext.ApprovalRequests
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == approvalId, cancellationToken)
++            ?? throw new FortnoxApprovalRequiredException(approvalId, "Approve this action before data is sent to the accounting system.");
++
++        if (approval.Status != Domain.Enums.ApprovalRequestStatus.Approved)
++        {
++            throw new FortnoxApprovalRequiredException(approvalId, "Approve this action before data is sent to the accounting system.");
++        }
++
++        var activeConnection = await _dbContext.FinanceIntegrationConnections
++            .AsNoTracking()
++            .Where(x =>
++                x.CompanyId == companyId &&
++                x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
++                x.Status == FinanceIntegrationConnectionStatuses.Connected &&
++                (!command.ConnectionId.HasValue || x.Id == command.ConnectionId.Value))
++            .OrderByDescending(x => x.ConnectedUtc ?? x.UpdatedUtc)
++            .FirstOrDefaultAsync(cancellationToken)
++            ?? throw new FortnoxApiException("Fortnox is not connected.", null, "authorization", requiresReconnect: true);
++
++        await WriteAuditAsync(command, "write_execution_started", FinanceIntegrationAuditOutcomes.Succeeded, "Approved accounting-system action is being sent to Fortnox.", cancellationToken);
++        var payload = ParsePayload(command.SanitizedPayloadJson);
++        var context = new FortnoxRequestContext(companyId, activeConnection.Id, command.CorrelationId, approvalId, command.ActorUserId);
++
++        try
++        {
++            JsonNode? response = command.HttpMethod switch
++            {
++                "POST" => await _fortnoxApiClient.PostAsync<JsonNode?, JsonNode?>(context, command.Path, payload, cancellationToken),
++                "PUT" => await _fortnoxApiClient.PutAsync<JsonNode?, JsonNode?>(context, command.Path, payload, cancellationToken),
++                "DELETE" => await ExecuteDeleteAsync(context, command.Path, cancellationToken),
++                _ => throw new FortnoxApiException("This Fortnox action type is not supported for execution.", null, "unsupported_action")
++            };
++
++            await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
++            return ToResult(command, "Fortnox accepted the approved accounting-system action.", executed: true);
++        }
++        catch (Exception exception) when (exception is FortnoxApiException or HttpRequestException or TaskCanceledException)
++        {
++            var safeSummary = exception is FortnoxApiException apiException
++                ? apiException.SafeMessage
++                : "Fortnox could not complete the approved accounting-system action.";
++            await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
++            return ToResult(command, safeSummary, executed: false);
++        }
++    }
++
++    private async Task<JsonNode?> ExecuteDeleteAsync(FortnoxRequestContext context, string path, CancellationToken cancellationToken)
++    {
++        await _fortnoxApiClient.DeleteAsync(context, path, cancellationToken);
++        return null;
++    }
++
++    private async Task WriteAuditAsync(
++        FinanceIntegrationWriteCommandRecord command,
++        string eventType,
++        string outcome,
++        string summary,
++        CancellationToken cancellationToken)
++    {
++        var alreadyRecorded = await _dbContext.FinanceIntegrationAuditEvents
++            .AsNoTracking()
++            .AnyAsync(x =>
++                x.CompanyId == command.CompanyId &&
++                x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
++                x.EventType == eventType &&
++                x.InternalRecordId == command.Id &&
++                x.CorrelationId == command.ApprovalId!.Value.ToString("N"),
++                cancellationToken);
++
++        if (alreadyRecorded)
++        {
++            return;
++        }
++
++        _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
++            Guid.NewGuid(),
++            command.CompanyId,
++            command.ConnectionId,
++            FinanceIntegrationProviderKeys.Fortnox,
++            eventType,
++            outcome,
++            command.CommandType,
++            command.Id,
++            command.ExternalId,
++            command.ApprovalId?.ToString("N"),
++            summary,
++            _timeProvider.GetUtcNow().UtcDateTime,
++            errorCount: outcome == FinanceIntegrationAuditOutcomes.Failed ? 1 : 0));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    private static JsonNode? ParsePayload(string sanitizedPayloadJson) =>
++        string.IsNullOrWhiteSpace(sanitizedPayloadJson)
++            ? new JsonObject()
++            : JsonNode.Parse(sanitizedPayloadJson) ?? new JsonObject();
++
++    private static FinanceIntegrationOutboundExecutionResult ToResult(
++        FinanceIntegrationWriteCommandRecord command,
++        string summary,
++        bool executed) =>
++        new(
++            FinanceIntegrationProviderKeys.Fortnox,
++            command.Id,
++            command.ApprovalId,
++            command.Status,
++            command.ResponseStatusCode,
++            command.SafeFailureSummary ?? command.SafeResponseSummary ?? summary,
++            executed);
++}
+diff --git a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+index 33018cc..416096d 100644
+--- a/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
++++ b/src/VirtualCompany.Infrastructure/Companies/CompanyApprovalRequestService.cs
+@@ -187,6 +187,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+ 
+         EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
+         await _dbContext.SaveChangesAsync(cancellationToken);
++        if (finalized &&
++            approval.Status == ApprovalRequestStatus.Approved &&
++            ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) == ApprovalTargetEntityType.FinanceIntegrationWrite)
++        {
++            await _serviceProvider.GetRequiredService<IFortnoxOutboundActionExecutor>().ExecuteApprovedAsync(companyId, approval.TargetEntityId, cancellationToken);
++        }
+         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+ 
+         return new ApprovalDecisionResultDto(
+@@ -342,6 +348,41 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+             }
+         }
++        else if (targetType == ApprovalTargetEntityType.FinanceIntegrationWrite)
++        {
++            var command = await _dbContext.FinanceIntegrationWriteCommands.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
++            var previousStatus = command.Status;
++            var now = DateTime.UtcNow;
++
++            if (approval.Status == ApprovalRequestStatus.Approved)
++            {
++                var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
++                command.MarkApproved(approval.Id, approver, now);
++                _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
++                    Guid.NewGuid(),
++                    command.CompanyId,
++                    command.ConnectionId,
++                    FinanceIntegrationProviderKeys.Fortnox,
++                    "write_approval_approved",
++                    FinanceIntegrationAuditOutcomes.Succeeded,
++                    command.CommandType,
++                    command.Id,
++                    null,
++                    approval.Id.ToString("N"),
++                    "Approved accounting-system action is ready to send to Fortnox.",
++                    now));
++                return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
++            }
++
++            if (approval.Status == ApprovalRequestStatus.Rejected)
++            {
++                command.MarkRejected(now);
++                return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
++            }
++
++            if (approval.Status == ApprovalRequestStatus.Expired)
++            {
++                command.MarkExpired(now);
++                return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
++            }
++        }
+ 
+         return null;
+     }
+@@ -1185,6 +1226,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
+             new(AuditTargetTypes.WorkflowInstance, id.ToString("N"), previousState, currentState, "workflow_instances");
+         public static LinkedEntityStateTransition ForAction(Guid id, string previousState, string currentState) =>
+             new(AuditTargetTypes.AgentToolExecution, id.ToString("N"), previousState, currentState, "agent_tool_executions");
++        public static LinkedEntityStateTransition ForFinanceIntegrationWrite(Guid id, string previousState, string currentState) =>
++            new(AuditTargetTypes.IntegrationConnection, id.ToString("N"), previousState, currentState, "fortnox_write_commands");
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index d84af95..b6ee96d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -109,6 +109,7 @@ public static class DependencyInjection
+         services.AddScoped<FinanceIntegrationWriteApprovalService>();
+         services.AddScoped<IFinanceIntegrationWriteApprovalService>(provider => provider.GetRequiredService<FinanceIntegrationWriteApprovalService>());
+         services.AddScoped<IFinanceIntegrationWriteCommandService>(provider => provider.GetRequiredService<FinanceIntegrationWriteApprovalService>());
++        services.AddScoped<IFortnoxOutboundActionExecutor, FortnoxOutboundActionExecutor>();
+         services.AddScoped<FortnoxSyncService>();
+         services.AddScoped<IFortnoxSyncService>(provider => provider.GetRequiredService<FortnoxSyncService>());
+         services.AddScoped<FortnoxFinanceIntegrationSyncService>();
+diff --git a/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs b/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs
+new file mode 100644
+index 0000000..9ff67db
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs
+@@ -0,0 +1,48 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/companies/{companyId:guid}/finance/integrations/fortnox/outbound-actions")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class FortnoxOutboundActionsController : ControllerBase
++{
++    private readonly IFortnoxOutboundActionExecutor _executor;
++
++    public FortnoxOutboundActionsController(IFortnoxOutboundActionExecutor executor)
++    {
++        _executor = executor;
++    }
++
++    [HttpPost("{writeRequestId:guid}/execute")]
++    public async Task<ActionResult<FinanceIntegrationOutboundExecutionResult>> ExecuteAsync(
++        Guid companyId,
++        Guid writeRequestId,
++        CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _executor.ExecuteApprovedAsync(companyId, writeRequestId, cancellationToken));
++        }
++        catch (FortnoxApprovalRequiredException ex)
++        {
++            return StatusCode(StatusCodes.Status409Conflict, new ProblemDetails
++            {
++                Title = "Approval required",
++                Detail = ex.SafeMessage,
++                Status = StatusCodes.Status409Conflict
++            });
++        }
++        catch (FortnoxApiException ex)
++        {
++            return StatusCode(StatusCodes.Status502BadGateway, new ProblemDetails
++            {
++                Title = "Fortnox action failed",
++                Detail = ex.SafeMessage,
++                Status = StatusCodes.Status502BadGateway
++            });
++        }
++        catch (KeyNotFoundException)
++        {
++            return NotFound();
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504180000_AddFortnoxOutboundActionExecutionState.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504180000_AddFortnoxOutboundActionExecutionState.cs
+new file mode 100644
+index 0000000..0200d57
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504180000_AddFortnoxOutboundActionExecutionState.cs
+@@ -0,0 +1,94 @@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[Migration("20260504180000_AddFortnoxOutboundActionExecutionState")]
++public partial class AddFortnoxOutboundActionExecutionState : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.AddColumn<int>(
++            name: "response_status_code",
++            table: "fortnox_write_commands",
++            type: "int",
++            nullable: true);
++
++        migrationBuilder.AddColumn<string>(
++            name: "safe_response_summary",
++            table: "fortnox_write_commands",
++            type: "nvarchar(1000)",
++            maxLength: 1000,
++            nullable: true);
++
++        migrationBuilder.AddColumn<bool>(
++            name: "retry_supported",
++            table: "fortnox_write_commands",
++            type: "bit",
++            nullable: false,
++            defaultValue: false);
++
++        migrationBuilder.AddColumn<string>(
++            name: "retry_policy",
++            table: "fortnox_write_commands",
++            type: "nvarchar(32)",
++            maxLength: 32,
++            nullable: false,
++            defaultValue: "none");
++
++        migrationBuilder.AddColumn<int>(
++            name: "execution_attempt_count",
++            table: "fortnox_write_commands",
++            type: "int",
++            nullable: false,
++            defaultValue: 0);
++
++        migrationBuilder.Sql("""
++            UPDATE fortnox_write_commands
++            SET retry_policy =
++                CASE
++                    WHEN entity_type IN ('payment', 'invoice_export', 'voucher_create') THEN 'none'
++                    ELSE 'transient_only'
++                END,
++                retry_supported =
++                CASE
++                    WHEN entity_type IN ('payment', 'invoice_export', 'voucher_create') THEN CAST(0 AS bit)
++                    ELSE CAST(1 AS bit)
++                END
++            """);
++
++        migrationBuilder.AddCheckConstraint(
++            name: "CK_fortnox_write_commands_status",
++            table: "fortnox_write_commands",
++            sql: "status IN ('awaiting_approval', 'approved', 'executing', 'executed', 'failed', 'rejected', 'expired', 'cancelled')");
++
++        migrationBuilder.AddCheckConstraint(
++            name: "CK_fortnox_write_commands_retry_policy",
++            table: "fortnox_write_commands",
++            sql: "retry_policy IN ('none', 'transient_only')");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropCheckConstraint(
++            name: "CK_fortnox_write_commands_status",
++            table: "fortnox_write_commands");
++
++        migrationBuilder.DropCheckConstraint(
++            name: "CK_fortnox_write_commands_retry_policy",
++            table: "fortnox_write_commands");
++
++        migrationBuilder.DropColumn(
++            name: "response_status_code",
++            table: "fortnox_write_commands");
++
++        migrationBuilder.DropColumn(
++            name: "safe_response_summary",
++            table: "fortnox_write_commands");
++
++        migrationBuilder.DropColumn(
++            name: "retry_supported",
++            table: "fortnox_write_commands");
++
++        migrationBuilder.DropColumn(
++            name: "retry_policy",
++            table: "fortnox_write_commands");
++
++        migrationBuilder.DropColumn(
++            name: "execution_attempt_count",
++            table: "fortnox_write_commands");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs
+index 9368b2e..d431f75 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs
+@@ -1,5 +1,6 @@
+ using System.Text.Json;
+ using VirtualCompany.Application.Finance;
++using VirtualCompany.Domain.Entities;
+ using Xunit;
+ 
+ namespace VirtualCompany.Api.Tests;
+@@ -75,6 +76,46 @@ public sealed class FortnoxWriteApprovalTests
+         Assert.DoesNotContain("token", exception.SafeMessage, StringComparison.OrdinalIgnoreCase);
+     }
+ 
++    [Fact]
++    public void Write_action_statuses_distinguish_rejected_expired_and_cancelled_without_execution()
++    {
++        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.Payment);
++
++        command.MarkRejected(DateTime.UtcNow);
++
++        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Rejected, command.Status);
++        Assert.Null(command.ExecutionStartedUtc);
++        Assert.Null(command.ExecutedUtc);
++    }
++
++    [Fact]
++    public void Sensitive_action_types_do_not_allow_automatic_retry()
++    {
++        var payment = CreateCommand(FinanceIntegrationWriteCommandTypes.Payment);
++        var record = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);
++
++        Assert.False(payment.RetrySupported);
++        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.None, payment.RetryPolicy);
++        Assert.True(record.RetrySupported);
++        Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);
++    }
++
++    [Fact]
++    public void Successful_execution_persists_safe_response_summary_and_status_code()
++    {
++        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.AccountingRecord);
++
++        command.MarkApproved(Guid.NewGuid(), Guid.NewGuid(), DateTime.UtcNow);
++        command.MarkExecutionStarted(DateTime.UtcNow);
++        command.MarkExecuted("1001", 200, """{"DocumentNumber":"1001"}""", DateTime.UtcNow);
++
++        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Executed, command.Status);
++        Assert.Equal(1, command.ExecutionAttemptCount);
++        Assert.Equal(200, command.ResponseStatusCode);
++        Assert.Contains("1001", command.SafeResponseSummary);
++    }
++
+     [Fact]
+     public void Real_fortnox_api_tests_are_opt_in_only()
+     {
+@@ -85,4 +126,25 @@ public sealed class FortnoxWriteApprovalTests
+ 
+         Assert.False(enabled);
+     }
++
++    private static FinanceIntegrationWriteCommandRecord CreateCommand(string commandType) =>
++        new(
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            Guid.NewGuid(),
++            commandType,
++            "POST",
++            "invoices",
++            "Example company",
++            """{"Invoice":{"Total":100}}""",
++            new string('a', 64),
++            """{"Invoice":{"Total":100}}""",
++            "correlation-1",
++            DateTime.UtcNow);
+ }
+END_OF_PATCH

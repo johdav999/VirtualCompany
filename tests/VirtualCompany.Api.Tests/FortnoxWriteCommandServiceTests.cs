@@ -47,23 +47,28 @@ public sealed class FortnoxWriteCommandServiceTests
         var payload = new { Invoice = new { CustomerNumber = "100", Total = 1200m } };
         var hash = FortnoxWritePayloadSanitizer.CreatePayloadHash(payload);
 
-        var request = new FortnoxWriteCommandRequest(
+        var request = new FinanceIntegrationWriteCommand(
+            FinanceIntegrationProviderKeys.Fortnox,
             companyId,
             Guid.NewGuid(),
             Guid.NewGuid(),
+            FinanceIntegrationWriteCommandTypes.InvoiceExport,
             "POST",
             "invoices",
             "Example company",
-            "invoices",
             FortnoxWritePayloadSanitizer.CreateSummary(payload),
             hash,
-            FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
+            new FinanceIntegrationWritePayload(
+                FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
+                payload.GetType().Name),
             Guid.NewGuid(),
             "correlation-1");
 
+        request.ProviderKey.Should().Be(FinanceIntegrationProviderKeys.Fortnox);
         request.CompanyId.Should().Be(companyId);
+        request.CommandType.Should().Be(FinanceIntegrationWriteCommandTypes.InvoiceExport);
         request.PayloadHash.Should().Be(hash);
-        request.SanitizedPayloadJson.Should().NotContain("access_token");
+        request.Payload.SanitizedJson.Should().NotContain("access_token");
         request.HttpMethod.Should().Be("POST");
         request.Path.Should().Be("invoices");
     }
@@ -90,20 +95,20 @@ public sealed class FortnoxWriteCommandServiceTests
         approval.LastCheck.PayloadSummary.Should().Contain("Acme AB");
     }
 
-    private sealed class CapturingApprovalService : IFortnoxWriteApprovalService
+    private sealed class CapturingApprovalService : IFinanceIntegrationWriteApprovalService
     {
         public Guid ApprovalId { get; } = Guid.NewGuid();
         public int EnsureApprovedCalls { get; private set; }
-        public FortnoxWriteApprovalCheck? LastCheck { get; private set; }
+        public FinanceIntegrationWriteApprovalCheck? LastCheck { get; private set; }
 
-        public Task EnsureApprovedAsync(FortnoxWriteApprovalCheck check, CancellationToken cancellationToken)
+        public Task EnsureApprovedAsync(FinanceIntegrationWriteApprovalCheck check, CancellationToken cancellationToken)
         {
             EnsureApprovedCalls++;
             LastCheck = check;
-            throw new FortnoxApprovalRequiredException(ApprovalId, "Fortnox writes require approval before data is sent to Fortnox.");
+            throw new FortnoxApprovalRequiredException(ApprovalId, "Approve this action before data is sent to the accounting system.");
         }
 
-        public Task RecordExecutionSucceededAsync(FortnoxWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken) => Task.CompletedTask;
-        public Task RecordExecutionFailedAsync(FortnoxWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task RecordExecutionSucceededAsync(FinanceIntegrationWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task RecordExecutionFailedAsync(FinanceIntegrationWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 }

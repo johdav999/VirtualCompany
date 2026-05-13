@@ -13,10 +13,37 @@ public sealed class FortnoxOptions
     public string AuthorizationUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/auth";
     public string TokenUrl { get; set; } = "https://apps.fortnox.se/oauth-v1/token";
     public string ApiBaseUrl { get; set; } = "https://api.fortnox.se/3";
+    public string AccountType { get; set; } = string.Empty;
     public int ApiMaxRetries { get; set; } = 3;
     public int ApiRetryBaseDelayMilliseconds { get; set; } = 200;
     public int ApiMaxRetryDelaySeconds { get; set; } = 30;
     public string[] Scopes { get; set; } = [];
+}
+
+public static class FortnoxScopeDefaults
+{
+    public static readonly string[] ImportSync =
+    [
+        "companyinformation",
+        "bookkeeping",
+        "customer",
+        "supplier",
+        "article",
+        "project",
+        "invoice",
+        "supplierinvoice"
+    ];
+
+    public static IReadOnlyList<string> Resolve(string[]? configuredScopes)
+    {
+        var scopes = configuredScopes?
+            .Where(scope => !string.IsNullOrWhiteSpace(scope))
+            .Select(scope => scope.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        return scopes is { Length: > 0 } ? scopes : ImportSync;
+    }
 }
 
 public sealed class FortnoxOptionsValidator : IValidateOptions<FortnoxOptions>

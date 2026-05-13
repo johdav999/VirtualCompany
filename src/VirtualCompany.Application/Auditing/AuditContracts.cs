@@ -155,6 +155,7 @@ public interface IAuditQueryService
 public static class AuditActorTypes
 {
     public const string User = "user";
+    public const string Human = User;
     public const string System = "system";
     public const string Agent = "agent";
 }
@@ -181,12 +182,15 @@ public static class AuditTargetTypes
     public const string CompanyNotification = "company_notification";
     public const string ProactiveMessage = "proactive_message";
     public const string AgentResponsibilityPolicy = "agent_responsibility_policy";
+    public const string IntegrationConnection = "integration_connection";
     public const string FiscalPeriod = "fiscal_period";
 }
 
 public static class AuditEventOutcomes
 {
     public const string Succeeded = "succeeded";
+    public const string Started = "started";
+    public const string Blocked = "blocked";
     public const string Denied = "denied";
     public const string Pending = "pending";
     public const string Failed = "failed";
@@ -258,11 +262,19 @@ public static class AuditEventActions
     public const string CompanyNotificationActioned = "company.notification.actioned";
     public const string ProactiveMessageDelivered = "proactive_message.delivered";
     public const string ProactiveMessageBlocked = "proactive_message.blocked";
-    public const string ReportingPeriodCloseValidationExecuted = "finance.reporting_period.close_validation.executed";
-    public const string ReportingPeriodLockApplied = "finance.reporting_period.lock.applied";
-    public const string ReportingPeriodLockRemoved = "finance.reporting_period.lock.removed";
-    public const string ReportingPeriodRegenerationBlocked = "finance.reporting_period.regeneration.blocked";
     public const string AgentResponsibilityOutOfScopeHandled = "agent.responsibility.out_of_scope_handled";
+    public const string ReportingPeriodCloseValidationExecuted = "reporting_period.close_validation.executed";
+    public const string ReportingPeriodLockApplied = "reporting_period.lock.applied";
+    public const string ReportingPeriodLockRemoved = "reporting_period.lock.removed";
+    public const string ReportingPeriodRegenerationBlocked = "reporting_period.regeneration.blocked";
+    public const string IntegrationConnectionDisconnected = "integration.connection.disconnected";
+    public const string SalesLeadQualified = "sales.lead.qualified";
+    public const string SalesLeadRejected = "sales.lead.rejected";
+    public const string SalesLeadConverted = "sales.lead.converted";
+    public const string SalesDealStageChanged = "sales.deal.stage_changed";
+    public const string SalesDealWon = "sales.deal.won";
+    public const string SalesDealLost = "sales.deal.lost";
+    public const string SalesEmailProcessed = "sales.email.processed";
 }
 
 public static class AuditBoundaryDecisionOutcomes

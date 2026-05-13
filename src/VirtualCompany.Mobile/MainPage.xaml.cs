@@ -551,7 +551,11 @@ public partial class MainPage : ContentPage
         }
     }
 
-    private static CompanyMembershipDto ToMembership(this ResolvedCompanyContextDto context) =>
+}
+
+internal static class ObservableCollectionExtensions
+{
+    public static CompanyMembershipDto ToMembership(this ResolvedCompanyContextDto context) =>
         new()
         {
             MembershipId = context.MembershipId,
@@ -560,10 +564,7 @@ public partial class MainPage : ContentPage
             MembershipRole = context.MembershipRole,
             Status = context.Status
         };
-}
 
-internal static class ObservableCollectionExtensions
-{
     public static void ReplaceWith<T>(this ObservableCollection<T> collection, IEnumerable<T> items)
     {
         collection.Clear();

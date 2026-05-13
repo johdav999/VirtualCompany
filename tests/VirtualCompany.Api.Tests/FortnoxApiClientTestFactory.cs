@@ -8,7 +8,7 @@ namespace VirtualCompany.Api.Tests;
 
 internal static class FortnoxApiClientTestFactory
 {
-    public static FortnoxApiClient Create(CapturingHandler handler, IFortnoxWriteApprovalService? approvalService = null)
+    public static FortnoxApiClient Create(CapturingHandler handler, IFinanceIntegrationWriteApprovalService? approvalService = null)
     {
         var httpClient = new HttpClient(handler)
         {

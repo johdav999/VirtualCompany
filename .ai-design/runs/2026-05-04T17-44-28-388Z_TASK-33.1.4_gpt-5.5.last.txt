@@ -1,0 +1,351 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs b/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
+index 9f9f6a1..0a6d9fd 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
+@@ -63,6 +63,42 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(result);
+     }
+ 
++    [HttpGet("api/companies/{companyId:guid}/finance/integrations/fortnox/oauth/start")]
++    public async Task<IActionResult> StartFortnoxOAuthAsync(
++        Guid companyId,
++        [FromQuery] string? returnUri,
++        [FromQuery] bool reconnect,
++        CancellationToken cancellationToken)
++    {
++        var provider = ResolveProvider(FinanceIntegrationProviderKeys.Fortnox);
++        if (provider is null)
++        {
++            return UnknownProvider(FinanceIntegrationProviderKeys.Fortnox);
++        }
++
++        FinanceIntegrationOAuthResult result;
++        try
++        {
++            result = await provider.OAuth.BuildAuthorizationUrlAsync(
++                new StartFinanceIntegrationOAuthConnectionCommand(
++                    provider.ProviderKey,
++                    companyId,
++                    ResolveUserId(),
++                    BuildReturnUri(returnUri, provider.ProviderKey),
++                    reconnect),
++                cancellationToken);
++        }
++        catch (InvalidOperationException ex) when (IsProviderDisabledException(provider.ProviderKey, ex))
++        {
++            return BadRequest(CreateProviderNotConfiguredProblem(provider.ProviderKey));
++        }
++
++        return Redirect(result.AuthorizationUrl.ToString());
++    }
++
++    [HttpGet("api/companies/{companyId:guid}/finance/integrations/fortnox/status")]
++    public Task<ActionResult<FinanceIntegrationConnectionStatusResult>> FortnoxStatusAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        StatusAsync(companyId, FinanceIntegrationProviderKeys.Fortnox, cancellationToken);
++
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/connect")]
+     public async Task<ActionResult<StartFinanceIntegrationConnectionResponse>> ConnectAsync(
+         Guid companyId,
+@@ -181,6 +217,28 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(result);
+     }
+ 
++    [HttpDelete("api/companies/{companyId:guid}/finance/integrations/fortnox")]
++    public Task<ActionResult<FinanceIntegrationConnectionDisconnectResult>> DisconnectFortnoxAsync(
++        Guid companyId,
++        CancellationToken cancellationToken) =>
++        DisconnectAsync(companyId, FinanceIntegrationProviderKeys.Fortnox, cancellationToken);
++
++    [HttpGet("api/companies/{companyId:guid}/finance/integrations/fortnox/oauth/callback")]
++    public Task<ActionResult<FinanceIntegrationOAuthCompletionResult>> FortnoxCallbackAsync(
++        Guid companyId,
++        [FromQuery] string? code,
++        [FromQuery] string? state,
++        [FromQuery] string? nonce,
++        [FromQuery] string? error,
++        CancellationToken cancellationToken) =>
++        CallbackAsync(
++            companyId,
++            FinanceIntegrationProviderKeys.Fortnox,
++            new CompleteFinanceIntegrationConnectionRequest(
++                code,
++                state ?? string.Empty,
++                nonce,
++                error),
++            cancellationToken);
++
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/write-command")]
+     public async Task<ActionResult<FinanceIntegrationWriteResult>> RequestWriteCommandApprovalAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+index 9db18e0..ef6652e 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+@@ -88,6 +88,7 @@ public interface IFortnoxTokenStore
+ {
+     Task<FortnoxTokenSnapshot?> GetAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken);
++    Task<FortnoxTokenSnapshot?> GetStatusAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken);
+     Task<FortnoxTokenSnapshot> UpsertConnectedAsync(Guid companyId, Guid userId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
+     Task<FortnoxTokenSnapshot> StoreRefreshResultAsync(Guid companyId, Guid connectionId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
+     Task MarkAsync(Guid companyId, Guid connectionId, string status, string safeReason, DateTime nowUtc, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+index 86b98c0..3dc3dcf 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+@@ -280,7 +280,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         CancellationToken cancellationToken)
+     {
+         EnsureCurrentTenantUser(query.CompanyId, query.UserId);
+-        var connection = await _tokenStore.GetAsync(query.CompanyId, null, cancellationToken);
++        var connection = await _tokenStore.GetStatusAsync(query.CompanyId, null, cancellationToken);
+ 
+         if (connection is null)
+         {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs
+index 2f0d89d..8c587cf 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthSessionStore.cs
+@@ -51,7 +51,7 @@ public sealed class EfFortnoxOAuthSessionStore : IFortnoxOAuthSessionStore
+             .AsNoTracking()
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.StateHash == stateHash, cancellationToken);
+ 
+-        if (record is null)
++        if (record is null || record.ExpiresUtc <= DateTime.UtcNow)
+         {
+             throw new UnauthorizedAccessException("Fortnox OAuth state was invalid or expired.");
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+index 4ac9410..fa6ab37 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+@@ -40,6 +40,24 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
+         return connection is null ? null : ToSnapshot(connection, includeTokens: true);
+     }
+ 
++    public async Task<FortnoxTokenSnapshot?> GetStatusAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken)
++    {
++        var query = _dbContext.FortnoxConnections
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId);
++
++        if (connectionId.HasValue)
++        {
++            query = query.Where(x => x.Id == connectionId.Value);
++        }
++
++        var connection = await query.SingleOrDefaultAsync(cancellationToken);
++
++        // Status surfaces must never decrypt or expose token material.
++        return connection is null
++            ? null
++            : ToSnapshot(connection, includeTokens: false);
++    }
++
+     public async Task<FortnoxTokenSnapshot> UpsertConnectedAsync(
+         Guid companyId,
+         Guid userId,
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504123000_AddFortnoxConnectionPersistenceForPostgreSql.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504123000_AddFortnoxConnectionPersistenceForPostgreSql.cs
+new file mode 100644
+index 0000000..e4bd906
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504123000_AddFortnoxConnectionPersistenceForPostgreSql.cs
+@@ -0,0 +1,200 @@
++using Microsoft.EntityFrameworkCore.Infrastructure;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++[Migration("20260504123000_AddFortnoxConnectionPersistenceForPostgreSql")]
++[DbContext(typeof(VirtualCompanyDbContext))]
++public partial class AddFortnoxConnectionPersistenceForPostgreSql : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider != "Npgsql.EntityFrameworkCore.PostgreSQL")
++        {
++            return;
++        }
++
++        migrationBuilder.Sql("""
++            CREATE TABLE IF NOT EXISTS fortnox_connections (
++                id uuid NOT NULL,
++                company_id uuid NOT NULL,
++                connected_by_user_id uuid NOT NULL,
++                status character varying(32) NOT NULL,
++                encrypted_access_token text NULL,
++                encrypted_refresh_token text NULL,
++                token_encryption_key_id character varying(128) NULL,
++                token_encryption_algorithm character varying(64) NULL,
++                access_token_expires_at timestamp with time zone NULL,
++                refresh_token_expires_at timestamp with time zone NULL,
++                granted_scopes_json text NOT NULL DEFAULT '[]',
++                provider_tenant_id character varying(256) NULL,
++                fortnox_company_name character varying(256) NULL,
++                provider_metadata_json text NOT NULL DEFAULT '{}',
++                connected_at timestamp with time zone NULL,
++                last_refresh_attempt_at timestamp with time zone NULL,
++                last_successful_refresh_at timestamp with time zone NULL,
++                last_validated_at timestamp with time zone NULL,
++                last_sync_at timestamp with time zone NULL,
++                last_error_summary character varying(1000) NULL,
++                disconnected_at timestamp with time zone NULL,
++                created_at timestamp with time zone NOT NULL,
++                updated_at timestamp with time zone NOT NULL,
++                CONSTRAINT pk_fortnox_connections PRIMARY KEY (id),
++                CONSTRAINT ak_fortnox_connections_company_id_id UNIQUE (company_id, id),
++                CONSTRAINT ck_fortnox_connections_status CHECK (status IN ('pending', 'connected', 'needs_reconnect', 'revoked', 'error', 'disconnected')),
++                CONSTRAINT fk_fortnox_connections_companies_company_id FOREIGN KEY (company_id) REFERENCES companies ("Id") ON DELETE CASCADE,
++                CONSTRAINT fk_fortnox_connections_users_connected_by_user_id FOREIGN KEY (connected_by_user_id) REFERENCES users ("Id") ON DELETE RESTRICT
++            );
++
++            CREATE UNIQUE INDEX IF NOT EXISTS ix_fortnox_connections_company_id ON fortnox_connections (company_id);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_connections_company_id_status ON fortnox_connections (company_id, status);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_connections_connected_by_user_id ON fortnox_connections (connected_by_user_id);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_connections_status ON fortnox_connections (status);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_connections_access_token_expires_at ON fortnox_connections (access_token_expires_at);
++            """);
++
++        migrationBuilder.Sql("""
++            CREATE TABLE IF NOT EXISTS fortnox_oauth_states (
++                id uuid NOT NULL,
++                company_id uuid NOT NULL,
++                user_id uuid NOT NULL,
++                connection_id uuid NULL,
++                state_hash character varying(128) NOT NULL,
++                created_at timestamp with time zone NOT NULL,
++                expires_at timestamp with time zone NOT NULL,
++                consumed_at timestamp with time zone NULL,
++                callback_received_at timestamp with time zone NULL,
++                redirect_uri character varying(2048) NULL,
++                code_verifier_ciphertext text NULL,
++                failure_reason character varying(1000) NULL,
++                CONSTRAINT pk_fortnox_oauth_states PRIMARY KEY (id),
++                CONSTRAINT fk_fortnox_oauth_states_companies_company_id FOREIGN KEY (company_id) REFERENCES companies ("Id") ON DELETE CASCADE,
++                CONSTRAINT fk_fortnox_oauth_states_users_user_id FOREIGN KEY (user_id) REFERENCES users ("Id") ON DELETE RESTRICT,
++                CONSTRAINT fk_fortnox_oauth_states_fortnox_connections_company_id_connection_id FOREIGN KEY (company_id, connection_id) REFERENCES fortnox_connections (company_id, id) ON DELETE NO ACTION
++            );
++
++            CREATE UNIQUE INDEX IF NOT EXISTS ix_fortnox_oauth_states_state_hash ON fortnox_oauth_states (state_hash);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_oauth_states_company_id_user_id ON fortnox_oauth_states (company_id, user_id);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_oauth_states_expires_at ON fortnox_oauth_states (expires_at);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_oauth_states_consumed_at ON fortnox_oauth_states (consumed_at);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_oauth_states_user_id ON fortnox_oauth_states (user_id);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_oauth_states_company_id_connection_id ON fortnox_oauth_states (company_id, connection_id);
++            """);
++
++        migrationBuilder.Sql("""
++            CREATE TABLE IF NOT EXISTS fortnox_sync_histories (
++                id uuid NOT NULL,
++                company_id uuid NOT NULL,
++                fortnox_connection_id uuid NOT NULL,
++                sync_type character varying(64) NOT NULL,
++                direction character varying(32) NOT NULL,
++                status character varying(32) NOT NULL,
++                started_at timestamp with time zone NOT NULL,
++                completed_at timestamp with time zone NULL,
++                triggered_by_user_id uuid NULL,
++                records_processed integer NOT NULL DEFAULT 0,
++                records_succeeded integer NOT NULL DEFAULT 0,
++                records_failed integer NOT NULL DEFAULT 0,
++                correlation_id character varying(128) NULL,
++                error_summary character varying(1000) NULL,
++                metadata_json text NOT NULL DEFAULT '{}',
++                CONSTRAINT pk_fortnox_sync_histories PRIMARY KEY (id),
++                CONSTRAINT ck_fortnox_sync_histories_direction CHECK (direction IN ('import', 'export', 'bidirectional')),
++                CONSTRAINT ck_fortnox_sync_histories_status CHECK (status IN ('running', 'succeeded', 'failed')),
++                CONSTRAINT ck_fortnox_sync_histories_records_processed_nonnegative CHECK (records_processed >= 0),
++                CONSTRAINT ck_fortnox_sync_histories_records_succeeded_nonnegative CHECK (records_succeeded >= 0),
++                CONSTRAINT ck_fortnox_sync_histories_records_failed_nonnegative CHECK (records_failed >= 0),
++                CONSTRAINT fk_fortnox_sync_histories_companies_company_id FOREIGN KEY (company_id) REFERENCES companies ("Id") ON DELETE CASCADE,
++                CONSTRAINT fk_fortnox_sync_histories_fortnox_connections_company_id_fortnox_connection_id FOREIGN KEY (company_id, fortnox_connection_id) REFERENCES fortnox_connections (company_id, id) ON DELETE CASCADE,
++                CONSTRAINT fk_fortnox_sync_histories_users_triggered_by_user_id FOREIGN KEY (triggered_by_user_id) REFERENCES users ("Id") ON DELETE SET NULL
++            );
++
++            CREATE INDEX IF NOT EXISTS ix_fortnox_sync_histories_company_id_fortnox_connection_id_started_at ON fortnox_sync_histories (company_id, fortnox_connection_id, started_at);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_sync_histories_status ON fortnox_sync_histories (status);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_sync_histories_company_id_correlation_id ON fortnox_sync_histories (company_id, correlation_id);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_sync_histories_triggered_by_user_id ON fortnox_sync_histories (triggered_by_user_id);
++            """);
++
++        migrationBuilder.Sql("""
++            CREATE TABLE IF NOT EXISTS fortnox_external_references (
++                id uuid NOT NULL,
++                company_id uuid NOT NULL,
++                fortnox_connection_id uuid NULL,
++                entity_type character varying(64) NOT NULL,
++                internal_entity_id uuid NOT NULL,
++                external_entity_type character varying(64) NOT NULL,
++                external_id character varying(256) NOT NULL,
++                external_display_reference character varying(128) NULL,
++                last_synced_at timestamp with time zone NULL,
++                created_at timestamp with time zone NOT NULL,
++                updated_at timestamp with time zone NOT NULL,
++                CONSTRAINT pk_fortnox_external_references PRIMARY KEY (id),
++                CONSTRAINT fk_fortnox_external_references_companies_company_id FOREIGN KEY (company_id) REFERENCES companies ("Id") ON DELETE CASCADE,
++                CONSTRAINT fk_fortnox_external_references_fortnox_connections_company_id_fortnox_connection_id FOREIGN KEY (company_id, fortnox_connection_id) REFERENCES fortnox_connections (company_id, id) ON DELETE NO ACTION
++            );
++
++            CREATE UNIQUE INDEX IF NOT EXISTS ix_fortnox_external_references_company_id_entity_type_internal_entity_id_external_entity_type ON fortnox_external_references (company_id, entity_type, internal_entity_id, external_entity_type);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_external_references_company_id_external_entity_type_external_id ON fortnox_external_references (company_id, external_entity_type, external_id);
++            CREATE INDEX IF NOT EXISTS ix_fortnox_external_references_company_id_fortnox_connection_id ON fortnox_external_references (company_id, fortnox_connection_id);
++            """);
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        if (ActiveProvider != "Npgsql.EntityFrameworkCore.PostgreSQL")
++        {
++            return;
++        }
++
++        migrationBuilder.Sql("""
++            DROP TABLE IF EXISTS fortnox_external_references;
++            DROP TABLE IF EXISTS fortnox_sync_histories;
++            DROP TABLE IF EXISTS fortnox_oauth_states;
++            DROP TABLE IF EXISTS fortnox_connections;
++            """);
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs
+index 14e0f3e..1bca9de 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxTokenStoreTests.cs
+@@ -34,6 +34,31 @@ public sealed class FortnoxTokenStoreTests
+         Assert.Null(snapshot.RefreshToken);
+     }
+ 
++    [Fact]
++    public async Task GetStatusAsync_returns_safe_snapshot_without_decrypted_tokens()
++    {
++        var companyId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext();
++        var store = new FortnoxTokenStore(dbContext, CreateEncryption());
++        await store.UpsertConnectedAsync(
++            companyId,
++            userId,
++            new FortnoxOAuthTokenResult(
++                "plain-access-token",
++                "plain-refresh-token",
++                DateTime.UtcNow.AddHours(1),
++                ["bookkeeping"],
++                "tenant-1"),
++            DateTime.UtcNow,
++            CancellationToken.None);
++
++        var snapshot = await store.GetStatusAsync(companyId, null, CancellationToken.None);
++
++        Assert.NotNull(snapshot);
++        Assert.Equal("connected", snapshot!.Status);
++        Assert.Null(snapshot.AccessToken);
++        Assert.Null(snapshot.RefreshToken);
++    }
++
+     [Fact]
+     public async Task DisconnectAsync_clears_active_token_material()
+     {
+END_OF_PATCH

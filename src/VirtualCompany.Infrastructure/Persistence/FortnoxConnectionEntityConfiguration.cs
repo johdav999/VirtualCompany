@@ -29,25 +29,34 @@ internal sealed class FortnoxConnectionEntityConfiguration : IEntityTypeConfigur
             .IsRequired();
         builder.Property(x => x.EncryptedAccessToken).HasColumnName("encrypted_access_token");
         builder.Property(x => x.EncryptedRefreshToken).HasColumnName("encrypted_refresh_token");
+        builder.Property(x => x.TokenEncryptionKeyId).HasColumnName("token_encryption_key_id").HasMaxLength(128);
+        builder.Property(x => x.TokenEncryptionAlgorithm).HasColumnName("token_encryption_algorithm").HasMaxLength(64);
         builder.Property(x => x.AccessTokenExpiresUtc).HasColumnName("access_token_expires_at");
+        builder.Property(x => x.RefreshTokenExpiresUtc).HasColumnName("refresh_token_expires_at");
         builder.Property(x => x.GrantedScopes)
             .HasColumnName("granted_scopes_json")
             .HasJsonConversion<List<string>>()
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonArrayDefault)
             .IsRequired();
         builder.Property(x => x.ProviderTenantId).HasColumnName("provider_tenant_id").HasMaxLength(256);
+        builder.Property(x => x.FortnoxCompanyName).HasColumnName("fortnox_company_name").HasMaxLength(256);
         HasJsonObjectConversion(builder.Property(x => x.ProviderMetadata).HasColumnName("provider_metadata_json"))
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.ConnectedUtc).HasColumnName("connected_at");
         builder.Property(x => x.LastRefreshAttemptUtc).HasColumnName("last_refresh_attempt_at");
         builder.Property(x => x.LastSuccessfulRefreshUtc).HasColumnName("last_successful_refresh_at");
+        builder.Property(x => x.LastValidatedUtc).HasColumnName("last_validated_at");
+        builder.Property(x => x.LastSyncUtc).HasColumnName("last_sync_at");
         builder.Property(x => x.LastErrorSummary).HasColumnName("last_error_summary").HasMaxLength(1000);
+        builder.Property(x => x.DisconnectedUtc).HasColumnName("disconnected_at");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => x.CompanyId).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status });
+        builder.HasIndex(x => x.Status);
+        builder.HasIndex(x => x.AccessTokenExpiresUtc);
 
         builder.HasOne(x => x.Company)
             .WithMany()

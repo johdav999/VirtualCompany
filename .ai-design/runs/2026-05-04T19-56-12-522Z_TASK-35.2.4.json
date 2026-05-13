@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-35.2.4",
+  "promptPath": ".ai-design/prompts/TASK-35.2.4.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T19:56:12.522Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T19-56-12-522Z_TASK-35.2.4_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T19-56-12-522Z_TASK-35.2.4.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T20:00:30.979Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": ", saved.OriginalGeneratedBody);\n+    }\n+\n+    [Fact]\n+    public async Task Launch_blocks_duplicate_offer_when_matching_campaign_was_sent_within_lookback()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = Client(seed.CompanyAId);\n+        var first = await client.PostAsJsonAsync(\"/api/sales/campaigns\", ValidCampaign(seed.ContactAId, \"Renewal duplicate\"));\n+        var firstCampaign = await first.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();\n+        await client.PostAsJsonAsync($\"/api/sales/campaigns/{firstCampaign!.Id}/launch\", new { });\n+        await _factory.ExecuteDbContextAsync(async dbContext =>\n+        {\n+            var sent = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().FirstAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == firstCampaign.Id);\n+            sent.MarkSent(\"test\", null, \"duplicate-provider-message\", \"duplicate-thread\", null, SalesStatuses.Delivered, DateTime.UtcNow, sent.CurrentDraftSubject, sent.CurrentDraftBody);\n+            await dbContext.SaveChangesAsync();\n+        });\n+\n+        var second = await client.PostAsJsonAsync(\"/api/sales/campaigns\", ValidCampaign(seed.ContactAId, \"Renewal duplicate\"));\n+        var secondCampaign = await second.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();\n+        await client.PostAsJsonAsync($\"/api/sales/campaigns/{secondCampaign!.Id}/launch\", new { });\n+\n+        Assert.Equal(0, await _factory.ExecuteDbContextAsync(dbContext => dbContext.SalesSequenceExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == secondCampaign.Id)));\n+        Assert.True(await _factory.ExecuteDbContextAsync(dbContext => dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyAId && x.Action == \"sales.sequence.duplicate_offer_blocked\")));\n+    }\n+\n     [Fact]\n     public async Task Reply_and_deal_created_cancel_pending_future_steps_for_contact()\n     {\nEND_OF_PATCH\n",
+  "stderrTail": "ratedBody);\n+    }\n+\n+    [Fact]\n+    public async Task Launch_blocks_duplicate_offer_when_matching_campaign_was_sent_within_lookback()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = Client(seed.CompanyAId);\n+        var first = await client.PostAsJsonAsync(\"/api/sales/campaigns\", ValidCampaign(seed.ContactAId, \"Renewal duplicate\"));\n+        var firstCampaign = await first.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();\n+        await client.PostAsJsonAsync($\"/api/sales/campaigns/{firstCampaign!.Id}/launch\", new { });\n+        await _factory.ExecuteDbContextAsync(async dbContext =>\n+        {\n+            var sent = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().FirstAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == firstCampaign.Id);\n+            sent.MarkSent(\"test\", null, \"duplicate-provider-message\", \"duplicate-thread\", null, SalesStatuses.Delivered, DateTime.UtcNow, sent.CurrentDraftSubject, sent.CurrentDraftBody);\n+            await dbContext.SaveChangesAsync();\n+        });\n+\n+        var second = await client.PostAsJsonAsync(\"/api/sales/campaigns\", ValidCampaign(seed.ContactAId, \"Renewal duplicate\"));\n+        var secondCampaign = await second.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();\n+        await client.PostAsJsonAsync($\"/api/sales/campaigns/{secondCampaign!.Id}/launch\", new { });\n+\n+        Assert.Equal(0, await _factory.ExecuteDbContextAsync(dbContext => dbContext.SalesSequenceExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == secondCampaign.Id)));\n+        Assert.True(await _factory.ExecuteDbContextAsync(dbContext => dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyAId && x.Action == \"sales.sequence.duplicate_offer_blocked\")));\n+    }\n+\n     [Fact]\n     public async Task Reply_and_deal_created_cancel_pending_future_steps_for_contact()\n     {\nEND_OF_PATCH\ntokens used\n134,498\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

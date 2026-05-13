@@ -1,7 +1,11 @@
 using Microsoft.Data.Sqlite;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Api.Controllers;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Infrastructure;
 using VirtualCompany.Infrastructure.Finance;
@@ -96,8 +100,84 @@ public sealed class FinanceIntegrationFoundationTests
         Assert.IsType<FortnoxFinanceIntegrationProvider>(provider);
         Assert.Same(provider, registry.Resolve(FinanceIntegrationProviderKeys.Fortnox));
         Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.ProviderKey);
+        Assert.IsAssignableFrom<IFinanceIntegrationOAuthService>(provider.OAuth);
+        Assert.IsAssignableFrom<IFinanceIntegrationSyncService>(provider.Sync);
+        Assert.IsAssignableFrom<IFinanceIntegrationWriteCommandService>(provider.WriteCommands);
+        Assert.IsAssignableFrom<IFinanceIntegrationMapper>(provider.Mapper);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.OAuth.ProviderKey);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.Sync.ProviderKey);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.WriteCommands.ProviderKey);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, provider.Mapper.ProviderKey);
         Assert.IsType<FortnoxFinanceIntegrationProvider>(
             scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
+    }
+
+    [Fact]
+    public void Infrastructure_registration_exposes_fortnox_services_through_generic_provider_abstraction()
+    {
+        using var serviceProvider = BuildInfrastructureServiceProvider();
+        using var scope = serviceProvider.CreateScope();
+        var provider = scope.ServiceProvider
+            .GetRequiredService<IFinanceIntegrationProviderResolver>()
+            .GetRequired(FinanceIntegrationProviderKeys.Fortnox);
+
+        Assert.Same(
+            scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationOAuthService>(),
+            provider.OAuth);
+        Assert.Same(
+            scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationSyncService>(),
+            provider.Sync);
+        Assert.Same(
+            scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationWriteCommandService>(),
+            provider.WriteCommands);
+        Assert.Same(
+            scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationMapper>(),
+            provider.Mapper);
+    }
+
+    [Fact]
+    public async Task Fortnox_sync_can_be_triggered_through_generic_adapter()
+    {
+        var companyId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        var fortnoxSyncService = new StubFortnoxSyncService(companyId, connectionId);
+        var adapter = new FortnoxFinanceIntegrationSyncService(fortnoxSyncService);
+
+        var result = await adapter.SyncAsync(
+            new RunFinanceIntegrationSyncCommand(
+                FinanceIntegrationProviderKeys.Fortnox,
+                companyId,
+                connectionId,
+                "correlation"),
+            CancellationToken.None);
+
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, result.ProviderKey);
+        Assert.Equal(companyId, result.CompanyId);
+        Assert.Equal(connectionId, result.ConnectionId);
+        Assert.Equal("correlation", fortnoxSyncService.LastSyncCommand?.CorrelationId);
+        Assert.Contains(result.Entities, entity => entity.EntityType == "invoices" && entity.Created == 1);
+    }
+
+    [Fact]
+    public async Task Fortnox_oauth_token_handling_is_available_through_generic_adapter()
+    {
+        var companyId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        var fortnoxOAuthService = new StubFortnoxOAuthService();
+        var adapter = new FortnoxFinanceIntegrationOAuthService(fortnoxOAuthService);
+
+        var result = await adapter.GetValidAccessTokenAsync(
+            new RefreshFinanceIntegrationAccessTokenCommand(
+                FinanceIntegrationProviderKeys.Fortnox,
+                companyId,
+                connectionId),
+            CancellationToken.None);
+
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, result.ProviderKey);
+        Assert.True(result.Succeeded);
+        Assert.Equal("access-token", result.AccessToken);
+        Assert.Equal(companyId, fortnoxOAuthService.LastRefreshCommand?.CompanyId);
+        Assert.Equal(connectionId, fortnoxOAuthService.LastRefreshCommand?.ConnectionId);
     }
 
     [Fact]
@@ -111,6 +191,56 @@ public sealed class FinanceIntegrationFoundationTests
             () => resolver.GetRequired("unknown"));
 
         Assert.Equal("unknown", exception.ProviderKey);
+    }
+
+    [Fact]
+    public async Task Provider_key_status_route_uses_registered_provider()
+    {
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var oauth = new CapturingFinanceIntegrationOAuthService();
+        var controller = CreateFinanceIntegrationController(companyId, userId, new StubFinanceIntegrationProvider(oauth: oauth));
+
+        var response = await controller.StatusAsync(companyId, FinanceIntegrationProviderKeys.Fortnox, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var result = Assert.IsType<FinanceIntegrationConnectionStatusResult>(ok.Value);
+        Assert.True(result.IsConnected);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, result.ProviderKey);
+        Assert.Equal(companyId, oauth.LastStatusQuery?.CompanyId);
+        Assert.Equal(userId, oauth.LastStatusQuery?.UserId);
+    }
+
+    [Fact]
+    public async Task Provider_metadata_route_returns_registered_provider_status()
+    {
+        var companyId = Guid.NewGuid();
+        var provider = new StubFinanceIntegrationProvider();
+        var controller = CreateFinanceIntegrationController(companyId, Guid.NewGuid(), provider);
+
+        var response = await controller.ProvidersAsync(companyId, CancellationToken.None);
+
+        var ok = Assert.IsType<OkObjectResult>(response.Result);
+        var providers = Assert.IsAssignableFrom<IReadOnlyList<FinanceIntegrationConnectionsController.FinanceIntegrationProviderMetadataResponse>>(ok.Value);
+        var metadata = Assert.Single(providers);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, metadata.ProviderKey);
+        Assert.Equal("Fortnox", metadata.DisplayName);
+        Assert.Contains("invoices", metadata.Capabilities);
+        Assert.True(metadata.Status.IsConnected);
+    }
+
+    [Fact]
+    public async Task Unknown_provider_key_route_returns_clear_not_found()
+    {
+        var companyId = Guid.NewGuid();
+        var controller = CreateFinanceIntegrationController(companyId, Guid.NewGuid(), new StubFinanceIntegrationProvider());
+
+        var response = await controller.StatusAsync(companyId, "unknown", CancellationToken.None);
+
+        var notFound = Assert.IsType<NotFoundObjectResult>(response.Result);
+        var problem = Assert.IsType<ProblemDetails>(notFound.Value);
+        Assert.Equal(404, problem.Status);
+        Assert.Contains("unknown", problem.Detail);
     }
 
     private static ServiceProvider BuildInfrastructureServiceProvider()
@@ -183,4 +313,170 @@ public sealed class FinanceIntegrationFoundationTests
             new DbContextOptionsBuilder<VirtualCompanyDbContext>()
                 .UseSqlite(connection)
                 .Options);
+
+    private static FinanceIntegrationConnectionsController CreateFinanceIntegrationController(
+        Guid companyId,
+        Guid userId,
+        IFinanceIntegrationProvider provider) =>
+        new(
+            new TestCompanyContextAccessor(companyId, userId),
+            new SingleProviderRegistry(provider),
+            new TestWebHostEnvironment());
+
+    private sealed class StubFortnoxSyncService(Guid companyId, Guid connectionId) : IFortnoxSyncService
+    {
+        public RunFortnoxSyncCommand? LastSyncCommand { get; private set; }
+
+        public Task<FortnoxSyncResult> SyncAsync(RunFortnoxSyncCommand command, CancellationToken cancellationToken)
+        {
+            LastSyncCommand = command;
+            return Task.FromResult(new FortnoxSyncResult(
+                companyId,
+                connectionId,
+                DateTime.UtcNow.AddMinutes(-1),
+                DateTime.UtcNow,
+                "succeeded",
+                Created: 1,
+                Updated: 2,
+                Skipped: 3,
+                Errors: 0,
+                [new FortnoxEntitySyncResult("invoices", Created: 1, Updated: 0, Skipped: 0, Errors: 0)]));
+        }
+
+        public Task<FortnoxSyncHistoryResult> GetHistoryAsync(GetFortnoxSyncHistoryQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(new FortnoxSyncHistoryResult(query.CompanyId, []));
+    }
+
+    private sealed class StubFortnoxOAuthService : IFortnoxOAuthService
+    {
+        public RefreshFortnoxAccessTokenCommand? LastRefreshCommand { get; private set; }
+
+        public Task<FortnoxOAuthStartResult> BuildAuthorizationUrlAsync(StartFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FortnoxOAuthStartResult(new Uri("https://apps.fortnox.se/oauth-v1/auth"), DateTime.UtcNow.AddMinutes(10)));
+
+        public Task<FortnoxOAuthCompletionResult> HandleCallbackAsync(CompleteFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FortnoxOAuthCompletionResult(Guid.NewGuid(), command.CompanyId, "connected", command.ProviderError is null ? null : new Uri("https://localhost/")));
+
+        public Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(RefreshFortnoxAccessTokenCommand command, CancellationToken cancellationToken)
+        {
+            LastRefreshCommand = command;
+            return Task.FromResult(FortnoxAccessTokenResult.Success("access-token", DateTime.UtcNow.AddMinutes(30)));
+        }
+
+        public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), null, null, DateTime.UtcNow));
+
+        public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task<FortnoxConnectionDisconnectResult> DisconnectAsync(DisconnectFortnoxConnectionCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FortnoxConnectionDisconnectResult(command.CompanyId, Guid.NewGuid(), "disconnected", DateTime.UtcNow, "Fortnox has been disconnected."));
+    }
+
+    private sealed class SingleProviderRegistry(IFinanceIntegrationProvider provider) : IFinanceIntegrationProviderRegistry
+    {
+        public IReadOnlyCollection<IFinanceIntegrationProvider> Providers { get; } = [provider];
+
+        public IFinanceIntegrationProvider Resolve(string providerKey) => GetRequired(providerKey);
+
+        public IFinanceIntegrationProvider GetRequired(string providerKey) =>
+            string.Equals(providerKey, provider.ProviderKey, StringComparison.OrdinalIgnoreCase)
+                ? provider
+                : throw new FinanceIntegrationProviderNotFoundException(providerKey);
+    }
+
+    private sealed class StubFinanceIntegrationProvider(
+        IFinanceIntegrationOAuthService? oauth = null,
+        IFinanceIntegrationSyncService? sync = null,
+        IFinanceIntegrationWriteCommandService? writeCommands = null,
+        IFinanceIntegrationMapper? mapper = null) : IFinanceIntegrationProvider
+    {
+        public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
+        public string DisplayName => "Fortnox";
+        public IReadOnlyCollection<string> Capabilities { get; } = ["invoices", "payments", "write"];
+        public IFinanceIntegrationOAuthService OAuth { get; } = oauth ?? new CapturingFinanceIntegrationOAuthService();
+        public IFinanceIntegrationSyncService Sync { get; } = sync ?? new StubFinanceIntegrationSyncService();
+        public IFinanceIntegrationWriteCommandService WriteCommands { get; } = writeCommands ?? new StubFinanceIntegrationWriteCommandService();
+        public IFinanceIntegrationMapper Mapper { get; } = mapper ?? new StubFinanceIntegrationMapper();
+    }
+
+    private sealed class CapturingFinanceIntegrationOAuthService : IFinanceIntegrationOAuthService
+    {
+        public GetFinanceIntegrationConnectionStatusQuery? LastStatusQuery { get; private set; }
+        public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
+
+        public Task<FinanceIntegrationOAuthResult> BuildAuthorizationUrlAsync(StartFinanceIntegrationOAuthConnectionCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationOAuthResult(ProviderKey, new Uri("https://apps.fortnox.se/oauth-v1/auth"), DateTime.UtcNow.AddMinutes(10)));
+
+        public Task<FinanceIntegrationOAuthCompletionResult> HandleCallbackAsync(CompleteFinanceIntegrationOAuthConnectionCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationOAuthCompletionResult(ProviderKey, Guid.NewGuid(), command.CompanyId, "connected", null));
+
+        public Task<FinanceIntegrationAccessTokenResult> GetValidAccessTokenAsync(RefreshFinanceIntegrationAccessTokenCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationAccessTokenResult(ProviderKey, true, "access-token", DateTime.UtcNow.AddMinutes(30), false, null));
+
+        public Task<FinanceIntegrationConnectionStatusResult> GetStatusAsync(GetFinanceIntegrationConnectionStatusQuery query, CancellationToken cancellationToken)
+        {
+            LastStatusQuery = query;
+            return Task.FromResult(new FinanceIntegrationConnectionStatusResult(ProviderKey, true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), null, null));
+        }
+
+        public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task<FinanceIntegrationConnectionDisconnectResult> DisconnectAsync(DisconnectFinanceIntegrationConnectionCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationConnectionDisconnectResult(ProviderKey, command.CompanyId, Guid.NewGuid(), "disconnected", DateTime.UtcNow, "Disconnected."));
+    }
+
+    private sealed class StubFinanceIntegrationSyncService : IFinanceIntegrationSyncService
+    {
+        public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
+
+        public Task<FinanceIntegrationSyncResult> SyncAsync(RunFinanceIntegrationSyncCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationSyncResult(ProviderKey, command.CompanyId, command.ConnectionId ?? Guid.NewGuid(), DateTime.UtcNow, DateTime.UtcNow, "succeeded", 0, 0, 0, 0, []));
+
+        public Task<FinanceIntegrationSyncHistoryResult> GetHistoryAsync(GetFinanceIntegrationSyncHistoryQuery query, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationSyncHistoryResult(ProviderKey, query.CompanyId, []));
+    }
+
+    private sealed class StubFinanceIntegrationWriteCommandService : IFinanceIntegrationWriteCommandService
+    {
+        public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
+
+        public Task<FinanceIntegrationWriteResult> RequestApprovalAsync(FinanceIntegrationWriteCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationWriteResult(ProviderKey, command.WriteRequestId, Guid.NewGuid(), "awaiting_approval", "Approval required.", false));
+
+        public Task<FinanceIntegrationWriteResult> EnsureApprovedForExecutionAsync(FinanceIntegrationWriteCommand command, CancellationToken cancellationToken) =>
+            Task.FromResult(new FinanceIntegrationWriteResult(ProviderKey, command.WriteRequestId, command.ApprovedApprovalId, "approved", "Approved.", true));
+
+        public Task RecordExecutionSucceededAsync(FinanceIntegrationWriteCommand command, object? responsePayload, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+
+        public Task RecordExecutionFailedAsync(FinanceIntegrationWriteCommand command, Exception exception, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+    }
+
+    private sealed class StubFinanceIntegrationMapper : IFinanceIntegrationMapper
+    {
+        public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
+    }
+
+    private sealed class TestCompanyContextAccessor(Guid companyId, Guid userId) : ICompanyContextAccessor
+    {
+        public Guid? CompanyId { get; private set; } = companyId;
+        public Guid? UserId { get; } = userId;
+        public bool IsResolved => CompanyId.HasValue;
+        public ResolvedCompanyMembershipContext? Membership => null;
+        public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
+        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext) => CompanyId = companyContext?.CompanyId;
+    }
+
+    private sealed class TestWebHostEnvironment : IWebHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = "Development";
+        public string ApplicationName { get; set; } = "VirtualCompany.Api.Tests";
+        public string WebRootPath { get; set; } = string.Empty;
+        public Microsoft.Extensions.FileProviders.IFileProvider WebRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
+        public string ContentRootPath { get; set; } = string.Empty;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } = new Microsoft.Extensions.FileProviders.NullFileProvider();
+    }
 }

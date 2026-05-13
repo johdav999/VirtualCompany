@@ -74,4 +74,30 @@ public sealed class FortnoxMappingServiceTests
         Assert.Equal("Fortnox voucher A-42", result.Description);
         Assert.Equal(99.95m, result.Amount);
     }
+
+    [Fact]
+    public void Supplier_invoice_mapping_normalizes_paid_status_and_supplier_identity()
+    {
+        var result = _mapper.MapSupplierInvoice(new FortnoxSupplierInvoice
+        {
+            GivenNumber = "SI-42",
+            SupplierNumber = "S-1",
+            SupplierName = " Office AB ",
+            InvoiceDate = "2026-04-10",
+            DueDate = "2026-05-10",
+            Total = 500m,
+            Balance = 500m,
+            Currency = "eur",
+            Booked = true,
+            LastModified = "2026-04-30T10:00:00Z"
+        });
+
+        Assert.Equal("SI-42", result.ExternalId);
+        Assert.Equal("S-1", result.SupplierNumber);
+        Assert.Equal("Office AB", result.SupplierName);
+        Assert.Equal("EUR", result.Currency);
+        Assert.Equal("approved", result.Status);
+        Assert.Equal(FinanceSettlementStatuses.Unpaid, result.SettlementStatus);
+        Assert.Equal(new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc), result.ExternalUpdatedUtc);
+    }
 }

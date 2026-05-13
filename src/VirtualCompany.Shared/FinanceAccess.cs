@@ -5,6 +5,7 @@ public static class FinancePermissions
     public const string View = "finance.view";
     public const string Edit = "finance.edit";
     public const string Approve = "finance.approve";
+    public const string ManageIntegrations = "finance.integrations.manage";
     public const string SandboxAdmin = "finance.sandbox_admin";
 }
 
@@ -24,6 +25,12 @@ public static class FinanceAccess
         "owner",
         "admin",
         "tester"
+    };
+
+    private static readonly HashSet<string> FinanceIntegrationManagerRoleValues = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "owner",
+        "admin"
     };
 
     private static readonly HashSet<string> FinanceTransactionEditRoleValues = new(StringComparer.OrdinalIgnoreCase)
@@ -51,6 +58,7 @@ public static class FinanceAccess
     public static IReadOnlyCollection<string> ViewRoles => FinanceViewRoleValues;
     public static IReadOnlyCollection<string> SandboxAdminRoles => FinanceSandboxAdminRoleValues;
     public static IReadOnlyCollection<string> EditRoles => FinanceTransactionEditRoleValues;
+    public static IReadOnlyCollection<string> IntegrationManagerRoles => FinanceIntegrationManagerRoleValues;
     public static IReadOnlyCollection<string> InvoiceApprovalRoles => FinanceInvoiceApprovalRoleValues;
 
     public static bool CanView(string? membershipRole) =>
@@ -63,6 +71,10 @@ public static class FinanceAccess
     public static bool CanAccessSandboxAdmin(string? membershipRole) =>
         !string.IsNullOrWhiteSpace(membershipRole) &&
         FinanceSandboxAdminRoleValues.Contains(membershipRole.Trim());
+
+    public static bool CanManageFinanceIntegrations(string? membershipRole) =>
+        !string.IsNullOrWhiteSpace(membershipRole) &&
+        FinanceIntegrationManagerRoleValues.Contains(membershipRole.Trim());
 
     public static bool CanManageSimulation(string? membershipRole) =>
         !string.IsNullOrWhiteSpace(membershipRole) &&

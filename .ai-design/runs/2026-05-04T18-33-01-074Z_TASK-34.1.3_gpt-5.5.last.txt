@@ -1,0 +1,117 @@
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -149,6 +149,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+ 
+     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
+ 
++    public override int SaveChanges()
++    {
++        ValidateCompanyOwnedMutations();
++        ApplyFinanceSourceTrackingDefaults();
++        EnsureBankTransactionPostingStates();
++
++        return base.SaveChanges();
++    }
++
+     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
+     {
+         ValidateCompanyOwnedMutations();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -141,7 +141,11 @@ internal sealed class LeadConfiguration : IEntityTypeConfiguration<Lead>
+             .HasForeignKey(nameof(Lead.CompanyId), nameof(Lead.CustomerCompanyId))
+             .HasPrincipalKey(nameof(CustomerCompany.CompanyId), nameof(CustomerCompany.Id))
+             .OnDelete(DeleteBehavior.Restrict);
+-        builder.HasOne(x => x.ConvertedDeal).WithMany().HasForeignKey(x => x.ConvertedDealId).OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.ConvertedDeal)
++            .WithMany()
++            .HasForeignKey(nameof(Lead.CompanyId), nameof(Lead.ConvertedDealId))
++            .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
++            .OnDelete(DeleteBehavior.Restrict);
+     }
+ 
+     private static void ConfigureAudit(EntityTypeBuilder<Lead> builder)
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
+index 0000000..0000000 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504190000_AddSalesPersistenceModel.cs
+@@ -206,10 +206,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+ 
+             migrationBuilder.AddForeignKey(
+                 name: "FK_leads_deals_converted_deal_id",
+                 table: "leads",
+-                column: "converted_deal_id",
++                columns: new[] { "company_id", "converted_deal_id" },
+                 principalTable: "deals",
+-                principalColumn: "id",
++                principalColumns: new[] { "company_id", "id" },
+                 onDelete: ReferentialAction.Restrict);
+ 
+             migrationBuilder.CreateTable(
+@@ -369,7 +369,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
+             migrationBuilder.CreateIndex(name: "IX_leads_status", table: "leads", column: "status");
+             migrationBuilder.CreateIndex(name: "IX_leads_created_at", table: "leads", column: "created_at");
+             migrationBuilder.CreateIndex(name: "IX_leads_pipeline_stage_id", table: "leads", column: "pipeline_stage_id");
+-            migrationBuilder.CreateIndex(name: "IX_leads_converted_deal_id", table: "leads", column: "converted_deal_id");
++            migrationBuilder.CreateIndex(name: "IX_leads_company_id_converted_deal_id", table: "leads", columns: new[] { "company_id", "converted_deal_id" });
+             migrationBuilder.CreateIndex(name: "IX_leads_company_id_primary_contact_id", table: "leads", columns: new[] { "company_id", "primary_contact_id" });
+             migrationBuilder.CreateIndex(name: "IX_leads_company_id_customer_company_id", table: "leads", columns: new[] { "company_id", "customer_company_id" });
+ 
+diff --git a/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs b/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
+index 0000000..0000000 100644
+--- a/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SalesPersistenceTenantIsolationTests.cs
+@@ -59,6 +59,18 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWeb
+         AssertSalesEmailLinkForeignKey<Deal>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.DealId));
+         AssertSalesEmailLinkForeignKey<Contact>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.ContactId));
+         AssertSalesEmailLinkForeignKey<CustomerCompany>(dbContext, nameof(SalesEmailLink.CompanyId), nameof(SalesEmailLink.CustomerCompanyId));
++
++        var leadEntityType = dbContext.Model.FindEntityType(typeof(Lead));
++        Assert.NotNull(leadEntityType);
++        Assert.Contains(leadEntityType!.GetForeignKeys(), foreignKey =>
++            foreignKey.PrincipalEntityType.ClrType == typeof(Deal) &&
++            foreignKey.Properties.Select(property => property.Name).SequenceEqual([
++                nameof(Lead.CompanyId),
++                nameof(Lead.ConvertedDealId)
++            ]) &&
++            foreignKey.PrincipalKey.Properties.Select(property => property.Name).SequenceEqual([
++                nameof(ICompanyOwnedEntity.CompanyId),
++                nameof(Deal.Id)
++            ]));
+     }
+ 
+     [Fact]
+@@ -134,6 +146,27 @@ public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWeb
+         await Assert.ThrowsAsync<InvalidOperationException>(() => dbContext.SaveChangesAsync());
+     }
+ 
++    [Fact]
++    public async Task Sales_lead_conversion_cannot_reference_cross_tenant_deal()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++
++        await SeedTwoCompaniesAsync(companyAId, companyBId);
++
++        using var scope = _factory.Services.CreateScope();
++        scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>().SetCompanyId(companyAId);
++        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
++        var leadFromCompanyA = await dbContext.Leads
++            .IgnoreQueryFilters()
++            .FirstAsync(x => x.CompanyId == companyAId);
++        var dealFromCompanyB = await dbContext.Deals
++            .IgnoreQueryFilters()
++            .FirstAsync(x => x.CompanyId == companyBId);
++
++        leadFromCompanyA.ConvertToDeal(dealFromCompanyB.Id);
++        await Assert.ThrowsAnyAsync<Exception>(() => dbContext.SaveChangesAsync());
++    }
++
+     [Fact]
+     public async Task Sales_repository_rejects_cross_tenant_links()
+     {
+END_OF_PATCH

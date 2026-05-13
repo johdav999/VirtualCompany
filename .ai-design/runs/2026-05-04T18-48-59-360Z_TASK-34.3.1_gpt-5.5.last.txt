@@ -1,0 +1,1075 @@
+diff --git a/src/VirtualCompany.Application/Auditing/AuditContracts.cs b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+index 5b0f1c1..9a1a2f0 100644
+--- a/src/VirtualCompany.Application/Auditing/AuditContracts.cs
++++ b/src/VirtualCompany.Application/Auditing/AuditContracts.cs
+@@ -267,4 +267,11 @@ public static class AuditEventActions
+     public const string CompanyNotificationActioned = "company.notification.actioned";
+     public const string ProactiveMessageDelivered = "proactive_message.delivered";
++    public const string SalesLeadQualified = "sales.lead.qualified";
++    public const string SalesLeadRejected = "sales.lead.rejected";
++    public const string SalesLeadConverted = "sales.lead.converted";
++    public const string SalesDealStageChanged = "sales.deal.stage_changed";
++    public const string SalesDealWon = "sales.deal.won";
++    public const string SalesDealLost = "sales.deal.lost";
++    public const string SalesEmailProcessed = "sales.email.processed";
+ }
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index b5dd2a0..d7f4f6d 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -278,6 +278,28 @@ public sealed class Lead : ICompanyOwnedEntity
+     public ICollection<SalesActivity> Activities { get; } = new List<SalesActivity>();
+     public ICollection<SalesAgentRecommendation> Recommendations { get; } = new List<SalesAgentRecommendation>();
+ 
++    public void Qualify()
++    {
++        if (Status is SalesStatuses.Converted or SalesStatuses.Rejected)
++        {
++            throw new InvalidOperationException("Only open leads can be qualified.");
++        }
++
++        Status = SalesStatuses.Qualified;
++        PipelineStageId = SalesPipelineStage.QualifiedStageId;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void Reject()
++    {
++        if (Status == SalesStatuses.Converted)
++        {
++            throw new InvalidOperationException("Converted leads cannot be rejected.");
++        }
++
++        Status = SalesStatuses.Rejected;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void ConvertToDeal(Guid dealId)
+     {
+         ConvertedDealId = dealId == Guid.Empty ? throw new ArgumentException("DealId is required.", nameof(dealId)) : dealId;
+@@ -380,6 +402,33 @@ public sealed class Deal : ICompanyOwnedEntity
+     public ICollection<SalesActivity> Activities { get; } = new List<SalesActivity>();
+     public ICollection<SalesAgentRecommendation> Recommendations { get; } = new List<SalesAgentRecommendation>();
+ 
++    public void ChangeStage(Guid pipelineStageId)
++    {
++        if (Status is SalesStatuses.Won or SalesStatuses.Lost)
++        {
++            throw new InvalidOperationException("Closed deals cannot change stage.");
++        }
++
++        PipelineStageId = pipelineStageId == Guid.Empty ? throw new ArgumentException("PipelineStageId is required.", nameof(pipelineStageId)) : pipelineStageId;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkWon()
++    {
++        if (Status == SalesStatuses.Lost)
++        {
++            throw new InvalidOperationException("Lost deals cannot be marked won.");
++        }
++
++        Status = SalesStatuses.Won;
++        PipelineStageId = SalesPipelineStage.WonStageId;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkLost()
++    {
++        Status = SalesStatuses.Lost;
++        PipelineStageId = SalesPipelineStage.LostStageId;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void SoftDelete()
+     {
+         if (IsDeleted)
+@@ -580,6 +629,10 @@ public static class SalesStatuses
+     public const string Active = "active";
+     public const string Open = "open";
+     public const string Converted = "converted";
++    public const string Qualified = "qualified";
++    public const string Rejected = "rejected";
++    public const string Won = "won";
++    public const string Lost = "lost";
+     public const string Completed = "completed";
+     public const string WaitingForApproval = "waiting_for_approval";
+     public const string Linked = "linked";
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index d8ff0aa..0e84f49 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -18,4 +18,130 @@ public interface ISalesPersistenceRepository
+     Task AddDealAsync(Deal deal, CancellationToken cancellationToken);
+ 
+     Task SaveChangesAsync(CancellationToken cancellationToken);
+ }
++
++public interface ISalesOperationsService
++{
++    Task<SalesDashboardResponse> GetDashboardAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<SalesLeadDetailResponse?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken);
++    Task<SalesLeadDetailResponse?> QualifyLeadAsync(Guid companyId, Guid userId, Guid leadId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<SalesLeadDetailResponse?> RejectLeadAsync(Guid companyId, Guid userId, Guid leadId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<SalesDealDetailResponse?> ConvertLeadAsync(Guid companyId, Guid userId, Guid leadId, ConvertLeadRequest request, CancellationToken cancellationToken);
++    Task<SalesPipelineResponse> GetPipelineAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<SalesDealDetailResponse?> GetDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<SalesDealDetailResponse?> ChangeDealStageAsync(Guid companyId, Guid userId, Guid dealId, ChangeDealStageRequest request, CancellationToken cancellationToken);
++    Task<SalesDealDetailResponse?> MarkDealWonAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<SalesDealDetailResponse?> MarkDealLostAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
++    Task<ProcessSalesEmailResponse> ProcessEmailAsync(Guid companyId, Guid userId, ProcessSalesEmailRequest request, CancellationToken cancellationToken);
++}
++
++public sealed class SalesValidationException : Exception
++{
++    public SalesValidationException(IReadOnlyDictionary<string, string[]> errors)
++        : base("The sales request is invalid.")
++    {
++        Errors = errors;
++    }
++
++    public IReadOnlyDictionary<string, string[]> Errors { get; }
++
++    public static void ThrowIfEmpty(Guid value, string field)
++    {
++        if (value == Guid.Empty)
++        {
++            throw new SalesValidationException(new Dictionary<string, string[]> { [field] = ["This field is required."] });
++        }
++    }
++}
++
++public sealed record SalesDashboardResponse(
++    decimal PipelineValue,
++    string Currency,
++    int NewLeads,
++    int HotLeads,
++    int DealsNeedingAttention,
++    decimal ForecastRevenue,
++    IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
++    IReadOnlyList<SalesActivityResponse> RecentActivity);
++
++public sealed record SalesLeadSummaryResponse(
++    Guid Id,
++    string Title,
++    string Status,
++    string Temperature,
++    string? SourceEmail,
++    string QualificationStatus,
++    decimal? ConfidenceScore,
++    string SuggestedNextAction,
++    decimal? EstimatedValue,
++    string? Currency,
++    DateTime CreatedUtc,
++    DateTime UpdatedUtc);
++
++public sealed record SalesLeadDetailResponse(
++    Guid Id,
++    string Title,
++    string Status,
++    string QualificationStatus,
++    string Temperature,
++    string? SourceEmail,
++    string? ContactName,
++    string? CustomerCompanyName,
++    decimal? EstimatedValue,
++    string? Currency,
++    string SuggestedNextAction,
++    IReadOnlyList<SalesActivityResponse> Activities,
++    IReadOnlyList<SalesRecommendationResponse> Recommendations);
++
++public sealed record SalesDealSummaryResponse(
++    Guid Id,
++    string Title,
++    Guid StageId,
++    string StageName,
++    string Status,
++    decimal Amount,
++    string Currency,
++    string? CustomerCompanyName,
++    string? ContactName,
++    DateTime? ExpectedCloseUtc,
++    DateTime UpdatedUtc);
++
++public sealed record SalesDealDetailResponse(
++    Guid Id,
++    string Title,
++    Guid StageId,
++    string StageName,
++    string Status,
++    decimal Amount,
++    string Currency,
++    string Summary,
++    string? ContactName,
++    string? ContactEmail,
++    string? CustomerCompanyName,
++    string AgentAnalysis,
++    string SuggestedReply,
++    IReadOnlyList<SalesActivityResponse> Activities,
++    IReadOnlyList<SalesRecommendationResponse> Recommendations,
++    IReadOnlyList<string> AvailableActions);
++
++public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
++public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
++public sealed record SalesActivityResponse(Guid Id, string ActivityType, string Summary, string Status, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
++public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, DateTime CreatedUtc);
++
++public sealed record SalesActionRequest(string? Note);
++public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
++public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
++public sealed record ProcessSalesEmailRequest(
++    string ProviderMessageId,
++    string SenderEmail,
++    string? SenderName,
++    string? CompanyName,
++    string Subject,
++    string Body,
++    string? Intent,
++    string? ProductOrServiceInterest,
++    decimal Confidence,
++    bool CreateLead = true);
++
++public sealed record ProcessSalesEmailResponse(
++    string Status,
++    Guid? LeadId,
++    Guid? ActivityId,
++    Guid EmailLinkId);
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+new file mode 100644
+index 0000000..5942367
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -0,0 +1,432 @@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class SalesOperationsService : ISalesOperationsService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public SalesOperationsService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<SalesDashboardResponse> GetDashboardAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++
++        var leads = await LeadQuery(companyId).ToListAsync(cancellationToken);
++        var deals = await DealQuery(companyId).ToListAsync(cancellationToken);
++        var recommendations = await RecommendationQuery(companyId).Take(5).ToListAsync(cancellationToken);
++        var recentActivity = await ActivityQuery(companyId).Take(10).ToListAsync(cancellationToken);
++
++        var pipelineValue = deals.Where(x => x.Status == SalesStatuses.Open).Sum(x => x.Amount);
++        var forecastRevenue = deals.Where(x => x.Status == SalesStatuses.Open).Sum(x => x.Amount * ForecastWeight(x.PipelineStageId));
++
++        return new SalesDashboardResponse(
++            pipelineValue,
++            deals.FirstOrDefault()?.Currency ?? leads.FirstOrDefault()?.Currency ?? "USD",
++            leads.Count(x => x.Status == SalesStatuses.Open),
++            leads.Count(x => ResolveTemperature(x) == "Hot"),
++            deals.Count(x => x.Status == SalesStatuses.Open && x.UpdatedUtc <= DateTime.UtcNow.AddDays(-7)),
++            Math.Round(forecastRevenue, 2),
++            recommendations.Select(MapRecommendation).ToList(),
++            recentActivity.Select(MapActivity).ToList());
++    }
++
++    public async Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        return await LeadQuery(companyId)
++            .OrderByDescending(x => x.UpdatedUtc)
++            .Select(x => MapLeadSummary(x))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<SalesLeadDetailResponse?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureId(leadId, nameof(leadId));
++
++        var lead = await LeadQuery(companyId).SingleOrDefaultAsync(x => x.Id == leadId, cancellationToken);
++        return lead is null ? null : MapLeadDetail(lead);
++    }
++
++    public async Task<SalesLeadDetailResponse?> QualifyLeadAsync(Guid companyId, Guid userId, Guid leadId, SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var lead = await MutableLeadAsync(companyId, leadId, cancellationToken);
++        if (lead is null)
++        {
++            return null;
++        }
++
++        lead.Qualify();
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "qualification", BuildSummary(request.Note, "Lead qualified by Alex."), DateTime.UtcNow, leadId: lead.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesLeadQualified, "lead", lead.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Alex qualified the lead for follow-up.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetLeadAsync(companyId, leadId, cancellationToken);
++    }
++
++    public async Task<SalesLeadDetailResponse?> RejectLeadAsync(Guid companyId, Guid userId, Guid leadId, SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var lead = await MutableLeadAsync(companyId, leadId, cancellationToken);
++        if (lead is null)
++        {
++            return null;
++        }
++
++        lead.Reject();
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "review", BuildSummary(request.Note, "Lead rejected after review."), DateTime.UtcNow, leadId: lead.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesLeadRejected, "lead", lead.Id, AuditEventOutcomes.Rejected, request.Note ?? "The lead was not a fit right now.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetLeadAsync(companyId, leadId, cancellationToken);
++    }
++
++    public async Task<SalesDealDetailResponse?> ConvertLeadAsync(Guid companyId, Guid userId, Guid leadId, ConvertLeadRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        ValidateConvert(request);
++
++        var lead = await MutableLeadAsync(companyId, leadId, cancellationToken);
++        if (lead is null)
++        {
++            return null;
++        }
++
++        if (lead.Status == SalesStatuses.Converted)
++        {
++            throw Validation(nameof(leadId), "This lead has already been converted.");
++        }
++
++        var deal = new Deal(
++            Guid.NewGuid(),
++            companyId,
++            lead.Title,
++            SalesPipelineStage.QualifiedStageId,
++            request.Amount,
++            request.Currency,
++            sourceLeadId: lead.Id,
++            primaryContactId: lead.PrimaryContactId,
++            customerCompanyId: lead.CustomerCompanyId,
++            expectedCloseUtc: request.ExpectedCloseUtc);
++        lead.ConvertToDeal(deal.Id);
++        _dbContext.Deals.Add(deal);
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "conversion", BuildSummary(request.Note, "Lead converted to a sales deal."), DateTime.UtcNow, leadId: lead.Id, dealId: deal.Id, contactId: lead.PrimaryContactId, customerCompanyId: lead.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesLeadConverted, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The qualified lead was converted to a deal.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetDealAsync(companyId, deal.Id, cancellationToken);
++    }
++
++    public async Task<SalesPipelineResponse> GetPipelineAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        var stages = await _dbContext.SalesPipelineStages
++            .IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => !x.IsDeleted && x.IsActive && (x.CompanyId == SalesPipelineStage.SystemCompanyId || x.CompanyId == companyId))
++            .OrderBy(x => x.DisplayOrder)
++            .ToListAsync(cancellationToken);
++
++        var deals = await DealQuery(companyId).Where(x => x.Status == SalesStatuses.Open).ToListAsync(cancellationToken);
++        var response = stages.Select(stage =>
++        {
++            var stageDeals = deals.Where(x => x.PipelineStageId == stage.Id).OrderByDescending(x => x.UpdatedUtc).ToList();
++            return new SalesPipelineStageResponse(
++                stage.Id,
++                stage.Name,
++                stage.DisplayOrder,
++                stageDeals.Sum(x => x.Amount),
++                stageDeals.Count,
++                stageDeals.Select(MapDealSummary).ToList());
++        }).ToList();
++        return new SalesPipelineResponse(response);
++    }
++
++    public async Task<SalesDealDetailResponse?> GetDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureId(dealId, nameof(dealId));
++
++        var deal = await DealQuery(companyId).SingleOrDefaultAsync(x => x.Id == dealId, cancellationToken);
++        return deal is null ? null : MapDealDetail(deal);
++    }
++
++    public async Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        var exists = await _dbContext.Deals.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == dealId && !x.IsDeleted, cancellationToken);
++        if (!exists)
++        {
++            return [];
++        }
++
++        return await ActivityQuery(companyId)
++            .Where(x => x.DealId == dealId)
++            .OrderByDescending(x => x.OccurredUtc)
++            .Select(x => MapActivity(x))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        return await RecommendationQuery(companyId)
++            .Take(50)
++            .Select(x => MapRecommendation(x))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<SalesDealDetailResponse?> ChangeDealStageAsync(Guid companyId, Guid userId, Guid dealId, ChangeDealStageRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        if (request.StageId == Guid.Empty)
++        {
++            throw Validation(nameof(request.StageId), "Stage is required.");
++        }
++
++        if (!await StageExistsAsync(companyId, request.StageId, cancellationToken))
++        {
++            throw Validation(nameof(request.StageId), "Stage is not available for this company.");
++        }
++
++        var deal = await MutableDealAsync(companyId, dealId, cancellationToken);
++        if (deal is null)
++        {
++            return null;
++        }
++
++        var previousStage = deal.PipelineStageId;
++        deal.ChangeStage(request.StageId);
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "stage change", BuildSummary(request.Note, "Deal moved to a new stage."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesDealStageChanged, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "Deal stage changed.", new Dictionary<string, string?> { ["previousStageId"] = previousStage.ToString("D"), ["newStageId"] = request.StageId.ToString("D") });
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetDealAsync(companyId, dealId, cancellationToken);
++    }
++
++    public async Task<SalesDealDetailResponse?> MarkDealWonAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var deal = await MutableDealAsync(companyId, dealId, cancellationToken);
++        if (deal is null)
++        {
++            return null;
++        }
++
++        deal.MarkWon();
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "won", BuildSummary(request.Note, "Deal marked won."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesDealWon, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The deal was won.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetDealAsync(companyId, dealId, cancellationToken);
++    }
++
++    public async Task<SalesDealDetailResponse?> MarkDealLostAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var deal = await MutableDealAsync(companyId, dealId, cancellationToken);
++        if (deal is null)
++        {
++            return null;
++        }
++
++        deal.MarkLost();
++        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "lost", BuildSummary(request.Note, "Deal marked lost."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
++        AddAudit(companyId, userId, AuditEventActions.SalesDealLost, "deal", deal.Id, AuditEventOutcomes.Rejected, request.Note ?? "The deal was lost.");
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return await GetDealAsync(companyId, dealId, cancellationToken);
++    }
++
++    public async Task<ProcessSalesEmailResponse> ProcessEmailAsync(Guid companyId, Guid userId, ProcessSalesEmailRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        ValidateEmail(request);
++
++        var existing = await _dbContext.SalesEmailLinks.IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.ExternalMessageId == request.ProviderMessageId && !x.IsDeleted, cancellationToken);
++        if (existing is not null)
++        {
++            return new ProcessSalesEmailResponse("already_processed", existing.LeadId, null, existing.Id);
++        }
++
++        var customer = !string.IsNullOrWhiteSpace(request.CompanyName)
++            ? await _dbContext.CustomerCompanies.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Name == request.CompanyName.Trim(), cancellationToken)
++            : null;
++        if (customer is null && !string.IsNullOrWhiteSpace(request.CompanyName))
++        {
++            customer = new CustomerCompany(Guid.NewGuid(), companyId, request.CompanyName.Trim());
++            _dbContext.CustomerCompanies.Add(customer);
++        }
++
++        var contact = await _dbContext.Contacts.IgnoreQueryFilters().FirstOrDefaultAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.Email == request.SenderEmail.Trim().ToLowerInvariant(), cancellationToken);
++        if (contact is null)
++        {
++            contact = new Contact(Guid.NewGuid(), companyId, string.IsNullOrWhiteSpace(request.SenderName) ? request.SenderEmail : request.SenderName, request.SenderEmail, customer?.Id);
++            _dbContext.Contacts.Add(contact);
++        }
++
++        Lead? lead = null;
++        SalesActivity? activity = null;
++        if (request.CreateLead)
++        {
++            lead = new Lead(Guid.NewGuid(), companyId, string.IsNullOrWhiteSpace(request.Subject) ? "New sales email" : request.Subject, SalesPipelineStage.NewStageId, primaryContactId: contact.Id, customerCompanyId: customer?.Id, source: "sales email");
++            lead.ApplyEmailSignal(request.Subject, contact.Id, customer?.Id, request.Confidence, "sales email");
++            _dbContext.Leads.Add(lead);
++            activity = new SalesActivity(Guid.NewGuid(), companyId, "email", $"Inbound sales email from {request.SenderEmail}: {request.Subject}", DateTime.UtcNow, leadId: lead.Id, contactId: contact.Id, customerCompanyId: customer?.Id);
++            _dbContext.SalesActivities.Add(activity);
++        }
++
++        var link = new SalesEmailLink(Guid.NewGuid(), companyId, request.ProviderMessageId, lead?.Id, null, contact.Id, customer?.Id, request.CreateLead ? SalesStatuses.Linked : SalesStatuses.Ignored, detectedIntent: request.Intent, productOrServiceInterest: request.ProductOrServiceInterest, confidence: request.Confidence, rationale: request.Body);
++        _dbContext.SalesEmailLinks.Add(link);
++        AddAudit(companyId, userId, AuditEventActions.SalesEmailProcessed, "sales_email", link.Id, AuditEventOutcomes.Succeeded, "Sales email processed.", dataSourcesUsed: [new AuditDataSourceUsed("email", request.ProviderMessageId, request.Subject, request.SenderEmail)]);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++
++        return new ProcessSalesEmailResponse("processed", lead?.Id, activity?.Id, link.Id);
++    }
++
++    private IQueryable<Lead> LeadQuery(Guid companyId) =>
++        _dbContext.Leads.IgnoreQueryFilters().AsNoTracking()
++            .Include(x => x.PrimaryContact)
++            .Include(x => x.CustomerCompany)
++            .Include(x => x.Activities)
++            .Include(x => x.Recommendations)
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted);
++
++    private IQueryable<Deal> DealQuery(Guid companyId) =>
++        _dbContext.Deals.IgnoreQueryFilters().AsNoTracking()
++            .Include(x => x.PipelineStage)
++            .Include(x => x.PrimaryContact)
++            .Include(x => x.CustomerCompany)
++            .Include(x => x.Activities)
++            .Include(x => x.Recommendations)
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted);
++
++    private IQueryable<SalesActivity> ActivityQuery(Guid companyId) =>
++        _dbContext.SalesActivities.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && !x.IsDeleted).OrderByDescending(x => x.OccurredUtc);
++
++    private IQueryable<SalesAgentRecommendation> RecommendationQuery(Guid companyId) =>
++        _dbContext.SalesAgentRecommendations.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && !x.IsDeleted).OrderByDescending(x => x.CreatedUtc);
++
++    private Task<Lead?> MutableLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken) =>
++        _dbContext.Leads.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == leadId && !x.IsDeleted, cancellationToken);
++
++    private Task<Deal?> MutableDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken) =>
++        _dbContext.Deals.IgnoreQueryFilters().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == dealId && !x.IsDeleted, cancellationToken);
++
++    private Task<bool> StageExistsAsync(Guid companyId, Guid stageId, CancellationToken cancellationToken) =>
++        _dbContext.SalesPipelineStages.IgnoreQueryFilters().AnyAsync(x => x.Id == stageId && !x.IsDeleted && x.IsActive && (x.CompanyId == SalesPipelineStage.SystemCompanyId || x.CompanyId == companyId), cancellationToken);
++
++    private void AddAudit(Guid companyId, Guid userId, string action, string targetType, Guid targetId, string outcome, string rationale, IReadOnlyDictionary<string, string?>? metadata = null, IEnumerable<AuditDataSourceUsed>? dataSourcesUsed = null) =>
++        _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, "human", userId, action, targetType, targetId.ToString("D"), outcome, rationale, ["sales"], metadata, dataSourcesUsed: dataSourcesUsed));
++
++    private static SalesLeadSummaryResponse MapLeadSummary(Lead lead) =>
++        new(lead.Id, lead.Title, StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, StatusLabel(lead.Status), ResolveConfidence(lead), SuggestedLeadAction(lead), lead.EstimatedValue, lead.Currency, lead.CreatedUtc, lead.UpdatedUtc);
++
++    private static SalesLeadDetailResponse MapLeadDetail(Lead lead) =>
++        new(lead.Id, lead.Title, StatusLabel(lead.Status), StatusLabel(lead.Status), ResolveTemperature(lead), lead.PrimaryContact?.Email, lead.PrimaryContact?.FullName, lead.CustomerCompany?.Name, lead.EstimatedValue, lead.Currency, SuggestedLeadAction(lead), lead.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), lead.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList());
++
++    private static SalesDealSummaryResponse MapDealSummary(Deal deal) =>
++        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, deal.CustomerCompany?.Name, deal.PrimaryContact?.FullName, deal.ExpectedCloseUtc, deal.UpdatedUtc);
++
++    private static SalesDealDetailResponse MapDealDetail(Deal deal) =>
++        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal));
++
++    private static SalesActivityResponse MapActivity(SalesActivity activity) =>
++        new(activity.Id, StatusLabel(activity.ActivityType), activity.Summary, StatusLabel(activity.Status), activity.OccurredUtc, activity.LeadId, activity.DealId);
++
++    private static SalesRecommendationResponse MapRecommendation(SalesAgentRecommendation recommendation) =>
++        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, recommendation.CreatedUtc);
++
++    private static string ResolveTemperature(Lead lead)
++    {
++        var confidence = ResolveConfidence(lead);
++        return confidence switch
++        {
++            >= 0.8m => "Hot",
++            >= 0.6m => "Warm",
++            _ => "New"
++        };
++    }
++
++    private static decimal? ResolveConfidence(Lead lead) => null;
++
++    private static string SuggestedLeadAction(Lead lead) =>
++        lead.Status switch
++        {
++            SalesStatuses.Open => "Review and qualify",
++            SalesStatuses.Qualified => "Convert to deal",
++            SalesStatuses.Converted => "Open deal",
++            SalesStatuses.Rejected => "No action needed",
++            _ => "Review details"
++        };
++
++    private static string DealAnalysis(Deal deal) =>
++        deal.Status switch
++        {
++            SalesStatuses.Won => "Alex marked this deal as won.",
++            SalesStatuses.Lost => "Alex marked this deal as lost.",
++            _ when deal.UpdatedUtc <= DateTime.UtcNow.AddDays(-7) => "Alex recommends follow-up because this deal has been quiet for a week.",
++            _ => "Alex is monitoring this deal and recommends keeping momentum."
++        };
++
++    private static string SuggestedReply(Deal deal) =>
++        deal.Status == SalesStatuses.Open ? "Thanks for the conversation. I will follow up with the next step and timing." : string.Empty;
++
++    private static IReadOnlyList<string> DealActions(Deal deal) =>
++        deal.Status == SalesStatuses.Open ? ["Change stage", "Mark won", "Mark lost", "Create finance document"] : ["Review activity"];
++
++    private static decimal ForecastWeight(Guid stageId) =>
++        stageId == SalesPipelineStage.ProposalStageId ? 0.7m :
++        stageId == SalesPipelineStage.QualifiedStageId ? 0.45m :
++        stageId == SalesPipelineStage.WonStageId ? 1m : 0.2m;
++
++    private static string BuildSummary(string? note, string fallback) =>
++        string.IsNullOrWhiteSpace(note) ? fallback : note.Trim();
++
++    private static string StatusLabel(string value) =>
++        value.Replace("_", " ", StringComparison.Ordinal).Trim() is { Length: > 0 } label
++            ? char.ToUpperInvariant(label[0]) + label[1..]
++            : value;
++
++    private static void ValidateConvert(ConvertLeadRequest request)
++    {
++        var errors = new Dictionary<string, string[]>();
++        if (request.Amount <= 0) errors[nameof(request.Amount)] = ["Amount must be greater than zero."];
++        if (string.IsNullOrWhiteSpace(request.Currency) || request.Currency.Trim().Length != 3) errors[nameof(request.Currency)] = ["Currency must be a three-letter code."];
++        if (errors.Count > 0) throw new SalesValidationException(errors);
++    }
++
++    private static void ValidateEmail(ProcessSalesEmailRequest request)
++    {
++        var errors = new Dictionary<string, string[]>();
++        if (string.IsNullOrWhiteSpace(request.ProviderMessageId)) errors[nameof(request.ProviderMessageId)] = ["Provider message id is required."];
++        if (string.IsNullOrWhiteSpace(request.SenderEmail) || !request.SenderEmail.Contains('@', StringComparison.Ordinal)) errors[nameof(request.SenderEmail)] = ["Sender email must be valid."];
++        if (string.IsNullOrWhiteSpace(request.Subject)) errors[nameof(request.Subject)] = ["Subject is required."];
++        if (request.Confidence is < 0 or > 1) errors[nameof(request.Confidence)] = ["Confidence must be between 0 and 1."];
++        if (errors.Count > 0) throw new SalesValidationException(errors);
++    }
++
++    private static SalesValidationException Validation(string field, string message) =>
++        new(new Dictionary<string, string[]> { [field] = [message] });
++
++    private static void EnsureCompany(Guid companyId) => SalesValidationException.ThrowIfEmpty(companyId, "companyId");
++    private static void EnsureUser(Guid userId) => SalesValidationException.ThrowIfEmpty(userId, "userId");
++    private static void EnsureId(Guid id, string field) => SalesValidationException.ThrowIfEmpty(id, field);
++}
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index b06ed9a..74859ec 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -443,6 +443,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
+         services.AddScoped<ISalesEmailIngestionService, SalesEmailIngestionService>();
+         services.AddScoped<ISalesEmailIntentExtractionService, OpenAiSalesEmailIntentExtractionService>();
++        services.AddScoped<ISalesOperationsService, SalesOperationsService>();
+ 
+         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
+         services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+new file mode 100644
+index 0000000..b34738a
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -0,0 +1,158 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/sales")]
++[Authorize(Policy = CompanyPolicies.CompanyMember)]
++[RequireCompanyContext]
++public sealed class SalesController : ControllerBase
++{
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly ISalesOperationsService _salesOperations;
++
++    public SalesController(ICompanyContextAccessor companyContextAccessor, ISalesOperationsService salesOperations)
++    {
++        _companyContextAccessor = companyContextAccessor;
++        _salesOperations = salesOperations;
++    }
++
++    [HttpGet("dashboard")]
++    public Task<SalesDashboardResponse> GetDashboardAsync(CancellationToken cancellationToken) =>
++        _salesOperations.GetDashboardAsync(CompanyId(), cancellationToken);
++
++    [HttpGet("leads")]
++    public Task<IReadOnlyList<SalesLeadSummaryResponse>> ListLeadsAsync(CancellationToken cancellationToken) =>
++        _salesOperations.ListLeadsAsync(CompanyId(), cancellationToken);
++
++    [HttpGet("leads/{id:guid}")]
++    public async Task<ActionResult<SalesLeadDetailResponse>> GetLeadAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.GetLeadAsync(CompanyId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpPost("leads/{id:guid}/qualify")]
++    public async Task<ActionResult<SalesLeadDetailResponse>> QualifyLeadAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _salesOperations.QualifyLeadAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Lead could not be qualified.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
++    [HttpPost("leads/{id:guid}/reject")]
++    public async Task<ActionResult<SalesLeadDetailResponse>> RejectLeadAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _salesOperations.RejectLeadAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Lead could not be rejected.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
++    [HttpPost("leads/{id:guid}/convert")]
++    public async Task<ActionResult<SalesDealDetailResponse>> ConvertLeadAsync(Guid id, [FromBody] ConvertLeadRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _salesOperations.ConvertLeadAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Lead could not be converted.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
++    [HttpGet("pipeline")]
++    public Task<SalesPipelineResponse> GetPipelineAsync(CancellationToken cancellationToken) =>
++        _salesOperations.GetPipelineAsync(CompanyId(), cancellationToken);
++
++    [HttpGet("deals/{id:guid}")]
++    public async Task<ActionResult<SalesDealDetailResponse>> GetDealAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.GetDealAsync(CompanyId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpGet("deals/{id:guid}/activities")]
++    public Task<IReadOnlyList<SalesActivityResponse>> GetDealActivitiesAsync(Guid id, CancellationToken cancellationToken) =>
++        _salesOperations.ListDealActivitiesAsync(CompanyId(), id, cancellationToken);
++
++    [HttpGet("recommendations")]
++    public Task<IReadOnlyList<SalesRecommendationResponse>> GetRecommendationsAsync(CancellationToken cancellationToken) =>
++        _salesOperations.ListRecommendationsAsync(CompanyId(), cancellationToken);
++
++    [HttpPost("deals/{id:guid}/stage-change")]
++    public async Task<ActionResult<SalesDealDetailResponse>> ChangeDealStageAsync(Guid id, [FromBody] ChangeDealStageRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _salesOperations.ChangeDealStageAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Deal stage could not be changed.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
++    [HttpPost("deals/{id:guid}/mark-won")]
++    public async Task<ActionResult<SalesDealDetailResponse>> MarkWonAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.MarkDealWonAsync(CompanyId(), UserId(), id, request, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpPost("deals/{id:guid}/mark-lost")]
++    public async Task<ActionResult<SalesDealDetailResponse>> MarkLostAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
++    {
++        var result = await _salesOperations.MarkDealLostAsync(CompanyId(), UserId(), id, request, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpPost("email/process")]
++    public async Task<ActionResult<ProcessSalesEmailResponse>> ProcessEmailAsync([FromBody] ProcessSalesEmailRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _salesOperations.ProcessEmailAsync(CompanyId(), UserId(), request, cancellationToken));
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++    }
++
++    private Guid CompanyId() =>
++        _companyContextAccessor.CompanyId is { } companyId && companyId != Guid.Empty ? companyId : throw new UnauthorizedAccessException("A resolved company is required.");
++
++    private Guid UserId() =>
++        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty ? userId : throw new UnauthorizedAccessException("A resolved user is required.");
++}
+diff --git a/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+new file mode 100644
+index 0000000..166cc61
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+@@ -0,0 +1,211 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.AspNetCore.Mvc;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auditing;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public SalesOperationsApiIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Dashboard_and_leads_are_scoped_to_current_tenant()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var dashboard = await client.GetFromJsonAsync<SalesDashboardResponse>("/api/sales/dashboard");
++        var leads = await client.GetFromJsonAsync<IReadOnlyList<SalesLeadSummaryResponse>>("/api/sales/leads");
++
++        Assert.NotNull(dashboard);
++        Assert.Equal(1000m, dashboard!.PipelineValue);
++        Assert.NotNull(leads);
++        Assert.Single(leads!);
++        Assert.Equal(seed.LeadAId, leads![0].Id);
++    }
++
++    [Fact]
++    public async Task Cross_tenant_lead_and_deal_access_returns_not_found()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/sales/leads/{seed.LeadBId}")).StatusCode);
++        Assert.Equal(HttpStatusCode.NotFound, (await client.GetAsync($"/api/sales/deals/{seed.DealBId}")).StatusCode);
++    }
++
++    [Fact]
++    public async Task Qualify_reject_convert_and_deal_actions_persist_state_and_audit_events()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var qualify = await client.PostAsJsonAsync($"/api/sales/leads/{seed.LeadAId}/qualify", new SalesActionRequest("Good fit"));
++        Assert.Equal(HttpStatusCode.OK, qualify.StatusCode);
++
++        var convert = await client.PostAsJsonAsync($"/api/sales/leads/{seed.LeadAId}/convert", new ConvertLeadRequest(2500m, "USD", DateTime.UtcNow.AddDays(30), "Create opportunity"));
++        Assert.Equal(HttpStatusCode.OK, convert.StatusCode);
++        var createdDeal = await convert.Content.ReadFromJsonAsync<SalesDealDetailResponse>();
++        Assert.NotNull(createdDeal);
++
++        var stage = await client.PostAsJsonAsync($"/api/sales/deals/{createdDeal!.Id}/stage-change", new ChangeDealStageRequest(SalesPipelineStage.ProposalStageId, "Proposal sent"));
++        Assert.Equal(HttpStatusCode.OK, stage.StatusCode);
++
++        var won = await client.PostAsJsonAsync($"/api/sales/deals/{createdDeal.Id}/mark-won", new SalesActionRequest("Customer accepted"));
++        Assert.Equal(HttpStatusCode.OK, won.StatusCode);
++
++        var auditActions = await _factory.ExecuteDbContextAsync(async dbContext =>
++            await dbContext.AuditEvents.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyAId)
++                .Select(x => x.Action)
++                .ToListAsync());
++
++        Assert.Contains(AuditEventActions.SalesLeadQualified, auditActions);
++        Assert.Contains(AuditEventActions.SalesLeadConverted, auditActions);
++        Assert.Contains(AuditEventActions.SalesDealStageChanged, auditActions);
++        Assert.Contains(AuditEventActions.SalesDealWon, auditActions);
++    }
++
++    [Fact]
++    public async Task Reject_lead_writes_audit_event()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var response = await client.PostAsJsonAsync($"/api/sales/leads/{seed.RejectLeadId}/reject", new SalesActionRequest("Not ready"));
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        Assert.True(await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyAId && x.Action == AuditEventActions.SalesLeadRejected)));
++    }
++
++    [Fact]
++    public async Task Validation_errors_are_structured_and_field_specific()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var convert = await client.PostAsJsonAsync($"/api/sales/leads/{seed.LeadAId}/convert", new ConvertLeadRequest(0, "", null, null));
++        var email = await client.PostAsJsonAsync("/api/sales/email/process", new ProcessSalesEmailRequest("", "not-an-email", null, null, "", "", null, null, 1.5m));
++
++        Assert.Equal(HttpStatusCode.BadRequest, convert.StatusCode);
++        Assert.Equal(HttpStatusCode.BadRequest, email.StatusCode);
++        var problem = await convert.Content.ReadFromJsonAsync<HttpValidationProblemDetails>();
++        Assert.NotNull(problem);
++        Assert.Contains(nameof(ConvertLeadRequest.Amount), problem!.Errors.Keys);
++        Assert.Contains(nameof(ConvertLeadRequest.Currency), problem.Errors.Keys);
++    }
++
++    [Fact]
++    public async Task Pipeline_detail_activities_and_recommendations_are_tenant_scoped()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var pipeline = await client.GetFromJsonAsync<SalesPipelineResponse>("/api/sales/pipeline");
++        var deal = await client.GetFromJsonAsync<SalesDealDetailResponse>($"/api/sales/deals/{seed.DealAId}");
++        var activities = await client.GetFromJsonAsync<IReadOnlyList<SalesActivityResponse>>($"/api/sales/deals/{seed.DealAId}/activities");
++        var recommendations = await client.GetFromJsonAsync<IReadOnlyList<SalesRecommendationResponse>>("/api/sales/recommendations");
++
++        Assert.NotNull(pipeline);
++        Assert.Contains(pipeline!.Stages.SelectMany(x => x.Deals), x => x.Id == seed.DealAId);
++        Assert.NotNull(deal);
++        Assert.Equal(seed.DealAId, deal!.Id);
++        Assert.Single(activities!);
++        Assert.Single(recommendations!);
++        Assert.DoesNotContain(recommendations!, x => x.DealId == seed.DealBId);
++    }
++
++    [Fact]
++    public async Task Email_processing_validates_persists_lead_and_writes_audit_event()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var response = await client.PostAsJsonAsync("/api/sales/email/process", new ProcessSalesEmailRequest(
++            "sales-message-1",
++            "buyer@example.com",
++            "Buyer One",
++            "Buyer Co",
++            "Pricing request",
++            "Can we get pricing?",
++            "pricing request",
++            "Platform",
++            0.91m));
++
++        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
++        var result = await response.Content.ReadFromJsonAsync<ProcessSalesEmailResponse>();
++        Assert.NotNull(result);
++        Assert.NotNull(result!.LeadId);
++
++        var state = await _factory.ExecuteDbContextAsync(async dbContext => new
++        {
++            LeadCount = await dbContext.Leads.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.Id == result.LeadId),
++            AuditCount = await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.Action == AuditEventActions.SalesEmailProcessed)
++        });
++        Assert.Equal(1, state.LeadCount);
++        Assert.Equal(1, state.AuditCount);
++    }
++
++    private HttpClient Client(Guid companyId)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "sales-user");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "sales-user@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Sales User");
++        client.DefaultRequestHeaders.Add(CompanyContextResolutionMiddleware.CompanyHeaderName, companyId.ToString("D"));
++        return client;
++    }
++
++    private async Task<SeedIds> SeedAsync()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var leadAId = Guid.NewGuid();
++        var rejectLeadId = Guid.NewGuid();
++        var leadBId = Guid.NewGuid();
++        var dealAId = Guid.NewGuid();
++        var dealBId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "sales-user@example.com", "Sales User", "dev-header", "sales-user"));
++            dbContext.Companies.AddRange(new Company(companyAId, "Sales Tenant A"), new Company(companyBId, "Sales Tenant B"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++
++            AddSalesRecords(dbContext, companyAId, leadAId, rejectLeadId, dealAId, "A");
++            AddSalesRecords(dbContext, companyBId, leadBId, Guid.NewGuid(), dealBId, "B");
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(companyAId, companyBId, leadAId, rejectLeadId, leadBId, dealAId, dealBId);
++    }
++
++    private static void AddSalesRecords(VirtualCompanyDbContext dbContext, Guid companyId, Guid leadId, Guid rejectLeadId, Guid dealId, string suffix)
++    {
++        var customerId = Guid.NewGuid();
++        var contactId = Guid.NewGuid();
++        dbContext.CustomerCompanies.Add(new CustomerCompany(customerId, companyId, $"Customer {suffix}"));
++        dbContext.Contacts.Add(new Contact(contactId, companyId, $"Buyer {suffix}", $"buyer-{suffix}@example.com", customerId));
++        dbContext.Leads.Add(new Lead(leadId, companyId, $"Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
++        dbContext.Leads.Add(new Lead(rejectLeadId, companyId, $"Reject Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
++        dbContext.Deals.Add(new Deal(dealId, companyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 1000m, "USD", primaryContactId: contactId, customerCompanyId: customerId));
++        dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "email", $"Email {suffix}", DateTime.UtcNow, leadId: leadId, dealId: dealId, contactId: contactId, customerCompanyId: customerId));
++        dbContext.SalesAgentRecommendations.Add(new SalesAgentRecommendation(Guid.NewGuid(), companyId, $"Follow up {suffix}", "The buyer asked for pricing.", leadId, dealId));
++    }
++
++    private sealed record SeedIds(Guid CompanyAId, Guid CompanyBId, Guid LeadAId, Guid RejectLeadId, Guid LeadBId, Guid DealAId, Guid DealBId);
++}
+END_OF_PATCH

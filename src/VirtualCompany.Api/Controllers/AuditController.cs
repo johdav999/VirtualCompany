@@ -90,7 +90,7 @@ public sealed class AuditController : ControllerBase
         {
             return Ok(await _auditQueryService.ListAsync(
                 companyId,
-                new AuditHistoryFilter(agentId, FromUtc: from.Value, ToUtc: to.Value, Skip: skip, Take: take),
+                new AuditHistoryFilter(agentId, FromUtc: from.GetValueOrDefault(), ToUtc: to.GetValueOrDefault(), Skip: skip, Take: take),
                 cancellationToken));
         }
         catch (ArgumentException ex) when (ex.ParamName == "filter")

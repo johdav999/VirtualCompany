@@ -1,0 +1,399 @@
+diff --git a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+index 6c9f3a1..88d02cd 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+@@ -127,7 +127,9 @@ public sealed record FinanceIntegrationSyncResult(
+     int Skipped,
+     int Errors,
+     IReadOnlyList<FinanceIntegrationEntitySyncResult> Entities,
+-    string? ErrorSummary = null);
++    string? ErrorSummary = null,
++    int RetryAttempts = 0,
++    string? RetryOutcome = null);
+ 
+ public sealed record FinanceIntegrationSyncHistoryItem(
+     Guid Id,
+@@ -140,7 +142,9 @@ public sealed record FinanceIntegrationSyncHistoryItem(
+     int Skipped,
+     int Errors,
+     string Summary,
+-    string? ErrorSummary);
++    string? ErrorSummary,
++    int RetryAttempts = 0,
++    string? RetryOutcome = null);
+ 
+ public sealed record FinanceIntegrationSyncHistoryResult(
+     string ProviderKey,
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+index 2e6d5c3..097f916 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+@@ -69,6 +69,17 @@ public sealed class FortnoxApprovalRequiredException : Exception
+     public string SafeMessage { get; }
+ }
+ 
++public sealed record FortnoxErrorTranslationContext(
++    HttpStatusCode? StatusCode,
++    string? Category,
++    string? FortnoxErrorCode,
++    string? FortnoxErrorMessage,
++    TimeSpan? RetryAfter = null);
++
++public interface IFortnoxErrorTranslator
++{
++    string Translate(FortnoxErrorTranslationContext context);
++}
++
+ public interface IFortnoxApiClient
+ {
+     Task<FortnoxCompanyInformation> GetCompanyInformationAsync(FortnoxRequestContext context, CancellationToken cancellationToken);
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs
+index 9adcc0d..d258d6a 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxSyncContracts.cs
+@@ -17,7 +17,9 @@ public sealed record FortnoxEntitySyncResult(
+     int Created,
+     int Updated,
+     int Skipped,
+-    int Errors,
++    int Errors,
++    int RetryAttempts = 0,
++    string? RetryOutcome = null,
+     string? ErrorSummary = null);
+ 
+ public sealed record FortnoxSyncResult(
+@@ -34,7 +36,9 @@ public sealed record FortnoxSyncResult(
+     int Skipped,
+     int Errors,
+     IReadOnlyList<FortnoxEntitySyncResult> Entities,
+-    string? ErrorSummary = null);
++    string? ErrorSummary = null,
++    int RetryAttempts = 0,
++    string? RetryOutcome = null);
+ 
+ public sealed record FortnoxSyncHistoryItem(
+     Guid Id,
+@@ -47,7 +51,9 @@ public sealed record FortnoxSyncHistoryItem(
+     int Skipped,
+     int Errors,
+     string Summary,
+-    string? ErrorSummary);
++    string? ErrorSummary,
++    int RetryAttempts = 0,
++    string? RetryOutcome = null);
+ 
+ public sealed record FortnoxSyncHistoryResult(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs b/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
+index 02bc71f..be9cd0d 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
+@@ -153,6 +153,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+     }
+ 
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync")]
++    [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync/now")]
+     public async Task<ActionResult<FinanceIntegrationSyncResult>> SyncNowAsync(
+         Guid companyId,
+         string providerKey,
+@@ -192,6 +193,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+     }
+ 
+     [HttpGet("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync-history")]
++    [HttpGet("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync/history")]
+     public async Task<ActionResult<FinanceIntegrationSyncHistoryResult>> SyncHistoryAsync(
+         Guid companyId,
+         string providerKey,
+@@ -212,6 +214,32 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(result);
+     }
+ 
++    [HttpGet("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync/history/{syncId:guid}")]
++    public async Task<ActionResult<FinanceIntegrationSyncHistoryItem>> SyncHistoryDetailAsync(
++        Guid companyId,
++        string providerKey,
++        Guid syncId,
++        CancellationToken cancellationToken)
++    {
++        var provider = ResolveProvider(providerKey);
++        if (provider is null)
++        {
++            return UnknownProvider(providerKey);
++        }
++
++        var result = await provider.Sync.GetHistoryAsync(
++            new GetFinanceIntegrationSyncHistoryQuery(
++                provider.ProviderKey,
++                companyId,
++                100),
++            cancellationToken);
++
++        var item = result.Items.FirstOrDefault(x => x.Id == syncId);
++        if (item is null)
++        {
++            return NotFound();
++        }
++
++        return Ok(item);
++    }
++
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/disconnect")]
+     public async Task<ActionResult<FinanceIntegrationConnectionDisconnectResult>> DisconnectAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 7977752..fa96bd3 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -105,6 +105,7 @@ public static class DependencyInjection
+         services.AddScoped<FortnoxFinanceIntegrationOAuthService>();
+         services.AddScoped<IFinanceIntegrationOAuthService>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationOAuthService>());
+         services.TryAddSingleton<IFortnoxIntegrationDiagnostics, FortnoxIntegrationDiagnostics>();
++        services.TryAddSingleton<IFortnoxErrorTranslator, DefaultFortnoxErrorTranslator>();
+         services.AddScoped<IFortnoxTokenStore, FortnoxTokenStore>();
+         services.AddScoped<FortnoxOAuthClient>();
+         services.AddScoped<FortnoxMappingService>();
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+index 59e8c7f..187c45f 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+@@ -20,6 +20,7 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+     private readonly ILogger<FortnoxApiClient> _logger;
+     private readonly TimeProvider _timeProvider;
+     private readonly IFinanceIntegrationWriteApprovalService _writeApprovalService;
++    private readonly IFortnoxErrorTranslator _errorTranslator;
+ 
+     public FortnoxApiClient(
+         HttpClient httpClient,
+@@ -27,7 +28,8 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+         IOptionsMonitor<FortnoxOptions> options,
+         ILogger<FortnoxApiClient> logger,
+         TimeProvider timeProvider,
+-        IFinanceIntegrationWriteApprovalService? writeApprovalService = null)
++        IFinanceIntegrationWriteApprovalService? writeApprovalService = null,
++        IFortnoxErrorTranslator? errorTranslator = null)
+     {
+         _httpClient = httpClient;
+         _oauthService = oauthService;
+@@ -36,6 +38,7 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+         _timeProvider = timeProvider;
+         _writeApprovalService = writeApprovalService ?? NoOpFinanceIntegrationWriteApprovalService.Instance;
++        _errorTranslator = errorTranslator ?? new DefaultFortnoxErrorTranslator();
+ 
+         _httpClient.BaseAddress ??= NormalizeBaseAddress(_options.CurrentValue.ApiBaseUrl);
+     }
+@@ -500,23 +503,22 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+         throw exception;
+     }
+ 
+-    private static FortnoxApiException CreateException(
++    private FortnoxApiException CreateException(
+         HttpStatusCode statusCode,
+         FortnoxErrorInformation? error,
+         TimeSpan? retryAfter)
+     {
+         var code = error?.Code ?? error?.Error;
+         var message = error?.Message;
+-
+-        return statusCode switch
++        var category = statusCode switch
+         {
+-            HttpStatusCode.Unauthorized => new FortnoxApiException("Fortnox connection needs attention.", statusCode, "authorization", code, message, requiresReconnect: true),
+-            HttpStatusCode.Forbidden => new FortnoxApiException("The connected Fortnox account does not have permission for this data.", statusCode, "permission", code, message),
+-            HttpStatusCode.NotFound => new FortnoxApiException("The requested Fortnox data could not be found.", statusCode, "not_found", code, message),
+-            HttpStatusCode.UnprocessableEntity or HttpStatusCode.BadRequest => new FortnoxApiException("Fortnox could not process the requested data.", statusCode, "validation", code, message),
+-            HttpStatusCode.TooManyRequests => new FortnoxApiException("Fortnox is receiving too many requests. Please try again shortly.", statusCode, "rate_limited", code, message, isTransient: true, retryAfter: retryAfter),
+-            _ when (int)statusCode >= 500 => new FortnoxApiException("Fortnox is temporarily unavailable. Please try again shortly.", statusCode, "upstream_unavailable", code, message, isTransient: true),
+-            _ => new FortnoxApiException("Fortnox request failed.", statusCode, "upstream_error", code, message)
++            HttpStatusCode.Unauthorized => "authorization",
++            HttpStatusCode.Forbidden => "permission",
++            HttpStatusCode.NotFound => "not_found",
++            HttpStatusCode.UnprocessableEntity or HttpStatusCode.BadRequest => "validation",
++            HttpStatusCode.TooManyRequests => "rate_limited",
++            _ when (int)statusCode >= 500 => "upstream_unavailable",
++            _ => "upstream_error"
+         };
++        var safeMessage = _errorTranslator.Translate(new FortnoxErrorTranslationContext(statusCode, category, code, message, retryAfter));
++        return new FortnoxApiException(safeMessage, statusCode, category, code, message, category is "rate_limited" or "upstream_unavailable", statusCode == HttpStatusCode.Unauthorized, retryAfter);
+     }
+ 
+     private static FortnoxErrorInformation? TryReadError(string body)
+diff --git a/src/VirtualCompany.Infrastructure/Finance/DefaultFortnoxErrorTranslator.cs b/src/VirtualCompany.Infrastructure/Finance/DefaultFortnoxErrorTranslator.cs
+new file mode 100644
+index 0000000..6d97cde
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Finance/DefaultFortnoxErrorTranslator.cs
+@@ -0,0 +1,29 @@
++using System.Net;
++using VirtualCompany.Application.Finance;
++
++namespace VirtualCompany.Infrastructure.Finance;
++
++public sealed class DefaultFortnoxErrorTranslator : IFortnoxErrorTranslator
++{
++    public string Translate(FortnoxErrorTranslationContext context) =>
++        context.Category switch
++        {
++            "authorization" => "Fortnox connection needs attention. Reconnect Fortnox and try again.",
++            "permission" => "The connected Fortnox account does not have permission for this data.",
++            "not_found" => "The requested Fortnox data could not be found.",
++            "validation" => "Fortnox could not process the requested data. Review the record details and try again.",
++            "rate_limited" => BuildRateLimitMessage(context.RetryAfter),
++            "upstream_unavailable" => "Fortnox is temporarily unavailable. Please try again shortly.",
++            "invalid_response" => "Fortnox returned data in an unexpected format.",
++            _ when context.StatusCode == HttpStatusCode.Unauthorized => "Fortnox connection needs attention. Reconnect Fortnox and try again.",
++            _ when context.StatusCode == HttpStatusCode.Forbidden => "The connected Fortnox account does not have permission for this data.",
++            _ when context.StatusCode == HttpStatusCode.TooManyRequests => BuildRateLimitMessage(context.RetryAfter),
++            _ when (int?)context.StatusCode >= 500 => "Fortnox is temporarily unavailable. Please try again shortly.",
++            _ => "Fortnox could not complete the request. Please try again."
++        };
++
++    private static string BuildRateLimitMessage(TimeSpan? retryAfter) =>
++        retryAfter.HasValue && retryAfter.Value > TimeSpan.Zero
++            ? $"Fortnox is receiving too many requests. Please try again in about {Math.Ceiling(retryAfter.Value.TotalSeconds)} seconds."
++            : "Fortnox is receiving too many requests. Please try again shortly.";
++}
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs
+index 2298f14..459d0ef 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs
+@@ -155,7 +155,9 @@ public sealed class FortnoxFinanceIntegrationSyncService(IFortnoxSyncService for
+                     item.Skipped,
+                     item.Errors,
+                     item.Summary,
+-                    item.ErrorSummary))
++                    item.ErrorSummary,
++                    item.RetryAttempts,
++                    item.RetryOutcome))
+                 .ToList());
+     }
+ 
+@@ -177,7 +179,9 @@ public sealed class FortnoxFinanceIntegrationSyncService(IFortnoxSyncService for
+                     entity.Skipped,
+                     entity.Errors,
+                     entity.ErrorSummary))
+-                .ToList(),
+-            result.ErrorSummary);
++                .ToList(),
++            result.ErrorSummary,
++            result.RetryAttempts,
++            result.RetryOutcome);
+ 
+     private static void EnsureProvider(string providerKey)
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+index 9cdf033..f9e9409 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxSyncService.cs
+@@ -84,6 +84,8 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+         history.Metadata["skipped"] = skipped;
+         history.Metadata["durationMilliseconds"] = (completedUtc - startedUtc).TotalMilliseconds;
+         history.Metadata["entities"] = BuildEntityMetadata(entityResults);
++        history.Metadata["retryAttempts"] = entityResults.Sum(x => x.RetryAttempts);
++        history.Metadata["retryOutcome"] = BuildRetryOutcome(entityResults);
+         AddManualSyncAudit(command, connection.Id, errors == 0 ? FinanceIntegrationAuditOutcomes.Succeeded : FinanceIntegrationAuditOutcomes.Failed, BuildHistorySummary(entityResults), completedUtc, created, updated, skipped, errors, "manual_sync_completed");
+ 
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -126,7 +128,9 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             entityResults.Sum(x => x.Skipped),
+             errors,
+             entityResults,
+-            errorSummary);
++            errorSummary,
++            entityResults.Sum(x => x.RetryAttempts),
++            BuildRetryOutcome(entityResults));
+     }
+ 
+     public async Task<FortnoxSyncHistoryResult> GetHistoryAsync(GetFortnoxSyncHistoryQuery query, CancellationToken cancellationToken)
+@@ -151,7 +155,9 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+                 ReadInt(x.Metadata, "skipped"),
+                 x.RecordsFailed,
+                 BuildHistoryItemSummary(x),
+-                x.ErrorSummary))
++                x.ErrorSummary,
++                ReadInt(x.Metadata, "retryAttempts"),
++                ReadString(x.Metadata, "retryOutcome")))
+             .ToList();
+ 
+         return new FortnoxSyncHistoryResult(query.CompanyId, items);
+@@ -229,7 +235,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+                 state.ConnectionId,
+                 entityType);
+ 
+-            return new FortnoxEntitySyncResult(entityType, 0, 0, 0, 1, safeMessage);
++            return new FortnoxEntitySyncResult(entityType, 0, 0, 0, 1, exception is FortnoxApiException { IsTransient: true } ? 1 : 0, string.IsNullOrWhiteSpace(retrySummary) ? null : retrySummary.Trim(), safeMessage);
+         }
+     }
+ 
+@@ -727,6 +733,13 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+                 ["updated"] = result.Updated,
+                 ["skipped"] = result.Skipped,
+                 ["errors"] = result.Errors,
++                ["retryAttempts"] = result.RetryAttempts,
++                ["retryOutcome"] = result.RetryOutcome,
+                 ["errorSummary"] = result.ErrorSummary
+             });
+         }
+@@ -739,6 +752,12 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
+             ? value
+             : 0;
+ 
++    private static string? ReadString(JsonObject metadata, string key) =>
++        metadata.TryGetPropertyValue(key, out var node) && node is not null
++            ? node.ToString()
++            : null;
++
++    private static string BuildRetryOutcome(IReadOnlyCollection<FortnoxEntitySyncResult> results) =>
++        results.Sum(x => x.RetryAttempts) == 0 ? "No retry was needed." : "One or more Fortnox requests needed retry handling.";
++
+     private static string BuildHistoryItemSummary(FortnoxSyncHistory history)
+     {
+         var created = ReadInt(history.Metadata, "created");
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxErrorTranslatorTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxErrorTranslatorTests.cs
+new file mode 100644
+index 0000000..6e8a871
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/FortnoxErrorTranslatorTests.cs
+@@ -0,0 +1,38 @@
++using System.Net;
++using VirtualCompany.Application.Finance;
++using VirtualCompany.Infrastructure.Finance;
++using Xunit;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class FortnoxErrorTranslatorTests
++{
++    private readonly DefaultFortnoxErrorTranslator _translator = new();
++
++    [Theory]
++    [InlineData(HttpStatusCode.Unauthorized, "authorization", "Fortnox connection needs attention. Reconnect Fortnox and try again.")]
++    [InlineData(HttpStatusCode.Forbidden, "permission", "The connected Fortnox account does not have permission for this data.")]
++    [InlineData(HttpStatusCode.BadRequest, "validation", "Fortnox could not process the requested data. Review the record details and try again.")]
++    [InlineData(HttpStatusCode.InternalServerError, "upstream_unavailable", "Fortnox is temporarily unavailable. Please try again shortly.")]
++    public void Translate_returns_plain_english_safe_messages(HttpStatusCode statusCode, string category, string expected)
++    {
++        var message = _translator.Translate(new FortnoxErrorTranslationContext(
++            statusCode,
++            category,
++            "200001",
++            "Internal Fortnox provider detail"));
++
++        Assert.Equal(expected, message);
++        Assert.DoesNotContain("200001", message);
++        Assert.DoesNotContain("Internal Fortnox provider detail", message);
++    }
++
++    [Fact]
++    public void Translate_includes_safe_retry_after_hint_for_rate_limits()
++    {
++        var message = _translator.Translate(new FortnoxErrorTranslationContext(
++            HttpStatusCode.TooManyRequests,
++            "rate_limited",
++            "429",
++            "Rate limit exceeded",
++            TimeSpan.FromSeconds(12)));
++
++        Assert.Equal("Fortnox is receiving too many requests. Please try again in about 12 seconds.", message);
++    }
++}
+END_OF_PATCH

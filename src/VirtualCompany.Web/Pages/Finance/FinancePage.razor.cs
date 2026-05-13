@@ -352,7 +352,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
 
         if (insights.Count == 0)
         {
-            insights.Add(CreateInsight("No urgent finance risks detected", "Review recent activity to keep records clean.", "Open activity", FinanceRoutes.Activity, FinanceKpiTone.Positive, "✓", companyId));
+            insights.Add(CreateInsight("No urgent finance risks detected", "Review recent transactions to keep records clean.", "Open transactions", FinanceRoutes.Transactions, FinanceKpiTone.Positive, "✓", companyId));
         }
 
         return insights.Take(4).ToArray();

@@ -24,6 +24,32 @@ public sealed class AuditEvent : ICompanyOwnedEntity
         Guid id,
         Guid companyId,
         string actorType,
+        string? actorReference,
+        string action,
+        string targetType,
+        string targetId,
+        string outcome,
+        string? rationaleSummary,
+        DateTime occurredUtc)
+        : this(
+            id,
+            companyId,
+            actorType,
+            TryParseGuid(actorReference),
+            action,
+            targetType,
+            targetId,
+            outcome,
+            rationaleSummary,
+            metadata: CreateActorReferenceMetadata(actorReference),
+            occurredUtc: occurredUtc)
+    {
+    }
+
+    public AuditEvent(
+        Guid id,
+        Guid companyId,
+        string actorType,
         Guid? actorId,
         string action,
         string targetType,
@@ -111,6 +137,17 @@ public sealed class AuditEvent : ICompanyOwnedEntity
     public string? IdentityReasonCode { get; private set; }
     public string? BoundaryReasonCode { get; private set; }
     public Company Company { get; private set; } = null!;
+
+    private static Guid? TryParseGuid(string? value) =>
+        Guid.TryParse(value, out var parsed) ? parsed : null;
+
+    private static IReadOnlyDictionary<string, string?>? CreateActorReferenceMetadata(string? actorReference) =>
+        string.IsNullOrWhiteSpace(actorReference) || Guid.TryParse(actorReference, out _)
+            ? null
+            : new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["actorReference"] = actorReference
+            };
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {

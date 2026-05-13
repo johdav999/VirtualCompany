@@ -1,0 +1,719 @@
+diff --git a/src/VirtualCompany.Application/Sales/SalesEmailIngestionContracts.cs b/src/VirtualCompany.Application/Sales/SalesEmailIngestionContracts.cs
+index 3f56a01..a8734cb 100644
+--- a/src/VirtualCompany.Application/Sales/SalesEmailIngestionContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesEmailIngestionContracts.cs
+@@ -1,3 +1,5 @@
++using VirtualCompany.Application.Mailbox;
++
+ namespace VirtualCompany.Application.Sales;
+ 
+ public sealed record ProcessSalesEmailMessageCommand(
+@@ -17,6 +19,7 @@ public sealed record SalesEmailIngestionResult(
+     bool AlreadyProcessed,
+     Guid? LeadId,
+     Guid? ContactId,
++    Guid? ActivityId,
+     Guid? CustomerCompanyId,
+     Guid MailboxConnectionId,
+     string Provider,
+@@ -29,6 +32,44 @@ public sealed record SalesEmailIngestionResult(
+     string? Rationale,
+     SalesEmailSignalResult? Signal);
+ 
++public sealed record SalesEmailIntentExtractionRequest(
++    Guid CompanyId,
++    string Provider,
++    Guid MailboxConnectionId,
++    IReadOnlyList<MailboxInboundMessage> Messages);
++
++public sealed record SalesEmailIntentExtractionResult(
++    string Classification,
++    SalesEmailSignalResult? Signal,
++    string? IgnoreReason,
++    string Rationale,
++    bool UsedFallback = false);
++
++public interface ISalesEmailIntentExtractionService
++{
++    Task<SalesEmailIntentExtractionResult?> ExtractAsync(
++        SalesEmailIntentExtractionRequest request,
++        CancellationToken cancellationToken);
++}
++
++public static class SalesEmailIntentClassifications
++{
++    public const string SalesLead = "sales_lead";
++    public const string Ignore = "ignore";
++    public const string Uncertain = "uncertain";
++}
++
++public static class SalesEmailIntents
++{
++    public const string DemoRequest = "demo request";
++    public const string PricingRequest = "pricing request";
++    public const string QuoteRequest = "quote request";
++    public const string ExpansionInterest = "expansion interest";
++    public const string BuyingInterest = "buying interest";
++}
++
++public static class SalesEmailUrgencies
++{
++    public const string Low = "low";
++    public const string Medium = "medium";
++    public const string High = "high";
++}
++
+ public sealed record SalesEmailSignalResult(
+     string SenderEmail,
+     string? ContactName,
+@@ -61,6 +102,8 @@ public static class SalesEmailIgnoreReasons
+     public const string Receipt = "receipt";
+     public const string Invoice = "invoice";
+     public const string SupportTicket = "support_ticket_without_upsell_intent";
+-    public const string NoSalesIntent = "no_sales_intent";
++    public const string NonSalesOperational = "non_sales_operational";
++    public const string InsufficientSignal = "insufficient_signal";
++    public const string NoSalesIntent = InsufficientSignal;
+ }
+ 
+ public static class SalesEmailLinkKinds
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index d152f84..36ef04d 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -218,6 +218,9 @@ public static class DependencyInjection
+         services.AddOptions<CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions>()
+             .Bind(configuration.GetSection(CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions.SectionName));
+ 
++        services.AddOptions<OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions>()
++            .Bind(configuration.GetSection(OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions.SectionName));
++
+         services.AddOptions<MultiAgentCollaborationOptions>()
+             .Bind(configuration.GetSection(MultiAgentCollaborationOptions.SectionName))
+             .PostConfigure(options =>
+@@ -279,6 +282,7 @@ public static class DependencyInjection
+         services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
+         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
+         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
++        services.AddHttpClient(OpenAiSalesEmailIntentExtractionService.ClientName);
+         services.AddHttpClient(GmailMailboxProviderClient.ClientName);
+         services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
+         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
+@@ -456,6 +460,7 @@ public static class DependencyInjection
+         services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
+         services.AddScoped<ISalesEmailIngestionService, SalesEmailIngestionService>();
++        services.AddScoped<ISalesEmailIntentExtractionService, OpenAiSalesEmailIntentExtractionService>();
+ 
+         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
+         services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OpenAiSalesEmailIntentExtractionService.cs b/src/VirtualCompany.Infrastructure/Sales/OpenAiSalesEmailIntentExtractionService.cs
+new file mode 100644
+index 0000000..d06b21e
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/OpenAiSalesEmailIntentExtractionService.cs
+@@ -0,0 +1,324 @@
++using System.Net.Http.Headers;
++using System.Net.Http.Json;
++using System.Text;
++using System.Text.Json;
++using System.Text.Json.Serialization;
++using System.Text.RegularExpressions;
++using Microsoft.Extensions.Logging;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Mailbox;
++using VirtualCompany.Application.Sales;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class OpenAiSalesEmailIntentExtractionService : ISalesEmailIntentExtractionService
++{
++    public const string ClientName = "sales-email-intent-extraction";
++    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
++    private static readonly Regex WhitespaceRegex = new("\\s+", RegexOptions.Compiled);
++    private static readonly HashSet<string> AllowedClassifications = new(StringComparer.OrdinalIgnoreCase)
++    {
++        SalesEmailIntentClassifications.SalesLead,
++        SalesEmailIntentClassifications.Ignore,
++        SalesEmailIntentClassifications.Uncertain
++    };
++    private static readonly HashSet<string> AllowedIgnoreReasons = new(StringComparer.OrdinalIgnoreCase)
++    {
++        SalesEmailIgnoreReasons.Newsletter,
++        SalesEmailIgnoreReasons.Receipt,
++        SalesEmailIgnoreReasons.Invoice,
++        SalesEmailIgnoreReasons.SupportTicket,
++        SalesEmailIgnoreReasons.NonSalesOperational,
++        SalesEmailIgnoreReasons.InsufficientSignal
++    };
++    private static readonly HashSet<string> AllowedUrgencies = new(StringComparer.OrdinalIgnoreCase)
++    {
++        SalesEmailUrgencies.Low,
++        SalesEmailUrgencies.Medium,
++        SalesEmailUrgencies.High
++    };
++
++    private readonly IHttpClientFactory _httpClientFactory;
++    private readonly SalesEmailIntentExtractionOptions _options;
++    private readonly ILogger<OpenAiSalesEmailIntentExtractionService> _logger;
++
++    public OpenAiSalesEmailIntentExtractionService(
++        IHttpClientFactory httpClientFactory,
++        IOptions<SalesEmailIntentExtractionOptions> options,
++        ILogger<OpenAiSalesEmailIntentExtractionService> logger)
++    {
++        _httpClientFactory = httpClientFactory;
++        _options = options.Value;
++        _logger = logger;
++    }
++
++    public async Task<SalesEmailIntentExtractionResult?> ExtractAsync(
++        SalesEmailIntentExtractionRequest request,
++        CancellationToken cancellationToken)
++    {
++        if (!CanUseOpenAi() || request.Messages.Count == 0)
++        {
++            return null;
++        }
++
++        try
++        {
++            var response = await RequestStructuredExtractionAsync(request, cancellationToken);
++            return TryMap(response, request.Messages.Last(), out var result, out var validationError)
++                ? result
++                : LogInvalidResult(request, validationError);
++        }
++        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException or InvalidOperationException)
++        {
++            _logger.LogWarning(
++                ex,
++                "Sales email intent extraction fell back to deterministic rules. CompanyId: {CompanyId}, Provider: {Provider}, MailboxConnectionId: {MailboxConnectionId}.",
++                request.CompanyId,
++                request.Provider,
++                request.MailboxConnectionId);
++            return null;
++        }
++    }
++
++    private bool CanUseOpenAi() =>
++        _options.Enabled &&
++        !string.IsNullOrWhiteSpace(_options.ApiKey) &&
++        !string.IsNullOrWhiteSpace(_options.BaseUrl) &&
++        !string.IsNullOrWhiteSpace(_options.Model);
++
++    private async Task<StructuredExtractionPayload> RequestStructuredExtractionAsync(
++        SalesEmailIntentExtractionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var client = _httpClientFactory.CreateClient(ClientName);
++        client.BaseAddress = new Uri(_options.BaseUrl, UriKind.Absolute);
++        client.Timeout = TimeSpan.FromSeconds(Math.Clamp(_options.TimeoutSeconds, 5, 120));
++        client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", _options.ApiKey);
++
++        var chatRequest = new ChatCompletionRequest
++        {
++            Model = _options.Model,
++            Messages =
++            [
++                new ChatMessage(
++                    "system",
++                    "You classify inbound mailbox messages for a tenant-scoped sales workflow. Return only valid JSON matching the requested schema. Do not invent facts. Classify as sales_lead only when the sender shows buying, demo, pricing, quote, evaluation, contract, or expansion intent. Classify newsletters, receipts, invoices, support issues without upsell intent, and operational emails as ignore with a concrete ignoreReason. Use confidence from 0.0 to 1.0."),
++                new ChatMessage("user", BuildPrompt(request))
++            ],
++            Temperature = 0m,
++            MaxTokens = 500,
++            ResponseFormat = new ResponseFormat(
++                "json_schema",
++                new JsonSchemaFormat(
++                    "sales_email_intent",
++                    true,
++                    new
++                    {
++                        type = "object",
++                        additionalProperties = false,
++                        required = new[]
++                        {
++                            "classification",
++                            "senderEmail",
++                            "contactName",
++                            "companyName",
++                            "intent",
++                            "productOrServiceInterest",
++                            "urgency",
++                            "confidence",
++                            "ignoreReason",
++                            "reasonSummary"
++                        },
++                        properties = new
++                        {
++                            classification = new { type = "string", @enum = new[] { "sales_lead", "ignore", "uncertain" } },
++                            senderEmail = new { type = new[] { "string", "null" } },
++                            contactName = new { type = new[] { "string", "null" } },
++                            companyName = new { type = new[] { "string", "null" } },
++                            intent = new { type = new[] { "string", "null" } },
++                            productOrServiceInterest = new { type = new[] { "string", "null" } },
++                            urgency = new { type = new[] { "string", "null" }, @enum = new object?[] { "low", "medium", "high", null } },
++                            confidence = new { type = "number", minimum = 0, maximum = 1 },
++                            ignoreReason = new { type = new[] { "string", "null" }, @enum = new object?[] { "newsletter", "receipt", "invoice", "support_ticket_without_upsell_intent", "non_sales_operational", "insufficient_signal", null } },
++                            reasonSummary = new { type = "string" }
++                        }
++                    }))
++        };
++
++        using var httpResponse = await client.PostAsJsonAsync("chat/completions", chatRequest, SerializerOptions, cancellationToken);
++        if (!httpResponse.IsSuccessStatusCode)
++        {
++            var body = await httpResponse.Content.ReadAsStringAsync(cancellationToken);
++            throw new HttpRequestException(
++                $"Sales email extraction provider returned {(int)httpResponse.StatusCode}: {body}",
++                null,
++                httpResponse.StatusCode);
++        }
++
++        var chatResponse = await httpResponse.Content.ReadFromJsonAsync<ChatCompletionResponse>(SerializerOptions, cancellationToken)
++            ?? throw new InvalidOperationException("Sales email extraction provider returned an empty response.");
++        var content = chatResponse.Choices
++            .Select(choice => choice.Message?.Content?.Trim())
++            .FirstOrDefault(text => !string.IsNullOrWhiteSpace(text));
++
++        if (string.IsNullOrWhiteSpace(content))
++        {
++            throw new InvalidOperationException("Sales email extraction provider returned no structured content.");
++        }
++
++        return JsonSerializer.Deserialize<StructuredExtractionPayload>(content, SerializerOptions)
++            ?? throw new InvalidOperationException("Sales email extraction provider returned empty JSON.");
++    }
++
++    private SalesEmailIntentExtractionResult? LogInvalidResult(
++        SalesEmailIntentExtractionRequest request,
++        string validationError)
++    {
++        _logger.LogWarning(
++            "Sales email intent extraction returned invalid structured output and will use fallback. CompanyId: {CompanyId}, Provider: {Provider}, MailboxConnectionId: {MailboxConnectionId}, ValidationError: {ValidationError}.",
++            request.CompanyId,
++            request.Provider,
++            request.MailboxConnectionId,
++            validationError);
++        return null;
++    }
++
++    private static bool TryMap(
++        StructuredExtractionPayload payload,
++        MailboxInboundMessage latest,
++        out SalesEmailIntentExtractionResult? result,
++        out string validationError)
++    {
++        result = null;
++        validationError = string.Empty;
++
++        var classification = NormalizeToken(payload.Classification);
++        if (classification is null || !AllowedClassifications.Contains(classification))
++        {
++            validationError = "classification is missing or unsupported.";
++            return false;
++        }
++
++        if (payload.Confidence is < 0m or > 1m)
++        {
++            validationError = "confidence must be between 0 and 1.";
++            return false;
++        }
++
++        var rationale = NormalizeOptional(payload.ReasonSummary, 1000);
++        if (string.IsNullOrWhiteSpace(rationale))
++        {
++            validationError = "reasonSummary is required.";
++            return false;
++        }
++
++        if (string.Equals(classification, SalesEmailIntentClassifications.SalesLead, StringComparison.OrdinalIgnoreCase))
++        {
++            var senderEmail = NormalizeEmail(payload.SenderEmail) ?? NormalizeEmail(latest.Sender.Email);
++            var intent = NormalizeOptional(payload.Intent, 120);
++            var urgency = NormalizeToken(payload.Urgency) ?? SalesEmailUrgencies.Medium;
++            if (senderEmail is null)
++            {
++                validationError = "senderEmail is required for sales leads.";
++                return false;
++            }
++
++            if (string.IsNullOrWhiteSpace(intent))
++            {
++                validationError = "intent is required for sales leads.";
++                return false;
++            }
++
++            if (!AllowedUrgencies.Contains(urgency))
++            {
++                validationError = "urgency is unsupported.";
++                return false;
++            }
++
++            result = new SalesEmailIntentExtractionResult(
++                classification,
++                new SalesEmailSignalResult(
++                    senderEmail,
++                    NormalizeOptional(payload.ContactName, 160) ?? NormalizeOptional(latest.Sender.DisplayName, 160),
++                    NormalizeOptional(payload.CompanyName, 200),
++                    intent,
++                    NormalizeOptional(payload.ProductOrServiceInterest, 200),
++                    urgency,
++                    payload.Confidence),
++                null,
++                rationale);
++            return true;
++        }
++
++        var ignoreReason = NormalizeToken(payload.IgnoreReason);
++        if (string.IsNullOrWhiteSpace(ignoreReason) || !AllowedIgnoreReasons.Contains(ignoreReason))
++        {
++            validationError = "ignoreReason is required for ignored or uncertain messages.";
++            return false;
++        }
++
++        result = new SalesEmailIntentExtractionResult(
++            classification,
++            null,
++            ignoreReason,
++            rationale);
++        return true;
++    }
++
++    private static string BuildPrompt(SalesEmailIntentExtractionRequest request)
++    {
++        var builder = new StringBuilder();
++        builder.AppendLine("Return JSON with fields: classification, senderEmail, contactName, companyName, intent, productOrServiceInterest, urgency, confidence, ignoreReason, reasonSummary.");
++        builder.AppendLine("Allowed classifications: sales_lead, ignore, uncertain.");
++        builder.AppendLine("Allowed ignore reasons: newsletter, receipt, invoice, support_ticket_without_upsell_intent, non_sales_operational, insufficient_signal.");
++        builder.AppendLine("Allowed urgency values for sales leads: low, medium, high.");
++        builder.AppendLine();
++        builder.AppendLine("Messages, oldest to newest:");
++        foreach (var message in request.Messages)
++        {
++            builder.AppendLine("---");
++            builder.Append("Message ID: ").AppendLine(message.ProviderMessageId);
++            builder.Append("Thread ID: ").AppendLine(message.ProviderThreadId);
++            builder.Append("From: ").Append(message.Sender.DisplayName).Append(" <").Append(message.Sender.Email).AppendLine(">");
++            builder.Append("Subject: ").AppendLine(NormalizePromptText(message.Subject, 300));
++            builder.Append("Received UTC: ").AppendLine(message.ReceivedUtc?.ToString("O") ?? "unknown");
++            builder.AppendLine("Body:");
++            builder.AppendLine(NormalizePromptText(message.PlainTextBody ?? StripHtml(message.HtmlBody), 4000));
++        }
++
++        return builder.ToString().Trim();
++    }
++
++    private static string NormalizePromptText(string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return string.Empty;
++        }
++
++        var normalized = WhitespaceRegex.Replace(value, " ").Trim();
++        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
++    }
++
++    private static string? StripHtml(string? html) =>
++        string.IsNullOrWhiteSpace(html) ? null : Regex.Replace(html, "<.*?>", " ");
++
++    private static string? NormalizeEmail(string? value)
++    {
++        var normalized = NormalizeOptional(value, 256)?.ToLowerInvariant();
++        return normalized is not null && normalized.Contains('@', StringComparison.Ordinal) ? normalized : null;
++    }
++
++    private static string? NormalizeToken(string? value) =>
++        NormalizeOptional(value, 120)?.ToLowerInvariant();
++
++    private static string? NormalizeOptional(string? value, int maxLength)
++    {
++        if (string.IsNullOrWhiteSpace(value))
++        {
++            return null;
++        }
++
++        var normalized = WhitespaceRegex.Replace(value, " ").Trim();
++        return normalized.Length <= maxLength ? normalized : normalized[..maxLength];
++    }
++
++    public sealed class SalesEmailIntentExtractionOptions
++    {
++        public const string SectionName = "SalesEmailIntentExtraction";
++
++        public bool Enabled { get; set; } = true;
++        public string BaseUrl { get; set; } = "https://api.openai.com/v1/";
++        public string ApiKey { get; set; } = string.Empty;
++        public string Model { get; set; } = "gpt-4.1-mini";
++        public int TimeoutSeconds { get; set; } = 20;
++    }
++
++    private sealed class StructuredExtractionPayload
++    {
++        public string? Classification { get; set; }
++        public string? SenderEmail { get; set; }
++        public string? ContactName { get; set; }
++        public string? CompanyName { get; set; }
++        public string? Intent { get; set; }
++        public string? ProductOrServiceInterest { get; set; }
++        public string? Urgency { get; set; }
++        public decimal Confidence { get; set; }
++        public string? IgnoreReason { get; set; }
++        public string? ReasonSummary { get; set; }
++    }
++
++    private sealed class ChatCompletionRequest
++    {
++        [JsonPropertyName("model")]
++        public string Model { get; set; } = string.Empty;
++
++        [JsonPropertyName("messages")]
++        public List<ChatMessage> Messages { get; set; } = [];
++
++        [JsonPropertyName("temperature")]
++        public decimal Temperature { get; set; }
++
++        [JsonPropertyName("max_tokens")]
++        public int MaxTokens { get; set; }
++
++        [JsonPropertyName("response_format")]
++        public ResponseFormat? ResponseFormat { get; set; }
++    }
++
++    private sealed record ChatMessage(
++        [property: JsonPropertyName("role")] string Role,
++        [property: JsonPropertyName("content")] string Content);
++
++    private sealed record ResponseFormat(
++        [property: JsonPropertyName("type")] string Type,
++        [property: JsonPropertyName("json_schema")] JsonSchemaFormat JsonSchema);
++
++    private sealed record JsonSchemaFormat(
++        [property: JsonPropertyName("name")] string Name,
++        [property: JsonPropertyName("strict")] bool Strict,
++        [property: JsonPropertyName("schema")] object Schema);
++
++    private sealed class ChatCompletionResponse
++    {
++        [JsonPropertyName("choices")]
++        public List<ChatChoice> Choices { get; set; } = [];
++    }
++
++    private sealed class ChatChoice
++    {
++        [JsonPropertyName("message")]
++        public ChatChoiceMessage? Message { get; set; }
++    }
++
++    private sealed class ChatChoiceMessage
++    {
++        [JsonPropertyName("content")]
++        public string? Content { get; set; }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+index a22e0ca..e586a7d 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+@@ -16,16 +16,19 @@ namespace VirtualCompany.Infrastructure.Sales;
+ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+ {
+     private static readonly Regex WhitespaceRegex = new("\\s+", RegexOptions.Compiled);
++    private const decimal MinimumLeadConfidence = 0.65m;
+     private readonly VirtualCompanyDbContext _dbContext;
+     private readonly IMailboxProviderRegistry _providerRegistry;
+     private readonly IFieldEncryptionService _fieldEncryption;
+     private readonly ICompanyOutboxEnqueuer _outbox;
++    private readonly ISalesEmailIntentExtractionService _intentExtraction;
+     private readonly TimeProvider _timeProvider;
+ 
+     public SalesEmailIngestionService(
+         VirtualCompanyDbContext dbContext,
+         IMailboxProviderRegistry providerRegistry,
+         IFieldEncryptionService fieldEncryption,
+         ICompanyOutboxEnqueuer outbox,
++        ISalesEmailIntentExtractionService intentExtraction,
+         TimeProvider timeProvider)
+     {
+         _dbContext = dbContext;
+@@ -33,6 +36,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         _fieldEncryption = fieldEncryption;
+         _outbox = outbox;
++        _intentExtraction = intentExtraction;
+         _timeProvider = timeProvider;
+     }
+ 
+@@ -96,8 +100,8 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+     {
+         var threadIdentity = ResolveThreadIdentity(connection, messages, providerThreadId);
+         var existingLeadLink = await FindLeadThreadLinkAsync(companyId, connection, threadIdentity, cancellationToken);
+-        var detection = DetectSalesSignal(messages);
+         var primaryMessage = messages.Last();
++        var detection = await DetectSalesSignalAsync(companyId, connection, messages, cancellationToken);
+ 
+         if (detection.IgnoreReason is not null)
+         {
+@@ -126,6 +130,18 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+ 
+         lead.ApplyEmailSignal(BuildLeadTitle(signal), contact?.Id, customerCompany?.Id, signal.Confidence, "sales email");
+ 
++        var existingActivityId = await FindDetectionActivityIdAsync(companyId, lead.Id, providerMessageId, cancellationToken);
++        Guid? activityId = existingActivityId;
++
++        if (existingActivityId is null)
++        {
++            activityId = Guid.NewGuid();
++            _dbContext.SalesActivities.Add(new SalesActivity(
++                activityId.Value,
++                companyId,
++                "email",
++                $"Inbound sales email {providerMessageId} from {signal.SenderEmail}: {signal.Intent}",
++                primaryMessage.ReceivedUtc ?? _timeProvider.GetUtcNow().UtcDateTime,
++                lead.Id,
++                contactId: contact?.Id,
++                customerCompanyId: customerCompany?.Id));
++        }
++
+         if (!await HasMessageLinkAsync(companyId, connection, providerMessageId, cancellationToken))
+         {
+             _dbContext.SalesEmailLinks.Add(new SalesEmailLink(
+@@ -163,20 +179,6 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+                 confidence: signal.Confidence));
+         }
+ 
+-        if (!await HasDetectionActivityAsync(companyId, lead.Id, providerMessageId, cancellationToken))
+-        {
+-            _dbContext.SalesActivities.Add(new SalesActivity(
+-                Guid.NewGuid(),
+-                companyId,
+-                "email",
+-                $"Inbound sales email from {signal.SenderEmail}: {signal.Intent}",
+-                primaryMessage.ReceivedUtc ?? _timeProvider.GetUtcNow().UtcDateTime,
+-                lead.Id,
+-                contactId: contact?.Id,
+-                customerCompanyId: customerCompany?.Id));
+-        }
+-
+         EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, detection, threadIdentity);
+         EnqueueLeadDetected(companyId, connection, primaryMessage, lead.Id, signal, threadIdentity);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+@@ -187,6 +189,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+             false,
+             lead.Id,
+             contact?.Id,
++            activityId,
+             customerCompany?.Id,
+             connection.Id,
+             connection.Provider.ToStorageValue(),
+@@ -226,10 +229,28 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+             connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
+ 
+-    private static DetectionOutcome DetectSalesSignal(IReadOnlyList<MailboxInboundMessage> messages)
++    private async Task<DetectionOutcome> DetectSalesSignalAsync(
++        Guid companyId,
++        MailboxConnection connection,
++        IReadOnlyList<MailboxInboundMessage> messages,
++        CancellationToken cancellationToken)
++    {
++        var extracted = await _intentExtraction.ExtractAsync(
++            new SalesEmailIntentExtractionRequest(companyId, connection.Provider.ToStorageValue(), connection.Id, messages),
++            cancellationToken);
++
++        var detection = extracted is null
++            ? DetectFallbackSalesSignal(messages)
++            : DetectionOutcome.FromExtraction(extracted);
++
++        if (detection.Signal is { Confidence: < MinimumLeadConfidence } signal)
++        {
++            return DetectionOutcome.Ignored(
++                SalesEmailIgnoreReasons.InsufficientSignal,
++                $"The message had possible sales intent but confidence was too low to create a lead ({signal.Confidence:0.00}).");
++        }
++
++        return detection;
++    }
++
++    private static DetectionOutcome DetectFallbackSalesSignal(IReadOnlyList<MailboxInboundMessage> messages)
+     {
+         var latest = messages.Last();
+         var body = NormalizeBody(string.Join("\n\n", messages.Select(x => $"{x.Subject}\n{x.PlainTextBody ?? StripHtml(x.HtmlBody)}")));
+@@ -238,7 +259,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+ 
+         if (string.IsNullOrWhiteSpace(senderEmail))
+         {
+-            return DetectionOutcome.Ignored(SalesEmailIgnoreReasons.NoSalesIntent, "The message has no sender address to create a lead from.");
++            return DetectionOutcome.Ignored(SalesEmailIgnoreReasons.InsufficientSignal, "The message has no sender address to create a lead from.");
+         }
+ 
+         if (ContainsAny(body, "unsubscribe", "newsletter", "weekly digest", "view in browser"))
+@@ -259,12 +280,12 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+         var hasUpsellIntent = ContainsAny(body, "upgrade", "add seats", "more licenses", "expand", "pricing");
+         if (ContainsAny(body, "support ticket", "case number", "bug", "not working", "refund") && !hasUpsellIntent)
+         {
+-            return DetectionOutcome.Ignored(SalesEmailIgnoreReasons.SupportTicket, "The message is a support request without buying or expansion intent.");
++            return DetectionOutcome.Ignored(SalesEmailIgnoreReasons.SupportTicket, "The message is a support request without buying or expansion intent.");
+         }
+ 
+         var positive = ContainsAny(body, "demo", "pricing", "quote", "proposal", "interested", "buy", "purchase", "evaluate", "trial", "book a call", "upgrade", "add seats", "license", "contract");
+         if (!positive)
+         {
+-            return DetectionOutcome.Ignored(SalesEmailIgnoreReasons.NoSalesIntent, "No clear sales buying signal was found.");
++            return DetectionOutcome.Ignored(SalesEmailIgnoreReasons.InsufficientSignal, "No clear sales buying signal was found.");
+         }
+ 
+         var urgency = ContainsAny(body, "urgent", "as soon as possible", "this week", "today", "tomorrow") ? "high" :
+@@ -274,7 +295,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+             ContainsAny(body, "pricing", "quote", "proposal") ? "pricing request" :
+             hasUpsellIntent ? "expansion interest" : "buying interest";
+         var companyName = GuessCompanyName(senderEmail);
+-        var confidence = positive && hasUpsellIntent ? 0.86m : positive ? 0.74m : 0.50m;
++        var confidence = positive && hasUpsellIntent ? 0.86m : positive ? 0.72m : 0.50m;
+ 
+         return DetectionOutcome.Detected(
+             new SalesEmailSignalResult(
+@@ -391,8 +412,9 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+     private async Task<bool> HasThreadLinkAsync(Guid companyId, MailboxConnection connection, string threadId, CancellationToken cancellationToken) =>
+         await FindThreadLinkAsync(companyId, connection, threadId, cancellationToken) is not null;
+ 
+-    private async Task<bool> HasDetectionActivityAsync(Guid companyId, Guid leadId, string messageId, CancellationToken cancellationToken) =>
+-        await _dbContext.SalesActivities.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && !x.IsDeleted && x.LeadId == leadId && x.ActivityType == "email" && x.Summary.Contains(messageId), cancellationToken);
++    private async Task<Guid?> FindDetectionActivityIdAsync(Guid companyId, Guid leadId, string messageId, CancellationToken cancellationToken) =>
++        await _dbContext.SalesActivities.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.LeadId == leadId && x.ActivityType == "email" && x.Summary.Contains(messageId))
++            .Select(x => (Guid?)x.Id)
++            .FirstOrDefaultAsync(cancellationToken);
+ 
+     private static SalesEmailLink CreateIgnoredLink(Guid companyId, MailboxConnection connection, string externalMessageId, string? internetMessageId, string? messageThreadId, string? threadIdentity, string ignoreReason, string rationale, string linkKind) =>
+         new(Guid.NewGuid(), companyId, externalMessageId, status: SalesStatuses.Ignored, provider: connection.Provider.ToStorageValue(), mailboxConnectionId: connection.Id, externalThreadId: threadIdentity ?? messageThreadId, internetMessageId: internetMessageId, linkKind: linkKind, ignoreReason: ignoreReason, rationale: rationale);
+@@ -400,10 +422,10 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+     private static SalesEmailIngestionResult ToAlreadyProcessedResult(SalesEmailLink link, MailboxConnection connection) =>
+-        new(SalesEmailIngestionStatuses.AlreadyProcessed, true, link.LeadId, link.ContactId, link.CustomerCompanyId, connection.Id, connection.Provider.ToStorageValue(), link.LinkKind == SalesEmailLinkKinds.Message ? link.ExternalMessageId : null, link.ExternalThreadId ?? (link.LinkKind == SalesEmailLinkKinds.Thread ? link.ExternalMessageId : null), link.InternetMessageId, link.IgnoreReason, link.Rationale, null);
++        new(SalesEmailIngestionStatuses.AlreadyProcessed, true, link.LeadId, link.ContactId, null, link.CustomerCompanyId, connection.Id, connection.Provider.ToStorageValue(), link.LinkKind == SalesEmailLinkKinds.Message ? link.ExternalMessageId : null, link.ExternalThreadId ?? (link.LinkKind == SalesEmailLinkKinds.Thread ? link.ExternalMessageId : null), link.InternetMessageId, link.IgnoreReason, link.Rationale, null);
+ 
+     private static SalesEmailIngestionResult ToIgnoredResult(SalesEmailLink link, MailboxConnection connection) =>
+-        new(SalesEmailIngestionStatuses.Ignored, false, null, null, null, connection.Id, connection.Provider.ToStorageValue(), link.LinkKind == SalesEmailLinkKinds.Message ? link.ExternalMessageId : null, link.ExternalThreadId, link.InternetMessageId, link.IgnoreReason, link.Rationale, null);
++        new(SalesEmailIngestionStatuses.Ignored, false, null, null, null, null, connection.Id, connection.Provider.ToStorageValue(), link.LinkKind == SalesEmailLinkKinds.Message ? link.ExternalMessageId : null, link.ExternalThreadId, link.InternetMessageId, link.IgnoreReason, link.Rationale, null);
+ 
+     private static string ResolveThreadIdentity(MailboxConnection connection, IReadOnlyList<MailboxInboundMessage> messages, string? providerThreadId) =>
+         providerThreadId ?? messages.LastOrDefault(x => !string.IsNullOrWhiteSpace(x.ProviderThreadId))?.ProviderThreadId ?? messages.First().InternetMessageId ?? $"{connection.Provider.ToStorageValue()}:{messages.First().ProviderMessageId}";
+@@ -456,6 +478,19 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
+     {
+         public static DetectionOutcome Detected(SalesEmailSignalResult signal, string rationale) => new(signal, null, rationale);
+         public static DetectionOutcome Ignored(string reason, string rationale) => new(null, reason, rationale);
++        public static DetectionOutcome FromExtraction(SalesEmailIntentExtractionResult extraction)
++        {
++            if (string.Equals(extraction.Classification, SalesEmailIntentClassifications.SalesLead, StringComparison.OrdinalIgnoreCase) &&
++                extraction.Signal is not null)
++            {
++                return Detected(extraction.Signal, extraction.Rationale);
++            }
++
++            return Ignored(
++                string.IsNullOrWhiteSpace(extraction.IgnoreReason)
++                    ? SalesEmailIgnoreReasons.InsufficientSignal
++                    : extraction.IgnoreReason,
++                extraction.Rationale);
++        }
+     }
+ }
+END_OF_PATCH

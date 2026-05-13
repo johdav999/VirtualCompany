@@ -1,0 +1,181 @@
+@page "/agents/automation"
+@rendermode InteractiveServer
+@using System.ComponentModel.DataAnnotations
+@inject SalesAutomationApiClient AutomationClient
+
+<PageTitle>Agent automation settings</PageTitle>
+
+<section class="py-4 dashboard-hero">
+    <div class="d-flex flex-column flex-lg-row justify-content-between gap-3 align-items-lg-end mb-4">
+        <div>
+            <span class="dashboard-kicker">AGENTS</span>
+            <h1 class="mb-2">Automation controls</h1>
+            <p class="text-body-secondary mb-0">Set when Alex can send outbound email, when messages need review, and how website leads enter follow-up.</p>
+        </div>
+        <a class="btn btn-outline-primary" href="/outbound-review-queue">Open review queue</a>
+    </div>
+
+    <div class="row g-4">
+        <div class="col-lg-7">
+            <div class="wizard-card">
+                <h2 class="h4 mb-3">Outbound policy</h2>
+
+                @if (!string.IsNullOrWhiteSpace(statusMessage))
+                {
+                    <div class="alert alert-success">@statusMessage</div>
+                }
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger">@errorMessage</div>
+                }
+
+                @if (isLoading)
+                {
+                    <p class="text-body-secondary mb-0">Loading automation policy...</p>
+                }
+                else
+                {
+                    <EditForm Model="@form" OnValidSubmit="@SaveAsync">
+                        <DataAnnotationsValidator />
+                        <ValidationSummary />
+
+                        <div class="form-check form-switch mb-4">
+                            <InputCheckbox id="outbound-enabled" class="form-check-input" @bind-Value="form.OutboundEnabled" />
+                            <label class="form-check-label fw-semibold" for="outbound-enabled">Allow outbound email automation</label>
+                            <div class="form-text">When this is off, sequence messages are blocked before they reach an email provider.</div>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label" for="max-emails">Maximum emails per day</label>
+                            <InputNumber id="max-emails" class="form-control" @bind-Value="form.MaxEmailsPerDay" />
+                            <ValidationMessage For="@(() => form.MaxEmailsPerDay)" />
+                        </div>
+
+                        <fieldset class="mb-4">
+                            <legend class="h6">Messages that need review</legend>
+                            <div class="vstack gap-3 mt-3">
+                                <label class="form-check">
+                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalFirstContact" />
+                                    <span class="form-check-label">First contact emails</span>
+                                </label>
+                                <label class="form-check">
+                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalPricingDiscussion" />
+                                    <span class="form-check-label">Pricing discussions</span>
+                                </label>
+                                <label class="form-check">
+                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalFollowUps" />
+                                    <span class="form-check-label">Follow-up emails</span>
+                                </label>
+                                <label class="form-check">
+                                    <InputCheckbox class="form-check-input" @bind-Value="form.RequireApprovalReEngagement" />
+                                    <span class="form-check-label">Re-engagement emails</span>
+                                </label>
+                            </div>
+                        </fieldset>
+
+                        <div class="mb-4">
+                            <label class="form-label" for="dedupe-window">Website lead duplicate window, minutes</label>
+                            <InputNumber id="dedupe-window" class="form-control" @bind-Value="form.WebsiteLeadDeduplicationWindowMinutes" />
+                            <ValidationMessage For="@(() => form.WebsiteLeadDeduplicationWindowMinutes)" />
+                        </div>
+
+                        <div class="dashboard-actions">
+                            <button class="btn btn-primary" type="submit" disabled="@isSaving">Save settings</button>
+                        </div>
+                    </EditForm>
+                }
+            </div>
+        </div>
+
+        <div class="col-lg-5">
+            <div class="wizard-card">
+                <h2 class="h4 mb-3">Website form key</h2>
+                <p class="text-body-secondary">Use this key from your website form submission code. It resolves the company without exposing or trusting a company ID.</p>
+                <div class="p-3 border rounded bg-light text-break"><code>@(form.WebsiteLeadFormKey.Length == 0 ? "Not generated yet" : form.WebsiteLeadFormKey)</code></div>
+                <p class="text-body-secondary small mt-3 mb-0">Endpoint: <code>POST /api/website/forms/leads</code></p>
+            </div>
+        </div>
+    </div>
+</section>
+
+@code {
+    private AutomationPolicyForm form = new();
+    private bool isLoading = true;
+    private bool isSaving;
+    private string? statusMessage;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var policy = await AutomationClient.GetPolicyAsync();
+            form = AutomationPolicyForm.From(policy);
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SaveAsync()
+    {
+        isSaving = true;
+        statusMessage = null;
+        errorMessage = null;
+        try
+        {
+            var policy = await AutomationClient.UpdatePolicyAsync(form.ToRequest());
+            form = AutomationPolicyForm.From(policy);
+            statusMessage = "Automation settings were saved.";
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private sealed class AutomationPolicyForm
+    {
+        public bool OutboundEnabled { get; set; }
+        [Range(0, 10000)]
+        public int MaxEmailsPerDay { get; set; } = 25;
+        public bool RequireApprovalFirstContact { get; set; } = true;
+        public bool RequireApprovalPricingDiscussion { get; set; } = true;
+        public bool RequireApprovalFollowUps { get; set; } = true;
+        public bool RequireApprovalReEngagement { get; set; } = true;
+        [Range(1, 43200)]
+        public int WebsiteLeadDeduplicationWindowMinutes { get; set; } = 10080;
+        public string WebsiteLeadFormKey { get; set; } = string.Empty;
+
+        public static AutomationPolicyForm From(OutboundAutomationPolicyViewModel policy) => new()
+        {
+            OutboundEnabled = policy.OutboundEnabled,
+            MaxEmailsPerDay = policy.MaxEmailsPerDay,
+            RequireApprovalFirstContact = policy.RequireApprovalFirstContact,
+            RequireApprovalPricingDiscussion = policy.RequireApprovalPricingDiscussion,
+            RequireApprovalFollowUps = policy.RequireApprovalFollowUps,
+            RequireApprovalReEngagement = policy.RequireApprovalReEngagement,
+            WebsiteLeadDeduplicationWindowMinutes = policy.WebsiteLeadDeduplicationWindowMinutes,
+            WebsiteLeadFormKey = policy.WebsiteLeadFormKey
+        };
+
+        public UpdateOutboundAutomationPolicyRequest ToRequest() => new(
+            OutboundEnabled,
+            MaxEmailsPerDay,
+            RequireApprovalFirstContact,
+            RequireApprovalPricingDiscussion,
+            RequireApprovalFollowUps,
+            RequireApprovalReEngagement,
+            WebsiteLeadDeduplicationWindowMinutes,
+            null);
+    }
+}

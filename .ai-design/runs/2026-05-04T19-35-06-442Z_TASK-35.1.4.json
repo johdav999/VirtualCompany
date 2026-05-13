@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-35.1.4",
+  "promptPath": ".ai-design/prompts/TASK-35.1.4.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T19:35:06.442Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T19-35-06-442Z_TASK-35.1.4_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T19-35-06-442Z_TASK-35.1.4.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T19:40:17.863Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "wait dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()\n+                .Where(x => x.CompanyId == companyId && x.ContactId == contactId && x.Status == SalesStatuses.Cancelled)\n+                .ToListAsync()\n+        });\n+\n+        Assert.True(state.AuditExists);\n+        Assert.Contains(state.CancelledSteps, x => x.CancellationReason == reason && x.CancellationSourceReference != null);\n+    }\n+\n+    [Fact]\n+    public async Task Sequence_stop_events_are_idempotent_and_tenant_scoped()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = Client(seed.CompanyAId);\n+        var create = await client.PostAsJsonAsync(\"/api/sales/campaigns\", ValidCampaign(seed.ContactAId, \"Tenant safe campaign\"));\n+        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();\n+        await client.PostAsJsonAsync($\"/api/sales/campaigns/{campaign!.Id}/launch\", new { });\n+\n+        var first = await client.PostAsJsonAsync($\"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created\", new { DealId = seed.DealAId });\n+        var duplicate = await client.PostAsJsonAsync($\"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created\", new { DealId = seed.DealAId });\n+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);\n+        Assert.Equal(HttpStatusCode.Accepted, duplicate.StatusCode);\n+        await DispatchOutboxAsync();\n+        await DispatchOutboxAsync();\n+\n+        var pendingOtherTenant = await _factory.ExecuteDbContextAsync(dbContext =>\n+            dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyBId && x.ContactId == seed.ContactBId && x.Status == SalesStatuses.Pending));\n+        Assert.Equal(0, pendingOtherTenant);\n+        Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, campaign.Id));\n+    }\n \n     private static CreateOutboundCampaignRequest ValidCampaign(Guid contactId, string name = \"Renewal outreach\") =>\n         new(\nEND_OF_PATCH\n",
+  "stderrTail": "SequenceExecutionSteps.IgnoreQueryFilters()\n+                .Where(x => x.CompanyId == companyId && x.ContactId == contactId && x.Status == SalesStatuses.Cancelled)\n+                .ToListAsync()\n+        });\n+\n+        Assert.True(state.AuditExists);\n+        Assert.Contains(state.CancelledSteps, x => x.CancellationReason == reason && x.CancellationSourceReference != null);\n+    }\n+\n+    [Fact]\n+    public async Task Sequence_stop_events_are_idempotent_and_tenant_scoped()\n+    {\n+        var seed = await SeedAsync();\n+        using var client = Client(seed.CompanyAId);\n+        var create = await client.PostAsJsonAsync(\"/api/sales/campaigns\", ValidCampaign(seed.ContactAId, \"Tenant safe campaign\"));\n+        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();\n+        await client.PostAsJsonAsync($\"/api/sales/campaigns/{campaign!.Id}/launch\", new { });\n+\n+        var first = await client.PostAsJsonAsync($\"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created\", new { DealId = seed.DealAId });\n+        var duplicate = await client.PostAsJsonAsync($\"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created\", new { DealId = seed.DealAId });\n+        Assert.Equal(HttpStatusCode.Accepted, first.StatusCode);\n+        Assert.Equal(HttpStatusCode.Accepted, duplicate.StatusCode);\n+        await DispatchOutboxAsync();\n+        await DispatchOutboxAsync();\n+\n+        var pendingOtherTenant = await _factory.ExecuteDbContextAsync(dbContext =>\n+            dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyBId && x.ContactId == seed.ContactBId && x.Status == SalesStatuses.Pending));\n+        Assert.Equal(0, pendingOtherTenant);\n+        Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, campaign.Id));\n+    }\n \n     private static CreateOutboundCampaignRequest ValidCampaign(Guid contactId, string name = \"Renewal outreach\") =>\n         new(\nEND_OF_PATCH\ntokens used\n119,930\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

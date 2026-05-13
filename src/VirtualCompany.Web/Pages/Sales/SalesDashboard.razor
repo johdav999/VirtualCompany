@@ -1,0 +1,273 @@
+@page "/app/sales"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using System.Globalization
+@using VirtualCompany.Web.Components.Sales
+
+<PageTitle>Sales</PageTitle>
+
+<div class="sales-workspace">
+    <main class="sales-main">
+        <header class="sales-page-header">
+            <span>SALES</span>
+            <h1>Sales review</h1>
+            <p>Review pipeline health, new leads, Alex's recommendations, and the next sales actions.</p>
+            <nav class="sales-tabs" aria-label="Sales sections">
+                <a class="active" href="@BuildPath("/app/sales")">Overview</a>
+                <a href="@BuildPath("/app/sales/leads")">Leads</a>
+                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
+                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            </nav>
+        </header>
+
+        @if (isLoading)
+        {
+            <section class="sales-card sales-empty">Loading live sales data...</section>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <section class="sales-card sales-error">
+                <h2>Sales is unavailable</h2>
+                <p>@errorMessage</p>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+            </section>
+        }
+        else if (dashboard is not null)
+        {
+            <section class="sales-kpi-grid" aria-label="Sales KPIs">
+                <article class="sales-kpi-card">
+                    <span>Pipeline value</span>
+                    <strong>@Money(dashboard.PipelineValue, dashboard.Currency)</strong>
+                    <small>Open deals in the active pipeline</small>
+                </article>
+                <article class="sales-kpi-card">
+                    <span>New leads</span>
+                    <strong>@dashboard.NewLeads</strong>
+                    <small>Waiting for first review</small>
+                </article>
+                <article class="sales-kpi-card">
+                    <span>Hot leads</span>
+                    <strong>@dashboard.HotLeads</strong>
+                    <small>Alex sees buying intent</small>
+                </article>
+                <article class="sales-kpi-card">
+                    <span>Forecast revenue</span>
+                    <strong>@Money(PrimaryForecastValue, PrimaryForecastCurrency)</strong>
+                    <small>Expected in the next 30 days</small>
+                </article>
+            </section>
+
+            <section class="sales-briefing-card">
+                <div>
+                    <span>Today's briefing</span>
+                    <h2>Alex is watching @dashboard.DealsNeedingAttention deal@(dashboard.DealsNeedingAttention == 1 ? "" : "s") that need follow-up.</h2>
+                    <p>
+                        @if (dashboard.HotLeads > 0)
+                        {
+                            <text>@dashboard.HotLeads hot lead@(dashboard.HotLeads == 1 ? " is" : "s are") ready for review. </text>
+                        }
+                        @if (dashboard.AgentRecommendations.Count > 0)
+                        {
+                            <text>The top recommendation is: @dashboard.AgentRecommendations[0].Recommendation</text>
+                        }
+                        else
+                        {
+                            <text>No urgent sales recommendation is open right now.</text>
+                        }
+                    </p>
+                </div>
+                <div class="sales-actions">
+                    <a class="sales-button sales-button--primary" href="@BuildPath("/app/sales/leads")">Review leads</a>
+                    <a class="sales-button" href="@BuildPath("/app/sales/pipeline")">Open pipeline</a>
+                </div>
+            </section>
+
+            <section class="sales-card">
+                <div class="sales-section-heading">
+                    <div>
+                        <span>REVENUE INSIGHTS</span>
+                        <h2>Conversion and forecast</h2>
+                    </div>
+                </div>
+                @if (analytics is null && forecast is null)
+                {
+                    <div class="sales-empty">Alex has not recorded enough campaign activity for conversion reporting yet.</div>
+                }
+                else
+                {
+                    <div class="sales-kpi-grid sales-kpi-grid--compact">
+                        <article class="sales-kpi-card">
+                            <span>Reply rate</span>
+                            <strong>@Percent(analytics?.Rates.ReplyRate ?? 0m)</strong>
+                            <small>@(analytics?.Funnel.Replied ?? 0) replies from @(analytics?.Funnel.Sent ?? 0) sent messages</small>
+                        </article>
+                        <article class="sales-kpi-card">
+                            <span>Conversion rate</span>
+                            <strong>@Percent(analytics?.Rates.ConversionRate ?? 0m)</strong>
+                            <small>@(analytics?.Funnel.Converted ?? 0) converted opportunities</small>
+                        </article>
+                        <article class="sales-kpi-card">
+                            <span>60 day forecast</span>
+                            <strong>@Money(ForecastValue(60), PrimaryForecastCurrency)</strong>
+                            <small>Risk-adjusted expected revenue</small>
+                        </article>
+                        <article class="sales-kpi-card">
+                            <span>High risk deals</span>
+                            <strong>@(forecast?.RiskDistribution.High ?? 0)</strong>
+                            <small>Need review before the next forecast refresh</small>
+                        </article>
+                    </div>
+                    <div class="sales-two-column sales-two-column--even">
+                        <div class="sales-list">
+                            <h3>Campaign performance</h3>
+                            @if (analytics?.Campaigns.Count > 0)
+                            {
+                                @foreach (var campaign in analytics.Campaigns)
+                                {
+                                    <div class="sales-list-row">
+                                        <div>
+                                            <strong>@campaign.CampaignName</strong>
+                                            <span>@campaign.Counts.Sent sent Aú @campaign.Counts.Replied replies Aú @campaign.Counts.Converted converted</span>
+                                        </div>
+                                        <span class="sales-badge sales-badge--active">@Percent(campaign.Rates.ReplyRate)</span>
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <div class="sales-empty">No campaign sends have been recorded yet.</div>
+                            }
+                        </div>
+                        <div class="sales-list">
+                            <h3>A/B message variants</h3>
+                            @if (analytics?.Variants.Count > 0)
+                            {
+                                @foreach (var variant in analytics.Variants)
+                                {
+                                    <div class="sales-list-row">
+                                        <div>
+                                            <strong>@variant.VariantKey</strong>
+                                            <span>@variant.Counts.Sent sent Aú @variant.Counts.Replied replies Aú @variant.Counts.Converted converted</span>
+                                        </div>
+                                        <span class="sales-badge sales-badge--active">@Percent(variant.Rates.ConversionRate)</span>
+                                    </div>
+                                }
+                            }
+                            else
+                            {
+                                <div class="sales-empty">No variants have enough activity to compare yet.</div>
+                            }
+                        </div>
+                    </div>
+                }
+            </section>
+
+            <div class="sales-two-column">
+                <section class="sales-card">
+                    <div class="sales-section-heading">
+                        <div>
+                            <span>AGENT RECOMMENDATIONS</span>
+                            <h2>What Alex recommends</h2>
+                        </div>
+                    </div>
+                    @if (dashboard.AgentRecommendations.Count == 0)
+                    {
+                        <div class="sales-empty">No recommendations need review.</div>
+                    }
+                    else
+                    {
+                        <div class="sales-list">
+                            @foreach (var recommendation in dashboard.AgentRecommendations)
+                            {
+                                <a class="sales-list-row" href="@RecommendationPath(recommendation)">
+                                    <div>
+                                        <strong>@recommendation.Recommendation</strong>
+                                        <span>@recommendation.Rationale</span>
+                                    </div>
+                                    <span class="@BadgeClass(recommendation.Status)">@recommendation.Status</span>
+                                </a>
+                            }
+                        </div>
+                    }
+                </section>
+
+                <section class="sales-card">
+                    <div class="sales-section-heading">
+                        <div>
+                            <span>RECENT ACTIVITY</span>
+                            <h2>Latest sales movement</h2>
+                        </div>
+                    </div>
+                    @if (dashboard.RecentActivity.Count == 0)
+                    {
+                        <div class="sales-empty">No sales activity has been recorded yet.</div>
+                    }
+                    else
+                    {
+                        <div class="sales-timeline">
+                            @foreach (var item in dashboard.RecentActivity)
+                            {
+                                <a class="sales-timeline-row" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads"))">
+                                    <span></span>
+                                    <div>
+                                        <strong>@item.Summary</strong>
+                                        <small>@item.ActivityType · @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                    </div>
+                                </a>
+                            }
+                        </div>
+                    }
+                </section>
+            </div>
+        }
+    </main>
+
+    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@(AgentPanelDashboard ?? dashboard)" ErrorMessage="@AgentPanelErrorMessage" />
+</div>
+
+@code {
+    private bool isLoading = true;
+    private string? errorMessage;
+    private SalesDashboardResponse? dashboard;
+    private SalesAnalyticsDashboardResponse? analytics;
+    private RevenueForecastSnapshotResponse? forecast;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            if (!await ResolveCompanyAsync())
+            {
+                errorMessage = ShellErrorMessage;
+                return;
+            }
+
+            dashboard = await SalesApiClient.GetDashboardAsync(ResolvedCompanyId!.Value);
+            analytics = await SalesApiClient.GetAnalyticsAsync(ResolvedCompanyId!.Value);
+            forecast = await SalesApiClient.GetRevenueForecastAsync(ResolvedCompanyId!.Value);
+            AgentPanelDashboard = dashboard;
+        }
+        catch (SalesApiException ex)
+        {
+            errorMessage = ex.Message;
+            AgentPanelErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private decimal PrimaryForecastValue => ForecastValue(30) > 0m ? ForecastValue(30) : dashboard?.ForecastRevenue ?? 0m;
+    private string PrimaryForecastCurrency => forecast?.Currency ?? dashboard?.Currency ?? "USD";
+    private decimal ForecastValue(int days) => forecast?.Windows.FirstOrDefault(x => x.Days == days)?.ExpectedRevenue ?? 0m;
+    private string RecommendationPath(SalesRecommendationResponse recommendation) => recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
+    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
+    private static string Percent(decimal value) => string.Create(CultureInfo.CurrentCulture, $"{value:P0}");
+    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+}

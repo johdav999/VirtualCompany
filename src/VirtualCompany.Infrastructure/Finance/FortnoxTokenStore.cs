@@ -11,6 +11,8 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
 {
     private const string AccessTokenPurpose = "fortnox:access_token";
     private const string RefreshTokenPurpose = "fortnox:refresh_token";
+    private const string TokenEncryptionAlgorithm = "aspnet-data-protection-v1";
+    private const string TokenEncryptionKeyId = "tenant-scoped-data-protection";
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFieldEncryptionService _fieldEncryption;
@@ -38,6 +40,25 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
         return connection is null ? null : ToSnapshot(connection, includeTokens: true);
     }
 
+    public async Task<FortnoxTokenSnapshot?> GetStatusAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken)
+    {
+        var query = _dbContext.FortnoxConnections
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId);
+
+        if (connectionId.HasValue)
+        {
+            query = query.Where(x => x.Id == connectionId.Value);
+        }
+
+        var connection = await query.SingleOrDefaultAsync(cancellationToken);
+
+        // Status surfaces must never decrypt or expose token material.
+        return connection is null
+            ? null
+            : ToSnapshot(connection, includeTokens: false);
+    }
+
     public async Task<FortnoxTokenSnapshot> UpsertConnectedAsync(
         Guid companyId,
         Guid userId,
@@ -60,7 +81,9 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
             tokenResult.AccessTokenExpiresUtc,
             tokenResult.GrantedScopes,
             tokenResult.ProviderTenantId,
-            nowUtc);
+            nowUtc,
+            tokenEncryptionKeyId: TokenEncryptionKeyId,
+            tokenEncryptionAlgorithm: TokenEncryptionAlgorithm);
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return ToSnapshot(connection, includeTokens: false);
@@ -124,6 +147,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
             FortnoxConnectionStatus.Disconnected,
             "Fortnox was disconnected by a company administrator.",
             nowUtc);
+        connection.ClearTokenMaterial(nowUtc);
 
         // Stored token material is no longer returned by the application after disconnect.
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -133,10 +157,11 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
 
     private FortnoxTokenSnapshot ToSnapshot(FortnoxConnection connection, bool includeTokens)
     {
-        var accessToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)
+        var mayReturnTokens = includeTokens && connection.Status is not FortnoxConnectionStatus.Disconnected and not FortnoxConnectionStatus.Revoked and not FortnoxConnectionStatus.NeedsReconnect;
+        var accessToken = mayReturnTokens && !string.IsNullOrWhiteSpace(connection.EncryptedAccessToken)
             ? DecryptAccess(connection.CompanyId, connection.EncryptedAccessToken)
             : null;
-        var refreshToken = includeTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)
+        var refreshToken = mayReturnTokens && !string.IsNullOrWhiteSpace(connection.EncryptedRefreshToken)
             ? DecryptRefresh(connection.CompanyId, connection.EncryptedRefreshToken)
             : null;
 
@@ -148,7 +173,11 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
             refreshToken,
             connection.AccessTokenExpiresUtc,
             connection.GrantedScopes,
-            connection.ProviderTenantId);
+            connection.ProviderTenantId,
+            connection.ConnectedUtc,
+            connection.LastRefreshAttemptUtc,
+            connection.LastErrorSummary,
+            connection.LastSyncUtc);
     }
 
     private string EncryptAccess(Guid companyId, string plaintext) =>

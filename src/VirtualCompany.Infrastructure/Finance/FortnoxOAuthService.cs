@@ -1,12 +1,15 @@
 using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Infrastructure.Finance;
 
@@ -18,7 +21,9 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
     private static readonly TimeSpan RefreshLockPoll = TimeSpan.FromMilliseconds(250);
     private static readonly TimeSpan RefreshSkew = TimeSpan.FromMinutes(5);
 
+    private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyContextAccessor _companyContextAccessor;
+    private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
     private readonly IFortnoxOAuthSessionStore _sessionStore;
     private readonly IFortnoxTokenStore _tokenStore;
     private readonly FortnoxOAuthClient _client;
@@ -26,10 +31,12 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FortnoxOAuthService> _logger;
     private readonly IFortnoxIntegrationDiagnostics? _diagnostics;
+    private readonly IAuditEventWriter _auditEventWriter;
 
     public FortnoxOAuthService(
         VirtualCompanyDbContext dbContext,
         ICompanyContextAccessor companyContextAccessor,
+        ICompanyMembershipContextResolver companyMembershipContextResolver,
         IFortnoxOAuthStateProtector stateProtector,
         IFortnoxOAuthSessionStore sessionStore,
         IFortnoxTokenStore tokenStore,
@@ -37,15 +44,19 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
         IDistributedLockProvider lockProvider,
         TimeProvider timeProvider,
         ILogger<FortnoxOAuthService> logger,
+        IAuditEventWriter auditEventWriter,
         IFortnoxIntegrationDiagnostics? diagnostics = null)
     {
+        _dbContext = dbContext;
         _companyContextAccessor = companyContextAccessor;
+        _companyMembershipContextResolver = companyMembershipContextResolver;
         _sessionStore = sessionStore;
         _tokenStore = tokenStore;
         _client = client;
         _lockProvider = lockProvider;
         _timeProvider = timeProvider;
         _logger = logger;
+        _auditEventWriter = auditEventWriter;
         _diagnostics = diagnostics;
     }
 
@@ -78,47 +89,83 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
         CompleteFortnoxOAuthConnectionCommand command,
         CancellationToken cancellationToken)
     {
-        if (!string.IsNullOrWhiteSpace(command.ProviderError))
-        {
-            throw new FortnoxOAuthException("Fortnox authorization was cancelled or denied.");
-        }
-
-        if (string.IsNullOrWhiteSpace(command.Code))
-        {
-            throw new FortnoxOAuthException("Fortnox did not return an authorization code.");
-        }
-
-        var state = await _sessionStore.ConsumeAsync(command.CompanyId, command.State, cancellationToken);
-        ValidateCallbackState(command, state);
-        EnsureCurrentTenantUser(state.CompanyId, state.UserId);
-
-        FortnoxOAuthTokenResult tokenResult;
+        FortnoxOAuthState? state = null;
+        var receivedUtc = UtcNow();
         try
         {
-            tokenResult = await _client.ExchangeCodeAsync(command.Code, cancellationToken);
+            if (string.IsNullOrWhiteSpace(command.State))
+            {
+                throw new FortnoxOAuthException("Fortnox authorization state was missing.");
+            }
+
+            state = command.CompanyId == Guid.Empty
+                ? await _sessionStore.GetAsync(command.State, cancellationToken)
+                : await _sessionStore.GetAsync(command.CompanyId, command.State, cancellationToken);
+            ValidateCallbackState(command, state);
+            await ResolveCallbackCompanyContextAsync(command, state, cancellationToken);
+            EnsureCallbackTenantUser(command, state);
+
+            if (!string.IsNullOrWhiteSpace(command.ProviderError))
+            {
+                throw new FortnoxOAuthException(FormatProviderError(command.ProviderError));
+            }
+
+            if (string.IsNullOrWhiteSpace(command.Code))
+            {
+                throw new FortnoxOAuthException("Fortnox did not return an authorization code.");
+            }
+
+            FortnoxOAuthTokenResult tokenResult;
+            try
+            {
+                tokenResult = await _client.ExchangeCodeAsync(command.Code, cancellationToken);
+            }
+            catch (FortnoxOAuthException)
+            {
+                throw;
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
+            {
+                throw new FortnoxOAuthException("Fortnox authorization is temporarily unavailable. Try again later.", isTransient: true);
+            }
+
+            var strategy = _dbContext.Database.CreateExecutionStrategy();
+            var connection = await strategy.ExecuteAsync(async () =>
+            {
+                await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+                await _sessionStore.MarkConsumedAsync(state.CompanyId, command.State, null, receivedUtc, cancellationToken);
+                var persistedConnection = await _tokenStore.UpsertConnectedAsync(state.CompanyId, state.UserId, tokenResult, UtcNow(), cancellationToken);
+                await _sessionStore.AttachConnectionAsync(state.CompanyId, command.State, persistedConnection.ConnectionId, cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+
+                return persistedConnection;
+            });
+
+            _logger.LogInformation(
+                "Fortnox OAuth connection completed. CompanyId: {CompanyId}. UserId: {UserId}. ConnectionId: {ConnectionId}.",
+                state.CompanyId,
+                state.UserId,
+                connection.ConnectionId);
+
+            return new FortnoxOAuthCompletionResult(
+                connection.ConnectionId,
+                state.CompanyId,
+                connection.Status,
+                state.ReturnUri);
         }
-        catch (FortnoxOAuthException)
+        catch (Exception ex) when (ex is FortnoxOAuthException or UnauthorizedAccessException or ArgumentException)
         {
+            if (!string.IsNullOrWhiteSpace(command.State))
+            {
+                var failureCompanyId = state?.CompanyId ?? command.CompanyId;
+                if (failureCompanyId != Guid.Empty)
+                {
+                    await SafeMarkCallbackFailedAsync(failureCompanyId, command.State, ToSafeCallbackFailureReason(ex), receivedUtc, cancellationToken);
+                }
+            }
+
             throw;
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or JsonException)
-        {
-            throw new FortnoxOAuthException("Fortnox authorization is temporarily unavailable. Try again later.", isTransient: true);
-        }
-
-        var connection = await _tokenStore.UpsertConnectedAsync(state.CompanyId, state.UserId, tokenResult, UtcNow(), cancellationToken);
-
-        _logger.LogInformation(
-            "Fortnox OAuth connection completed. CompanyId: {CompanyId}. UserId: {UserId}. ConnectionId: {ConnectionId}.",
-            state.CompanyId,
-            state.UserId,
-            connection.ConnectionId);
-
-        return new FortnoxOAuthCompletionResult(
-            connection.ConnectionId,
-            state.CompanyId,
-            connection.Status,
-            state.ReturnUri);
     }
 
     public async Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(
@@ -126,7 +173,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
         CancellationToken cancellationToken)
     {
         var existing = await _tokenStore.GetAsync(command.CompanyId, command.ConnectionId, cancellationToken);
-        var usable = TryUseExistingToken(existing);
+        var usable = command.ForceRefresh ? null : TryUseExistingToken(existing);
         if (usable is not null)
         {
             return usable;
@@ -150,7 +197,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
         }
 
         var afterLock = await _tokenStore.GetAsync(command.CompanyId, existing.ConnectionId, cancellationToken);
-        usable = TryUseExistingToken(afterLock);
+        usable = command.ForceRefresh ? null : TryUseExistingToken(afterLock);
         if (usable is not null)
         {
             return usable;
@@ -214,7 +261,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
         }
         catch (Exception ex) when (ex is FortnoxOAuthException or HttpRequestException or TaskCanceledException)
         {
-            await _tokenStore.MarkAsync(connection.CompanyId, connection.ConnectionId, FortnoxConnectionStatusValues.Error, "Fortnox token refresh failed. The job will retry later.", now, cancellationToken);
+            await _tokenStore.MarkAsync(connection.CompanyId, connection.ConnectionId, FortnoxConnectionStatusValues.NeedsReconnect, "Fortnox token refresh failed. Reconnect Fortnox to continue.", now, cancellationToken);
             _logger.LogWarning(
                 "Fortnox token refresh failed without exposing token material. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}.",
                 connection.CompanyId,
@@ -252,21 +299,22 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
         CancellationToken cancellationToken)
     {
         EnsureCurrentTenantUser(query.CompanyId, query.UserId);
-        var connection = await _tokenStore.GetAsync(query.CompanyId, null, cancellationToken);
+        var connection = await _tokenStore.GetStatusAsync(query.CompanyId, null, cancellationToken);
 
         if (connection is null)
         {
-            return new FortnoxConnectionStatusResult(false, null, null, null, null, null, null);
+            return new FortnoxConnectionStatusResult(false, null, null, null, null, null, null, null);
         }
 
         return new FortnoxConnectionStatusResult(
             connection.Status == FortnoxConnectionStatusValues.Connected,
             connection.ConnectionId,
             connection.Status,
-            null,
+            connection.ConnectedUtc,
             connection.AccessTokenExpiresUtc,
-            null,
-            null);
+            connection.LastRefreshAttemptUtc,
+            connection.LastErrorSummary,
+            connection.LastSuccessfulSyncUtc);
     }
 
     public async Task MarkNeedsReconnectAsync(
@@ -292,6 +340,28 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
             command.UserId,
             disconnected?.ConnectionId);
 
+        await _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                command.CompanyId,
+                AuditActorTypes.User,
+                command.UserId,
+                AuditEventActions.IntegrationConnectionDisconnected,
+                AuditTargetTypes.IntegrationConnection,
+                disconnected?.ConnectionId.ToString("D") ?? "fortnox",
+                AuditEventOutcomes.Succeeded,
+                "Fortnox was disconnected by a company administrator.",
+                DataSources: ["Fortnox connection settings"],
+                Metadata: new Dictionary<string, string?>
+                {
+                    ["provider"] = "Fortnox",
+                    ["connectionId"] = disconnected?.ConnectionId.ToString("D"),
+                    ["status"] = FortnoxConnectionStatusValues.Disconnected
+                },
+                OccurredUtc: now),
+            cancellationToken);
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
         return new FortnoxConnectionDisconnectResult(
             command.CompanyId,
             disconnected?.ConnectionId,
@@ -303,6 +373,46 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
     private static bool IsReconnectStatus(string status) =>
         status is FortnoxConnectionStatusValues.NeedsReconnect or FortnoxConnectionStatusValues.Revoked or FortnoxConnectionStatusValues.Disconnected;
 
+    private async Task SafeMarkCallbackFailedAsync(
+        Guid companyId,
+        string stateHandle,
+        string safeReason,
+        DateTime receivedUtc,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _sessionStore.MarkFailedAsync(companyId, stateHandle, safeReason, receivedUtc, cancellationToken);
+        }
+        catch (Exception ex) when (ex is UnauthorizedAccessException or ArgumentException or DbUpdateException)
+        {
+            _logger.LogWarning(
+                "Fortnox OAuth callback failure could not be recorded. CompanyId: {CompanyId}. Reason: {Reason}.",
+                companyId,
+                safeReason);
+        }
+    }
+
+    private static string ToSafeCallbackFailureReason(Exception exception) =>
+        exception is FortnoxOAuthException oauthException ? oauthException.SafeMessage : "Fortnox authorization was invalid.";
+
+    private static string FormatProviderError(string providerError)
+    {
+        if (providerError.Contains("error_missing_license", StringComparison.OrdinalIgnoreCase) ||
+            providerError.Contains("not licensed", StringComparison.OrdinalIgnoreCase))
+        {
+            return "The Fortnox company is not licensed for one or more requested permissions. Remove unlicensed scopes from the Fortnox configuration, or enable the matching Fortnox license before reconnecting.";
+        }
+
+        if (providerError.Contains("invalid_scope", StringComparison.OrdinalIgnoreCase) ||
+            providerError.Contains("unsupported scope", StringComparison.OrdinalIgnoreCase))
+        {
+            return "Fortnox rejected the requested permissions. Enable the same scopes in the Fortnox Developer Portal, or remove unsupported scopes from the local Fortnox configuration.";
+        }
+
+        return "Fortnox authorization was cancelled or denied.";
+    }
+
     private void ValidateCallbackState(CompleteFortnoxOAuthConnectionCommand command, FortnoxOAuthState state)
     {
         var now = UtcNow();
@@ -311,7 +421,8 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
             throw new FortnoxOAuthException("Fortnox authorization has expired. Start the connection again.");
         }
 
-        if (state.CompanyId != command.CompanyId || state.UserId != command.UserId)
+        if ((command.CompanyId != Guid.Empty && state.CompanyId != command.CompanyId) ||
+            (command.UserId != Guid.Empty && state.UserId != command.UserId))
         {
             throw new UnauthorizedAccessException("Fortnox authorization did not match the current company and user.");
         }
@@ -322,6 +433,39 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
                 System.Text.Encoding.UTF8.GetBytes(command.Nonce)))
         {
             throw new UnauthorizedAccessException("Fortnox authorization nonce was invalid.");
+        }
+    }
+
+    private async Task ResolveCallbackCompanyContextAsync(
+        CompleteFortnoxOAuthConnectionCommand command,
+        FortnoxOAuthState state,
+        CancellationToken cancellationToken)
+    {
+        if (command.CompanyId != Guid.Empty || _companyContextAccessor.IsResolved)
+        {
+            return;
+        }
+
+        _companyContextAccessor.SetCompanyId(state.CompanyId);
+        var membership = await _companyMembershipContextResolver.ResolveAsync(state.CompanyId, cancellationToken);
+        if (membership is null && command.UserId != Guid.Empty)
+        {
+            throw new UnauthorizedAccessException("Fortnox authorization did not match an active company membership.");
+        }
+    }
+
+    private void EnsureCallbackTenantUser(CompleteFortnoxOAuthConnectionCommand command, FortnoxOAuthState state)
+    {
+        if (_companyContextAccessor.CompanyId != state.CompanyId)
+        {
+            throw new UnauthorizedAccessException("Fortnox connections are scoped to the current tenant and user.");
+        }
+
+        if (command.UserId != Guid.Empty &&
+            _companyContextAccessor.UserId.HasValue &&
+            _companyContextAccessor.UserId.Value != state.UserId)
+        {
+            throw new UnauthorizedAccessException("Fortnox authorization did not match the current company and user.");
         }
     }
 

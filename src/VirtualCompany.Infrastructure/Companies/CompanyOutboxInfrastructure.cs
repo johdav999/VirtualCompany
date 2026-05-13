@@ -15,12 +15,14 @@ using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Sales;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -180,6 +182,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ICompanyNotificationDispatcher _notificationDispatcher;
     private readonly IInternalWorkflowEventTriggerService _workflowEventTriggerService;
     private readonly IFinanceWorkflowTriggerService _financeWorkflowTriggerService;
+    private readonly ISequenceExecutionService _sequenceExecutionService;
     private readonly ITriggerExecutionService _triggerExecutionService;
     private readonly IExecutiveCockpitDashboardCacheInvalidator _cockpitCacheInvalidator;
     private readonly IOptions<CompanyOutboxDispatcherOptions> _options;
@@ -197,6 +200,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ICompanyNotificationDispatcher notificationDispatcher,
         ITriggerExecutionService triggerExecutionService,
         IFinanceWorkflowTriggerService financeWorkflowTriggerService,
+        ISequenceExecutionService sequenceExecutionService,
         IInternalWorkflowEventTriggerService workflowEventTriggerService,
         IExecutiveCockpitDashboardCacheInvalidator cockpitCacheInvalidator,
         IOptions<CompanyOutboxDispatcherOptions> options,
@@ -213,6 +217,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _notificationDispatcher = notificationDispatcher;
         _triggerExecutionService = triggerExecutionService;
         _financeWorkflowTriggerService = financeWorkflowTriggerService;
+        _sequenceExecutionService = sequenceExecutionService;
         _workflowEventTriggerService = workflowEventTriggerService;
         _cockpitCacheInvalidator = cockpitCacheInvalidator;
         _options = options;
@@ -499,6 +504,11 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             case CompanyOutboxTopics.FinancePaymentCreated:
             case CompanyOutboxTopics.FinanceSimulationDayAdvanced:
             case CompanyOutboxTopics.FinanceThresholdBreached:
+            case CompanyOutboxTopics.SalesEmailReceived:
+            case CompanyOutboxTopics.SalesLeadDetected:
+            case CompanyOutboxTopics.SalesLeadQualified:
+            case CompanyOutboxTopics.SalesDealWon:
+            case CompanyOutboxTopics.SalesDealCreated:
             {
                 var payload = Deserialize<PlatformEventEnvelope>(message);
                 if (payload.CompanyId != message.CompanyId)
@@ -521,6 +531,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                         },
                         cancellationToken);
                 }
+                await HandleSalesSequenceStopEventAsync(payload, cancellationToken);
                 await _workflowEventTriggerService.HandleAsync(
                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.EventId : payload.CorrelationId },
                     cancellationToken);
@@ -616,6 +627,46 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             payload.CorrelationId);
     }
 
+    private async Task HandleSalesSequenceStopEventAsync(PlatformEventEnvelope payload, CancellationToken cancellationToken)
+    {
+        if (string.Equals(payload.EventType, CompanyOutboxTopics.SalesEmailReceived, StringComparison.OrdinalIgnoreCase))
+        {
+            var contactId = TryReadMetadataGuid(payload.Metadata, "contactId");
+            if (contactId is Guid resolvedContactId)
+            {
+                await _sequenceExecutionService.CancelPendingStepsForContactAsync(
+                    payload.CompanyId,
+                    resolvedContactId,
+                    SalesStopReasons.ReplyReceived,
+                    cancellationToken);
+                return;
+            }
+
+            await _sequenceExecutionService.HandleReplyReceivedAsync(
+                payload.CompanyId,
+                new OutboundReplyReceived(
+                    TryReadMetadataString(payload.Metadata, "providerMessageId") ?? payload.SourceEntityId,
+                    TryReadMetadataString(payload.Metadata, "providerThreadId"),
+                    TryReadMetadataString(payload.Metadata, "internetMessageId"),
+                    TryReadMetadataString(payload.Metadata, "senderEmail") ?? string.Empty,
+                    payload.OccurredAtUtc),
+                cancellationToken);
+        }
+        else if (string.Equals(payload.EventType, CompanyOutboxTopics.SalesDealCreated, StringComparison.OrdinalIgnoreCase))
+        {
+            var dealId = TryReadMetadataGuid(payload.Metadata, "dealId") ?? TryParseGuid(payload.SourceEntityId);
+            var contactId = TryReadMetadataGuid(payload.Metadata, "contactId");
+            if (dealId is Guid resolvedDealId && contactId is Guid resolvedContactId)
+            {
+                await _sequenceExecutionService.HandleDealCreatedAsync(
+                    payload.CompanyId,
+                    resolvedContactId,
+                    resolvedDealId,
+                    cancellationToken);
+            }
+        }
+    }
+
     private async Task EnqueueBriefingJobForNotificationAsync(
         CompanyOutboxMessage message,
         NotificationDeliveryRequestedMessage payload,
@@ -684,6 +735,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         }
 
         return null;
+    }
+
+    private static Guid? TryReadMetadataGuid(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        string key)
+    {
+        var value = TryReadMetadataString(metadata, key);
+        return Guid.TryParse(value, out var parsed) ? parsed : null;
     }
 
     private async Task InvalidateCockpitAsync(

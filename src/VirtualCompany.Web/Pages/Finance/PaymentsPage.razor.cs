@@ -24,6 +24,12 @@ public partial class PaymentsPage : FinancePageBase
     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Payments.Count == 0;
     private string? TypeFilterValue => NormalizeOptionalText(Type);
     private string ClearFiltersHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Payments, AccessState.CompanyId);
+    private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
+    private string LauraHref => AccessState.CompanyId is Guid companyId ? $"/agents?companyId={companyId:D}&agent=Laura" : "/agents";
+    private IReadOnlyList<PaymentListItemViewModel> PaymentItems =>
+        Payments.Select(payment => ToListItem(payment, PaymentId == payment.Id)).ToList();
+    private PaymentDetailViewModel? SelectedPaymentDisplay =>
+        SelectedPayment is null ? null : ToDetailViewModel(SelectedPayment);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -117,20 +123,8 @@ public partial class PaymentsPage : FinancePageBase
         return $"{path}?{string.Join("&", query)}";
     }
 
-    private string GetPaymentListItemClass(Guid paymentId) =>
-        PaymentId == paymentId
-            ? "list-group-item list-group-item-action active"
-            : "list-group-item list-group-item-action";
-
     private bool IsTypeSelected(string option) =>
         string.Equals(TypeFilterValue, option, StringComparison.OrdinalIgnoreCase);
-
-    private static string GetStatusBadgeClass(string status) =>
-        string.Equals(status, "completed", StringComparison.OrdinalIgnoreCase)
-            ? "text-bg-success"
-            : string.Equals(status, "failed", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "cancelled", StringComparison.OrdinalIgnoreCase)
-                ? "text-bg-danger"
-                : "text-bg-warning";
 
     private static string? NormalizeOptionalText(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
@@ -138,11 +132,112 @@ public partial class PaymentsPage : FinancePageBase
     private static string FormatCurrency(decimal amount, string currency) =>
         $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
 
-    private static string FormatDate(DateTime value) =>
-        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private static string FormatFriendlyDate(DateTime value) =>
+        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
 
     private static string FormatLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
-            ? "n/a"
-            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            ? "Not available"
+            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                .ToLowerInvariant() is { } normalized
+                ? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(normalized)
+                : "Not available";
+
+    private static string FormatPaymentMethod(string? value)
+    {
+        var normalized = NormalizeOptionalText(value);
+        return normalized switch
+        {
+            "ach" => "ACH",
+            "bank_transfer" => "Bank transfer",
+            "card" => "Card",
+            "wire" or "wire_transfer" => "Wire transfer",
+            null => "Not available",
+            _ => FormatLabel(normalized)
+        };
+    }
+
+    private static PaymentStatusPresentation ResolveStatusPresentation(string? status)
+    {
+        var normalized = NormalizeOptionalText(status) ?? string.Empty;
+        return normalized switch
+        {
+            "completed" or "paid" or "settled" => new("Completed", "success"),
+            "pending" or "processing" or "scheduled" => new("Pending", "warning"),
+            "failed" or "cancelled" or "rejected" => new("Failed", "danger"),
+            _ => new(string.IsNullOrWhiteSpace(status) ? "Unknown" : FormatLabel(status), "neutral")
+        };
+    }
+
+    private static PaymentTypePresentation ResolveTypePresentation(string? paymentType)
+    {
+        var normalized = NormalizeOptionalText(paymentType) ?? string.Empty;
+        return normalized switch
+        {
+            "incoming" => new("Incoming", "success", "+"),
+            "outgoing" => new("Outgoing", "warning", "-"),
+            _ => new(string.IsNullOrWhiteSpace(paymentType) ? "Payment" : FormatLabel(paymentType), "neutral", "?")
+        };
+    }
+
+    private static PaymentListItemViewModel ToListItem(FinancePaymentResponse payment, bool isSelected)
+    {
+        var status = ResolveStatusPresentation(payment.Status);
+        var type = ResolveTypePresentation(payment.PaymentType);
+        var method = FormatPaymentMethod(payment.Method);
+        var reference = string.IsNullOrWhiteSpace(payment.CounterpartyReference) ? "Payment" : payment.CounterpartyReference;
+
+        return new PaymentListItemViewModel(
+            payment.Id,
+            reference,
+            method,
+            FormatFriendlyDate(payment.PaymentDate),
+            FormatCurrency(payment.Amount, payment.Currency),
+            status.Label,
+            status.Tone,
+            type.Tone,
+            type.IconText,
+            isSelected);
+    }
+
+    private static PaymentDetailViewModel ToDetailViewModel(FinancePaymentResponse payment)
+    {
+        var status = ResolveStatusPresentation(payment.Status);
+        var type = ResolveTypePresentation(payment.PaymentType);
+        var reference = string.IsNullOrWhiteSpace(payment.CounterpartyReference) ? "Payment" : payment.CounterpartyReference;
+
+        return new PaymentDetailViewModel(
+            reference,
+            type.Label,
+            FormatCurrency(payment.Amount, payment.Currency),
+            status.Label,
+            status.Tone,
+            FormatPaymentMethod(payment.Method),
+            FormatFriendlyDate(payment.PaymentDate));
+    }
+
+    private sealed record PaymentStatusPresentation(string Label, string Tone);
+
+    private sealed record PaymentTypePresentation(string Label, string Tone, string IconText);
+
+    private sealed record PaymentListItemViewModel(
+        Guid Id,
+        string Reference,
+        string MethodLabel,
+        string DisplayDate,
+        string DisplayAmount,
+        string StatusLabel,
+        string StatusTone,
+        string IconTone,
+        string IconText,
+        bool IsSelected);
+
+    private sealed record PaymentDetailViewModel(
+        string Reference,
+        string PaymentTypeLabel,
+        string DisplayAmount,
+        string StatusLabel,
+        string StatusTone,
+        string MethodLabel,
+        string DisplayDate);
 }

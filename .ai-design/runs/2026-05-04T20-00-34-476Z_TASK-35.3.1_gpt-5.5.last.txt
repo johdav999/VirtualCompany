@@ -1,0 +1,1584 @@
+diff --git a/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs b/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs
+new file mode 100644
+index 0000000..f7a1a9c
+--- /dev/null
++++ b/src/VirtualCompany.Application/Sales/OutboundAutomationContracts.cs
+@@ -0,0 +1,153 @@
++namespace VirtualCompany.Application.Sales;
++
++public interface IOutboundAutomationPolicyService
++{
++    Task<OutboundAutomationPolicyResponse> GetPolicyAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<OutboundAutomationPolicyResponse> UpdatePolicyAsync(Guid companyId, Guid userId, UpdateOutboundAutomationPolicyRequest request, CancellationToken cancellationToken);
++}
++
++public interface IOutboundAutomationEnforcementService
++{
++    Task<OutboundPolicyEvaluationResult> EvaluateSequenceStepAsync(Guid companyId, Guid stepId, CancellationToken cancellationToken);
++}
++
++public interface IOutboundReviewQueueService
++{
++    Task<IReadOnlyList<OutboundReviewQueueItemResponse>> ListPendingAsync(Guid companyId, CancellationToken cancellationToken);
++    Task<OutboundReviewQueueDetailResponse?> GetAsync(Guid companyId, Guid reviewId, CancellationToken cancellationToken);
++    Task<OutboundReviewQueueDetailResponse?> ApproveAsync(Guid companyId, Guid userId, Guid reviewId, OutboundReviewDecisionRequest request, CancellationToken cancellationToken);
++    Task<OutboundReviewQueueDetailResponse?> RejectAsync(Guid companyId, Guid userId, Guid reviewId, OutboundReviewDecisionRequest request, CancellationToken cancellationToken);
++    Task<OutboundReviewQueueDetailResponse?> EditAndApproveAsync(Guid companyId, Guid userId, Guid reviewId, OutboundEditAndApproveRequest request, CancellationToken cancellationToken);
++}
++
++public interface IWebsiteLeadCaptureService
++{
++    Task<WebsiteLeadSubmissionResponse> SubmitAsync(WebsiteLeadSubmissionRequest request, CancellationToken cancellationToken);
++}
++
++public sealed record OutboundAutomationPolicyResponse(
++    Guid Id,
++    bool OutboundEnabled,
++    int MaxEmailsPerDay,
++    bool RequireApprovalFirstContact,
++    bool RequireApprovalPricingDiscussion,
++    bool RequireApprovalFollowUps,
++    bool RequireApprovalReEngagement,
++    int WebsiteLeadDeduplicationWindowMinutes,
++    Guid? WebsiteLeadFollowUpSequenceId,
++    DateTime UpdatedUtc);
++
++public sealed record UpdateOutboundAutomationPolicyRequest(
++    bool OutboundEnabled,
++    int MaxEmailsPerDay,
++    bool RequireApprovalFirstContact,
++    bool RequireApprovalPricingDiscussion,
++    bool RequireApprovalFollowUps,
++    bool RequireApprovalReEngagement,
++    int WebsiteLeadDeduplicationWindowMinutes,
++    Guid? WebsiteLeadFollowUpSequenceId);
++
++public sealed record OutboundPolicyEvaluationResult(
++    string Outcome,
++    string ReasonCode,
++    string Reason,
++    Guid? ReviewId);
++
++public static class OutboundPolicyOutcomes
++{
++    public const string Allowed = "allowed";
++    public const string Blocked = "blocked";
++    public const string RequiresApproval = "requires_approval";
++}
++
++public static class OutboundPolicyReasonCodes
++{
++    public const string MissingPolicy = "missing_policy";
++    public const string OutboundDisabled = "outbound_disabled";
++    public const string DailyLimitReached = "daily_limit_reached";
++    public const string FirstContactApprovalRequired = "first_contact_approval_required";
++    public const string PricingApprovalRequired = "pricing_approval_required";
++    public const string FollowUpApprovalRequired = "follow_up_approval_required";
++    public const string ReEngagementApprovalRequired = "re_engagement_approval_required";
++    public const string Allowed = "allowed";
++}
++
++public static class OutboundMessageCategories
++{
++    public const string FirstContact = "first_contact";
++    public const string PricingDiscussion = "pricing_discussion";
++    public const string FollowUp = "follow_up";
++    public const string ReEngagement = "re_engagement";
++}
++
++public sealed record OutboundReviewQueueItemResponse(
++    Guid Id,
++    Guid SequenceExecutionStepId,
++    Guid CampaignId,
++    Guid ContactId,
++    string ContactName,
++    string ContactEmail,
++    string Category,
++    string Status,
++    string Reason,
++    DateTime RequestedUtc);
++
++public sealed record OutboundReviewQueueDetailResponse(
++    Guid Id,
++    Guid SequenceExecutionStepId,
++    Guid CampaignId,
++    Guid ContactId,
++    string ContactName,
++    string ContactEmail,
++    string Category,
++    string Status,
++    string ReasonCode,
++    string Reason,
++    string Subject,
++    string Body,
++    string? EditedSubject,
++    string? EditedBody,
++    Guid? DecidedByUserId,
++    DateTime? DecidedUtc,
++    string? DecisionComment,
++    DateTime RequestedUtc);
++
++public sealed record OutboundReviewDecisionRequest(string? Comment);
++
++public sealed record OutboundEditAndApproveRequest(
++    string Subject,
++    string Body,
++    string? Comment);
++
++public sealed record WebsiteLeadSubmissionRequest(
++    string TenantKey,
++    string Email,
++    string? Name,
++    string? CompanyName,
++    string? Message,
++    string? SourceUrl,
++    string? FormId);
++
++public sealed record WebsiteLeadSubmissionResponse(
++    string Status,
++    DateTime ReceivedUtc);
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index 4e77b19..8dbe346 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -177,12 +177,24 @@ public sealed record SalesRecommendationResponse(
+ 
+ public sealed record SalesAutomationPolicyResponse(
+     Guid Id,
+     string Mode,
+     bool FinanceDocumentsAlwaysRequireApproval,
++    bool OutboundEnabled,
++    int MaxEmailsPerDay,
++    bool RequireApprovalFirstContact,
++    bool RequireApprovalPricingDiscussion,
++    bool RequireApprovalFollowUps,
++    bool RequireApprovalReEngagement,
++    int WebsiteLeadDeduplicationWindowMinutes,
++    Guid? WebsiteLeadFollowUpSequenceId,
+     DateTime UpdatedUtc);
+@@ -223,7 +235,16 @@ public sealed record UpdateLeadQualificationRequest(
+     string SuggestedNextAction,
+     string? Note);
+ 
+-public sealed record UpdateSalesAutomationPolicyRequest(string Mode);
++public sealed record UpdateSalesAutomationPolicyRequest(
++    string Mode,
++    bool? OutboundEnabled = null,
++    int? MaxEmailsPerDay = null,
++    bool? RequireApprovalFirstContact = null,
++    bool? RequireApprovalPricingDiscussion = null,
++    bool? RequireApprovalFollowUps = null,
++    bool? RequireApprovalReEngagement = null,
++    int? WebsiteLeadDeduplicationWindowMinutes = null,
++    Guid? WebsiteLeadFollowUpSequenceId = null);
+ public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
+ public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
+ public sealed record ProcessSalesEmailRequest(
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 68b6e9f..569d537 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -236,6 +236,8 @@ public sealed class Lead : ICompanyOwnedEntity
+     public string? Priority { get; private set; }
+     public string? SuggestedNextAction { get; private set; }
+     public DateTime? QualifiedUtc { get; private set; }
++    public string? WebsiteSubmissionEmail { get; private set; }
++    public Guid? WebsiteLeadSubmissionId { get; private set; }
+     public Guid? QualifiedByUserId { get; private set; }
+@@ -298,6 +300,14 @@ public sealed class Lead : ICompanyOwnedEntity
+         UpdatedUtc = DateTime.UtcNow;
+     }
+ 
++    public void ApplyWebsiteSubmission(Guid submissionId, string normalizedEmail, string? message)
++    {
++        WebsiteLeadSubmissionId = submissionId == Guid.Empty ? throw new ArgumentException("SubmissionId is required.", nameof(submissionId)) : submissionId;
++        WebsiteSubmissionEmail = SalesEntityText.NormalizeRequired(normalizedEmail, nameof(normalizedEmail), 256).ToLowerInvariant();
++        SuggestedNextAction = SalesEntityText.NormalizeOptional(message, nameof(message), 500) ?? SuggestedNextAction ?? "Review website enquiry";
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
+     public void SoftDelete()
+     {
+         if (IsDeleted)
+@@ -1253,15 +1263,91 @@ public sealed class SalesAutomationPolicy : ICompanyOwnedEntity
+ {
+     private SalesAutomationPolicy() { }
+-    public SalesAutomationPolicy(Guid id, Guid companyId, string mode) { SalesEntityText.EnsureCompany(companyId); Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = companyId; Mode = SalesEntityText.NormalizeRequired(mode, nameof(mode), 80).ToLowerInvariant(); FinanceDocumentsAlwaysRequireApproval = true; CreatedUtc = DateTime.UtcNow; UpdatedUtc = CreatedUtc; }
++    public SalesAutomationPolicy(Guid id, Guid companyId, string mode)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        Mode = SalesEntityText.NormalizeRequired(mode, nameof(mode), 80).ToLowerInvariant();
++        FinanceDocumentsAlwaysRequireApproval = true;
++        OutboundEnabled = false;
++        MaxEmailsPerDay = 25;
++        RequireApprovalFirstContact = true;
++        RequireApprovalPricingDiscussion = true;
++        RequireApprovalFollowUps = true;
++        RequireApprovalReEngagement = true;
++        WebsiteLeadDeduplicationWindowMinutes = 10080;
++        CreatedUtc = DateTime.UtcNow;
++        UpdatedUtc = CreatedUtc;
++    }
+     public Guid Id { get; private set; }
+     public Guid CompanyId { get; private set; }
+     public string Mode { get; private set; } = null!;
+     public bool FinanceDocumentsAlwaysRequireApproval { get; private set; }
++    public bool OutboundEnabled { get; private set; }
++    public int MaxEmailsPerDay { get; private set; }
++    public bool RequireApprovalFirstContact { get; private set; }
++    public bool RequireApprovalPricingDiscussion { get; private set; }
++    public bool RequireApprovalFollowUps { get; private set; }
++    public bool RequireApprovalReEngagement { get; private set; }
++    public int WebsiteLeadDeduplicationWindowMinutes { get; private set; }
++    public Guid? WebsiteLeadFollowUpSequenceId { get; private set; }
+     public DateTime CreatedUtc { get; private set; }
+     public DateTime UpdatedUtc { get; private set; }
+     public void UpdateMode(string mode) { Mode = SalesEntityText.NormalizeRequired(mode, nameof(mode), 80).ToLowerInvariant(); FinanceDocumentsAlwaysRequireApproval = true; UpdatedUtc = DateTime.UtcNow; }
++
++    public void UpdateOutboundSettings(
++        bool outboundEnabled,
++        int maxEmailsPerDay,
++        bool requireApprovalFirstContact,
++        bool requireApprovalPricingDiscussion,
++        bool requireApprovalFollowUps,
++        bool requireApprovalReEngagement,
++        int websiteLeadDeduplicationWindowMinutes,
++        Guid? websiteLeadFollowUpSequenceId)
++    {
++        if (maxEmailsPerDay < 0)
++        {
++            throw new ArgumentOutOfRangeException(nameof(maxEmailsPerDay), "Daily email limit cannot be negative.");
++        }
++
++        if (websiteLeadDeduplicationWindowMinutes is < 1 or > 43200)
++        {
++            throw new ArgumentOutOfRangeException(nameof(websiteLeadDeduplicationWindowMinutes), "Website lead deduplication window must be between 1 minute and 30 days.");
++        }
++
++        OutboundEnabled = outboundEnabled;
++        MaxEmailsPerDay = maxEmailsPerDay;
++        RequireApprovalFirstContact = requireApprovalFirstContact;
++        RequireApprovalPricingDiscussion = requireApprovalPricingDiscussion;
++        RequireApprovalFollowUps = requireApprovalFollowUps;
++        RequireApprovalReEngagement = requireApprovalReEngagement;
++        WebsiteLeadDeduplicationWindowMinutes = websiteLeadDeduplicationWindowMinutes;
++        WebsiteLeadFollowUpSequenceId = SalesEntityText.NormalizeOptionalId(websiteLeadFollowUpSequenceId, nameof(websiteLeadFollowUpSequenceId));
++        UpdatedUtc = DateTime.UtcNow;
++    }
+ }
++
++public sealed class OutboundMessageReview : ICompanyOwnedEntity
++{
++    private OutboundMessageReview() { }
++    public OutboundMessageReview(Guid id, Guid companyId, Guid sequenceExecutionStepId, Guid campaignId, Guid contactId, string category, string reasonCode, string reason, string subject, string body)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        SequenceExecutionStepId = SalesEntityText.NormalizeOptionalId(sequenceExecutionStepId, nameof(sequenceExecutionStepId))!.Value;
++        SalesCampaignId = SalesEntityText.NormalizeOptionalId(campaignId, nameof(campaignId))!.Value;
++        ContactId = SalesEntityText.NormalizeOptionalId(contactId, nameof(contactId))!.Value;
++        Category = SalesEntityText.NormalizeRequired(category, nameof(category), 64).ToLowerInvariant();
++        ReasonCode = SalesEntityText.NormalizeRequired(reasonCode, nameof(reasonCode), 120).ToLowerInvariant();
++        Reason = SalesEntityText.NormalizeRequired(reason, nameof(reason), 1000);
++        OriginalSubject = SalesEntityText.NormalizeRequired(subject, nameof(subject), 300);
++        OriginalBody = SalesEntityText.NormalizeRequired(body, nameof(body), 16000);
++        Status = SalesStatuses.WaitingForApproval;
++        RequestedUtc = DateTime.UtcNow;
++        CreatedUtc = RequestedUtc;
++        UpdatedUtc = CreatedUtc;
++    }
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid SequenceExecutionStepId { get; private set; }
++    public Guid SalesCampaignId { get; private set; }
++    public Guid ContactId { get; private set; }
++    public string Category { get; private set; } = null!;
++    public string ReasonCode { get; private set; } = null!;
++    public string Reason { get; private set; } = null!;
++    public string OriginalSubject { get; private set; } = null!;
++    public string OriginalBody { get; private set; } = null!;
++    public string? EditedSubject { get; private set; }
++    public string? EditedBody { get; private set; }
++    public string Status { get; private set; } = null!;
++    public Guid? DecidedByUserId { get; private set; }
++    public DateTime? DecidedUtc { get; private set; }
++    public string? DecisionComment { get; private set; }
++    public DateTime RequestedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public SalesSequenceExecutionStep SequenceExecutionStep { get; private set; } = null!;
++    public Contact Contact { get; private set; } = null!;
++
++    public void Approve(Guid userId, string? comment)
++    {
++        Decide(userId, SalesStatuses.Approved, comment);
++    }
++
++    public void Reject(Guid userId, string? comment)
++    {
++        Decide(userId, SalesStatuses.Rejected, comment);
++    }
++
++    public void EditAndApprove(Guid userId, string subject, string body, string? comment)
++    {
++        EditedSubject = SalesEntityText.NormalizeRequired(subject, nameof(subject), 300);
++        EditedBody = SalesEntityText.NormalizeRequired(body, nameof(body), 16000);
++        Decide(userId, SalesStatuses.Approved, comment);
++    }
++
++    private void Decide(Guid userId, string status, string? comment)
++    {
++        if (Status != SalesStatuses.WaitingForApproval)
++        {
++            throw new InvalidOperationException("This outbound message has already been reviewed.");
++        }
++
++        DecidedByUserId = SalesEntityText.NormalizeOptionalId(userId, nameof(userId))!.Value;
++        Status = status;
++        DecisionComment = SalesEntityText.NormalizeOptional(comment, nameof(comment), 1000);
++        DecidedUtc = DateTime.UtcNow;
++        UpdatedUtc = DecidedUtc.Value;
++    }
++}
++
++public sealed class WebsiteLeadSubmission : ICompanyOwnedEntity
++{
++    private WebsiteLeadSubmission() { }
++    public WebsiteLeadSubmission(Guid id, Guid companyId, string normalizedEmail, string? name, string? companyName, string? message, string? sourceUrl, string? formId)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        NormalizedEmail = SalesEntityText.NormalizeRequired(normalizedEmail, nameof(normalizedEmail), 256).ToLowerInvariant();
++        Name = SalesEntityText.NormalizeOptional(name, nameof(name), 160);
++        CompanyName = SalesEntityText.NormalizeOptional(companyName, nameof(companyName), 200);
++        Message = SalesEntityText.NormalizeOptional(message, nameof(message), 2000);
++        SourceUrl = SalesEntityText.NormalizeOptional(sourceUrl, nameof(sourceUrl), 512);
++        FormId = SalesEntityText.NormalizeOptional(formId, nameof(formId), 120);
++        Status = SalesStatuses.Open;
++        ReceivedUtc = DateTime.UtcNow;
++        CreatedUtc = ReceivedUtc;
++        UpdatedUtc = CreatedUtc;
++    }
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? LeadId { get; private set; }
++    public Guid? ContactId { get; private set; }
++    public Guid? MergedIntoSubmissionId { get; private set; }
++    public Guid? EnrollmentOutboxMessageId { get; private set; }
++    public string NormalizedEmail { get; private set; } = null!;
++    public string? Name { get; private set; }
++    public string? CompanyName { get; private set; }
++    public string? Message { get; private set; }
++    public string? SourceUrl { get; private set; }
++    public string? FormId { get; private set; }
++    public string Status { get; private set; } = null!;
++    public DateTime ReceivedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Lead? Lead { get; private set; }
++
++    public void LinkLead(Guid leadId, Guid contactId)
++    {
++        LeadId = SalesEntityText.NormalizeOptionalId(leadId, nameof(leadId))!.Value;
++        ContactId = SalesEntityText.NormalizeOptionalId(contactId, nameof(contactId))!.Value;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkMerged(Guid targetSubmissionId)
++    {
++        MergedIntoSubmissionId = SalesEntityText.NormalizeOptionalId(targetSubmissionId, nameof(targetSubmissionId))!.Value;
++        Status = "merged";
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    public void MarkEnrollmentQueued(Guid outboxMessageId)
++    {
++        EnrollmentOutboxMessageId = SalesEntityText.NormalizeOptionalId(outboxMessageId, nameof(outboxMessageId))!.Value;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++}
+@@ -1555,6 +1641,7 @@ public static class SalesStatuses
+     public const string WaitingForApproval = "waiting_for_approval";
+     public const string Linked = "linked";
+     public const string Ignored = "ignored";
++    public const string Blocked = "blocked";
+     public const string Pending = "pending";
+diff --git a/src/VirtualCompany.Domain/Entities/SalesSequenceExecutionStep.Partial.cs b/src/VirtualCompany.Domain/Entities/SalesSequenceExecutionStep.Partial.cs
+new file mode 100644
+index 0000000..a84466d
+--- /dev/null
++++ b/src/VirtualCompany.Domain/Entities/SalesSequenceExecutionStep.Partial.cs
+@@ -0,0 +1,30 @@
++namespace VirtualCompany.Domain.Entities;
++
++public sealed partial class SalesSequenceExecutionStep
++{
++    public string? PolicyDecisionOutcome { get; private set; }
++    public string? PolicyDecisionReasonCode { get; private set; }
++    public string? PolicyDecisionReason { get; private set; }
++    public Guid? OutboundMessageReviewId { get; private set; }
++    public DateTime? PolicyEvaluatedUtc { get; private set; }
++
++    public void MarkBlockedByPolicy(string reasonCode, string reason)
++    {
++        Status = SalesStatuses.Blocked;
++        DeliveryStatus = SalesStatuses.Blocked;
++        PolicyDecisionOutcome = "blocked";
++        PolicyDecisionReasonCode = SalesEntityText.NormalizeRequired(reasonCode, nameof(reasonCode), 120);
++        PolicyDecisionReason = SalesEntityText.NormalizeRequired(reason, nameof(reason), 1000);
++        PolicyEvaluatedUtc = DateTime.UtcNow;
++        UpdatedUtc = PolicyEvaluatedUtc.Value;
++    }
++
++    public void MarkWaitingForOutboundReview(Guid reviewId, string reasonCode, string reason)
++    {
++        Status = SalesStatuses.WaitingForApproval;
++        OutboundMessageReviewId = SalesEntityText.NormalizeOptionalId(reviewId, nameof(reviewId))!.Value;
++        PolicyDecisionOutcome = "requires_approval";
++        PolicyDecisionReasonCode = SalesEntityText.NormalizeRequired(reasonCode, nameof(reasonCode), 120);
++        PolicyDecisionReason = SalesEntityText.NormalizeRequired(reason, nameof(reason), 1000);
++        PolicyEvaluatedUtc = DateTime.UtcNow;
++        UpdatedUtc = PolicyEvaluatedUtc.Value;
++    }
++}
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+index 569d537..d795b9f 100644
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@ -1110,7 +1110,7 @@ public sealed class SalesSequenceExecution : ICompanyOwnedEntity
+     }
+ }
+ 
+-public sealed class SalesSequenceExecutionStep : ICompanyOwnedEntity
++public sealed partial class SalesSequenceExecutionStep : ICompanyOwnedEntity
+ {
+     private SalesSequenceExecutionStep()
+     {
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+index 7bb2cb8..c6f29ff 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@ -160,6 +160,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+     public DbSet<SalesSequenceExecutionStep> SalesSequenceExecutionSteps => Set<SalesSequenceExecutionStep>();
+     public DbSet<SalesAutomationPolicy> SalesAutomationPolicies => Set<SalesAutomationPolicy>();
++    public DbSet<OutboundMessageReview> OutboundMessageReviews => Set<OutboundMessageReview>();
++    public DbSet<WebsiteLeadSubmission> WebsiteLeadSubmissions => Set<WebsiteLeadSubmission>();
+     public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
+@@ -360,6 +362,8 @@ public sealed class VirtualCompanyDbContext : DbContext
+                 entry.Entity is SalesSequenceExecution ||
+                 entry.Entity is SalesSequenceExecutionStep ||
+                 entry.Entity is SalesAutomationPolicy ||
++                entry.Entity is OutboundMessageReview ||
++                entry.Entity is WebsiteLeadSubmission ||
+                 entry.Entity is SalesActionApproval ||
+@@ -747,6 +751,15 @@ public sealed class VirtualCompanyDbContext : DbContext
+             .HasQueryFilter(contact =>
+                 CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesSequenceExecution>()
++            .HasQueryFilter(execution =>
++                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesSequenceExecutionStep>()
++            .HasQueryFilter(step =>
++                CurrentCompanyId.HasValue && step.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<SalesAutomationPolicy>()
++            .HasQueryFilter(policy =>
++                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+         modelBuilder.Entity<SalesActionApproval>()
+             .HasQueryFilter(approval =>
+                 CurrentCompanyId.HasValue && approval.CompanyId == CurrentCompanyId.Value && !approval.IsDeleted);
+@@ -754,5 +767,11 @@ public sealed class VirtualCompanyDbContext : DbContext
+             .HasQueryFilter(link =>
+                 CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value && !link.IsDeleted);
++        modelBuilder.Entity<OutboundMessageReview>()
++            .HasQueryFilter(review =>
++                CurrentCompanyId.HasValue && review.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<WebsiteLeadSubmission>()
++            .HasQueryFilter(submission =>
++                CurrentCompanyId.HasValue && submission.CompanyId == CurrentCompanyId.Value);
+     }
+ }
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+index 3f77137..d86bf2f 100644
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@ -142,6 +142,8 @@ internal sealed class LeadConfiguration : IEntityTypeConfiguration<Lead>
+         builder.Property(x => x.Priority).HasColumnName("priority").HasMaxLength(32);
+         builder.Property(x => x.SuggestedNextAction).HasColumnName("suggested_next_action").HasMaxLength(500);
+         builder.Property(x => x.QualifiedUtc).HasColumnName("qualified_at");
++        builder.Property(x => x.WebsiteSubmissionEmail).HasColumnName("website_submission_email").HasMaxLength(256);
++        builder.Property(x => x.WebsiteLeadSubmissionId).HasColumnName("website_lead_submission_id");
+         builder.Property(x => x.QualifiedByUserId).HasColumnName("qualified_by_user_id");
+@@ -631,6 +633,11 @@ internal sealed class SalesSequenceExecutionStepConfiguration : IEntityTypeConfig
+         builder.Property(x => x.GeneratedDraftUtc).HasColumnName("generated_draft_at");
+         builder.Property(x => x.DraftUpdatedUtc).HasColumnName("draft_updated_at");
++        builder.Property(x => x.PolicyDecisionOutcome).HasColumnName("policy_decision_outcome").HasMaxLength(32);
++        builder.Property(x => x.PolicyDecisionReasonCode).HasColumnName("policy_decision_reason_code").HasMaxLength(120);
++        builder.Property(x => x.PolicyDecisionReason).HasColumnName("policy_decision_reason").HasMaxLength(1000);
++        builder.Property(x => x.OutboundMessageReviewId).HasColumnName("outbound_message_review_id");
++        builder.Property(x => x.PolicyEvaluatedUtc).HasColumnName("policy_evaluated_at");
+         builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(256).IsRequired();
+@@ -645,6 +652,8 @@ internal sealed class SalesSequenceExecutionStepConfiguration : IEntityTypeConfig
+         builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.Status });
+         builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.CancellationReason });
++        builder.HasIndex(x => new { x.CompanyId, x.PolicyDecisionOutcome, x.PolicyEvaluatedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.OutboundMessageReviewId }).HasFilter("[outbound_message_review_id] IS NOT NULL");
+@@ -663,6 +672,11 @@ internal sealed class SalesAutomationPolicyConfiguration : IEntityTypeConfigurati
+         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+         builder.Property(x => x.Mode).HasColumnName("mode").HasMaxLength(80).IsRequired();
+         builder.Property(x => x.FinanceDocumentsAlwaysRequireApproval).HasColumnName("finance_documents_always_require_approval").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.OutboundEnabled).HasColumnName("outbound_enabled").HasDefaultValue(false).IsRequired();
++        builder.Property(x => x.MaxEmailsPerDay).HasColumnName("max_emails_per_day").HasDefaultValue(25).IsRequired();
++        builder.Property(x => x.RequireApprovalFirstContact).HasColumnName("require_approval_first_contact").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.RequireApprovalPricingDiscussion).HasColumnName("require_approval_pricing_discussion").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.RequireApprovalFollowUps).HasColumnName("require_approval_follow_ups").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.RequireApprovalReEngagement).HasColumnName("require_approval_re_engagement").HasDefaultValue(true).IsRequired();
++        builder.Property(x => x.WebsiteLeadDeduplicationWindowMinutes).HasColumnName("website_lead_deduplication_window_minutes").HasDefaultValue(10080).IsRequired();
++        builder.Property(x => x.WebsiteLeadFollowUpSequenceId).HasColumnName("website_lead_follow_up_sequence_id");
+@@ -718,3 +732,84 @@ internal sealed class SalesFinanceHandoffConfiguration : IEntityTypeConfiguratio
+         builder.HasOne(x => x.Deal)
+             .WithMany()
+             .HasForeignKey(nameof(SalesFinanceHandoff.CompanyId), nameof(SalesFinanceHandoff.DealId))
+             .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
+             .OnDelete(DeleteBehavior.Restrict);
+     }
+ }
++
++internal sealed class OutboundMessageReviewConfiguration : IEntityTypeConfiguration<OutboundMessageReview>
++{
++    public void Configure(EntityTypeBuilder<OutboundMessageReview> builder)
++    {
++        builder.ToTable("outbound_message_reviews");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.SequenceExecutionStepId).HasColumnName("sequence_execution_step_id").IsRequired();
++        builder.Property(x => x.SalesCampaignId).HasColumnName("sales_campaign_id").IsRequired();
++        builder.Property(x => x.ContactId).HasColumnName("contact_id").IsRequired();
++        builder.Property(x => x.Category).HasColumnName("category").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.ReasonCode).HasColumnName("reason_code").HasMaxLength(120).IsRequired();
++        builder.Property(x => x.Reason).HasColumnName("reason").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.OriginalSubject).HasColumnName("original_subject").HasMaxLength(300).IsRequired();
++        builder.Property(x => x.OriginalBody).HasColumnName("original_body").HasMaxLength(16000).IsRequired();
++        builder.Property(x => x.EditedSubject).HasColumnName("edited_subject").HasMaxLength(300);
++        builder.Property(x => x.EditedBody).HasColumnName("edited_body").HasMaxLength(16000);
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.DecidedByUserId).HasColumnName("decided_by_user_id");
++        builder.Property(x => x.DecidedUtc).HasColumnName("decided_at");
++        builder.Property(x => x.DecisionComment).HasColumnName("decision_comment").HasMaxLength(1000);
++        builder.Property(x => x.RequestedUtc).HasColumnName("requested_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.RequestedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.SequenceExecutionStepId }).IsUnique();
++        builder.HasOne(x => x.SequenceExecutionStep)
++            .WithMany()
++            .HasForeignKey(nameof(OutboundMessageReview.CompanyId), nameof(OutboundMessageReview.SequenceExecutionStepId))
++            .HasPrincipalKey(nameof(SalesSequenceExecutionStep.CompanyId), nameof(SalesSequenceExecutionStep.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++        builder.HasOne(x => x.Contact)
++            .WithMany()
++            .HasForeignKey(nameof(OutboundMessageReview.CompanyId), nameof(OutboundMessageReview.ContactId))
++            .HasPrincipalKey(nameof(Contact.CompanyId), nameof(Contact.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
++
++internal sealed class WebsiteLeadSubmissionConfiguration : IEntityTypeConfiguration<WebsiteLeadSubmission>
++{
++    public void Configure(EntityTypeBuilder<WebsiteLeadSubmission> builder)
++    {
++        builder.ToTable("website_lead_submissions");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.LeadId).HasColumnName("lead_id");
++        builder.Property(x => x.ContactId).HasColumnName("contact_id");
++        builder.Property(x => x.MergedIntoSubmissionId).HasColumnName("merged_into_submission_id");
++        builder.Property(x => x.EnrollmentOutboxMessageId).HasColumnName("enrollment_outbox_message_id");
++        builder.Property(x => x.NormalizedEmail).HasColumnName("normalized_email").HasMaxLength(256).IsRequired();
++        builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160);
++        builder.Property(x => x.CompanyName).HasColumnName("company_name").HasMaxLength(200);
++        builder.Property(x => x.Message).HasColumnName("message").HasMaxLength(2000);
++        builder.Property(x => x.SourceUrl).HasColumnName("source_url").HasMaxLength(512);
++        builder.Property(x => x.FormId).HasColumnName("form_id").HasMaxLength(120);
++        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ReceivedUtc).HasColumnName("received_at").IsRequired();
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++        builder.HasIndex(x => new { x.CompanyId, x.NormalizedEmail, x.ReceivedUtc });
++        builder.HasIndex(x => new { x.CompanyId, x.Status, x.ReceivedUtc });
++        builder.HasOne(x => x.Lead)
++            .WithMany()
++            .HasForeignKey(nameof(WebsiteLeadSubmission.CompanyId), nameof(WebsiteLeadSubmission.LeadId))
++            .HasPrincipalKey(nameof(Lead.CompanyId), nameof(Lead.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs
+new file mode 100644
+index 0000000..1395103
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundAutomationServices.cs
+@@ -0,0 +1,418 @@
++using System.Text.Json.Nodes;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Application.Workflows;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class OutboundAutomationPolicyService : IOutboundAutomationPolicyService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public OutboundAutomationPolicyService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<OutboundAutomationPolicyResponse> GetPolicyAsync(Guid companyId, CancellationToken cancellationToken) =>
++        Map(await GetOrCreatePolicyAsync(companyId, cancellationToken));
++
++    public async Task<OutboundAutomationPolicyResponse> UpdatePolicyAsync(Guid companyId, Guid userId, UpdateOutboundAutomationPolicyRequest request, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        Validate(request);
++
++        if (request.WebsiteLeadFollowUpSequenceId is Guid sequenceId)
++        {
++            var exists = await _dbContext.SalesSequences.IgnoreQueryFilters()
++                .AnyAsync(x => x.CompanyId == companyId && x.Id == sequenceId && x.Status == SalesStatuses.Active, cancellationToken);
++            if (!exists)
++            {
++                throw new SalesValidationException(new Dictionary<string, string[]>
++                {
++                    [nameof(request.WebsiteLeadFollowUpSequenceId)] = ["Choose an active follow-up sequence for this company."]
++                });
++            }
++        }
++
++        var policy = await GetOrCreatePolicyAsync(companyId, cancellationToken);
++        var before = Map(policy);
++        policy.UpdateOutboundSettings(
++            request.OutboundEnabled,
++            request.MaxEmailsPerDay,
++            request.RequireApprovalFirstContact,
++            request.RequireApprovalPricingDiscussion,
++            request.RequireApprovalFollowUps,
++            request.RequireApprovalReEngagement,
++            request.WebsiteLeadDeduplicationWindowMinutes,
++            request.WebsiteLeadFollowUpSequenceId);
++
++        _dbContext.AuditEvents.Add(new AuditEvent(
++            Guid.NewGuid(),
++            companyId,
++            AuditActorTypes.Human,
++            userId.ToString("D"),
++            "sales.outbound_policy.updated",
++            "sales_automation_policy",
++            policy.Id.ToString("D"),
++            AuditEventOutcomes.Succeeded,
++            "Outbound automation policy was updated.",
++            DateTime.UtcNow)
++        {
++            PayloadDiffJson = JsonObject.Create(new
++            {
++                before,
++                after = Map(policy)
++            })?.ToJsonString()
++        });
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Map(policy);
++    }
++
++    private async Task<SalesAutomationPolicy> GetOrCreatePolicyAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        var policy = await _dbContext.SalesAutomationPolicies.IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++        if (policy is not null)
++        {
++            return policy;
++        }
++
++        policy = new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++        _dbContext.SalesAutomationPolicies.Add(policy);
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return policy;
++    }
++
++    private static OutboundAutomationPolicyResponse Map(SalesAutomationPolicy policy) =>
++        new(
++            policy.Id,
++            policy.OutboundEnabled,
++            policy.MaxEmailsPerDay,
++            policy.RequireApprovalFirstContact,
++            policy.RequireApprovalPricingDiscussion,
++            policy.RequireApprovalFollowUps,
++            policy.RequireApprovalReEngagement,
++            policy.WebsiteLeadDeduplicationWindowMinutes,
++            policy.WebsiteLeadFollowUpSequenceId,
++            policy.UpdatedUtc);
++
++    private static void Validate(UpdateOutboundAutomationPolicyRequest request)
++    {
++        var errors = new Dictionary<string, string[]>();
++        if (request.MaxEmailsPerDay < 0)
++        {
++            errors[nameof(request.MaxEmailsPerDay)] = ["Daily email limit cannot be negative."];
++        }
++
++        if (request.WebsiteLeadDeduplicationWindowMinutes is < 1 or > 43200)
++        {
++            errors[nameof(request.WebsiteLeadDeduplicationWindowMinutes)] = ["Deduplication window must be between 1 minute and 30 days."];
++        }
++
++        if (errors.Count > 0)
++        {
++            throw new SalesValidationException(errors);
++        }
++    }
++
++    private static void EnsureCompany(Guid companyId) => SalesValidationException.ThrowIfEmpty(companyId, "companyId");
++    private static void EnsureUser(Guid userId) => SalesValidationException.ThrowIfEmpty(userId, "userId");
++}
++
++public sealed class OutboundAutomationEnforcementService : IOutboundAutomationEnforcementService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public OutboundAutomationEnforcementService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<OutboundPolicyEvaluationResult> EvaluateSequenceStepAsync(Guid companyId, Guid stepId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        SalesValidationException.ThrowIfEmpty(stepId, nameof(stepId));
++
++        var step = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++            .Include(x => x.SequenceExecution).ThenInclude(x => x.Contact)
++            .Include(x => x.SequenceExecution).ThenInclude(x => x.SalesCampaign)
++            .Include(x => x.SalesSequenceStep)
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == stepId, cancellationToken);
++        if (step is null)
++        {
++            return Blocked(OutboundPolicyReasonCodes.MissingPolicy, "The message could not be evaluated because the sequence step was not found.");
++        }
++
++        if (step.OutboundMessageReviewId is Guid existingReviewId)
++        {
++            return new OutboundPolicyEvaluationResult(OutboundPolicyOutcomes.RequiresApproval, step.PolicyDecisionReasonCode ?? OutboundPolicyReasonCodes.FollowUpApprovalRequired, step.PolicyDecisionReason ?? "This message is waiting for approval.", existingReviewId);
++        }
++
++        var policy = await _dbContext.SalesAutomationPolicies.IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
++        if (policy is null)
++        {
++            return await PersistBlockedAsync(step, OutboundPolicyReasonCodes.MissingPolicy, "Outbound automation policy is missing, so this send was blocked.", cancellationToken);
++        }
++
++        if (!policy.OutboundEnabled)
++        {
++            return await PersistBlockedAsync(step, OutboundPolicyReasonCodes.OutboundDisabled, "Outbound automation is disabled for this company.", cancellationToken);
++        }
++
++        if (policy.MaxEmailsPerDay == 0 || await DailyLimitReachedAsync(companyId, policy.MaxEmailsPerDay, cancellationToken))
++        {
++            return await PersistBlockedAsync(step, OutboundPolicyReasonCodes.DailyLimitReached, "The daily outbound email limit has been reached.", cancellationToken);
++        }
++
++        var category = ResolveCategory(step);
++        var approval = ApprovalRequired(policy, category);
++        if (approval is not null)
++        {
++            return await PersistReviewAsync(step, category, approval.Value.reasonCode, approval.Value.reason, cancellationToken);
++        }
++
++        return new OutboundPolicyEvaluationResult(OutboundPolicyOutcomes.Allowed, OutboundPolicyReasonCodes.Allowed, "Outbound send is allowed under the current policy.", null);
++    }
++
++    private async Task<OutboundPolicyEvaluationResult> PersistBlockedAsync(SalesSequenceExecutionStep step, string reasonCode, string reason, CancellationToken cancellationToken)
++    {
++        step.MarkBlockedByPolicy(reasonCode, reason);
++        _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), step.CompanyId, AuditActorTypes.System, "outbound-policy", "sales.outbound_send.blocked", "sales_sequence_execution_step", step.Id.ToString("D"), AuditEventOutcomes.Blocked, reason, DateTime.UtcNow));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Blocked(reasonCode, reason);
++    }
++
++    private async Task<OutboundPolicyEvaluationResult> PersistReviewAsync(SalesSequenceExecutionStep step, string category, string reasonCode, string reason, CancellationToken cancellationToken)
++    {
++        var subject = step.CurrentDraftSubject ?? step.OriginalGeneratedSubject ?? step.SalesSequenceStep.TemplateSubject ?? "Following up";
++        var body = step.CurrentDraftBody ?? step.OriginalGeneratedBody ?? step.SalesSequenceStep.TemplateContent;
++        var review = await _dbContext.OutboundMessageReviews.IgnoreQueryFilters()
++            .SingleOrDefaultAsync(x => x.CompanyId == step.CompanyId && x.SequenceExecutionStepId == step.Id, cancellationToken);
++
++        if (review is null)
++        {
++            review = new OutboundMessageReview(Guid.NewGuid(), step.CompanyId, step.Id, step.SalesCampaignId, step.ContactId, category, reasonCode, reason, subject, body);
++            _dbContext.OutboundMessageReviews.Add(review);
++        }
++
++        step.MarkWaitingForOutboundReview(review.Id, reasonCode, reason);
++        _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), step.CompanyId, AuditActorTypes.System, "outbound-policy", "sales.outbound_review.requested", "outbound_message_review", review.Id.ToString("D"), AuditEventOutcomes.Started, reason, DateTime.UtcNow));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new OutboundPolicyEvaluationResult(OutboundPolicyOutcomes.RequiresApproval, reasonCode, reason, review.Id);
++    }
++
++    private async Task<bool> DailyLimitReachedAsync(Guid companyId, int maxEmailsPerDay, CancellationToken cancellationToken)
++    {
++        var today = DateTime.UtcNow.Date;
++        var sentToday = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++            .CountAsync(x => x.CompanyId == companyId && x.SentUtc >= today && x.SentUtc < today.AddDays(1), cancellationToken);
++        return sentToday >= maxEmailsPerDay;
++    }
++
++    private static (string reasonCode, string reason)? ApprovalRequired(SalesAutomationPolicy policy, string category) =>
++        category switch
++        {
++            OutboundMessageCategories.FirstContact when policy.RequireApprovalFirstContact => (OutboundPolicyReasonCodes.FirstContactApprovalRequired, "First contact emails need approval before sending."),
++            OutboundMessageCategories.PricingDiscussion when policy.RequireApprovalPricingDiscussion => (OutboundPolicyReasonCodes.PricingApprovalRequired, "Pricing discussions need approval before sending."),
++            OutboundMessageCategories.FollowUp when policy.RequireApprovalFollowUps => (OutboundPolicyReasonCodes.FollowUpApprovalRequired, "Follow-up emails need approval before sending."),
++            OutboundMessageCategories.ReEngagement when policy.RequireApprovalReEngagement => (OutboundPolicyReasonCodes.ReEngagementApprovalRequired, "Re-engagement emails need approval before sending."),
++            _ => null
++        };
++
++    private static string ResolveCategory(SalesSequenceExecutionStep step)
++    {
++        var text = $"{step.SalesSequenceStep.TemplateSubject} {step.SalesSequenceStep.TemplateContent}".ToLowerInvariant();
++        if (text.Contains("price", StringComparison.Ordinal) || text.Contains("pricing", StringComparison.Ordinal) || text.Contains("quote", StringComparison.Ordinal))
++        {
++            return OutboundMessageCategories.PricingDiscussion;
++        }
++
++        if (text.Contains("re-engage", StringComparison.Ordinal) || text.Contains("checking back", StringComparison.Ordinal))
++        {
++            return OutboundMessageCategories.ReEngagement;
++        }
++
++        return step.StepOrder == 1 ? OutboundMessageCategories.FirstContact : OutboundMessageCategories.FollowUp;
++    }
++
++    private static OutboundPolicyEvaluationResult Blocked(string reasonCode, string reason) =>
++        new(OutboundPolicyOutcomes.Blocked, reasonCode, reason, null);
++
++    private static void EnsureCompany(Guid companyId) => SalesValidationException.ThrowIfEmpty(companyId, "companyId");
++}
++
++public sealed class OutboundReviewQueueService : IOutboundReviewQueueService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++
++    public OutboundReviewQueueService(VirtualCompanyDbContext dbContext)
++    {
++        _dbContext = dbContext;
++    }
++
++    public async Task<IReadOnlyList<OutboundReviewQueueItemResponse>> ListPendingAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        var reviews = await ReviewQuery(companyId)
++            .Where(x => x.Status == SalesStatuses.WaitingForApproval)
++            .OrderBy(x => x.RequestedUtc)
++            .Take(100)
++            .ToListAsync(cancellationToken);
++        return reviews.Select(x => new OutboundReviewQueueItemResponse(x.Id, x.SequenceExecutionStepId, x.SalesCampaignId, x.ContactId, x.Contact.FullName, x.Contact.Email, Label(x.Category), Label(x.Status), x.Reason, x.RequestedUtc)).ToList();
++    }
++
++    public async Task<OutboundReviewQueueDetailResponse?> GetAsync(Guid companyId, Guid reviewId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        var review = await ReviewQuery(companyId).SingleOrDefaultAsync(x => x.Id == reviewId, cancellationToken);
++        return review is null ? null : Map(review);
++    }
++
++    public Task<OutboundReviewQueueDetailResponse?> ApproveAsync(Guid companyId, Guid userId, Guid reviewId, OutboundReviewDecisionRequest request, CancellationToken cancellationToken) =>
++        DecideAsync(companyId, userId, reviewId, r => r.Approve(userId, request.Comment), "sales.outbound_review.approved", "Outbound message was approved.", cancellationToken);
++
++    public Task<OutboundReviewQueueDetailResponse?> RejectAsync(Guid companyId, Guid userId, Guid reviewId, OutboundReviewDecisionRequest request, CancellationToken cancellationToken) =>
++        DecideAsync(companyId, userId, reviewId, r => r.Reject(userId, request.Comment), "sales.outbound_review.rejected", "Outbound message was rejected.", cancellationToken);
++
++    public Task<OutboundReviewQueueDetailResponse?> EditAndApproveAsync(Guid companyId, Guid userId, Guid reviewId, OutboundEditAndApproveRequest request, CancellationToken cancellationToken) =>
++        DecideAsync(companyId, userId, reviewId, r =>
++        {
++            r.EditAndApprove(userId, request.Subject, request.Body, request.Comment);
++            r.SequenceExecutionStep.UpdateDraftContent(request.Subject, request.Body, DateTime.UtcNow);
++        }, "sales.outbound_review.edited_and_approved", "Outbound message was edited and approved.", cancellationToken);
++
++    private async Task<OutboundReviewQueueDetailResponse?> DecideAsync(Guid companyId, Guid userId, Guid reviewId, Action<OutboundMessageReview> apply, string auditAction, string auditSummary, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureUser(userId);
++        var review = await ReviewQuery(companyId).SingleOrDefaultAsync(x => x.Id == reviewId, cancellationToken);
++        if (review is null)
++        {
++            return null;
++        }
++
++        apply(review);
++        _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.Human, userId.ToString("D"), auditAction, "outbound_message_review", review.Id.ToString("D"), AuditEventOutcomes.Succeeded, auditSummary, DateTime.UtcNow));
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return Map(review);
++    }
++
++    private IQueryable<OutboundMessageReview> ReviewQuery(Guid companyId) =>
++        _dbContext.OutboundMessageReviews.IgnoreQueryFilters()
++            .Include(x => x.Contact)
++            .Include(x => x.SequenceExecutionStep)
++            .Where(x => x.CompanyId == companyId);
++
++    private static OutboundReviewQueueDetailResponse Map(OutboundMessageReview review) =>
++        new(
++            review.Id,
++            review.SequenceExecutionStepId,
++            review.SalesCampaignId,
++            review.ContactId,
++            review.Contact.FullName,
++            review.Contact.Email,
++            Label(review.Category),
++            Label(review.Status),
++            review.ReasonCode,
++            review.Reason,
++            review.OriginalSubject,
++            review.OriginalBody,
++            review.EditedSubject,
++            review.EditedBody,
++            review.DecidedByUserId,
++            review.DecidedUtc,
++            review.DecisionComment,
++            review.RequestedUtc);
++
++    private static string Label(string value) =>
++        value.Replace("_", " ", StringComparison.Ordinal).Trim() is { Length: > 0 } label ? char.ToUpperInvariant(label[0]) + label[1..] : value;
++
++    private static void EnsureCompany(Guid companyId) => SalesValidationException.ThrowIfEmpty(companyId, "companyId");
++    private static void EnsureUser(Guid userId) => SalesValidationException.ThrowIfEmpty(userId, "userId");
++}
++
++public sealed class WebsiteLeadCaptureService : IWebsiteLeadCaptureService
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyOutboxEnqueuer _outbox;
++
++    public WebsiteLeadCaptureService(VirtualCompanyDbContext dbContext, ICompanyOutboxEnqueuer outbox)
++    {
++        _dbContext = dbContext;
++        _outbox = outbox;
++    }
++
++    public async Task<WebsiteLeadSubmissionResponse> SubmitAsync(WebsiteLeadSubmissionRequest request, CancellationToken cancellationToken)
++    {
++        var companyId = ResolveTenantKey(request.TenantKey);
++        var email = NormalizeEmail(request.Email);
++        var policy = await _dbContext.SalesAutomationPolicies.IgnoreQueryFilters()
++            .AsNoTracking()
++            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken)
++            ?? new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++
++        var cutoff = DateTime.UtcNow.AddMinutes(-policy.WebsiteLeadDeduplicationWindowMinutes);
++        var duplicate = await _dbContext.WebsiteLeadSubmissions.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.NormalizedEmail == email && x.ReceivedUtc >= cutoff && x.Status != "merged")
++            .OrderByDescending(x => x.ReceivedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++
++        var submission = new WebsiteLeadSubmission(Guid.NewGuid(), companyId, email, request.Name, request.CompanyName, request.Message, request.SourceUrl, request.FormId);
++        _dbContext.WebsiteLeadSubmissions.Add(submission);
++
++        if (duplicate is not null)
++        {
++            submission.MarkMerged(duplicate.Id);
++            _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.System, "website-form", "sales.website_lead.deduplicated", "website_lead_submission", submission.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Duplicate website lead submission was merged.", DateTime.UtcNow));
++            await _dbContext.SaveChangesAsync(cancellationToken);
++            return new WebsiteLeadSubmissionResponse("accepted", submission.ReceivedUtc);
++        }
++
++        var contact = await _dbContext.Contacts.IgnoreQueryFilters()
++            .FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Email == email && !x.IsDeleted, cancellationToken);
++        if (contact is null)
++        {
++            contact = new Contact(Guid.NewGuid(), companyId, string.IsNullOrWhiteSpace(request.Name) ? email : request.Name!, email);
++            _dbContext.Contacts.Add(contact);
++        }
++
++        var lead = new Lead(Guid.NewGuid(), companyId, string.IsNullOrWhiteSpace(request.CompanyName) ? $"Website enquiry from {email}" : $"Website enquiry from {request.CompanyName}", SalesPipelineStage.NewStageId, source: "website_form", primaryContactId: contact.Id);
++        lead.ApplyWebsiteSubmission(submission.Id, email, request.Message);
++        submission.LinkLead(lead.Id, contact.Id);
++        _dbContext.Leads.Add(lead);
++        _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.System, "website-form", "sales.website_lead.submitted", "website_lead_submission", submission.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Website lead was accepted.", DateTime.UtcNow));
++
++        if (policy.WebsiteLeadFollowUpSequenceId is Guid sequenceId)
++        {
++            var eventId = $"website-lead:{companyId:N}:{submission.Id:N}";
++            _outbox.Enqueue(
++                companyId,
++                "sales.website_lead.follow_up_requested",
++                new PlatformEventEnvelope(
++                    eventId,
++                    "sales.website_lead.follow_up_requested",
++                    DateTime.UtcNow,
++                    companyId,
++                    eventId,
++                    "website_lead_submission",
++                    submission.Id.ToString("D"),
++                    new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
++                    {
++                        ["companyId"] = JsonValue.Create(companyId),
++                        ["submissionId"] = JsonValue.Create(submission.Id),
++                        ["leadId"] = JsonValue.Create(lead.Id),
++                        ["contactId"] = JsonValue.Create(contact.Id),
++                        ["sequenceId"] = JsonValue.Create(sequenceId)
++                    }),
++                eventId,
++                DateTime.UtcNow,
++                $"website-lead-follow-up:{companyId:N}:{submission.Id:N}",
++                causationId: submission.Id.ToString("D"));
++
++            _dbContext.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.System, "website-form", "sales.website_lead.enrollment_requested", "website_lead_submission", submission.Id.ToString("D"), AuditEventOutcomes.Started, "Follow-up sequence enrollment was queued.", DateTime.UtcNow));
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++        return new WebsiteLeadSubmissionResponse("accepted", submission.ReceivedUtc);
++    }
++
++    private static Guid ResolveTenantKey(string tenantKey)
++    {
++        if (!Guid.TryParse(tenantKey, out var companyId) || companyId == Guid.Empty)
++        {
++            throw new SalesValidationException(new Dictionary<string, string[]> { [nameof(WebsiteLeadSubmissionRequest.TenantKey)] = ["A valid website form key is required."] });
++        }
++
++        return companyId;
++    }
++
++    private static string NormalizeEmail(string email)
++    {
++        if (string.IsNullOrWhiteSpace(email) || !email.Contains('@', StringComparison.Ordinal))
++        {
++            throw new SalesValidationException(new Dictionary<string, string[]> { [nameof(WebsiteLeadSubmissionRequest.Email)] = ["A valid email address is required."] });
++        }
++
++        return email.Trim().ToLowerInvariant();
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+index e8ba28d..7f53eca 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+@@ -356,14 +356,16 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+     private readonly ICompanyOutboxEnqueuer _outbox;
++    private readonly IOutboundAutomationEnforcementService _outboundPolicy;
+     private readonly ILogger<SequenceExecutionService> _logger;
+@@ -361,13 +363,14 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+ 
+-    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, ILogger<SequenceExecutionService> logger, ICustomerMemoryService customerMemory, IOptions<CustomerMemoryOptions> customerMemoryOptions)
++    public SequenceExecutionService(VirtualCompanyDbContext dbContext, IOutboundEmailSender emailSender, ICompanyOutboxEnqueuer outbox, IOutboundAutomationEnforcementService outboundPolicy, ILogger<SequenceExecutionService> logger, ICustomerMemoryService customerMemory, IOptions<CustomerMemoryOptions> customerMemoryOptions)
+     {
+         _dbContext = dbContext;
+         _emailSender = emailSender;
+         _outbox = outbox;
++        _outboundPolicy = outboundPolicy;
+         _logger = logger;
+         _customerMemory = customerMemory;
+@@ -456,7 +459,7 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+         foreach (var step in dueSteps)
+         {
+             var campaign = step.SequenceExecution.SalesCampaign;
+-            if (campaign.Status != SalesStatuses.Active || campaign.ApprovalRequired && campaign.ApprovedUtc is null)
++            if (campaign.Status != SalesStatuses.Active || campaign.ApprovalRequired && campaign.ApprovedUtc is null)
+             {
+                 step.Cancel();
+                 cancelled++;
+@@ -470,6 +473,19 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
+                 continue;
+             }
+ 
++            var policyDecision = await _outboundPolicy.EvaluateSequenceStepAsync(step.CompanyId, step.Id, cancellationToken);
++            if (policyDecision.Outcome == OutboundPolicyOutcomes.Blocked)
++            {
++                cancelled++;
++                continue;
++            }
++
++            if (policyDecision.Outcome == OutboundPolicyOutcomes.RequiresApproval)
++            {
++                deferred++;
++                continue;
++            }
++
+             try
+             {
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index 9f50f23..1f3db03 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -451,7 +451,32 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     public async Task<SalesAutomationPolicyResponse> UpdateAutomationPolicyAsync(Guid companyId, Guid userId, UpdateSalesAutomationPolicyRequest request, CancellationToken cancellationToken)
+     {
+         var policy = await GetOrCreatePolicyAsync(companyId, cancellationToken);
+         policy.UpdateMode(request.Mode);
++        policy.UpdateOutboundSettings(
++            request.OutboundEnabled ?? policy.OutboundEnabled,
++            request.MaxEmailsPerDay ?? policy.MaxEmailsPerDay,
++            request.RequireApprovalFirstContact ?? policy.RequireApprovalFirstContact,
++            request.RequireApprovalPricingDiscussion ?? policy.RequireApprovalPricingDiscussion,
++            request.RequireApprovalFollowUps ?? policy.RequireApprovalFollowUps,
++            request.RequireApprovalReEngagement ?? policy.RequireApprovalReEngagement,
++            request.WebsiteLeadDeduplicationWindowMinutes ?? policy.WebsiteLeadDeduplicationWindowMinutes,
++            request.WebsiteLeadFollowUpSequenceId ?? policy.WebsiteLeadFollowUpSequenceId);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         return MapPolicy(policy);
+@@ -694,7 +719,15 @@ public sealed class SalesOperationsService : ISalesOperationsService
+     private static SalesAutomationPolicyResponse MapPolicy(SalesAutomationPolicy policy) =>
+         new(
+             policy.Id,
+             policy.Mode,
+             policy.FinanceDocumentsAlwaysRequireApproval,
++            policy.OutboundEnabled,
++            policy.MaxEmailsPerDay,
++            policy.RequireApprovalFirstContact,
++            policy.RequireApprovalPricingDiscussion,
++            policy.RequireApprovalFollowUps,
++            policy.RequireApprovalReEngagement,
++            policy.WebsiteLeadDeduplicationWindowMinutes,
++            policy.WebsiteLeadFollowUpSequenceId,
+             policy.UpdatedUtc);
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+index 2f603bd..6a964e3 100644
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@ -471,6 +471,10 @@ public static class DependencyInjection
+         services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
++        services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
++        services.AddScoped<IOutboundAutomationEnforcementService, OutboundAutomationEnforcementService>();
++        services.AddScoped<IOutboundReviewQueueService, OutboundReviewQueueService>();
++        services.AddScoped<IWebsiteLeadCaptureService, WebsiteLeadCaptureService>();
+         services.AddScoped<IOutboundEmailSender, MailboxOutboundEmailSender>();
+diff --git a/src/VirtualCompany.Api/Controllers/OutboundAutomationController.cs b/src/VirtualCompany.Api/Controllers/OutboundAutomationController.cs
+new file mode 100644
+index 0000000..104f580
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/OutboundAutomationController.cs
+@@ -0,0 +1,56 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/automation/outbound-policy")]
++[Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
++[RequireCompanyContext]
++public sealed class OutboundAutomationController : ControllerBase
++{
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly IOutboundAutomationPolicyService _policies;
++
++    public OutboundAutomationController(ICompanyContextAccessor companyContextAccessor, IOutboundAutomationPolicyService policies)
++    {
++        _companyContextAccessor = companyContextAccessor;
++        _policies = policies;
++    }
++
++    [HttpGet]
++    public Task<OutboundAutomationPolicyResponse> GetAsync(CancellationToken cancellationToken) =>
++        _policies.GetPolicyAsync(CompanyId(), cancellationToken);
++
++    [HttpPut]
++    public async Task<ActionResult<OutboundAutomationPolicyResponse>> UpdateAsync([FromBody] UpdateOutboundAutomationPolicyRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Ok(await _policies.UpdatePolicyAsync(CompanyId(), UserId(), request, cancellationToken));
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++        catch (ArgumentOutOfRangeException ex)
++        {
++            return ValidationProblem(new Dictionary<string, string[]> { [ex.ParamName ?? "policy"] = [ex.Message] });
++        }
++    }
++
++    private Guid CompanyId() =>
++        _companyContextAccessor.CompanyId is { } companyId && companyId != Guid.Empty ? companyId : throw new UnauthorizedAccessException("A resolved company is required.");
++
++    private Guid UserId() =>
++        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty ? userId : throw new UnauthorizedAccessException("A resolved user is required.");
++}
+diff --git a/src/VirtualCompany.Api/Controllers/OutboundReviewQueueController.cs b/src/VirtualCompany.Api/Controllers/OutboundReviewQueueController.cs
+new file mode 100644
+index 0000000..ec50d89
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/OutboundReviewQueueController.cs
+@@ -0,0 +1,88 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/review-queue/outbound")]
++[Authorize(Policy = CompanyPolicies.CompanyManager)]
++[RequireCompanyContext]
++public sealed class OutboundReviewQueueController : ControllerBase
++{
++    private readonly ICompanyContextAccessor _companyContextAccessor;
++    private readonly IOutboundReviewQueueService _reviews;
++
++    public OutboundReviewQueueController(ICompanyContextAccessor companyContextAccessor, IOutboundReviewQueueService reviews)
++    {
++        _companyContextAccessor = companyContextAccessor;
++        _reviews = reviews;
++    }
++
++    [HttpGet]
++    public Task<IReadOnlyList<OutboundReviewQueueItemResponse>> ListAsync(CancellationToken cancellationToken) =>
++        _reviews.ListPendingAsync(CompanyId(), cancellationToken);
++
++    [HttpGet("{id:guid}")]
++    public async Task<ActionResult<OutboundReviewQueueDetailResponse>> GetAsync(Guid id, CancellationToken cancellationToken)
++    {
++        var result = await _reviews.GetAsync(CompanyId(), id, cancellationToken);
++        return result is null ? NotFound() : Ok(result);
++    }
++
++    [HttpPost("{id:guid}/approve")]
++    public async Task<ActionResult<OutboundReviewQueueDetailResponse>> ApproveAsync(Guid id, [FromBody] OutboundReviewDecisionRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _reviews.ApproveAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Review item could not be approved.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
++    [HttpPost("{id:guid}/reject")]
++    public async Task<ActionResult<OutboundReviewQueueDetailResponse>> RejectAsync(Guid id, [FromBody] OutboundReviewDecisionRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _reviews.RejectAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Review item could not be rejected.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++    }
++
++    [HttpPost("{id:guid}/edit-and-approve")]
++    public async Task<ActionResult<OutboundReviewQueueDetailResponse>> EditAndApproveAsync(Guid id, [FromBody] OutboundEditAndApproveRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            var result = await _reviews.EditAndApproveAsync(CompanyId(), UserId(), id, request, cancellationToken);
++            return result is null ? NotFound() : Ok(result);
++        }
++        catch (InvalidOperationException ex)
++        {
++            return Problem(title: "Review item could not be edited.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
++        }
++        catch (ArgumentException ex)
++        {
++            return ValidationProblem(new Dictionary<string, string[]> { ["message"] = [ex.Message] });
++        }
++    }
++
++    private Guid CompanyId() =>
++        _companyContextAccessor.CompanyId is { } companyId && companyId != Guid.Empty ? companyId : throw new UnauthorizedAccessException("A resolved company is required.");
++
++    private Guid UserId() =>
++        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty ? userId : throw new UnauthorizedAccessException("A resolved user is required.");
++}
+diff --git a/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs b/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs
+new file mode 100644
+index 0000000..be2e27a
+--- /dev/null
++++ b/src/VirtualCompany.Api/Controllers/WebsiteLeadFormsController.cs
+@@ -0,0 +1,31 @@
++using Microsoft.AspNetCore.Authorization;
++using Microsoft.AspNetCore.Mvc;
++using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Sales;
++
++namespace VirtualCompany.Api.Controllers;
++
++[ApiController]
++[Route("api/website/forms/leads")]
++[AllowAnonymous]
++public sealed class WebsiteLeadFormsController : ControllerBase
++{
++    private readonly IWebsiteLeadCaptureService _leadCapture;
++
++    public WebsiteLeadFormsController(IWebsiteLeadCaptureService leadCapture)
++    {
++        _leadCapture = leadCapture;
++    }
++
++    [HttpPost]
++    public async Task<ActionResult<WebsiteLeadSubmissionResponse>> SubmitAsync([FromBody] WebsiteLeadSubmissionRequest request, CancellationToken cancellationToken)
++    {
++        try
++        {
++            return Accepted(await _leadCapture.SubmitAsync(request, cancellationToken));
++        }
++        catch (SalesValidationException ex)
++        {
++            return ValidationProblem(ex.Errors);
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504193000_AddOutboundAutomationPolicyAndWebsiteLeadCapture.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504193000_AddOutboundAutomationPolicyAndWebsiteLeadCapture.cs
+new file mode 100644
+index 0000000..83a1dbd
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260504193000_AddOutboundAutomationPolicyAndWebsiteLeadCapture.cs
+@@ -0,0 +1,199 @@
++using System;
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations
++{
++    public partial class AddOutboundAutomationPolicyAndWebsiteLeadCapture : Migration
++    {
++        protected override void Up(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.AddColumn<bool>("outbound_enabled", "sales_automation_policies", "bit", nullable: false, defaultValue: false);
++            migrationBuilder.AddColumn<int>("max_emails_per_day", "sales_automation_policies", "int", nullable: false, defaultValue: 25);
++            migrationBuilder.AddColumn<bool>("require_approval_first_contact", "sales_automation_policies", "bit", nullable: false, defaultValue: true);
++            migrationBuilder.AddColumn<bool>("require_approval_pricing_discussion", "sales_automation_policies", "bit", nullable: false, defaultValue: true);
++            migrationBuilder.AddColumn<bool>("require_approval_follow_ups", "sales_automation_policies", "bit", nullable: false, defaultValue: true);
++            migrationBuilder.AddColumn<bool>("require_approval_re_engagement", "sales_automation_policies", "bit", nullable: false, defaultValue: true);
++            migrationBuilder.AddColumn<int>("website_lead_deduplication_window_minutes", "sales_automation_policies", "int", nullable: false, defaultValue: 10080);
++            migrationBuilder.AddColumn<Guid>("website_lead_follow_up_sequence_id", "sales_automation_policies", "uniqueidentifier", nullable: true);
++
++            migrationBuilder.AddColumn<string>("website_submission_email", "leads", "nvarchar(256)", maxLength: 256, nullable: true);
++            migrationBuilder.AddColumn<Guid>("website_lead_submission_id", "leads", "uniqueidentifier", nullable: true);
++
++            migrationBuilder.AddColumn<string>("policy_decision_outcome", "sales_sequence_execution_steps", "nvarchar(32)", maxLength: 32, nullable: true);
++            migrationBuilder.AddColumn<string>("policy_decision_reason_code", "sales_sequence_execution_steps", "nvarchar(120)", maxLength: 120, nullable: true);
++            migrationBuilder.AddColumn<string>("policy_decision_reason", "sales_sequence_execution_steps", "nvarchar(1000)", maxLength: 1000, nullable: true);
++            migrationBuilder.AddColumn<Guid>("outbound_message_review_id", "sales_sequence_execution_steps", "uniqueidentifier", nullable: true);
++            migrationBuilder.AddColumn<DateTime>("policy_evaluated_at", "sales_sequence_execution_steps", "datetime2", nullable: true);
++
++            migrationBuilder.CreateTable(
++                name: "outbound_message_reviews",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    sequence_execution_step_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    sales_campaign_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    category = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                    reason_code = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: false),
++                    reason = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                    original_subject = table.Column<string>(type: "nvarchar(300)", maxLength: 300, nullable: false),
++                    original_body = table.Column<string>(type: "nvarchar(max)", maxLength: 16000, nullable: false),
++                    edited_subject = table.Column<string>(type: "nvarchar(300)", maxLength: 300, nullable: true),
++                    edited_body = table.Column<string>(type: "nvarchar(max)", maxLength: 16000, nullable: true),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    decided_by_user_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    decided_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                    decision_comment = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: true),
++                    requested_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_outbound_message_reviews", x => x.id);
++                    table.UniqueConstraint("AK_outbound_message_reviews_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey("FK_outbound_message_reviews_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey("FK_outbound_message_reviews_contacts_company_id_contact_id", x => new { x.company_id, x.contact_id }, "contacts", new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                    table.ForeignKey("FK_outbound_message_reviews_sales_sequence_execution_steps_company_id_sequence_execution_step_id", x => new { x.company_id, x.sequence_execution_step_id }, "sales_sequence_execution_steps", new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateTable(
++                name: "website_lead_submissions",
++                columns: table => new
++                {
++                    id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                    lead_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    contact_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    merged_into_submission_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    enrollment_outbox_message_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                    normalized_email = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: false),
++                    name = table.Column<string>(type: "nvarchar(160)", maxLength: 160, nullable: true),
++                    company_name = table.Column<string>(type: "nvarchar(200)", maxLength: 200, nullable: true),
++                    message = table.Column<string>(type: "nvarchar(2000)", maxLength: 2000, nullable: true),
++                    source_url = table.Column<string>(type: "nvarchar(512)", maxLength: 512, nullable: true),
++                    form_id = table.Column<string>(type: "nvarchar(120)", maxLength: 120, nullable: true),
++                    status = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                    received_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                    updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++                },
++                constraints: table =>
++                {
++                    table.PrimaryKey("PK_website_lead_submissions", x => x.id);
++                    table.UniqueConstraint("AK_website_lead_submissions_company_id_id", x => new { x.company_id, x.id });
++                    table.ForeignKey("FK_website_lead_submissions_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
++                    table.ForeignKey("FK_website_lead_submissions_leads_company_id_lead_id", x => new { x.company_id, x.lead_id }, "leads", new[] { "company_id", "id" }, onDelete: ReferentialAction.Restrict);
++                });
++
++            migrationBuilder.CreateIndex("IX_sales_sequence_execution_steps_company_id_policy_decision_outcome_policy_evaluated_at", "sales_sequence_execution_steps", new[] { "company_id", "policy_decision_outcome", "policy_evaluated_at" });
++            migrationBuilder.CreateIndex("IX_sales_sequence_execution_steps_company_id_outbound_message_review_id", "sales_sequence_execution_steps", new[] { "company_id", "outbound_message_review_id" }, filter: "[outbound_message_review_id] IS NOT NULL");
++            migrationBuilder.CreateIndex("IX_outbound_message_reviews_company_id_status_requested_at", "outbound_message_reviews", new[] { "company_id", "status", "requested_at" });
++            migrationBuilder.CreateIndex("IX_outbound_message_reviews_company_id_sequence_execution_step_id", "outbound_message_reviews", new[] { "company_id", "sequence_execution_step_id" }, unique: true);
++            migrationBuilder.CreateIndex("IX_outbound_message_reviews_company_id_contact_id", "outbound_message_reviews", new[] { "company_id", "contact_id" });
++            migrationBuilder.CreateIndex("IX_website_lead_submissions_company_id_normalized_email_received_at", "website_lead_submissions", new[] { "company_id", "normalized_email", "received_at" });
++            migrationBuilder.CreateIndex("IX_website_lead_submissions_company_id_status_received_at", "website_lead_submissions", new[] { "company_id", "status", "received_at" });
++            migrationBuilder.CreateIndex("IX_website_lead_submissions_company_id_lead_id", "website_lead_submissions", new[] { "company_id", "lead_id" }, filter: "[lead_id] IS NOT NULL");
++        }
++
++        protected override void Down(MigrationBuilder migrationBuilder)
++        {
++            migrationBuilder.DropTable("outbound_message_reviews");
++            migrationBuilder.DropTable("website_lead_submissions");
++            migrationBuilder.DropIndex("IX_sales_sequence_execution_steps_company_id_policy_decision_outcome_policy_evaluated_at", "sales_sequence_execution_steps");
++            migrationBuilder.DropIndex("IX_sales_sequence_execution_steps_company_id_outbound_message_review_id", "sales_sequence_execution_steps");
++            migrationBuilder.DropColumn("outbound_enabled", "sales_automation_policies");
++            migrationBuilder.DropColumn("max_emails_per_day", "sales_automation_policies");
++            migrationBuilder.DropColumn("require_approval_first_contact", "sales_automation_policies");
++            migrationBuilder.DropColumn("require_approval_pricing_discussion", "sales_automation_policies");
++            migrationBuilder.DropColumn("require_approval_follow_ups", "sales_automation_policies");
++            migrationBuilder.DropColumn("require_approval_re_engagement", "sales_automation_policies");
++            migrationBuilder.DropColumn("website_lead_deduplication_window_minutes", "sales_automation_policies");
++            migrationBuilder.DropColumn("website_lead_follow_up_sequence_id", "sales_automation_policies");
++            migrationBuilder.DropColumn("website_submission_email", "leads");
++            migrationBuilder.DropColumn("website_lead_submission_id", "leads");
++            migrationBuilder.DropColumn("policy_decision_outcome", "sales_sequence_execution_steps");
++            migrationBuilder.DropColumn("policy_decision_reason_code", "sales_sequence_execution_steps");
++            migrationBuilder.DropColumn("policy_decision_reason", "sales_sequence_execution_steps");
++            migrationBuilder.DropColumn("outbound_message_review_id", "sales_sequence_execution_steps");
++            migrationBuilder.DropColumn("policy_evaluated_at", "sales_sequence_execution_steps");
++        }
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/OutboundAutomationPolicyEvaluatorTests.cs b/tests/VirtualCompany.Api.Tests/OutboundAutomationPolicyEvaluatorTests.cs
+new file mode 100644
+index 0000000..e5a6daf
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/OutboundAutomationPolicyEvaluatorTests.cs
+@@ -0,0 +1,77 @@
++using Microsoft.EntityFrameworkCore;
++using Microsoft.Extensions.Logging.Abstractions;
++using Microsoft.Extensions.Options;
++using VirtualCompany.Application.Companies;
++using VirtualCompany.Application.CustomerMemory;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Sales;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class OutboundAutomationPolicyEvaluatorTests
++{
++    [Fact]
++    public async Task OutboundDisabledBlocksSend()
++    {
++        using var db = CreateDb();
++        var companyId = Guid.NewGuid();
++        var step = SeedStep(db, companyId);
++        db.SalesAutomationPolicies.Add(new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly));
++        await db.SaveChangesAsync();
++
++        var service = new OutboundAutomationEnforcementService(db);
++        var result = await service.EvaluateSequenceStepAsync(companyId, step.Id, CancellationToken.None);
++
++        Assert.Equal(OutboundPolicyOutcomes.Blocked, result.Outcome);
++        Assert.Equal(OutboundPolicyReasonCodes.OutboundDisabled, result.ReasonCode);
++    }
++
++    [Fact]
++    public async Task FirstContactRequiresApprovalWhenConfigured()
++    {
++        using var db = CreateDb();
++        var companyId = Guid.NewGuid();
++        var step = SeedStep(db, companyId);
++        var policy = new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++        policy.UpdateOutboundSettings(true, 50, true, false, false, false, 10080, null);
++        db.SalesAutomationPolicies.Add(policy);
++        await db.SaveChangesAsync();
++
++        var service = new OutboundAutomationEnforcementService(db);
++        var result = await service.EvaluateSequenceStepAsync(companyId, step.Id, CancellationToken.None);
++
++        Assert.Equal(OutboundPolicyOutcomes.RequiresApproval, result.Outcome);
++        Assert.Equal(OutboundPolicyReasonCodes.FirstContactApprovalRequired, result.ReasonCode);
++        Assert.NotNull(result.ReviewId);
++    }
++
++    [Fact]
++    public async Task ValidSendUnderLimitIsAllowed()
++    {
++        using var db = CreateDb();
++        var companyId = Guid.NewGuid();
++        var step = SeedStep(db, companyId);
++        var policy = new SalesAutomationPolicy(Guid.NewGuid(), companyId, SalesAutomationPolicyModes.ManualOnly);
++        policy.UpdateOutboundSettings(true, 50, false, false, false, false, 10080, null);
++        db.SalesAutomationPolicies.Add(policy);
++        await db.SaveChangesAsync();
++
++        var service = new OutboundAutomationEnforcementService(db);
++        var result = await service.EvaluateSequenceStepAsync(companyId, step.Id, CancellationToken.None);
++
++        Assert.Equal(OutboundPolicyOutcomes.Allowed, result.Outcome);
++    }
++
++    private static VirtualCompanyDbContext CreateDb() =>
++        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
++            .Options);
++
++    private static SalesSequenceExecutionStep SeedStep(VirtualCompanyDbContext db, Guid companyId)
++    {
++        db.Companies.Add(new Company(companyId, "Acme", "Technology", "SaaS"));
++        var contact = new Contact(Guid.NewGuid(), companyId, "Pat Prospect", "pat@example.com");
++        var sequence = new SalesSequence(Guid.NewGuid(), companyId, "Website follow-up");
++        var sequenceStep = new SalesSequenceStep(Guid.NewGuid(), companyId, sequence.Id, 1, 0, "Hello {{first_name}}", "Intro", "Following up");
++        sequence.Steps.Add(sequenceStep);
++        var campaign = new SalesCampaign(Guid.NewGuid(), companyId, sequence.Id, "Campaign", "website");
++        var campaignContact = new SalesCampaignContact(Guid.NewGuid(), companyId, campaign.Id, contact.Id);
++        var execution = new SalesSequenceExecution(Guid.NewGuid(), companyId, campaign.Id, campaignContact.Id, contact.Id);
++        var step = new SalesSequenceExecutionStep(Guid.NewGuid(), companyId, execution.Id, campaign.Id, contact.Id, sequenceStep.Id, 1, DateTime.UtcNow.AddMinutes(-1), Guid.NewGuid().ToString("N"));
++        db.Contacts.Add(contact);
++        db.SalesSequences.Add(sequence);
++        db.SalesCampaigns.Add(campaign);
++        db.SalesCampaignContacts.Add(campaignContact);
++        db.SalesSequenceExecutions.Add(execution);
++        db.SalesSequenceExecutionSteps.Add(step);
++        return step;
++    }
++}
+END_OF_PATCH

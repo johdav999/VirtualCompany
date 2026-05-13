@@ -1,0 +1,968 @@
+diff --git a/src/VirtualCompany.Domain/Entities/SalesEntities.cs b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+--- a/src/VirtualCompany.Domain/Entities/SalesEntities.cs
++++ b/src/VirtualCompany.Domain/Entities/SalesEntities.cs
+@@
+     public SalesPipelineStage PipelineStage { get; private set; } = null!;
+     public ICollection<SalesActivity> Activities { get; } = new List<SalesActivity>();
+     public ICollection<SalesAgentRecommendation> Recommendations { get; } = new List<SalesAgentRecommendation>();
++    public ICollection<DealIntelligenceSignal> IntelligenceSignals { get; } = new List<DealIntelligenceSignal>();
+@@
+ public sealed class RevenueForecastSnapshot : ICompanyOwnedEntity
+ {
+@@
+ }
++
++public sealed class DealIntelligenceSignal : ICompanyOwnedEntity
++{
++    private DealIntelligenceSignal()
++    {
++    }
++
++    public DealIntelligenceSignal(
++        Guid id,
++        Guid companyId,
++        string signalType,
++        decimal confidenceScore,
++        string explanation,
++        DateTime detectedUtc,
++        Guid? dealId = null,
++        Guid? conversationId = null,
++        Guid? messageId = null,
++        Guid? sequenceId = null,
++        Guid? sequenceStepId = null,
++        string signalState = DealIntelligenceSignalStates.Detected,
++        string sourceType = DealIntelligenceSignalSourceTypes.InboundReply,
++        string? sourceMessageId = null,
++        string? sourceThreadId = null,
++        string? sourceMetadataJson = null,
++        DateTime? sourceWindowStartedUtc = null,
++        DateTime? sourceWindowEndedUtc = null,
++        DateTime? createdUtc = null,
++        DateTime? updatedUtc = null)
++    {
++        SalesEntityText.EnsureCompany(companyId);
++        Id = id == Guid.Empty ? Guid.NewGuid() : id;
++        CompanyId = companyId;
++        DealId = SalesEntityText.NormalizeOptionalId(dealId, nameof(dealId));
++        ConversationId = SalesEntityText.NormalizeOptionalId(conversationId, nameof(conversationId));
++        MessageId = SalesEntityText.NormalizeOptionalId(messageId, nameof(messageId));
++        SequenceId = SalesEntityText.NormalizeOptionalId(sequenceId, nameof(sequenceId));
++        SequenceStepId = SalesEntityText.NormalizeOptionalId(sequenceStepId, nameof(sequenceStepId));
++        SignalType = DealIntelligenceSignalTypes.Normalize(signalType);
++        SignalState = SalesEntityText.NormalizeRequired(signalState, nameof(signalState), 32).ToLowerInvariant();
++        ConfidenceScore = ValidateConfidence(confidenceScore);
++        Explanation = SalesEntityText.NormalizeRequired(explanation, nameof(explanation), 1000);
++        SourceType = SalesEntityText.NormalizeRequired(sourceType, nameof(sourceType), 64).ToLowerInvariant();
++        SourceMessageId = SalesEntityText.NormalizeOptional(sourceMessageId, nameof(sourceMessageId), 256);
++        SourceThreadId = SalesEntityText.NormalizeOptional(sourceThreadId, nameof(sourceThreadId), 256);
++        SourceMetadataJson = SalesEntityText.NormalizeOptional(sourceMetadataJson, nameof(sourceMetadataJson), 8000);
++        DetectedUtc = SalesEntityText.NormalizeUtc(detectedUtc, nameof(detectedUtc));
++        SourceWindowStartedUtc = sourceWindowStartedUtc.HasValue ? SalesEntityText.NormalizeUtc(sourceWindowStartedUtc.Value, nameof(sourceWindowStartedUtc)) : null;
++        SourceWindowEndedUtc = sourceWindowEndedUtc.HasValue ? SalesEntityText.NormalizeUtc(sourceWindowEndedUtc.Value, nameof(sourceWindowEndedUtc)) : null;
++        CreatedUtc = SalesEntityText.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
++        UpdatedUtc = SalesEntityText.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
++    }
++
++    public Guid Id { get; private set; }
++    public Guid CompanyId { get; private set; }
++    public Guid? DealId { get; private set; }
++    public Guid? ConversationId { get; private set; }
++    public Guid? MessageId { get; private set; }
++    public Guid? SequenceId { get; private set; }
++    public Guid? SequenceStepId { get; private set; }
++    public string SignalType { get; private set; } = null!;
++    public string SignalState { get; private set; } = null!;
++    public decimal ConfidenceScore { get; private set; }
++    public string Explanation { get; private set; } = null!;
++    public string SourceType { get; private set; } = null!;
++    public string? SourceMessageId { get; private set; }
++    public string? SourceThreadId { get; private set; }
++    public string? SourceMetadataJson { get; private set; }
++    public DateTime DetectedUtc { get; private set; }
++    public DateTime? SourceWindowStartedUtc { get; private set; }
++    public DateTime? SourceWindowEndedUtc { get; private set; }
++    public DateTime CreatedUtc { get; private set; }
++    public DateTime UpdatedUtc { get; private set; }
++    public Company Company { get; private set; } = null!;
++    public Deal? Deal { get; private set; }
++
++    public void UpdateDetection(decimal confidenceScore, string explanation, string? sourceMetadataJson, DateTime detectedUtc, DateTime? sourceWindowStartedUtc, DateTime? sourceWindowEndedUtc)
++    {
++        ConfidenceScore = ValidateConfidence(confidenceScore);
++        Explanation = SalesEntityText.NormalizeRequired(explanation, nameof(explanation), 1000);
++        SourceMetadataJson = SalesEntityText.NormalizeOptional(sourceMetadataJson, nameof(sourceMetadataJson), 8000);
++        DetectedUtc = SalesEntityText.NormalizeUtc(detectedUtc, nameof(detectedUtc));
++        SourceWindowStartedUtc = sourceWindowStartedUtc.HasValue ? SalesEntityText.NormalizeUtc(sourceWindowStartedUtc.Value, nameof(sourceWindowStartedUtc)) : null;
++        SourceWindowEndedUtc = sourceWindowEndedUtc.HasValue ? SalesEntityText.NormalizeUtc(sourceWindowEndedUtc.Value, nameof(sourceWindowEndedUtc)) : null;
++        UpdatedUtc = DateTime.UtcNow;
++    }
++
++    private static decimal ValidateConfidence(decimal value) =>
++        value is < 0m or > 1m
++            ? throw new ArgumentOutOfRangeException(nameof(value), "Confidence score must be between 0 and 1.")
++            : Math.Round(value, 4, MidpointRounding.AwayFromZero);
++}
++
++public static class DealIntelligenceSignalTypes
++{
++    public const string Ghosting = "ghosting";
++    public const string PriceResistance = "price_resistance";
++    public const string BuyingIntent = "buying_intent";
++
++    public static IReadOnlySet<string> Supported { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
++    {
++        Ghosting,
++        PriceResistance,
++        BuyingIntent
++    };
++
++    public static string Normalize(string value)
++    {
++        var normalized = SalesEntityText.NormalizeRequired(value, nameof(value), 64).ToLowerInvariant();
++        return Supported.Contains(normalized)
++            ? normalized
++            : throw new ArgumentException("Unsupported deal intelligence signal type.", nameof(value));
++    }
++}
++
++public static class DealIntelligenceSignalStates
++{
++    public const string Detected = "detected";
++}
++
++public static class DealIntelligenceSignalSourceTypes
++{
++    public const string InboundReply = "inbound_reply";
++    public const string ConversationReanalysis = "conversation_reanalysis";
++}
+ 
+ public static class SalesStatuses
+ {
+diff --git a/src/VirtualCompany.Application/Sales/ReplySignalDetectionContracts.cs b/src/VirtualCompany.Application/Sales/ReplySignalDetectionContracts.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Application/Sales/ReplySignalDetectionContracts.cs
+@@
++namespace VirtualCompany.Application.Sales;
++
++public interface IReplySignalDetectionPipeline
++{
++    Task<ReplySignalDetectionResult> AnalyzeInboundReplyAsync(AnalyzeInboundReplySignalsCommand command, CancellationToken cancellationToken);
++    Task<ReplySignalDetectionResult> AnalyzeConversationAsync(AnalyzeConversationSignalsCommand command, CancellationToken cancellationToken);
++}
++
++public interface IReplySignalDetectionService
++{
++    ReplySignalDetectionResult Detect(ReplySignalDetectionRequest request);
++}
++
++public interface IDealIntelligenceSignalRepository
++{
++    Task UpsertAsync(Guid companyId, IReadOnlyList<DetectedReplySignal> signals, CancellationToken cancellationToken);
++    Task<IReadOnlyList<DealIntelligenceSignalDto>> ListLatestByDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<DealIntelligenceSignalDto>> ListLatestByConversationAsync(Guid companyId, Guid conversationId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<DealIntelligenceSignalDto>> ListLatestByCompanyAsync(Guid companyId, string? signalType, int limit, CancellationToken cancellationToken);
++}
++
++public sealed record AnalyzeInboundReplySignalsCommand(
++    Guid CompanyId,
++    string Provider,
++    string ProviderMessageId,
++    string? ProviderThreadId,
++    string? InternetMessageId,
++    string? Subject,
++    string? Body,
++    string SenderEmail,
++    DateTime? ReceivedUtc,
++    Guid? DealId = null,
++    Guid? ConversationId = null,
++    Guid? MessageId = null,
++    Guid? SequenceId = null,
++    Guid? SequenceStepId = null);
++
++public sealed record AnalyzeConversationSignalsCommand(
++    Guid CompanyId,
++    Guid? DealId = null,
++    Guid? ConversationId = null,
++    string? ProviderThreadId = null,
++    string? SenderEmail = null);
++
++public sealed record ReplySignalDetectionRequest(
++    Guid CompanyId,
++    IReadOnlyList<ReplySignalContextMessage> Messages,
++    Guid? DealId = null,
++    Guid? ConversationId = null,
++    Guid? MessageId = null,
++    Guid? SequenceId = null,
++    Guid? SequenceStepId = null,
++    string SourceType = "inbound_reply",
++    string? SourceMessageId = null,
++    string? SourceThreadId = null,
++    DateTime? DetectedUtc = null);
++
++public sealed record ReplySignalContextMessage(
++    string Direction,
++    string? Subject,
++    string? Body,
++    string? SenderEmail,
++    DateTime? OccurredUtc,
++    string? ProviderMessageId = null,
++    string? ProviderThreadId = null);
++
++public sealed record ReplySignalDetectionResult(
++    Guid CompanyId,
++    IReadOnlyList<DetectedReplySignal> Signals);
++
++public sealed record DetectedReplySignal(
++    Guid CompanyId,
++    string SignalType,
++    decimal Confidence,
++    string Explanation,
++    Guid? DealId,
++    Guid? ConversationId,
++    Guid? MessageId,
++    Guid? SequenceId,
++    Guid? SequenceStepId,
++    string SourceType,
++    string? SourceMessageId,
++    string? SourceThreadId,
++    DateTime DetectedUtc,
++    DateTime? SourceWindowStartedUtc,
++    DateTime? SourceWindowEndedUtc,
++    IReadOnlyDictionary<string, string?> Evidence);
++
++public sealed record DealIntelligenceSignalDto(
++    Guid Id,
++    Guid CompanyId,
++    Guid? DealId,
++    Guid? ConversationId,
++    Guid? MessageId,
++    Guid? SequenceId,
++    Guid? SequenceStepId,
++    string SignalType,
++    string SignalState,
++    decimal ConfidenceScore,
++    string Explanation,
++    string SourceType,
++    string? SourceMessageId,
++    string? SourceThreadId,
++    string? SourceMetadataJson,
++    DateTime DetectedUtc,
++    DateTime? SourceWindowStartedUtc,
++    DateTime? SourceWindowEndedUtc,
++    DateTime UpdatedUtc);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContext.cs
+@@
+     public DbSet<SalesFinanceHandoff> SalesFinanceHandoffs => Set<SalesFinanceHandoff>();
+     public DbSet<RevenueForecastSnapshot> RevenueForecastSnapshots => Set<RevenueForecastSnapshot>();
+     public DbSet<DealRiskScoreSnapshot> DealRiskScoreSnapshots => Set<DealRiskScoreSnapshot>();
++    public DbSet<DealIntelligenceSignal> DealIntelligenceSignals => Set<DealIntelligenceSignal>();
+@@
+                 entry.Entity is SalesActionApproval ||
+                 entry.Entity is SalesFinanceHandoff ||
+-                entry.Entity is SalesEmailLink)
++                entry.Entity is SalesEmailLink ||
++                entry.Entity is DealIntelligenceSignal)
+@@
+         modelBuilder.Entity<CustomerMemoryProfileIndustrySignal>()
+             .HasQueryFilter(signal =>
+                 CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
++        modelBuilder.Entity<DealIntelligenceSignal>()
++            .HasQueryFilter(signal =>
++                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+--- a/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
++++ b/src/VirtualCompany.Infrastructure/Persistence/SalesEntityConfigurations.cs
+@@
+ internal sealed class SalesPipelineStageConfiguration : IEntityTypeConfiguration<SalesPipelineStage>
+ {
+@@
+ }
++
++internal sealed class DealIntelligenceSignalConfiguration : IEntityTypeConfiguration<DealIntelligenceSignal>
++{
++    public void Configure(EntityTypeBuilder<DealIntelligenceSignal> builder)
++    {
++        builder.ToTable("deal_intelligence_signals");
++        builder.HasKey(x => x.Id);
++        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
++        builder.Property(x => x.Id).HasColumnName("id");
++        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
++        builder.Property(x => x.DealId).HasColumnName("deal_id");
++        builder.Property(x => x.ConversationId).HasColumnName("conversation_id");
++        builder.Property(x => x.MessageId).HasColumnName("message_id");
++        builder.Property(x => x.SequenceId).HasColumnName("sequence_id");
++        builder.Property(x => x.SequenceStepId).HasColumnName("sequence_step_id");
++        builder.Property(x => x.SignalType).HasColumnName("signal_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SignalState).HasColumnName("signal_state").HasMaxLength(32).IsRequired();
++        builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("decimal(5,4)").IsRequired();
++        builder.Property(x => x.Explanation).HasColumnName("explanation").HasMaxLength(1000).IsRequired();
++        builder.Property(x => x.SourceType).HasColumnName("source_type").HasMaxLength(64).IsRequired();
++        builder.Property(x => x.SourceMessageId).HasColumnName("source_message_id").HasMaxLength(256);
++        builder.Property(x => x.SourceThreadId).HasColumnName("source_thread_id").HasMaxLength(256);
++        builder.Property(x => x.SourceMetadataJson).HasColumnName("source_metadata_json").HasColumnType("nvarchar(max)");
++        builder.Property(x => x.DetectedUtc).HasColumnName("detected_at").IsRequired();
++        builder.Property(x => x.SourceWindowStartedUtc).HasColumnName("source_window_started_at");
++        builder.Property(x => x.SourceWindowEndedUtc).HasColumnName("source_window_ended_at");
++        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
++        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
++
++        builder.ToTable(t =>
++        {
++            t.HasCheckConstraint("CK_deal_intelligence_signals_confidence_score_range", "confidence_score >= 0 AND confidence_score <= 1");
++            t.HasCheckConstraint("CK_deal_intelligence_signals_explanation_required", "LEN(LTRIM(RTRIM(explanation))) > 0");
++        });
++
++        builder.HasIndex(x => x.CompanyId);
++        builder.HasIndex(x => x.DealId);
++        builder.HasIndex(x => x.ConversationId);
++        builder.HasIndex(x => x.MessageId);
++        builder.HasIndex(x => x.SignalType);
++        builder.HasIndex(x => x.DetectedUtc);
++        builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceMessageId, x.SignalType })
++            .IsUnique()
++            .HasFilter("[source_message_id] IS NOT NULL");
++        builder.HasIndex(x => new { x.CompanyId, x.DealId, x.SourceThreadId, x.SignalType })
++            .HasFilter("[deal_id] IS NOT NULL AND [source_thread_id] IS NOT NULL");
++
++        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
++        builder.HasOne(x => x.Deal)
++            .WithMany(x => x.IntelligenceSignals)
++            .HasForeignKey(nameof(DealIntelligenceSignal.CompanyId), nameof(DealIntelligenceSignal.DealId))
++            .HasPrincipalKey(nameof(Deal.CompanyId), nameof(Deal.Id))
++            .OnDelete(DeleteBehavior.Restrict);
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/ReplySignalDetectionService.cs b/src/VirtualCompany.Infrastructure/Sales/ReplySignalDetectionService.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Sales/ReplySignalDetectionService.cs
+@@
++using System.Text.Json;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++
++namespace VirtualCompany.Infrastructure.Sales;
++
++public sealed class DeterministicReplySignalDetectionService : IReplySignalDetectionService
++{
++    private static readonly string[] PriceResistanceTerms =
++    [
++        "too expensive",
++        "over budget",
++        "budget right now",
++        "cost is high",
++        "price is high",
++        "pricing is high",
++        "discount",
++        "cheaper",
++        "can't afford",
++        "cannot afford"
++    ];
++
++    private static readonly string[] BuyingIntentTerms =
++    [
++        "schedule a demo",
++        "book a demo",
++        "next step",
++        "send the contract",
++        "send a contract",
++        "send a quote",
++        "send proposal",
++        "looks good",
++        "move forward",
++        "procurement",
++        "approval process",
++        "start next week",
++        "ready to proceed"
++    ];
++
++    public ReplySignalDetectionResult Detect(ReplySignalDetectionRequest request)
++    {
++        if (request.CompanyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(request));
++        }
++
++        var detectedUtc = request.DetectedUtc ?? DateTime.UtcNow;
++        var windowStart = request.Messages.Where(x => x.OccurredUtc.HasValue).Min(x => x.OccurredUtc);
++        var windowEnd = request.Messages.Where(x => x.OccurredUtc.HasValue).Max(x => x.OccurredUtc);
++        var latestInbound = request.Messages.LastOrDefault(x => x.Direction.Equals("inbound", StringComparison.OrdinalIgnoreCase));
++        var text = string.Join(" ", request.Messages.Select(x => $"{x.Subject} {x.Body}")).Trim();
++        var signals = new List<DetectedReplySignal>();
++
++        AddKeywordSignal(request, signals, DealIntelligenceSignalTypes.PriceResistance, PriceResistanceTerms, text, detectedUtc, windowStart, windowEnd, "The reply raised a pricing or budget objection.");
++        AddKeywordSignal(request, signals, DealIntelligenceSignalTypes.BuyingIntent, BuyingIntentTerms, text, detectedUtc, windowStart, windowEnd, "The reply expressed clear interest in moving to a next step.");
++
++        var unansweredOutboundCount = CountRecentUnansweredOutbound(request.Messages);
++        if (latestInbound is null && unansweredOutboundCount >= 2)
++        {
++            signals.Add(BuildSignal(
++                request,
++                DealIntelligenceSignalTypes.Ghosting,
++                Math.Min(0.95m, 0.60m + (unansweredOutboundCount * 0.10m)),
++                "The conversation has multiple unanswered outbound follow-ups and no recent customer reply.",
++                detectedUtc,
++                windowStart,
++                windowEnd,
++                new Dictionary<string, string?>
++                {
++                    ["unansweredOutboundCount"] = unansweredOutboundCount.ToString(System.Globalization.CultureInfo.InvariantCulture),
++                    ["heuristic"] = "two_or_more_unanswered_outbound_messages"
++                }));
++        }
++
++        return new ReplySignalDetectionResult(request.CompanyId, signals);
++    }
++
++    private static void AddKeywordSignal(ReplySignalDetectionRequest request, List<DetectedReplySignal> signals, string signalType, IReadOnlyList<string> terms, string text, DateTime detectedUtc, DateTime? windowStart, DateTime? windowEnd, string explanation)
++    {
++        var matches = terms.Where(term => text.Contains(term, StringComparison.OrdinalIgnoreCase)).Take(5).ToArray();
++        if (matches.Length == 0)
++        {
++            return;
++        }
++
++        signals.Add(BuildSignal(
++            request,
++            signalType,
++            Math.Min(0.95m, 0.70m + (matches.Length * 0.05m)),
++            explanation,
++            detectedUtc,
++            windowStart,
++            windowEnd,
++            new Dictionary<string, string?>
++            {
++                ["matchedTerms"] = string.Join(", ", matches),
++                ["detector"] = "deterministic_keyword_baseline"
++            }));
++    }
++
++    private static int CountRecentUnansweredOutbound(IReadOnlyList<ReplySignalContextMessage> messages)
++    {
++        var ordered = messages.OrderBy(x => x.OccurredUtc ?? DateTime.MinValue).ToArray();
++        var latestInboundUtc = ordered.LastOrDefault(x => x.Direction.Equals("inbound", StringComparison.OrdinalIgnoreCase))?.OccurredUtc;
++        return ordered.Count(x =>
++            x.Direction.Equals("outbound", StringComparison.OrdinalIgnoreCase) &&
++            (!latestInboundUtc.HasValue || x.OccurredUtc > latestInboundUtc.Value));
++    }
++
++    private static DetectedReplySignal BuildSignal(ReplySignalDetectionRequest request, string signalType, decimal confidence, string explanation, DateTime detectedUtc, DateTime? windowStart, DateTime? windowEnd, IReadOnlyDictionary<string, string?> evidence) =>
++        new(
++            request.CompanyId,
++            signalType,
++            confidence,
++            explanation,
++            request.DealId,
++            request.ConversationId,
++            request.MessageId,
++            request.SequenceId,
++            request.SequenceStepId,
++            request.SourceType,
++            request.SourceMessageId,
++            request.SourceThreadId,
++            detectedUtc,
++            windowStart,
++            windowEnd,
++            evidence);
++}
++
++public sealed class DealIntelligenceSignalRepository : IDealIntelligenceSignalRepository
++{
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly ICompanyContextAccessor? _companyContextAccessor;
++
++    public DealIntelligenceSignalRepository(VirtualCompanyDbContext dbContext, ICompanyContextAccessor? companyContextAccessor = null)
++    {
++        _dbContext = dbContext;
++        _companyContextAccessor = companyContextAccessor;
++    }
++
++    public async Task UpsertAsync(Guid companyId, IReadOnlyList<DetectedReplySignal> signals, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        foreach (var signal in signals.Where(x => x.CompanyId == companyId))
++        {
++            var metadataJson = JsonSerializer.Serialize(signal.Evidence);
++            var existing = await FindExistingAsync(companyId, signal, cancellationToken);
++            if (existing is null)
++            {
++                _dbContext.DealIntelligenceSignals.Add(new DealIntelligenceSignal(
++                    Guid.NewGuid(),
++                    companyId,
++                    signal.SignalType,
++                    signal.Confidence,
++                    signal.Explanation,
++                    signal.DetectedUtc,
++                    signal.DealId,
++                    signal.ConversationId,
++                    signal.MessageId,
++                    signal.SequenceId,
++                    signal.SequenceStepId,
++                    sourceType: signal.SourceType,
++                    sourceMessageId: signal.SourceMessageId,
++                    sourceThreadId: signal.SourceThreadId,
++                    sourceMetadataJson: metadataJson,
++                    sourceWindowStartedUtc: signal.SourceWindowStartedUtc,
++                    sourceWindowEndedUtc: signal.SourceWindowEndedUtc));
++                continue;
++            }
++
++            existing.UpdateDetection(signal.Confidence, signal.Explanation, metadataJson, signal.DetectedUtc, signal.SourceWindowStartedUtc, signal.SourceWindowEndedUtc);
++        }
++
++        await _dbContext.SaveChangesAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<DealIntelligenceSignalDto>> ListLatestByDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        return await Project(_dbContext.DealIntelligenceSignals.IgnoreQueryFilters().AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.DealId == dealId))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<DealIntelligenceSignalDto>> ListLatestByConversationAsync(Guid companyId, Guid conversationId, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        return await Project(_dbContext.DealIntelligenceSignals.IgnoreQueryFilters().AsNoTracking()
++                .Where(x => x.CompanyId == companyId && x.ConversationId == conversationId))
++            .ToListAsync(cancellationToken);
++    }
++
++    public async Task<IReadOnlyList<DealIntelligenceSignalDto>> ListLatestByCompanyAsync(Guid companyId, string? signalType, int limit, CancellationToken cancellationToken)
++    {
++        EnsureTenant(companyId);
++        var query = _dbContext.DealIntelligenceSignals.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId);
++        if (!string.IsNullOrWhiteSpace(signalType))
++        {
++            var normalized = DealIntelligenceSignalTypes.Normalize(signalType);
++            query = query.Where(x => x.SignalType == normalized);
++        }
++
++        return await Project(query)
++            .Take(Math.Clamp(limit, 1, 500))
++            .ToListAsync(cancellationToken);
++    }
++
++    private async Task<DealIntelligenceSignal?> FindExistingAsync(Guid companyId, DetectedReplySignal signal, CancellationToken cancellationToken)
++    {
++        if (!string.IsNullOrWhiteSpace(signal.SourceMessageId))
++        {
++            return await _dbContext.DealIntelligenceSignals.IgnoreQueryFilters()
++                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.SourceType == signal.SourceType && x.SourceMessageId == signal.SourceMessageId && x.SignalType == signal.SignalType, cancellationToken);
++        }
++
++        return await _dbContext.DealIntelligenceSignals.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.SignalType == signal.SignalType)
++            .Where(x => signal.DealId.HasValue && x.DealId == signal.DealId || signal.ConversationId.HasValue && x.ConversationId == signal.ConversationId)
++            .OrderByDescending(x => x.DetectedUtc)
++            .FirstOrDefaultAsync(cancellationToken);
++    }
++
++    private static IQueryable<DealIntelligenceSignalDto> Project(IQueryable<DealIntelligenceSignal> query) =>
++        query.OrderByDescending(x => x.DetectedUtc)
++            .Select(x => new DealIntelligenceSignalDto(
++                x.Id,
++                x.CompanyId,
++                x.DealId,
++                x.ConversationId,
++                x.MessageId,
++                x.SequenceId,
++                x.SequenceStepId,
++                x.SignalType,
++                x.SignalState,
++                x.ConfidenceScore,
++                x.Explanation,
++                x.SourceType,
++                x.SourceMessageId,
++                x.SourceThreadId,
++                x.SourceMetadataJson,
++                x.DetectedUtc,
++                x.SourceWindowStartedUtc,
++                x.SourceWindowEndedUtc,
++                x.UpdatedUtc));
++
++    private void EnsureTenant(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++
++        if (_companyContextAccessor?.CompanyId is Guid currentCompanyId && currentCompanyId != companyId)
++        {
++            throw new InvalidOperationException("Deal intelligence signals are outside the active company context.");
++        }
++    }
++}
++
++public sealed class ReplySignalDetectionPipeline : IReplySignalDetectionPipeline
++{
++    private const int ConversationWindowSize = 12;
++    private readonly VirtualCompanyDbContext _dbContext;
++    private readonly IReplySignalDetectionService _detector;
++    private readonly IDealIntelligenceSignalRepository _repository;
++
++    public ReplySignalDetectionPipeline(VirtualCompanyDbContext dbContext, IReplySignalDetectionService detector, IDealIntelligenceSignalRepository repository)
++    {
++        _dbContext = dbContext;
++        _detector = detector;
++        _repository = repository;
++    }
++
++    public async Task<ReplySignalDetectionResult> AnalyzeInboundReplyAsync(AnalyzeInboundReplySignalsCommand command, CancellationToken cancellationToken)
++    {
++        EnsureCompany(command.CompanyId);
++        var history = await BuildEmailHistoryAsync(command.CompanyId, command.Provider, command.ProviderThreadId, command.SenderEmail, cancellationToken);
++        var messages = history
++            .Append(new ReplySignalContextMessage("inbound", command.Subject, command.Body, command.SenderEmail, command.ReceivedUtc, command.ProviderMessageId, command.ProviderThreadId))
++            .OrderBy(x => x.OccurredUtc ?? DateTime.MinValue)
++            .TakeLast(ConversationWindowSize)
++            .ToArray();
++
++        var result = _detector.Detect(new ReplySignalDetectionRequest(
++            command.CompanyId,
++            messages,
++            command.DealId,
++            command.ConversationId,
++            command.MessageId,
++            command.SequenceId,
++            command.SequenceStepId,
++            DealIntelligenceSignalSourceTypes.InboundReply,
++            command.ProviderMessageId,
++            command.ProviderThreadId,
++            DateTime.UtcNow));
++
++        await _repository.UpsertAsync(command.CompanyId, result.Signals, cancellationToken);
++        return result;
++    }
++
++    public async Task<ReplySignalDetectionResult> AnalyzeConversationAsync(AnalyzeConversationSignalsCommand command, CancellationToken cancellationToken)
++    {
++        EnsureCompany(command.CompanyId);
++        var history = await BuildEmailHistoryAsync(command.CompanyId, null, command.ProviderThreadId, command.SenderEmail, cancellationToken);
++        var result = _detector.Detect(new ReplySignalDetectionRequest(
++            command.CompanyId,
++            history.TakeLast(ConversationWindowSize).ToArray(),
++            command.DealId,
++            command.ConversationId,
++            SourceType: DealIntelligenceSignalSourceTypes.ConversationReanalysis,
++            SourceThreadId: command.ProviderThreadId,
++            DetectedUtc: DateTime.UtcNow));
++
++        await _repository.UpsertAsync(command.CompanyId, result.Signals, cancellationToken);
++        return result;
++    }
++
++    private async Task<IReadOnlyList<ReplySignalContextMessage>> BuildEmailHistoryAsync(Guid companyId, string? provider, string? providerThreadId, string? senderEmail, CancellationToken cancellationToken)
++    {
++        var query = _dbContext.SalesEmailLinks.IgnoreQueryFilters().AsNoTracking()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.LinkKind == SalesEmailLinkKinds.Message);
++
++        if (!string.IsNullOrWhiteSpace(providerThreadId))
++        {
++            query = query.Where(x => x.ExternalThreadId == providerThreadId);
++        }
++        else if (!string.IsNullOrWhiteSpace(senderEmail))
++        {
++            var normalizedSender = senderEmail.Trim().ToLowerInvariant();
++            query = query.Where(x => x.ContactId != null && _dbContext.Contacts.IgnoreQueryFilters().Any(contact => contact.CompanyId == companyId && contact.Id == x.ContactId && contact.Email == normalizedSender));
++        }
++
++        if (!string.IsNullOrWhiteSpace(provider))
++        {
++            query = query.Where(x => x.Provider == provider);
++        }
++
++        return await query
++            .OrderByDescending(x => x.CreatedUtc)
++            .Take(ConversationWindowSize)
++            .Select(x => new ReplySignalContextMessage(
++                "inbound",
++                null,
++                x.Rationale,
++                null,
++                x.CreatedUtc,
++                x.ExternalMessageId,
++                x.ExternalThreadId))
++            .ToListAsync(cancellationToken);
++    }
++
++    private static void EnsureCompany(Guid companyId)
++    {
++        if (companyId == Guid.Empty)
++        {
++            throw new ArgumentException("CompanyId is required.", nameof(companyId));
++        }
++    }
++}
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesEmailIngestionService.cs
+@@
+     private readonly ICompanyOutboxEnqueuer _outbox;
+     private readonly ISalesEmailIntentExtractionService _intentExtraction;
++    private readonly IReplySignalDetectionPipeline _replySignalDetection;
+     private readonly TimeProvider _timeProvider;
+@@
+         IFieldEncryptionService fieldEncryption,
+         ICompanyOutboxEnqueuer outbox,
+         ISalesEmailIntentExtractionService intentExtraction,
++        IReplySignalDetectionPipeline replySignalDetection,
+         TimeProvider timeProvider)
+@@
+         _outbox = outbox;
+         _intentExtraction = intentExtraction;
++        _replySignalDetection = replySignalDetection;
+         _timeProvider = timeProvider;
+@@
+         EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, contact?.Id, detection, threadIdentity);
+         EnqueueLeadDetected(companyId, connection, primaryMessage, lead.Id, signal, threadIdentity);
+         await _dbContext.SaveChangesAsync(cancellationToken);
+         await transaction.CommitAsync(cancellationToken);
++
++        await _replySignalDetection.AnalyzeInboundReplyAsync(
++            new AnalyzeInboundReplySignalsCommand(
++                companyId,
++                connection.Provider.ToStorageValue(),
++                providerMessageId,
++                threadIdentity,
++                primaryMessage.InternetMessageId,
++                primaryMessage.Subject,
++                FirstNonEmpty(primaryMessage.PlainTextBody, primaryMessage.HtmlBody),
++                signal.SenderEmail,
++                primaryMessage.ReceivedUtc,
++                ProviderThreadId: threadIdentity),
++            cancellationToken);
+ 
+         return new SalesEmailIngestionResult(
+diff --git a/src/VirtualCompany.Infrastructure/DependencyInjection.cs b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+--- a/src/VirtualCompany.Infrastructure/DependencyInjection.cs
++++ b/src/VirtualCompany.Infrastructure/DependencyInjection.cs
+@@
+         services.AddScoped<ISalesEmailIngestionService, SalesEmailIngestionService>();
+         services.AddScoped<ISalesEmailIntentExtractionService, OpenAiSalesEmailIntentExtractionService>();
++        services.AddScoped<IReplySignalDetectionService, DeterministicReplySignalDetectionService>();
++        services.AddScoped<IReplySignalDetectionPipeline, ReplySignalDetectionPipeline>();
++        services.AddScoped<IDealIntelligenceSignalRepository, DealIntelligenceSignalRepository>();
+         services.AddScoped<ISalesOperationsService, SalesOperationsService>();
+diff --git a/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505003000_AddDealIntelligenceSignals.cs b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505003000_AddDealIntelligenceSignals.cs
+new file mode 100644
+--- /dev/null
++++ b/src/VirtualCompany.Infrastructure/Persistence/Migrations/20260505003000_AddDealIntelligenceSignals.cs
+@@
++using Microsoft.EntityFrameworkCore.Migrations;
++
++#nullable disable
++
++namespace VirtualCompany.Infrastructure.Persistence.Migrations;
++
++public partial class AddDealIntelligenceSignals : Migration
++{
++    protected override void Up(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.CreateTable(
++            name: "deal_intelligence_signals",
++            columns: table => new
++            {
++                id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                company_id = table.Column<Guid>(type: "uniqueidentifier", nullable: false),
++                deal_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                conversation_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                message_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                sequence_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                sequence_step_id = table.Column<Guid>(type: "uniqueidentifier", nullable: true),
++                signal_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                signal_state = table.Column<string>(type: "nvarchar(32)", maxLength: 32, nullable: false),
++                confidence_score = table.Column<decimal>(type: "decimal(5,4)", nullable: false),
++                explanation = table.Column<string>(type: "nvarchar(1000)", maxLength: 1000, nullable: false),
++                source_type = table.Column<string>(type: "nvarchar(64)", maxLength: 64, nullable: false),
++                source_message_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                source_thread_id = table.Column<string>(type: "nvarchar(256)", maxLength: 256, nullable: true),
++                source_metadata_json = table.Column<string>(type: "nvarchar(max)", nullable: true),
++                detected_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                source_window_started_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                source_window_ended_at = table.Column<DateTime>(type: "datetime2", nullable: true),
++                created_at = table.Column<DateTime>(type: "datetime2", nullable: false),
++                updated_at = table.Column<DateTime>(type: "datetime2", nullable: false)
++            },
++            constraints: table =>
++            {
++                table.PrimaryKey("PK_deal_intelligence_signals", x => x.id);
++                table.UniqueConstraint("AK_deal_intelligence_signals_company_id_id", x => new { x.company_id, x.id });
++                table.CheckConstraint("CK_deal_intelligence_signals_confidence_score_range", "confidence_score >= 0 AND confidence_score <= 1");
++                table.CheckConstraint("CK_deal_intelligence_signals_explanation_required", "LEN(LTRIM(RTRIM(explanation))) > 0");
++                table.ForeignKey(
++                    name: "FK_deal_intelligence_signals_companies_company_id",
++                    column: x => x.company_id,
++                    principalTable: "companies",
++                    principalColumn: "id",
++                    onDelete: ReferentialAction.Cascade);
++                table.ForeignKey(
++                    name: "FK_deal_intelligence_signals_deals_company_id_deal_id",
++                    columns: x => new { x.company_id, x.deal_id },
++                    principalTable: "deals",
++                    principalColumns: new[] { "company_id", "id" },
++                    onDelete: ReferentialAction.Restrict);
++            });
++
++        migrationBuilder.CreateIndex(name: "IX_deal_intelligence_signals_company_id", table: "deal_intelligence_signals", column: "company_id");
++        migrationBuilder.CreateIndex(name: "IX_deal_intelligence_signals_deal_id", table: "deal_intelligence_signals", column: "deal_id");
++        migrationBuilder.CreateIndex(name: "IX_deal_intelligence_signals_conversation_id", table: "deal_intelligence_signals", column: "conversation_id");
++        migrationBuilder.CreateIndex(name: "IX_deal_intelligence_signals_message_id", table: "deal_intelligence_signals", column: "message_id");
++        migrationBuilder.CreateIndex(name: "IX_deal_intelligence_signals_signal_type", table: "deal_intelligence_signals", column: "signal_type");
++        migrationBuilder.CreateIndex(name: "IX_deal_intelligence_signals_detected_at", table: "deal_intelligence_signals", column: "detected_at");
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_intelligence_signals_company_id_source_type_source_message_id_signal_type",
++            table: "deal_intelligence_signals",
++            columns: new[] { "company_id", "source_type", "source_message_id", "signal_type" },
++            unique: true,
++            filter: "[source_message_id] IS NOT NULL");
++        migrationBuilder.CreateIndex(
++            name: "IX_deal_intelligence_signals_company_id_deal_id_source_thread_id_signal_type",
++            table: "deal_intelligence_signals",
++            columns: new[] { "company_id", "deal_id", "source_thread_id", "signal_type" },
++            filter: "[deal_id] IS NOT NULL AND [source_thread_id] IS NOT NULL");
++    }
++
++    protected override void Down(MigrationBuilder migrationBuilder)
++    {
++        migrationBuilder.DropTable(name: "deal_intelligence_signals");
++    }
++}
+diff --git a/tests/VirtualCompany.Api.Tests/DealIntelligenceSignalTests.cs b/tests/VirtualCompany.Api.Tests/DealIntelligenceSignalTests.cs
+new file mode 100644
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/DealIntelligenceSignalTests.cs
+@@
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Sales;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class DealIntelligenceSignalTests
++{
++    [Fact]
++    public void Signal_requires_supported_type_confidence_and_explanation()
++    {
++        var companyId = Guid.NewGuid();
++
++        Assert.Throws<ArgumentException>(() => new DealIntelligenceSignal(Guid.NewGuid(), companyId, "unsupported", 0.8m, "Detected.", DateTime.UtcNow));
++        Assert.Throws<ArgumentOutOfRangeException>(() => new DealIntelligenceSignal(Guid.NewGuid(), companyId, DealIntelligenceSignalTypes.BuyingIntent, 1.1m, "Detected.", DateTime.UtcNow));
++        Assert.Throws<ArgumentException>(() => new DealIntelligenceSignal(Guid.NewGuid(), companyId, DealIntelligenceSignalTypes.BuyingIntent, 0.9m, "", DateTime.UtcNow));
++    }
++
++    [Fact]
++    public void Deterministic_detector_finds_buying_intent_and_price_resistance()
++    {
++        var companyId = Guid.NewGuid();
++        var detector = new DeterministicReplySignalDetectionService();
++
++        var result = detector.Detect(new ReplySignalDetectionRequest(
++            companyId,
++            [
++                new ReplySignalContextMessage("inbound", "Re: proposal", "This looks good, can we schedule a demo next week? It is a bit too expensive for our budget right now.", "buyer@example.com", DateTime.UtcNow, "msg-1", "thread-1")
++            ],
++            SourceMessageId: "msg-1",
++            SourceThreadId: "thread-1"));
++
++        Assert.Contains(result.Signals, x => x.SignalType == DealIntelligenceSignalTypes.BuyingIntent && x.Confidence > 0);
++        Assert.Contains(result.Signals, x => x.SignalType == DealIntelligenceSignalTypes.PriceResistance && x.Confidence > 0);
++        Assert.All(result.Signals, x => Assert.False(string.IsNullOrWhiteSpace(x.Explanation)));
++    }
++
++    [Fact]
++    public void Deterministic_detector_finds_ghosting_from_unanswered_outbound_history()
++    {
++        var companyId = Guid.NewGuid();
++        var detector = new DeterministicReplySignalDetectionService();
++
++        var result = detector.Detect(new ReplySignalDetectionRequest(
++            companyId,
++            [
++                new ReplySignalContextMessage("outbound", "Checking in", "Following up on the proposal.", "alex@virtual.test", DateTime.UtcNow.AddDays(-8), "out-1", "thread-1"),
++                new ReplySignalContextMessage("outbound", "Next steps", "Do you want to continue?", "alex@virtual.test", DateTime.UtcNow.AddDays(-3), "out-2", "thread-1")
++            ],
++            SourceType: DealIntelligenceSignalSourceTypes.ConversationReanalysis,
++            SourceThreadId: "thread-1"));
++
++        var signal = Assert.Single(result.Signals);
++        Assert.Equal(DealIntelligenceSignalTypes.Ghosting, signal.SignalType);
++        Assert.True(signal.Confidence >= 0.8m);
++    }
++
++    [Fact]
++    public async Task Repository_upserts_by_company_message_and_signal_type()
++    {
++        var companyId = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(companyId);
++        dbContext.Companies.Add(new Company(companyId, "Tenant A", "tenant-a"));
++        await dbContext.SaveChangesAsync();
++
++        var repository = new DealIntelligenceSignalRepository(dbContext, new FixedCompanyContextAccessor(companyId));
++        var signal = new DetectedReplySignal(
++            companyId,
++            DealIntelligenceSignalTypes.BuyingIntent,
++            0.8m,
++            "The buyer asked for a demo.",
++            null,
++            null,
++            null,
++            null,
++            null,
++            DealIntelligenceSignalSourceTypes.InboundReply,
++            "msg-1",
++            "thread-1",
++            DateTime.UtcNow,
++            DateTime.UtcNow.AddMinutes(-1),
++            DateTime.UtcNow,
++            new Dictionary<string, string?> { ["matchedTerms"] = "schedule a demo" });
++
++        await repository.UpsertAsync(companyId, [signal], CancellationToken.None);
++        await repository.UpsertAsync(companyId, [signal with { Confidence = 0.9m }], CancellationToken.None);
++
++        var rows = await dbContext.DealIntelligenceSignals.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync();
++        var row = Assert.Single(rows);
++        Assert.Equal(0.9m, row.ConfidenceScore);
++    }
++
++    [Fact]
++    public async Task Repository_blocks_cross_tenant_reads()
++    {
++        var tenantA = Guid.NewGuid();
++        var tenantB = Guid.NewGuid();
++        await using var dbContext = CreateDbContext(tenantA);
++        var repository = new DealIntelligenceSignalRepository(dbContext, new FixedCompanyContextAccessor(tenantA));
++
++        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.ListLatestByCompanyAsync(tenantB, null, 10, CancellationToken.None));
++    }
++
++    private static VirtualCompanyDbContext CreateDbContext(Guid companyId)
++    {
++        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
++            .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
++            .Options;
++        return new VirtualCompanyDbContext(options, new FixedCompanyContextAccessor(companyId));
++    }
++
++    private sealed class FixedCompanyContextAccessor : ICompanyContextAccessor
++    {
++        public FixedCompanyContextAccessor(Guid companyId)
++        {
++            CompanyId = companyId;
++        }
++
++        public Guid? CompanyId { get; }
++    }
++}
+END_OF_PATCH

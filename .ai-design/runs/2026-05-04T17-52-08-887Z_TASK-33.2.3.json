@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.2.3",
+  "promptPath": ".ai-design/prompts/TASK-33.2.3.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T17:52:08.887Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T17-52-08-887Z_TASK-33.2.3_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T17-52-08-887Z_TASK-33.2.3.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T17:54:35.342Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "ID(N'[dbo].[fortnox_external_references]'))\n+            BEGIN\n+                CREATE UNIQUE INDEX [IX_fortnox_external_references_company_id_external_entity_type_external_id]\n+                    ON [fortnox_external_references] ([company_id], [external_entity_type], [external_id]);\n+            END\n+            \"\"\");\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.Sql(\"\"\"\n+            IF OBJECT_ID(N'[dbo].[fortnox_sync_histories]', N'U') IS NOT NULL\n+            BEGIN\n+                IF OBJECT_ID(N'[dbo].[CK_fortnox_sync_histories_status]', N'C') IS NOT NULL\n+                    ALTER TABLE [fortnox_sync_histories] DROP CONSTRAINT [CK_fortnox_sync_histories_status];\n+\n+                ALTER TABLE [fortnox_sync_histories]\n+                    ADD CONSTRAINT [CK_fortnox_sync_histories_status]\n+                    CHECK ([status] IN ('running', 'succeeded', 'failed'));\n+            END\n+            \"\"\");\n+\n+        migrationBuilder.Sql(\"\"\"\n+            IF OBJECT_ID(N'[dbo].[finance_integration_sync_states]', N'U') IS NOT NULL\n+            BEGIN\n+                IF OBJECT_ID(N'[dbo].[CK_finance_integration_sync_states_status]', N'C') IS NOT NULL\n+                    ALTER TABLE [finance_integration_sync_states] DROP CONSTRAINT [CK_finance_integration_sync_states_status];\n+\n+                ALTER TABLE [finance_integration_sync_states]\n+                    ADD CONSTRAINT [CK_finance_integration_sync_states_status]\n+                    CHECK ([status] IN ('pending', 'running', 'succeeded', 'failed'));\n+            END\n+            \"\"\");\n+\n+        migrationBuilder.Sql(\"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_fortnox_external_references_company_id_external_entity_type_external_id' AND object_id = OBJECT_ID(N'[dbo].[fortnox_external_references]')) DROP INDEX [IX_fortnox_external_references_company_id_external_entity_type_external_id] ON [fortnox_external_references];\");\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "external_references]'))\n+            BEGIN\n+                CREATE UNIQUE INDEX [IX_fortnox_external_references_company_id_external_entity_type_external_id]\n+                    ON [fortnox_external_references] ([company_id], [external_entity_type], [external_id]);\n+            END\n+            \"\"\");\n+    }\n+\n+    protected override void Down(MigrationBuilder migrationBuilder)\n+    {\n+        migrationBuilder.Sql(\"\"\"\n+            IF OBJECT_ID(N'[dbo].[fortnox_sync_histories]', N'U') IS NOT NULL\n+            BEGIN\n+                IF OBJECT_ID(N'[dbo].[CK_fortnox_sync_histories_status]', N'C') IS NOT NULL\n+                    ALTER TABLE [fortnox_sync_histories] DROP CONSTRAINT [CK_fortnox_sync_histories_status];\n+\n+                ALTER TABLE [fortnox_sync_histories]\n+                    ADD CONSTRAINT [CK_fortnox_sync_histories_status]\n+                    CHECK ([status] IN ('running', 'succeeded', 'failed'));\n+            END\n+            \"\"\");\n+\n+        migrationBuilder.Sql(\"\"\"\n+            IF OBJECT_ID(N'[dbo].[finance_integration_sync_states]', N'U') IS NOT NULL\n+            BEGIN\n+                IF OBJECT_ID(N'[dbo].[CK_finance_integration_sync_states_status]', N'C') IS NOT NULL\n+                    ALTER TABLE [finance_integration_sync_states] DROP CONSTRAINT [CK_finance_integration_sync_states_status];\n+\n+                ALTER TABLE [finance_integration_sync_states]\n+                    ADD CONSTRAINT [CK_finance_integration_sync_states_status]\n+                    CHECK ([status] IN ('pending', 'running', 'succeeded', 'failed'));\n+            END\n+            \"\"\");\n+\n+        migrationBuilder.Sql(\"IF EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_fortnox_external_references_company_id_external_entity_type_external_id' AND object_id = OBJECT_ID(N'[dbo].[fortnox_external_references]')) DROP INDEX [IX_fortnox_external_references_company_id_external_entity_type_external_id] ON [fortnox_external_references];\");\n+    }\n+}\nEND_OF_PATCH\ntokens used\n102,703\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}

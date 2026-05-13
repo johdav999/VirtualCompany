@@ -71,6 +71,14 @@ public sealed class FortnoxOptionsValidationTests
         Assert.DoesNotContain(options.ClientSecret, string.Join(Environment.NewLine, result.Failures), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public void Empty_configured_scopes_fall_back_to_import_sync_scopes()
+    {
+        var scopes = FortnoxScopeDefaults.Resolve([]);
+
+        Assert.Equal(FortnoxScopeDefaults.ImportSync, scopes);
+    }
+
     private static ValidateOptionsResult Validate(FortnoxOptions options) =>
         new FortnoxOptionsValidator().Validate(Options.DefaultName, options);
 

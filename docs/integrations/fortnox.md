@@ -77,11 +77,24 @@ dotnet user-secrets set "FinanceIntegrations:Fortnox:TokenUrl" "https://apps.for
 dotnet user-secrets set "FinanceIntegrations:Fortnox:ApiBaseUrl" "https://api.fortnox.se/3/" --project src/VirtualCompany.Api
 ```
 
-Set scopes as configuration values using array indexes if needed:
+If `FinanceIntegrations:Fortnox:Scopes` is empty, the application requests the default import sync scopes listed below. Set scopes as configuration values using array indexes when an environment needs to narrow or expand the requested permissions:
 
 ```powershell
 dotnet user-secrets set "FinanceIntegrations:Fortnox:Scopes:0" "<scope-name>" --project src/VirtualCompany.Api
 ```
+
+The current import sync uses these Fortnox scopes:
+
+- `companyinformation` for company information
+- `bookkeeping` for accounts and vouchers
+- `customer` for customers
+- `supplier` for suppliers
+- `article` for articles
+- `project` for projects
+- `invoice` for invoices
+- `supplierinvoice` for supplier invoices
+
+Enable the same scopes on the Fortnox Developer Portal app and in `FinanceIntegrations:Fortnox:Scopes`, then reconnect Fortnox. Fortnox grants scopes per authorization code, so existing connections do not receive newly enabled scopes until the user reconnects.
 
 ## Production Secrets
 

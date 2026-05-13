@@ -210,6 +210,7 @@ public sealed class FinanceExternalReference : ICompanyOwnedEntity
     public DateTime? ExternalUpdatedUtc { get; private set; }
     public JsonObject Metadata { get; private set; } = [];
     public DateTime CreatedUtc { get; private set; }
+    public DateTime LastSyncedUtc => UpdatedUtc;
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceIntegrationConnection Connection { get; private set; } = null!;
@@ -240,6 +241,14 @@ public sealed class FinanceExternalReference : ICompanyOwnedEntity
         UpdatedUtc = CreatedUtc;
     }
 
+    public void RepointToInternalRecord(Guid internalRecordId, string? externalNumber, DateTime? externalUpdatedUtc, DateTime syncedUtc)
+    {
+        InternalRecordId = internalRecordId == Guid.Empty
+            ? throw new ArgumentException("InternalRecordId is required.", nameof(internalRecordId))
+            : internalRecordId;
+        Refresh(externalNumber, externalUpdatedUtc, syncedUtc);
+    }
+
     public void Refresh(string? externalNumber, DateTime? externalUpdatedUtc, DateTime updatedUtc)
     {
         ExternalNumber = NormalizeOptional(externalNumber, nameof(externalNumber), 128);
@@ -247,10 +256,15 @@ public sealed class FinanceExternalReference : ICompanyOwnedEntity
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
     }
 
+    public void MarkSynced(DateTime syncedUtc)
+    {
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(syncedUtc, nameof(syncedUtc));
+    }
+
     public bool IsCurrent(DateTime? externalUpdatedUtc) =>
-        ExternalUpdatedUtc.HasValue &&
-        externalUpdatedUtc.HasValue &&
-        ExternalUpdatedUtc.Value >= EntityTimestampNormalizer.NormalizeUtc(externalUpdatedUtc.Value, nameof(externalUpdatedUtc));
+        !externalUpdatedUtc.HasValue ||
+        (ExternalUpdatedUtc.HasValue &&
+         ExternalUpdatedUtc.Value >= EntityTimestampNormalizer.NormalizeUtc(externalUpdatedUtc.Value, nameof(externalUpdatedUtc)));
 
     private static string? NormalizeOptional(string? value, string name, int maxLength)
     {
@@ -377,21 +391,21 @@ public sealed class FinanceIntegrationAuditEvent : ICompanyOwnedEntity
     }
 }
 
-public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
+public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
 {
-    private FortnoxWriteCommand()
+    private FinanceIntegrationWriteCommandRecord()
     {
     }
 
-    public FortnoxWriteCommand(
+    public FinanceIntegrationWriteCommandRecord(
         Guid id,
         Guid companyId,
         Guid? connectionId,
         Guid? actorUserId,
+        string commandType,
         string httpMethod,
         string path,
         string targetCompany,
-        string entityType,
         string payloadSummary,
         string payloadHash,
         string sanitizedPayloadJson,
@@ -402,15 +416,17 @@ public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
         ConnectionId = connectionId == Guid.Empty ? null : connectionId;
         ActorUserId = actorUserId == Guid.Empty ? null : actorUserId;
+        CommandType = NormalizeRequired(commandType, nameof(commandType), 64).Replace('-', '_').ToLowerInvariant();
         HttpMethod = NormalizeRequired(httpMethod, nameof(httpMethod), 16).ToUpperInvariant();
         Path = NormalizeRequired(path, nameof(path), 512);
         TargetCompany = NormalizeRequired(targetCompany, nameof(targetCompany), 160);
-        EntityType = NormalizeRequired(entityType, nameof(entityType), 64).ToLowerInvariant();
         PayloadSummary = NormalizeRequired(payloadSummary, nameof(payloadSummary), 1000);
         PayloadHash = NormalizeRequired(payloadHash, nameof(payloadHash), 128).ToLowerInvariant();
         SanitizedPayloadJson = NormalizeRequired(sanitizedPayloadJson, nameof(sanitizedPayloadJson), 8000);
         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
-        Status = FortnoxWriteCommandStatuses.AwaitingApproval;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval;
+        RetryPolicy = FinanceIntegrationWriteRetryPolicies.ForCommandType(CommandType);
+        RetrySupported = RetryPolicy != FinanceIntegrationWriteRetryPolicyValues.None;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
         UpdatedUtc = CreatedUtc;
     }
@@ -421,10 +437,10 @@ public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
     public Guid? ActorUserId { get; private set; }
     public Guid? ApprovalId { get; private set; }
     public Guid? ApprovedByUserId { get; private set; }
+    public string CommandType { get; private set; } = null!;
     public string HttpMethod { get; private set; } = null!;
     public string Path { get; private set; } = null!;
     public string TargetCompany { get; private set; } = null!;
-    public string EntityType { get; private set; } = null!;
     public string PayloadSummary { get; private set; } = null!;
     public string PayloadHash { get; private set; } = null!;
     public string SanitizedPayloadJson { get; private set; } = null!;
@@ -432,6 +448,11 @@ public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
     public string? FailureCategory { get; private set; }
     public string? SafeFailureSummary { get; private set; }
     public string? ExternalId { get; private set; }
+    public int? ResponseStatusCode { get; private set; }
+    public string? SafeResponseSummary { get; private set; }
+    public bool RetrySupported { get; private set; }
+    public string RetryPolicy { get; private set; } = FinanceIntegrationWriteRetryPolicyValues.None;
+    public int ExecutionAttemptCount { get; private set; }
     public string? CorrelationId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
@@ -444,6 +465,11 @@ public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
 
     public void AttachApproval(Guid approvalId, DateTime updatedUtc)
     {
+        if (Status != FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval)
+        {
+            return;
+        }
+
         if (approvalId == Guid.Empty)
         {
             throw new ArgumentException("ApprovalId is required.", nameof(approvalId));
@@ -455,47 +481,77 @@ public sealed class FortnoxWriteCommand : ICompanyOwnedEntity
 
     public void MarkApproved(Guid approvalId, Guid? approvedByUserId, DateTime approvedUtc)
     {
-        if (Status == FortnoxWriteCommandStatuses.Executed)
+        if (Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
         {
-            return;
+            throw new InvalidOperationException("Finance integration write command has already executed.");
         }
 
         ApprovalId = approvalId == Guid.Empty ? ApprovalId : approvalId;
         ApprovedByUserId = approvedByUserId == Guid.Empty ? null : approvedByUserId;
-        Status = FortnoxWriteCommandStatuses.Approved;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.Approved;
         ApprovedUtc = EntityTimestampNormalizer.NormalizeUtc(approvedUtc, nameof(approvedUtc));
         UpdatedUtc = ApprovedUtc.Value;
     }
 
     public void MarkExecutionStarted(DateTime startedUtc)
     {
-        if (Status == FortnoxWriteCommandStatuses.Executed)
+        if (Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
         {
-            throw new InvalidOperationException("Fortnox write command has already executed.");
+            throw new InvalidOperationException("Finance integration write command has already executed.");
         }
 
-        Status = FortnoxWriteCommandStatuses.Executing;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.Executing;
         ExecutionStartedUtc = EntityTimestampNormalizer.NormalizeUtc(startedUtc, nameof(startedUtc));
+        ExecutionAttemptCount++;
         UpdatedUtc = ExecutionStartedUtc.Value;
     }
 
-    public void MarkExecuted(string? externalId, DateTime executedUtc)
+    public void MarkExecuted(string? externalId, int? responseStatusCode, string? safeResponseSummary, DateTime executedUtc)
     {
-        Status = FortnoxWriteCommandStatuses.Executed;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.Executed;
         ExternalId = NormalizeOptional(externalId, nameof(externalId), 256);
+        ResponseStatusCode = responseStatusCode;
+        SafeResponseSummary = NormalizeOptional(safeResponseSummary, nameof(safeResponseSummary), 1000);
         SafeFailureSummary = null;
         FailureCategory = null;
         ExecutedUtc = EntityTimestampNormalizer.NormalizeUtc(executedUtc, nameof(executedUtc));
         UpdatedUtc = ExecutedUtc.Value;
     }
 
-    public void MarkFailed(string failureCategory, string safeFailureSummary, DateTime failedUtc)
+    public void MarkFailed(string failureCategory, string safeFailureSummary, int? responseStatusCode, DateTime failedUtc)
     {
-        Status = FortnoxWriteCommandStatuses.Failed;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.Failed;
+        ResponseStatusCode = responseStatusCode;
         FailureCategory = NormalizeOptional(failureCategory, nameof(failureCategory), 64);
         SafeFailureSummary = NormalizeOptional(safeFailureSummary, nameof(safeFailureSummary), 1000);
         FailedUtc = EntityTimestampNormalizer.NormalizeUtc(failedUtc, nameof(failedUtc));
         UpdatedUtc = FailedUtc.Value;
+    }
+
+    public void MarkRejected(DateTime updatedUtc)
+    {
+        MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Rejected, updatedUtc);
+    }
+
+    public void MarkExpired(DateTime updatedUtc)
+    {
+        MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Expired, updatedUtc);
+    }
+
+    public void MarkCancelled(DateTime updatedUtc)
+    {
+        MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Cancelled, updatedUtc);
+    }
+
+    private void MarkTerminalWithoutExecution(string status, DateTime updatedUtc)
+    {
+        if (Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
+        {
+            return;
+        }
+
+        Status = status;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
     }
 
     private static int NormalizeCount(int value, string name)
@@ -554,9 +610,10 @@ public static class FinanceIntegrationSyncStatuses
     public const string Running = "running";
     public const string Succeeded = "succeeded";
     public const string Failed = "failed";
+    public const string Partial = "partial";
 
     public static string BuildCheckConstraintSql(string columnName) =>
-        $"{columnName} IN ('pending', 'running', 'succeeded', 'failed')";
+        $"{columnName} IN ('pending', 'running', 'succeeded', 'failed', 'partial')";
 }
 
 public static class FinanceIntegrationAuditOutcomes
@@ -569,11 +626,34 @@ public static class FinanceIntegrationAuditOutcomes
         $"{columnName} IN ('succeeded', 'failed', 'skipped')";
 }
 
-public static class FortnoxWriteCommandStatuses
+public static class FinanceIntegrationWriteCommandRecordStatuses
 {
     public const string AwaitingApproval = "awaiting_approval";
     public const string Approved = "approved";
     public const string Executing = "executing";
     public const string Executed = "executed";
     public const string Failed = "failed";
+    public const string Rejected = "rejected";
+    public const string Expired = "expired";
+    public const string Cancelled = "cancelled";
+
+    public static string BuildCheckConstraintSql(string columnName) =>
+        $"{columnName} IN ('awaiting_approval', 'approved', 'executing', 'executed', 'failed', 'rejected', 'expired', 'cancelled')";
+}
+
+public static class FinanceIntegrationWriteRetryPolicyValues
+{
+    public const string None = "none";
+    public const string TransientOnly = "transient_only";
+
+    public static string BuildCheckConstraintSql(string columnName) =>
+        $"{columnName} IN ('none', 'transient_only')";
+}
+
+public static class FinanceIntegrationWriteRetryPolicies
+{
+    public static string ForCommandType(string commandType) =>
+        commandType is "payment" or "invoice_export" or "voucher_create"
+            ? FinanceIntegrationWriteRetryPolicyValues.None
+            : FinanceIntegrationWriteRetryPolicyValues.TransientOnly;
 }

@@ -1,0 +1,475 @@
+@page "/app/sales/deals/{DealId:guid}"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using System.Globalization
+@using VirtualCompany.Web.Components.Sales
+
+<PageTitle>Deal details</PageTitle>
+
+<div class="sales-workspace">
+    <main class="sales-main">
+        <header class="sales-page-header">
+            <span>SALES</span>
+            <h1>@(deal?.Title ?? "Deal details")</h1>
+            <p>Review contact context, timeline, Alex's analysis, and the next action.</p>
+            <nav class="sales-tabs" aria-label="Sales sections">
+                <a href="@BuildPath("/app/sales")">Overview</a>
+                <a href="@BuildPath("/app/sales/leads")">Leads</a>
+                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
+            </nav>
+        </header>
+
+        @if (isLoading)
+        {
+            <section class="sales-card sales-empty">Loading deal...</section>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <section class="sales-card sales-error">
+                <h2>Deal is unavailable</h2>
+                <p>@errorMessage</p>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+            </section>
+        }
+        else if (deal is not null)
+        {
+            <section class="sales-detail-hero">
+                <div>
+                    <span class="@BadgeClass(deal.Status)">@deal.Status</span>
+                    <h2>@deal.Title</h2>
+                    <p>@deal.Summary</p>
+                </div>
+                <div class="sales-detail-hero__value">
+                    <span>@deal.StageName</span>
+                    <strong>@Money(deal.Amount, deal.Currency)</strong>
+                </div>
+            </section>
+
+            <div class="sales-two-column sales-two-column--detail">
+                <div class="sales-detail-stack">
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>CONTACT</span>
+                                <h2>Who this involves</h2>
+                            </div>
+                        </div>
+                        <dl class="sales-definition-list">
+                            <div>
+                                <dt>Contact</dt>
+                                <dd>
+                                    @if (deal.CustomerMemory is not null)
+                                    {
+                                        <a class="sales-inline-link" href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">@deal.CustomerMemory.ContactName</a>
+                                    }
+                                    else
+                                    {
+                                        @(deal.ContactName ?? "No contact linked")
+                                    }
+                                </dd>
+                            </div>
+                            <div>
+                                <dt>Email</dt>
+                                <dd>@(deal.ContactEmail ?? "No email linked")</dd>
+                            </div>
+                            <div>
+                                <dt>Company</dt>
+                                <dd>@(deal.CustomerCompanyName ?? "No company linked")</dd>
+                            </div>
+                        </dl>
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>CUSTOMER MEMORY</span>
+                                <h2>Relationship profile</h2>
+                            </div>
+                            @if (deal.CustomerMemory is not null)
+                            {
+                                <a class="sales-button sales-button--small" href="@BuildContactProfilePath(deal.CustomerMemory.ContactId)">Open profile</a>
+                            }
+                        </div>
+                        @if (deal.CustomerMemory is null)
+                        {
+                            <div class="sales-empty">No customer memory is available because this deal has no linked contact.</div>
+                        }
+                        else
+                        {
+                            <div class="sales-memory-layout">
+                                <div class="sales-score-card">
+                                    <span>Engagement score</span>
+                                    <strong>@Score(deal.CustomerMemory.EngagementScore)</strong>
+                                    <small>@EngagementBand(deal.CustomerMemory.EngagementScore) · updated @deal.CustomerMemory.RefreshedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                </div>
+                                <div class="sales-memory-copy">
+                                    <h3>AI summary</h3>
+                                    <p>@EmptyText(deal.CustomerMemory.AiSummary, "No AI summary available")</p>
+                                    <h3>Relationship memory</h3>
+                                    <p>@EmptyText(deal.CustomerMemory.RelationshipMemory, "No relationship memory recorded yet")</p>
+                                    @if (!string.IsNullOrWhiteSpace(deal.CustomerMemory.LastOutreachSummary))
+                                    {
+                                        <h3>Last outreach</h3>
+                                        <p>@deal.CustomerMemory.LastOutreachSummary</p>
+                                    }
+                                </div>
+                            </div>
+
+                            <div class="sales-memory-signal-grid">
+                                <section>
+                                    <h3>Preferences</h3>
+                                    @if (deal.CustomerMemory.Preferences.Count == 0)
+                                    {
+                                        <div class="sales-empty sales-empty--compact">No preferences recorded yet.</div>
+                                    }
+                                    else
+                                    {
+                                        <div class="sales-signal-list">
+                                            @foreach (var signal in deal.CustomerMemory.Preferences.Take(4))
+                                            {
+                                                <div>
+                                                    <strong>@PlainLabel(signal.Key)</strong>
+                                                    <span>@signal.Value</span>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </section>
+                                <section>
+                                    <h3>Price sensitivity</h3>
+                                    @if (deal.CustomerMemory.PriceSensitivityIndicators.Count == 0)
+                                    {
+                                        <div class="sales-empty sales-empty--compact">No price sensitivity indicators found.</div>
+                                    }
+                                    else
+                                    {
+                                        <div class="sales-signal-list">
+                                            @foreach (var signal in deal.CustomerMemory.PriceSensitivityIndicators.Take(4))
+                                            {
+                                                <div>
+                                                    <strong>@PlainLabel(signal.Key)</strong>
+                                                    <span>@signal.Value</span>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </section>
+                                <section>
+                                    <h3>Industry signals</h3>
+                                    @if (deal.CustomerMemory.IndustrySignals.Count == 0)
+                                    {
+                                        <div class="sales-empty sales-empty--compact">No industry signals recorded yet.</div>
+                                    }
+                                    else
+                                    {
+                                        <div class="sales-signal-list">
+                                            @foreach (var signal in deal.CustomerMemory.IndustrySignals.Take(4))
+                                            {
+                                                <div>
+                                                    <strong>@PlainLabel(signal.Key)</strong>
+                                                    <span>@signal.Value</span>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                </section>
+                            </div>
+                        }
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>EMAIL TIMELINE</span>
+                                <h2>Conversation history</h2>
+                            </div>
+                        </div>
+                        @if (dealEmails.Count == 0)
+                        {
+                            <div class="sales-empty">No linked sales emails for this deal yet.</div>
+                        }
+                        else
+                        {
+                            <EmailTimeline Items="@dealEmails" />
+                        }
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>ACTIVITY</span>
+                                <h2>Deal timeline</h2>
+                            </div>
+                        </div>
+                        @if (deal.Activities.Count == 0)
+                        {
+                            <div class="sales-empty">No activity has been recorded yet.</div>
+                        }
+                        else
+                        {
+                            <Timeline Items="@deal.Activities" />
+                        }
+                    </section>
+                </div>
+
+                <aside class="sales-detail-stack">
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>ALEX'S ANALYSIS</span>
+                                <h2>What this means</h2>
+                            </div>
+                        </div>
+                        <p>@deal.AgentAnalysis</p>
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>SUGGESTED REPLY</span>
+                                <h2>Draft response</h2>
+                            </div>
+                        </div>
+                        @if (string.IsNullOrWhiteSpace(deal.SuggestedReply))
+                        {
+                            <div class="sales-empty">No reply is suggested for this closed deal.</div>
+                        }
+                        else
+                        {
+                            <p class="sales-suggested-reply">@deal.SuggestedReply</p>
+                        }
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>NEXT ACTIONS</span>
+                                <h2>Follow-up actions</h2>
+                            </div>
+                        </div>
+                        <div class="sales-actions sales-actions--stacked">
+                            <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="MarkWonAsync">Mark won</button>
+                            <button class="sales-button" disabled="@isSubmitting" @onclick="MarkLostAsync">Mark lost</button>
+                        </div>
+                        @if (financeHandoff is not null)
+                        {
+                            <div class="sales-finance-handoff">
+                                <span class="@BadgeClass(financeHandoff.Status)">@financeHandoff.Status</span>
+                                <strong>@financeHandoff.DocumentType draft in @financeHandoff.ExternalSystem</strong>
+                                <p>@financeHandoff.Summary</p>
+                                @if (!string.IsNullOrWhiteSpace(financeHandoff.ExternalDocumentNumber) || !string.IsNullOrWhiteSpace(financeHandoff.ExternalDocumentId))
+                                {
+                                    <small>Draft reference: @(financeHandoff.ExternalDocumentNumber ?? financeHandoff.ExternalDocumentId)</small>
+                                }
+                                else if (financeHandoff.ApprovalStatus == "Waiting for approval")
+                                {
+                                    <small>Laura is waiting for approval before any finance document is created.</small>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(financeHandoff.FailureSummary))
+                                {
+                                    <p class="sales-error-text">@financeHandoff.FailureSummary</p>
+                                }
+                                <div class="sales-actions">
+                                    @if (financeHandoff.ApprovalStatus == "Waiting for approval")
+                                    {
+                                        <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="ApproveFinanceHandoffAsync">Approve finance draft</button>
+                                    }
+                                    @if (financeHandoff.CanRetry)
+                                    {
+                                        <button class="sales-button" disabled="@isSubmitting" @onclick="RetryFinanceHandoffAsync">Retry</button>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(actionMessage))
+                        {
+                            <div class="sales-toast sales-toast--inline">@actionMessage</div>
+                        }
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>RECOMMENDATIONS</span>
+                                <h2>Alex recommends</h2>
+                            </div>
+                        </div>
+                        @if (deal.Recommendations.Count == 0)
+                        {
+                            <div class="sales-empty">No recommendations are linked to this deal.</div>
+                        }
+                        else
+                        {
+                            <div class="sales-list">
+                                @foreach (var recommendation in deal.Recommendations)
+                                {
+                                    <div class="sales-list-row">
+                                        <div>
+                                            <strong>@recommendation.Recommendation</strong>
+                                            <span>@recommendation.Rationale</span>
+                                        </div>
+                                        <span class="@BadgeClass(recommendation.Status)">@recommendation.Status</span>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </section>
+                </aside>
+            </div>
+        }
+    </main>
+
+    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+</div>
+
+@code {
+    [Parameter] public Guid DealId { get; set; }
+
+    private bool isLoading = true;
+    private bool isSubmitting;
+    private string? errorMessage;
+    private string? actionMessage;
+    private SalesDealDetailResponse? deal;
+    private IReadOnlyList<SalesEmailTimelineResponse> dealEmails = [];
+    private SalesFinanceHandoffResponse? financeHandoff;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            if (!await ResolveCompanyAsync())
+            {
+                errorMessage = ShellErrorMessage;
+                return;
+            }
+
+            deal = await SalesApiClient.GetDealAsync(ResolvedCompanyId!.Value, DealId);
+            dealEmails = await SalesApiClient.ListDealEmailsAsync(ResolvedCompanyId!.Value, DealId);
+            financeHandoff = await SalesApiClient.GetFinanceHandoffAsync(ResolvedCompanyId!.Value, DealId);
+            if (deal is null)
+            {
+                errorMessage = "This deal was not found for the active company.";
+            }
+
+            await RefreshAgentPanelAsync();
+        }
+        catch (SalesApiException ex)
+        {
+            errorMessage = ex.Message;
+            AgentPanelErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task MarkWonAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkWonAsync(companyId, DealId, "Marked won from the sales review screen."), "Deal marked won.");
+    private async Task MarkLostAsync() => await RunDealActionAsync(async companyId => deal = await SalesApiClient.MarkLostAsync(companyId, DealId, "Marked lost from the sales review screen."), "Deal marked lost.");
+    private async Task ApproveFinanceHandoffAsync() => await RunDealActionAsync(async companyId => financeHandoff = await SalesApiClient.ApproveFinanceHandoffAsync(companyId, DealId, "Approved from the deal review screen."), "Finance draft approved.");
+    private async Task RetryFinanceHandoffAsync() => await RunDealActionAsync(async companyId => financeHandoff = await SalesApiClient.RetryFinanceHandoffAsync(companyId, DealId), "Finance draft retry started.");
+
+    private async Task RunDealActionAsync(Func<Guid, Task> action, string successMessage)
+    {
+        if (ResolvedCompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isSubmitting = true;
+        actionMessage = null;
+        try
+        {
+            await action(companyId);
+            await RefreshAgentPanelAsync();
+            financeHandoff = await SalesApiClient.GetFinanceHandoffAsync(companyId, DealId);
+            actionMessage = successMessage;
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string BuildFinanceDocumentPath() => ResolvedCompanyId is Guid companyId ? $"/finance/invoices?companyId={companyId:D}&source=sales&dealId={DealId:D}" : "/finance/invoices";
+    private string BuildContactProfilePath(Guid contactId) => BuildPath($"/app/sales/contacts/{contactId:D}");
+    private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
+    private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";
+    private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;
+    private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
+    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
+    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+
+    private sealed partial class Timeline : ComponentBase
+    {
+        [Parameter] public IReadOnlyList<SalesActivityResponse> Items { get; set; } = [];
+
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
+        {
+            var sequence = 0;
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "sales-timeline");
+            foreach (var item in Items)
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.AddAttribute(sequence++, "class", "sales-timeline-row");
+                builder.OpenElement(sequence++, "span");
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "div");
+                builder.OpenElement(sequence++, "strong");
+                builder.AddContent(sequence++, item.Summary);
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "small");
+                builder.AddContent(sequence++, $"{item.ActivityType} · {item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
+                builder.CloseElement();
+                builder.CloseElement();
+                builder.CloseElement();
+            }
+            builder.CloseElement();
+        }
+    }
+
+    private sealed partial class EmailTimeline : ComponentBase
+    {
+        [Parameter] public IReadOnlyList<SalesEmailTimelineResponse> Items { get; set; } = [];
+
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
+        {
+            var sequence = 0;
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "sales-timeline");
+            foreach (var item in Items)
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.AddAttribute(sequence++, "class", "sales-timeline-row");
+                builder.OpenElement(sequence++, "span");
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "div");
+                builder.OpenElement(sequence++, "strong");
+                builder.AddContent(sequence++, item.DetectedIntent ?? "Sales email");
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "small");
+                builder.AddContent(sequence++, $"{item.Status} - {item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
+                builder.CloseElement();
+                if (!string.IsNullOrWhiteSpace(item.Rationale))
+                {
+                    builder.OpenElement(sequence++, "p");
+                    builder.AddContent(sequence++, item.Rationale);
+                    builder.CloseElement();
+                }
+                builder.CloseElement();
+                builder.CloseElement();
+            }
+            builder.CloseElement();
+        }
+    }
+}

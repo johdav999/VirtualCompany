@@ -1,0 +1,482 @@
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+index 9b7f0a8..4f2c4d1 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+@@ -209,7 +209,7 @@
+                     else
+                     {
+                         <div class="finance-integration-card__readonly" role="status">
+-                            Owner or admin access is required to connect, sync, reconnect, or disconnect accounting systems.
++                            Company owner or admin access is required to connect, sync, reconnect, or disconnect accounting systems.
+                         </div>
+                     }
+                     @if (!CanManageFinanceIntegrations)
+@@ -253,7 +253,7 @@
+                 }
+             </section>
+ 
+-            @if (ShowFinanceIntegrationHistory)
++            @if (ShowFinanceIntegrationHistory)
+             {
+                 <section class="finance-integration-history-card mt-4">
+                     <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+index 1f7c7a2..c4cce05 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+@@ -2,6 +2,7 @@ using System.Globalization;
+ using Microsoft.AspNetCore.Components;
+ using Microsoft.AspNetCore.Components.Routing;
+ using Microsoft.AspNetCore.WebUtilities;
++using VirtualCompany.Shared;
+ using VirtualCompany.Web.Services;
+ 
+ namespace VirtualCompany.Web.Pages.Finance;
+@@ -27,7 +28,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool IsFinanceIntegrationSyncing { get; set; }
+     private bool IsFinanceIntegrationDisconnecting { get; set; }
+     private bool IsFinanceIntegrationHistoryLoading { get; set; }
+-    private bool ShowFinanceIntegrationHistory { get; set; }
++    private bool ShowFinanceIntegrationHistory { get; set; } = true;
+     private string? FinanceIntegrationErrorMessage { get; set; }
+     private string? FinanceIntegrationActionErrorMessage { get; set; }
+     private string? FinanceIntegrationSuccessMessage { get; set; }
+@@ -37,7 +38,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool IsBusy => IsSettingsLoading || IsSaving;
+     private bool IsFinanceIntegrationBusy => IsFinanceIntegrationLoading || IsFinanceIntegrationConnecting || IsFinanceIntegrationSyncing || IsFinanceIntegrationDisconnecting;
+     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
+-    private bool CanManageFinanceIntegrations => IsCompanyAdministrator(AccessState.MembershipRole);
++    private bool CanManageFinanceIntegrations => FinanceAccess.CanAccessSandboxAdmin(AccessState.MembershipRole);
+     private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId);
+     private string IntegrationSettingsHref => FinanceRoutes.BuildFinanceIntegrationSettingsPath(SelectedProviderKey, AccessState.CompanyId);
+     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
+@@ -85,6 +86,9 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         SuccessMessage = null;
+         GmailClientSecret = string.Empty;
+         Microsoft365ClientSecret = string.Empty;
++        FinanceIntegrationStatus = null;
++        FinanceIntegrationHistory = null;
++        ShowFinanceIntegrationHistory = true;
+ 
+         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
+         {
+@@ -166,13 +170,18 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+             }
+ 
+             ApplyFinanceIntegrationCallbackMessage();
++
++            if (ShowFinanceIntegrationHistory)
++            {
++                await LoadFinanceIntegrationHistoryAsync(companyId, surfaceErrors: false);
++            }
+         }
+         catch (FinanceApiException ex)
+         {
+             FinanceIntegrationStatus = null;
+-            FinanceIntegrationErrorMessage = ex.Message;
++            FinanceIntegrationErrorMessage = SafeFinanceIntegrationError(ex.Message, "Financial integrations are unavailable. Please try again.");
+         }
+         finally
+         {
+@@ -192,13 +201,15 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         IsFinanceIntegrationConnecting = true;
+         FinanceIntegrationActionErrorMessage = null;
+         FinanceIntegrationSuccessMessage = null;
++        FinanceIntegrationStatus = CreateOptimisticStatus("pending");
+ 
+         try
+         {
+             var returnUri = Navigation.ToAbsoluteUri(IntegrationSettingsHref).ToString();
+             var response = await FinanceApiClient.StartFinanceIntegrationConnectionAsync(companyId, SelectedProviderKey, returnUri, reconnect);
+             Navigation.NavigateTo(response.AuthorizationUrl, forceLoad: true);
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = ex.Message;
++            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, reconnect ? "Couldn't start Fortnox reconnection. Please try again." : "Couldn't start Fortnox connection. Please try again.");
++            await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         finally
+         {
+@@ -217,18 +228,19 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         IsFinanceIntegrationSyncing = true;
+         FinanceIntegrationActionErrorMessage = null;
+         FinanceIntegrationSuccessMessage = null;
+ 
+         try
+         {
+             var result = await FinanceApiClient.SyncFinanceIntegrationNowAsync(companyId, SelectedProviderKey, FinanceIntegrationStatus?.ConnectionId);
+             FinanceIntegrationSuccessMessage = $"Sync finished: {result.Created} created, {result.Updated} updated, {result.Skipped} skipped.";
+-            await LoadFinanceIntegrationStatusAsync(companyId);
+-            if (ShowFinanceIntegrationHistory)
+-            {
+-                await LoadFinanceIntegrationHistoryAsync();
+-            }
++            await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = ex.Message;
++            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, "Sync failed. Review the latest sync history entry for a safe summary.");
++            await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         finally
+         {
+@@ -247,17 +259,18 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         IsFinanceIntegrationDisconnecting = true;
+         FinanceIntegrationActionErrorMessage = null;
+         FinanceIntegrationSuccessMessage = null;
++        FinanceIntegrationStatus = CreateOptimisticStatus("disconnected");
+ 
+         try
+         {
+             var result = await FinanceApiClient.DisconnectFinanceIntegrationAsync(companyId, SelectedProviderKey);
+-            FinanceIntegrationSuccessMessage = result.Message;
+-            await LoadFinanceIntegrationStatusAsync(companyId);
++            FinanceIntegrationSuccessMessage = FormatSafeText(result.Message, $"{SelectedProviderDisplayName} has been disconnected.");
++            await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = ex.Message;
++            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, "Couldn't disconnect Fortnox. Please try again.");
++            await RefreshFinanceIntegrationStateAsync(companyId);
+         }
+         finally
+         {
+@@ -269,7 +282,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     {
+         ShowFinanceIntegrationHistory = !ShowFinanceIntegrationHistory;
+         if (ShowFinanceIntegrationHistory && FinanceIntegrationHistory is null)
+         {
+-            await LoadFinanceIntegrationHistoryAsync();
++            await LoadFinanceIntegrationHistoryAsync(surfaceErrors: true);
+         }
+     }
+ 
+@@ -280,20 +293,35 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+             return;
+         }
+ 
++        await LoadFinanceIntegrationHistoryAsync(companyId, surfaceErrors: true);
++    }
++
++    private Task RefreshFinanceIntegrationStateAsync(Guid companyId) =>
++        LoadFinanceIntegrationStatusAsync(companyId);
++
++    private async Task LoadFinanceIntegrationHistoryAsync(Guid companyId, bool surfaceErrors)
++    {
+         IsFinanceIntegrationHistoryLoading = true;
+         try
+         {
+             FinanceIntegrationHistory = await FinanceApiClient.GetFinanceIntegrationSyncHistoryAsync(companyId, SelectedProviderKey);
+         }
+         catch (FinanceApiException ex)
+         {
+-            FinanceIntegrationActionErrorMessage = ex.Message;
++            if (surfaceErrors)
++            {
++                FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(ex.Message, "Sync history is unavailable. Please try again.");
++            }
+         }
+         finally
+         {
+             IsFinanceIntegrationHistoryLoading = false;
+         }
+     }
+ 
++    private FinanceIntegrationConnectionStatusResponse CreateOptimisticStatus(string connectionStatus) =>
++        new()
++        {
++            ProviderKey = SelectedProviderKey,
++            IsConnected = string.Equals(connectionStatus, "connected", StringComparison.OrdinalIgnoreCase),
++            ConnectionId = FinanceIntegrationStatus?.ConnectionId,
++            ConnectionStatus = connectionStatus,
++            ConnectedAtUtc = FinanceIntegrationStatus?.ConnectedAtUtc,
++            LastSuccessfulSyncUtc = FinanceIntegrationStatus?.LastSuccessfulSyncUtc,
++            LastErrorSummary = FinanceIntegrationStatus?.LastErrorSummary
++        };
++
+     private void ApplyFinanceIntegrationCallbackMessage()
+     {
+         var uri = Navigation.ToAbsoluteUri(Navigation.Uri);
+@@ -309,7 +337,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         }
+         else if (query.TryGetValue("integrationMessage", out var message) ||
+                  query.TryGetValue("fortnoxMessage", out message))
+         {
+-            FinanceIntegrationActionErrorMessage = message.ToString();
++            FinanceIntegrationActionErrorMessage = SafeFinanceIntegrationError(message.ToString(), "Finance integration authorization could not be completed.");
+         }
+     }
+@@ -351,7 +379,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         "connecting" => $"{SelectedProviderDisplayName} authorization has started and is waiting for completion.",
+         "connected" => $"{SelectedProviderDisplayName} is connected and ready to sync finance records.",
+         "syncing" => $"{SelectedProviderDisplayName} sync is running. You can review history when it completes.",
+         "needs_reconnect" => $"{SelectedProviderDisplayName} needs a fresh authorization before syncing can continue.",
+-        "error" => FinanceIntegrationStatus?.LastErrorSummary ?? $"{SelectedProviderDisplayName} reported an error. Reconnect to restore the integration.",
++        "error" => FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, $"{SelectedProviderDisplayName} reported an issue. Reconnect to restore the integration."),
+         _ => "Provider state is unavailable."
+     };
+@@ -416,15 +444,36 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private static string FormatSafeErrorSummary(FinanceIntegrationSyncHistoryItemResponse item)
+     {
+         if (!string.IsNullOrWhiteSpace(item.ErrorSummary))
+         {
+-            return FormatSafeText(item.ErrorSummary, "Review the sync details.");
++            return FormatSafeText(item.ErrorSummary, "Review the sync details.");
+         }
+ 
+         return item.Errors > 0
+             ? $"{item.Errors} records need attention."
+             : "No issues reported.";
+     }
+ 
+     private static string FormatSafeText(string? value, string fallback)
+     {
+         var trimmed = value?.Trim();
+-        return string.IsNullOrWhiteSpace(trimmed) ? fallback : trimmed;
++        if (string.IsNullOrWhiteSpace(trimmed) || ContainsUnsafeErrorDetail(trimmed))
++        {
++            return fallback;
++        }
++
++        return trimmed.Length <= 180 ? trimmed : $"{trimmed[..177]}...";
+     }
+ 
+-    private static bool IsCompanyAdministrator(string? membershipRole) =>
+-        string.Equals(membershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+-        string.Equals(membershipRole, "admin", StringComparison.OrdinalIgnoreCase);
++    private static string SafeFinanceIntegrationError(string? value, string fallback) =>
++        FormatSafeText(value, fallback);
++
++    private static bool ContainsUnsafeErrorDetail(string value) =>
++        value.Contains("access_token", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("refresh_token", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("client_secret", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("authorization:", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("bearer ", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("System.", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains("Exception", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains(" at ", StringComparison.OrdinalIgnoreCase) ||
++        value.Contains('\n') ||
++        value.Contains('\r') ||
++        (value.Contains('{') && value.Contains('}'));
+ 
+     public void Dispose()
+     {
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index 7eec8d2..fd155f7 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -35,10 +35,11 @@ public sealed class FinanceApiClient
+         CancellationToken cancellationToken = default)
+     {
+         EnsureOnlineMutation();
++        var action = reconnect ? "reconnect" : "connect";
+         return SendCompanyScopedAsync<StartFinanceIntegrationConnectionRequest, StartFinanceIntegrationConnectionResponse>(
+             companyId,
+             HttpMethod.Post,
+-            $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/connect",
++            $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/{action}",
+             new StartFinanceIntegrationConnectionRequest(returnUri, reconnect),
+             cancellationToken);
+     }
+@@ -49,23 +50,31 @@ public sealed class FinanceApiClient
+         string providerKey,
+         Guid? connectionId,
+         CancellationToken cancellationToken = default) =>
+-        SendCompanyScopedAsync<SyncFinanceIntegrationNowRequest, FinanceIntegrationSyncResultResponse>(
++        SyncFinanceIntegrationNowCoreAsync(companyId, providerKey, connectionId, cancellationToken);
++
++    private Task<FinanceIntegrationSyncResultResponse> SyncFinanceIntegrationNowCoreAsync(
++        Guid companyId,
++        string providerKey,
++        Guid? connectionId,
++        CancellationToken cancellationToken)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<SyncFinanceIntegrationNowRequest, FinanceIntegrationSyncResultResponse>(
+             companyId,
+             HttpMethod.Post,
+             $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/sync",
+             new SyncFinanceIntegrationNowRequest(connectionId),
+             cancellationToken);
++    }
+ 
+     public Task<FinanceIntegrationSyncHistoryResponse> GetFinanceIntegrationSyncHistoryAsync(
+         Guid companyId,
+         string providerKey,
+         CancellationToken cancellationToken = default) =>
+         GetAsync<FinanceIntegrationSyncHistoryResponse>(companyId, $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/sync-history?limit=25", allowNotFound: false, cancellationToken)!;
+ 
+-    public Task<FinanceIntegrationConnectionDisconnectResponse> DisconnectFinanceIntegrationAsync(
++    public Task<FinanceIntegrationConnectionDisconnectResponse> DisconnectFinanceIntegrationAsync(
+         Guid companyId,
+         string providerKey,
+-        CancellationToken cancellationToken = default) =>
+-        SendCompanyScopedAsync<object, FinanceIntegrationConnectionDisconnectResponse>(companyId, HttpMethod.Post, $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/disconnect", new { }, cancellationToken);
++        CancellationToken cancellationToken = default)
++    {
++        EnsureOnlineMutation();
++        return SendCompanyScopedAsync<object, FinanceIntegrationConnectionDisconnectResponse>(companyId, HttpMethod.Post, $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/disconnect", new { }, cancellationToken);
++    }
+@@ -1804,6 +1813,8 @@ public sealed class FinanceIntegrationSyncResultResponse
+     public List<FinanceIntegrationEntitySyncResultResponse> Entities { get; set; } = [];
+     public string? ErrorSummary { get; set; }
++    public int RetryAttempts { get; set; }
++    public string? RetryOutcome { get; set; }
+ }
+@@ -1833,4 +1844,6 @@ public sealed class FinanceIntegrationSyncHistoryItemResponse
+     public int Errors { get; set; }
+     public string Summary { get; set; } = string.Empty;
+     public string? ErrorSummary { get; set; }
++    public int RetryAttempts { get; set; }
++    public string? RetryOutcome { get; set; }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+index 62c48d3..1267188 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+@@ -36,6 +36,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+             Assert.Contains("Approval-gated writes", cut.Markup);
+             Assert.Contains("payload hash", cut.Markup, StringComparison.OrdinalIgnoreCase);
+             Assert.DoesNotContain("Token expiry", cut.Markup);
+             Assert.DoesNotContain("Last token refresh", cut.Markup);
++            Assert.DoesNotContain("needs_reconnect", cut.Markup);
+         });
+     }
+@@ -70,7 +71,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Connected", cut.Markup);
+-            Assert.Contains("Owner or admin access is required", cut.Markup);
++            Assert.Contains("Company owner or admin access is required", cut.Markup);
+             Assert.Contains("View sync history", cut.Markup);
+             Assert.DoesNotContain("Sync data", cut.Markup);
+             Assert.DoesNotContain("Disconnect", cut.Markup);
+@@ -98,14 +99,40 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
+     [Fact]
+-    public void History_action_loads_recent_sync_history()
++    public void Initial_load_shows_recent_sync_history()
+     {
+         var companyId = Guid.Parse("902b85fd-64dd-412a-a64b-c2f172df05d9");
+         using var harness = CreateHarness(companyId, ConnectedStatus());
+         var cut = RenderFortnoxSettings(harness, companyId);
+ 
+-        cut.FindAll("button").Single(button => button.TextContent.Contains("View sync history", StringComparison.OrdinalIgnoreCase)).Click();
+-
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Sync history", cut.Markup);
+@@ -115,6 +142,44 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Connect_posts_to_connect_endpoint_and_navigates_to_authorization_url()
++    {
++        var companyId = Guid.Parse("f066aa85-e7c9-4598-a21f-e8830f023927");
++        using var harness = CreateHarness(companyId, new FinanceIntegrationConnectionStatusResponse
++        {
++            ProviderKey = "fortnox",
++            IsConnected = false,
++            ConnectionStatus = "disconnected"
++        });
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.FindAll("button").Single(button => button.TextContent.Contains("Connect accounting system", StringComparison.OrdinalIgnoreCase)).Click();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains(harness.Requests, request =>
++                request.Method == HttpMethod.Post &&
++                request.RequestUri!.AbsolutePath.EndsWith("/finance/integrations/fortnox/connect", StringComparison.OrdinalIgnoreCase));
++            Assert.StartsWith("https://apps.fortnox.test/oauth", harness.Navigation.Uri, StringComparison.OrdinalIgnoreCase);
++        });
++    }
++
++    [Fact]
++    public void Unsafe_backend_error_details_are_not_rendered()
++    {
++        var companyId = Guid.Parse("af1670d7-c61d-4db4-8277-3a1cb4a32272");
++        using var harness = CreateHarness(companyId, ConnectedStatus(), syncFailureDetail: "System.InvalidOperationException: access_token leaked\n   at Provider.Raw()");
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.Find("button.btn-outline-primary").Click();
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Sync failed. Review the latest sync history entry for a safe summary.", cut.Markup);
++            Assert.DoesNotContain("access_token", cut.Markup);
++            Assert.DoesNotContain("InvalidOperationException", cut.Markup);
++        });
++    }
++
+     private static IRenderedComponent<SettingsPage> RenderFortnoxSettings(FortnoxSettingsHarness harness, Guid companyId)
+     {
+         harness.Navigation.NavigateTo($"http://localhost/finance/settings/integrations/fortnox?companyId={companyId:D}");
+@@ -130,13 +195,14 @@ public sealed class FinanceIntegrationSettingsPageTests
+             IsConnected = true,
+             ConnectionId = Guid.Parse("3df69f40-7d74-4daa-990f-449cce60e2c4"),
+             ConnectionStatus = "connected",
+             AccessTokenExpiresUtc = new DateTime(2026, 4, 30, 12, 0, 0, DateTimeKind.Utc),
+-            LastRefreshAttemptUtc = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc)
++            LastRefreshAttemptUtc = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc),
+             LastSuccessfulSyncUtc = new DateTime(2026, 4, 30, 10, 1, 0, DateTimeKind.Utc)
+         };
+ 
+-    private static FortnoxSettingsHarness CreateHarness(Guid companyId, FinanceIntegrationConnectionStatusResponse status, string membershipRole = "owner")
++    private static FortnoxSettingsHarness CreateHarness(
++        Guid companyId,
++        FinanceIntegrationConnectionStatusResponse status,
++        string membershipRole = "owner",
++        string? syncFailureDetail = null)
+     {
+         var context = new TestContext();
+         var requests = new List<HttpRequestMessage>();
+@@ -181,6 +247,19 @@ public sealed class FinanceIntegrationSettingsPageTests
+                 };}
+             }
+ 
++            if (path.EndsWith("/finance/integrations/fortnox/connect", StringComparison.OrdinalIgnoreCase) ||
++                path.EndsWith("/finance/integrations/fortnox/reconnect", StringComparison.OrdinalIgnoreCase))
++            {
++                return Task.FromResult(CreateJsonResponse(new StartFinanceIntegrationConnectionResponse
++                {
++                    AuthorizationUrl = "https://apps.fortnox.test/oauth?state=test",
++                    ExpiresUtc = new DateTime(2026, 4, 30, 10, 10, 0, DateTimeKind.Utc)
++                }));
++            }
++
+             if (path.EndsWith("/finance/integrations/fortnox/sync", StringComparison.OrdinalIgnoreCase))
+             {
++                if (!string.IsNullOrWhiteSpace(syncFailureDetail))
++                {
++                    return Task.FromResult(CreateProblemResponse(HttpStatusCode.BadGateway, syncFailureDetail));
++                }
++
+                 return Task.FromResult(CreateJsonResponse(new FinanceIntegrationSyncResultResponse
+                 {
+                     ProviderKey = "fortnox",
+@@ -243,6 +322,15 @@ public sealed class FinanceIntegrationSettingsPageTests
+     private static HttpResponseMessage CreateNotFoundResponse() =>
+         new(HttpStatusCode.NotFound) { Content = JsonContent.Create(new { title = "Not found", detail = "Not found." }) };
+ 
++    private static HttpResponseMessage CreateProblemResponse(HttpStatusCode statusCode, string detail) =>
++        new(statusCode)
++        {
++            Content = JsonContent.Create(new
++            {
++                title = "Finance request failed",
++                detail
++            })
++        };
++
+     private sealed record FortnoxSettingsHarness(TestContext Context, FakeNavigationManager Navigation, List<HttpRequestMessage> Requests) : IDisposable
+     {
+         public void Dispose() => Context.Dispose();
+END_OF_PATCH

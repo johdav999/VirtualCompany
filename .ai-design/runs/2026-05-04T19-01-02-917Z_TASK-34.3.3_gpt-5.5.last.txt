@@ -1,0 +1,411 @@
+diff --git a/src/VirtualCompany.Application/Sales/SalesContracts.cs b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+index 8f7b4c1..6dddb5a 100644
+--- a/src/VirtualCompany.Application/Sales/SalesContracts.cs
++++ b/src/VirtualCompany.Application/Sales/SalesContracts.cs
+@@ -30,6 +30,7 @@ public interface ISalesOperationsService
+     Task<SalesPipelineResponse> GetPipelineAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<SalesDealDetailResponse?> GetDealAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
++    Task<IReadOnlyList<SalesEmailTimelineResponse>> ListDealEmailsAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<SalesDealDetailResponse?> ChangeDealStageAsync(Guid companyId, Guid userId, Guid dealId, ChangeDealStageRequest request, CancellationToken cancellationToken);
+     Task<SalesDealDetailResponse?> MarkDealWonAsync(Guid companyId, Guid userId, Guid dealId, SalesActionRequest request, CancellationToken cancellationToken);
+@@ -116,6 +117,17 @@ public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageRespo
+ public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
+ public sealed record SalesActivityResponse(Guid Id, string ActivityType, string Summary, string Status, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
+ public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, DateTime CreatedUtc);
++public sealed record SalesEmailTimelineResponse(
++    Guid Id,
++    string ProviderMessageId,
++    string Status,
++    string? DetectedIntent,
++    string? ProductOrServiceInterest,
++    decimal? Confidence,
++    string? Rationale,
++    DateTime OccurredUtc,
++    Guid? LeadId,
++    Guid? DealId);
+ 
+ public sealed record SalesActionRequest(string? Note);
+ public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
+diff --git a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+index 61ac1b3..2d74bb6 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/SalesOperationsService.cs
+@@ -168,6 +168,24 @@ public sealed class SalesOperationsService : ISalesOperationsService
+             .ToListAsync(cancellationToken);
+     }
+ 
++    public async Task<IReadOnlyList<SalesEmailTimelineResponse>> ListDealEmailsAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++        EnsureId(dealId, nameof(dealId));
++
++        var exists = await _dbContext.Deals.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == dealId && !x.IsDeleted, cancellationToken);
++        if (!exists)
++        {
++            return [];
++        }
++
++        return await _dbContext.SalesEmailLinks.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && x.DealId == dealId && !x.IsDeleted)
++            .OrderByDescending(x => x.CreatedUtc)
++            .Select(x => new SalesEmailTimelineResponse(x.Id, x.ExternalMessageId, StatusLabel(x.Status), x.DetectedIntent, x.ProductOrServiceInterest, x.Confidence, x.Rationale, x.CreatedUtc, x.LeadId, x.DealId))
++            .ToListAsync(cancellationToken);
++    }
++
+     public async Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         EnsureCompany(companyId);
+@@ -303,7 +321,14 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         if (request.CreateLead)
+         {
+             lead = new Lead(Guid.NewGuid(), companyId, string.IsNullOrWhiteSpace(request.Subject) ? "New sales email" : request.Subject, SalesPipelineStage.NewStageId, primaryContactId: contact.Id, customerCompanyId: customer?.Id, source: "sales email");
+-            lead.ApplyEmailSignal(request.Subject, contact.Id, customer?.Id, request.Confidence, "sales email");
++            lead.ApplyEmailSignal(
++                request.Subject,
++                contact.Id,
++                customer?.Id,
++                request.Confidence,
++                string.IsNullOrWhiteSpace(request.ProductOrServiceInterest)
++                    ? "sales email"
++                    : request.ProductOrServiceInterest.Trim());
+             _dbContext.Leads.Add(lead);
+             activity = new SalesActivity(Guid.NewGuid(), companyId, "email", $"Inbound sales email from {request.SenderEmail}: {request.Subject}", DateTime.UtcNow, leadId: lead.Id, contactId: contact.Id, customerCompanyId: customer?.Id);
+             _dbContext.SalesActivities.Add(activity);
+@@ -379,7 +404,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         new(activity.Id, StatusLabel(activity.ActivityType), activity.Summary, StatusLabel(activity.Status), activity.OccurredUtc, activity.LeadId, activity.DealId);
+ 
+     private static SalesRecommendationResponse MapRecommendation(SalesAgentRecommendation recommendation) =>
+-        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, recommendation.CreatedUtc);
++        new(recommendation.Id, recommendation.Recommendation, recommendation.Rationale, StatusLabel(recommendation.Status), recommendation.LeadId, recommendation.DealId, recommendation.CreatedUtc);
+ 
+     private static string ResolveTemperature(Lead lead)
+     {
+@@ -394,7 +419,10 @@ public sealed class SalesOperationsService : ISalesOperationsService
+         };
+     }
+ 
+-    private static decimal? ResolveConfidence(Lead lead) => null;
++    private static decimal? ResolveConfidence(Lead lead) =>
++        lead.Recommendations.Count > 0
++            ? Math.Clamp(lead.Recommendations.Max(x => x.Confidence ?? 0m), 0m, 1m)
++            : null;
+ 
+     private static string SuggestedLeadAction(Lead lead) =>
+         lead.Status switch
+diff --git a/src/VirtualCompany.Api/Controllers/SalesController.cs b/src/VirtualCompany.Api/Controllers/SalesController.cs
+index d5ab31f..263739e 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesController.cs
+@@ -106,10 +106,16 @@ public sealed class SalesController : ControllerBase
+     [HttpGet("deals/{id:guid}/activities")]
+     public Task<IReadOnlyList<SalesActivityResponse>> GetDealActivitiesAsync(Guid id, CancellationToken cancellationToken) =>
+         _salesOperations.ListDealActivitiesAsync(CompanyId(), id, cancellationToken);
+ 
++    [HttpGet("deals/{id:guid}/emails")]
++    public Task<IReadOnlyList<SalesEmailTimelineResponse>> GetDealEmailsAsync(Guid id, CancellationToken cancellationToken) =>
++        _salesOperations.ListDealEmailsAsync(CompanyId(), id, cancellationToken);
++
+     [HttpGet("recommendations")]
+     public Task<IReadOnlyList<SalesRecommendationResponse>> GetRecommendationsAsync(CancellationToken cancellationToken) =>
+         _salesOperations.ListRecommendationsAsync(CompanyId(), cancellationToken);
+ 
++    [HttpPost("deals/{id:guid}/stage")]
+     [HttpPost("deals/{id:guid}/stage-change")]
+     public async Task<ActionResult<SalesDealDetailResponse>> ChangeDealStageAsync(Guid id, [FromBody] ChangeDealStageRequest request, CancellationToken cancellationToken)
+     {
+         try
+@@ -132,6 +138,7 @@ public sealed class SalesController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("deals/{id:guid}/won")]
+     [HttpPost("deals/{id:guid}/mark-won")]
+     public async Task<ActionResult<SalesDealDetailResponse>> MarkWonAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+     {
+@@ -150,6 +157,7 @@ public sealed class SalesController : ControllerBase
+         }
+     }
+ 
++    [HttpPost("deals/{id:guid}/lost")]
+     [HttpPost("deals/{id:guid}/mark-lost")]
+     public async Task<ActionResult<SalesDealDetailResponse>> MarkLostAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 342d8fb..a0fe6cb 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -44,17 +44,20 @@ public sealed class SalesApiClient
+     public async Task<IReadOnlyList<SalesActivityResponse>> ListDealActivitiesAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
+         await GetAsync<List<SalesActivityResponse>>(companyId, $"api/sales/deals/{dealId:D}/activities", allowNotFound: false, cancellationToken) ?? [];
+ 
++    public async Task<IReadOnlyList<SalesEmailTimelineResponse>> ListDealEmailsAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
++        await GetAsync<List<SalesEmailTimelineResponse>>(companyId, $"api/sales/deals/{dealId:D}/emails", allowNotFound: false, cancellationToken) ?? [];
++
+     public async Task<IReadOnlyList<SalesRecommendationResponse>> ListRecommendationsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+         await GetAsync<List<SalesRecommendationResponse>>(companyId, "api/sales/recommendations", allowNotFound: false, cancellationToken) ?? [];
+ 
+     public Task<SalesDealDetailResponse> ChangeDealStageAsync(Guid companyId, Guid dealId, Guid stageId, string? note, CancellationToken cancellationToken = default) =>
+-        SendAsync<ChangeDealStageRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/stage-change", new(stageId, note), cancellationToken);
++        SendAsync<ChangeDealStageRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/stage", new(stageId, note), cancellationToken);
+ 
+     public Task<SalesDealDetailResponse> MarkWonAsync(Guid companyId, Guid dealId, string? note, CancellationToken cancellationToken = default) =>
+-        SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/mark-won", new(note), cancellationToken);
++        SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/won", new(note), cancellationToken);
+ 
+     public Task<SalesDealDetailResponse> MarkLostAsync(Guid companyId, Guid dealId, string? note, CancellationToken cancellationToken = default) =>
+-        SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/mark-lost", new(note), cancellationToken);
++        SendAsync<SalesActionRequest, SalesDealDetailResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/lost", new(note), cancellationToken);
+ 
+     private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+     {
+@@ -198,6 +201,7 @@ public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId
+ public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
+ public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);
+ public sealed record SalesActivityResponse(Guid Id, string ActivityType, string Summary, string Status, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
++public sealed record SalesEmailTimelineResponse(Guid Id, string ProviderMessageId, string Status, string? DetectedIntent, string? ProductOrServiceInterest, decimal? Confidence, string? Rationale, DateTime OccurredUtc, Guid? LeadId, Guid? DealId);
+ public sealed record SalesRecommendationResponse(Guid Id, string Recommendation, string Rationale, string Status, Guid? LeadId, Guid? DealId, DateTime CreatedUtc);
+ public sealed record SalesActionRequest(string? Note);
+ public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor b/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+index 586dfcb..ed3b2f1 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+@@ -67,6 +67,19 @@
+                                         <div>
+                                             <span>@Money(deal.Amount, deal.Currency)</span>
+                                             <span>@CloseDate(deal.ExpectedCloseUtc)</span>
+                                         </div>
++                                        <label class="sales-stage-select" @onclick:stopPropagation @onmousedown:stopPropagation>
++                                            <span>Move to</span>
++                                            <select value="@deal.StageId"
++                                                    disabled="@IsMoving(deal.Id)"
++                                                    @onchange="args => ChangeStageFromSelectAsync(deal.Id, args.Value?.ToString())">
++                                                @foreach (var targetStage in pipeline.Stages)
++                                                {
++                                                    <option value="@targetStage.StageId">@targetStage.Name</option>
++                                                }
++                                            </select>
++                                        </label>
+                                     </a>
+                                 }
+                             </div>
+@@ -93,6 +106,7 @@
+     private string? actionMessage;
+     private SalesPipelineResponse? pipeline;
+     private Guid? draggedDealId;
++    private Guid? movingDealId;
+ 
+     protected override async Task OnParametersSetAsync() => await LoadAsync();
+ 
+@@ -124,13 +138,27 @@
+ 
+         actionMessage = null;
+         try
+         {
++            movingDealId = dealId;
+             await SalesApiClient.ChangeDealStageAsync(companyId, dealId, stageId, "Moved from the sales pipeline board.");
+             pipeline = await SalesApiClient.GetPipelineAsync(companyId);
+             await RefreshAgentPanelAsync();
+             actionMessage = "Deal stage updated.";
+         }
+@@ -141,12 +169,35 @@
+         finally
+         {
+             draggedDealId = null;
++            movingDealId = null;
+         }
+     }
+ 
++    private async Task ChangeStageFromSelectAsync(Guid dealId, string? stageIdValue)
++    {
++        if (!Guid.TryParse(stageIdValue, out var stageId) || ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        actionMessage = null;
++        movingDealId = dealId;
++        try
++        {
++            await SalesApiClient.ChangeDealStageAsync(companyId, dealId, stageId, "Moved from the stage selector.");
++            pipeline = await SalesApiClient.GetPipelineAsync(companyId);
++            await RefreshAgentPanelAsync();
++            actionMessage = "Deal stage updated.";
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++        finally
++        {
++            movingDealId = null;
++        }
++    }
++
++    private bool IsMoving(Guid dealId) => movingDealId == dealId;
+     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+     private static string StageCurrency(SalesPipelineStageResponse stage) => stage.Deals.FirstOrDefault()?.Currency ?? "USD";
+     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+index 6595351..16c5766 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDealDetail.razor
+@@ -74,11 +74,11 @@
+                             </div>
+                         </div>
+-                        @if (EmailActivities.Count == 0)
++                        @if (dealEmails.Count == 0)
+                         {
+                             <div class="sales-empty">No linked sales emails for this deal yet.</div>
+                         }
+                         else
+                         {
+-                            <Timeline Items="@EmailActivities" />
++                            <EmailTimeline Items="@dealEmails" />
+                         }
+                     </section>
+@@ -195,9 +195,7 @@
+     private string? errorMessage;
+     private string? actionMessage;
+     private SalesDealDetailResponse? deal;
+-
+-    private IReadOnlyList<SalesActivityResponse> EmailActivities =>
+-        deal?.Activities.Where(x => x.ActivityType.Contains("email", StringComparison.OrdinalIgnoreCase)).ToList() ?? [];
++    private IReadOnlyList<SalesEmailTimelineResponse> dealEmails = [];
+ 
+     protected override async Task OnParametersSetAsync() => await LoadAsync();
+ 
+@@ -215,6 +213,7 @@
+ 
+             deal = await SalesApiClient.GetDealAsync(ResolvedCompanyId!.Value, DealId);
++            dealEmails = await SalesApiClient.ListDealEmailsAsync(ResolvedCompanyId!.Value, DealId);
+             if (deal is null)
+             {
+                 errorMessage = "This deal was not found for the active company.";
+@@ -291,4 +290,37 @@
+             builder.CloseElement();
+         }
+     }
++
++    private sealed partial class EmailTimeline : ComponentBase
++    {
++        [Parameter] public IReadOnlyList<SalesEmailTimelineResponse> Items { get; set; } = [];
++
++        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
++        {
++            var sequence = 0;
++            builder.OpenElement(sequence++, "div");
++            builder.AddAttribute(sequence++, "class", "sales-timeline");
++            foreach (var item in Items)
++            {
++                builder.OpenElement(sequence++, "div");
++                builder.AddAttribute(sequence++, "class", "sales-timeline-row");
++                builder.OpenElement(sequence++, "span");
++                builder.CloseElement();
++                builder.OpenElement(sequence++, "div");
++                builder.OpenElement(sequence++, "strong");
++                builder.AddContent(sequence++, item.DetectedIntent ?? "Sales email");
++                builder.CloseElement();
++                builder.OpenElement(sequence++, "small");
++                builder.AddContent(sequence++, $"{item.Status} - {item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
++                builder.CloseElement();
++                if (!string.IsNullOrWhiteSpace(item.Rationale))
++                {
++                    builder.OpenElement(sequence++, "p");
++                    builder.AddContent(sequence++, item.Rationale);
++                    builder.CloseElement();
++                }
++                builder.CloseElement();
++                builder.CloseElement();
++            }
++            builder.CloseElement();
++        }
++    }
+ }
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 36d257d..eaadf7c 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -681,6 +681,34 @@
+     gap: 0.75rem;
+ }
+ 
++.sales-stage-select {
++    display: grid;
++    gap: 0.35rem;
++    margin-top: 0.8rem;
++    color: #64748B;
++    font-size: 0.75rem;
++    font-weight: 600;
++}
++
++.sales-stage-select select {
++    width: 100%;
++    min-height: 2.25rem;
++    border: 1px solid #E5E7EB;
++    border-radius: 0.75rem;
++    background: #FFFFFF;
++    color: #0F172A;
++    font: inherit;
++    padding: 0.35rem 0.6rem;
++}
++
++.sales-stage-select select:disabled {
++    cursor: progress;
++    opacity: 0.65;
++}
++
++.sales-stage-select select:focus {
++    border-color: #2563EB;
++    outline: 2px solid rgba(37, 99, 235, 0.18);
++}
++
+ .sales-detail-hero__value {
+     display: grid;
+     justify-items: end;
+diff --git a/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+index a15b1a7..c624e0b 100644
+--- a/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/SalesOperationsApiIntegrationTests.cs
+@@ -65,10 +65,10 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebAp
+         var createdDeal = await convert.Content.ReadFromJsonAsync<SalesDealDetailResponse>();
+         Assert.NotNull(createdDeal);
+ 
+-        var stage = await client.PostAsJsonAsync($"/api/sales/deals/{createdDeal!.Id}/stage-change", new ChangeDealStageRequest(SalesPipelineStage.ProposalStageId, "Proposal sent"));
++        var stage = await client.PostAsJsonAsync($"/api/sales/deals/{createdDeal!.Id}/stage", new ChangeDealStageRequest(SalesPipelineStage.ProposalStageId, "Proposal sent"));
+         Assert.Equal(HttpStatusCode.OK, stage.StatusCode);
+ 
+-        var won = await client.PostAsJsonAsync($"/api/sales/deals/{createdDeal.Id}/mark-won", new SalesActionRequest("Customer accepted"));
++        var won = await client.PostAsJsonAsync($"/api/sales/deals/{createdDeal.Id}/won", new SalesActionRequest("Customer accepted"));
+         Assert.Equal(HttpStatusCode.OK, won.StatusCode);
+ 
+         var auditActions = await _factory.ExecuteDbContextAsync(async dbContext =>
+@@ -113,6 +113,7 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebAp
+         var pipeline = await client.GetFromJsonAsync<SalesPipelineResponse>("/api/sales/pipeline");
+         var deal = await client.GetFromJsonAsync<SalesDealDetailResponse>($"/api/sales/deals/{seed.DealAId}");
+         var activities = await client.GetFromJsonAsync<IReadOnlyList<SalesActivityResponse>>($"/api/sales/deals/{seed.DealAId}/activities");
++        var emails = await client.GetFromJsonAsync<IReadOnlyList<SalesEmailTimelineResponse>>($"/api/sales/deals/{seed.DealAId}/emails");
+         var recommendations = await client.GetFromJsonAsync<IReadOnlyList<SalesRecommendationResponse>>("/api/sales/recommendations");
+ 
+         Assert.NotNull(pipeline);
+@@ -120,6 +121,8 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebAp
+         Assert.NotNull(deal);
+         Assert.Equal(seed.DealAId, deal!.Id);
+         Assert.Single(activities!);
++        Assert.NotNull(emails);
++        Assert.Single(emails!);
+         Assert.Single(recommendations!);
+         Assert.DoesNotContain(recommendations!, x => x.DealId == seed.DealBId);
+     }
+@@ -178,6 +181,7 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebAp
+         dbContext.Leads.Add(new Lead(leadId, companyId, $"Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
+         dbContext.Leads.Add(new Lead(rejectLeadId, companyId, $"Reject Lead {suffix}", SalesPipelineStage.NewStageId, primaryContactId: contactId, customerCompanyId: customerId));
+         dbContext.Deals.Add(new Deal(dealId, companyId, $"Deal {suffix}", SalesPipelineStage.QualifiedStageId, 1000m, "USD", primaryContactId: contactId, customerCompanyId: customerId));
++        dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyId, $"message-{suffix}", leadId, dealId, contactId, customerId, SalesStatuses.Linked, detectedIntent: "pricing request", productOrServiceInterest: "Platform", confidence: 0.87m, rationale: $"Buyer {suffix} asked for pricing."));
+         dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "email", $"Email {suffix}", DateTime.UtcNow, leadId: leadId, dealId: dealId, contactId: contactId, customerCompanyId: customerId));
+         dbContext.SalesAgentRecommendations.Add(new SalesAgentRecommendation(Guid.NewGuid(), companyId, $"Follow up {suffix}", "The buyer asked for pricing.", leadId, dealId));
+     }
+END_OF_PATCH

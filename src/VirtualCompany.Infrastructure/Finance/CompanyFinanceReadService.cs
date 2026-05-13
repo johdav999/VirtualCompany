@@ -1111,10 +1111,14 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
 
         var normalizedType = NormalizeCounterpartyType(query.CounterpartyType);
-        var rows = await _dbContext.FinanceCounterparties
+        var counterparties = FilterCounterpartiesByType(
+            _dbContext.FinanceCounterparties
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && MatchesCounterpartyType(x.CounterpartyType, normalizedType))
+            .Where(x => x.CompanyId == query.CompanyId),
+            normalizedType);
+
+        var rows = await counterparties
             .OrderBy(x => x.Name)
             .ThenBy(x => x.CreatedUtc)
             .Take(NormalizeLimit(query.Limit))
@@ -1144,10 +1148,14 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
 
         var normalizedType = NormalizeCounterpartyType(query.CounterpartyType);
-        var row = await _dbContext.FinanceCounterparties
+        var counterparties = FilterCounterpartiesByType(
+            _dbContext.FinanceCounterparties
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.CounterpartyId && MatchesCounterpartyType(x.CounterpartyType, normalizedType))
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.CounterpartyId),
+            normalizedType);
+
+        var row = await counterparties
             .Select(x => new FinanceCounterpartyRow(x.Id, x.CompanyId, NormalizeCounterpartyType(x.CounterpartyType), x.Name, x.Email, x.PaymentTerms, x.TaxId, x.CreditLimit, x.PreferredPaymentMethod, x.DefaultAccountMapping, x.CreatedUtc, x.UpdatedUtc))
             .SingleOrDefaultAsync(cancellationToken);
 
@@ -3913,6 +3921,11 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
 
     private static string NormalizeCounterpartyType(string value) =>
         FinanceCounterparty.NormalizeCounterpartyKind(value);
+
+    private static IQueryable<FinanceCounterparty> FilterCounterpartiesByType(IQueryable<FinanceCounterparty> query, string expected) =>
+        expected == "supplier"
+            ? query.Where(x => x.CounterpartyType == "supplier" || x.CounterpartyType == "vendor")
+            : query.Where(x => x.CounterpartyType == "customer");
 
     private static bool MatchesCounterpartyType(string actual, string expected) =>
         expected == "supplier"

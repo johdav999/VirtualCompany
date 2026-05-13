@@ -129,6 +129,27 @@ public sealed class FortnoxApiClientTests
         Assert.Equal("P-1", Assert.Single(page.Items).ProjectNumber);
     }
 
+    [Fact]
+    public async Task Unauthorized_response_forces_token_refresh_and_replays_once()
+    {
+        var handler = new CapturingHandler(
+            new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = Json("""{"ErrorInformation":{"Error":"200001","Message":"expired token"}}""") },
+            new HttpResponseMessage(HttpStatusCode.OK) { Content = Json("""{"Accounts":[{"Number":1930,"Description":"Bank"}]}""") });
+        var oauth = new StubFortnoxOAuthService("stale-token", "fresh-token");
+        var client = CreateClient(handler, oauth: oauth);
+
+        var page = await client.GetAccountsAsync(new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid()), null, CancellationToken.None);
+
+        Assert.Equal(2, handler.Requests.Count);
+        Assert.Equal("stale-token", handler.Requests[0].Headers.Authorization?.Parameter);
+        Assert.Equal("fresh-token", handler.Requests[1].Headers.Authorization?.Parameter);
+        Assert.Collection(
+            oauth.RefreshCommands,
+            command => Assert.False(command.ForceRefresh),
+            command => Assert.True(command.ForceRefresh));
+        Assert.Equal(1930, Assert.Single(page.Items).Number);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Unauthorized, "authorization", "Fortnox connection needs attention.", true)]
     [InlineData(HttpStatusCode.Forbidden, "permission", "The connected Fortnox account does not have permission for this data.", false)]
@@ -156,6 +177,39 @@ public sealed class FortnoxApiClientTests
         Assert.Equal("internal upstream detail", exception.FortnoxErrorMessage);
         Assert.Equal(requiresReconnect, exception.RequiresReconnect);
         Assert.DoesNotContain("access-token", exception.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Numeric_fortnox_error_fields_are_preserved()
+    {
+        var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = Json("""{"ErrorInformation":{"Code":2000428,"Error":400,"Message":"Invalid query parameter."}}""")
+        });
+        var client = CreateClient(handler, maxRetries: 0);
+
+        var exception = await Assert.ThrowsAsync<FortnoxApiException>(() =>
+            client.GetInvoicesAsync(new FortnoxRequestContext(Guid.NewGuid()), null, CancellationToken.None));
+
+        Assert.Equal("2000428", exception.FortnoxErrorCode);
+        Assert.Equal("Invalid query parameter.", exception.FortnoxErrorMessage);
+    }
+
+    [Fact]
+    public async Task Scope_permission_errors_require_reconnect()
+    {
+        var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.BadRequest)
+        {
+            Content = Json("""{"ErrorInformation":{"Code":2000663,"Error":400,"Message":"Har inte behörighet för scope."}}""")
+        });
+        var client = CreateClient(handler, maxRetries: 0);
+
+        var exception = await Assert.ThrowsAsync<FortnoxApiException>(() =>
+            client.GetVouchersAsync(new FortnoxRequestContext(Guid.NewGuid()), null, CancellationToken.None));
+
+        Assert.Equal("permission", exception.Category);
+        Assert.True(exception.RequiresReconnect);
+        Assert.Equal("Fortnox did not grant one or more requested permissions. Enable the scopes in the Fortnox Developer Portal, reconnect Fortnox, and try again.", exception.SafeMessage);
     }
 
     [Fact]
@@ -191,7 +245,7 @@ public sealed class FortnoxApiClientTests
             });
     }
 
-    private static FortnoxApiClient CreateClient(CapturingHandler handler, int maxRetries = 3)
+    private static FortnoxApiClient CreateClient(CapturingHandler handler, int maxRetries = 3, IFortnoxOAuthService? oauth = null)
     {
         var httpClient = new HttpClient(handler)
         {
@@ -208,7 +262,7 @@ public sealed class FortnoxApiClientTests
 
         return new FortnoxApiClient(
             httpClient,
-            new StubFortnoxOAuthService(),
+            oauth ?? new StubFortnoxOAuthService("access-token"),
             new StaticOptionsMonitor<FortnoxOptions>(options.Value),
             NullLogger<FortnoxApiClient>.Instance,
             TimeProvider.System);
@@ -248,6 +302,15 @@ public sealed class FortnoxApiClientTests
 
     private sealed class StubFortnoxOAuthService : IFortnoxOAuthService
     {
+        private readonly Queue<string> _tokens;
+
+        public StubFortnoxOAuthService(params string[] tokens)
+        {
+            _tokens = new Queue<string>(tokens);
+        }
+
+        public List<RefreshFortnoxAccessTokenCommand> RefreshCommands { get; } = [];
+
         public Task<FortnoxOAuthStartResult> BuildAuthorizationUrlAsync(StartFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken) =>
             throw new NotSupportedException();
 
@@ -255,13 +318,22 @@ public sealed class FortnoxApiClientTests
             throw new NotSupportedException();
 
         public Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(RefreshFortnoxAccessTokenCommand command, CancellationToken cancellationToken) =>
-            Task.FromResult(FortnoxAccessTokenResult.Success("access-token", DateTime.UtcNow.AddHours(1)));
+            RefreshAsync(command);
+
+        private Task<FortnoxAccessTokenResult> RefreshAsync(RefreshFortnoxAccessTokenCommand command)
+        {
+            RefreshCommands.Add(command);
+            return Task.FromResult(FortnoxAccessTokenResult.Success(_tokens.Count > 0 ? _tokens.Dequeue() : "access-token", DateTime.UtcNow.AddHours(1)));
+        }
 
         public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
-            throw new NotSupportedException();
+            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), DateTime.UtcNow, null, DateTime.UtcNow));
 
         public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
             Task.CompletedTask;
+
+        public Task<FortnoxConnectionDisconnectResult> DisconnectAsync(DisconnectFortnoxConnectionCommand command, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
     }
 
     private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>

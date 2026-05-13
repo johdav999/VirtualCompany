@@ -1,0 +1,258 @@
+@page "/app/sales/contacts/{ContactId:guid}"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using System.Globalization
+@using VirtualCompany.Web.Components.Sales
+
+<PageTitle>Customer profile</PageTitle>
+
+<div class="sales-workspace">
+    <main class="sales-main">
+        <header class="sales-page-header">
+            <span>SALES</span>
+            <h1>@(profile?.ContactName ?? "Customer profile")</h1>
+            <p>Review relationship memory, past interactions, engagement, and deal history before Alex drafts the next message.</p>
+            <nav class="sales-tabs" aria-label="Sales sections">
+                <a href="@BuildPath("/app/sales")">Overview</a>
+                <a href="@BuildPath("/app/sales/leads")">Leads</a>
+                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
+                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            </nav>
+        </header>
+
+        @if (isLoading)
+        {
+            <section class="sales-card sales-empty">Loading customer profile...</section>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <section class="sales-card sales-error">
+                <h2>Customer profile is unavailable</h2>
+                <p>@errorMessage</p>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+            </section>
+        }
+        else if (profile is not null)
+        {
+            <section class="sales-detail-hero">
+                <div>
+                    <span class="sales-badge sales-badge--active">@EngagementBand(profile.EngagementScore)</span>
+                    <h2>@profile.ContactName</h2>
+                    <p>@profile.ContactEmail - @(profile.CustomerCompanyName ?? "No company linked")</p>
+                </div>
+                <div class="sales-detail-hero__value">
+                    <span>Engagement score</span>
+                    <strong>@Score(profile.EngagementScore)</strong>
+                </div>
+            </section>
+
+            <section class="sales-card">
+                <div class="sales-section-heading">
+                    <div>
+                        <span>MEMORY</span>
+                        <h2>Relationship profile</h2>
+                    </div>
+                    <span class="sales-badge">Updated @profile.RefreshedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                </div>
+                <div class="sales-memory-layout">
+                    <div class="sales-score-card">
+                        <span>Engagement score</span>
+                        <strong>@Score(profile.EngagementScore)</strong>
+                        <small>@EngagementBand(profile.EngagementScore)</small>
+                    </div>
+                    <div class="sales-memory-copy">
+                        <h3>AI summary</h3>
+                        <p>@EmptyText(profile.AiSummary, "No AI summary available")</p>
+                        <h3>Relationship memory</h3>
+                        <p>@EmptyText(profile.RelationshipMemory, "No relationship memory recorded yet")</p>
+                        <h3>Last outreach</h3>
+                        <p>@(string.IsNullOrWhiteSpace(profile.LastOutreachSummary) ? "No outreach has been recorded yet." : profile.LastOutreachSummary)</p>
+                    </div>
+                </div>
+            </section>
+
+            <div class="sales-two-column sales-two-column--detail">
+                <div class="sales-detail-stack">
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>INTERACTIONS</span>
+                                <h2>Historical interactions</h2>
+                            </div>
+                        </div>
+                        @if (profile.PastConversations.Count == 0)
+                        {
+                            <div class="sales-empty">No interactions found for this contact.</div>
+                        }
+                        else
+                        {
+                            <div class="sales-timeline">
+                                @foreach (var item in profile.PastConversations)
+                                {
+                                    <div class="sales-timeline-row">
+                                        <span></span>
+                                        <div>
+                                            <strong>@item.Summary</strong>
+                                            <small>@PlainLabel(item.SourceType) - @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                        </div>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>DEALS</span>
+                                <h2>Past deals</h2>
+                            </div>
+                        </div>
+                        @if (profile.PreviousDeals.Count == 0)
+                        {
+                            <div class="sales-empty">No prior deals.</div>
+                        }
+                        else
+                        {
+                            <div class="sales-list">
+                                @foreach (var deal in profile.PreviousDeals)
+                                {
+                                    <a class="sales-list-row sales-list-row--button" href="@BuildPath($"/app/sales/deals/{deal.DealId:D}")">
+                                        <div>
+                                            <strong>@deal.Title</strong>
+                                            <span>@deal.Summary</span>
+                                        </div>
+                                        <div class="sales-list-row__meta">
+                                            <span class="@BadgeClass(deal.Status)">@deal.Status</span>
+                                            <strong>@Money(deal.Amount, deal.Currency)</strong>
+                                        </div>
+                                    </a>
+                                }
+                            </div>
+                        }
+                    </section>
+                </div>
+
+                <aside class="sales-detail-stack">
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>SIGNALS</span>
+                                <h2>Preferences</h2>
+                            </div>
+                        </div>
+                        <SignalList Items="@profile.Preferences" EmptyText="No preferences recorded yet." />
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>SIGNALS</span>
+                                <h2>Price sensitivity</h2>
+                            </div>
+                        </div>
+                        <SignalList Items="@profile.PriceSensitivityIndicators" EmptyText="No price sensitivity indicators found." />
+                    </section>
+
+                    <section class="sales-card">
+                        <div class="sales-section-heading">
+                            <div>
+                                <span>SIGNALS</span>
+                                <h2>Industry signals</h2>
+                            </div>
+                        </div>
+                        <SignalList Items="@profile.IndustrySignals" EmptyText="No industry signals recorded yet." />
+                    </section>
+                </aside>
+            </div>
+        }
+    </main>
+
+    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+</div>
+
+@code {
+    [Parameter] public Guid ContactId { get; set; }
+
+    private bool isLoading = true;
+    private string? errorMessage;
+    private CustomerMemoryContext? profile;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            if (!await ResolveCompanyAsync())
+            {
+                errorMessage = ShellErrorMessage;
+                return;
+            }
+
+            profile = await SalesApiClient.GetContactProfileAsync(ResolvedCompanyId!.Value, ContactId);
+            if (profile is null)
+            {
+                errorMessage = "This contact was not found for the active company.";
+            }
+
+            await RefreshAgentPanelAsync();
+        }
+        catch (SalesApiException ex)
+        {
+            errorMessage = ex.Message;
+            AgentPanelErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
+    private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";
+    private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;
+    private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
+    private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
+    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+
+    private sealed partial class SignalList : ComponentBase
+    {
+        [Parameter] public IReadOnlyList<CustomerMemorySignal> Items { get; set; } = [];
+        [Parameter] public string EmptyText { get; set; } = "No signals recorded yet.";
+
+        protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
+        {
+            var sequence = 0;
+            if (Items.Count == 0)
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.AddAttribute(sequence++, "class", "sales-empty sales-empty--compact");
+                builder.AddContent(sequence++, EmptyText);
+                builder.CloseElement();
+                return;
+            }
+
+            builder.OpenElement(sequence++, "div");
+            builder.AddAttribute(sequence++, "class", "sales-signal-list");
+            foreach (var signal in Items)
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.OpenElement(sequence++, "strong");
+                builder.AddContent(sequence++, PlainLabel(signal.Key));
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "span");
+                builder.AddContent(sequence++, signal.Value);
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "small");
+                builder.AddContent(sequence++, $"{Math.Round(signal.Confidence * 100m, 0)}% confidence - {signal.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
+                builder.CloseElement();
+                builder.CloseElement();
+            }
+            builder.CloseElement();
+        }
+    }
+}

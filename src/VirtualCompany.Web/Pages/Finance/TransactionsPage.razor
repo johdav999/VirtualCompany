@@ -4,188 +4,237 @@
 @page "/finance/activity/{TransactionId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Activity</PageTitle>
+<PageTitle>Transactions</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Activity"
-    Description="Review money movements and finance activity for the company."
-    LoadingMessage="Loading activity...">
-    <form method="get" class="agent-filter-bar mb-4">
-        <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
-        <div>
-            <label class="form-label" for="transaction-filter-from">From</label>
-            <input id="transaction-filter-from" class="form-control" type="date" name="from" value="@FromInputValue" />
+    Title="Transactions"
+    Description="All account activity across bank and integrations"
+    LoadingMessage="Loading transactions..."
+    ShowShellHeader="false"
+    ShowShellNavigation="false">
+    <section class="transactions-workspace" aria-labelledby="transactions-heading">
+        <div class="finance-overview-header">
+            <div>
+                <span class="finance-overview-kicker">Finance module</span>
+                <h1 id="transactions-heading" class="finance-overview-title">Transactions</h1>
+                <p class="finance-overview-subtitle">All account activity across bank and integrations</p>
+            </div>
+            <div class="finance-overview-header__actions">
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+            </div>
         </div>
-        <div>
-            <label class="form-label" for="transaction-filter-to">To</label>
-            <input id="transaction-filter-to" class="form-control" type="date" name="to" value="@ToInputValue" />
-        </div>
-        <div>
-            <label class="form-label" for="transaction-filter-category">Category</label>
-            <select id="transaction-filter-category" class="form-select" name="category">
-                <option value="" selected="@string.IsNullOrWhiteSpace(CategoryFilterValue)">All categories</option>
-                @foreach (var option in CategoryOptions)
-                {
-                    <option value="@option" selected="@IsCategorySelected(option)">@FormatLabel(option)</option>
-                }
-            </select>
-        </div>
-        <div>
-            <label class="form-label" for="transaction-filter-flagged">Flagged</label>
-            <select id="transaction-filter-flagged" class="form-select" name="flagged">
-                <option value="all" selected="@IsFlaggedSelected("all")">All transactions</option>
-                <option value="flagged" selected="@IsFlaggedSelected("flagged")">Flagged only</option>
-                <option value="not_flagged" selected="@IsFlaggedSelected("not_flagged")">Not flagged</option>
-            </select>
-        </div>
-        <div class="dashboard-actions">
-            <button class="btn btn-primary" type="submit">Apply filters</button>
-            <a class="btn btn-outline-secondary" href="@ClearFiltersHref">Clear</a>
-        </div>
-    </form>
 
-    <div class="row g-4 align-items-start">
-        <div class="col-lg-7">
-            <div class="wizard-card wizard-card--compact">
-                <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+        <form method="get" class="transactions-filter-bar">
+            <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
+            <div class="transactions-filter-bar__field transactions-filter-bar__field--date-range">
+                <label for="transaction-filter-from">Date range</label>
+                <div class="transactions-filter-bar__date-range">
+                    <input id="transaction-filter-from" type="date" name="from" value="@FromInputValue" aria-label="From date" />
+                    <input id="transaction-filter-to" type="date" name="to" value="@ToInputValue" aria-label="To date" />
+                </div>
+            </div>
+            <div class="transactions-filter-bar__field">
+                <label for="transaction-filter-account">Account</label>
+                <select id="transaction-filter-account" name="account">
+                    <option value="" selected="@string.IsNullOrWhiteSpace(AccountFilterValue)">All accounts</option>
+                    @foreach (var option in AccountOptions)
+                    {
+                        <option value="@option" selected="@IsAccountSelected(option)">@option</option>
+                    }
+                </select>
+            </div>
+            <div class="transactions-filter-bar__field transactions-filter-bar__field--wide">
+                <label for="transaction-filter-search">Search</label>
+                <input id="transaction-filter-search" type="search" name="search" value="@SearchFilterValue" placeholder="Description, counterparty, reference, category, or amount" />
+            </div>
+            <div class="transactions-filter-bar__actions">
+                <button class="btn transactions-button transactions-button--primary" type="submit">Apply filters</button>
+                <a class="btn transactions-button transactions-button--secondary" href="@ClearFiltersHref">Clear</a>
+            </div>
+        </form>
+
+        <div class="transactions-summary-grid">
+            <article class="transactions-summary-card">
+                <span>Total inflow</span>
+                <strong class="transactions-amount transactions-amount--positive">@Summary.DisplayInflow</strong>
+                <small>Selected transactions</small>
+            </article>
+            <article class="transactions-summary-card">
+                <span>Total outflow</span>
+                <strong class="transactions-amount transactions-amount--negative">@Summary.DisplayOutflow</strong>
+                <small>Selected transactions</small>
+            </article>
+            <article class="transactions-summary-card">
+                <span>Uncategorized</span>
+                <strong>@Summary.UncategorizedCount</strong>
+                <small>Needs category review</small>
+            </article>
+            <article class="transactions-summary-card">
+                <span>Needs review</span>
+                <strong>@Summary.NeedsReviewCount</strong>
+                <small>Flagged or unusual</small>
+            </article>
+        </div>
+
+        <div class="transactions-layout">
+            <article class="transactions-ledger-card">
+                <div class="transactions-ledger-card__header">
                     <div>
-                        <h2 class="h5 mb-1">Activity list</h2>
-                        <p class="text-body-secondary mb-0">Review dates, categories, amounts, and items that need attention.</p>
+                        <h2>Ledger transactions</h2>
+                        <p>Review account activity, categories, references, and reconciliation signals.</p>
                     </div>
-                    <span class="badge text-bg-light">@Transactions.Count item@(Transactions.Count == 1 ? string.Empty : "s")</span>
+                    <span>@DisplayedTransactions.Count item@(DisplayedTransactions.Count == 1 ? string.Empty : "s")</span>
                 </div>
 
                 <FinanceDataState
                     IsLoading="@IsListLoading"
-                    IsEmpty="@IsListEmpty"
+                    IsEmpty="@IsDisplayedListEmpty"
                     ErrorMessage="@ListErrorMessage"
-                    LoadingTitle="Loading activity"
-                    LoadingMessage="Fetching finance activity."
-                    EmptyTitle="No activity matched the active filters"
-                    EmptyMessage="Adjust the date range, category, or flagged filter and try again."
+                    LoadingTitle="Loading transactions"
+                    LoadingMessage="Fetching account activity."
+                    EmptyTitle="@EmptyTitle"
+                    EmptyMessage="@EmptyMessage"
                     OnRetry="@ReloadAsync">
-                    <div class="list-group">
-                        @foreach (var transaction in Transactions)
-                        {
-                            <a class="@GetTransactionListItemClass(transaction.Id)" href="@BuildTransactionHref(transaction.Id)">
-                                <div class="d-flex w-100 justify-content-between gap-3">
-                                    <div>
-                                        <strong>@transaction.Description</strong>
-                                        <div class="text-body-secondary small mt-1">@FormatDate(transaction.TransactionUtc) | Category: @FormatLabel(transaction.TransactionType)</div>
-                                        <div class="small mt-2">@transaction.ExternalReference</div>
-                                    </div>
-                                    <div class="text-end">
-                                        <div class="fw-semibold">@FormatCurrency(transaction.Amount, transaction.Currency)</div>
-                                        <div class="small text-body-secondary mt-1">@transaction.AccountName</div>
-                                        <div class="mt-2 d-flex gap-2 justify-content-end">
-                                            <span class="badge @(transaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">
-                                                @(transaction.IsFlagged ? "Flagged" : "Clear")
-                                            </span>
-                                            <span class="badge @(transaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(transaction.AnomalyState)</span>
-                                        </div>
-                                    </div>
-                                </div>
-                            </a>
-                        }
+                    <div class="transactions-table-wrap">
+                        <table class="transactions-table">
+                            <thead>
+                                <tr>
+                                    <th>Date</th>
+                                    <th>Description</th>
+                                    <th>Counterparty</th>
+                                    <th>Account</th>
+                                    <th class="transactions-table__amount">Amount</th>
+                                    <th>Category</th>
+                                    <th>Status</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var transaction in TransactionRows)
+                                {
+                                    <tr class="@(transaction.IsSelected ? "is-selected" : string.Empty)" @onclick="() => NavigateToTransaction(transaction.Id)">
+                                        <td data-label="Date">@transaction.DisplayDate</td>
+                                        <td data-label="Description">
+                                            <a href="@BuildTransactionHref(transaction.Id)">@transaction.Description</a>
+                                            <small>@transaction.ExternalReference</small>
+                                        </td>
+                                        <td data-label="Counterparty">@transaction.CounterpartyName</td>
+                                        <td data-label="Account">@transaction.AccountName</td>
+                                        <td data-label="Amount" class="@($"transactions-table__amount transactions-amount {(transaction.IsPositive ? "transactions-amount--positive" : "transactions-amount--negative")}")">@transaction.DisplayAmount</td>
+                                        <td data-label="Category"><span class="transactions-category-pill">@transaction.CategoryLabel</span></td>
+                                        <td data-label="Status"><span class="@($"transactions-status-badge transactions-status-badge--{transaction.StatusTone}")">@transaction.StatusLabel</span></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
                     </div>
                 </FinanceDataState>
-            </div>
-        </div>
+            </article>
 
-        <div class="col-lg-5">
-            <div class="wizard-card wizard-card--compact">
+            <aside class="transactions-detail-card">
                 @if (IsDetailLoading)
                 {
-                    <FinanceLoadingState Title="Loading activity detail" Message="Opening the selected activity item." />
+                    <FinanceLoadingState Title="Loading transaction detail" Message="Opening the selected transaction." />
                 }
                 else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                 {
-                    <FinanceErrorState Title="Activity detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    <FinanceErrorState Title="Transaction detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
                 }
                 else if (SelectedTransaction is null)
                 {
-                    <FinanceEmptyState Title="No activity selected" Message="Select an activity item to see details." />
+                    <div class="transactions-detail-empty">
+                        <div class="transactions-detail-empty__icon" aria-hidden="true">txn</div>
+                        <h2>Select a transaction to inspect details</h2>
+                        <p>Use this panel for category review, anomaly investigation, and reconciliation.</p>
+                    </div>
                 }
-                else
+                else if (SelectedTransactionDisplay is { } detail)
                 {
-                    <h2 class="h5">Activity detail</h2>
-                    <p class="text-body-secondary mb-4">@SelectedTransaction.Description</p>
+                    <div class="transactions-detail-panel">
+                        <div class="transactions-detail-panel__header">
+                            <div>
+                                <span class="@($"transactions-status-badge transactions-status-badge--{detail.StatusTone}")">@detail.StatusLabel</span>
+                                <h2>@detail.DisplayAmount</h2>
+                                <p>@detail.Description</p>
+                            </div>
+                        </div>
 
-                    <h3 class="h6">Category</h3>
-                    <form class="mb-4" @onsubmit="HandleCategorySaveAsync" @onsubmit:preventDefault="true">
-                        <label class="form-label" for="transaction-category-input">Category</label>
-                        <input id="transaction-category-input" class="form-control" list="transaction-category-options" @bind="EditableCategory" disabled="@(!CanEditTransactionCategory || IsSavingCategory)" />
-                        <datalist id="transaction-category-options">
-                            @foreach (var option in EditableCategoryOptions)
+                        <form class="transactions-category-editor" @onsubmit="HandleCategorySaveAsync" @onsubmit:preventDefault="true">
+                            <label for="transaction-category-input">Category</label>
+                            <div class="transactions-category-editor__control">
+                                <input id="transaction-category-input" list="transaction-category-options" @bind="EditableCategory" disabled="@(!CanEditTransactionCategory || IsSavingCategory)" />
+                                <button class="btn transactions-button transactions-button--primary" type="submit" disabled="@(!CanEditTransactionCategory || IsSavingCategory)">Save</button>
+                            </div>
+                            <datalist id="transaction-category-options">
+                                @foreach (var option in EditableCategoryOptions)
+                                {
+                                    <option value="@option">@FormatLabel(option)</option>
+                                }
+                            </datalist>
+                            @if (!string.IsNullOrWhiteSpace(CategoryValidationMessage))
                             {
-                                <option value="@option">@FormatLabel(option)</option>
+                                <div class="transactions-validation-message">@CategoryValidationMessage</div>
                             }
-                        </datalist>
-                        @if (!string.IsNullOrWhiteSpace(CategoryValidationMessage))
+                            <p>@(CanEditTransactionCategory ? "Change the category when the ledger classification is wrong." : "Finance edit access is required to update categories.")</p>
+                        </form>
+
+                        @if (!string.IsNullOrWhiteSpace(CategorySaveMessage))
                         {
-                            <div class="text-danger small mt-1">@CategoryValidationMessage</div>
+                            <div class="alert alert-success" role="status">@CategorySaveMessage</div>
                         }
-                        <div class="form-text">
-                            @(CanEditTransactionCategory
-                                ? "Use a supported finance category. Invalid values are shown inline."
-                                : "Finance edit access is required to update transaction categories.")
-                        </div>
-                        <div class="dashboard-actions mt-3">
-                            <button class="btn btn-primary" type="submit" disabled="@(!CanEditTransactionCategory || IsSavingCategory)">Save category</button>
-                        </div>
-                    </form>
 
-                    <dl class="mb-4">
-                        <dt>Amount</dt>
-                        <dd>@FormatCurrency(SelectedTransaction.Amount, SelectedTransaction.Currency)</dd>
-                        <dt>Account</dt>
-                        <dd>@SelectedTransaction.AccountName</dd>
-                        <dt>Counterparty</dt>
-                        <dd>@(string.IsNullOrWhiteSpace(SelectedTransaction.CounterpartyName) ? "n/a" : SelectedTransaction.CounterpartyName)</dd>
-                        <dt>Occurred</dt>
-                        <dd>@FormatDate(SelectedTransaction.TransactionUtc)</dd>
-                        <dt>Reference</dt>
-                        <dd>@SelectedTransaction.ExternalReference</dd>
-                        <dt>Flagged</dt>
-                        <dd>@(SelectedTransaction.IsFlagged ? "Yes" : "No")</dd>
-                        <dt>Anomaly state</dt>
-                        <dd><span class="badge @(SelectedTransaction.IsFlagged ? "text-bg-warning" : "text-bg-light")">@FormatLabel(SelectedTransaction.AnomalyState)</span></dd>
-                    </dl>
-                    @if (!string.IsNullOrWhiteSpace(CategorySaveMessage))
-                    {
-                        <div class="alert alert-success" role="status">@CategorySaveMessage</div>
-                    }
+                        <dl class="transactions-detail-list">
+                            <div><dt>Counterparty</dt><dd>@detail.CounterpartyName</dd></div>
+                            <div><dt>Date</dt><dd>@detail.DisplayDate</dd></div>
+                            <div><dt>Account</dt><dd>@detail.AccountName</dd></div>
+                            <div><dt>Category</dt><dd>@detail.CategoryLabel</dd></div>
+                            <div><dt>External reference</dt><dd>@detail.ExternalReference</dd></div>
+                            <div><dt>Source</dt><dd>@detail.SourceLabel</dd></div>
+                            <div><dt>Anomaly state</dt><dd>@detail.AnomalyLabel</dd></div>
+                        </dl>
 
-                    <h3 class="h6">Flags</h3>
-                    @if (SelectedTransaction.Flags.Count == 0)
-                    {
-                        <p class="text-body-secondary">No anomaly flags were recorded for this transaction.</p>
-                    }
-                    else
-                    {
-                        <div class="d-flex flex-wrap gap-2 mb-4">
-                            @foreach (var flag in SelectedTransaction.Flags)
+                        <section class="transactions-insight-card">
+                            <span>Agent insight</span>
+                            <p>@detail.AgentInsight</p>
+                        </section>
+
+                        <section class="transactions-detail-section">
+                            <h3>Flags</h3>
+                            @if (detail.Flags.Count == 0)
                             {
-                                <span class="badge text-bg-light">@FormatLabel(flag)</span>
+                                <p>No review flags are recorded for this transaction.</p>
                             }
-                        </div>
-                    }
+                            else
+                            {
+                                <div class="transactions-flag-list">
+                                    @foreach (var flag in detail.Flags)
+                                    {
+                                        <span>@FormatLabel(flag)</span>
+                                    }
+                                </div>
+                            }
+                        </section>
 
-                    <h3 class="h6">Linked document</h3>
-                    <FinanceLinkedResourceState
-                        Availability="@SelectedTransaction.LinkedDocument.Availability"
-                        Message="@SelectedTransaction.LinkedDocument.Message"
-                        ResourceTitle="@SelectedTransaction.LinkedDocument.Document?.Title"
-                        SecondaryText="@SelectedTransaction.LinkedDocument.Document?.OriginalFileName"
-                        TypeText="@SelectedTransaction.LinkedDocument.Document?.ContentType"
-                        CanNavigate="@SelectedTransaction.LinkedDocument.CanNavigate"
-                        NavigateHref="@(SelectedTransaction.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedTransaction.LinkedDocument.Document.Id))"
-                        ActionText="Open linked document" />
+                        <section class="transactions-detail-section">
+                            <h3>Linked document</h3>
+                            <FinanceLinkedResourceState
+                                Availability="@SelectedTransaction.LinkedDocument.Availability"
+                                Message="@SelectedTransaction.LinkedDocument.Message"
+                                ResourceTitle="@SelectedTransaction.LinkedDocument.Document?.Title"
+                                SecondaryText="@SelectedTransaction.LinkedDocument.Document?.OriginalFileName"
+                                TypeText="@SelectedTransaction.LinkedDocument.Document?.ContentType"
+                                CanNavigate="@SelectedTransaction.LinkedDocument.CanNavigate"
+                                NavigateHref="@(SelectedTransaction.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedTransaction.LinkedDocument.Document.Id))"
+                                ActionText="Open linked document" />
+                        </section>
+                    </div>
                 }
-            </div>
+            </aside>
         </div>
-    </div>
+    </section>
 </FinancePageLayout>

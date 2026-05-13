@@ -60,6 +60,11 @@
             }
         }
         <div class="nav-item px-3">
+            <NavLink class="nav-link" href="@salesHref">
+                <span class="bi bi-graph-up-arrow" aria-hidden="true"></span> Sales
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
             <NavLink class="nav-link" href="@agentsHref">
                 <span class="bi bi-people" aria-hidden="true"></span> Agents
             </NavLink>
@@ -82,6 +87,11 @@
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@approvalsHref">
                 <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="@outboundReviewsHref">
+                <span class="bi bi-send-check" aria-hidden="true"></span> Message review
             </NavLink>
         </div>
         <div class="nav-item px-3">
@@ -125,12 +135,14 @@
     private Guid? currentCompanyId;
     private CurrentUserContextViewModel? currentUser;
     private string dashboardHref = "/dashboard";
+    private string salesHref = "/app/sales";
     private string agentsHref = "/agents";
     private string workflowsHref = "/workflows";
     private string inboxHref = "/inbox";
     private string activityHref = "/activity-feed";
     private string approvalsHref = "/approvals";
     private string auditHref = "/audit";
+    private string outboundReviewsHref = "/outbound-review-queue";
     private string briefingHref = "/briefing-preferences";
     private string settingsHref = "/onboarding";
     private SidebarAgentContext sidebarAgent = SidebarAgentContext.Default("/agents");
@@ -176,12 +188,14 @@
         simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin);
         systemAdminHref = BuildRestrictedAreaHref(FinanceRoutes.TransparencyToolRegistry);
         dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
+        salesHref = currentCompanyId is Guid salesCompanyId ? $"/app/sales?companyId={salesCompanyId:D}" : "/app/sales";
         agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
         workflowsHref = DashboardRoutes.EnsureCompanyContext("/workflows", currentCompanyId, "/workflows");
         inboxHref = currentCompanyId is Guid inboxCompanyId ? $"/inbox?companyId={inboxCompanyId:D}" : "/inbox";
         activityHref = DashboardRoutes.EnsureCompanyContext("/activity-feed", currentCompanyId, "/activity-feed");
         approvalsHref = DashboardRoutes.BuildApprovalsPath(currentCompanyId);
         auditHref = currentCompanyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit";
+        outboundReviewsHref = currentCompanyId is Guid reviewCompanyId ? $"/outbound-review-queue?companyId={reviewCompanyId:D}" : "/outbound-review-queue";
         briefingHref = currentCompanyId is Guid briefingCompanyId ? $"/briefing-preferences?companyId={briefingCompanyId:D}" : "/briefing-preferences";
         settingsHref = currentCompanyId is Guid settingsCompanyId ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Settings, settingsCompanyId) : "/onboarding";
     }
@@ -247,9 +261,9 @@
                 route),
             "sales" => new SidebarAgentContext(
                 "sales",
-                "Sales agent",
+                "Alex",
                 "Sales Manager",
-                null,
+                "/images/paul.png",
                 "I'm watching your pipeline and surfacing the follow-ups that need attention.",
                 "Message sales",
                 route),
@@ -296,7 +310,7 @@
             return "finance";
         }
 
-        if (path.StartsWith("sales", StringComparison.Ordinal))
+        if (path.StartsWith("sales", StringComparison.Ordinal) || path.StartsWith("app/sales", StringComparison.Ordinal))
         {
             return "sales";
         }

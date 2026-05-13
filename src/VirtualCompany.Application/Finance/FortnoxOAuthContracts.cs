@@ -16,7 +16,8 @@ public sealed record CompleteFortnoxOAuthConnectionCommand(
 
 public sealed record RefreshFortnoxAccessTokenCommand(
     Guid CompanyId,
-    Guid? ConnectionId = null);
+    Guid? ConnectionId = null,
+    bool ForceRefresh = false);
 
 public sealed record DisconnectFortnoxConnectionCommand(
     Guid CompanyId,
@@ -43,7 +44,8 @@ public sealed record FortnoxConnectionStatusResult(
     DateTime? ConnectedAtUtc,
     DateTime? AccessTokenExpiresUtc,
     DateTime? LastRefreshAttemptUtc,
-    string? LastErrorSummary);
+    string? LastErrorSummary,
+    DateTime? LastSuccessfulSyncUtc = null);
 
 public sealed record FortnoxAccessTokenResult(
     bool Succeeded,
@@ -71,6 +73,10 @@ public sealed record FortnoxOAuthState(
     bool Reconnect,
     Uri? ReturnUri = null);
 
+public sealed record FortnoxOAuthRedirectState(
+    Guid CompanyId,
+    Uri? ReturnUri);
+
 public sealed record FortnoxOAuthTokenResult(
     string AccessToken,
     string RefreshToken,
@@ -86,7 +92,11 @@ public sealed record FortnoxTokenSnapshot(
     string? RefreshToken,
     DateTime? AccessTokenExpiresUtc,
     IReadOnlyCollection<string> GrantedScopes,
-    string? ProviderTenantId);
+    string? ProviderTenantId,
+    DateTime? ConnectedUtc,
+    DateTime? LastRefreshAttemptUtc,
+    string? LastErrorSummary,
+    DateTime? LastSuccessfulSyncUtc);
 
 public sealed record FortnoxConnectionDisconnectResult(
     Guid CompanyId,
@@ -98,12 +108,18 @@ public sealed record FortnoxConnectionDisconnectResult(
 public interface IFortnoxOAuthSessionStore
 {
     Task<string> CreateAsync(FortnoxOAuthState state, TimeSpan ttl, CancellationToken cancellationToken);
-    Task<FortnoxOAuthState> ConsumeAsync(Guid companyId, string stateHandle, CancellationToken cancellationToken);
+    Task<FortnoxOAuthState> GetAsync(Guid companyId, string stateHandle, CancellationToken cancellationToken);
+    Task<FortnoxOAuthState> GetAsync(string stateHandle, CancellationToken cancellationToken);
+    Task<FortnoxOAuthRedirectState?> GetRedirectStateAsync(string stateHandle, CancellationToken cancellationToken);
+    Task MarkConsumedAsync(Guid companyId, string stateHandle, Guid? connectionId, DateTime consumedUtc, CancellationToken cancellationToken);
+    Task AttachConnectionAsync(Guid companyId, string stateHandle, Guid connectionId, CancellationToken cancellationToken);
+    Task MarkFailedAsync(Guid companyId, string stateHandle, string safeReason, DateTime receivedUtc, CancellationToken cancellationToken);
 }
 
 public interface IFortnoxTokenStore
 {
     Task<FortnoxTokenSnapshot?> GetAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken);
+    Task<FortnoxTokenSnapshot?> GetStatusAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken);
     Task<FortnoxTokenSnapshot> UpsertConnectedAsync(Guid companyId, Guid userId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
     Task<FortnoxTokenSnapshot> StoreRefreshResultAsync(Guid companyId, Guid connectionId, FortnoxOAuthTokenResult tokenResult, DateTime nowUtc, CancellationToken cancellationToken);
     Task MarkAsync(Guid companyId, Guid connectionId, string status, string safeReason, DateTime nowUtc, CancellationToken cancellationToken);

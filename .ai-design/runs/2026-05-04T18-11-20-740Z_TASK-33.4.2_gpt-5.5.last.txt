@@ -1,0 +1,234 @@
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+index 6c0d0b1..b9b74fd 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxApiContracts.cs
+@@ -9,7 +9,9 @@ public sealed record FortnoxRequestContext(
+     Guid CompanyId,
+     Guid? ConnectionId = null,
+     string? CorrelationId = null,
+     Guid? ApprovedApprovalId = null,
+-    Guid? ActorUserId = null);
++    Guid? ActorUserId = null,
++    Guid? WriteRequestId = null,
++    bool RetryExternalFailures = true);
+ 
+ public sealed record FortnoxPageOptions(
+     DateTimeOffset? LastModified = null,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+index 4c2d43f..5ef1012 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxApiClient.cs
+@@ -200,7 +200,7 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+                     FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
+                     payload?.GetType().Name),
+-                DeterministicWriteRequestId(context, method, path, summary));
++                context.WriteRequestId ?? DeterministicWriteRequestId(context, method, path, summary));
+ 
+         await _writeApprovalService.EnsureApprovedAsync(check, cancellationToken);
+         return check;
+@@ -276,12 +276,12 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
+ 
+         var accessToken = await ResolveAccessTokenAsync(context, forceRefresh: false, cancellationToken);
+         var requestUri = BuildUri(path, options);
+-        var maxRetries = Math.Max(0, _options.CurrentValue.ApiMaxRetries);
++        var maxRetries = context.RetryExternalFailures ? Math.Max(0, _options.CurrentValue.ApiMaxRetries) : 0;
+         var replayedAfterUnauthorized = false;
+-        if (maxRetries == 0)
++        if (context.RetryExternalFailures && maxRetries == 0)
+         {
+             maxRetries = DefaultMaxRetries;
+         }
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs
+index a51e609..f2b6b78 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOutboundActionExecutor.cs
+@@ -30,9 +30,9 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
+             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == writeRequestId, cancellationToken)
+             ?? throw new KeyNotFoundException("Accounting-system action was not found.");
+ 
+-        if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
++        if (command.Status is FinanceIntegrationWriteCommandRecordStatuses.Executed or FinanceIntegrationWriteCommandRecordStatuses.Executing)
+         {
+-            return ToResult(command, "This accounting-system action has already completed.", executed: false);
++            return ToResult(command, "This accounting-system action is already being handled.", executed: false);
+         }
+ 
+         if (command.Status is FinanceIntegrationWriteCommandRecordStatuses.Rejected or
+@@ -74,7 +74,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
+ 
+         await WriteAuditAsync(command, "write_execution_started", FinanceIntegrationAuditOutcomes.Succeeded, "Approved accounting-system action is being sent to Fortnox.", cancellationToken);
+         var payload = ParsePayload(command.SanitizedPayloadJson);
+-        var context = new FortnoxRequestContext(companyId, activeConnection.Id, command.CorrelationId, approvalId, command.ActorUserId);
++        var context = new FortnoxRequestContext(companyId, activeConnection.Id, command.CorrelationId, approvalId, command.ActorUserId, command.Id, command.RetrySupported);
+ 
+         try
+         {
+@@ -89,7 +89,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
+             };
+ 
+             await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
+-            return ToResult(command, "Fortnox accepted the approved accounting-system action.", executed: true);
++            var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
++            return ToResult(refreshed, "Fortnox accepted the approved accounting-system action.", executed: true);
+         }
+         catch (Exception exception) when (exception is FortnoxApiException or HttpRequestException or TaskCanceledException)
+         {
+@@ -98,7 +99,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
+                 ? apiException.SafeMessage
+                 : "Fortnox could not complete the approved accounting-system action.";
+             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
+-            return ToResult(command, safeSummary, executed: false);
++            var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
++            return ToResult(refreshed, safeSummary, executed: false);
+         }
+     }
+ 
+@@ -108,6 +110,12 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
+         return null;
+     }
+ 
++    private async Task<FinanceIntegrationWriteCommandRecord> ReloadAsync(Guid companyId, Guid writeRequestId, CancellationToken cancellationToken) =>
++        await _dbContext.FinanceIntegrationWriteCommands
++            .AsNoTracking()
++            .SingleAsync(x => x.CompanyId == companyId && x.Id == writeRequestId, cancellationToken);
++
+     private async Task WriteAuditAsync(
+         FinanceIntegrationWriteCommandRecord command,
+         string eventType,
+@@ -122,7 +130,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecutor
+                 x.CompanyId == command.CompanyId &&
+                 x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                 x.EventType == eventType &&
+                 x.InternalRecordId == command.Id &&
+-                x.CorrelationId == command.ApprovalId!.Value.ToString("N"),
++                x.CorrelationId == (command.ApprovalId.HasValue ? command.ApprovalId.Value.ToString("N") : command.Id.ToString("N")),
+                 cancellationToken);
+ 
+         if (alreadyRecorded)
+diff --git a/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs b/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs
+index e9f1c0a..b74a0d2 100644
+--- a/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FortnoxOutboundActionsController.cs
+@@ -1,6 +1,8 @@
++using System.Text.Json.Nodes;
+ using Microsoft.AspNetCore.Authorization;
+ using Microsoft.AspNetCore.Mvc;
+ using VirtualCompany.Application.Authorization;
++using VirtualCompany.Application.Auth;
+ using VirtualCompany.Application.Finance;
+ using VirtualCompany.Infrastructure.Tenancy;
+ 
+@@ -13,11 +15,58 @@ public sealed class FortnoxOutboundActionsController : ControllerBase
+ {
+     private readonly IFortnoxOutboundActionExecutor _executor;
++    private readonly IFinanceIntegrationProviderRegistry _providerRegistry;
++    private readonly ICompanyContextAccessor _companyContextAccessor;
+ 
+-    public FortnoxOutboundActionsController(IFortnoxOutboundActionExecutor executor)
++    public FortnoxOutboundActionsController(
++        IFortnoxOutboundActionExecutor executor,
++        IFinanceIntegrationProviderRegistry providerRegistry,
++        ICompanyContextAccessor companyContextAccessor)
+     {
+         _executor = executor;
++        _providerRegistry = providerRegistry;
++        _companyContextAccessor = companyContextAccessor;
+     }
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
++    [HttpPost]
++    public async Task<ActionResult<FinanceIntegrationWriteResult>> RequestAsync(
++        Guid companyId,
++        [FromBody] FortnoxOutboundActionRequest request,
++        CancellationToken cancellationToken)
++    {
++        var provider = _providerRegistry.GetRequired(FinanceIntegrationProviderKeys.Fortnox);
++        var payload = request.Payload ?? new JsonObject();
++        var sanitizedPayload = FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload);
++        var payloadSummary = string.IsNullOrWhiteSpace(request.PayloadSummary)
++            ? FortnoxWritePayloadSanitizer.CreateSummary(payload)
++            : request.PayloadSummary.Trim();
++        var payloadHash = string.IsNullOrWhiteSpace(request.PayloadHash)
++            ? FortnoxWritePayloadSanitizer.CreatePayloadHash(payload)
++            : request.PayloadHash.Trim().ToLowerInvariant();
++        var writeRequestId = request.WriteRequestId is { } id && id != Guid.Empty
++            ? id
++            : Guid.NewGuid();
++
++        try
++        {
++            var result = await provider.WriteCommands.RequestApprovalAsync(
++                new FinanceIntegrationWriteCommand(
++                    provider.ProviderKey,
++                    companyId,
++                    request.ConnectionId,
++                    ResolveUserId(),
++                    FinanceIntegrationWriteCommandTypes.Normalize(request.CommandType),
++                    request.HttpMethod,
++                    request.Path,
++                    request.TargetCompany,
++                    payloadSummary,
++                    payloadHash,
++                    new FinanceIntegrationWritePayload(sanitizedPayload, request.ProviderPayloadType),
++                    writeRequestId,
++                    request.CorrelationId),
++                cancellationToken);
++
++            return Accepted(result);
++        }
++        catch (ArgumentException ex)
++        {
++            return BadRequest(new ProblemDetails { Title = "Fortnox action request was invalid", Detail = ex.Message, Status = StatusCodes.Status400BadRequest });
++        }
++    }
++
+     [HttpPost("{writeRequestId:guid}/execute")]
+     public async Task<ActionResult<FinanceIntegrationOutboundExecutionResult>> ExecuteAsync(
+         Guid companyId,
+@@ -53,4 +102,24 @@ public sealed class FortnoxOutboundActionsController : ControllerBase
+             return NotFound();
+         }
+     }
++
++    private Guid ResolveUserId() =>
++        _companyContextAccessor.UserId is { } userId && userId != Guid.Empty
++            ? userId
++            : throw new UnauthorizedAccessException("A resolved user is required.");
++
++    public sealed record FortnoxOutboundActionRequest(
++        string? CommandType,
++        string HttpMethod,
++        string Path,
++        string TargetCompany,
++        JsonNode? Payload,
++        Guid? ConnectionId = null,
++        Guid? WriteRequestId = null,
++        string? PayloadSummary = null,
++        string? PayloadHash = null,
++        string? ProviderPayloadType = null,
++        string? CorrelationId = null);
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs
+index 0d07bcf..b38ed4a 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxWriteApprovalTests.cs
+@@ -86,6 +86,18 @@ public sealed class FortnoxWriteApprovalTests
+         Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.TransientOnly, record.RetryPolicy);
+     }
+ 
++    [Fact]
++    public void Approved_execution_context_carries_persisted_write_request_and_retry_policy()
++    {
++        var writeRequestId = Guid.NewGuid();
++
++        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), "correlation-1", Guid.NewGuid(), Guid.NewGuid(), writeRequestId, retryExternalFailures: false);
++
++        Assert.Equal(writeRequestId, context.WriteRequestId);
++        Assert.False(context.RetryExternalFailures);
++        Assert.NotNull(context.ApprovedApprovalId);
++    }
++
+     [Fact]
+     public void Successful_execution_persists_safe_response_summary_and_status_code()
+     {
+END_OF_PATCH

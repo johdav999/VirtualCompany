@@ -1,0 +1,1302 @@
+diff --git a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+index 8e6e6f1..b7e1c0f 100644
+--- a/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
++++ b/src/VirtualCompany.Application/Sales/OutboundCampaignContracts.cs
+@@ -6,6 +6,7 @@ public interface IOutboundCampaignService
+ {
+     Task<OutboundCampaignDetailResponse> CreateCampaignAsync(Guid companyId, Guid userId, CreateOutboundCampaignRequest request, CancellationToken cancellationToken);
+     Task<OutboundCampaignDetailResponse?> GetCampaignAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken);
++    Task<OutboundAudienceOptionsResponse> GetAudienceOptionsAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<IReadOnlyList<OutboundCampaignSummaryResponse>> ListCampaignsAsync(Guid companyId, CancellationToken cancellationToken);
+     Task<OutboundCampaignDetailResponse?> LaunchCampaignAsync(Guid companyId, Guid userId, Guid campaignId, CancellationToken cancellationToken);
+     Task<OutboundCampaignDetailResponse?> PauseCampaignAsync(Guid companyId, Guid userId, Guid campaignId, CancellationToken cancellationToken);
+@@ -88,6 +89,19 @@ public sealed record OutboundCampaignDetailResponse(
+     DateTime CreatedUtc,
+     DateTime UpdatedUtc);
+ 
++public sealed record OutboundAudienceOptionsResponse(
++    IReadOnlyList<OutboundAudienceContactResponse> Contacts,
++    IReadOnlyList<OutboundAudienceSourceResponse> Sources);
++
++public sealed record OutboundAudienceContactResponse(
++    Guid ContactId,
++    string ContactName,
++    string Email,
++    string? CustomerCompanyName,
++    IReadOnlyList<string> SourceTypes);
++
++public sealed record OutboundAudienceSourceResponse(
++    string SourceType,
++    string Label,
++    int ContactCount);
++
+ public sealed record OutboundPolicyResponse(
+     bool OutboundEnabled,
+     int MaxEmailsPerDay,
+diff --git a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+index 41d3a52..8a3f983 100644
+--- a/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
++++ b/src/VirtualCompany.Infrastructure/Sales/OutboundCampaignService.cs
+@@ -74,6 +74,54 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
+         return campaign is null ? null : MapDetail(campaign);
+     }
+ 
++    public async Task<OutboundAudienceOptionsResponse> GetAudienceOptionsAsync(Guid companyId, CancellationToken cancellationToken)
++    {
++        EnsureCompany(companyId);
++
++        var wonContactIds = await _dbContext.Deals.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.PrimaryContactId.HasValue && x.Status == SalesStatuses.Won)
++            .Select(x => x.PrimaryContactId!.Value)
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        var importedContactIds = await _dbContext.SalesEmailLinks.IgnoreQueryFilters()
++            .Where(x => x.CompanyId == companyId && x.ContactId.HasValue && !x.IsDeleted)
++            .Select(x => x.ContactId!.Value)
++            .Distinct()
++            .ToListAsync(cancellationToken);
++
++        var contacts = await _dbContext.Contacts.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Include(x => x.CustomerCompany)
++            .Where(x => x.CompanyId == companyId && !x.IsDeleted && x.Status == SalesStatuses.Active)
++            .OrderBy(x => x.FullName)
++            .ThenBy(x => x.Email)
++            .ToListAsync(cancellationToken);
++
++        var audience = contacts.Select(contact =>
++        {
++            var sources = new List<string> { "existing_contacts" };
++            if (wonContactIds.Contains(contact.Id))
++            {
++                sources.Add("past_customers");
++            }
++
++            if (importedContactIds.Contains(contact.Id))
++            {
++                sources.Add("imported_contacts");
++            }
++
++            return new OutboundAudienceContactResponse(
++                contact.Id,
++                contact.FullName,
++                contact.Email,
++                contact.CustomerCompany?.Name,
++                sources);
++        }).ToList();
++
++        var sourceCounts = new[]
++        {
++            new OutboundAudienceSourceResponse("existing_contacts", "Existing contacts", audience.Count),
++            new OutboundAudienceSourceResponse("past_customers", "Past customers", audience.Count(x => x.SourceTypes.Contains("past_customers"))),
++            new OutboundAudienceSourceResponse("imported_contacts", "Imported contact lists", audience.Count(x => x.SourceTypes.Contains("imported_contacts")))
++        };
++
++        return new OutboundAudienceOptionsResponse(audience, sourceCounts);
++    }
++
+     public async Task<IReadOnlyList<OutboundCampaignSummaryResponse>> ListCampaignsAsync(Guid companyId, CancellationToken cancellationToken)
+     {
+         EnsureCompany(companyId);
+@@ -82,15 +130,28 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
+             .OrderByDescending(x => x.UpdatedUtc)
+             .Take(100)
+             .ToListAsync(cancellationToken);
+ 
++        var campaignIds = campaigns.Select(x => x.Id).ToArray();
++        var executionCounts = await _dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++            .AsNoTracking()
++            .Where(x => x.CompanyId == companyId && campaignIds.Contains(x.SalesCampaignId))
++            .GroupBy(x => x.SalesCampaignId)
++            .Select(x => new
++            {
++                CampaignId = x.Key,
++                Pending = x.Count(step => step.Status == SalesStatuses.Pending),
++                Sent = x.Count(step => step.SentUtc.HasValue),
++                Bounced = x.Count(step => step.BounceStatus != null || step.DeliveryStatus == SalesStatuses.Bounced)
++            })
++            .ToDictionaryAsync(x => x.CampaignId, cancellationToken);
++
+         return campaigns.Select(x => new OutboundCampaignSummaryResponse(
+             x.Id,
+             x.Name,
+             StatusLabel(x.Status),
+             x.Contacts.Count,
+-            x.Contacts.SelectMany(c => c.SalesCampaign.SalesSequence.Campaigns).Count(),
+-            x.Contacts.Count(c => c.LastSentUtc.HasValue),
+-            0,
++            executionCounts.TryGetValue(x.Id, out var counts) ? counts.Pending : 0,
++            executionCounts.TryGetValue(x.Id, out counts) ? counts.Sent : 0,
++            executionCounts.TryGetValue(x.Id, out counts) ? counts.Bounced : 0,
+             x.UpdatedUtc)).ToList();
+     }
+diff --git a/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs b/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
+index 3d2cdb6..1e4f9d4 100644
+--- a/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
++++ b/src/VirtualCompany.Api/Controllers/SalesCampaignsController.cs
+@@ -28,6 +28,10 @@ public sealed class SalesCampaignsController : ControllerBase
+     public Task<IReadOnlyList<OutboundCampaignSummaryResponse>> ListAsync(CancellationToken cancellationToken) =>
+         _campaigns.ListCampaignsAsync(CompanyId(), cancellationToken);
+ 
++    [HttpGet("audience-options")]
++    public Task<OutboundAudienceOptionsResponse> AudienceOptionsAsync(CancellationToken cancellationToken) =>
++        _campaigns.GetAudienceOptionsAsync(CompanyId(), cancellationToken);
++
+     [HttpGet("{id:guid}")]
+     public async Task<ActionResult<OutboundCampaignDetailResponse>> GetAsync(Guid id, CancellationToken cancellationToken)
+     {
+diff --git a/src/VirtualCompany.Web/Services/SalesApiClient.cs b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+index 2f8b9f2..ab8d001 100644
+--- a/src/VirtualCompany.Web/Services/SalesApiClient.cs
++++ b/src/VirtualCompany.Web/Services/SalesApiClient.cs
+@@ -63,6 +63,25 @@ public sealed class SalesApiClient
+     public Task<SalesFinanceHandoffResponse> RetryFinanceHandoffAsync(Guid companyId, Guid dealId, CancellationToken cancellationToken = default) =>
+         SendAsync<object, SalesFinanceHandoffResponse>(companyId, HttpMethod.Post, $"api/sales/deals/{dealId:D}/finance-handoff/retry", new { }, cancellationToken);
+ 
++    public async Task<IReadOnlyList<OutboundCampaignSummaryResponse>> ListCampaignsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        await GetAsync<List<OutboundCampaignSummaryResponse>>(companyId, "api/sales/campaigns", allowNotFound: false, cancellationToken) ?? [];
++
++    public Task<OutboundCampaignDetailResponse?> GetCampaignAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
++        GetAsync<OutboundCampaignDetailResponse>(companyId, $"api/sales/campaigns/{campaignId:D}", allowNotFound: true, cancellationToken);
++
++    public Task<OutboundAudienceOptionsResponse> GetCampaignAudienceOptionsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
++        GetAsync<OutboundAudienceOptionsResponse>(companyId, "api/sales/campaigns/audience-options", allowNotFound: false, cancellationToken)!;
++
++    public Task<OutboundCampaignDetailResponse> CreateCampaignAsync(Guid companyId, CreateOutboundCampaignRequest request, CancellationToken cancellationToken = default) =>
++        SendAsync<CreateOutboundCampaignRequest, OutboundCampaignDetailResponse>(companyId, HttpMethod.Post, "api/sales/campaigns", request, cancellationToken);
++
++    public Task<OutboundCampaignDetailResponse> LaunchCampaignAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
++        SendAsync<object, OutboundCampaignDetailResponse>(companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/launch", new { }, cancellationToken);
++
++    public Task<OutboundCampaignDetailResponse> PauseCampaignAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
++        SendAsync<object, OutboundCampaignDetailResponse>(companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/pause", new { }, cancellationToken);
++
++    public Task<OutboundCampaignDetailResponse> StopCampaignAsync(Guid companyId, Guid campaignId, string? reason, CancellationToken cancellationToken = default) =>
++        SendAsync<StopCampaignRequest, OutboundCampaignDetailResponse>(companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/stop", new(reason), cancellationToken);
++
+     private async Task<T?> GetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
+     {
+         if (_useOfflineMode)
+@@ -231,3 +250,31 @@ public sealed record SalesActionRequest(string? Note);
+ public sealed record UpdateLeadQualificationRequest(string Fit, string Temperature, string Priority, string SuggestedNextAction, string? Note);
+ public sealed record ConvertLeadRequest(decimal Amount, string Currency, DateTime? ExpectedCloseUtc, string? Note);
+ public sealed record ChangeDealStageRequest(Guid StageId, string? Note);
++public sealed record CreateOutboundCampaignRequest(string Name, string? Description, string AudienceType, IReadOnlyList<Guid> ContactIds, OutboundPolicyRequest Policy, IReadOnlyList<CreateSequenceStepRequest> Steps);
++public sealed record OutboundPolicyRequest(bool OutboundEnabled, int MaxEmailsPerDay, bool ApprovalRequired);
++public sealed record CreateSequenceStepRequest(int StepOrder, int DelayDays, string Subject, string Body, bool AiPersonalizationEnabled);
++public sealed record StopCampaignRequest(string? Reason);
++public sealed record OutboundCampaignSummaryResponse(Guid Id, string Name, string Status, int AudienceCount, int PendingSteps, int SentSteps, int BouncedSteps, DateTime UpdatedUtc);
++public sealed record OutboundCampaignDetailResponse(Guid Id, string Name, string? Description, string Status, string AudienceType, OutboundPolicyResponse Policy, IReadOnlyList<OutboundCampaignContactResponse> Audience, IReadOnlyList<SequenceStepResponse> Steps, IReadOnlyList<SequenceExecutionResponse> Executions, DateTime CreatedUtc, DateTime UpdatedUtc);
++public sealed record OutboundPolicyResponse(bool OutboundEnabled, int MaxEmailsPerDay, bool ApprovalRequired);
++public sealed record OutboundCampaignContactResponse(Guid ContactId, string ContactName, string Email, string Status, int? CurrentStepOrder, DateTime EnrolledUtc);
++public sealed record SequenceStepResponse(Guid Id, int StepOrder, int DelayDays, string Subject, bool AiPersonalizationEnabled);
++public sealed record SequenceExecutionResponse(Guid Id, Guid ContactId, string ContactName, string Status, string? StopReason, IReadOnlyList<SequenceExecutionStepResponse> Steps);
++public sealed record SequenceExecutionStepResponse(Guid Id, int StepOrder, string Status, DateTime ScheduledSendUtc, DateTime? SentUtc, string? ProviderMessageId, string DeliveryStatus, string? BounceStatus);
++public sealed record OutboundAudienceOptionsResponse(IReadOnlyList<OutboundAudienceContactResponse> Contacts, IReadOnlyList<OutboundAudienceSourceResponse> Sources);
++public sealed record OutboundAudienceContactResponse(Guid ContactId, string ContactName, string Email, string? CustomerCompanyName, IReadOnlyList<string> SourceTypes);
++public sealed record OutboundAudienceSourceResponse(string SourceType, string Label, int ContactCount);
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor b/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
+index 3b7a11d..6f1f7a8 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesDashboard.razor
+@@ -17,6 +17,7 @@
+                 <a class="active" href="@BuildPath("/app/sales")">Overview</a>
+                 <a href="@BuildPath("/app/sales/leads")">Leads</a>
+                 <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+             </nav>
+         </header>
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor b/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
+index 5861c28..f9a7e72 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesLeads.razor
+@@ -17,6 +17,7 @@
+                 <a href="@BuildPath("/app/sales")">Overview</a>
+                 <a class="active" href="@BuildPath("/app/sales/leads")">Leads</a>
+                 <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+             </nav>
+         </header>
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor b/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+index d47a2d9..0bc8e4b 100644
+--- a/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesPipeline.razor
+@@ -17,6 +17,7 @@
+                 <a href="@BuildPath("/app/sales")">Overview</a>
+                 <a href="@BuildPath("/app/sales/leads")">Leads</a>
+                 <a class="active" href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+             </nav>
+         </header>
+diff --git a/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor b/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor
+index 1d9a8b1..70fca29 100644
+--- a/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor
++++ b/src/VirtualCompany.Web/Components/Sales/SalesAgentPanel.razor
+@@ -23,6 +23,10 @@
+                     <span>@Dashboard.DealsNeedingAttention</span>
+                     <small>follow-ups</small>
+                 </a>
++                <a href="@BuildPath("/app/sales/campaigns")">
++                    <span>@Dashboard.NewLeads</span>
++                    <small>campaign audience</small>
++                </a>
+             </div>
+         </section>
+diff --git a/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor b/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+new file mode 100644
+index 0000000..9f6820b
+--- /dev/null
++++ b/src/VirtualCompany.Web/Pages/Sales/SalesCampaigns.razor
+@@ -0,0 +1,488 @@
++@page "/app/sales/campaigns"
++@rendermode InteractiveServer
++@inherits SalesPageBase
++@using System.Globalization
++@using VirtualCompany.Web.Components.Sales
++
++<PageTitle>Sales campaigns</PageTitle>
++
++<div class="sales-workspace">
++    <main class="sales-main">
++        <header class="sales-page-header">
++            <span>SALES</span>
++            <h1>Outbound campaigns</h1>
++            <p>Create multi-step email sequences, choose the audience, preview the schedule, and let Alex manage safe follow-up.</p>
++            <nav class="sales-tabs" aria-label="Sales sections">
++                <a href="@BuildPath("/app/sales")">Overview</a>
++                <a href="@BuildPath("/app/sales/leads")">Leads</a>
++                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
++                <a class="active" href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
++            </nav>
++        </header>
++
++        @if (isLoading)
++        {
++            <section class="sales-card sales-empty">Loading campaigns...</section>
++        }
++        else if (!string.IsNullOrWhiteSpace(errorMessage))
++        {
++            <section class="sales-card sales-error">
++                <h2>Campaigns are unavailable</h2>
++                <p>@errorMessage</p>
++                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
++            </section>
++        }
++        else
++        {
++            <section class="sales-kpi-grid" aria-label="Campaign KPIs">
++                <article class="sales-kpi-card">
++                    <span>Active campaigns</span>
++                    <strong>@campaigns.Count(x => string.Equals(x.Status, "Active", StringComparison.OrdinalIgnoreCase))</strong>
++                    <small>Sending only while policy allows</small>
++                </article>
++                <article class="sales-kpi-card">
++                    <span>Audience ready</span>
++                    <strong>@FilteredAudience.Count</strong>
++                    <small>Eligible contacts in this view</small>
++                </article>
++                <article class="sales-kpi-card">
++                    <span>Pending steps</span>
++                    <strong>@campaigns.Sum(x => x.PendingSteps)</strong>
++                    <small>Scheduled future emails</small>
++                </article>
++                <article class="sales-kpi-card">
++                    <span>Sent emails</span>
++                    <strong>@campaigns.Sum(x => x.SentSteps)</strong>
++                    <small>Persisted delivery records</small>
++                </article>
++            </section>
++
++            <div class="sales-two-column sales-two-column--campaigns">
++                <section class="sales-card">
++                    <div class="sales-section-heading">
++                        <div>
++                            <span>CAMPAIGNS</span>
++                            <h2>Live campaign control</h2>
++                            <p>Start, pause, or stop a campaign without leaving this page.</p>
++                        </div>
++                        <button class="sales-button sales-button--primary" @onclick="BeginNewCampaign">New campaign</button>
++                    </div>
++
++                    @if (campaigns.Count == 0)
++                    {
++                        <div class="sales-empty">
++                            <h2>No campaigns yet</h2>
++                            <p>Create a sequence with at least four steps and Alex will schedule the eligible contacts.</p>
++                        </div>
++                    }
++                    else
++                    {
++                        <div class="sales-list">
++                            @foreach (var campaign in campaigns)
++                            {
++                                <button class="@CampaignRowClass(campaign.Id)" @onclick="() => SelectCampaignAsync(campaign.Id)">
++                                    <div>
++                                        <strong>@campaign.Name</strong>
++                                        <span>@campaign.AudienceCount contacts · @campaign.PendingSteps pending · @campaign.SentSteps sent · updated @campaign.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
++                                    </div>
++                                    <span class="@BadgeClass(campaign.Status)">@campaign.Status</span>
++                                </button>
++                            }
++                        </div>
++                    }
++                </section>
++
++                <section class="sales-card">
++                    <div class="sales-section-heading">
++                        <div>
++                            <span>DETAILS</span>
++                            <h2>@(selectedCampaign is null ? "Campaign preview" : selectedCampaign.Name)</h2>
++                            <p>@(selectedCampaign is null ? "Select a campaign or create a draft to review the audience and schedule." : "Review status, delivery state, and future sequence steps.")</p>
++                        </div>
++                    </div>
++
++                    @if (selectedCampaign is null)
++                    {
++                        <div class="sales-empty">
++                            <h2>No campaign selected</h2>
++                            <p>Select a campaign to see details, or create one from the builder below.</p>
++                        </div>
++                    }
++                    else
++                    {
++                        <div class="sales-campaign-detail">
++                            <div class="sales-campaign-detail__header">
++                                <span class="@BadgeClass(selectedCampaign.Status)">@selectedCampaign.Status</span>
++                                <span>@selectedCampaign.Audience.Count contacts</span>
++                                <span>@selectedCampaign.Steps.Count steps</span>
++                            </div>
++
++                            <div class="sales-actions">
++                                <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="() => ChangeCampaignStateAsync("launch")">Start</button>
++                                <button class="sales-button" disabled="@isSubmitting" @onclick="() => ChangeCampaignStateAsync("pause")">Pause</button>
++                                <button class="sales-button" disabled="@isSubmitting" @onclick="() => ChangeCampaignStateAsync("stop")">Stop</button>
++                            </div>
++
++                            <dl class="sales-definition-list">
++                                <div>
++                                    <dt>Policy</dt>
++                                    <dd>@PolicySummary(selectedCampaign.Policy)</dd>
++                                </div>
++                                <div>
++                                    <dt>Delivery</dt>
++                                    <dd>@selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.SentUtc.HasValue) sent, @selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.Status == "Pending") pending, @selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.BounceStatus is not null) bounced</dd>
++                                </div>
++                            </dl>
++
++                            <div class="sales-campaign-executions">
++                                @if (selectedCampaign.Executions.Count == 0)
++                                {
++                                    <div class="sales-empty sales-empty--compact">No sequence executions have been scheduled yet.</div>
++                                }
++                                else
++                                {
++                                    @foreach (var execution in selectedCampaign.Executions.Take(8))
++                                    {
++                                        <article>
++                                            <header>
++                                                <strong>@execution.ContactName</strong>
++                                                <span class="@BadgeClass(execution.Status)">@execution.Status</span>
++                                            </header>
++                                            <div>
++                                                @foreach (var step in execution.Steps)
++                                                {
++                                                    <span title="@step.ScheduledSendUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)" class="@BadgeClass(step.Status)">Step @step.StepOrder</span>
++                                                }
++                                            </div>
++                                        </article>
++                                    }
++                                }
++                            </div>
++                        </div>
++                    }
++                </section>
++            </div>
++
++            @if (showBuilder)
++            {
++                <section class="sales-card sales-campaign-builder">
++                    <div class="sales-section-heading">
++                        <div>
++                            <span>CREATE CAMPAIGN</span>
++                            <h2>Build a four-step sequence</h2>
++                            <p>Alex will only schedule eligible tenant contacts and the backend will enforce outbound policy before sending.</p>
++                        </div>
++                        <button class="sales-button" @onclick="CancelBuilder">Close</button>
++                    </div>
++
++                    @if (validationErrors.Count > 0)
++                    {
++                        <div class="sales-alert sales-alert--danger">
++                            @foreach (var error in validationErrors)
++                            {
++                                <div>@error</div>
++                            }
++                        </div>
++                    }
++
++                    <div class="sales-campaign-form">
++                        <label>
++                            <span>Campaign name</span>
++                            <input class="sales-input" @bind="draft.Name" @bind:event="oninput" placeholder="Q2 renewal outreach" />
++                        </label>
++                        <label>
++                            <span>Description</span>
++                            <input class="sales-input" @bind="draft.Description" @bind:event="oninput" placeholder="Optional internal note" />
++                        </label>
++                    </div>
++
++                    <div class="sales-campaign-layout">
++                        <section class="sales-campaign-panel">
++                            <div class="sales-section-heading">
++                                <div>
++                                    <span>AUDIENCE</span>
++                                    <h2>Select contacts</h2>
++                                </div>
++                            </div>
++
++                            <div class="sales-filter-card sales-filter-card--campaigns">
++                                <label>
++                                    <span>Audience source</span>
++                                    <select class="sales-input" @bind="draft.AudienceType">
++                                        @foreach (var source in audienceOptions.Sources)
++                                        {
++                                            <option value="@source.SourceType">@source.Label (@source.ContactCount)</option>
++                                        }
++                                    </select>
++                                </label>
++                                <label>
++                                    <span>Search contacts</span>
++                                    <input class="sales-input" @bind="audienceSearch" @bind:event="oninput" placeholder="Search by name, email, or company" />
++                                </label>
++                            </div>
++
++                            <div class="sales-audience-list">
++                                @if (FilteredAudience.Count == 0)
++                                {
++                                    <div class="sales-empty sales-empty--compact">No contacts match this audience source.</div>
++                                }
++                                else
++                                {
++                                    @foreach (var contact in FilteredAudience.Take(80))
++                                    {
++                                        <label class="sales-audience-row">
++                                            <input type="checkbox" checked="@draft.ContactIds.Contains(contact.ContactId)" @onchange="args => ToggleContact(contact.ContactId, args.Value as bool? == true)" />
++                                            <span>
++                                                <strong>@contact.ContactName</strong>
++                                                <small>@contact.Email · @(contact.CustomerCompanyName ?? "No company linked")</small>
++                                            </span>
++                                        </label>
++                                    }
++                                }
++                            </div>
++                        </section>
++
++                        <section class="sales-campaign-panel">
++                            <div class="sales-section-heading">
++                                <div>
++                                    <span>SEQUENCE</span>
++                                    <h2>Email steps</h2>
++                                </div>
++                                <button class="sales-button sales-button--small" @onclick="AddStep">Add step</button>
++                            </div>
++
++                            <div class="sales-sequence-builder">
++                                @foreach (var step in draft.Steps.OrderBy(x => x.StepOrder))
++                                {
++                                    <article class="sales-sequence-step" @key="step.ClientId">
++                                        <header>
++                                            <strong>Step @step.StepOrder</strong>
++                                            <label class="sales-switch">
++                                                <input type="checkbox" @bind="step.AiPersonalizationEnabled" />
++                                                <span>AI personalization</span>
++                                            </label>
++                                        </header>
++                                        <div class="sales-sequence-grid">
++                                            <label>
++                                                <span>Delay days</span>
++                                                <input class="sales-input" type="number" min="0" @bind="step.DelayDays" />
++                                            </label>
++                                            <label>
++                                                <span>Subject</span>
++                                                <input class="sales-input" @bind="step.Subject" @bind:event="oninput" />
++                                            </label>
++                                        </div>
++                                        <label>
++                                            <span>Email body</span>
++                                            <textarea class="sales-input sales-textarea" @bind="step.Body" @bind:event="oninput"></textarea>
++                                        </label>
++                                    </article>
++                                }
++                            </div>
++                        </section>
++                    </div>
++
++                    <section class="sales-campaign-preview">
++                        <div>
++                            <span>PREVIEW</span>
++                            <h2>@PreviewTitle</h2>
++                            <p>@PreviewSummary</p>
++                        </div>
++                        <div class="sales-campaign-preview__grid">
++                            <article>
++                                <strong>@draft.ContactIds.Count</strong>
++                                <span>eligible contacts</span>
++                            </article>
++                            <article>
++                                <strong>@draft.Steps.Count</strong>
++                                <span>sequence steps</span>
++                            </article>
++                            <article>
++                                <strong>@ProjectedScheduleDays</strong>
++                                <span>days in schedule</span>
++                            </article>
++                        </div>
++                        <div class="sales-actions">
++                            <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="CreateCampaignAsync">Save campaign</button>
++                            <button class="sales-button" @onclick="SelectAllFiltered">Select this audience</button>
++                        </div>
++                    </section>
++                </section>
++            }
++
++            @if (!string.IsNullOrWhiteSpace(actionMessage))
++            {
++                <div class="sales-toast">@actionMessage</div>
++            }
++        }
++    </main>
++
++    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
++</div>
++
++@code {
++    private bool isLoading = true;
++    private bool isSubmitting;
++    private bool showBuilder;
++    private string? errorMessage;
++    private string? actionMessage;
++    private string? audienceSearch;
++    private List<string> validationErrors = [];
++    private List<OutboundCampaignSummaryResponse> campaigns = [];
++    private OutboundCampaignDetailResponse? selectedCampaign;
++    private OutboundAudienceOptionsResponse audienceOptions = new([], []);
++    private CampaignDraft draft = CampaignDraft.CreateDefault();
++
++    protected override async Task OnParametersSetAsync() => await LoadAsync();
++
++    private IReadOnlyList<OutboundAudienceContactResponse> FilteredAudience => audienceOptions.Contacts
++        .Where(x => x.SourceTypes.Contains(draft.AudienceType))
++        .Where(x => string.IsNullOrWhiteSpace(audienceSearch) ||
++            $"{x.ContactName} {x.Email} {x.CustomerCompanyName}".Contains(audienceSearch, StringComparison.OrdinalIgnoreCase))
++        .ToList();
++
++    private string PreviewTitle => string.IsNullOrWhiteSpace(draft.Name) ? "Draft campaign" : draft.Name;
++    private string PreviewSummary => draft.ContactIds.Count == 0
++        ? "Select contacts to preview who Alex will enroll."
++        : $"{draft.ContactIds.Count} contacts will receive {draft.Steps.Count} email steps. Sends are rate limited and pending steps stop after a reply, bounce, or deal creation.";
++    private int ProjectedScheduleDays => draft.Steps.Count == 0 ? 0 : draft.Steps.Max(x => x.DelayDays) + 1;
++
++    private async Task LoadAsync()
++    {
++        isLoading = true;
++        errorMessage = null;
++        try
++        {
++            if (!await ResolveCompanyAsync())
++            {
++                errorMessage = ShellErrorMessage;
++                return;
++            }
++
++            var companyId = ResolvedCompanyId!.Value;
++            campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
++            audienceOptions = await SalesApiClient.GetCampaignAudienceOptionsAsync(companyId);
++            if (selectedCampaign is not null)
++            {
++                selectedCampaign = await SalesApiClient.GetCampaignAsync(companyId, selectedCampaign.Id);
++            }
++
++            EnsureAudienceSource();
++            await RefreshAgentPanelAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            errorMessage = ex.Message;
++            AgentPanelErrorMessage = ex.Message;
++        }
++        finally
++        {
++            isLoading = false;
++        }
++    }
++
++    private void BeginNewCampaign()
++    {
++        draft = CampaignDraft.CreateDefault();
++        EnsureAudienceSource();
++        validationErrors = [];
++        showBuilder = true;
++    }
++
++    private void CancelBuilder()
++    {
++        showBuilder = false;
++        validationErrors = [];
++    }
++
++    private async Task SelectCampaignAsync(Guid campaignId)
++    {
++        if (ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        actionMessage = null;
++        try
++        {
++            selectedCampaign = await SalesApiClient.GetCampaignAsync(companyId, campaignId);
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++    }
++
++    private async Task ChangeCampaignStateAsync(string action)
++    {
++        if (ResolvedCompanyId is not Guid companyId || selectedCampaign is null)
++        {
++            return;
++        }
++
++        isSubmitting = true;
++        actionMessage = null;
++        try
++        {
++            selectedCampaign = action switch
++            {
++                "launch" => await SalesApiClient.LaunchCampaignAsync(companyId, selectedCampaign.Id),
++                "pause" => await SalesApiClient.PauseCampaignAsync(companyId, selectedCampaign.Id),
++                "stop" => await SalesApiClient.StopCampaignAsync(companyId, selectedCampaign.Id, "Stopped from the campaign control page."),
++                _ => selectedCampaign
++            };
++            campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
++            actionMessage = action == "launch" ? "Campaign start requested." : action == "pause" ? "Campaign paused." : "Campaign stopped.";
++            await RefreshAgentPanelAsync();
++        }
++        catch (SalesApiException ex)
++        {
++            actionMessage = ex.Message;
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private async Task CreateCampaignAsync()
++    {
++        if (ResolvedCompanyId is not Guid companyId)
++        {
++            return;
++        }
++
++        validationErrors = ValidateDraft();
++        if (validationErrors.Count > 0)
++        {
++            return;
++        }
++
++        isSubmitting = true;
++        actionMessage = null;
++        try
++        {
++            selectedCampaign = await SalesApiClient.CreateCampaignAsync(companyId, new CreateOutboundCampaignRequest(
++                draft.Name,
++                draft.Description,
++                draft.AudienceType,
++                draft.ContactIds.ToList(),
++                new OutboundPolicyRequest(draft.OutboundEnabled, draft.MaxEmailsPerDay, draft.ApprovalRequired),
++                draft.Steps.OrderBy(x => x.StepOrder).Select(x => new CreateSequenceStepRequest(x.StepOrder, x.DelayDays, x.Subject, x.Body, x.AiPersonalizationEnabled)).ToList()));
++            campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
++            showBuilder = false;
++            actionMessage = "Campaign saved.";
++        }
++        catch (SalesApiException ex)
++        {
++            validationErrors = ex.Errors?.SelectMany(x => x.Value).ToList() ?? [ex.Message];
++        }
++        finally
++        {
++            isSubmitting = false;
++        }
++    }
++
++    private List<string> ValidateDraft()
++    {
++        var errors = new List<string>();
++        if (string.IsNullOrWhiteSpace(draft.Name)) errors.Add("Campaign name is required.");
++        if (string.IsNullOrWhiteSpace(draft.AudienceType)) errors.Add("Audience selection is required.");
++        if (draft.ContactIds.Count == 0) errors.Add("Select at least one eligible contact.");
++        if (draft.Steps.Count < 4) errors.Add("A campaign sequence needs at least 4 steps.");
++        if (draft.MaxEmailsPerDay <= 0) errors.Add("Daily email limit must be greater than zero.");
++        if (!draft.OutboundEnabled) errors.Add("Outbound email must be enabled before Alex can launch a campaign.");
++        foreach (var step in draft.Steps)
++        {
++            if (step.DelayDays < 0) errors.Add($"Step {step.StepOrder} delay cannot be negative.");
++            if (string.IsNullOrWhiteSpace(step.Subject)) errors.Add($"Step {step.StepOrder} needs a subject.");
++            if (string.IsNullOrWhiteSpace(step.Body)) errors.Add($"Step {step.StepOrder} needs an email body.");
++        }
++
++        return errors;
++    }
++
++    private void ToggleContact(Guid contactId, bool selected)
++    {
++        if (selected)
++        {
++            draft.ContactIds.Add(contactId);
++        }
++        else
++        {
++            draft.ContactIds.Remove(contactId);
++        }
++    }
++
++    private void SelectAllFiltered()
++    {
++        foreach (var contact in FilteredAudience)
++        {
++            draft.ContactIds.Add(contact.ContactId);
++        }
++    }
++
++    private void AddStep()
++    {
++        var nextOrder = draft.Steps.Count == 0 ? 1 : draft.Steps.Max(x => x.StepOrder) + 1;
++        draft.Steps.Add(new CampaignStepDraft
++        {
++            StepOrder = nextOrder,
++            DelayDays = nextOrder == 1 ? 0 : (nextOrder - 1) * 3,
++            Subject = $"Checking in, step {nextOrder}",
++            Body = "Hi {{first_name}},\n\nFollowing up to see if this is still useful for your team.\n\nBest,\nAlex",
++            AiPersonalizationEnabled = true
++        });
++    }
++
++    private void EnsureAudienceSource()
++    {
++        if (audienceOptions.Sources.Count == 0)
++        {
++            return;
++        }
++
++        if (string.IsNullOrWhiteSpace(draft.AudienceType) || audienceOptions.Sources.All(x => x.SourceType != draft.AudienceType))
++        {
++            draft.AudienceType = audienceOptions.Sources[0].SourceType;
++        }
++    }
++
++    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
++    private string CampaignRowClass(Guid campaignId) => $"sales-list-row sales-list-row--button{(selectedCampaign?.Id == campaignId ? " sales-list-row--selected" : "")}";
++    private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
++    private static string PolicySummary(OutboundPolicyResponse policy) => $"{(policy.OutboundEnabled ? "Outbound enabled" : "Outbound disabled")}, {policy.MaxEmailsPerDay} emails per day, {(policy.ApprovalRequired ? "approval required" : "no launch approval required")}";
++
++    private sealed class CampaignDraft
++    {
++        public string Name { get; set; } = "";
++        public string? Description { get; set; }
++        public string AudienceType { get; set; } = "existing_contacts";
++        public HashSet<Guid> ContactIds { get; } = [];
++        public bool OutboundEnabled { get; set; } = true;
++        public int MaxEmailsPerDay { get; set; } = 50;
++        public bool ApprovalRequired { get; set; }
++        public List<CampaignStepDraft> Steps { get; } = [];
++
++        public static CampaignDraft CreateDefault()
++        {
++            var draft = new CampaignDraft();
++            for (var i = 1; i <= 4; i++)
++            {
++                draft.Steps.Add(new CampaignStepDraft
++                {
++                    StepOrder = i,
++                    DelayDays = i == 1 ? 0 : (i - 1) * 3,
++                    Subject = i switch
++                    {
++                        1 => "Quick question for {{company_name}}",
++                        2 => "Useful next step?",
++                        3 => "Worth a short review?",
++                        _ => "Should I close the loop?"
++                    },
++                    Body = "Hi {{first_name}},\n\nAlex is following up with a short, relevant note for your team.\n\nBest,\nAlex",
++                    AiPersonalizationEnabled = true
++                });
++            }
++
++            return draft;
++        }
++    }
++
++    private sealed class CampaignStepDraft
++    {
++        public Guid ClientId { get; } = Guid.NewGuid();
++        public int StepOrder { get; set; }
++        public int DelayDays { get; set; }
++        public string Subject { get; set; } = "";
++        public string Body { get; set; } = "";
++        public bool AiPersonalizationEnabled { get; set; }
++    }
++}
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 448d90e..eef829e 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -447,6 +447,8 @@ code {
+ .sales-list-row,
+ .sales-timeline-row,
+ .sales-agent-panel__item {
++    background: transparent;
++    border: 0;
+     align-items: center;
+     border-radius: 12px;
+     color: inherit;
+@@ -456,6 +458,19 @@ code {
+     padding: 12px;
+     text-decoration: none;
+ }
++
++.sales-list-row--button {
++    cursor: pointer;
++    font: inherit;
++    text-align: left;
++    width: 100%;
++}
++
++.sales-list-row--selected {
++    background: #eff6ff;
++    box-shadow: inset 3px 0 0 #2563eb;
++}
+ 
+ .sales-list-row:hover,
+ .sales-timeline-row:hover,
+@@ -489,12 +504,17 @@ code {
+     color: #15803d;
+ }
+ 
++.sales-badge--active,
++.sales-badge--delivered {
++    background: #ecfdf5;
++    color: #15803d;
++}
++
+ .sales-badge--rejected,
+-.sales-badge--lost {
++.sales-badge--lost,
++.sales-badge--stopped,
++.sales-badge--cancelled,
++.sales-badge--bounced {
+     background: #fef2f2;
+     color: #b91c1c;
+ }
+ 
+@@ -784,6 +804,138 @@ code {
+     position: static;
+ }
+ 
++.sales-two-column--campaigns {
++    grid-template-columns: minmax(0, 0.95fr) minmax(360px, 0.8fr);
++}
++
++.sales-campaign-builder,
++.sales-campaign-panel,
++.sales-campaign-detail,
++.sales-sequence-builder,
++.sales-campaign-executions {
++    display: grid;
++    gap: 16px;
++}
++
++.sales-campaign-form {
++    display: grid;
++    gap: 14px;
++    grid-template-columns: minmax(240px, 1fr) minmax(240px, 1fr);
++}
++
++.sales-campaign-form label,
++.sales-campaign-panel label,
++.sales-sequence-step label {
++    display: grid;
++    gap: 6px;
++}
++
++.sales-campaign-form label span,
++.sales-campaign-panel label span,
++.sales-sequence-step label span {
++    color: #475569;
++    font-size: 0.85rem;
++    font-weight: 700;
++}
++
++.sales-campaign-layout {
++    align-items: start;
++    display: grid;
++    gap: 18px;
++    grid-template-columns: minmax(300px, 0.9fr) minmax(360px, 1.1fr);
++}
++
++.sales-campaign-panel {
++    background: #f8fafc;
++    border: 1px solid #e5e7eb;
++    border-radius: 14px;
++    padding: 16px;
++}
++
++.sales-filter-card--campaigns {
++    grid-template-columns: minmax(180px, 240px) minmax(220px, 1fr);
++    padding: 0;
++    box-shadow: none;
++    border: 0;
++    background: transparent;
++}
++
++.sales-audience-list {
++    display: grid;
++    gap: 8px;
++    max-height: 420px;
++    overflow: auto;
++    padding-right: 4px;
++}
++
++.sales-audience-row {
++    align-items: center;
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 12px;
++    display: flex !important;
++    gap: 10px;
++    padding: 10px;
++}
++
++.sales-audience-row input {
++    height: 18px;
++    width: 18px;
++}
++
++.sales-audience-row span {
++    display: grid;
++    gap: 2px;
++}
++
++.sales-audience-row small {
++    color: #64748b;
++}
++
++.sales-sequence-step {
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 14px;
++    display: grid;
++    gap: 12px;
++    padding: 14px;
++}
++
++.sales-sequence-step header,
++.sales-campaign-detail__header,
++.sales-campaign-executions article header {
++    align-items: center;
++    display: flex;
++    gap: 10px;
++    justify-content: space-between;
++}
++
++.sales-sequence-grid {
++    display: grid;
++    gap: 12px;
++    grid-template-columns: 120px minmax(0, 1fr);
++}
++
++.sales-textarea {
++    min-height: 96px;
++    resize: vertical;
++}
++
++.sales-switch {
++    align-items: center;
++    display: flex !important;
++    gap: 8px;
++}
++
++.sales-campaign-preview {
++    background: #eff6ff;
++    border: 1px solid #bfdbfe;
++    border-radius: 14px;
++    display: grid;
++    gap: 14px;
++    padding: 16px;
++}
++
++.sales-campaign-preview > div > span {
++    color: #2563eb;
++    font-size: 0.75rem;
++    font-weight: 700;
++}
++
++.sales-campaign-preview__grid {
++    display: grid;
++    gap: 12px;
++    grid-template-columns: repeat(3, minmax(0, 1fr));
++}
++
++.sales-campaign-preview__grid article,
++.sales-campaign-executions article {
++    background: #ffffff;
++    border: 1px solid #e5e7eb;
++    border-radius: 12px;
++    display: grid;
++    gap: 6px;
++    padding: 12px;
++}
++
++.sales-campaign-preview__grid strong {
++    color: #0f172a;
++    font-size: 1.5rem;
++}
++
++.sales-campaign-preview__grid span,
++.sales-campaign-detail__header,
++.sales-campaign-executions article > div {
++    color: #64748b;
++}
++
++.sales-campaign-executions article > div {
++    display: flex;
++    flex-wrap: wrap;
++    gap: 6px;
++}
++
+ @media (max-width: 1100px) {
+     .sales-workspace {
+         grid-template-columns: minmax(0, 1fr);
+@@ -793,7 +945,9 @@ code {
+         position: static;
+     }
+ 
+     .sales-kpi-grid,
+     .sales-two-column,
+-    .sales-two-column--detail {
++    .sales-two-column--detail,
++    .sales-two-column--campaigns,
++    .sales-campaign-layout {
+         grid-template-columns: repeat(2, minmax(0, 1fr));
+     }
+ }
+@@ -805,7 +959,12 @@ code {
+     .sales-kpi-grid,
+     .sales-two-column,
+     .sales-two-column--detail,
++    .sales-two-column--campaigns,
+     .sales-filter-card,
+-    .sales-convert-panel {
++    .sales-convert-panel,
++    .sales-campaign-layout,
++    .sales-campaign-form,
++    .sales-filter-card--campaigns,
++    .sales-sequence-grid,
++    .sales-campaign-preview__grid {
+         grid-template-columns: minmax(0, 1fr);
+     }
+diff --git a/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
+new file mode 100644
+index 0000000..344b777
+--- /dev/null
++++ b/tests/VirtualCompany.Api.Tests/SalesCampaignsIntegrationTests.cs
+@@ -0,0 +1,167 @@
++using System.Net;
++using System.Net.Http.Json;
++using Microsoft.EntityFrameworkCore;
++using VirtualCompany.Application.Auth;
++using VirtualCompany.Application.Sales;
++using VirtualCompany.Domain.Entities;
++using VirtualCompany.Domain.Enums;
++using VirtualCompany.Infrastructure.Auth;
++using VirtualCompany.Infrastructure.Persistence;
++using VirtualCompany.Infrastructure.Tenancy;
++
++namespace VirtualCompany.Api.Tests;
++
++public sealed class SalesCampaignsIntegrationTests : IClassFixture<TestWebApplicationFactory>
++{
++    private readonly TestWebApplicationFactory _factory;
++
++    public SalesCampaignsIntegrationTests(TestWebApplicationFactory factory)
++    {
++        _factory = factory;
++    }
++
++    [Fact]
++    public async Task Audience_options_are_tenant_scoped_and_grouped_for_campaign_builder()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var options = await client.GetFromJsonAsync<OutboundAudienceOptionsResponse>("/api/sales/campaigns/audience-options");
++
++        Assert.NotNull(options);
++        Assert.Contains(options!.Contacts, x => x.ContactId == seed.ContactAId && x.SourceTypes.Contains("existing_contacts"));
++        Assert.Contains(options.Contacts, x => x.ContactId == seed.ContactAId && x.SourceTypes.Contains("past_customers"));
++        Assert.DoesNotContain(options.Contacts, x => x.ContactId == seed.ContactBId);
++    }
++
++    [Fact]
++    public async Task Create_campaign_validates_required_fields_and_four_step_sequence()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var response = await client.PostAsJsonAsync("/api/sales/campaigns", new CreateOutboundCampaignRequest(
++            "",
++            null,
++            "existing_contacts",
++            [],
++            new OutboundPolicyRequest(true, 50, false),
++            [
++                new CreateSequenceStepRequest(1, 0, "One", "Body", true)
++            ]));
++
++        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
++    }
++
++    [Fact]
++    public async Task Launch_schedules_steps_idempotently_and_state_controls_update_without_cross_tenant_access()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var create = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId));
++        Assert.Equal(HttpStatusCode.Created, create.StatusCode);
++        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        Assert.NotNull(campaign);
++
++        var launch = await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign!.Id}/launch", new { });
++        Assert.Equal(HttpStatusCode.OK, launch.StatusCode);
++        var launchAgain = await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign.Id}/launch", new { });
++        Assert.Equal(HttpStatusCode.OK, launchAgain.StatusCode);
++
++        var state = await _factory.ExecuteDbContextAsync(async dbContext => new
++        {
++            Executions = await dbContext.SalesSequenceExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == campaign.Id),
++            Steps = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == campaign.Id)
++        });
++
++        Assert.Equal(1, state.Executions);
++        Assert.Equal(4, state.Steps);
++
++        var pause = await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign.Id}/pause", new { });
++        Assert.Equal(HttpStatusCode.OK, pause.StatusCode);
++
++        var stop = await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign.Id}/stop", new { Reason = "No longer needed" });
++        Assert.Equal(HttpStatusCode.OK, stop.StatusCode);
++        Assert.True(await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().AllAsync(x => x.CompanyId != seed.CompanyAId || x.SalesCampaignId != campaign.Id || x.Status == SalesStatuses.Cancelled)));
++
++        using var otherTenantClient = Client(seed.CompanyBId);
++        Assert.Equal(HttpStatusCode.NotFound, (await otherTenantClient.GetAsync($"/api/sales/campaigns/{campaign.Id}")).StatusCode);
++    }
++
++    [Fact]
++    public async Task Reply_and_deal_created_cancel_pending_future_steps_for_contact()
++    {
++        var seed = await SeedAsync();
++        using var client = Client(seed.CompanyAId);
++
++        var create = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId));
++        var campaign = await create.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        await client.PostAsJsonAsync($"/api/sales/campaigns/{campaign!.Id}/launch", new { });
++
++        await _factory.ExecuteDbContextAsync(async dbContext =>
++        {
++            var first = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == seed.CompanyAId && x.SalesCampaignId == campaign.Id)
++                .OrderBy(x => x.StepOrder)
++                .FirstAsync();
++            first.MarkSent("test", null, "provider-message-1", "thread-1", null, SalesStatuses.Delivered, DateTime.UtcNow);
++            await dbContext.SaveChangesAsync();
++        });
++
++        var reply = await client.PostAsJsonAsync("/api/sales/campaigns/provider/reply", new OutboundReplyReceived("provider-message-1", "thread-1", null, "buyer-a@example.com"));
++        Assert.Equal(HttpStatusCode.OK, reply.StatusCode);
++        Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, campaign.Id));
++
++        var createSecond = await client.PostAsJsonAsync("/api/sales/campaigns", ValidCampaign(seed.ContactAId, "Deal stop campaign"));
++        var second = await createSecond.Content.ReadFromJsonAsync<OutboundCampaignDetailResponse>();
++        await client.PostAsJsonAsync($"/api/sales/campaigns/{second!.Id}/launch", new { });
++        var dealStop = await client.PostAsJsonAsync($"/api/sales/campaigns/contacts/{seed.ContactAId}/deal-created", new { DealId = seed.DealAId });
++        Assert.Equal(HttpStatusCode.OK, dealStop.StatusCode);
++        Assert.True(await PendingStepsCancelledAsync(seed.CompanyAId, second.Id));
++    }
++
++    private async Task<bool> PendingStepsCancelledAsync(Guid companyId, Guid campaignId) =>
++        await _factory.ExecuteDbContextAsync(dbContext =>
++            dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
++                .Where(x => x.CompanyId == companyId && x.SalesCampaignId == campaignId && x.Status == SalesStatuses.Pending)
++                .CountAsync())
++        == 0;
++
++    private static CreateOutboundCampaignRequest ValidCampaign(Guid contactId, string name = "Renewal outreach") =>
++        new(
++            name,
++            "Four-step renewal sequence",
++            "existing_contacts",
++            [contactId],
++            new OutboundPolicyRequest(true, 50, false),
++            [
++                new CreateSequenceStepRequest(1, 0, "First touch", "Hi, checking in.", true),
++                new CreateSequenceStepRequest(2, 2, "Second touch", "Following up with a useful detail.", true),
++                new CreateSequenceStepRequest(3, 5, "Third touch", "Would a short review help?", true),
++                new CreateSequenceStepRequest(4, 9, "Close the loop", "Should I close the loop?", false)
++            ]);
++
++    private HttpClient Client(Guid companyId)
++    {
++        var client = _factory.CreateClient();
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "campaign-user");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "campaign-user@example.com");
++        client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Campaign User");
++        client.DefaultRequestHeaders.Add(CompanyContextResolutionMiddleware.CompanyHeaderName, companyId.ToString("D"));
++        return client;
++    }
++
++    private async Task<SeedIds> SeedAsync()
++    {
++        var companyAId = Guid.NewGuid();
++        var companyBId = Guid.NewGuid();
++        var userId = Guid.NewGuid();
++        var customerAId = Guid.NewGuid();
++        var customerBId = Guid.NewGuid();
++        var contactAId = Guid.NewGuid();
++        var contactBId = Guid.NewGuid();
++        var dealAId = Guid.NewGuid();
++
++        await _factory.SeedAsync(dbContext =>
++        {
++            dbContext.Users.Add(new User(userId, "campaign-user@example.com", "Campaign User", "dev-header", "campaign-user"));
++            dbContext.Companies.AddRange(new Company(companyAId, "Campaign Tenant A"), new Company(companyBId, "Campaign Tenant B"));
++            dbContext.CompanyMemberships.AddRange(
++                new CompanyMembership(Guid.NewGuid(), companyAId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
++                new CompanyMembership(Guid.NewGuid(), companyBId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
++            dbContext.CustomerCompanies.AddRange(new CustomerCompany(customerAId, companyAId, "Customer A"), new CustomerCompany(customerBId, companyBId, "Customer B"));
++            dbContext.Contacts.AddRange(new Contact(contactAId, companyAId, "Buyer A", "buyer-a@example.com", customerAId), new Contact(contactBId, companyBId, "Buyer B", "buyer-b@example.com", customerBId));
++            dbContext.Deals.Add(new Deal(dealAId, companyAId, "Won deal A", SalesPipelineStage.WonStageId, 1000m, "USD", SalesStatuses.Won, primaryContactId: contactAId, customerCompanyId: customerAId));
++            dbContext.SalesEmailLinks.Add(new SalesEmailLink(Guid.NewGuid(), companyAId, "imported-message-a", contactId: contactAId, customerCompanyId: customerAId, provider: "test"));
++            return Task.CompletedTask;
++        });
++
++        return new SeedIds(companyAId, companyBId, contactAId, contactBId, dealAId);
++    }
++
++    private sealed record SeedIds(Guid CompanyAId, Guid CompanyBId, Guid ContactAId, Guid ContactBId, Guid DealAId);
++}
+END_OF_PATCH

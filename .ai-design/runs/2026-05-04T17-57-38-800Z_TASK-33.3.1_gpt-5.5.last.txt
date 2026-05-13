@@ -1,0 +1,613 @@
+diff --git a/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs b/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
+index 3b0a6b5..5e4d5f1 100644
+--- a/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
++++ b/src/VirtualCompany.Api/Controllers/FinanceIntegrationConnectionsController.cs
+@@ -8,7 +8,7 @@ using VirtualCompany.Infrastructure.Tenancy;
+ namespace VirtualCompany.Api.Controllers;
+ 
+ [ApiController]
+-[Authorize(Policy = CompanyPolicies.CompanyAdmin)]
++[Authorize(Policy = CompanyPolicies.FinanceView)]
+ [RequireCompanyContext]
+ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+ {
+@@ -73,6 +73,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(result);
+     }
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpGet("api/companies/{companyId:guid}/finance/integrations/fortnox/oauth/start")]
+     public async Task<IActionResult> StartFortnoxOAuthAsync(
+         Guid companyId,
+@@ -109,6 +110,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+     public Task<ActionResult<FinanceIntegrationConnectionStatusResult>> FortnoxStatusAsync(
+         Guid companyId,
+         CancellationToken cancellationToken) =>
+         StatusAsync(companyId, FinanceIntegrationProviderKeys.Fortnox, cancellationToken);
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/connect")]
+     public async Task<ActionResult<StartFinanceIntegrationConnectionResponse>> ConnectAsync(
+         Guid companyId,
+@@ -143,6 +145,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(new StartFinanceIntegrationConnectionResponse(result.AuthorizationUrl.ToString(), result.ExpiresUtc));
+     }
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/reconnect")]
+     public Task<ActionResult<StartFinanceIntegrationConnectionResponse>> ReconnectAsync(
+         Guid companyId,
+@@ -157,6 +160,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+             },
+             cancellationToken);
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync")]
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/sync/now")]
+     public async Task<ActionResult<FinanceIntegrationSyncResult>> SyncNowAsync(
+@@ -245,6 +249,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(item);
+     }
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/disconnect")]
+     public async Task<ActionResult<FinanceIntegrationConnectionDisconnectResult>> DisconnectAsync(
+         Guid companyId,
+@@ -263,11 +268,13 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+         return Ok(result);
+     }
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpDelete("api/companies/{companyId:guid}/finance/integrations/fortnox")]
+     public Task<ActionResult<FinanceIntegrationConnectionDisconnectResult>> DisconnectFortnoxAsync(
+         Guid companyId,
+         CancellationToken cancellationToken) =>
+         DisconnectAsync(companyId, FinanceIntegrationProviderKeys.Fortnox, cancellationToken);
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpGet("api/companies/{companyId:guid}/finance/integrations/fortnox/oauth/callback")]
+     public Task<ActionResult<FinanceIntegrationOAuthCompletionResult>> FortnoxCallbackAsync(
+         Guid companyId,
+@@ -287,6 +294,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
+             cancellationToken);
+ 
++    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+     [HttpPost("api/companies/{companyId:guid}/finance/integrations/{providerKey}/write-command")]
+     public async Task<ActionResult<FinanceIntegrationWriteResult>> RequestWriteCommandApprovalAsync(
+         Guid companyId,
+diff --git a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+index 61d84db..6d6dc6b 100644
+--- a/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FinanceIntegrationProviderContracts.cs
+@@ -110,7 +110,8 @@ public sealed record FinanceIntegrationConnectionStatusResult(
+     DateTime? ConnectedAtUtc,
+     DateTime? AccessTokenExpiresUtc,
+     DateTime? LastRefreshAttemptUtc,
+-    string? LastErrorSummary);
++    string? LastErrorSummary,
++    DateTime? LastSuccessfulSyncUtc = null);
+ 
+ public sealed record FinanceIntegrationConnectionDisconnectResult(
+     string ProviderKey,
+diff --git a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+index 03843dc..20b86be 100644
+--- a/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
++++ b/src/VirtualCompany.Application/Finance/FortnoxOAuthContracts.cs
+@@ -45,7 +45,8 @@ public sealed record FortnoxConnectionStatusResult(
+     DateTime? ConnectedAtUtc,
+     DateTime? AccessTokenExpiresUtc,
+     DateTime? LastRefreshAttemptUtc,
+-    string? LastErrorSummary);
++    string? LastErrorSummary,
++    DateTime? LastSuccessfulSyncUtc = null);
+ 
+ public sealed record FortnoxAccessTokenResult(
+     bool Succeeded,
+@@ -92,7 +93,8 @@ public sealed record FortnoxTokenSnapshot(
+     string? ProviderTenantId,
+     DateTime? ConnectedUtc,
+     DateTime? LastRefreshAttemptUtc,
+-    string? LastErrorSummary);
++    string? LastErrorSummary,
++    DateTime? LastSuccessfulSyncUtc);
+ 
+ public sealed record FortnoxConnectionDisconnectResult(
+     Guid CompanyId,
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs
+index 4237e15..3bc9309 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxFinanceIntegrationAdapters.cs
+@@ -72,7 +72,8 @@ public sealed class FortnoxFinanceIntegrationOAuthService(IFortnoxOAuthService f
+             result.ConnectedAtUtc,
+             result.AccessTokenExpiresUtc,
+             result.LastRefreshAttemptUtc,
+-            result.LastErrorSummary);
++            result.LastErrorSummary,
++            result.LastSuccessfulSyncUtc);
+     }
+ 
+     public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+index b0aa080..74845c6 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxOAuthService.cs
+@@ -286,7 +286,7 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+         var connection = await _tokenStore.GetStatusAsync(query.CompanyId, null, cancellationToken);
+ 
+         if (connection is null)
+         {
+-            return new FortnoxConnectionStatusResult(false, null, null, null, null, null, null);
++            return new FortnoxConnectionStatusResult(false, null, null, null, null, null, null, null);
+         }
+ 
+         return new FortnoxConnectionStatusResult(
+@@ -296,7 +296,8 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
+             connection.ConnectedUtc,
+             connection.AccessTokenExpiresUtc,
+             connection.LastRefreshAttemptUtc,
+-            connection.LastErrorSummary);
++            connection.LastErrorSummary,
++            connection.LastSuccessfulSyncUtc);
+     }
+ 
+     public async Task MarkNeedsReconnectAsync(
+diff --git a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+index c9fd6f1..e96a9ca 100644
+--- a/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
++++ b/src/VirtualCompany.Infrastructure/Finance/FortnoxTokenStore.cs
+@@ -179,7 +179,8 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
+             connection.ProviderTenantId,
+             connection.ConnectedUtc,
+             connection.LastRefreshAttemptUtc,
+-            connection.LastErrorSummary);
++            connection.LastErrorSummary,
++            connection.LastSyncUtc);
+     }
+ 
+     private string EncryptAccess(Guid companyId, string plaintext) =>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+index 6fe0226..d1f2ef1 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor
+@@ -177,31 +177,41 @@
+                             <p class="text-body-secondary mb-0">@FinanceIntegrationStateDescription</p>
+                         </div>
+                     </div>
+-                    <div class="d-flex flex-wrap gap-2">
+-                        @if (ShowConnectAction)
++                    @if (CanManageFinanceIntegrations)
++                    {
++                        <div class="d-flex flex-wrap gap-2">
++                            @if (ShowConnectAction)
++                            {
++                                <button class="btn btn-primary" type="button" @onclick="ConnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
++                                    @(IsFinanceIntegrationConnecting ? "Connecting..." : "Connect accounting system")
++                                </button>
++                            }
++                            @if (ShowReconnectAction)
++                            {
++                                <button class="btn btn-primary" type="button" @onclick="ReconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
++                                    @(IsFinanceIntegrationConnecting ? "Reconnecting..." : "Reconnect")
++                                </button>
++                            }
++                            @if (ShowSyncAction)
++                            {
++                                <button class="btn btn-outline-primary" type="button" @onclick="SyncFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy || IsFinanceIntegrationSyncing">
++                                    @(IsFinanceIntegrationSyncing ? "Syncing..." : "Sync data")
++                                </button>
++                            }
++                            @if (ShowDisconnectAction)
++                            {
++                                <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">Disconnect</button>
++                            }
++                            <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
++                                @(ShowFinanceIntegrationHistory ? "Hide sync history" : "View sync history")
++                            </button>
++                        </div>
++                    }
++                    else
++                    {
++                        <div class="finance-integration-card__readonly" role="status">
++                            Owner or admin access is required to connect, sync, reconnect, or disconnect accounting systems.
++                        </div>
++                    }
++                    @if (!CanManageFinanceIntegrations)
++                    {
++                        <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
++                            @(ShowFinanceIntegrationHistory ? "Hide sync history" : "View sync history")
++                        </button>
++                    }
+-                        {
+-                            <button class="btn btn-primary" type="button" @onclick="ConnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
+-                                @(IsFinanceIntegrationConnecting ? "Connecting..." : "Connect accounting system")
+-                            </button>
+-                        }
+-                        @if (ShowReconnectAction)
+-                        {
+-                            <button class="btn btn-primary" type="button" @onclick="ReconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
+-                                @(IsFinanceIntegrationConnecting ? "Reconnecting..." : "Reconnect")
+-                            </button>
+-                        }
+-                        @if (ShowSyncAction)
+-                        {
+-                            <button class="btn btn-outline-primary" type="button" @onclick="SyncFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy || IsFinanceIntegrationSyncing">
+-                                @(IsFinanceIntegrationSyncing ? "Syncing..." : "Sync data")
+-                            </button>
+-                        }
+-                        @if (ShowDisconnectAction)
+-                        {
+-                            <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">Disconnect</button>
+-                        }
+-                        <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
+-                            View sync history
+-                        </button>
+-                    </div>
+                 </div>
+ 
+                 <div class="finance-integration-card__metrics">
+@@ -210,15 +220,15 @@
+                         <strong>@FinanceIntegrationConnectionSummary</strong>
+                     </div>
+                     <div>
+-                        <span>Last token refresh</span>
+-                        <strong>@(FinanceIntegrationStatus?.LastRefreshAttemptUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not refreshed yet")</strong>
++                        <span>Last successful sync</span>
++                        <strong>@FormatDateTime(FinanceIntegrationStatus?.LastSuccessfulSyncUtc)</strong>
+                     </div>
+                     <div>
+-                        <span>Token expiry</span>
+-                        <strong>@(FinanceIntegrationStatus?.AccessTokenExpiresUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Not available")</strong>
++                        <span>Last issue</span>
++                        <strong>@LastFailureSummary</strong>
+                     </div>
+                 </div>
+ 
+-                <div class="finance-integration-card__notice" role="status">
++                <div class="finance-integration-card__notice">
+                     <strong>Approval-gated writes</strong>
+                     <span>Outbound accounting-system changes create an approval with company, summary, and payload hash before any provider API call runs.</span>
+                 </div>
+@@ -263,14 +273,14 @@
+                                     <tr>
+                                         <th>Started</th>
+                                         <th>Status</th>
+-                                        <th>Created</th>
+-                                        <th>Updated</th>
+-                                        <th>Skipped</th>
+-                                        <th>Errors</th>
+-                                        <th>Summary</th>
++                                        <th>Imported records</th>
++                                        <th>Duration</th>
++                                        <th>Safe error summary</th>
+                                     </tr>
+                                 </thead>
+                                 <tbody>
+                                     @foreach (var item in FinanceIntegrationHistory.Items)
+                                     {
++                                        var importedCount = item.Created + item.Updated;
+                                         <tr>
+                                             <td>@item.StartedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                                             <td><span class="@GetHistoryBadgeClass(item.Status)">@FormatIntegrationStatus(item.Status)</span></td>
+-                                            <td>@item.Created</td>
+-                                            <td>@item.Updated</td>
+-                                            <td>@item.Skipped</td>
+-                                            <td>@item.Errors</td>
+-                                            <td>@item.Summary</td>
++                                            <td>
++                                                <strong>@importedCount</strong>
++                                                <span class="d-block small text-body-secondary">@FormatImportCounts(item.Created, item.Updated, item.Skipped, item.Errors)</span>
++                                            </td>
++                                            <td>@FormatDuration(item.StartedUtc, item.CompletedUtc)</td>
++                                            <td>@FormatSafeErrorSummary(item)</td>
+                                         </tr>
+                                     }
+                                 </tbody>
+diff --git a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+index d7bf432..f1e942d 100644
+--- a/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
++++ b/src/VirtualCompany.Web/Pages/Finance/SettingsPage.razor.cs
+@@ -47,6 +47,10 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool IsSettingsLoading { get; set; }
+     private bool IsSaving { get; set; }
+@@ -43,6 +43,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool IsBusy => IsSettingsLoading || IsSaving;
+     private bool IsFinanceIntegrationBusy => IsFinanceIntegrationLoading || IsFinanceIntegrationConnecting || IsFinanceIntegrationSyncing || IsFinanceIntegrationDisconnecting;
+     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
++    private bool CanManageFinanceIntegrations => IsCompanyAdministrator(AccessState.MembershipRole);
+     private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId);
+     private string IntegrationSettingsHref => FinanceRoutes.BuildFinanceIntegrationSettingsPath(SelectedProviderKey, AccessState.CompanyId);
+     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
+@@ -50,6 +51,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool IsIntegrationSettingsRoute => Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("finance/settings/integrations/", StringComparison.OrdinalIgnoreCase);
+     private string SelectedProviderKey => string.IsNullOrWhiteSpace(ProviderKey) ? DefaultIntegrationProviderKey : ProviderKey.Trim();
+     private string SelectedProviderDisplayName => SelectedFinanceIntegrationProvider?.DisplayName ?? FormatProviderName(SelectedProviderKey);
++    private string LastFailureSummary => FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, "No recent sync issues.");
+ 
+     protected override void OnInitialized()
+     {
+@@ -253,7 +255,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+ 
+     private async Task StartFinanceIntegrationOAuthAsync(bool reconnect)
+     {
+-        if (AccessState.CompanyId is not Guid companyId)
++        if (!CanManageFinanceIntegrations || AccessState.CompanyId is not Guid companyId)
+         {
+             return;
+         }
+@@ -280,7 +282,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+ 
+     private async Task SyncFinanceIntegrationAsync()
+     {
+-        if (AccessState.CompanyId is not Guid companyId)
++        if (!CanManageFinanceIntegrations || AccessState.CompanyId is not Guid companyId)
+         {
+             return;
+         }
+@@ -311,7 +313,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+ 
+     private async Task DisconnectFinanceIntegrationAsync()
+     {
+-        if (AccessState.CompanyId is not Guid companyId)
++        if (!CanManageFinanceIntegrations || AccessState.CompanyId is not Guid companyId)
+         {
+             return;
+         }
+@@ -433,9 +435,9 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+         _ => "Provider state is unavailable."
+     };
+ 
+-    private string FinanceIntegrationConnectionSummary => FinanceIntegrationStatus?.ConnectionId is Guid connectionId
+-        ? $"{FinanceIntegrationStateLabel} ({connectionId:N})"
+-        : "No accounting system connection is stored.";
++    private string FinanceIntegrationConnectionSummary => FinanceIntegrationStatus?.ConnectionId is not null
++        ? FinanceIntegrationStateLabel
++        : "No accounting connection is stored.";
+ 
+     private string FinanceIntegrationBadgeClass => FinanceIntegrationState switch
+     {
+@@ -452,19 +454,75 @@ public partial class SettingsPage : FinancePageBase, IDisposable
+     private bool ShowSyncAction => FinanceIntegrationState is "connected" or "syncing";
+     private bool ShowDisconnectAction => FinanceIntegrationStatus?.ConnectionId is not null && FinanceIntegrationState is not "not_connected";
+ 
+-    private static string FormatIntegrationStatus(string status) =>
+-        string.IsNullOrWhiteSpace(status)
+-            ? "Unknown"
+-            : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(status.Replace("_", " "));
++    private static string FormatIntegrationStatus(string status) => status.Trim().ToLowerInvariant() switch
++    {
++        "succeeded" or "completed" => "Completed",
++        "failed" => "Failed",
++        "partial" or "completed_with_errors" => "Completed with issues",
++        "running" or "in_progress" => "Running",
++        "pending" => "Waiting to start",
++        "" => "Unknown",
++        _ => "Needs review"
++    };
+ 
+     private static string FormatProviderName(string providerKey) =>
+         string.IsNullOrWhiteSpace(providerKey)
+             ? "Accounting system"
+             : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(providerKey.Replace("-", " ").Replace("_", " "));
+ 
+-    private static string GetHistoryBadgeClass(string status) => status switch
++    private static string GetHistoryBadgeClass(string status) => status.Trim().ToLowerInvariant() switch
+     {
+-        "succeeded" => "badge text-bg-success",
++        "succeeded" or "completed" => "badge text-bg-success",
+         "failed" => "badge text-bg-danger",
++        "partial" or "completed_with_errors" => "badge text-bg-warning",
++        "running" or "in_progress" => "badge text-bg-primary",
+         _ => "badge text-bg-secondary"
+     };
+ 
++    private static string FormatDateTime(DateTime? value) =>
++        value.HasValue
++            ? value.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
++            : "Not synced yet";
++
++    private static string FormatDuration(DateTime startedUtc, DateTime? completedUtc)
++    {
++        if (!completedUtc.HasValue)
++        {
++            return "Still running";
++        }
++
++        var duration = completedUtc.Value - startedUtc;
++        if (duration.TotalSeconds < 1)
++        {
++            return "Under 1 second";
++        }
++
++        if (duration.TotalMinutes < 1)
++        {
++            return $"{Math.Round(duration.TotalSeconds):0} seconds";
++        }
++
++        return duration.TotalHours < 1
++            ? $"{Math.Round(duration.TotalMinutes):0} minutes"
++            : $"{duration.TotalHours:0.#} hours";
++    }
++
++    private static string FormatImportCounts(int created, int updated, int skipped, int errors) =>
++        $"Created {created}, updated {updated}, skipped {skipped}, issues {errors}.";
++
++    private static string FormatSafeErrorSummary(FinanceIntegrationSyncHistoryItemResponse item)
++    {
++        if (!string.IsNullOrWhiteSpace(item.ErrorSummary))
++        {
++            return FormatSafeText(item.ErrorSummary, "Review the sync details.");
++        }
++
++        return item.Errors > 0
++            ? $"{item.Errors} records need attention."
++            : "No issues reported.";
++    }
++
++    private static string FormatSafeText(string? value, string fallback)
++    {
++        var trimmed = value?.Trim();
++        return string.IsNullOrWhiteSpace(trimmed) ? fallback : trimmed;
++    }
++
++    private static bool IsCompanyAdministrator(string? membershipRole) =>
++        string.Equals(membershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
++        string.Equals(membershipRole, "admin", StringComparison.OrdinalIgnoreCase);
++
+     public void Dispose()
+     {
+         Navigation.LocationChanged -= OnLocationChanged;
+diff --git a/src/VirtualCompany.Web/Services/FinanceApiClient.cs b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+index a94a913..af09f46 100644
+--- a/src/VirtualCompany.Web/Services/FinanceApiClient.cs
++++ b/src/VirtualCompany.Web/Services/FinanceApiClient.cs
+@@ -1775,6 +1775,7 @@ public sealed class FinanceIntegrationConnectionStatusResponse
+     public DateTime? AccessTokenExpiresUtc { get; set; }
+     public DateTime? LastRefreshAttemptUtc { get; set; }
+     public string? LastErrorSummary { get; set; }
++    public DateTime? LastSuccessfulSyncUtc { get; set; }
+ }
+ 
+ public sealed class FinanceIntegrationConnectionDisconnectResponse
+diff --git a/src/VirtualCompany.Web/wwwroot/css/app.css b/src/VirtualCompany.Web/wwwroot/css/app.css
+index 0eb2a0d..fd4f3cb 100644
+--- a/src/VirtualCompany.Web/wwwroot/css/app.css
++++ b/src/VirtualCompany.Web/wwwroot/css/app.css
+@@ -4427,6 +4427,15 @@
+     overflow-wrap: anywhere;
+ }
+ 
++.finance-integration-card__readonly {
++    background: #f8fafc;
++    border: 1px solid rgba(15, 23, 42, 0.08);
++    border-radius: 8px;
++    color: #475569;
++    font-size: 0.9rem;
++    padding: 0.75rem 0.9rem;
++}
++
+ .finance-integration-card__notice {
+     align-items: flex-start;
+     background: #eff6ff;
+diff --git a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+index 312d8da..898c3d9 100644
+--- a/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FinanceIntegrationFoundationTests.cs
+@@ -364,7 +364,7 @@ public sealed class FinanceIntegrationFoundationTests
+         }
+ 
+         public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
+-            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), null, null));
++            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), null, null, DateTime.UtcNow));
+ 
+         public Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
+             Task.CompletedTask;
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs
+index 5cfaee8..98b0d7f 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxApiClientTests.cs
+@@ -294,7 +294,7 @@ public sealed class FortnoxApiClientTests
+             return Task.FromResult(FortnoxAccessTokenResult.Success(_tokens.Count > 0 ? _tokens.Dequeue() : "access-token", DateTime.UtcNow.AddHours(1)));
+         }
+ 
+         public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
+-            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), DateTime.UtcNow, null));
++            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddHours(1), DateTime.UtcNow, null, DateTime.UtcNow));
+ 
+         public Task<FortnoxConnectionDisconnectResult> DisconnectAsync(DisconnectFortnoxConnectionCommand command, CancellationToken cancellationToken) =>
+             Task.FromResult(new FortnoxConnectionDisconnectResult(command.CompanyId, Guid.NewGuid(), "disconnected", DateTime.UtcNow, "Fortnox has been disconnected."));
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxRealApiIntegrationTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxRealApiIntegrationTests.cs
+index 1079c7e..f8482b4 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxRealApiIntegrationTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxRealApiIntegrationTests.cs
+@@ -67,6 +67,6 @@ public sealed class FortnoxRealApiIntegrationTests
+         public Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(RefreshFortnoxAccessTokenCommand command, CancellationToken cancellationToken) =>
+             Task.FromResult(FortnoxAccessTokenResult.Success(accessToken, DateTime.UtcNow.AddMinutes(30)));
+ 
+         public Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken) =>
+-            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), DateTime.UtcNow, null));
++            Task.FromResult(new FortnoxConnectionStatusResult(true, Guid.NewGuid(), "connected", DateTime.UtcNow, DateTime.UtcNow.AddMinutes(30), DateTime.UtcNow, null, DateTime.UtcNow));
+     }
+ }
+diff --git a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+index 0b2f0b1..fd2f8f2 100644
+--- a/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
++++ b/tests/VirtualCompany.Api.Tests/FortnoxSettingsPageTests.cs
+@@ -22,7 +22,8 @@ public sealed class FinanceIntegrationSettingsPageTests
+             IsConnected = status == "connected",
+             ConnectionId = status is null ? null : Guid.Parse("7d03c4c5-d287-4f67-995d-af6a70cf6a1a"),
+             ConnectionStatus = status,
+-            LastErrorSummary = status == "error" ? "Fortnox reported an authorization problem." : null
++            LastErrorSummary = status == "error" ? "Fortnox reported an authorization problem." : null,
++            LastSuccessfulSyncUtc = status == "connected" ? new DateTime(2026, 4, 30, 10, 1, 0, DateTimeKind.Utc) : null
+         });
+ 
+         var cut = RenderFortnoxSettings(harness, companyId);
+@@ -37,6 +38,8 @@ public sealed class FinanceIntegrationSettingsPageTests
+             Assert.Contains("View sync history", cut.Markup);
+             Assert.Contains("Approval-gated writes", cut.Markup);
+             Assert.Contains("payload hash", cut.Markup, StringComparison.OrdinalIgnoreCase);
++            Assert.DoesNotContain("Token expiry", cut.Markup);
++            Assert.DoesNotContain("Last token refresh", cut.Markup);
+         });
+     }
+ 
+@@ -57,6 +60,25 @@ public sealed class FinanceIntegrationSettingsPageTests
+         });
+     }
+ 
++    [Fact]
++    public void Finance_viewer_can_review_status_but_cannot_trigger_integration_actions()
++    {
++        var companyId = Guid.Parse("4fa845cb-fcd6-43bb-b7a2-31db92062f62");
++        using var harness = CreateHarness(companyId, ConnectedStatus(), membershipRole: "manager");
++
++        var cut = RenderFortnoxSettings(harness, companyId);
++
++        cut.WaitForAssertion(() =>
++        {
++            Assert.Contains("Connected", cut.Markup);
++            Assert.Contains("Owner or admin access is required", cut.Markup);
++            Assert.Contains("View sync history", cut.Markup);
++            Assert.DoesNotContain("Sync data", cut.Markup);
++            Assert.DoesNotContain("Disconnect", cut.Markup);
++            Assert.DoesNotContain("Reconnect", cut.Markup);
++        });
++    }
++
+     [Fact]
+     public void Sync_now_posts_company_scoped_request_and_refreshes_status()
+     {
+@@ -85,8 +107,9 @@ public sealed class FinanceIntegrationSettingsPageTests
+         cut.WaitForAssertion(() =>
+         {
+             Assert.Contains("Sync history", cut.Markup);
++            Assert.Contains("Imported records", cut.Markup);
++            Assert.Contains("Duration", cut.Markup);
+             Assert.Contains("Created 2, updated 1, skipped 3, errors 0.", cut.Markup);
+-            Assert.Contains(">3<", cut.Markup);
+         });
+     }
+ 
+@@ -106,10 +129,11 @@ public sealed class FinanceIntegrationSettingsPageTests
+             ConnectionStatus = "connected",
+             AccessTokenExpiresUtc = new DateTime(2026, 4, 30, 12, 0, 0, DateTimeKind.Utc),
+             LastRefreshAttemptUtc = new DateTime(2026, 4, 30, 10, 0, 0, DateTimeKind.Utc)
++            LastSuccessfulSyncUtc = new DateTime(2026, 4, 30, 10, 1, 0, DateTimeKind.Utc)
+         };
+ 
+-    private static FortnoxSettingsHarness CreateHarness(Guid companyId, FinanceIntegrationConnectionStatusResponse status)
++    private static FortnoxSettingsHarness CreateHarness(Guid companyId, FinanceIntegrationConnectionStatusResponse status, string membershipRole = "owner")
+     {
+         var context = new TestContext();
+         var requests = new List<HttpRequestMessage>();
+@@ -119,7 +143,7 @@ public sealed class FinanceIntegrationSettingsPageTests
+         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
+         {
+             return Task.FromResult(request.RequestUri?.AbsolutePath switch
+             {
+-                "/api/auth/me" => CreateJsonResponse(CreateCurrentUser(companyId, "owner")),
++                "/api/auth/me" => CreateJsonResponse(CreateCurrentUser(companyId, membershipRole)),
+                 _ => CreateNotFoundResponse()
+             });
+         }))
+END_OF_PATCH

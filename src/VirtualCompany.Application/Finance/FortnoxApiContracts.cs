@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
+using System.Globalization;
 
 namespace VirtualCompany.Application.Finance;
 
@@ -12,7 +13,9 @@ public sealed record FortnoxRequestContext(
     Guid? ConnectionId = null,
     string? CorrelationId = null,
     Guid? ApprovedApprovalId = null,
-    Guid? ActorUserId = null);
+    Guid? ActorUserId = null,
+    Guid? WriteRequestId = null,
+    bool RetryExternalFailures = true);
 
 public sealed record FortnoxPageOptions(
     DateTimeOffset? LastModified = null,
@@ -85,19 +88,17 @@ public sealed class FortnoxApprovalRequiredException : Exception
     public string SafeMessage { get; }
 }
 
-public sealed record FortnoxWriteApprovalCheck(
-    Guid CompanyId,
-    Guid? ConnectionId,
-    Guid? ActorUserId,
-    Guid? ApprovedApprovalId,
-    string HttpMethod,
-    string Path,
-    string TargetCompany,
-    string EntityType,
-    string PayloadSummary,
-    string PayloadHash,
-    string SanitizedPayloadJson,
-    Guid WriteRequestId);
+public sealed record FortnoxErrorTranslationContext(
+    HttpStatusCode? StatusCode,
+    string? Category,
+    string? FortnoxErrorCode,
+    string? FortnoxErrorMessage,
+    TimeSpan? RetryAfter = null);
+
+public interface IFortnoxErrorTranslator
+{
+    string Translate(FortnoxErrorTranslationContext context);
+}
 
 public interface IFortnoxApiClient
 {
@@ -114,13 +115,6 @@ public interface IFortnoxApiClient
     Task<TResponse?> PostAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
     Task<TResponse?> PutAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
     Task DeleteAsync(FortnoxRequestContext context, string path, CancellationToken cancellationToken);
-}
-
-public interface IFortnoxWriteApprovalService
-{
-    Task EnsureApprovedAsync(FortnoxWriteApprovalCheck check, CancellationToken cancellationToken);
-    Task RecordExecutionSucceededAsync(FortnoxWriteApprovalCheck check, object? responsePayload, CancellationToken cancellationToken);
-    Task RecordExecutionFailedAsync(FortnoxWriteApprovalCheck check, Exception exception, CancellationToken cancellationToken);
 }
 
 public static class FortnoxWritePayloadSanitizer
@@ -198,6 +192,7 @@ public sealed class FortnoxCompanyInformation
 {
     public string? CompanyName { get; set; }
     public string? OrganizationNumber { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? DatabaseNumber { get; set; }
     public string? CountryCode { get; set; }
     public string? Email { get; set; }
@@ -207,6 +202,7 @@ public sealed class FortnoxCompanyInformation
 
 public sealed class FortnoxCustomer
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? CustomerNumber { get; set; }
     public string? Name { get; set; }
     public string? OrganisationNumber { get; set; }
@@ -218,6 +214,7 @@ public sealed class FortnoxCustomer
 
 public sealed class FortnoxSupplier
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? SupplierNumber { get; set; }
     public string? Name { get; set; }
     public string? OrganisationNumber { get; set; }
@@ -229,7 +226,9 @@ public sealed class FortnoxSupplier
 
 public sealed class FortnoxInvoice
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? DocumentNumber { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? CustomerNumber { get; set; }
     public string? CustomerName { get; set; }
     public string? InvoiceDate { get; set; }
@@ -246,7 +245,9 @@ public sealed class FortnoxInvoice
 
 public sealed class FortnoxSupplierInvoice
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? GivenNumber { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? SupplierNumber { get; set; }
     public string? SupplierName { get; set; }
     public string? InvoiceDate { get; set; }
@@ -285,6 +286,7 @@ public sealed class FortnoxAccount
 
 public sealed class FortnoxArticle
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? ArticleNumber { get; set; }
     public string? Description { get; set; }
     public string? Type { get; set; }
@@ -296,6 +298,7 @@ public sealed class FortnoxArticle
 
 public sealed class FortnoxProject
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? ProjectNumber { get; set; }
     public string? Description { get; set; }
     public string? Status { get; set; }
@@ -331,8 +334,11 @@ public sealed class FortnoxMetaInformation
 
 public sealed class FortnoxErrorInformation
 {
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? Error { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? Code { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
     public string? Message { get; set; }
 }
 
@@ -340,4 +346,31 @@ public sealed class FortnoxErrorEnvelope
 {
     public FortnoxErrorInformation? ErrorInformation { get; set; }
     public FortnoxErrorInformation? Error { get; set; }
+}
+
+internal sealed class FortnoxFlexibleStringConverter : JsonConverter<string?>
+{
+    public override string? Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options) =>
+        reader.TokenType switch
+        {
+            JsonTokenType.Null => null,
+            JsonTokenType.String => reader.GetString(),
+            JsonTokenType.Number => reader.TryGetInt64(out var integer)
+                ? integer.ToString(CultureInfo.InvariantCulture)
+                : reader.GetDecimal().ToString(CultureInfo.InvariantCulture),
+            JsonTokenType.True => bool.TrueString,
+            JsonTokenType.False => bool.FalseString,
+            _ => throw new JsonException($"Cannot convert Fortnox token type '{reader.TokenType}' to string.")
+        };
+
+    public override void Write(Utf8JsonWriter writer, string? value, JsonSerializerOptions options)
+    {
+        if (value is null)
+        {
+            writer.WriteNullValue();
+            return;
+        }
+
+        writer.WriteStringValue(value);
+    }
 }

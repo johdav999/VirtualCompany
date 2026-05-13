@@ -7,6 +7,7 @@ using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -186,6 +187,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
 
         EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
         await _dbContext.SaveChangesAsync(cancellationToken);
+        if (finalized &&
+            approval.Status == ApprovalRequestStatus.Approved &&
+            ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) == ApprovalTargetEntityType.FinanceIntegrationWrite)
+        {
+            await _serviceProvider.GetRequiredService<IFortnoxOutboundActionExecutor>().ExecuteApprovedAsync(companyId, approval.TargetEntityId, cancellationToken);
+        }
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
         return new ApprovalDecisionResultDto(
@@ -342,6 +349,44 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
             }
         }
+        else if (targetType == ApprovalTargetEntityType.FinanceIntegrationWrite)
+        {
+            var command = await _dbContext.FinanceIntegrationWriteCommands.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
+            var previousStatus = command.Status;
+            var now = DateTime.UtcNow;
+
+            if (approval.Status == ApprovalRequestStatus.Approved)
+            {
+                var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
+                command.MarkApproved(approval.Id, approver, now);
+                _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
+                    Guid.NewGuid(),
+                    command.CompanyId,
+                    command.ConnectionId,
+                    FinanceIntegrationProviderKeys.Fortnox,
+                    "write_approval_approved",
+                    FinanceIntegrationAuditOutcomes.Succeeded,
+                    command.CommandType,
+                    command.Id,
+                    null,
+                    approval.Id.ToString("N"),
+                    "Approved accounting-system action is ready to send to Fortnox.",
+                    now));
+                return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
+            }
+
+            if (approval.Status == ApprovalRequestStatus.Rejected)
+            {
+                command.MarkRejected(now);
+                return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
+            }
+
+            if (approval.Status == ApprovalRequestStatus.Expired)
+            {
+                command.MarkExpired(now);
+                return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
+            }
+        }
 
         return null;
     }
@@ -458,7 +503,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             ApprovalTargetEntityType.Action => await _dbContext.ToolExecutionAttempts
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
-            ApprovalTargetEntityType.FortnoxWrite => await _dbContext.FortnoxWriteCommands
+            ApprovalTargetEntityType.FinanceIntegrationWrite => await _dbContext.FinanceIntegrationWriteCommands
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
@@ -1108,7 +1153,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             var value when string.Equals(value, ApprovalTargetEntityType.Task.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Task",
             var value when string.Equals(value, ApprovalTargetEntityType.Workflow.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Workflow",
             var value when string.Equals(value, ApprovalTargetEntityType.Action.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Action",
-            var value when string.Equals(value, ApprovalTargetEntityType.FortnoxWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Fortnox write",
+            var value when string.Equals(value, ApprovalTargetEntityType.FinanceIntegrationWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting system action",
+            var value when string.Equals(value, "fortnox_write", StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             _ => entityType
         };
 
@@ -1220,5 +1266,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             new(AuditTargetTypes.WorkflowInstance, id.ToString("N"), previousState, currentState, "workflow_instances");
         public static LinkedEntityStateTransition ForAction(Guid id, string previousState, string currentState) =>
             new(AuditTargetTypes.AgentToolExecution, id.ToString("N"), previousState, currentState, "agent_tool_executions");
+        public static LinkedEntityStateTransition ForFinanceIntegrationWrite(Guid id, string previousState, string currentState) =>
+            new(AuditTargetTypes.IntegrationConnection, id.ToString("N"), previousState, currentState, "fortnox_write_commands");
     }
 }

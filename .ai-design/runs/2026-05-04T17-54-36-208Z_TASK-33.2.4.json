@@ -1,0 +1,33 @@
+{
+  "taskId": "TASK-33.2.4",
+  "promptPath": ".ai-design/prompts/TASK-33.2.4.prompt.md",
+  "runTests": true,
+  "documentCode": true,
+  "startedAt": "2026-05-04T17:54:36.208Z",
+  "commandLine": "codex exec --sandbox read-only --skip-git-repo-check -c model_reasoning_effort='medium' --output-last-message c:\\Users\\Johan\\source\\repos\\Virtual Company\\.ai-design\\runs\\2026-05-04T17-54-36-208Z_TASK-33.2.4_gpt-5.5.last.txt -m gpt-5.5 -",
+  "terminalName": "Codex CLI",
+  "runLogPath": ".ai-design/runs/2026-05-04T17-54-36-208Z_TASK-33.2.4.json",
+  "agentsPromptPath": "AGENTS.md, production-implementation.md, ui-instructions.md",
+  "modelsTried": [
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.3-codex",
+    "gpt-5.3-codex-spark",
+    "gpt-5.2-codex",
+    "gpt-5.1-codex",
+    "gpt-5-codex"
+  ],
+  "selectedModel": "gpt-5.5",
+  "sandbox": "read-only",
+  "codexExitCode": 0,
+  "patchApplyExitCode": 0,
+  "patchApplied": true,
+  "patchSource": "last-message-file",
+  "completedAt": "2026-05-04T17:57:37.778Z",
+  "exitCode": 0,
+  "status": "succeeded",
+  "stdoutTail": "le mode 100644\nindex 0000000..6e8a871\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/FortnoxErrorTranslatorTests.cs\n@@ -0,0 +1,38 @@\n+using System.Net;\n+using VirtualCompany.Application.Finance;\n+using VirtualCompany.Infrastructure.Finance;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class FortnoxErrorTranslatorTests\n+{\n+    private readonly DefaultFortnoxErrorTranslator _translator = new();\n+\n+    [Theory]\n+    [InlineData(HttpStatusCode.Unauthorized, \"authorization\", \"Fortnox connection needs attention. Reconnect Fortnox and try again.\")]\n+    [InlineData(HttpStatusCode.Forbidden, \"permission\", \"The connected Fortnox account does not have permission for this data.\")]\n+    [InlineData(HttpStatusCode.BadRequest, \"validation\", \"Fortnox could not process the requested data. Review the record details and try again.\")]\n+    [InlineData(HttpStatusCode.InternalServerError, \"upstream_unavailable\", \"Fortnox is temporarily unavailable. Please try again shortly.\")]\n+    public void Translate_returns_plain_english_safe_messages(HttpStatusCode statusCode, string category, string expected)\n+    {\n+        var message = _translator.Translate(new FortnoxErrorTranslationContext(\n+            statusCode,\n+            category,\n+            \"200001\",\n+            \"Internal Fortnox provider detail\"));\n+\n+        Assert.Equal(expected, message);\n+        Assert.DoesNotContain(\"200001\", message);\n+        Assert.DoesNotContain(\"Internal Fortnox provider detail\", message);\n+    }\n+\n+    [Fact]\n+    public void Translate_includes_safe_retry_after_hint_for_rate_limits()\n+    {\n+        var message = _translator.Translate(new FortnoxErrorTranslationContext(\n+            HttpStatusCode.TooManyRequests,\n+            \"rate_limited\",\n+            \"429\",\n+            \"Rate limit exceeded\",\n+            TimeSpan.FromSeconds(12)));\n+\n+        Assert.Equal(\"Fortnox is receiving too many requests. Please try again in about 12 seconds.\", message);\n+    }\n+}\nEND_OF_PATCH\n",
+  "stderrTail": "x 0000000..6e8a871\n--- /dev/null\n+++ b/tests/VirtualCompany.Api.Tests/FortnoxErrorTranslatorTests.cs\n@@ -0,0 +1,38 @@\n+using System.Net;\n+using VirtualCompany.Application.Finance;\n+using VirtualCompany.Infrastructure.Finance;\n+using Xunit;\n+\n+namespace VirtualCompany.Api.Tests;\n+\n+public sealed class FortnoxErrorTranslatorTests\n+{\n+    private readonly DefaultFortnoxErrorTranslator _translator = new();\n+\n+    [Theory]\n+    [InlineData(HttpStatusCode.Unauthorized, \"authorization\", \"Fortnox connection needs attention. Reconnect Fortnox and try again.\")]\n+    [InlineData(HttpStatusCode.Forbidden, \"permission\", \"The connected Fortnox account does not have permission for this data.\")]\n+    [InlineData(HttpStatusCode.BadRequest, \"validation\", \"Fortnox could not process the requested data. Review the record details and try again.\")]\n+    [InlineData(HttpStatusCode.InternalServerError, \"upstream_unavailable\", \"Fortnox is temporarily unavailable. Please try again shortly.\")]\n+    public void Translate_returns_plain_english_safe_messages(HttpStatusCode statusCode, string category, string expected)\n+    {\n+        var message = _translator.Translate(new FortnoxErrorTranslationContext(\n+            statusCode,\n+            category,\n+            \"200001\",\n+            \"Internal Fortnox provider detail\"));\n+\n+        Assert.Equal(expected, message);\n+        Assert.DoesNotContain(\"200001\", message);\n+        Assert.DoesNotContain(\"Internal Fortnox provider detail\", message);\n+    }\n+\n+    [Fact]\n+    public void Translate_includes_safe_retry_after_hint_for_rate_limits()\n+    {\n+        var message = _translator.Translate(new FortnoxErrorTranslationContext(\n+            HttpStatusCode.TooManyRequests,\n+            \"rate_limited\",\n+            \"429\",\n+            \"Rate limit exceeded\",\n+            TimeSpan.FromSeconds(12)));\n+\n+        Assert.Equal(\"Fortnox is receiving too many requests. Please try again in about 12 seconds.\", message);\n+    }\n+}\nEND_OF_PATCH\ntokens used\n98,654\n",
+  "verbosityMode": "summary",
+  "reasoningEffort": "medium"
+}
