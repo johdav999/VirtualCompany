@@ -615,9 +615,7 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
         var blockedWorkflowCount = await _dbContext.WorkflowInstances
             .IgnoreQueryFilters()
             .CountAsync(x => x.CompanyId == companyId && x.State == WorkflowInstanceStatus.Blocked, cancellationToken);
-        var cashPosition = await _financeCashPositionWorkflowService.EvaluateAsync(
-            new EvaluateFinanceCashPositionWorkflowCommand(companyId),
-            cancellationToken);
+        var cashPosition = await TryEvaluateCashPositionForBriefingAsync(companyId, cancellationToken);
         var criticalAlertsCount = await _dbContext.Alerts
             .IgnoreQueryFilters()
             .CountAsync(x => x.CompanyId == companyId &&
@@ -681,6 +679,65 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
                 Assessment = x.Severity.ToStorageValue()
             })
             .ToList();
+
+        var dueSupplierBillRows = await _dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                (x.DueStatus == FinanceDocumentDueStatuses.DueSoon || x.DueStatus == FinanceDocumentDueStatuses.Overdue) &&
+                x.SettlementStatus != FinanceSettlementStatuses.Paid &&
+                x.SettlementStatus != FinanceSettlementStatuses.Credited &&
+                x.PostingStatus != FinanceDocumentPostingStatuses.Cancelled &&
+                x.DocumentKind != FinanceDocumentKinds.SupplierCreditNote)
+            .OrderByDescending(x => x.DueStatus == FinanceDocumentDueStatuses.Overdue)
+            .ThenBy(x => x.DueUtc)
+            .Take(10)
+            .Select(x => new
+            {
+                x.Id,
+                x.BillNumber,
+                x.CounterpartyId,
+                CounterpartyName = x.Counterparty == null ? "Unknown supplier" : x.Counterparty.Name,
+                x.Amount,
+                x.Currency,
+                x.DueUtc,
+                x.DueStatus
+            })
+            .ToListAsync(cancellationToken);
+        alerts.AddRange(dueSupplierBillRows.Select(x =>
+        {
+            var overdue = x.DueStatus == FinanceDocumentDueStatuses.Overdue;
+            var days = overdue
+                ? Math.Max(1, (window.EndUtc.Date - x.DueUtc.Date).Days)
+                : Math.Max(0, (x.DueUtc.Date - window.EndUtc.Date).Days);
+            var summary = overdue
+                ? $"Supplier bill {x.BillNumber} from {x.CounterpartyName} is {days} day{(days == 1 ? string.Empty : "s")} overdue."
+                : $"Supplier bill {x.BillNumber} from {x.CounterpartyName} is due in {days} day{(days == 1 ? string.Empty : "s")}.";
+            return ApplyPriority(new BriefingAggregateItemDto(
+                "alerts",
+                overdue ? "Supplier bill overdue" : "Supplier bill due soon",
+                summary,
+                overdue ? "medium" : "low",
+                x.DueStatus,
+                "bill",
+                x.Id,
+                x.DueUtc,
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["counterpartyId"] = JsonValue.Create(x.CounterpartyId.ToString("D")),
+                    ["counterpartyName"] = JsonValue.Create(x.CounterpartyName),
+                    ["amount"] = JsonValue.Create(x.Amount),
+                    ["currency"] = JsonValue.Create(x.Currency),
+                    ["dueStatus"] = JsonValue.Create(x.DueStatus)
+                },
+                [new BriefingSourceReferenceDto("bill", x.Id, x.BillNumber, x.DueStatus, $"/finance/supplier-bills/{x.Id:D}?companyId={companyId:D}")]),
+                ResolvePriority(severityRules, "alerts", "bill", "due", x.DueStatus)) with
+            {
+                CompanyEntityId = x.Id,
+                Assessment = x.DueStatus
+            };
+        }));
 
         var overdueTaskRows = await _dbContext.WorkTasks
             .IgnoreQueryFilters()
@@ -785,31 +842,34 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
                 new BriefingPriorityResolution(BriefingSectionPriorityCategory.Informational, 15, "informational_agent_update")))
             .ToList();
 
-        kpiHighlights.Add(ApplyPriority(new BriefingAggregateItemDto(
-            "kpi_highlights",
-            "Cash runway",
-            $"Available cash is {cashPosition.AvailableBalance:0.##} {cashPosition.Currency}; estimated runway is {(cashPosition.EstimatedRunwayDays.HasValue ? $"{cashPosition.EstimatedRunwayDays.Value} days" : "unavailable")}. {cashPosition.Rationale}",
-            cashPosition.AlertState.IsLowCash ? cashPosition.RiskLevel : null,
-            cashPosition.AlertState.AlertStatus,
-            "finance_cash_position",
-            companyId,
-            cashPosition.AsOfUtc,
-            BuildCashPositionMetadata(cashPosition),
-            []), ResolvePriority(severityRules, "kpi_highlights", "task", "status", "completed")));
-        if (cashPosition.AlertState.IsLowCash)
+        if (cashPosition is not null)
         {
-            alerts.Add(ApplyPriority(new BriefingAggregateItemDto(
-                "alerts",
-                "Low cash alert",
-                cashPosition.Rationale,
-                cashPosition.RiskLevel,
+            kpiHighlights.Add(ApplyPriority(new BriefingAggregateItemDto(
+                "kpi_highlights",
+                "Cash runway",
+                $"Available cash is {cashPosition.AvailableBalance:0.##} {cashPosition.Currency}; estimated runway is {(cashPosition.EstimatedRunwayDays.HasValue ? $"{cashPosition.EstimatedRunwayDays.Value} days" : "unavailable")}. {cashPosition.Rationale}",
+                cashPosition.AlertState.IsLowCash ? cashPosition.RiskLevel : null,
                 cashPosition.AlertState.AlertStatus,
                 "finance_cash_position",
-                cashPosition.AlertState.AlertId ?? companyId,
+                companyId,
                 cashPosition.AsOfUtc,
                 BuildCashPositionMetadata(cashPosition),
-                [new BriefingSourceReferenceDto("finance_cash_position", cashPosition.AlertState.AlertId ?? companyId, "Cash position", cashPosition.AlertState.AlertStatus, $"/dashboard?companyId={companyId}")]),
-                ResolvePriority(severityRules, "alerts", "alert", "severity", cashPosition.RiskLevel)));
+                []), ResolvePriority(severityRules, "kpi_highlights", "task", "status", "completed")));
+            if (cashPosition.AlertState.IsLowCash)
+            {
+                alerts.Add(ApplyPriority(new BriefingAggregateItemDto(
+                    "alerts",
+                    "Low cash alert",
+                    cashPosition.Rationale,
+                    cashPosition.RiskLevel,
+                    cashPosition.AlertState.AlertStatus,
+                    "finance_cash_position",
+                    cashPosition.AlertState.AlertId ?? companyId,
+                    cashPosition.AsOfUtc,
+                    BuildCashPositionMetadata(cashPosition),
+                    [new BriefingSourceReferenceDto("finance_cash_position", cashPosition.AlertState.AlertId ?? companyId, "Cash position", cashPosition.AlertState.AlertStatus, $"/dashboard?companyId={companyId}")]),
+                    ResolvePriority(severityRules, "alerts", "alert", "severity", cashPosition.RiskLevel)));
+            }
         }
 
         alerts = OrderAggregateItems(alerts);
@@ -834,6 +894,28 @@ public sealed class CompanyBriefingService : ICompanyBriefingService
             NarrativeText = insightPayload.NarrativeText,
             StructuredSections = structuredSections
         };
+    }
+
+    private async Task<FinanceCashPositionDto?> TryEvaluateCashPositionForBriefingAsync(
+        Guid companyId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _financeCashPositionWorkflowService.EvaluateAsync(
+                new EvaluateFinanceCashPositionWorkflowCommand(companyId),
+                cancellationToken);
+        }
+        catch (FinanceNotInitializedException ex)
+        {
+            _logger.LogInformation(
+                ex,
+                "Skipping cash position contribution for company briefing because finance data is not initialized. CompanyId: {CompanyId}. Domain: {Domain}. CanTriggerSeed: {CanTriggerSeed}.",
+                companyId,
+                ex.Domain,
+                ex.CanTriggerSeed);
+            return null;
+        }
     }
 
     private static List<BriefingAggregateItemDto> OrderAggregateItems(IEnumerable<BriefingAggregateItemDto> items) =>

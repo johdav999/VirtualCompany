@@ -345,6 +345,30 @@ public partial class TransactionsPage : FinancePageBase
     private static string FormatLabel(string? value) =>
         FinanceAnomalyPresentation.FormatLabel(value);
 
+    private static string FormatFlagReason(string? value, FinanceTransactionPaymentContextResponse? paymentContext = null)
+    {
+        var normalized = NormalizeOptionalText(value)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
+        return normalized switch
+        {
+            "payment_sync_blocked" => "Fortnox has not granted the Payment permission, so invoice payment rows cannot be imported. Reconnect Fortnox with Payment permission, then run sync again.",
+            "partially_paid" => BuildPartialPaymentReason(paymentContext),
+            "missing_receipt" or "missing_document" => "The transaction needs supporting evidence before the finance review can be closed.",
+            "category_mismatch" => "The current category does not match the transaction pattern or linked document.",
+            "unusually_high_amount" => "The amount is outside the normal range for this account or counterparty.",
+            _ => "Review the transaction details, source reference, and linked document before closing this item."
+        };
+    }
+
+    private static string BuildPartialPaymentReason(FinanceTransactionPaymentContextResponse? paymentContext)
+    {
+        if (paymentContext is null)
+        {
+            return "The linked invoice or supplier bill has a recorded payment that does not cover the full amount yet.";
+        }
+
+        return $"{FormatCurrency(paymentContext.PaidAmount, paymentContext.Currency)} has been paid against {FormatCurrency(paymentContext.TotalAmount, paymentContext.Currency)}. {FormatCurrency(paymentContext.RemainingAmount, paymentContext.Currency)} remains open.";
+    }
+
     private static string FormatTableDate(DateTime value) =>
         value == default ? "Not available" : value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
 
@@ -426,14 +450,22 @@ public partial class TransactionsPage : FinancePageBase
             FormatPlainText(transaction.ExternalReference),
             ResolveSourceLabel(transaction),
             FormatLabel(transaction.AnomalyState),
+            FormatPaymentSummary(transaction.PaymentContext),
             flags,
             status.Label,
             status.Tone,
-            BuildAgentInsight(transaction, status.Label));
+            BuildAgentInsight(transaction, status.Label),
+            BuildReviewReason(transaction, status.Label));
     }
 
     private static string ResolveSourceLabel(FinanceTransactionDetailResponse transaction)
     {
+        var category = NormalizeOptionalText(transaction.Category)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
+        if (category is "customer_payment" or "supplier_payment" or "payment")
+        {
+            return "Payment";
+        }
+
         if (transaction.InvoiceId is not null)
         {
             return "Invoice";
@@ -459,9 +491,21 @@ public partial class TransactionsPage : FinancePageBase
             return "This transaction needs a category before reporting and reconciliation are reliable.";
         }
 
+        if (HasFlag(transaction, "payment_sync_blocked"))
+        {
+            return "Fortnox payment sync is blocked because the connected token is missing the Payment permission. Reconnect Fortnox with Payment permission, then run sync again to import paid and partially paid invoice states.";
+        }
+
+        if (HasFlag(transaction, "partially_paid"))
+        {
+            return transaction.PaymentContext is null
+                ? "The linked invoice or supplier bill is partially paid. Review the remaining balance and confirm whether another payment is expected."
+                : $"The linked invoice or supplier bill is partially paid. {FormatCurrency(transaction.PaymentContext.PaidAmount, transaction.PaymentContext.Currency)} has been collected, with {FormatCurrency(transaction.PaymentContext.RemainingAmount, transaction.PaymentContext.Currency)} still open.";
+        }
+
         if (transaction.IsFlagged || transaction.Flags.Count > 0)
         {
-            return "This transaction has review flags. Check the reference, linked document, and category before closing the review.";
+            return "This transaction has review flags. Use the flag reasons below to decide what needs to be fixed before closing the review.";
         }
 
         var normalized = NormalizeOptionalText(transaction.AnomalyState)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
@@ -473,6 +517,38 @@ public partial class TransactionsPage : FinancePageBase
 
         return "No obvious issue detected.";
     }
+
+    private static string BuildReviewReason(FinanceTransactionDetailResponse transaction, string statusLabel)
+    {
+        if (transaction.Flags.Count > 0)
+        {
+            return FormatFlagReason(transaction.Flags[0], transaction.PaymentContext);
+        }
+
+        if (IsUncategorized(transaction.Category))
+        {
+            return "The transaction category is missing or too broad for reliable reporting.";
+        }
+
+        if (transaction.IsFlagged)
+        {
+            return $"This transaction is marked {statusLabel.ToLowerInvariant()}. Review the account, amount, source reference, and any linked invoice or bill before closing it.";
+        }
+
+        return "No review reason is recorded for this transaction.";
+    }
+
+    private static bool HasFlag(FinanceTransactionDetailResponse transaction, string flag) =>
+        transaction.Flags.Any(x =>
+            string.Equals(
+                NormalizeOptionalText(x)?.Replace("-", "_", StringComparison.Ordinal),
+                flag,
+                StringComparison.OrdinalIgnoreCase));
+
+    private static string? FormatPaymentSummary(FinanceTransactionPaymentContextResponse? paymentContext) =>
+        paymentContext is null
+            ? null
+            : $"{FormatCurrency(paymentContext.PaidAmount, paymentContext.Currency)} paid; {FormatCurrency(paymentContext.RemainingAmount, paymentContext.Currency)} remaining";
 
     private static TransactionsSummaryViewModel BuildSummary(IReadOnlyList<FinanceTransactionResponse> transactions)
     {
@@ -518,8 +594,10 @@ public partial class TransactionsPage : FinancePageBase
         string ExternalReference,
         string SourceLabel,
         string AnomalyLabel,
+        string? PaymentSummary,
         IReadOnlyList<string> Flags,
         string StatusLabel,
         string StatusTone,
-        string AgentInsight);
+        string AgentInsight,
+        string ReviewReason);
 }

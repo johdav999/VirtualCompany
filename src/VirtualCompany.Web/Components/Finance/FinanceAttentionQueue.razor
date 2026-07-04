@@ -4,6 +4,18 @@
     <div class="finance-section-heading">
         <h2 id="finance-attention-heading" class="h5 mb-0">What needs your attention</h2>
     </div>
+    <article class="@SummaryClass">
+        <div>
+            <p class="finance-overview-kicker mb-1">Today's finance queue</p>
+            <h3 class="h5 mb-1">@Summary.Title</h3>
+            <p class="mb-0">@Summary.Message</p>
+        </div>
+        @if (!string.IsNullOrWhiteSpace(Summary.Amount))
+        {
+            <strong>@Summary.Amount</strong>
+        }
+        <a class="btn btn-sm btn-outline-primary" href="@Summary.Href">@Summary.ActionLabel</a>
+    </article>
 
     <div class="finance-attention-grid">
         @foreach (var item in Items)
@@ -15,5 +27,16 @@
 
 @code {
     [Parameter, EditorRequired]
+    public FinanceAttentionSummaryViewModel Summary { get; set; } = new();
+
+    [Parameter, EditorRequired]
     public IReadOnlyList<FinanceAttentionItemViewModel> Items { get; set; } = [];
+
+    private string SummaryClass => Summary.Tone switch
+    {
+        FinanceKpiTone.Danger => "wizard-card wizard-card--compact finance-attention-summary finance-attention-summary--danger",
+        FinanceKpiTone.Warning => "wizard-card wizard-card--compact finance-attention-summary finance-attention-summary--warning",
+        FinanceKpiTone.Positive => "wizard-card wizard-card--compact finance-attention-summary finance-attention-summary--positive",
+        _ => "wizard-card wizard-card--compact finance-attention-summary"
+    };
 }

@@ -2,9 +2,9 @@
 {
     <aside class="contextual-agent-sidebar-card" data-module="@ModuleKey" aria-label="@($"{AgentName}, {AgentRole}")">
         <div class="contextual-agent-sidebar-card__header">
-            @if (!string.IsNullOrWhiteSpace(AvatarUrl))
+            @if (!string.IsNullOrWhiteSpace(AvatarUrl) && !avatarLoadFailed)
             {
-                <img class="contextual-agent-sidebar-card__avatar" src="@AvatarUrl" alt="" />
+                <img class="contextual-agent-sidebar-card__avatar" src="@AvatarUrl" alt="" @onerror="HandleAvatarLoadError" />
             }
             else
             {
@@ -44,6 +44,9 @@
     [Parameter] public string? ButtonRoute { get; set; }
     [Parameter] public string? ModuleKey { get; set; }
 
+    private string? previousAvatarUrl;
+    private bool avatarLoadFailed;
+
     private string Initials
     {
         get
@@ -56,5 +59,19 @@
 
             return parts.Length == 0 ? "A" : new string(parts);
         }
+    }
+
+    protected override void OnParametersSet()
+    {
+        if (!string.Equals(previousAvatarUrl, AvatarUrl, StringComparison.Ordinal))
+        {
+            previousAvatarUrl = AvatarUrl;
+            avatarLoadFailed = false;
+        }
+    }
+
+    private void HandleAvatarLoadError()
+    {
+        avatarLoadFailed = true;
     }
 }

@@ -106,7 +106,8 @@ builder.Services.AddScoped(sp => new FinanceApiClient(
     sp.GetRequiredService<ILogger<FinanceApiClient>>(),
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext),
+    sp.GetRequiredService<IConfiguration>()["FinanceUi:SourceFilter"]));
 builder.Services.AddScoped(sp => new DashboardSummaryApiClient(
     sp.GetRequiredService<HttpClient>(),
     ShouldUseOfflineMode(
@@ -118,6 +119,11 @@ builder.Services.AddScoped(sp => new SalesApiClient(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
         sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
 builder.Services.AddScoped(sp => new SalesAutomationApiClient(
+    sp.GetRequiredService<HttpClient>(),
+    ShouldUseOfflineMode(
+        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
+        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+builder.Services.AddScoped(sp => new SupportApiClient(
     sp.GetRequiredService<HttpClient>(),
     ShouldUseOfflineMode(
         sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],

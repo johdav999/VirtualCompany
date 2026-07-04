@@ -3,6 +3,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.AspNetCore.WebUtilities;
+using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Domain.Enums;
@@ -58,13 +59,21 @@ public sealed class MailboxProviderRegistry : IMailboxProviderRegistry
 public sealed class GmailMailboxProviderClient : IMailboxProviderClient
 {
     public const string ClientName = "gmail-mailbox";
+    private const int GmailMessageListPageSize = 100;
+    private const int GmailMessageListMaxPagesPerFolder = 10;
+    private const int GmailAttachmentSearchMaxPages = 3;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly IOptionsMonitor<MailboxIntegrationOptions> _options;
+    private readonly ILogger<GmailMailboxProviderClient> _logger;
 
-    public GmailMailboxProviderClient(IHttpClientFactory httpClientFactory, IOptionsMonitor<MailboxIntegrationOptions> options)
+    public GmailMailboxProviderClient(
+        IHttpClientFactory httpClientFactory,
+        IOptionsMonitor<MailboxIntegrationOptions> options,
+        ILogger<GmailMailboxProviderClient> logger)
     {
         _httpClientFactory = httpClientFactory;
         _options = options;
+        _logger = logger;
     }
 
     public MailboxProvider Provider => MailboxProvider.Gmail;
@@ -151,43 +160,203 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
     public async Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken)
     {
         var result = new List<MailboxMessageSummary>();
+        var seenMessageIds = new HashSet<string>(StringComparer.Ordinal);
         var after = new DateTimeOffset(query.FromUtc).ToUnixTimeSeconds();
         var before = new DateTimeOffset(query.ToUtc).ToUnixTimeSeconds();
         foreach (var folder in query.Folders)
         {
-            var listUri = QueryHelpers.AddQueryString(Options.MessagesEndpoint, new Dictionary<string, string?>
+            var folderResultCountBefore = result.Count;
+            string? pageToken = null;
+            for (var page = 0; page < GmailMessageListMaxPagesPerFolder; page++)
             {
-                ["labelIds"] = folder.ProviderFolderId,
-                ["q"] = $"after:{after} before:{before}"
-            });
-
-            using var request = new HttpRequestMessage(HttpMethod.Get, listUri);
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
-            using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
-            response.EnsureSuccessStatusCode();
-            using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-            if (!json.RootElement.TryGetProperty("messages", out var messages) || messages.ValueKind != JsonValueKind.Array)
-            {
-                continue;
-            }
-
-            foreach (var message in messages.EnumerateArray())
-            {
-                if (!message.TryGetProperty("id", out var idElement))
+                var queryString = new Dictionary<string, string?>
                 {
-                    continue;
+                    ["labelIds"] = folder.ProviderFolderId,
+                    ["q"] = $"after:{after} before:{before}",
+                    ["maxResults"] = GmailMessageListPageSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                };
+
+                if (!string.IsNullOrWhiteSpace(pageToken))
+                {
+                    queryString["pageToken"] = pageToken;
                 }
 
-                result.Add(await FetchMessageSummaryAsync(accessToken, idElement.GetString()!, cancellationToken));
+                var listUri = QueryHelpers.AddQueryString(Options.MessagesEndpoint, queryString);
+                using var request = new HttpRequestMessage(HttpMethod.Get, listUri);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                var pageMessageCount = 0;
+                if (json.RootElement.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
+                {
+                    pageMessageCount = messages.GetArrayLength();
+                    foreach (var message in messages.EnumerateArray())
+                    {
+                        if (!message.TryGetProperty("id", out var idElement))
+                        {
+                            continue;
+                        }
+
+                        var messageId = idElement.GetString();
+                        if (string.IsNullOrWhiteSpace(messageId) || !seenMessageIds.Add(messageId))
+                        {
+                            continue;
+                        }
+
+                        result.Add(await FetchMessageSummaryAsync(accessToken, messageId, cancellationToken));
+                    }
+                }
+
+                pageToken = json.RootElement.TryGetProperty("nextPageToken", out var nextPageToken) &&
+                    nextPageToken.ValueKind == JsonValueKind.String
+                        ? nextPageToken.GetString()
+                        : null;
+                _logger.LogInformation(
+                    "Gmail mailbox list page fetched. Folder: {Folder}. DisplayName: {DisplayName}. FromUtc: {FromUtc}. ToUtc: {ToUtc}. Page: {Page}. PageMessages: {PageMessages}. HasNextPage: {HasNextPage}.",
+                    folder.ProviderFolderId,
+                    folder.DisplayName,
+                    query.FromUtc,
+                    query.ToUtc,
+                    page + 1,
+                    pageMessageCount,
+                    !string.IsNullOrWhiteSpace(pageToken));
+                if (string.IsNullOrWhiteSpace(pageToken))
+                {
+                    break;
+                }
             }
+
+            _logger.LogInformation(
+                "Gmail mailbox folder list completed. Folder: {Folder}. DisplayName: {DisplayName}. FromUtc: {FromUtc}. ToUtc: {ToUtc}. MessagesAdded: {MessagesAdded}.",
+                folder.ProviderFolderId,
+                folder.DisplayName,
+                query.FromUtc,
+                query.ToUtc,
+                result.Count - folderResultCountBefore);
         }
+
+        await AppendAttachmentSearchResultsAsync(accessToken, query, after, before, result, seenMessageIds, cancellationToken);
 
         return result;
     }
 
+    private async Task AppendAttachmentSearchResultsAsync(
+        string accessToken,
+        MailboxMessageQuery query,
+        long after,
+        long before,
+        List<MailboxMessageSummary> result,
+        HashSet<string> seenMessageIds,
+        CancellationToken cancellationToken)
+    {
+        foreach (var attachmentQuery in new[] { "filename:pdf", "filename:docx", "filename:png", "filename:jpg", "filename:jpeg", "filename:webp" })
+        {
+            var resultCountBefore = result.Count;
+            string? pageToken = null;
+            for (var page = 0; page < GmailAttachmentSearchMaxPages; page++)
+            {
+                var queryString = new Dictionary<string, string?>
+                {
+                    ["q"] = $"in:inbox after:{after} before:{before} {attachmentQuery}",
+                    ["maxResults"] = GmailMessageListPageSize.ToString(System.Globalization.CultureInfo.InvariantCulture)
+                };
+
+                if (!string.IsNullOrWhiteSpace(pageToken))
+                {
+                    queryString["pageToken"] = pageToken;
+                }
+
+                var listUri = QueryHelpers.AddQueryString(Options.MessagesEndpoint, queryString);
+                using var request = new HttpRequestMessage(HttpMethod.Get, listUri);
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+                using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
+                response.EnsureSuccessStatusCode();
+                using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+                var pageMessageCount = 0;
+                var addedFromPage = 0;
+                if (json.RootElement.TryGetProperty("messages", out var messages) && messages.ValueKind == JsonValueKind.Array)
+                {
+                    pageMessageCount = messages.GetArrayLength();
+                    foreach (var message in messages.EnumerateArray())
+                    {
+                        if (!message.TryGetProperty("id", out var idElement))
+                        {
+                            continue;
+                        }
+
+                        var messageId = idElement.GetString();
+                        if (string.IsNullOrWhiteSpace(messageId) || !seenMessageIds.Add(messageId))
+                        {
+                            continue;
+                        }
+
+                        result.Add(await FetchMessageSummaryAsync(accessToken, messageId, cancellationToken));
+                        addedFromPage++;
+                    }
+                }
+
+                pageToken = json.RootElement.TryGetProperty("nextPageToken", out var nextPageToken) &&
+                    nextPageToken.ValueKind == JsonValueKind.String
+                        ? nextPageToken.GetString()
+                        : null;
+                _logger.LogInformation(
+                    "Gmail mailbox attachment search page fetched. Query: {AttachmentQuery}. FromUtc: {FromUtc}. ToUtc: {ToUtc}. Page: {Page}. PageMessages: {PageMessages}. AddedMessages: {AddedMessages}. HasNextPage: {HasNextPage}.",
+                    attachmentQuery,
+                    query.FromUtc,
+                    query.ToUtc,
+                    page + 1,
+                    pageMessageCount,
+                    addedFromPage,
+                    !string.IsNullOrWhiteSpace(pageToken));
+                if (string.IsNullOrWhiteSpace(pageToken))
+                {
+                    break;
+                }
+            }
+
+            _logger.LogInformation(
+                "Gmail mailbox attachment search completed. Query: {AttachmentQuery}. FromUtc: {FromUtc}. ToUtc: {ToUtc}. MessagesAdded: {MessagesAdded}.",
+                attachmentQuery,
+                query.FromUtc,
+                query.ToUtc,
+                result.Count - resultCountBefore);
+        }
+    }
+
     public async Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken) =>
         await FetchInboundMessageAsync(accessToken, request.MessageId, cancellationToken);
+
+    public async Task<MailboxAttachmentContent?> GetAttachmentContentAsync(
+        string accessToken,
+        MailboxAttachmentFetchRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(request.AttachmentId))
+        {
+            return null;
+        }
+
+        var uri = $"{Options.MessagesEndpoint}/{Uri.EscapeDataString(request.MessageId)}/attachments/{Uri.EscapeDataString(request.AttachmentId)}";
+        using var httpRequest = new HttpRequestMessage(HttpMethod.Get, uri);
+        httpRequest.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(httpRequest, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        if (!json.RootElement.TryGetProperty("data", out var data))
+        {
+            return null;
+        }
+
+        return new MailboxAttachmentContent(
+            request.AttachmentId,
+            request.FileName,
+            request.MimeType,
+            DecodeBase64UrlBytes(data.GetString()));
+    }
 
     public async Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken)
     {
@@ -247,7 +416,7 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
 
     private async Task<MailboxMessageSummary> FetchMessageSummaryAsync(string accessToken, string messageId, CancellationToken cancellationToken)
     {
-        var uri = QueryHelpers.AddQueryString($"{Options.MessagesEndpoint}/{Uri.EscapeDataString(messageId)}", "format", "metadata");
+        var uri = QueryHelpers.AddQueryString($"{Options.MessagesEndpoint}/{Uri.EscapeDataString(messageId)}", "format", "full");
         using var request = new HttpRequestMessage(HttpMethod.Get, uri);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
         using var response = await _httpClientFactory.CreateClient(ClientName).SendAsync(request, cancellationToken);
@@ -442,6 +611,18 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         return System.Text.Encoding.UTF8.GetString(Convert.FromBase64String(padded));
     }
 
+    private static byte[] DecodeBase64UrlBytes(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return [];
+        }
+
+        var padded = value.Replace('-', '+').Replace('_', '/');
+        padded = padded.PadRight(padded.Length + ((4 - padded.Length % 4) % 4), '=');
+        return Convert.FromBase64String(padded);
+    }
+
     private static IEnumerable<MailboxAttachmentSummary> ReadGmailAttachments(JsonElement root)
     {
         if (!root.TryGetProperty("payload", out var payload) ||
@@ -484,7 +665,8 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
                     string.IsNullOrWhiteSpace(attachmentId) ? filename.GetString()! : attachmentId,
                     filename.GetString(),
                     mimeType,
-                    size);
+                    size,
+                    IsTextExtractable: IsSupportedTextAttachment(filename.GetString(), mimeType));
             }
 
             if (part.TryGetProperty("parts", out var childParts))
@@ -495,6 +677,23 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
                 }
             }
         }
+    }
+
+    private static bool IsSupportedTextAttachment(string? fileName, string? mimeType)
+    {
+        var name = fileName ?? string.Empty;
+        var type = mimeType ?? string.Empty;
+        return name.EndsWith(".pdf", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".docx", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+            name.EndsWith(".webp", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("application/pdf", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("image/png", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase) ||
+            type.Equals("image/webp", StringComparison.OrdinalIgnoreCase);
     }
 
     private static MailboxOAuthTokenResult ParseTokenResult(JsonElement root, IReadOnlyCollection<string> fallbackScopes)

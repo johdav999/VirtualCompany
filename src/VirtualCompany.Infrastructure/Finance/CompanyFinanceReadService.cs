@@ -1,5 +1,7 @@
 using System.Globalization;
+using System.Data;
 using System.Text.Json.Nodes;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using VirtualCompany.Application.Auth;
@@ -16,6 +18,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
 {
     private const int DefaultLimit = 100;
     private const int MaxLimit = 500;
+    private const int MaxBurnLookbackDays = 3660;
     private const string MissingCounterpartyName = "Unknown counterparty";
 
     private readonly VirtualCompanyDbContext _dbContext;
@@ -27,6 +30,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
     private readonly TimeProvider? _timeProvider;
     private readonly IFinanceInsightPersistenceService _financeInsightPersistenceService;
     private readonly IReadOnlyList<IFinancialCheck> _financialChecks;
+    private readonly Dictionary<string, bool> _optionalSupplierInvoiceTableAvailability = new(StringComparer.OrdinalIgnoreCase);
 
     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
         : this(dbContext, null, null, null, null, null, null)
@@ -88,7 +92,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                     GetCashPositionAsync(new GetFinanceCashPositionQuery(context.CompanyId, context.AsOfUtc), cancellationToken)),
                 new TransactionAnomalyFinancialCheck(_dbContext),
                 new OverdueReceivablesFinancialCheck(_dbContext),
-                new PayablesFinancialCheck(_dbContext)
+                new PayablesFinancialCheck(_dbContext),
+                new SupplierBillDueMonitoringFinancialCheck(_dbContext)
             ];
     }
 
@@ -102,7 +107,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
 
         var accountBalances = await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
         var cashAccounts = accountBalances
-            .Where(x => IsCashAccount(x.AccountName, x.AccountCode))
+            .Where(x => IsCashAccount(x.AccountName, x.AccountCode, x.AccountType))
             .ToList();
 
         if (cashAccounts.Count == 0)
@@ -210,8 +215,16 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         int burnLookbackDays,
         CancellationToken cancellationToken)
     {
-        var lookbackDays = Math.Max(1, burnLookbackDays <= 0 ? 90 : burnLookbackDays);
-        var startUtc = asOfUtc.AddDays(-lookbackDays);
+        if (asOfUtc <= DateTime.MinValue)
+        {
+            return 0m;
+        }
+
+        var lookbackDays = Math.Clamp(burnLookbackDays <= 0 ? 90 : burnLookbackDays, 1, MaxBurnLookbackDays);
+        var lookbackTicks = TimeSpan.FromDays(lookbackDays).Ticks;
+        var startUtc = asOfUtc.Ticks <= lookbackTicks
+            ? DateTime.SpecifyKind(DateTime.MinValue, DateTimeKind.Utc)
+            : asOfUtc.AddTicks(-lookbackTicks);
         var totalBurn = await _dbContext.FinanceTransactions
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -502,7 +515,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, query.SourceFilter);
         var normalizedType = string.IsNullOrWhiteSpace(query.PaymentType)
             ? null
             : PaymentTypes.Normalize(query.PaymentType);
@@ -574,7 +587,6 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
         if (query.PaymentId == Guid.Empty)
         {
             throw new ArgumentException("Payment id is required.", nameof(query));
@@ -607,6 +619,13 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         }
 
         var hasFortnoxReference = await HasFortnoxReferenceAsync(query.CompanyId, ["payment"], row.Id, cancellationToken);
+        await EnsureFinanceInitializedForRecordAsync(
+            query.CompanyId,
+            row.SourceType,
+            row.ProviderKey,
+            hasFortnoxReference,
+            cancellationToken);
+
         var agentInsights = await LoadEntityAgentInsightsAsync(query.CompanyId, "payment", row.Id, cancellationToken);
         return new FinancePaymentDto(
             row.Id,
@@ -780,7 +799,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, query.SourceFilter);
         var startUtc = NormalizeUtc(query.StartUtc);
         var endUtc = NormalizeUtc(query.EndUtc);
         var category = NormalizeOptionalText(query.Category);
@@ -843,29 +862,57 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             query.CompanyId,
             rows.Select(x => x.DocumentId),
             cancellationToken);
+        var voucherFallbacks = await LoadFortnoxVoucherAmountFallbacksAsync(
+            query.CompanyId,
+            rows,
+            fortnoxReferenceIds,
+            cancellationToken);
+        var invoiceReviewStates = await LoadInvoiceReviewStatesAsync(
+            query.CompanyId,
+            rows.Select(x => x.InvoiceId).Concat(voucherFallbacks.Values.Select(x => x.InvoiceId)),
+            cancellationToken);
+        var billReviewStates = await LoadBillReviewStatesAsync(
+            query.CompanyId,
+            rows.Select(x => x.BillId).Concat(voucherFallbacks.Values.Select(x => x.BillId)),
+            cancellationToken);
+        var paymentSyncBlocked = await IsFortnoxPaymentSyncBlockedAsync(query.CompanyId, cancellationToken);
 
         return rows
             .Where(x => category is null || string.Equals(x.TransactionType, category, StringComparison.OrdinalIgnoreCase))
-            .Where(x => MatchesFlaggedState(flaggedState, anomalyLookup.ContainsKey(x.Id)))
+            .Where(x =>
+            {
+                voucherFallbacks.TryGetValue(x.Id, out var fallback);
+                var requiresDocumentReview = RequiresLinkedDocumentReview(x, fallback, invoiceReviewStates, billReviewStates);
+                var requiresPaymentSyncReview = RequiresFortnoxPaymentSyncReview(paymentSyncBlocked, fortnoxReferenceIds.Contains(x.Id), x, fallback);
+                return MatchesFlaggedState(flaggedState, anomalyLookup.ContainsKey(x.Id) || requiresDocumentReview || requiresPaymentSyncReview);
+            })
             .Take(limit)
-            .Select(x => new FinanceTransactionDto(
-                x.Id,
-                x.AccountId,
-                x.AccountName,
-                x.CounterpartyId,
-                x.CounterpartyName,
-                x.InvoiceId,
-                x.BillId,
-                x.TransactionUtc,
-                x.TransactionType,
-                x.Amount,
-                x.Currency,
-                x.Description,
-                x.ExternalReference,
-                MapLinkedDocument(x.DocumentId, linkedDocuments),
-                anomalyLookup.ContainsKey(x.Id),
-                ResolveTransactionAnomalyState(anomalyLookup.GetValueOrDefault(x.Id)),
-                ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id))))
+            .Select(x =>
+            {
+                voucherFallbacks.TryGetValue(x.Id, out var fallback);
+                var requiresDocumentReview = RequiresLinkedDocumentReview(x, fallback, invoiceReviewStates, billReviewStates);
+                var requiresPaymentSyncReview = RequiresFortnoxPaymentSyncReview(paymentSyncBlocked, fortnoxReferenceIds.Contains(x.Id), x, fallback);
+                var requiresReview = requiresDocumentReview || requiresPaymentSyncReview;
+
+                return new FinanceTransactionDto(
+                    x.Id,
+                    x.AccountId,
+                    x.AccountName,
+                    x.CounterpartyId ?? fallback?.CounterpartyId,
+                    x.CounterpartyName ?? fallback?.CounterpartyName,
+                    x.InvoiceId ?? fallback?.InvoiceId,
+                    x.BillId ?? fallback?.BillId,
+                    x.TransactionUtc,
+                    x.TransactionType,
+                    ResolveTransactionAmount(x, fallback),
+                    string.IsNullOrWhiteSpace(x.Currency) ? fallback?.Currency ?? x.Currency : x.Currency,
+                    x.Description,
+                    x.ExternalReference,
+                    MapLinkedDocument(x.DocumentId, linkedDocuments),
+                    anomalyLookup.ContainsKey(x.Id) || requiresReview,
+                    ResolveTransactionAnomalyState(anomalyLookup.GetValueOrDefault(x.Id), requiresReview),
+                    ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id)));
+            })
             .ToList();
     }
 
@@ -874,7 +921,6 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
         if (query.TransactionId == Guid.Empty)
         {
             throw new ArgumentException("Transaction id is required.", nameof(query));
@@ -909,30 +955,70 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return null;
         }
 
+        var hasFortnoxReference = await HasFortnoxReferenceAsync(
+            query.CompanyId,
+            ["voucher", "payment", "transaction"],
+            row.Id,
+            cancellationToken);
+        await EnsureFinanceInitializedForRecordAsync(
+            query.CompanyId,
+            row.SourceType,
+            row.ProviderKey,
+            hasFortnoxReference,
+            cancellationToken);
+
         var anomalyLookup = await LoadTransactionAnomalyLookupAsync(query.CompanyId, [row.Id], cancellationToken);
         var anomalies = anomalyLookup.GetValueOrDefault(row.Id) ?? [];
         var linkedDocuments = await LoadLinkedDocumentsAsync(query.CompanyId, [row.DocumentId], cancellationToken);
         var documentAccess = await BuildDocumentAccessAsync(query.CompanyId, row.DocumentId, linkedDocuments, cancellationToken);
+        var voucherFallbacks = await LoadFortnoxVoucherAmountFallbacksAsync(
+            query.CompanyId,
+            [row],
+            hasFortnoxReference ? new HashSet<Guid> { row.Id } : [],
+            cancellationToken);
+        voucherFallbacks.TryGetValue(row.Id, out var fallback);
+        var invoiceId = row.InvoiceId ?? fallback?.InvoiceId;
+        var billId = row.BillId ?? fallback?.BillId;
+        var invoiceReviewStates = await LoadInvoiceReviewStatesAsync(query.CompanyId, [invoiceId], cancellationToken);
+        var billReviewStates = await LoadBillReviewStatesAsync(query.CompanyId, [billId], cancellationToken);
+        var requiresDocumentReview = RequiresLinkedDocumentReview(row, fallback, invoiceReviewStates, billReviewStates);
+        var paymentContext = BuildPaymentContext(invoiceId, billId, invoiceReviewStates, billReviewStates);
+        var paymentSyncBlocked = await IsFortnoxPaymentSyncBlockedAsync(query.CompanyId, cancellationToken);
+        var requiresPaymentSyncReview = RequiresFortnoxPaymentSyncReview(paymentSyncBlocked, hasFortnoxReference, row, fallback);
+        var requiresReview = requiresDocumentReview || requiresPaymentSyncReview;
+        var flags = anomalies
+            .Select(x => NormalizeCategory(x.AnomalyType))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (requiresDocumentReview && !flags.Contains("partially_paid", StringComparer.OrdinalIgnoreCase))
+        {
+            flags.Add("partially_paid");
+        }
+        if (requiresPaymentSyncReview && !flags.Contains("payment_sync_blocked", StringComparer.OrdinalIgnoreCase))
+        {
+            flags.Add("payment_sync_blocked");
+        }
 
         return new FinanceTransactionDetailDto(
             row.Id,
             row.AccountId,
             row.AccountName,
-            row.CounterpartyId,
-            row.CounterpartyName,
-            row.InvoiceId,
-            row.BillId,
+            row.CounterpartyId ?? fallback?.CounterpartyId,
+            row.CounterpartyName ?? fallback?.CounterpartyName,
+            invoiceId,
+            billId,
             row.TransactionUtc,
             row.TransactionType,
-            row.Amount,
-            row.Currency,
+            ResolveTransactionAmount(row, fallback),
+            string.IsNullOrWhiteSpace(row.Currency) ? fallback?.Currency ?? row.Currency : row.Currency,
             row.Description,
             row.ExternalReference,
-            anomalies.Any(),
-            ResolveTransactionAnomalyState(anomalies),
-            anomalies.Select(x => NormalizeCategory(x.AnomalyType)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            anomalies.Any() || requiresReview,
+            ResolveTransactionAnomalyState(anomalies, requiresReview),
+            flags,
             BuildActionPermissions(),
-            documentAccess);
+            documentAccess,
+            paymentContext);
     }
 
     public async Task<FinanceInvoiceDetailDto?> GetInvoiceDetailAsync(
@@ -940,7 +1026,6 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
         if (query.InvoiceId == Guid.Empty)
         {
             throw new ArgumentException("Invoice id is required.", nameof(query));
@@ -960,6 +1045,12 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
+                x.PostingStatus,
+                x.SettlementStatus,
+                x.DueStatus,
+                x.DocumentKind,
+                x.ProviderStatus,
+                x.ProcessingStatus,
                 x.DocumentId,
                 EF.Property<string>(x, "SourceType"),
                 EF.Property<string?>(x, "ProviderKey"),
@@ -971,8 +1062,23 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return null;
         }
 
+        var hasFortnoxReference = await HasFortnoxReferenceAsync(query.CompanyId, ["invoice"], row.Id, cancellationToken);
+        await EnsureFinanceInitializedForRecordAsync(
+            query.CompanyId,
+            row.SourceType,
+            row.ProviderKey,
+            hasFortnoxReference,
+            cancellationToken);
+
         var linkedDocuments = await LoadLinkedDocumentsAsync(query.CompanyId, [row.DocumentId], cancellationToken);
         var documentAccess = await BuildDocumentAccessAsync(query.CompanyId, row.DocumentId, linkedDocuments, cancellationToken);
+        var invoiceReviewStates = await LoadInvoiceReviewStatesAsync(query.CompanyId, [row.Id], cancellationToken);
+        var paymentContext = BuildPaymentContext(
+            row.Id,
+            null,
+            invoiceReviewStates,
+            new Dictionary<Guid, TransactionDocumentReviewState>());
+        var relatedTransactions = await LoadInvoiceRelatedTransactionsAsync(query.CompanyId, row.Id, cancellationToken);
 
         return new FinanceInvoiceDetailDto(
             row.Id,
@@ -987,7 +1093,15 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             null,
             BuildActionPermissions(),
             documentAccess,
-            await LoadEntityAgentInsightsAsync(query.CompanyId, "invoice", row.Id, cancellationToken));
+            await LoadEntityAgentInsightsAsync(query.CompanyId, "invoice", row.Id, cancellationToken),
+            row.PostingStatus,
+            row.SettlementStatus,
+            row.DueStatus,
+            row.DocumentKind,
+            row.ProviderStatus,
+            row.ProcessingStatus,
+            paymentContext,
+            relatedTransactions);
     }
 
     private async Task<Dictionary<Guid, List<FinanceSeedAnomalyDto>>> LoadTransactionAnomalyLookupAsync(
@@ -1034,7 +1148,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, query.SourceFilter);
         var startUtc = NormalizeUtc(query.StartUtc);
         var endUtc = NormalizeUtc(query.EndUtc);
         var limit = NormalizeLimit(query.Limit);
@@ -1070,6 +1184,12 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
+                x.PostingStatus,
+                x.SettlementStatus,
+                x.DueStatus,
+                x.DocumentKind,
+                x.ProviderStatus,
+                x.ProcessingStatus,
                 x.DocumentId,
                 EF.Property<string>(x, "SourceType"),
                 EF.Property<string?>(x, "ProviderKey"),
@@ -1086,20 +1206,36 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             query.CompanyId,
             rows.Select(x => x.DocumentId),
             cancellationToken);
+        var invoiceReviewStates = await LoadInvoiceReviewStatesAsync(
+            query.CompanyId,
+            rows.Select(x => (Guid?)x.Id),
+            cancellationToken);
+        var emptyBillReviewStates = new Dictionary<Guid, TransactionDocumentReviewState>();
 
         return rows
-            .Select(x => new FinanceInvoiceDto(
-                x.Id,
-                x.CounterpartyId,
-                x.CounterpartyName,
-                x.InvoiceNumber,
-                x.IssuedUtc,
-                x.DueUtc,
-                x.Amount,
-                x.Currency,
-                x.Status,
-                MapLinkedDocument(x.DocumentId, linkedDocuments),
-                ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id))))
+            .Select(x =>
+            {
+                var paymentContext = BuildPaymentContext(x.Id, null, invoiceReviewStates, emptyBillReviewStates);
+                return new FinanceInvoiceDto(
+                    x.Id,
+                    x.CounterpartyId,
+                    x.CounterpartyName,
+                    x.InvoiceNumber,
+                    x.IssuedUtc,
+                    x.DueUtc,
+                    x.Amount,
+                    x.Currency,
+                    x.Status,
+                    MapLinkedDocument(x.DocumentId, linkedDocuments),
+                    ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id)),
+                    x.PostingStatus,
+                    x.SettlementStatus,
+                    x.DueStatus,
+                    x.DocumentKind,
+                    x.ProviderStatus,
+                    x.ProcessingStatus,
+                    paymentContext);
+            })
             .ToList();
     }
 
@@ -1375,7 +1511,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, query.SourceFilter);
         var startUtc = NormalizeUtc(query.StartUtc);
         var endUtc = NormalizeUtc(query.EndUtc);
         var limit = NormalizeLimit(query.Limit);
@@ -1411,6 +1547,12 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 x.Amount,
                 x.Currency,
                 x.Status,
+                x.PostingStatus,
+                x.SettlementStatus,
+                x.DueStatus,
+                x.DocumentKind,
+                x.ProviderStatus,
+                x.ProcessingStatus,
                 x.DocumentId,
                 EF.Property<string>(x, "SourceType"),
                 EF.Property<string?>(x, "ProviderKey"),
@@ -1427,21 +1569,265 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             query.CompanyId,
             rows.Select(x => x.DocumentId),
             cancellationToken);
+        var billReviewStates = await LoadBillReviewStatesAsync(
+            query.CompanyId,
+            rows.Select(x => (Guid?)x.Id),
+            cancellationToken);
+        var paymentProposals = await LoadSupplierPaymentProposalsAsync(
+            query.CompanyId,
+            rows.Select(x => x.Id),
+            cancellationToken);
+        var sourceDocumentAttachments = await LoadSupplierInvoiceSourceDocumentAttachmentsAsync(
+            query.CompanyId,
+            rows.Select(x => x.Id),
+            cancellationToken);
+        var draftActions = await LoadSupplierInvoiceDraftActionsAsync(
+            query.CompanyId,
+            rows.Select(x => x.Id),
+            cancellationToken);
+        var correctionActions = await LoadSupplierInvoiceCorrectionActionsAsync(
+            query.CompanyId,
+            rows.Select(x => x.Id),
+            cancellationToken);
+        var enrichmentActions = await LoadSupplierInvoiceEnrichmentActionsAsync(
+            query.CompanyId,
+            rows.Select(x => x.Id),
+            cancellationToken);
+        var emptyInvoiceReviewStates = new Dictionary<Guid, TransactionDocumentReviewState>();
 
         return rows
-            .Select(x => new FinanceBillDto(
-                x.Id,
-                x.CounterpartyId,
-                x.CounterpartyName,
-                x.BillNumber,
-                x.ReceivedUtc,
-                x.DueUtc,
-                x.Amount,
-                x.Currency,
-                x.Status,
-                MapLinkedDocument(x.DocumentId, linkedDocuments),
-                ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id))))
+            .Select(x =>
+            {
+                var paymentContext = BuildPaymentContext(null, x.Id, emptyInvoiceReviewStates, billReviewStates);
+                return new FinanceBillDto(
+                    x.Id,
+                    x.CounterpartyId,
+                    x.CounterpartyName,
+                    x.BillNumber,
+                    x.ReceivedUtc,
+                    x.DueUtc,
+                    x.Amount,
+                    x.Currency,
+                    x.Status,
+                    MapLinkedDocument(x.DocumentId, linkedDocuments),
+                    ResolveFinanceSource(x.SourceType, x.ProviderKey, fortnoxReferenceIds.Contains(x.Id)),
+                    x.PostingStatus,
+                    x.SettlementStatus,
+                    x.DueStatus,
+                    x.DocumentKind,
+                    x.ProviderStatus,
+                    x.ProcessingStatus,
+                    paymentContext,
+                    paymentProposals.GetValueOrDefault(x.Id),
+                    sourceDocumentAttachments.GetValueOrDefault(x.Id),
+                    draftActions.GetValueOrDefault(x.Id),
+                    correctionActions.GetValueOrDefault(x.Id),
+                    enrichmentActions.GetValueOrDefault(x.Id));
+            })
             .ToList();
+    }
+
+    private async Task<Dictionary<Guid, SupplierInvoicePaymentProposalDto>> LoadSupplierPaymentProposalsAsync(
+        Guid companyId,
+        IEnumerable<Guid> billIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = billIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var proposals = await _dbContext.SupplierInvoicePaymentProposals
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+            .OrderByDescending(x => x.CreatedUtc)
+            .ToListAsync(cancellationToken);
+
+        return proposals
+            .GroupBy(x => x.BillId)
+            .ToDictionary(group => group.Key, group => SupplierInvoicePaymentProposalService.MapProposal(group.First()));
+    }
+
+    private async Task<Dictionary<Guid, SupplierInvoiceSourceDocumentAttachmentDto>> LoadSupplierInvoiceSourceDocumentAttachmentsAsync(
+        Guid companyId,
+        IEnumerable<Guid> billIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = billIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var attachments = await ReadOptionalSupplierInvoiceTableAsync(
+            "supplier_invoice_source_document_attachments",
+            () => _dbContext.SupplierInvoiceSourceDocumentAttachments
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+                .ToListAsync(cancellationToken),
+            cancellationToken);
+
+        return attachments.ToDictionary(x => x.BillId, SupplierInvoiceSourceDocumentAttachmentService.MapAttachment);
+    }
+
+    private async Task<Dictionary<Guid, SupplierInvoiceDraftActionDto>> LoadSupplierInvoiceDraftActionsAsync(
+        Guid companyId,
+        IEnumerable<Guid> billIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = billIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var actions = await ReadOptionalSupplierInvoiceTableAsync(
+            "supplier_invoice_draft_actions",
+            () => _dbContext.SupplierInvoiceDraftActions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+                .ToListAsync(cancellationToken),
+            cancellationToken);
+
+        return actions.ToDictionary(x => x.BillId, SupplierInvoiceDraftActionService.MapAction);
+    }
+
+    private async Task<Dictionary<Guid, IReadOnlyList<SupplierInvoiceCorrectionActionDto>>> LoadSupplierInvoiceCorrectionActionsAsync(
+        Guid companyId,
+        IEnumerable<Guid> billIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = billIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var actions = await ReadOptionalSupplierInvoiceTableAsync(
+            "supplier_invoice_correction_actions",
+            () => _dbContext.SupplierInvoiceCorrectionActions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+                .OrderByDescending(x => x.UpdatedUtc)
+                .ToListAsync(cancellationToken),
+            cancellationToken);
+
+        return actions
+            .GroupBy(x => x.BillId)
+            .ToDictionary(
+                group => group.Key,
+                group => (IReadOnlyList<SupplierInvoiceCorrectionActionDto>)group
+                    .Select(SupplierInvoiceCorrectionService.MapAction)
+                    .ToArray());
+    }
+
+    private async Task<Dictionary<Guid, SupplierInvoiceEnrichmentActionDto>> LoadSupplierInvoiceEnrichmentActionsAsync(
+        Guid companyId,
+        IEnumerable<Guid> billIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = billIds.Where(id => id != Guid.Empty).Distinct().ToArray();
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var actions = await ReadOptionalSupplierInvoiceTableAsync(
+            "supplier_invoice_enrichment_actions",
+            () => _dbContext.SupplierInvoiceEnrichmentActions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+                .ToListAsync(cancellationToken),
+            cancellationToken);
+
+        return actions.ToDictionary(x => x.BillId, SupplierInvoiceEnrichmentService.MapAction);
+    }
+
+    private async Task<List<T>> ReadOptionalSupplierInvoiceTableAsync<T>(
+        string tableName,
+        Func<Task<List<T>>> read,
+        CancellationToken cancellationToken)
+    {
+        if (!await OptionalSupplierInvoiceTableExistsAsync(tableName, cancellationToken))
+        {
+            return [];
+        }
+
+        try
+        {
+            return await read();
+        }
+        catch (SqlException ex) when (IsMissingSqlObject(ex))
+        {
+            _optionalSupplierInvoiceTableAvailability[tableName] = false;
+            return [];
+        }
+    }
+
+    private async Task<bool> OptionalSupplierInvoiceTableExistsAsync(string tableName, CancellationToken cancellationToken)
+    {
+        if (_optionalSupplierInvoiceTableAvailability.TryGetValue(tableName, out var cached))
+        {
+            return cached;
+        }
+
+        var connection = _dbContext.Database.GetDbConnection();
+        var shouldClose = connection.State == ConnectionState.Closed;
+        if (shouldClose)
+        {
+            await connection.OpenAsync(cancellationToken);
+        }
+
+        try
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                SELECT CASE WHEN EXISTS (
+                    SELECT 1
+                    FROM sys.tables AS t
+                    INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
+                    WHERE s.name = N'dbo' AND t.name = @tableName
+                ) THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END
+                """;
+
+            var parameter = command.CreateParameter();
+            parameter.ParameterName = "@tableName";
+            parameter.Value = tableName;
+            command.Parameters.Add(parameter);
+
+            var result = await command.ExecuteScalarAsync(cancellationToken);
+            var exists = result is bool value
+                ? value
+                : result is not null && Convert.ToInt32(result, CultureInfo.InvariantCulture) == 1;
+            _optionalSupplierInvoiceTableAvailability[tableName] = exists;
+            return exists;
+        }
+        finally
+        {
+            if (shouldClose)
+            {
+                await connection.CloseAsync();
+            }
+        }
+    }
+
+    private static bool IsMissingSqlObject(SqlException exception)
+    {
+        foreach (SqlError error in exception.Errors)
+        {
+            if (error.Number == 208)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public async Task<IReadOnlyList<FinanceAccountBalanceDto>> GetBalancesAsync(
@@ -1712,7 +2098,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .ToListAsync(cancellationToken);
 
         var cashAccountIds = accounts
-            .Where(x => IsCashAccount(x.Name, x.Code) || string.Equals(x.AccountType, "asset", StringComparison.OrdinalIgnoreCase))
+            .Where(x => IsCashAccount(x.Name, x.Code, x.AccountType) || string.Equals(x.AccountType, "asset", StringComparison.OrdinalIgnoreCase))
             .Select(x => x.Id)
             .ToArray();
 
@@ -1790,8 +2176,16 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             sourceRecordIds);
     }
 
-    private async Task EnsureFinanceInitializedAsync(Guid companyId, CancellationToken cancellationToken)
+    private async Task EnsureFinanceInitializedAsync(
+        Guid companyId,
+        CancellationToken cancellationToken,
+        string? sourceFilter = null)
     {
+        if (FinanceDataSources.Normalize(sourceFilter) == FinanceDataSources.Fortnox)
+        {
+            return;
+        }
+
         if (_financeSeedingStateService is null)
         {
             return;
@@ -1800,8 +2194,50 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         var state = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(companyId, cancellationToken);
         if (state.State != FinanceSeedingState.Seeded)
         {
+            var hasIntegrationFinanceData = await _dbContext.FinanceExternalReferences
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(x =>
+                    x.CompanyId == companyId &&
+                    x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                    x.EntityType != "sales_finance_handoff",
+                    cancellationToken);
+            if (!hasIntegrationFinanceData)
+            {
+                hasIntegrationFinanceData = await _dbContext.FinanceBills
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .AnyAsync(x =>
+                        x.CompanyId == companyId &&
+                        (EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Fortnox ||
+                         EF.Property<string?>(x, "ProviderKey") == FinanceIntegrationProviderKeys.Fortnox),
+                        cancellationToken);
+            }
+
+            if (hasIntegrationFinanceData)
+            {
+                return;
+            }
+
             throw new FinanceNotInitializedException(companyId, "Finance data has not been initialized for this company. Generate finance data before requesting finance records.");
         }
+    }
+
+    private async Task EnsureFinanceInitializedForRecordAsync(
+        Guid companyId,
+        string? sourceType,
+        string? providerKey,
+        bool hasFortnoxReference,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(sourceType, FinanceRecordSourceTypes.Fortnox, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(providerKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase) ||
+            hasFortnoxReference)
+        {
+            return;
+        }
+
+        await EnsureFinanceInitializedAsync(companyId, cancellationToken);
     }
 
     private async Task<FiscalPeriodRow> LoadFiscalPeriodAsync(
@@ -2618,7 +3054,13 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.TransactionUtc <= asOfUtc)
-            .Select(x => new TransactionBalanceRow(x.AccountId, x.TransactionUtc, x.Amount))
+            .Select(x => new TransactionBalanceRow(
+                x.AccountId,
+                x.TransactionUtc,
+                x.TransactionType,
+                x.Amount,
+                x.Description,
+                x.ExternalReference))
             .ToListAsync(cancellationToken);
 
         var transactionsByAccount = transactions
@@ -2633,6 +3075,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 {
                     var postedSinceSnapshot = accountTransactions
                         .Where(transaction => transaction.TransactionUtc > balance.AsOfUtc)
+                        .Where(IsCashMovementTransaction)
                         .Sum(transaction => transaction.Amount);
 
                     return new FinanceAccountBalanceDto(
@@ -2645,7 +3088,9 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                         asOfUtc);
                 }
 
-                var postedAmount = accountTransactions.Sum(transaction => transaction.Amount);
+                var postedAmount = accountTransactions
+                    .Where(IsCashMovementTransaction)
+                    .Sum(transaction => transaction.Amount);
                 return new FinanceAccountBalanceDto(
                     account.Id,
                     account.Code,
@@ -3131,9 +3576,36 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             _ => true
         };
 
-    private static bool IsCashAccount(string name, string code) =>
-        name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
-        code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
+    private static bool IsCashAccount(string name, string code, string accountType) =>
+        (string.Equals(accountType, "cash", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(accountType, "asset", StringComparison.OrdinalIgnoreCase)) &&
+        (code.StartsWith("19", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(code, "1000", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("kassa", StringComparison.OrdinalIgnoreCase) ||
+            name.Contains("plusgiro", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsCashMovementTransaction(TransactionBalanceRow transaction) =>
+        !string.Equals(transaction.TransactionType, "voucher", StringComparison.OrdinalIgnoreCase) ||
+        IsExplicitBankPaymentVoucher(transaction.Description, transaction.ExternalReference);
+
+    private static bool IsExplicitBankPaymentVoucher(string description, string externalReference)
+    {
+        var text = string.Concat(description, " ", externalReference);
+        var mentionsBank =
+            text.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("bankgiro", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("plusgiro", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("kassa", StringComparison.OrdinalIgnoreCase);
+        var mentionsPayment =
+            text.Contains("payment", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("betal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("inbetal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("utbetal", StringComparison.OrdinalIgnoreCase);
+
+        return mentionsBank && mentionsPayment;
+    }
 
     private static string NormalizeCategory(string category) =>
         string.IsNullOrWhiteSpace(category)
@@ -3203,6 +3675,310 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         return anomalies.Any(x => string.Equals(x.AnomalyType, "missing_receipt", StringComparison.OrdinalIgnoreCase))
             ? "needs_review"
             : "flagged";
+    }
+
+    private static string ResolveTransactionAnomalyState(IReadOnlyCollection<FinanceSeedAnomalyDto>? anomalies, bool requiresDocumentReview)
+    {
+        var anomalyState = ResolveTransactionAnomalyState(anomalies);
+        return requiresDocumentReview && IsClearTransactionAnomalyState(anomalyState)
+            ? "needs_review"
+            : anomalyState;
+    }
+
+    private static bool IsClearTransactionAnomalyState(string? anomalyState)
+    {
+        var normalized = NormalizeOptionalText(anomalyState)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
+        return string.IsNullOrWhiteSpace(normalized) || normalized is "clear" or "none" or "normal" or "resolved";
+    }
+
+    private async Task<Dictionary<Guid, TransactionDocumentReviewState>> LoadInvoiceReviewStatesAsync(
+        Guid companyId,
+        IEnumerable<Guid?> invoiceIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = invoiceIds
+            .Where(x => x.HasValue && x.Value != Guid.Empty)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToArray();
+
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var states = await _dbContext.FinanceInvoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.Id))
+            .Select(x => new
+            {
+                x.Id,
+                x.SettlementStatus,
+                x.PaidAmount,
+                x.Amount,
+                x.Currency,
+                x.ProviderStatus
+            })
+            .ToDictionaryAsync(
+                x => x.Id,
+                x => new TransactionDocumentReviewState(x.SettlementStatus, x.PaidAmount, x.Amount, x.Currency, x.ProviderStatus),
+                cancellationToken);
+
+        var allocatedAmounts = await LoadAllocatedAmountsByInvoiceAsync(companyId, ids, cancellationToken);
+        foreach (var (invoiceId, allocatedAmount) in allocatedAmounts)
+        {
+            if (states.TryGetValue(invoiceId, out var state) &&
+                !HasProviderBalanceStatus(state.ProviderStatus) &&
+                allocatedAmount > state.PaidAmount)
+            {
+                states[invoiceId] = state with { PaidAmount = allocatedAmount };
+            }
+        }
+
+        return states;
+    }
+
+    private async Task<IReadOnlyList<FinanceInvoiceRelatedTransactionDto>> LoadInvoiceRelatedTransactionsAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        var rows = await _dbContext.FinanceTransactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.InvoiceId == invoiceId)
+            .OrderBy(x => x.TransactionUtc)
+            .ThenBy(x => x.Description)
+            .Select(x => new FinanceInvoiceRelatedTransactionDto(
+                x.Id,
+                x.TransactionUtc,
+                x.TransactionType,
+                x.Amount,
+                x.Currency,
+                x.Description,
+                x.ExternalReference))
+            .ToListAsync(cancellationToken);
+
+        return rows;
+    }
+
+    private async Task<IReadOnlyList<FinanceInvoiceRelatedTransactionDto>> LoadBillRelatedTransactionsAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        var rows = await _dbContext.FinanceTransactions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.BillId == billId)
+            .OrderBy(x => x.TransactionUtc)
+            .ThenBy(x => x.Description)
+            .Select(x => new FinanceInvoiceRelatedTransactionDto(
+                x.Id,
+                x.TransactionUtc,
+                x.TransactionType,
+                x.Amount,
+                x.Currency,
+                x.Description,
+                x.ExternalReference))
+            .ToListAsync(cancellationToken);
+
+        return rows;
+    }
+
+    private async Task<Dictionary<Guid, TransactionDocumentReviewState>> LoadBillReviewStatesAsync(
+        Guid companyId,
+        IEnumerable<Guid?> billIds,
+        CancellationToken cancellationToken)
+    {
+        var ids = billIds
+            .Where(x => x.HasValue && x.Value != Guid.Empty)
+            .Select(x => x!.Value)
+            .Distinct()
+            .ToArray();
+
+        if (ids.Length == 0)
+        {
+            return [];
+        }
+
+        var states = await _dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.Id))
+            .Select(x => new
+            {
+                x.Id,
+                x.SettlementStatus,
+                x.PaidAmount,
+                x.Amount,
+                x.Currency,
+                x.ProviderStatus
+            })
+            .ToDictionaryAsync(
+                x => x.Id,
+                x => new TransactionDocumentReviewState(x.SettlementStatus, x.PaidAmount, x.Amount, x.Currency, x.ProviderStatus),
+                cancellationToken);
+
+        var allocatedAmounts = await LoadAllocatedAmountsByBillAsync(companyId, ids, cancellationToken);
+        foreach (var (billId, allocatedAmount) in allocatedAmounts)
+        {
+            if (states.TryGetValue(billId, out var state) &&
+                !HasProviderBalanceStatus(state.ProviderStatus) &&
+                allocatedAmount > state.PaidAmount)
+            {
+                states[billId] = state with { PaidAmount = allocatedAmount };
+            }
+        }
+
+        return states;
+    }
+
+    private async Task<Dictionary<Guid, decimal>> LoadAllocatedAmountsByInvoiceAsync(
+        Guid companyId,
+        IReadOnlyCollection<Guid> invoiceIds,
+        CancellationToken cancellationToken)
+    {
+        if (invoiceIds.Count == 0)
+        {
+            return [];
+        }
+
+        return await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.InvoiceId.HasValue && invoiceIds.Contains(x.InvoiceId.Value))
+            .GroupBy(x => x.InvoiceId!.Value)
+            .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount) })
+            .ToDictionaryAsync(x => x.Id, x => decimal.Round(Math.Abs(x.Amount), 2, MidpointRounding.AwayFromZero), cancellationToken);
+    }
+
+    private async Task<Dictionary<Guid, decimal>> LoadAllocatedAmountsByBillAsync(
+        Guid companyId,
+        IReadOnlyCollection<Guid> billIds,
+        CancellationToken cancellationToken)
+    {
+        if (billIds.Count == 0)
+        {
+            return [];
+        }
+
+        return await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.BillId.HasValue && billIds.Contains(x.BillId.Value))
+            .GroupBy(x => x.BillId!.Value)
+            .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount) })
+            .ToDictionaryAsync(x => x.Id, x => decimal.Round(Math.Abs(x.Amount), 2, MidpointRounding.AwayFromZero), cancellationToken);
+    }
+
+    private static bool RequiresLinkedDocumentReview(
+        FinanceTransactionRow row,
+        FortnoxVoucherAmountFallback? fallback,
+        IReadOnlyDictionary<Guid, TransactionDocumentReviewState> invoiceReviewStates,
+        IReadOnlyDictionary<Guid, TransactionDocumentReviewState> billReviewStates)
+    {
+        if (IsPaymentTransaction(row.TransactionType))
+        {
+            return false;
+        }
+
+        var invoiceId = row.InvoiceId ?? fallback?.InvoiceId;
+        var billId = row.BillId ?? fallback?.BillId;
+
+        if (invoiceId.HasValue &&
+            invoiceReviewStates.TryGetValue(invoiceId.Value, out var invoiceState) &&
+            IsPartiallyPaid(invoiceState))
+        {
+            return true;
+        }
+
+        return billId.HasValue &&
+            billReviewStates.TryGetValue(billId.Value, out var billState) &&
+            IsPartiallyPaid(billState);
+    }
+
+    private static bool IsPaymentTransaction(string? transactionType)
+    {
+        var normalized = NormalizeOptionalText(transactionType)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
+        return normalized is "customer_payment" or "supplier_payment" or "payment";
+    }
+
+    private async Task<bool> IsFortnoxPaymentSyncBlockedAsync(Guid companyId, CancellationToken cancellationToken) =>
+        await _dbContext.FinanceIntegrationSyncStates
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(
+                x =>
+                    x.CompanyId == companyId &&
+                    x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                    (x.EntityType == "invoice_payments" || x.EntityType == "supplier_invoice_payments") &&
+                    x.Status == FinanceIntegrationSyncStatuses.Failed &&
+                    x.LastErrorSummary != null &&
+                    x.LastErrorSummary.Contains("payment") &&
+                    x.LastErrorSummary.Contains("permission"),
+                cancellationToken);
+
+    private static bool RequiresFortnoxPaymentSyncReview(
+        bool paymentSyncBlocked,
+        bool hasFortnoxReference,
+        FinanceTransactionRow row,
+        FortnoxVoucherAmountFallback? fallback) =>
+        paymentSyncBlocked &&
+        hasFortnoxReference &&
+        ((row.InvoiceId ?? fallback?.InvoiceId).HasValue ||
+         (row.BillId ?? fallback?.BillId).HasValue ||
+         IsFortnoxInvoiceLikeTransaction(row));
+
+    private static bool IsFortnoxInvoiceLikeTransaction(FinanceTransactionRow row)
+    {
+        var description = NormalizeOptionalText(row.Description)?.ToLowerInvariant() ?? string.Empty;
+        var reference = NormalizeOptionalText(row.ExternalReference)?.ToLowerInvariant() ?? string.Empty;
+        return description.Contains("kundfaktura", StringComparison.Ordinal) ||
+            description.Contains("customer invoice", StringComparison.Ordinal) ||
+            description.Contains("supplier invoice", StringComparison.Ordinal) ||
+            description.Contains("leverantörsfaktura", StringComparison.Ordinal) ||
+            reference.StartsWith("b-", StringComparison.Ordinal);
+    }
+
+    private static bool IsPartiallyPaid(TransactionDocumentReviewState state) =>
+        string.Equals(FinanceSettlementStatuses.Normalize(state.SettlementStatus), FinanceSettlementStatuses.PartiallyPaid, StringComparison.Ordinal) ||
+        state.PaidAmount > 0m && state.PaidAmount < Math.Abs(state.Amount);
+
+    private static bool HasProviderBalanceStatus(string? providerStatus) =>
+        !string.IsNullOrWhiteSpace(providerStatus) &&
+        providerStatus
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Any(part => part.StartsWith("balance=", StringComparison.OrdinalIgnoreCase));
+
+    private static FinanceTransactionPaymentContextDto? BuildPaymentContext(
+        Guid? invoiceId,
+        Guid? billId,
+        IReadOnlyDictionary<Guid, TransactionDocumentReviewState> invoiceReviewStates,
+        IReadOnlyDictionary<Guid, TransactionDocumentReviewState> billReviewStates)
+    {
+        var state = invoiceId.HasValue && invoiceReviewStates.TryGetValue(invoiceId.Value, out var invoiceState)
+            ? invoiceState
+            : billId.HasValue && billReviewStates.TryGetValue(billId.Value, out var billState)
+                ? billState
+                : null;
+
+        if (state is null)
+        {
+            return null;
+        }
+
+        var totalAmount = decimal.Round(Math.Abs(state.Amount), 2, MidpointRounding.AwayFromZero);
+        var paidAmount = decimal.Round(Math.Abs(state.PaidAmount), 2, MidpointRounding.AwayFromZero);
+        var remainingAmount = Math.Max(0m, decimal.Round(totalAmount - paidAmount, 2, MidpointRounding.AwayFromZero));
+
+        return new FinanceTransactionPaymentContextDto(
+            IsPartiallyPaid(state),
+            paidAmount,
+            totalAmount,
+            remainingAmount,
+            string.IsNullOrWhiteSpace(state.Currency) ? "SEK" : state.Currency);
     }
 
     private static string ResolveCurrency(IEnumerable<FinanceAmountRow> rows)
@@ -3549,7 +4325,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
     private sealed record TransactionBalanceRow(
         Guid AccountId,
         DateTime TransactionUtc,
-        decimal Amount);
+        string TransactionType,
+        decimal Amount,
+        string Description,
+        string ExternalReference);
 
     private sealed record FinancePaymentSourceRow(
         Guid Id,
@@ -3586,6 +4365,21 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         string? ProviderKey,
         bool HasFortnoxReference);
 
+    private sealed record FortnoxVoucherAmountFallback(
+        Guid CounterpartyId,
+        string CounterpartyName,
+        Guid? InvoiceId,
+        Guid? BillId,
+        decimal Amount,
+        string Currency);
+
+    private sealed record TransactionDocumentReviewState(
+        string SettlementStatus,
+        decimal PaidAmount,
+        decimal Amount,
+        string Currency,
+        string? ProviderStatus);
+
     private sealed record FinanceInvoiceRow(
         Guid Id,
         Guid CounterpartyId,
@@ -3596,6 +4390,12 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         decimal Amount,
         string Currency,
         string Status,
+        string PostingStatus,
+        string SettlementStatus,
+        string DueStatus,
+        string DocumentKind,
+        string? ProviderStatus,
+        string ProcessingStatus,
         Guid? DocumentId,
         string SourceType,
         string? ProviderKey,
@@ -3625,6 +4425,12 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         decimal Amount,
         string Currency,
         string Status,
+        string PostingStatus,
+        string SettlementStatus,
+        string DueStatus,
+        string DocumentKind,
+        string? ProviderStatus,
+        string ProcessingStatus,
         Guid? DocumentId,
         string SourceType,
         string? ProviderKey,
@@ -3908,6 +4714,179 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 entityTypes.Contains(reference.EntityType) &&
                 reference.InternalRecordId == internalRecordId,
                 cancellationToken);
+    }
+
+    private async Task<Dictionary<Guid, FortnoxVoucherAmountFallback>> LoadFortnoxVoucherAmountFallbacksAsync(
+        Guid companyId,
+        IEnumerable<FinanceTransactionRow> rows,
+        IReadOnlySet<Guid> fortnoxReferenceIds,
+        CancellationToken cancellationToken)
+    {
+        var candidateRows = rows
+            .Where(row =>
+                row.Amount == 0m &&
+                string.Equals(row.TransactionType, "voucher", StringComparison.OrdinalIgnoreCase) &&
+                IsFortnoxBacked(row, fortnoxReferenceIds))
+            .Select(row => new
+            {
+                row.Id,
+                DocumentNumber = ResolveVoucherDocumentNumber(row.Description)
+            })
+            .Where(row => row.DocumentNumber is not null)
+            .ToArray();
+
+        if (candidateRows.Length == 0)
+        {
+            return [];
+        }
+
+        var documentNumbers = candidateRows
+            .Select(row => row.DocumentNumber!)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+
+        var references = await _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(reference =>
+                reference.CompanyId == companyId &&
+                reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                (reference.EntityType == "invoice" || reference.EntityType == "supplier_invoice") &&
+                (documentNumbers.Contains(reference.ExternalId) ||
+                    (reference.ExternalNumber != null && documentNumbers.Contains(reference.ExternalNumber))))
+            .Select(reference => new
+            {
+                reference.EntityType,
+                reference.InternalRecordId,
+                reference.ExternalId,
+                reference.ExternalNumber
+            })
+            .ToListAsync(cancellationToken);
+
+        if (references.Count == 0)
+        {
+            return [];
+        }
+
+        var invoiceIds = references
+            .Where(reference => reference.EntityType == "invoice")
+            .Select(reference => reference.InternalRecordId)
+            .Distinct()
+            .ToArray();
+        var billIds = references
+            .Where(reference => reference.EntityType == "supplier_invoice")
+            .Select(reference => reference.InternalRecordId)
+            .Distinct()
+            .ToArray();
+
+        var invoiceRows = await _dbContext.FinanceInvoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(invoice => invoice.CompanyId == companyId && invoiceIds.Contains(invoice.Id))
+            .Select(invoice => new
+            {
+                invoice.Id,
+                invoice.CounterpartyId,
+                CounterpartyName = invoice.Counterparty.Name,
+                invoice.Amount,
+                invoice.Currency
+            })
+            .ToDictionaryAsync(invoice => invoice.Id, cancellationToken);
+
+        var billRows = await _dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(bill => bill.CompanyId == companyId && billIds.Contains(bill.Id))
+            .Select(bill => new
+            {
+                bill.Id,
+                bill.CounterpartyId,
+                CounterpartyName = bill.Counterparty.Name,
+                bill.Amount,
+                bill.Currency
+            })
+            .ToDictionaryAsync(bill => bill.Id, cancellationToken);
+
+        var fallbackByDocumentNumber = new Dictionary<string, FortnoxVoucherAmountFallback>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var reference in references)
+        {
+            if (reference.EntityType == "invoice" && invoiceRows.TryGetValue(reference.InternalRecordId, out var invoice))
+            {
+                var fallback = new FortnoxVoucherAmountFallback(
+                    invoice.CounterpartyId,
+                    invoice.CounterpartyName,
+                    invoice.Id,
+                    null,
+                    invoice.Amount,
+                    invoice.Currency);
+                AddVoucherFallback(fallbackByDocumentNumber, reference.ExternalId, fallback);
+                AddVoucherFallback(fallbackByDocumentNumber, reference.ExternalNumber, fallback);
+            }
+            else if (reference.EntityType == "supplier_invoice" && billRows.TryGetValue(reference.InternalRecordId, out var bill))
+            {
+                var fallback = new FortnoxVoucherAmountFallback(
+                    bill.CounterpartyId,
+                    bill.CounterpartyName,
+                    null,
+                    bill.Id,
+                    -Math.Abs(bill.Amount),
+                    bill.Currency);
+                AddVoucherFallback(fallbackByDocumentNumber, reference.ExternalId, fallback);
+                AddVoucherFallback(fallbackByDocumentNumber, reference.ExternalNumber, fallback);
+            }
+        }
+
+        var result = new Dictionary<Guid, FortnoxVoucherAmountFallback>();
+        foreach (var candidate in candidateRows)
+        {
+            if (candidate.DocumentNumber is not null &&
+                fallbackByDocumentNumber.TryGetValue(candidate.DocumentNumber, out var fallback))
+            {
+                result[candidate.Id] = fallback;
+            }
+        }
+
+        return result;
+    }
+
+    private static void AddVoucherFallback(
+        Dictionary<string, FortnoxVoucherAmountFallback> fallbacks,
+        string? documentNumber,
+        FortnoxVoucherAmountFallback fallback)
+    {
+        var normalized = NormalizeOptionalText(documentNumber);
+        if (normalized is not null && !fallbacks.ContainsKey(normalized))
+        {
+            fallbacks.Add(normalized, fallback);
+        }
+    }
+
+    private static bool IsFortnoxBacked(FinanceTransactionRow row, IReadOnlySet<Guid> fortnoxReferenceIds) =>
+        fortnoxReferenceIds.Contains(row.Id) ||
+        string.Equals(row.ProviderKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(row.SourceType, FinanceRecordSourceTypes.Fortnox, StringComparison.OrdinalIgnoreCase);
+
+    private static decimal ResolveTransactionAmount(
+        FinanceTransactionRow row,
+        FortnoxVoucherAmountFallback? fallback) =>
+        row.Amount == 0m && fallback is not null ? fallback.Amount : row.Amount;
+
+    private static string? ResolveVoucherDocumentNumber(string? description)
+    {
+        var normalized = NormalizeOptionalText(description);
+        if (normalized is null || normalized[^1] != ')')
+        {
+            return null;
+        }
+
+        var openingIndex = normalized.LastIndexOf('(');
+        if (openingIndex < 0 || openingIndex == normalized.Length - 2)
+        {
+            return null;
+        }
+
+        return NormalizeOptionalText(normalized[(openingIndex + 1)..^1]);
     }
 
     private static string ResolveFinanceSource(string sourceType, string? providerKey, bool hasFortnoxReference) =>

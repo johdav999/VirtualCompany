@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260426183000_AddDetectedBillSchemas")]
     public partial class AddDetectedBillSchemas : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -110,7 +112,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         column: x => x.company_id,
                         principalTable: "companies",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_detected_bill_fields_detected_bills_detected_bill_id",
                         column: x => x.detected_bill_id,

@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260426111500_AddEmailSnapshotDeduplicationMetadata")]
     public partial class AddEmailSnapshotDeduplicationMetadata : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

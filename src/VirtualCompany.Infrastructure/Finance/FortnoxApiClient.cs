@@ -72,11 +72,23 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         CancellationToken cancellationToken) =>
         GetPageAsync<FortnoxInvoice>(context, "invoices", "Invoices", options, cancellationToken);
 
+    public Task<FortnoxPagedResponse<FortnoxInvoicePayment>> GetInvoicePaymentsAsync(
+        FortnoxRequestContext context,
+        FortnoxPageOptions? options,
+        CancellationToken cancellationToken) =>
+        GetPageAsync<FortnoxInvoicePayment>(context, "invoicepayments", "InvoicePayments", options, cancellationToken);
+
     public Task<FortnoxPagedResponse<FortnoxSupplierInvoice>> GetSupplierInvoicesAsync(
         FortnoxRequestContext context,
         FortnoxPageOptions? options,
         CancellationToken cancellationToken) =>
         GetPageAsync<FortnoxSupplierInvoice>(context, "supplierinvoices", "SupplierInvoices", options, cancellationToken);
+
+    public Task<FortnoxPagedResponse<FortnoxSupplierInvoicePayment>> GetSupplierInvoicePaymentsAsync(
+        FortnoxRequestContext context,
+        FortnoxPageOptions? options,
+        CancellationToken cancellationToken) =>
+        GetPageAsync<FortnoxSupplierInvoicePayment>(context, "supplierinvoicepayments", "SupplierInvoicePayments", options, cancellationToken);
 
     public Task<FortnoxPagedResponse<FortnoxVoucher>> GetVouchersAsync(
         FortnoxRequestContext context,
@@ -133,6 +145,35 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         }
     }
 
+    public async Task<TResponse?> PostDirectAsync<TRequest, TResponse>(
+        FortnoxRequestContext context,
+        string path,
+        TRequest payload,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(context, HttpMethod.Post, path, null, () => CreateJsonContent(payload), cancellationToken);
+        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
+    }
+
+    public async Task<TResponse?> PostMultipartFileDirectAsync<TResponse>(
+        FortnoxRequestContext context,
+        string path,
+        string formFieldName,
+        string fileName,
+        string? contentType,
+        Stream content,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(
+            context,
+            HttpMethod.Post,
+            path,
+            null,
+            () => CreateMultipartFileContent(formFieldName, fileName, contentType, content),
+            cancellationToken);
+        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
+    }
+
     public async Task<TResponse?> PutAsync<TRequest, TResponse>(
         FortnoxRequestContext context,
         string path,
@@ -152,6 +193,16 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
             await _writeApprovalService.RecordExecutionFailedAsync(check, exception, cancellationToken);
             throw;
         }
+    }
+
+    public async Task<TResponse?> PutDirectAsync<TRequest, TResponse>(
+        FortnoxRequestContext context,
+        string path,
+        TRequest payload,
+        CancellationToken cancellationToken)
+    {
+        using var response = await SendAsync(context, HttpMethod.Put, path, null, () => CreateJsonContent(payload), cancellationToken);
+        return await DeserializeBodyAsync<TResponse>(response, cancellationToken);
     }
 
     public async Task DeleteAsync(
@@ -572,6 +623,28 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
 
     private static HttpContent CreateJsonContent<T>(T payload) =>
         new StringContent(JsonSerializer.Serialize(payload, FortnoxJson.Options), Encoding.UTF8, "application/json");
+
+    private static HttpContent CreateMultipartFileContent(
+        string formFieldName,
+        string fileName,
+        string? contentType,
+        Stream content)
+    {
+        if (content.CanSeek)
+        {
+            content.Position = 0;
+        }
+
+        var multipart = new MultipartFormDataContent();
+        var fileContent = new StreamContent(content);
+        if (!string.IsNullOrWhiteSpace(contentType))
+        {
+            fileContent.Headers.ContentType = new MediaTypeHeaderValue(contentType);
+        }
+
+        multipart.Add(fileContent, string.IsNullOrWhiteSpace(formFieldName) ? "file" : formFieldName, fileName);
+        return multipart;
+    }
 
     private static bool TryGetProperty(JsonElement element, string propertyName, out JsonElement value)
     {

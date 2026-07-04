@@ -66,7 +66,7 @@ public sealed class FinanceMailboxPageTests
             Assert.Contains("Mailbox connection", cut.Markup);
             Assert.Contains("Connect Gmail", cut.Markup);
             Assert.Contains("Connect Microsoft 365", cut.Markup);
-            Assert.Contains("Scan inbox for bills", cut.Markup);
+            Assert.Contains("Ask Laura to scan again", cut.Markup);
             Assert.Contains("Gmail", cut.Markup);
             Assert.Contains("Accounts Payable", cut.Markup);
             Assert.Contains("Messages scanned", cut.Markup);
@@ -92,7 +92,7 @@ public sealed class FinanceMailboxPageTests
         {
             Assert.Contains("Not connected", cut.Markup);
             Assert.Contains("Connect an active mailbox before starting an inbox scan.", cut.Markup);
-            Assert.Contains("disabled", cut.FindAll("button").Single(x => x.TextContent.Contains("Scan inbox for bills", StringComparison.Ordinal)).OuterHtml);
+            Assert.Contains("disabled", cut.FindAll("button").Single(x => x.TextContent.Contains("Ask Laura to scan again", StringComparison.Ordinal)).OuterHtml);
         });
     }
 

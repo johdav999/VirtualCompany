@@ -31,7 +31,8 @@ public static class FortnoxScopeDefaults
         "article",
         "project",
         "invoice",
-        "supplierinvoice"
+        "supplierinvoice",
+        "payment"
     ];
 
     public static IReadOnlyList<string> Resolve(string[]? configuredScopes)

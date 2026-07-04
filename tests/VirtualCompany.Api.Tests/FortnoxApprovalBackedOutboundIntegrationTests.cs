@@ -284,6 +284,87 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
     }
 
     [Fact]
+    public async Task Sync_refreshes_existing_supplier_invoice_lifecycle_statuses_from_fortnox()
+    {
+        var fakeApi = new FakeFortnoxApiClient
+        {
+            SupplierInvoices =
+            [
+                new FortnoxSupplierInvoice
+                {
+                    GivenNumber = "42",
+                    SupplierNumber = "S-42",
+                    SupplierName = "Nordic IT Solutions AB",
+                    InvoiceDate = "2026-05-01",
+                    DueDate = "2026-05-31",
+                    Total = 2410m,
+                    Balance = 2410m,
+                    Currency = "SEK",
+                    Booked = true,
+                    FullyPaid = false,
+                    LastModified = "2026-05-01T10:00:00Z"
+                }
+            ]
+        };
+
+        await using var factory = CreateFactory(apiClient: fakeApi);
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+
+        await ExecuteScopedAsync(factory, provider =>
+            provider.GetRequiredService<IFortnoxSyncService>().SyncAsync(
+                new RunFortnoxSyncCommand(seed.CompanyId, connectionId, "supplier-invoice-initial", seed.UserId, FullSync: true),
+                CancellationToken.None));
+
+        fakeApi.SupplierInvoices =
+        [
+            new FortnoxSupplierInvoice
+            {
+                GivenNumber = "42",
+                SupplierNumber = "S-42",
+                SupplierName = "Nordic IT Solutions AB",
+                InvoiceDate = "2026-05-01",
+                DueDate = "2026-05-31",
+                Total = 2410m,
+                Balance = 0m,
+                Currency = "SEK",
+                Booked = true,
+                FullyPaid = true,
+                PaymentPending = false,
+                LastModified = "2026-05-02T10:00:00Z"
+            }
+        ];
+
+        var refresh = await ExecuteScopedAsync(factory, provider =>
+            provider.GetRequiredService<IFortnoxSyncService>().SyncAsync(
+                new RunFortnoxSyncCommand(seed.CompanyId, connectionId, "supplier-invoice-refresh", seed.UserId, FullSync: true),
+                CancellationToken.None));
+
+        Assert.True(refresh.Updated >= 1);
+        var persisted = await ExecuteDbAsync(factory, async db => new
+        {
+            Bills = await db.FinanceBills.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId),
+            Bill = await db.FinanceBills.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == seed.CompanyId && x.BillNumber == "42"),
+            Reference = await db.FinanceExternalReferences.IgnoreQueryFilters().SingleAsync(x =>
+                x.CompanyId == seed.CompanyId &&
+                x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                x.EntityType == "supplier_invoice" &&
+                x.ExternalId == "42")
+        });
+
+        Assert.Equal(1, persisted.Bills);
+        Assert.Equal("paid", persisted.Bill.Status);
+        Assert.Equal(FinanceDocumentPostingStatuses.Booked, persisted.Bill.PostingStatus);
+        Assert.Equal(FinanceSettlementStatuses.Paid, persisted.Bill.SettlementStatus);
+        Assert.Equal(FinanceDocumentDueStatuses.NotDue, persisted.Bill.DueStatus);
+        Assert.Equal(FinanceDocumentKinds.SupplierInvoice, persisted.Bill.DocumentKind);
+        Assert.Equal(2410m, persisted.Bill.PaidAmount);
+        Assert.Contains("fullyPaid=true", persisted.Bill.ProviderStatus);
+        Assert.Equal(true, persisted.Reference.Metadata["rawFullyPaid"]?.GetValue<bool>());
+        Assert.Equal(0m, persisted.Reference.Metadata["rawBalance"]?.GetValue<decimal>());
+    }
+
+    [Fact]
     public async Task Sync_skips_entities_when_granted_fortnox_scopes_are_missing()
     {
         var fakeApi = new FakeFortnoxApiClient();
@@ -919,6 +1000,7 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
     {
         public List<FortnoxAccount> Accounts { get; init; } = [];
         public List<FortnoxCustomer> Customers { get; init; } = [];
+        public List<FortnoxSupplierInvoice> SupplierInvoices { get; set; } = [];
         public JsonNode? NextPostResponse { get; set; } = JsonNode.Parse("""{"Result":{"id":"ok"}}""");
         public Exception? NextException { get; set; }
         public List<string> PageCalls { get; } = [];
@@ -945,10 +1027,22 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
             return Task.FromResult(Page(Array.Empty<FortnoxInvoice>()));
         }
 
+        public Task<FortnoxPagedResponse<FortnoxInvoicePayment>> GetInvoicePaymentsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken)
+        {
+            PageCalls.Add("invoice_payments");
+            return Task.FromResult(Page(Array.Empty<FortnoxInvoicePayment>()));
+        }
+
         public Task<FortnoxPagedResponse<FortnoxSupplierInvoice>> GetSupplierInvoicesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken)
         {
             PageCalls.Add("supplier_invoices");
-            return Task.FromResult(Page(Array.Empty<FortnoxSupplierInvoice>()));
+            return Task.FromResult(Page(SupplierInvoices));
+        }
+
+        public Task<FortnoxPagedResponse<FortnoxSupplierInvoicePayment>> GetSupplierInvoicePaymentsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken)
+        {
+            PageCalls.Add("supplier_invoice_payments");
+            return Task.FromResult(Page(Array.Empty<FortnoxSupplierInvoicePayment>()));
         }
 
         public Task<FortnoxPagedResponse<FortnoxVoucher>> GetVouchersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken)
@@ -990,6 +1084,9 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
             WriteRequests.Add(new CapturedFortnoxWrite("POST", path, context, JsonSerializer.SerializeToNode(payload)));
             return Task.FromResult(NextPostResponse is null ? default : NextPostResponse.Deserialize<TResponse>());
         }
+
+        public Task<TResponse?> PostDirectAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken) =>
+            PostAsync<TRequest, TResponse>(context, path, payload, cancellationToken);
 
         public Task<TResponse?> PutAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken)
         {

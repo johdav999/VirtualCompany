@@ -60,6 +60,10 @@
                                 <span class="invoice-list-item__meta">
                                     <strong>@invoice.DisplayAmount</strong>
                                     <span class="@($"invoice-status-badge invoice-status-badge--{invoice.StatusTone}")">@invoice.FriendlyStatusLabel</span>
+                                    @if (!string.IsNullOrWhiteSpace(invoice.ReviewBadgeLabel))
+                                    {
+                                        <span class="@($"invoice-status-badge invoice-status-badge--{invoice.ReviewBadgeTone}")">@invoice.ReviewBadgeLabel</span>
+                                    }
                                 </span>
                                 <span class="invoice-list-item__chevron" aria-hidden="true">›</span>
                             </a>
@@ -93,7 +97,13 @@
                                 <h2>@detail.DisplayInvoiceNumber</h2>
                                 <p>@detail.DisplayCustomerName</p>
                             </div>
-                            <span class="@($"invoice-status-badge invoice-status-badge--{detail.StatusTone}")">@detail.FriendlyStatusLabel</span>
+                            <div class="invoice-detail-panel__badges">
+                                <span class="@($"invoice-status-badge invoice-status-badge--{detail.StatusTone}")">@detail.FriendlyStatusLabel</span>
+                                @if (!string.IsNullOrWhiteSpace(detail.ReviewBadgeLabel))
+                                {
+                                    <span class="@($"invoice-status-badge invoice-status-badge--{detail.ReviewBadgeTone}")">@detail.ReviewBadgeLabel</span>
+                                }
+                            </div>
                         </div>
 
                         <div class="invoice-detail-panel__amount">@detail.DisplayAmount</div>
@@ -102,7 +112,16 @@
                             <div><dt>Customer</dt><dd>@detail.DisplayCustomerName</dd></div>
                             <div><dt>Issued date</dt><dd>@detail.DisplayIssuedDate</dd></div>
                             <div><dt>Due date</dt><dd>@detail.DisplayDueDate</dd></div>
+                            <div><dt>Document type</dt><dd>@detail.DocumentKindLabel</dd></div>
                             <div><dt>Payment status</dt><dd>@detail.FriendlyStatusLabel</dd></div>
+                            @if (detail.PaymentSummary is not null)
+                            {
+                                <div><dt>Payment details</dt><dd>@detail.PaymentSummary.Summary</dd></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(detail.ReviewBadgeLabel))
+                            {
+                                <div><dt>Flag status</dt><dd>@detail.ReviewBadgeLabel</dd></div>
+                            }
                             <div><dt>Approval status</dt><dd>@detail.ApprovalStatus</dd></div>
                         </dl>
 
@@ -111,7 +130,7 @@
                             <select id="invoice-status-input" class="form-select" @bind="EditableStatus" disabled="@(!CanChangeInvoiceApprovalStatus || IsSavingStatus)">
                                 @foreach (var option in EditableStatusOptions)
                                 {
-                                    <option value="@option">@FormatStatusLabel(option)</option>
+                                    <option value="@option">@FormatInvoiceStatusLabel(option)</option>
                                 }
                             </select>
                             @if (!string.IsNullOrWhiteSpace(StatusValidationMessage))
@@ -140,8 +159,52 @@
 
                     <section class="invoice-detail-section">
                         <h3>Review notes</h3>
-                        <p>@detail.ReviewSummary</p>
+                        @if (detail.PaymentSummary?.IsPartiallyPaid == true)
+                        {
+                            <p>@detail.PaymentSummary.ReviewReason</p>
+                        }
+                        else
+                        {
+                            <p>@detail.ReviewSummary</p>
+                        }
                     </section>
+
+                    <section class="invoice-detail-section">
+                        <h3>Related transactions</h3>
+                        @if (detail.RelatedTransactions.Count == 0)
+                        {
+                            <p>No ledger transactions are linked to this invoice yet.</p>
+                        }
+                        else
+                        {
+                            <div class="invoice-related-transactions">
+                                @foreach (var transaction in detail.RelatedTransactions)
+                                {
+                                    <a class="invoice-related-transaction" href="@BuildTransactionHref(transaction.Id)">
+                                        <span class="@($"invoice-status-badge invoice-status-badge--{transaction.TypeTone}")">@transaction.TypeLabel</span>
+                                        <span>
+                                            <strong>@transaction.Description</strong>
+                                            <small>@transaction.DisplayDate - @transaction.CategoryLabel - @transaction.ExternalReference</small>
+                                        </span>
+                                        <strong>@transaction.DisplayAmount</strong>
+                                    </a>
+                                }
+                            </div>
+                        }
+                    </section>
+
+                    @if (detail.SourceDetails.Count > 0)
+                    {
+                        <section class="invoice-detail-section">
+                            <h3>Source details</h3>
+                            <dl class="invoice-detail-list invoice-source-detail-list">
+                                @foreach (var sourceDetail in detail.SourceDetails)
+                                {
+                                    <div><dt>@sourceDetail.Label</dt><dd>@sourceDetail.Value</dd></div>
+                                }
+                            </dl>
+                        </section>
+                    }
 
                     <section class="invoice-detail-section">
                         <h3>Linked document</h3>

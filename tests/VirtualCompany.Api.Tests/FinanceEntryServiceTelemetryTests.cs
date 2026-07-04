@@ -95,6 +95,43 @@ public sealed class FinanceEntryServiceTelemetryTests
     }
 
     [Fact]
+    public async Task Fallback_request_repairs_stale_seeded_metadata_without_active_execution()
+    {
+        var companyId = Guid.NewGuid();
+
+        await using var connection = await OpenConnectionAsync();
+        await using var dbContext = CreateContext(connection);
+        await dbContext.Database.EnsureCreatedAsync();
+        var company = new Company(companyId, "Finance Entry Stale Metadata Company");
+        company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+        dbContext.Companies.Add(company);
+        await dbContext.SaveChangesAsync();
+
+        var telemetry = new TestFinanceSeedTelemetry();
+        var logger = new ScopeCapturingLogger<CompanyFinanceEntryService>();
+        var service = CreateService(dbContext, telemetry, logger, Guid.NewGuid(), "finance-entry-fallback-repair");
+
+        var state = await service.RequestEntryStateAsync(
+            new GetFinanceEntryStateQuery(
+                companyId,
+                Source: FinanceEntrySources.FallbackRead,
+                SeedMode: FinanceSeedRequestModes.Replace),
+            CancellationToken.None);
+
+        Assert.True(state.SeedJobEnqueued);
+        Assert.True(state.SeedJobActive);
+        Assert.Equal(FinanceSeedOperationContractValues.Started, state.SeedOperation);
+        Assert.Equal(FinanceEntryProgressStates.SeedingRequested, state.ProgressState);
+        Assert.Equal(FinanceSeedingState.Seeding, state.SeedingState);
+
+        var telemetryEvent = Assert.Single(telemetry.Events);
+        Assert.Equal(FinanceSeedTelemetryEventNames.Requested, telemetryEvent.EventName);
+        Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
+        Assert.Equal(FinanceSeedingState.Seeding, telemetryEvent.Context.SeedStateBefore);
+        Assert.Equal(FinanceSeedingState.Seeding, telemetryEvent.Context.SeedStateAfter);
+    }
+
+    [Fact]
     public async Task Manual_replace_without_confirmation_is_rejected_without_requested_telemetry()
     {
         var companyId = Guid.NewGuid();

@@ -2,9 +2,38 @@
 
 <section class="finance-summary-stack" aria-labelledby="finance-overview-heading">
     <FinanceOverviewHeader CompanyId="@CompanyId" />
+    @if (Overview.CashRiskAlert is { } cashRiskAlert)
+    {
+        <article class="@GetCashRiskAlertClass(cashRiskAlert.Tone)" aria-label="Cash risk alert">
+            <span class="@GetCashRiskIconClass(cashRiskAlert.Tone)" aria-hidden="true">!</span>
+            <div class="finance-overview-alert__body">
+                <p class="finance-overview-kicker mb-1">Priority now</p>
+                <h2 class="h5 mb-1">@cashRiskAlert.Title</h2>
+                <p class="mb-0">@cashRiskAlert.Message</p>
+                <dl class="finance-overview-alert__metrics">
+                    <div>
+                        <dt>@cashRiskAlert.BalanceLabel</dt>
+                        <dd>@cashRiskAlert.BalanceValue</dd>
+                    </div>
+                    <div>
+                        <dt>@cashRiskAlert.RunwayLabel</dt>
+                        <dd>@cashRiskAlert.RunwayValue</dd>
+                    </div>
+                    <div>
+                        <dt>@cashRiskAlert.ReasonLabel</dt>
+                        <dd>@cashRiskAlert.Reason</dd>
+                    </div>
+                </dl>
+                @if (!string.IsNullOrWhiteSpace(cashRiskAlert.SupportingText))
+                {
+                    <p class="finance-overview-alert__support mb-0">@cashRiskAlert.SupportingText</p>
+                }
+            </div>
+            <a class="btn btn-primary finance-overview-button finance-overview-button--primary" href="@cashRiskAlert.Href">@cashRiskAlert.ActionLabel</a>
+        </article>
+    }
     <FinanceKpiRow Kpis="@Overview.Kpis" />
     <FinanceManagerInsightPanel Insight="@Overview.ManagerInsight" />
-    <FinanceAttentionQueue Items="@Overview.AttentionItems" />
     <FinanceSupportingPanels
         CashPosition="@Overview.CashPosition"
         MonthlySummary="@Overview.MonthlySummary"
@@ -18,4 +47,20 @@
 
     [Parameter]
     public Guid? CompanyId { get; set; }
+
+    private static string GetCashRiskAlertClass(FinanceKpiTone tone) =>
+        tone switch
+        {
+            FinanceKpiTone.Danger => "wizard-card wizard-card--compact finance-overview-alert finance-overview-alert--danger border-start border-4 border-danger bg-white shadow-sm d-flex align-items-center gap-3 justify-content-between p-3",
+            FinanceKpiTone.Warning => "wizard-card wizard-card--compact finance-overview-alert finance-overview-alert--warning border-start border-4 border-warning bg-white shadow-sm d-flex align-items-center gap-3 justify-content-between p-3",
+            _ => "wizard-card wizard-card--compact finance-overview-alert border-start border-4 bg-white shadow-sm d-flex align-items-center gap-3 justify-content-between p-3"
+        };
+
+    private static string GetCashRiskIconClass(FinanceKpiTone tone) =>
+        tone switch
+        {
+            FinanceKpiTone.Danger => "finance-overview-icon finance-overview-icon--danger finance-overview-alert__icon",
+            FinanceKpiTone.Warning => "finance-overview-icon finance-overview-icon--warning finance-overview-alert__icon",
+            _ => "finance-overview-icon finance-overview-icon--neutral finance-overview-alert__icon"
+        };
 }

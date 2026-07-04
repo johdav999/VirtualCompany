@@ -707,7 +707,7 @@ internal sealed class FinancePaymentAllocationService
         Func<Task<TResult>> action,
         CancellationToken cancellationToken)
     {
-        if (!_dbContext.Database.IsRelational())
+        if (!_dbContext.Database.IsRelational() || _dbContext.Database.CurrentTransaction is not null)
         {
             return await action();
         }
@@ -726,7 +726,7 @@ internal sealed class FinancePaymentAllocationService
         Func<Task> action,
         CancellationToken cancellationToken)
     {
-        if (!_dbContext.Database.IsRelational())
+        if (!_dbContext.Database.IsRelational() || _dbContext.Database.CurrentTransaction is not null)
         {
             await action();
             return;

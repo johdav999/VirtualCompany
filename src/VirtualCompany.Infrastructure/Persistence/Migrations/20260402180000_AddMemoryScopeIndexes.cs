@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260402180000_AddMemoryScopeIndexes")]
     public partial class AddMemoryScopeIndexes : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

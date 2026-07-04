@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260426103000_AddEmailBillDetectionSnapshots")]
     public partial class AddEmailBillDetectionSnapshots : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -40,8 +42,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_email_message_snapshots_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_email_message_snapshots_email_ingestion_runs_email_ingestion_run_id",
                         column: x => x.email_ingestion_run_id,
@@ -53,7 +55,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         column: x => x.mailbox_connection_id,
                         principalTable: "mailbox_connections",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateTable(
@@ -82,8 +84,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_email_attachment_snapshots_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        principalColumn: "Id",
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_email_attachment_snapshots_email_message_snapshots_email_message_snapshot_id",
                         column: x => x.email_message_snapshot_id,

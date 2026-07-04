@@ -2,6 +2,7 @@
 @page "/finance/supplier-bills"
 @page "/finance/bills/{BillId:guid}"
 @page "/finance/supplier-bills/{BillId:guid}"
+@rendermode InteractiveServer
 @inherits FinancePageBase
 
 <PageTitle>Supplier bills</PageTitle>
@@ -42,7 +43,20 @@
                         <h2>Bill list</h2>
                         <p>Review supplier bills, amounts, due dates, and payment status.</p>
                     </div>
-                    <span>@Bills.Count item@(Bills.Count == 1 ? string.Empty : "s")</span>
+                    <span>@FilteredBills.Count item@(FilteredBills.Count == 1 ? string.Empty : "s")</span>
+                </div>
+
+                <div class="bill-filter-bar" aria-label="Supplier bill filters">
+                    @foreach (var filter in BillFilters)
+                    {
+                        <button
+                            type="button"
+                            class="@($"bill-filter-pill {(filter.IsActive ? "is-active" : string.Empty)}")"
+                            @onclick="() => SetBillFilter(filter.Value)">
+                            <span>@filter.Label</span>
+                            <strong>@filter.Count</strong>
+                        </button>
+                    }
                 </div>
 
                 <FinanceDataState
@@ -52,7 +66,7 @@
                     LoadingTitle="Loading bills"
                     LoadingMessage="Fetching bills."
                     EmptyTitle="No bills available"
-                    EmptyMessage="This company does not have supplier bills to review yet."
+                    EmptyMessage="No supplier bills match this filter."
                     OnRetry="@ReloadAsync">
                     <div class="bill-list">
                         @foreach (var bill in BillItems)
@@ -67,6 +81,10 @@
                                 <span class="bill-list-item__meta">
                                     <strong>@bill.DisplayAmount</strong>
                                     <span class="@($"bill-status-badge bill-status-badge--{bill.StatusTone}")">@bill.FriendlyStatusLabel</span>
+                                    @if (!string.IsNullOrWhiteSpace(bill.ReviewBadgeLabel))
+                                    {
+                                        <span class="@($"bill-status-badge bill-status-badge--{bill.ReviewBadgeTone}")">@bill.ReviewBadgeLabel</span>
+                                    }
                                 </span>
                                 <span class="bill-list-item__chevron" aria-hidden="true">›</span>
                             </a>
@@ -100,7 +118,13 @@
                                 <h2>@detail.DisplayBillNumber</h2>
                                 <p>@detail.DisplaySupplierName</p>
                             </div>
-                            <span class="@($"bill-status-badge bill-status-badge--{detail.StatusTone}")">@detail.FriendlyStatusLabel</span>
+                            <div class="bill-detail-panel__badges">
+                                <span class="@($"bill-status-badge bill-status-badge--{detail.StatusTone}")">@detail.FriendlyStatusLabel</span>
+                                @if (!string.IsNullOrWhiteSpace(detail.ReviewBadgeLabel))
+                                {
+                                    <span class="@($"bill-status-badge bill-status-badge--{detail.ReviewBadgeTone}")">@detail.ReviewBadgeLabel</span>
+                                }
+                            </div>
                         </div>
 
                         <div class="bill-detail-panel__amount">@detail.DisplayAmount</div>
@@ -109,7 +133,16 @@
                             <div><dt>Supplier</dt><dd>@detail.DisplaySupplierName</dd></div>
                             <div><dt>Received date</dt><dd>@detail.DisplayReceivedDate</dd></div>
                             <div><dt>Due date</dt><dd>@detail.DisplayDueDate</dd></div>
-                            <div><dt>Payment status</dt><dd>@detail.FriendlyStatusLabel</dd></div>
+                            <div><dt>Document type</dt><dd>@detail.DocumentKindLabel</dd></div>
+                            <div><dt>Lifecycle status</dt><dd>@detail.FriendlyStatusLabel</dd></div>
+                            @if (detail.PaymentSummary is not null)
+                            {
+                                <div><dt>Payment details</dt><dd>@detail.PaymentSummary.Summary</dd></div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(detail.ReviewBadgeLabel))
+                            {
+                                <div><dt>Flag status</dt><dd>@detail.ReviewBadgeLabel</dd></div>
+                            }
                             <div><dt>Approval status</dt><dd>@detail.ApprovalStatus</dd></div>
                         </dl>
 
@@ -117,6 +150,402 @@
                             <h3>Follow-up</h3>
                             <p>@detail.WarningSummary</p>
                         </section>
+
+                        <section class="bill-detail-section">
+                            <div class="bill-detail-section__header">
+                                <h3>Laura enrichment</h3>
+                                <span class="@($"bill-status-badge bill-status-badge--{detail.Enrichment.StatusTone}")">@detail.Enrichment.StatusLabel</span>
+                            </div>
+                            <p>@detail.Enrichment.Description</p>
+                            @if (!string.IsNullOrWhiteSpace(detail.Enrichment.SuggestionSummary))
+                            {
+                                <p>@detail.Enrichment.SuggestionSummary</p>
+                            }
+                            @if (detail.Enrichment.SuggestionItems.Count > 0)
+                            {
+                                <ul class="bill-detail-list-simple">
+                                    @foreach (var item in detail.Enrichment.SuggestionItems)
+                                    {
+                                        <li>@item</li>
+                                    }
+                                </ul>
+                            }
+                            @if (detail.Enrichment.WarningItems.Count > 0)
+                            {
+                                <div class="bill-risk-list">
+                                    @foreach (var warning in detail.Enrichment.WarningItems)
+                                    {
+                                        <p>@warning</p>
+                                    }
+                                </div>
+                            }
+                            <div class="bill-action-row">
+                                @if (detail.Enrichment.CanSuggest)
+                                {
+                                    <button
+                                        type="button"
+                                        class="btn btn-secondary"
+                                        disabled="@IsEnrichmentSubmitting"
+                                        @onclick="SuggestEnrichmentAsync">
+                                        @(IsEnrichmentSubmitting ? "Working..." : "Ask Laura to enrich")
+                                    </button>
+                                }
+                                @if (detail.Enrichment.CanSync)
+                                {
+                                    <button
+                                        type="button"
+                                        class="btn btn-primary"
+                                        disabled="@IsEnrichmentSyncSubmitting"
+                                        @onclick="SyncEnrichmentAsync">
+                                        @(IsEnrichmentSyncSubmitting ? "Working..." : "Sync approved changes to Fortnox")
+                                    </button>
+                                }
+                                @if (detail.Enrichment.CanReconcile)
+                                {
+                                    <button
+                                        type="button"
+                                        class="btn btn-secondary"
+                                        disabled="@IsReconciliationSubmitting"
+                                        @onclick="ReconcileSupplierInvoiceAsync">
+                                        @(IsReconciliationSubmitting ? "Working..." : "Refresh reconciliation")
+                                    </button>
+                                }
+                            </div>
+                            @if (!string.IsNullOrWhiteSpace(detail.Enrichment.ProviderKey) ||
+                                 detail.Enrichment.RequestedUtc is not null ||
+                                 detail.Enrichment.ApprovedUtc is not null ||
+                                 detail.Enrichment.SyncedUtc is not null)
+                            {
+                                <dl class="bill-detail-list bill-source-detail-list">
+                                    @if (!string.IsNullOrWhiteSpace(detail.Enrichment.ProviderKey))
+                                    {
+                                        <div><dt>Provider</dt><dd>@detail.Enrichment.ProviderKey</dd></div>
+                                    }
+                                    @if (detail.Enrichment.RequestedUtc is not null)
+                                    {
+                                        <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.Enrichment.RequestedUtc.Value)</dd></div>
+                                    }
+                                    @if (detail.Enrichment.ApprovedUtc is not null)
+                                    {
+                                        <div><dt>Approved</dt><dd>@FormatFriendlyDate(detail.Enrichment.ApprovedUtc.Value)</dd></div>
+                                    }
+                                    @if (detail.Enrichment.SyncedUtc is not null)
+                                    {
+                                        <div><dt>Synced</dt><dd>@FormatFriendlyDate(detail.Enrichment.SyncedUtc.Value)</dd></div>
+                                    }
+                                </dl>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(EnrichmentMessage))
+                            {
+                                <p class="bill-detail-section__message">@EnrichmentMessage</p>
+                            }
+                        </section>
+
+                        <section class="bill-detail-section">
+                            <div class="bill-detail-section__header">
+                                <h3>Payment proposal</h3>
+                                @if (detail.PaymentProposal is not null)
+                                {
+                                    <span class="@($"bill-status-badge bill-status-badge--{detail.PaymentProposal.StatusTone}")">@detail.PaymentProposal.StatusLabel</span>
+                                }
+                            </div>
+
+                            @if (detail.PaymentProposal is { } proposal)
+                            {
+                                <p>@proposal.Description</p>
+                                <dl class="bill-detail-list bill-source-detail-list">
+                                    <div><dt>Amount</dt><dd>@proposal.DisplayAmount</dd></div>
+                                    <div><dt>Due date</dt><dd>@proposal.DisplayDueDate</dd></div>
+                                    <div><dt>Payment reference</dt><dd>@proposal.PaymentReference</dd></div>
+                                </dl>
+
+                                <div class="bill-payment-export-action">
+                                    <div class="bill-detail-section__header">
+                                        <h4>Payment export</h4>
+                                        <span class="@($"bill-status-badge bill-status-badge--{proposal.ExportTone}")">@proposal.ExportLabel</span>
+                                    </div>
+                                    @if (proposal.CanExport)
+                                    {
+                                        <p>Choose how to move this approved payment forward. No bank payment is initiated automatically.</p>
+                                        @if (proposal.CanPreparePaymentFile)
+                                        {
+                                            <button
+                                                type="button"
+                                                class="btn btn-primary"
+                                                disabled="@IsPaymentExportSubmitting"
+                                                @onclick="@(() => ExportPaymentInstructionAsync("prepare_payment_file"))">
+                                                @(IsPaymentExportSubmitting ? "Working..." : "Prepare payment file in Fortnox")
+                                            </button>
+                                        }
+                                        @if (proposal.CanRegisterPayment)
+                                        {
+                                            <button
+                                                type="button"
+                                                class="@($"btn {(proposal.CanPreparePaymentFile ? "btn-secondary" : "btn-primary")}")"
+                                                disabled="@IsPaymentExportSubmitting"
+                                                @onclick="@(() => ExportPaymentInstructionAsync("register_payment"))">
+                                                @(IsPaymentExportSubmitting ? "Working..." : proposal.ExportActionLabel)
+                                            </button>
+                                        }
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(proposal.ExportResponseSummary))
+                                    {
+                                        <p>@proposal.ExportResponseSummary</p>
+                                    }
+                                    else
+                                    {
+                                        <p>Payment export becomes available after the proposal is approved.</p>
+                                    }
+
+                                    @if (!string.IsNullOrWhiteSpace(proposal.ExportProviderKey))
+                                    {
+                                        <dl class="bill-detail-list bill-source-detail-list">
+                                            <div><dt>Provider</dt><dd>@proposal.ExportProviderKey</dd></div>
+                                            @if (proposal.ExportRequestedUtc is not null)
+                                            {
+                                                <div><dt>Requested</dt><dd>@FormatFriendlyDate(proposal.ExportRequestedUtc.Value)</dd></div>
+                                            }
+                                        </dl>
+                                    }
+                                </div>
+
+                                @if (detail.CanRequestPaymentProposal)
+                                {
+                                    <div class="bill-payment-export-action">
+                                        <p>Create a new approval-only payment proposal for the remaining balance. No payment is initiated automatically.</p>
+                                        <button
+                                            type="button"
+                                            class="btn btn-primary"
+                                            disabled="@IsPaymentProposalSubmitting"
+                                            @onclick="RequestPaymentProposalAsync">
+                                            @(IsPaymentProposalSubmitting ? "Sending..." : "Request payment approval")
+                                        </button>
+                                    </div>
+                                }
+                            }
+                            else if (detail.CanRequestPaymentProposal)
+                            {
+                                <p>Create an approval-only payment proposal for this supplier bill. No payment is initiated automatically.</p>
+                                <button
+                                    type="button"
+                                    class="btn btn-primary"
+                                    disabled="@IsPaymentProposalSubmitting"
+                                    @onclick="RequestPaymentProposalAsync">
+                                    @(IsPaymentProposalSubmitting ? "Sending..." : "Request payment approval")
+                                </button>
+                            }
+                            else
+                            {
+                                <p>This bill is not currently eligible for a payment proposal.</p>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(PaymentProposalMessage))
+                            {
+                                <p class="bill-detail-section__message">@PaymentProposalMessage</p>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(PaymentExportMessage))
+                            {
+                                <p class="bill-detail-section__message">@PaymentExportMessage</p>
+                            }
+                        </section>
+
+                        <section class="bill-detail-section">
+                            <div class="bill-detail-section__header">
+                                <h3>Fortnox draft</h3>
+                                <span class="@($"bill-status-badge bill-status-badge--{detail.DraftAction.StatusTone}")">@detail.DraftAction.StatusLabel</span>
+                            </div>
+                            <p>@detail.DraftAction.Description</p>
+                            @if (detail.DraftAction.CanUpdate || detail.DraftAction.CanBookkeep)
+                            {
+                                <div class="bill-action-row">
+                                    @if (detail.DraftAction.CanUpdate)
+                                    {
+                                        <button
+                                            type="button"
+                                            class="btn btn-secondary"
+                                            disabled="@IsDraftUpdateSubmitting"
+                                            @onclick="UpdateFortnoxDraftAsync">
+                                            @(IsDraftUpdateSubmitting ? "Working..." : "Update draft in Fortnox")
+                                        </button>
+                                    }
+                                    @if (detail.DraftAction.CanBookkeep)
+                                    {
+                                        <button
+                                            type="button"
+                                            class="btn btn-primary"
+                                            disabled="@IsDraftBookkeepingSubmitting"
+                                            @onclick="BookkeepFortnoxDraftAsync">
+                                            @(IsDraftBookkeepingSubmitting ? "Working..." : "Bookkeep supplier invoice")
+                                        </button>
+                                    }
+                                </div>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(detail.DraftAction.ProviderKey) ||
+                                 detail.DraftAction.RequestedUtc is not null ||
+                                 detail.DraftAction.UpdatedInProviderUtc is not null ||
+                                 detail.DraftAction.BookedUtc is not null)
+                            {
+                                <dl class="bill-detail-list bill-source-detail-list">
+                                    @if (!string.IsNullOrWhiteSpace(detail.DraftAction.ProviderKey))
+                                    {
+                                        <div><dt>Provider</dt><dd>@detail.DraftAction.ProviderKey</dd></div>
+                                    }
+                                    @if (detail.DraftAction.RequestedUtc is not null)
+                                    {
+                                        <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.DraftAction.RequestedUtc.Value)</dd></div>
+                                    }
+                                    @if (detail.DraftAction.UpdatedInProviderUtc is not null)
+                                    {
+                                        <div><dt>Updated</dt><dd>@FormatFriendlyDate(detail.DraftAction.UpdatedInProviderUtc.Value)</dd></div>
+                                    }
+                                    @if (detail.DraftAction.BookedUtc is not null)
+                                    {
+                                        <div><dt>Booked</dt><dd>@FormatFriendlyDate(detail.DraftAction.BookedUtc.Value)</dd></div>
+                                    }
+                                </dl>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(DraftActionMessage))
+                            {
+                                <p class="bill-detail-section__message">@DraftActionMessage</p>
+                            }
+                        </section>
+
+                        <section class="bill-detail-section">
+                            <div class="bill-detail-section__header">
+                                <h3>Corrections</h3>
+                            </div>
+
+                            <div class="bill-payment-export-action">
+                                <div class="bill-detail-section__header">
+                                    <h4>Cancellation</h4>
+                                    <span class="@($"bill-status-badge bill-status-badge--{detail.Corrections.CancellationStatusTone}")">@detail.Corrections.CancellationStatusLabel</span>
+                                </div>
+                                <p>@detail.Corrections.CancellationDescription</p>
+                                @if (detail.Corrections.CanCancel)
+                                {
+                                    <button
+                                        type="button"
+                                        class="btn btn-secondary"
+                                        disabled="@IsCancellationSubmitting"
+                                        @onclick="CancelSupplierInvoiceAsync">
+                                        @(IsCancellationSubmitting ? "Working..." : "Cancel supplier invoice")
+                                    </button>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(detail.Corrections.CancellationProviderKey) ||
+                                     detail.Corrections.CancellationRequestedUtc is not null ||
+                                     detail.Corrections.CancellationApprovedUtc is not null ||
+                                     detail.Corrections.CancellationCompletedUtc is not null)
+                                {
+                                    <dl class="bill-detail-list bill-source-detail-list">
+                                        @if (!string.IsNullOrWhiteSpace(detail.Corrections.CancellationProviderKey))
+                                        {
+                                            <div><dt>Provider</dt><dd>@detail.Corrections.CancellationProviderKey</dd></div>
+                                        }
+                                        @if (detail.Corrections.CancellationRequestedUtc is not null)
+                                        {
+                                            <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationRequestedUtc.Value)</dd></div>
+                                        }
+                                        @if (detail.Corrections.CancellationApprovedUtc is not null)
+                                        {
+                                            <div><dt>Approved</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationApprovedUtc.Value)</dd></div>
+                                        }
+                                        @if (detail.Corrections.CancellationCompletedUtc is not null)
+                                        {
+                                            <div><dt>Completed</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationCompletedUtc.Value)</dd></div>
+                                        }
+                                    </dl>
+                                }
+                            </div>
+
+                            <div class="bill-payment-export-action">
+                                <div class="bill-detail-section__header">
+                                    <h4>Credit note</h4>
+                                    <span class="@($"bill-status-badge bill-status-badge--{detail.Corrections.CreditNoteStatusTone}")">@detail.Corrections.CreditNoteStatusLabel</span>
+                                </div>
+                                <p>@detail.Corrections.CreditNoteDescription</p>
+                                @if (detail.Corrections.CanCreateCreditNote)
+                                {
+                                    <button
+                                        type="button"
+                                        class="btn btn-secondary"
+                                        disabled="@IsCreditNoteSubmitting"
+                                        @onclick="CreateSupplierCreditNoteAsync">
+                                        @(IsCreditNoteSubmitting ? "Working..." : "Create supplier credit note")
+                                    </button>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(detail.Corrections.CreditNoteProviderKey) ||
+                                     detail.Corrections.CreditNoteRequestedUtc is not null ||
+                                     detail.Corrections.CreditNoteApprovedUtc is not null ||
+                                     detail.Corrections.CreditNoteCompletedUtc is not null ||
+                                     !string.IsNullOrWhiteSpace(detail.Corrections.ProviderCreditNoteNumber))
+                                {
+                                    <dl class="bill-detail-list bill-source-detail-list">
+                                        @if (!string.IsNullOrWhiteSpace(detail.Corrections.CreditNoteProviderKey))
+                                        {
+                                            <div><dt>Provider</dt><dd>@detail.Corrections.CreditNoteProviderKey</dd></div>
+                                        }
+                                        @if (!string.IsNullOrWhiteSpace(detail.Corrections.ProviderCreditNoteNumber))
+                                        {
+                                            <div><dt>Credit note</dt><dd>@detail.Corrections.ProviderCreditNoteNumber</dd></div>
+                                        }
+                                        @if (detail.Corrections.CreditNoteRequestedUtc is not null)
+                                        {
+                                            <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteRequestedUtc.Value)</dd></div>
+                                        }
+                                        @if (detail.Corrections.CreditNoteApprovedUtc is not null)
+                                        {
+                                            <div><dt>Approved</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteApprovedUtc.Value)</dd></div>
+                                        }
+                                        @if (detail.Corrections.CreditNoteCompletedUtc is not null)
+                                        {
+                                            <div><dt>Completed</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteCompletedUtc.Value)</dd></div>
+                                        }
+                                    </dl>
+                                }
+                            </div>
+
+                            @if (!string.IsNullOrWhiteSpace(CorrectionActionMessage))
+                            {
+                                <p class="bill-detail-section__message">@CorrectionActionMessage</p>
+                            }
+                        </section>
+
+                        <section class="bill-detail-section">
+                            <h3>Related transactions</h3>
+                            @if (detail.RelatedTransactions.Count == 0)
+                            {
+                                <p>No ledger transactions are linked to this supplier bill yet.</p>
+                            }
+                            else
+                            {
+                                <div class="bill-related-transactions">
+                                    @foreach (var transaction in detail.RelatedTransactions)
+                                    {
+                                        <a class="bill-related-transaction" href="@BuildTransactionHref(transaction.Id)">
+                                            <span class="@($"bill-status-badge bill-status-badge--{transaction.TypeTone}")">@transaction.TypeLabel</span>
+                                            <span>
+                                                <strong>@transaction.Description</strong>
+                                                <small>@transaction.DisplayDate - @transaction.CategoryLabel - @transaction.ExternalReference</small>
+                                            </span>
+                                            <strong>@transaction.DisplayAmount</strong>
+                                        </a>
+                                    }
+                                </div>
+                            }
+                        </section>
+
+                        @if (detail.SourceDetails.Count > 0)
+                        {
+                            <section class="bill-detail-section">
+                                <h3>Source details</h3>
+                                <dl class="bill-detail-list bill-source-detail-list">
+                                    @foreach (var sourceDetail in detail.SourceDetails)
+                                    {
+                                        <div><dt>@sourceDetail.Label</dt><dd>@sourceDetail.Value</dd></div>
+                                    }
+                                </dl>
+                            </section>
+                        }
                     </div>
 
                     <section class="bill-detail-section">
@@ -130,6 +559,47 @@
                         CanNavigate="@SelectedBill.LinkedDocument.CanNavigate"
                         NavigateHref="@(SelectedBill.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedBill.LinkedDocument.Document.Id))"
                         ActionText="Open linked document" />
+                    </section>
+
+                    <section class="bill-detail-section">
+                        <div class="bill-detail-section__header">
+                            <h3>Source document attachment</h3>
+                            <span class="@($"bill-status-badge bill-status-badge--{detail.SourceDocumentAttachment.StatusTone}")">@detail.SourceDocumentAttachment.StatusLabel</span>
+                        </div>
+                        <p>@detail.SourceDocumentAttachment.Description</p>
+                        @if (detail.SourceDocumentAttachment.CanAttach)
+                        {
+                            <button
+                                type="button"
+                                class="btn btn-primary"
+                                disabled="@IsSourceDocumentAttachmentSubmitting"
+                                @onclick="AttachSourceDocumentAsync">
+                                @(IsSourceDocumentAttachmentSubmitting ? "Working..." : "Attach source document")
+                            </button>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(detail.SourceDocumentAttachment.ProviderKey) ||
+                             detail.SourceDocumentAttachment.RequestedUtc is not null ||
+                             detail.SourceDocumentAttachment.AttachedUtc is not null)
+                        {
+                            <dl class="bill-detail-list bill-source-detail-list">
+                                @if (!string.IsNullOrWhiteSpace(detail.SourceDocumentAttachment.ProviderKey))
+                                {
+                                    <div><dt>Provider</dt><dd>@detail.SourceDocumentAttachment.ProviderKey</dd></div>
+                                }
+                                @if (detail.SourceDocumentAttachment.RequestedUtc is not null)
+                                {
+                                    <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.SourceDocumentAttachment.RequestedUtc.Value)</dd></div>
+                                }
+                                @if (detail.SourceDocumentAttachment.AttachedUtc is not null)
+                                {
+                                    <div><dt>Attached</dt><dd>@FormatFriendlyDate(detail.SourceDocumentAttachment.AttachedUtc.Value)</dd></div>
+                                }
+                            </dl>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(SourceDocumentAttachmentMessage))
+                        {
+                            <p class="bill-detail-section__message">@SourceDocumentAttachmentMessage</p>
+                        }
                     </section>
 
                     <AgentInsightsPanel

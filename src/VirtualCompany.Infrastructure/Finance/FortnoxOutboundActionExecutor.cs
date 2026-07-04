@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Persistence;
@@ -11,15 +12,18 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFortnoxApiClient _fortnoxApiClient;
     private readonly TimeProvider _timeProvider;
+    private readonly ILogger<FortnoxOutboundActionExecutor> _logger;
 
     public FortnoxOutboundActionExecutor(
         VirtualCompanyDbContext dbContext,
         IFortnoxApiClient fortnoxApiClient,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ILogger<FortnoxOutboundActionExecutor> logger)
     {
         _dbContext = dbContext;
         _fortnoxApiClient = fortnoxApiClient;
         _timeProvider = timeProvider;
+        _logger = logger;
     }
 
     public async Task<FinanceIntegrationOutboundExecutionResult> ExecuteApprovedAsync(
@@ -30,9 +34,23 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         var command = await _dbContext.FinanceIntegrationWriteCommands
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == writeRequestId, cancellationToken)
             ?? throw new KeyNotFoundException("Accounting-system action was not found.");
+        _logger.LogInformation(
+            "Fortnox outbound action loaded. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. Status: {Status}. ApprovalId: {ApprovalId}. Path: {Path}. PayloadHash: {PayloadHash}. AttemptCount: {AttemptCount}.",
+            companyId,
+            writeRequestId,
+            command.Status,
+            command.ApprovalId,
+            command.Path,
+            command.PayloadHash,
+            command.ExecutionAttemptCount);
 
         if (command.Status is FinanceIntegrationWriteCommandRecordStatuses.Executed or FinanceIntegrationWriteCommandRecordStatuses.Executing)
         {
+            _logger.LogInformation(
+                "Fortnox outbound action skipped because it is already in terminal or active execution state. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. Status: {Status}.",
+                companyId,
+                writeRequestId,
+                command.Status);
             return ToResult(command, "This accounting-system action is already being handled.", executed: false);
         }
 
@@ -56,6 +74,12 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
 
         if (approval.Status != Domain.Enums.ApprovalRequestStatus.Approved)
         {
+            _logger.LogWarning(
+                "Fortnox outbound action blocked because approval is not approved. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. ApprovalStatus: {ApprovalStatus}.",
+                companyId,
+                writeRequestId,
+                approvalId,
+                approval.Status);
             throw new FortnoxApprovalRequiredException(approvalId, "Approve this action before data is sent to the accounting system.");
         }
 
@@ -73,6 +97,15 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         await WriteAuditAsync(command, "write_execution_started", FinanceIntegrationAuditOutcomes.Succeeded, "Approved accounting-system action is being sent to Fortnox.", cancellationToken);
         var payload = ParsePayload(command.SanitizedPayloadJson);
         var context = new FortnoxRequestContext(companyId, activeConnection.Id, command.CorrelationId, approvalId, command.ActorUserId, command.Id, command.RetrySupported);
+        _logger.LogInformation(
+            "Fortnox outbound action sending request. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. Method: {Method}. Path: {Path}. PayloadHash: {PayloadHash}.",
+            companyId,
+            activeConnection.Id,
+            command.Id,
+            approvalId,
+            command.HttpMethod,
+            command.Path,
+            command.PayloadHash);
 
         try
         {
@@ -86,6 +119,12 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
 
             await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
+            _logger.LogInformation(
+                "Fortnox outbound action succeeded. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. ExternalId: {ExternalId}.",
+                companyId,
+                writeRequestId,
+                approvalId,
+                refreshed.ExternalId);
             return ToResult(refreshed, "Fortnox accepted the approved accounting-system action.", executed: true);
         }
         catch (Exception exception) when (exception is FortnoxApiException or HttpRequestException or TaskCanceledException)
@@ -93,6 +132,15 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             var safeSummary = exception is FortnoxApiException apiException
                 ? apiException.SafeMessage
                 : "Fortnox could not complete the approved accounting-system action.";
+            _logger.LogWarning(
+                exception,
+                "Fortnox outbound action failed. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. Method: {Method}. Path: {Path}. SafeSummary: {SafeSummary}.",
+                companyId,
+                writeRequestId,
+                approvalId,
+                command.HttpMethod,
+                command.Path,
+                safeSummary);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             return ToResult(refreshed, safeSummary, executed: false);

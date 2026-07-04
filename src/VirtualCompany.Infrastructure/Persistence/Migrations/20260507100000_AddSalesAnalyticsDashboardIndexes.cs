@@ -4,6 +4,9 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations;
 
+[Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260507100000_AddSalesAnalyticsDashboardIndexes")]
+
 public partial class AddSalesAnalyticsDashboardIndexes : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

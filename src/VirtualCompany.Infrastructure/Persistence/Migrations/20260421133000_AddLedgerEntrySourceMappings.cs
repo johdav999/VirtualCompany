@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260421133000_AddLedgerEntrySourceMappings")]
     public partial class AddLedgerEntrySourceMappings : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -41,7 +43,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         columns: x => new { x.company_id, x.ledger_entry_id },
                         principalTable: "ledger_entries",
                         principalColumns: new[] { "company_id", "id" },
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateIndex(

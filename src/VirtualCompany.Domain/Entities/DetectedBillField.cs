@@ -71,6 +71,32 @@ public sealed class DetectedBillField : ICompanyOwnedEntity
     public Company Company { get; private set; } = null!;
     public DetectedBill DetectedBill { get; private set; } = null!;
 
+    public void ReplaceExtraction(
+        string? rawValue,
+        string? normalizedValue,
+        string sourceDocument,
+        string? sourceDocumentType,
+        string? pageReference,
+        string? sectionReference,
+        string? textSpan,
+        string? locator,
+        string extractionMethod,
+        decimal? fieldConfidence,
+        string? snippet)
+    {
+        RawValue = NormalizeOptional(rawValue, nameof(rawValue), 2000);
+        NormalizedValue = NormalizeOptional(normalizedValue, nameof(normalizedValue), 2000);
+        SourceDocument = NormalizeRequired(sourceDocument, nameof(sourceDocument), 512);
+        SourceDocumentType = NormalizeOptional(sourceDocumentType, nameof(sourceDocumentType), 64);
+        PageReference = NormalizeOptional(pageReference, nameof(pageReference), 128);
+        SectionReference = NormalizeOptional(sectionReference, nameof(sectionReference), 128);
+        TextSpan = NormalizeOptional(textSpan, nameof(textSpan), 128);
+        Locator = NormalizeOptional(locator, nameof(locator), 512);
+        ExtractionMethod = NormalizeRequired(extractionMethod, nameof(extractionMethod), 64);
+        FieldConfidence = NormalizeScore(fieldConfidence, nameof(fieldConfidence));
+        Snippet = NormalizeOptional(snippet, nameof(snippet), 2000);
+    }
+
     private static string NormalizeFieldName(string value)
     {
         var normalized = NormalizeRequired(value, nameof(value), 64);

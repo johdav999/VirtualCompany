@@ -146,6 +146,9 @@ public partial class MailboxPage : FinancePageBase
         SelectedMessage = message;
     }
 
+    private string BuildBillReviewHref(Guid billId) =>
+        FinanceRoutes.BuildBillInboxDetailPath(billId, AccessState.CompanyId);
+
     private async Task StartConnectionAsync(string provider)
     {
         if (AccessState.CompanyId is not Guid companyId)
@@ -220,7 +223,7 @@ public partial class MailboxPage : FinancePageBase
         switch (MailboxConnectionResult.Trim().ToLowerInvariant())
         {
             case "connected":
-                ActionMessage = "Mailbox connected. You can scan the inbox for bills now.";
+                ActionMessage = "Mailbox connected. Laura is scanning the inbox for supplier bills now.";
                 break;
             case "denied":
                 ActionErrorMessage = "Mailbox connection was cancelled before access was granted.";
@@ -291,4 +294,13 @@ public partial class MailboxPage : FinancePageBase
         attachments.Count == 0
             ? "None"
             : string.Join(", ", attachments.Select(attachment => string.IsNullOrWhiteSpace(attachment.FileName) ? "Unnamed attachment" : attachment.FileName));
+
+    private static bool IsCandidate(MailboxScannedMessageResponse message) =>
+        string.Equals(message.CandidateDecision, "candidate", StringComparison.OrdinalIgnoreCase);
+
+    private static string FormatDecisionLabel(MailboxScannedMessageResponse message) =>
+        IsCandidate(message) ? "Candidate" : "Not a bill";
+
+    private static string GetDecisionBadgeClass(MailboxScannedMessageResponse message) =>
+        IsCandidate(message) ? "badge text-bg-success" : "badge text-bg-light";
 }

@@ -71,11 +71,12 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.BankAccount).WithMany(x => x.Transactions).HasForeignKey(x => x.BankAccountId).OnDelete(DeleteBehavior.Restrict);
-        builder.HasMany(x => x.PaymentLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasMany(x => x.CashLedgerLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(x => x.PaymentLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.NoAction);
+        builder.HasMany(x => x.CashLedgerLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.PostingStateRecord)
             .WithOne(x => x.BankTransaction)
-            .HasForeignKey<BankTransactionPostingStateRecord>(x => x.BankTransactionId);
+            .HasForeignKey<BankTransactionPostingStateRecord>(x => x.BankTransactionId)
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }
 
@@ -125,6 +126,6 @@ internal sealed class BankTransactionCashLedgerLinkEntityConfiguration : IEntity
         builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => x.LedgerEntryId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => x.LedgerEntryId).OnDelete(DeleteBehavior.NoAction);
     }
 }

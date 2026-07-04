@@ -71,6 +71,7 @@ public static class FinanceRoutes
             new("Overview", Home, "Review key finance actions and open the operational finance workspace."),
             new("Invoices", Invoices, "Track invoice review and collection workflows."),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
+            new("Mailbox", Mailbox, "Connect email and scan inbox messages for bill candidates."),
             new("Payments", Payments, "Track money coming in and going out."),
             new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity]),
             new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies]),

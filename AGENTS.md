@@ -24,6 +24,16 @@ When changing frontend UI, layout, styling, dashboards, agent cards, approval vi
 - Existing implemented design system wins if it conflicts with older planning documents
 - Keep user-facing language plain English; avoid internal workflow names, enum names, or technical identifiers
 
+## Multi-prompt implementation persistence
+
+When implementing a sequence of prompts or a multi-part implementation plan:
+
+- Do not stop at intermediate checkpoints.
+- Do not stop after only reporting build, test, or analysis status.
+- Continue through the ordered prompts until the full requested implementation sequence is complete, genuinely blocked, or the user explicitly asks to pause or stop.
+- If a build or test fails, diagnose and fix the failure when it is in scope for the current implementation sequence, then continue.
+- Only stop when further progress requires missing external credentials, unavailable services, an unsafe/destructive action without approval, or a user decision that cannot reasonably be inferred.
+
 <!-- design-addin-instructions:start -->
 # Design Add-in Workspace Instructions
 

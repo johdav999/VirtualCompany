@@ -1,5 +1,6 @@
 @page "/onboarding"
 @rendermode InteractiveServer
+@using System.Globalization
 @using System.Text.Json
 @inject OnboardingApiClient ApiClient
 @inject NavigationManager Navigation
@@ -89,13 +90,25 @@ else
 
                                 <div class="col-md-6">
                                     <label class="form-label">Industry</label>
-                                    <input class="form-control" value="@model.Industry" @onchange="OnIndustryChangedAsync" />
+                                    <select class="form-select" value="@model.Industry" @onchange="OnIndustryChangedAsync">
+                                        <option value="">Select industry</option>
+                                        @foreach (var industry in IndustryOptions)
+                                        {
+                                            <option value="@industry">@industry</option>
+                                        }
+                                    </select>
                                     @RenderError(nameof(model.Industry))
                                 </div>
 
                                 <div class="col-md-6">
                                     <label class="form-label">Business type</label>
-                                    <input class="form-control" value="@model.BusinessType" @onchange="OnBusinessTypeChangedAsync" />
+                                    <select class="form-select" value="@model.BusinessType" @onchange="OnBusinessTypeChangedAsync">
+                                        <option value="">Select business type</option>
+                                        @foreach (var businessType in BusinessTypeOptions)
+                                        {
+                                            <option value="@businessType">@businessType</option>
+                                        }
+                                    </select>
                                     @RenderError(nameof(model.BusinessType))
                                 </div>
 
@@ -114,25 +127,49 @@ else
                             <div class="row g-3 mt-1">
                                 <div class="col-md-6">
                                     <label class="form-label">Timezone</label>
-                                    <input class="form-control" value="@model.Timezone" @oninput="OnTimezoneChanged" />
+                                    <select class="form-select" value="@model.Timezone" @onchange="OnTimezoneChanged">
+                                        <option value="">Select timezone</option>
+                                        @foreach (var timezone in TimezoneOptions)
+                                        {
+                                            <option value="@timezone">@timezone</option>
+                                        }
+                                    </select>
                                     @RenderError(nameof(model.Timezone))
                                 </div>
 
                                 <div class="col-md-6">
                                     <label class="form-label">Currency</label>
-                                    <input class="form-control" value="@model.Currency" @oninput="OnCurrencyChanged" />
+                                    <select class="form-select" value="@model.Currency" @onchange="OnCurrencyChanged">
+                                        <option value="">Select currency</option>
+                                        @foreach (var currency in CurrencyOptions)
+                                        {
+                                            <option value="@currency">@currency</option>
+                                        }
+                                    </select>
                                     @RenderError(nameof(model.Currency))
                                 </div>
 
                                 <div class="col-md-6">
                                     <label class="form-label">Language</label>
-                                    <input class="form-control" value="@model.Language" @oninput="OnLanguageChanged" />
+                                    <select class="form-select" value="@model.Language" @onchange="OnLanguageChanged">
+                                        <option value="">Select language</option>
+                                        @foreach (var language in LanguageOptions)
+                                        {
+                                            <option value="@language.Value">@language.Label</option>
+                                        }
+                                    </select>
                                     @RenderError(nameof(model.Language))
                                 </div>
 
                                 <div class="col-md-6">
                                     <label class="form-label">Compliance region</label>
-                                    <input class="form-control" value="@model.ComplianceRegion" @oninput="OnComplianceRegionChanged" />
+                                    <select class="form-select" value="@model.ComplianceRegion" @onchange="OnComplianceRegionChanged">
+                                        <option value="">Select compliance region</option>
+                                        @foreach (var region in ComplianceRegionOptions)
+                                        {
+                                            <option value="@region">@region</option>
+                                        }
+                                    </select>
                                     @RenderError(nameof(model.ComplianceRegion))
                                 </div>
                             </div>
@@ -226,6 +263,63 @@ else
         "Assign one owner for each core workflow.",
         "Upload company policies and documents as workspace knowledge."
     ];
+    private static readonly string[] FallbackIndustryOptions =
+    [
+        "Services",
+        "Retail",
+        "Manufacturing",
+        "Software",
+        "Consulting"
+    ];
+    private static readonly string[] FallbackBusinessTypeOptions =
+    [
+        "Agency",
+        "E-commerce",
+        "SaaS",
+        "Consultancy",
+        "Distributor"
+    ];
+    private static readonly string[] CommonCurrencyOptions =
+    [
+        "SEK",
+        "EUR",
+        "USD",
+        "GBP",
+        "NOK",
+        "DKK"
+    ];
+    private static readonly string[] ComplianceRegionBaseOptions =
+    [
+        "EU",
+        "Sweden",
+        "Norway",
+        "Denmark",
+        "Finland",
+        "United Kingdom",
+        "United States",
+        "Canada",
+        "Australia",
+        "Global"
+    ];
+    private static readonly IReadOnlyList<string> SystemTimezoneOptions = TimeZoneInfo.GetSystemTimeZones()
+        .Select(timezone => timezone.Id)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    private static readonly IReadOnlyList<string> SystemCurrencyOptions = CultureInfo.GetCultures(CultureTypes.SpecificCultures)
+        .Select(CreateRegionInfo)
+        .Where(region => region is not null)
+        .Select(region => region!.ISOCurrencySymbol)
+        .Concat(CommonCurrencyOptions)
+        .Distinct(StringComparer.OrdinalIgnoreCase)
+        .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+    private static readonly IReadOnlyList<SelectOption> SystemLanguageOptions = CultureInfo.GetCultures(CultureTypes.NeutralCultures)
+        .Where(culture => !string.IsNullOrWhiteSpace(culture.Name))
+        .Select(culture => new SelectOption(culture.Name, $"{culture.EnglishName} ({culture.Name})"))
+        .DistinctBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+        .OrderBy(option => option.Label, StringComparer.OrdinalIgnoreCase)
+        .ToList();
 
     private readonly Dictionary<string, string> validationErrors = new(StringComparer.OrdinalIgnoreCase);
     private readonly OnboardingFormModel model = new();
@@ -245,6 +339,29 @@ else
     private string? lastSavedLabel;
 
     private OnboardingTemplateViewModel? SelectedTemplate => templates.FirstOrDefault(x => x.TemplateId == model.SelectedTemplateId);
+    private IReadOnlyList<string> IndustryOptions => BuildOptionList(
+        templates.Select(x => x.Industry),
+        model.Industry,
+        FallbackIndustryOptions);
+    private IReadOnlyList<string> BusinessTypeOptions => BuildOptionList(
+        templates.Select(x => x.BusinessType),
+        model.BusinessType,
+        FallbackBusinessTypeOptions);
+    private IReadOnlyList<string> TimezoneOptions => BuildOptionList(
+        templates.Select(x => GetTemplateDefault(x.Defaults, "timezone")),
+        model.Timezone,
+        SystemTimezoneOptions);
+    private IReadOnlyList<string> CurrencyOptions => BuildOptionList(
+        templates.Select(x => GetTemplateDefault(x.Defaults, "currency")),
+        model.Currency,
+        SystemCurrencyOptions);
+    private IReadOnlyList<SelectOption> LanguageOptions => BuildLanguageOptionList(
+        templates.Select(x => GetTemplateDefault(x.Defaults, "language")),
+        model.Language);
+    private IReadOnlyList<string> ComplianceRegionOptions => BuildOptionList(
+        templates.Select(x => GetTemplateDefault(x.Defaults, "complianceRegion")),
+        model.ComplianceRegion,
+        ComplianceRegionBaseOptions);
     private IReadOnlyList<string> Guidance => SelectedTemplate?.StarterGuidance?.Count > 0
         ? SelectedTemplate.StarterGuidance
         : recommendedTemplate?.StarterGuidance?.Count > 0
@@ -716,6 +833,54 @@ else
         !string.IsNullOrWhiteSpace(model.SelectedTemplateId)
             ? model.SelectedTemplateId
             : recommendedTemplate?.TemplateId;
+
+    private static IReadOnlyList<string> BuildOptionList(
+        IEnumerable<string?> templateValues,
+        string? currentValue,
+        IReadOnlyCollection<string> fallbackValues)
+    {
+        var options = templateValues
+            .Concat(fallbackValues)
+            .Append(currentValue)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        return options;
+    }
+
+    private static IReadOnlyList<SelectOption> BuildLanguageOptionList(IEnumerable<string?> templateValues, string? currentValue)
+    {
+        var currentOptions = templateValues
+            .Append(currentValue)
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value!.Trim())
+            .Where(value => !SystemLanguageOptions.Any(option => string.Equals(option.Value, value, StringComparison.OrdinalIgnoreCase)))
+            .Select(value => new SelectOption(value, value));
+
+        return SystemLanguageOptions
+            .Concat(currentOptions)
+            .DistinctBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(option => option.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static RegionInfo? CreateRegionInfo(CultureInfo culture)
+    {
+        try
+        {
+            return new RegionInfo(culture.Name);
+        }
+        catch (ArgumentException)
+        {
+            return null;
+        }
+    }
+
+    private sealed record SelectOption(string Value, string Label);
+
     private RenderFragment RenderError(string field) => builder =>
     {
         if (validationErrors.TryGetValue(field, out var message))

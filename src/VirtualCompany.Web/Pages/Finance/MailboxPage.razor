@@ -9,14 +9,14 @@
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
     Title="Finance mailbox"
-    Description="Connect a mailbox and start bill scans for the active company."
+    Description="Connect a mailbox so Laura can check for supplier bills and prepare them for review."
     LoadingMessage="Loading mailbox integration...">
     <div class="wizard-card wizard-card--compact">
         <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
             <div>
                 <h2 class="h5 mb-1">Mailbox connection</h2>
                 <p class="text-body-secondary mb-0">
-                    Connect Gmail or Microsoft 365, then scan the configured inbox folders for bill-related messages.
+                    Connect Gmail or Microsoft 365. Laura scans the inbox for supplier bills automatically and keeps the manual scan available for follow-up checks.
                 </p>
             </div>
             <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsStatusLoading">Refresh</button>
@@ -89,7 +89,7 @@
                     Connect Microsoft 365
                 </button>
                 <button class="btn btn-outline-secondary" type="button" @onclick="TriggerScanAsync" disabled="@IsScanDisabled">
-                    @(IsScanInFlight ? "Starting scan..." : "Scan inbox for bills")
+                    @(IsScanInFlight ? "Starting scan..." : "Ask Laura to scan again")
                 </button>
             </div>
 
@@ -122,7 +122,7 @@
         <div class="d-flex justify-content-between gap-3 align-items-start mb-3">
             <div>
                 <h2 class="h5 mb-1">Scanned inbox</h2>
-                <p class="text-body-secondary mb-0">Bill-candidate messages fetched from the connected mailbox.</p>
+                <p class="text-body-secondary mb-0">Messages Laura reviewed from the connected mailbox, including rejected attachment emails.</p>
             </div>
         </div>
 
@@ -132,8 +132,8 @@
             ErrorMessage="@MessagesErrorMessage"
             LoadingTitle="Loading scanned messages"
             LoadingMessage="Reading message snapshots from recent mailbox scans."
-            EmptyTitle="No fetched bill messages yet"
-            EmptyMessage="Run a scan to show detected bill-related emails here."
+            EmptyTitle="No reviewed messages yet"
+            EmptyMessage="Run a scan to show bill candidates and rejected attachment emails here."
             ErrorTitle="Scanned messages are unavailable"
             OnRetry="@ReloadAsync">
             <div class="row g-3">
@@ -147,8 +147,9 @@
                                     @onclick="@(() => SelectMessage(message))">
                                 <div class="d-flex justify-content-between gap-3">
                                     <span class="fw-semibold text-truncate">@(!string.IsNullOrWhiteSpace(message.Subject) ? message.Subject : "(No subject)")</span>
-                                    <span class="small flex-shrink-0">@FormatDateTime(message.ReceivedUtc)</span>
+                                    <span class="@GetDecisionBadgeClass(message) flex-shrink-0">@FormatDecisionLabel(message)</span>
                                 </div>
+                                <div class="small flex-shrink-0 @(isSelected ? "text-white-50" : "text-body-secondary")">@FormatDateTime(message.ReceivedUtc)</div>
                                 <div class="small text-truncate @(isSelected ? "text-white-50" : "text-body-secondary")">@FormatSender(message)</div>
                                 <div class="small text-truncate @(isSelected ? "text-white-50" : "text-body-secondary")">@message.ReasonSummary</div>
                             </button>
@@ -168,7 +169,7 @@
                                     <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Subject</div>
                                     <h3 class="h6 mb-0">@(!string.IsNullOrWhiteSpace(SelectedMessage.Subject) ? SelectedMessage.Subject : "(No subject)")</h3>
                                 </div>
-                                <span class="badge text-bg-success align-self-start">@FormatMailboxCode(SelectedMessage.CandidateDecision)</span>
+                                <span class="@GetDecisionBadgeClass(SelectedMessage) align-self-start">@FormatDecisionLabel(SelectedMessage)</span>
                             </div>
                             <dl class="row small mb-3">
                                 <dt class="col-sm-4">From</dt>
@@ -184,6 +185,29 @@
                                 <dt class="col-sm-4">Attachments</dt>
                                 <dd class="col-sm-8">@FormatAttachments(SelectedMessage.Attachments)</dd>
                             </dl>
+                            <div class="border rounded-3 p-3 mb-3">
+                                <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
+                                    <div>
+                                        <div class="fw-semibold">Bill review</div>
+                                        @if (SelectedMessage.DetectedBillId is Guid)
+                                        {
+                                            <div class="small text-body-secondary">Review the extracted bill fields, then send clean supplier bills to Fortnox.</div>
+                                        }
+                                        else if (IsCandidate(SelectedMessage))
+                                        {
+                                            <div class="small text-body-secondary">Laura marked this as a bill candidate, but no bill review item has been created yet.</div>
+                                        }
+                                        else
+                                        {
+                                            <div class="small text-body-secondary">Laura reviewed this attachment email and did not classify it as a supplier bill.</div>
+                                        }
+                                    </div>
+                                    @if (SelectedMessage.DetectedBillId is Guid detectedBillId)
+                                    {
+                                        <NavLink class="btn btn-primary" href="@BuildBillReviewHref(detectedBillId)">Review bill</NavLink>
+                                    }
+                                </div>
+                            </div>
                             <div class="small text-uppercase text-body-secondary fw-semibold mb-1">Extracted email text</div>
                             @if (string.IsNullOrWhiteSpace(SelectedMessage.BodyPreview))
                             {
@@ -204,13 +228,13 @@
         <div class="d-flex justify-content-between gap-3 align-items-start mb-3">
             <div>
                 <h2 class="h5 mb-1">Recent scan</h2>
-                <p class="text-body-secondary mb-0">Latest audit summary for the current user's mailbox scan.</p>
+                <p class="text-body-secondary mb-0">Latest summary from Laura's mailbox scan for this account.</p>
             </div>
         </div>
 
         @if (Status?.LastRun is null)
         {
-            <FinanceEmptyState Title="No mailbox scans yet" Message="Run a manual scan after connecting a mailbox to create an audit record." />
+            <FinanceEmptyState Title="No mailbox scans yet" Message="Connect a mailbox and Laura will start checking it for supplier bills." />
         }
         else
         {

@@ -320,6 +320,7 @@ public sealed class LedgerEntrySourceMapping : ICompanyOwnedEntity
         SourceId = NormalizeRequired(sourceId, nameof(sourceId), 128);
         PostedAtUtc = EntityTimestampNormalizer.NormalizeUtc(postedAtUtc, nameof(postedAtUtc));
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? PostedAtUtc, nameof(createdUtc));
+        UpdatedUtc = CreatedUtc;
     }
 
     public Guid Id { get; private set; }

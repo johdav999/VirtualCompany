@@ -94,7 +94,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.Amount,
                 x.Currency,
                 x.Status,
-                x.SettlementStatus))
+                x.SettlementStatus,
+                x.DueStatus))
             .ToListAsync(cancellationToken);
 
         var billQuery = ApplySourceFilter(_dbContext.FinanceBills
@@ -113,7 +114,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.Amount,
                 x.Currency,
                 x.Status,
-                x.SettlementStatus))
+                x.SettlementStatus,
+                x.DueStatus))
             .ToListAsync(cancellationToken);
 
         var completedIncomingByInvoice = await LoadInvoiceAllocationLookupAsync(
@@ -130,7 +132,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Sum(x => CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id))));
 
         var overdueReceivables = Round(invoiceRows
-            .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus) && x.DueUtc < effectiveAsOfUtc)
+            .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus) && IsOverdue(x.DueStatus, x.DueUtc, effectiveAsOfUtc))
             .Sum(x => CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id))));
 
         var billPayables = Round(billRows
@@ -138,7 +140,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Sum(x => CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id))));
 
         var overdueBillPayables = Round(billRows
-            .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus) && x.DueUtc < effectiveAsOfUtc)
+            .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus) && IsOverdue(x.DueStatus, x.DueUtc, effectiveAsOfUtc))
             .Sum(x => CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id))));
 
         var assetRows = await _dbContext.FinanceAssets
@@ -340,7 +342,13 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.TransactionUtc <= asOfUtc), companyId, sourceFilter, "voucher", "payment", "transaction");
 
         var transactions = await transactionQuery
-            .Select(x => new TransactionRow(x.AccountId, x.TransactionUtc, x.Amount))
+            .Select(x => new TransactionRow(
+                x.AccountId,
+                x.TransactionUtc,
+                x.TransactionType,
+                x.Amount,
+                x.Description,
+                x.ExternalReference))
             .ToListAsync(cancellationToken);
 
         var transactionsByAccount = transactions
@@ -354,11 +362,12 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             {
                 var postedSinceSnapshot = accountTransactions
                     .Where(x => x.TransactionUtc > snapshot.AsOfUtc)
+                    .Where(IsCashMovementTransaction)
                     .Sum(x => x.Amount);
                 return snapshot.Amount + postedSinceSnapshot;
             }
 
-            return account.OpeningBalance + accountTransactions.Sum(x => x.Amount);
+            return account.OpeningBalance + accountTransactions.Where(IsCashMovementTransaction).Sum(x => x.Amount);
         });
 
         return Round(currentCash);
@@ -508,13 +517,40 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     }
 
     private static bool IsCashAccount(FinanceAccountRow account) =>
-        string.Equals(account.AccountType, "cash", StringComparison.OrdinalIgnoreCase) ||
-        account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
-        account.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
+        (string.Equals(account.AccountType, "cash", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(account.AccountType, "asset", StringComparison.OrdinalIgnoreCase)) &&
+        (account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("kassa", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("plusgiro", StringComparison.OrdinalIgnoreCase) ||
+            account.Code.StartsWith("19", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(account.Code, "1000", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsCashMovementTransaction(TransactionRow transaction) =>
+        !string.Equals(transaction.TransactionType, "voucher", StringComparison.OrdinalIgnoreCase) ||
+        IsExplicitBankPaymentVoucher(transaction.Description, transaction.ExternalReference);
+
+    private static bool IsExplicitBankPaymentVoucher(string description, string externalReference)
+    {
+        var text = string.Concat(description, " ", externalReference);
+        var mentionsBank =
+            text.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("bankgiro", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("plusgiro", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("kassa", StringComparison.OrdinalIgnoreCase);
+        var mentionsPayment =
+            text.Contains("payment", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("betal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("inbetal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("utbetal", StringComparison.OrdinalIgnoreCase);
+
+        return mentionsBank && mentionsPayment;
+    }
 
     private static bool IsIncludedReceivable(string status, string settlementStatus)
     {
-        if (string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal))
+        var normalizedSettlement = FinanceSettlementStatuses.Normalize(settlementStatus);
+        if (normalizedSettlement is FinanceSettlementStatuses.Paid or FinanceSettlementStatuses.Credited)
         {
             return false;
         }
@@ -525,7 +561,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
 
     private static bool IsIncludedPayable(string status, string settlementStatus)
     {
-        if (string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal))
+        var normalizedSettlement = FinanceSettlementStatuses.Normalize(settlementStatus);
+        if (normalizedSettlement is FinanceSettlementStatuses.Paid or FinanceSettlementStatuses.Credited)
         {
             return false;
         }
@@ -538,6 +575,10 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         string.Equals(FinanceAssetFundingBehaviors.Normalize(row.FundingBehavior), FinanceAssetFundingBehaviors.Payable, StringComparison.Ordinal) &&
         !string.Equals(FinanceSettlementStatuses.Normalize(row.FundingSettlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) &&
         IsIncludedAssetCost(row.Status);
+
+    private static bool IsOverdue(string dueStatus, DateTime dueUtc, DateTime asOfUtc) =>
+        string.Equals(FinanceDocumentDueStatuses.Normalize(dueStatus), FinanceDocumentDueStatuses.Overdue, StringComparison.Ordinal) ||
+        dueUtc.Date < asOfUtc.Date;
 
     private static bool IsIncludedInMonthlyRevenue(string status)
     {
@@ -598,7 +639,13 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         string Currency);
 
     private sealed record BalanceRow(Guid AccountId, DateTime AsOfUtc, decimal Amount);
-    private sealed record TransactionRow(Guid AccountId, DateTime TransactionUtc, decimal Amount);
+    private sealed record TransactionRow(
+        Guid AccountId,
+        DateTime TransactionUtc,
+        string TransactionType,
+        decimal Amount,
+        string Description,
+        string ExternalReference);
     private sealed record AllocationRow(Guid DocumentId, decimal Amount);
     private sealed record InvoicePaymentHistoryAllocationRow(Guid InvoiceId, DateTime PaymentDateUtc, decimal AllocatedAmount);
     private sealed record InvoicePaymentHistoryAggregation(decimal TotalAllocatedAmount, DateTime PaidUtc);
@@ -612,7 +659,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         decimal Amount,
         string Currency,
         string Status,
-        string SettlementStatus);
+        string SettlementStatus,
+        string DueStatus);
     private sealed record BillRow(
         Guid Id,
         string BillNumber,
@@ -623,6 +671,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         decimal Amount,
         string Currency,
         string Status,
-        string SettlementStatus);
+        string SettlementStatus,
+        string DueStatus);
     private sealed record AssetRow(Guid Id, string ReferenceNumber, string Name, string Category, DateTime PurchasedUtc, decimal Amount, string Currency, string FundingBehavior, string FundingSettlementStatus, string Status);
 }

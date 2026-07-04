@@ -129,13 +129,13 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
                 command.SeedValue,
                 command.SeedAnchorUtc.Value,
                 anomalyOptions,
-                allowNonSimulationTransactions)
+                includeTransactions: true)
             : DeterministicFinanceSeedDatasetGenerator.Generate(
                 _dbContext,
                 command.CompanyId,
                 command.SeedValue,
                 anomalyOptions,
-                allowNonSimulationTransactions);
+                includeTransactions: true);
     }
 
     private FinanceSeedBootstrapResultDto PreviewExistingSeed(FinanceSeedBootstrapCommand command)

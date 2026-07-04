@@ -79,7 +79,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         CONSTRAINT [CK_email_ingestion_runs_candidate_attachment_snapshot_count_nonnegative] CHECK ([candidate_attachment_snapshot_count] >= 0),
                         CONSTRAINT [CK_email_ingestion_runs_deduplicated_attachment_count_nonnegative] CHECK ([deduplicated_attachment_count] >= 0),
                         CONSTRAINT [FK_email_ingestion_runs_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE NO ACTION,
-                        CONSTRAINT [FK_email_ingestion_runs_mailbox_connections_mailbox_connection_id] FOREIGN KEY ([mailbox_connection_id]) REFERENCES [mailbox_connections] ([id]) ON DELETE CASCADE,
+                        CONSTRAINT [FK_email_ingestion_runs_mailbox_connections_mailbox_connection_id] FOREIGN KEY ([mailbox_connection_id]) REFERENCES [mailbox_connections] ([id]) ON DELETE NO ACTION,
                         CONSTRAINT [FK_email_ingestion_runs_users_triggered_by_user_id] FOREIGN KEY ([triggered_by_user_id]) REFERENCES [users] ([Id]) ON DELETE NO ACTION
                     );
                 END

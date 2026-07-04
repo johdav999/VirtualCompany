@@ -4,6 +4,7 @@ using System.Globalization;
 using Microsoft.Extensions.Logging;
 using VirtualCompany.Shared;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace VirtualCompany.Web.Services;
 
@@ -11,15 +12,24 @@ public sealed class FinanceApiClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private const string CompanyContextHeaderName = "X-Company-Id";
+    private const string FinanceDataSourceAll = "all";
+    private const string FinanceDataSourceFortnox = "fortnox";
+    private const string FinanceDataSourceSimulation = "simulation";
     private readonly HttpClient _httpClient;
     private readonly bool _useOfflineMode;
+    private readonly string? _financeDataSourceFilter;
     private readonly ILogger<FinanceApiClient>? _logger;
 
-    public FinanceApiClient(HttpClient httpClient, ILogger<FinanceApiClient>? logger = null, bool useOfflineMode = false)
+    public FinanceApiClient(
+        HttpClient httpClient,
+        ILogger<FinanceApiClient>? logger = null,
+        bool useOfflineMode = false,
+        string? financeDataSourceFilter = null)
     {
         _httpClient = httpClient;
         _logger = logger;
         _useOfflineMode = useOfflineMode;
+        _financeDataSourceFilter = NormalizeFinanceDataSourceFilter(financeDataSourceFilter);
     }
 
     public Task<List<FinanceIntegrationProviderResponse>> GetFinanceIntegrationProvidersAsync(Guid companyId, CancellationToken cancellationToken = default) =>
@@ -366,7 +376,10 @@ public sealed class FinanceApiClient
             return Task.FromResult<FinanceCashPositionResponse?>(null);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/cash-position{BuildQuery(("asOfUtc", asOfUtc?.ToString("O")))}";
+        var normalizedAsOfUtc = asOfUtc.HasValue && asOfUtc.Value > DateTime.MinValue
+            ? asOfUtc.Value
+            : (DateTime?)null;
+        var uri = $"internal/companies/{companyId}/finance/cash-position{BuildQuery(("asOfUtc", normalizedAsOfUtc?.ToString("O")))}";
         return GetAsync<FinanceCashPositionResponse>(companyId, uri, allowNotFound: true, cancellationToken);
     }
 
@@ -432,7 +445,7 @@ public sealed class FinanceApiClient
             return Task.FromResult<IReadOnlyList<FinanceTransactionResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/transactions{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("category", category), ("flagged", flagged), ("limit", limit.ToString()))}";
+        var uri = $"internal/companies/{companyId}/finance/transactions{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("category", category), ("flagged", flagged), ("limit", limit.ToString()), ("source", _financeDataSourceFilter))}";
         return GetListAsync<FinanceTransactionResponse>(companyId, uri, cancellationToken);
     }
 
@@ -452,7 +465,7 @@ public sealed class FinanceApiClient
             return Task.FromResult<IReadOnlyList<FinancePaymentResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
+        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)), ("source", _financeDataSourceFilter))}";
         return GetListAsync<FinancePaymentResponse>(companyId, uri, cancellationToken);
     }
 
@@ -471,7 +484,7 @@ public sealed class FinanceApiClient
             return Task.FromResult<IReadOnlyList<FinanceBillResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/bills{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
+        var uri = $"internal/companies/{companyId}/finance/bills{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)), ("source", _financeDataSourceFilter))}";
         return GetListAsync<FinanceBillResponse>(companyId, uri, cancellationToken);
     }
 
@@ -479,6 +492,161 @@ public sealed class FinanceApiClient
         _useOfflineMode
             ? Task.FromResult<FinanceBillDetailResponse?>(null)
             : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}", allowNotFound: true, cancellationToken);
+
+    public Task<SupplierInvoicePaymentProposalResponse> RequestSupplierBillPaymentProposalAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill payment proposal request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoicePaymentProposalResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/payment-proposal",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoicePaymentProposalResponse> ExportSupplierBillPaymentInstructionAsync(
+        Guid companyId,
+        Guid billId,
+        string exportMode = "register_payment",
+        CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill payment export request. CompanyId: {CompanyId}. BillId: {BillId}. ExportMode: {ExportMode}.",
+            companyId,
+            billId,
+            exportMode);
+
+        return SendCompanyScopedAsync<ExportSupplierBillPaymentInstructionRequest, SupplierInvoicePaymentProposalResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/payment-proposal/export",
+            new ExportSupplierBillPaymentInstructionRequest { ExportMode = exportMode },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceSourceDocumentAttachmentResponse> AttachSupplierBillSourceDocumentAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill source document attachment request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceSourceDocumentAttachmentResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/source-document-attachment",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceDraftActionResponse> UpdateSupplierBillFortnoxDraftAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill Fortnox draft update request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceDraftActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/fortnox-draft/update",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceDraftActionResponse> BookkeepSupplierBillFortnoxDraftAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill Fortnox bookkeeping request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceDraftActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/fortnox-draft/bookkeep",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceCorrectionActionResponse> CancelSupplierInvoiceAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill cancellation request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceCorrectionActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/corrections/cancel",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceCorrectionActionResponse> CreateSupplierCreditNoteAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill credit note request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceCorrectionActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/corrections/credit-note",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceEnrichmentActionResponse> SuggestSupplierInvoiceEnrichmentAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill enrichment suggestion request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceEnrichmentActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/enrichment/suggest",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceEnrichmentActionResponse> SyncSupplierInvoiceEnrichmentAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill enrichment sync request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceEnrichmentActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/enrichment/sync",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<SupplierInvoiceEnrichmentActionResponse> ReconcileSupplierInvoiceAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending supplier bill reconciliation request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, SupplierInvoiceEnrichmentActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/enrichment/reconcile",
+            new { },
+            cancellationToken);
+    }
 
     public Task<IReadOnlyList<FinanceBillInboxRowResponse>> GetBillInboxAsync(
         Guid companyId,
@@ -510,6 +678,14 @@ public sealed class FinanceApiClient
     public Task<FinanceBillReviewActionResultResponse> RequestBillInboxClarificationAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
         SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
             companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/request-clarification", new FinanceBillReviewActionRequest(rationale), cancellationToken);
+
+    public Task<FinanceBillFortnoxRegistrationResponse> RequestBillInboxFortnoxRegistrationAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillFortnoxRegistrationResponse>(
+            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/fortnox-registration/request", new FinanceBillReviewActionRequest(rationale), cancellationToken);
+
+    public Task<FinanceBillFortnoxRegistrationResponse> SendBillInboxFortnoxRegistrationAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<object, FinanceBillFortnoxRegistrationResponse>(
+            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/fortnox-registration/send", new { }, cancellationToken);
 
     public Task<MailboxConnectionStatusResponse?> GetMailboxConnectionStatusAsync(Guid companyId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -600,7 +776,7 @@ public sealed class FinanceApiClient
             return Task.FromResult<IReadOnlyList<FinanceInvoiceResponse>>([]);
         }
 
-        var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()))}";
+        var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()), ("source", _financeDataSourceFilter))}";
         return GetListAsync<FinanceInvoiceResponse>(companyId, uri, cancellationToken);
     }
 
@@ -646,6 +822,66 @@ public sealed class FinanceApiClient
         _useOfflineMode
             ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
             : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}", allowNotFound: true, cancellationToken);
+
+    public Task<CustomerInvoiceFortnoxActionResponse> RequestCustomerInvoiceFortnoxExportAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending customer invoice Fortnox export request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
+            companyId,
+            invoiceId);
+
+        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-export",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<CustomerInvoiceFortnoxActionResponse> ExecuteCustomerInvoiceFortnoxExportAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending customer invoice Fortnox export execution request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
+            companyId,
+            invoiceId);
+
+        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-export/execute",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<CustomerInvoiceFortnoxActionResponse> RequestCustomerInvoiceFortnoxBookkeepAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending customer invoice Fortnox bookkeeping request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
+            companyId,
+            invoiceId);
+
+        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-bookkeep",
+            new { },
+            cancellationToken);
+    }
+
+    public Task<CustomerInvoiceFortnoxActionResponse> ExecuteCustomerInvoiceFortnoxBookkeepAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending customer invoice Fortnox bookkeeping execution request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
+            companyId,
+            invoiceId);
+
+        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-bookkeep/execute",
+            new { },
+            cancellationToken);
+    }
 
     public Task<IReadOnlyList<FinanceInvoiceReviewListItemResponse>> GetInvoiceReviewsAsync(
         Guid companyId,
@@ -903,6 +1139,23 @@ public sealed class FinanceApiClient
             .ToArray();
 
         return segments.Length == 0 ? string.Empty : $"?{string.Join("&", segments)}";
+    }
+
+    private static string? NormalizeFinanceDataSourceFilter(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var normalized = value.Trim().ToLowerInvariant();
+        return normalized switch
+        {
+            FinanceDataSourceAll => null,
+            FinanceDataSourceFortnox => FinanceDataSourceFortnox,
+            FinanceDataSourceSimulation => FinanceDataSourceSimulation,
+            _ => null
+        };
     }
 
     private static string FormatProblemMessage(ApiProblemResponse problem)
@@ -1207,6 +1460,16 @@ public sealed class FinanceTransactionDetailResponse
     public List<string> Flags { get; set; } = [];
     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
+    public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
+}
+
+public sealed class FinanceTransactionPaymentContextResponse
+{
+    public bool IsPartiallyPaid { get; set; }
+    public decimal PaidAmount { get; set; }
+    public decimal TotalAmount { get; set; }
+    public decimal RemainingAmount { get; set; }
+    public string Currency { get; set; } = string.Empty;
 }
 
 public sealed class FinanceInvoiceResponse
@@ -1220,6 +1483,13 @@ public sealed class FinanceInvoiceResponse
     public decimal Amount { get; set; }
     public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string PostingStatus { get; set; } = string.Empty;
+    public string SettlementStatus { get; set; } = string.Empty;
+    public string DueStatus { get; set; } = string.Empty;
+    public string DocumentKind { get; set; } = string.Empty;
+    public string? ProviderStatus { get; set; }
+    public string ProcessingStatus { get; set; } = string.Empty;
+    public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
     public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
 }
 
@@ -1250,12 +1520,49 @@ public sealed class FinanceInvoiceDetailResponse
     public decimal Amount { get; set; }
     public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string PostingStatus { get; set; } = string.Empty;
+    public string SettlementStatus { get; set; } = string.Empty;
+    public string DueStatus { get; set; } = string.Empty;
+    public string DocumentKind { get; set; } = string.Empty;
+    public string? ProviderStatus { get; set; }
+    public string ProcessingStatus { get; set; } = string.Empty;
     public FinanceInvoiceRecommendationDetailsResponse? RecommendationDetails { get; set; }
     public List<FinanceInvoiceWorkflowHistoryItemResponse> WorkflowHistory { get; set; } = [];
     public FinanceInvoiceWorkflowContextResponse? WorkflowContext { get; set; }
     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+    public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
+    public List<FinanceInvoiceRelatedTransactionResponse> RelatedTransactions { get; set; } = [];
+}
+
+public sealed class FinanceInvoiceRelatedTransactionResponse
+{
+    public Guid Id { get; set; }
+    public DateTime TransactionUtc { get; set; }
+    public string TransactionType { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string ExternalReference { get; set; } = string.Empty;
+}
+
+public sealed class CustomerInvoiceFortnoxActionResponse
+{
+    public Guid InvoiceId { get; set; }
+    public Guid? CreateWriteRequestId { get; set; }
+    public Guid? CreateApprovalId { get; set; }
+    public string CreateStatus { get; set; } = string.Empty;
+    public Guid? BookkeepWriteRequestId { get; set; }
+    public Guid? BookkeepApprovalId { get; set; }
+    public string? BookkeepStatus { get; set; }
+    public string Message { get; set; } = string.Empty;
+    public bool CanRequestCreate { get; set; }
+    public bool CanExecuteCreate { get; set; }
+    public bool CanRequestBookkeep { get; set; }
+    public bool CanExecuteBookkeep { get; set; }
+    public string? FortnoxInvoiceNumber { get; set; }
+    public DateTime? LastSyncedUtc { get; set; }
 }
 
 public sealed class FinanceBillResponse
@@ -1269,6 +1576,18 @@ public sealed class FinanceBillResponse
     public decimal Amount { get; set; }
     public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string PostingStatus { get; set; } = string.Empty;
+    public string SettlementStatus { get; set; } = string.Empty;
+    public string DueStatus { get; set; } = string.Empty;
+    public string DocumentKind { get; set; } = string.Empty;
+    public string? ProviderStatus { get; set; }
+    public string ProcessingStatus { get; set; } = string.Empty;
+    public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
+    public SupplierInvoicePaymentProposalResponse? PaymentProposal { get; set; }
+    public SupplierInvoiceSourceDocumentAttachmentResponse? SourceDocumentAttachment { get; set; }
+    public SupplierInvoiceDraftActionResponse? DraftAction { get; set; }
+    public List<SupplierInvoiceCorrectionActionResponse> CorrectionActions { get; set; } = [];
+    public SupplierInvoiceEnrichmentActionResponse? EnrichmentAction { get; set; }
 }
 
 public sealed class FinanceBillDetailResponse
@@ -1282,9 +1601,130 @@ public sealed class FinanceBillDetailResponse
     public decimal Amount { get; set; }
     public string Currency { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string PostingStatus { get; set; } = string.Empty;
+    public string SettlementStatus { get; set; } = string.Empty;
+    public string DueStatus { get; set; } = string.Empty;
+    public string DocumentKind { get; set; } = string.Empty;
+    public string? ProviderStatus { get; set; }
+    public string ProcessingStatus { get; set; } = string.Empty;
     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+    public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
+    public List<FinanceInvoiceRelatedTransactionResponse> RelatedTransactions { get; set; } = [];
+    public SupplierInvoicePaymentProposalResponse? PaymentProposal { get; set; }
+    public SupplierInvoiceSourceDocumentAttachmentResponse? SourceDocumentAttachment { get; set; }
+    public SupplierInvoiceDraftActionResponse? DraftAction { get; set; }
+    public List<SupplierInvoiceCorrectionActionResponse> CorrectionActions { get; set; } = [];
+    public SupplierInvoiceEnrichmentActionResponse? EnrichmentAction { get; set; }
+}
+
+public sealed class SupplierInvoicePaymentProposalResponse
+{
+    public Guid Id { get; set; }
+    public Guid BillId { get; set; }
+    public Guid SupplierId { get; set; }
+    public string SupplierName { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public DateTime DueUtc { get; set; }
+    public string PaymentReference { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public Guid? TaskId { get; set; }
+    public Guid? ApprovalRequestId { get; set; }
+    public Guid? RequestedByUserId { get; set; }
+    public Guid? DecidedByUserId { get; set; }
+    public DateTime? DecidedUtc { get; set; }
+    public string ExportMode { get; set; } = "register_payment";
+    public string ExportStatus { get; set; } = "not_exported";
+    public string? ExportProviderKey { get; set; }
+    public Guid? ExportConnectionId { get; set; }
+    public Guid? ExportRequestedByUserId { get; set; }
+    public DateTime? ExportRequestedUtc { get; set; }
+    public DateTime? ExportedUtc { get; set; }
+    public string? ExportResponseSummary { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class ExportSupplierBillPaymentInstructionRequest
+{
+    public string? ExportMode { get; set; }
+}
+
+public sealed class SupplierInvoiceSourceDocumentAttachmentResponse
+{
+    public Guid Id { get; set; }
+    public Guid BillId { get; set; }
+    public Guid? DocumentId { get; set; }
+    public string Status { get; set; } = "not_attached";
+    public string? ProviderKey { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public Guid? RequestedByUserId { get; set; }
+    public DateTime? RequestedUtc { get; set; }
+    public DateTime? AttachedUtc { get; set; }
+    public string? ResponseSummary { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class SupplierInvoiceEnrichmentActionResponse
+{
+    public Guid Id { get; set; }
+    public Guid BillId { get; set; }
+    public string Status { get; set; } = "not_suggested";
+    public string? ProviderKey { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public Guid? RequestedByUserId { get; set; }
+    public Guid? ApprovedByUserId { get; set; }
+    public Guid? TaskId { get; set; }
+    public Guid? ApprovalRequestId { get; set; }
+    public DateTime? RequestedUtc { get; set; }
+    public DateTime? ApprovedUtc { get; set; }
+    public DateTime? SyncedUtc { get; set; }
+    public string? ResponseSummary { get; set; }
+    public JsonObject SuggestionPayload { get; set; } = [];
+    public JsonArray ReconciliationWarnings { get; set; } = [];
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class SupplierInvoiceDraftActionResponse
+{
+    public Guid Id { get; set; }
+    public Guid BillId { get; set; }
+    public string Status { get; set; } = "draft";
+    public string? ProviderKey { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public Guid? RequestedByUserId { get; set; }
+    public DateTime? RequestedUtc { get; set; }
+    public DateTime? UpdatedInProviderUtc { get; set; }
+    public DateTime? BookedUtc { get; set; }
+    public string? ResponseSummary { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class SupplierInvoiceCorrectionActionResponse
+{
+    public Guid Id { get; set; }
+    public Guid BillId { get; set; }
+    public string ActionType { get; set; } = string.Empty;
+    public string Status { get; set; } = string.Empty;
+    public string? ProviderKey { get; set; }
+    public Guid? ConnectionId { get; set; }
+    public Guid? RequestedByUserId { get; set; }
+    public Guid? ApprovedByUserId { get; set; }
+    public Guid? TaskId { get; set; }
+    public Guid? ApprovalRequestId { get; set; }
+    public DateTime? RequestedUtc { get; set; }
+    public DateTime? ApprovedUtc { get; set; }
+    public DateTime? CompletedUtc { get; set; }
+    public Guid? CreditNoteBillId { get; set; }
+    public string? ProviderCreditNoteNumber { get; set; }
+    public string? ResponseSummary { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
 }
 
 public sealed class FinanceBillInboxRowResponse
@@ -1319,9 +1759,37 @@ public sealed class FinanceBillInboxDetailResponse
     public List<FinanceBillWarningResponse> ValidationWarnings { get; set; } = [];
     public List<FinanceBillWarningResponse> DuplicateWarnings { get; set; } = [];
     public FinanceBillProposalSummaryResponse ProposalSummary { get; set; } = new();
+    public FinanceBillSourcePreviewResponse? SourcePreview { get; set; }
     public List<FinanceBillReviewActionResponse> ActionHistory { get; set; } = [];
     public bool CanApprove { get; set; }
     public string? ApprovalBlockedReason { get; set; }
+    public FinanceBillFortnoxRegistrationResponse? FortnoxRegistration { get; set; }
+}
+
+public sealed class FinanceBillSourcePreviewResponse
+{
+    public string Title { get; set; } = string.Empty;
+    public string? From { get; set; }
+    public DateTime? ReceivedUtc { get; set; }
+    public string? BodyText { get; set; }
+    public string SourceLabel { get; set; } = "Email body";
+    public string? FileName { get; set; }
+}
+
+public sealed class FinanceBillFortnoxRegistrationResponse
+{
+    public Guid? WriteRequestId { get; set; }
+    public Guid? ApprovalId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public string Message { get; set; } = string.Empty;
+    public bool CanRequest { get; set; }
+    public bool CanSendDirect { get; set; }
+    public bool CanExecute { get; set; }
+    public bool HasPendingRequest { get; set; }
+    public bool HasExecuted { get; set; }
+    public string? FortnoxPath { get; set; }
+    public string? ExternalId { get; set; }
+    public string? ActionKind { get; set; }
 }
 
 public sealed class FinanceBillExtractedFieldResponse
@@ -1477,6 +1945,7 @@ public sealed class MailboxScannedMessageResponse
     public string ReasonSummary { get; set; } = string.Empty;
     public string? BodyPreview { get; set; }
     public List<MailboxScannedAttachmentResponse> Attachments { get; set; } = [];
+    public Guid? DetectedBillId { get; set; }
     public DateTime CreatedUtc { get; set; }
 }
 

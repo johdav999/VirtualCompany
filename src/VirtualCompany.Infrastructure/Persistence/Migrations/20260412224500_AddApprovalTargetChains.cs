@@ -5,6 +5,9 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations;
 
+[Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260412224500_AddApprovalTargetChains")]
+
 public partial class AddApprovalTargetChains : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

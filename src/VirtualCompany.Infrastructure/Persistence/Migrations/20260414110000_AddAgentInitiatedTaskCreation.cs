@@ -19,6 +19,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
             var string128Type = isPostgres ? "character varying(128)" : "nvarchar(128)";
             var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
             var string2000Type = isPostgres ? "character varying(2000)" : "nvarchar(2000)";
+            var agentPrincipalColumns = isPostgres
+                ? new[] { "company_id", "id" }
+                : new[] { "CompanyId", "Id" };
+            var companyPrincipalColumn = isPostgres ? "id" : "Id";
+            var taskPrincipalColumn = isPostgres ? "id" : "id";
             migrationBuilder.AddColumn<string>(
                 name: "source_type",
                 table: "tasks",
@@ -139,19 +144,19 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_agent_task_creation_dedupe_agents_agent_id",
                         columns: x => new { x.company_id, x.agent_id },
                         principalTable: "agents",
-                        principalColumns: new[] { "company_id", "id" },
+                        principalColumns: agentPrincipalColumns,
                         onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_agent_task_creation_dedupe_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
+                        principalColumn: companyPrincipalColumn,
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_agent_task_creation_dedupe_tasks_task_id",
                         column: x => x.task_id,
                         principalTable: "tasks",
-                        principalColumn: "id",
+                        principalColumn: taskPrincipalColumn,
                         onDelete: ReferentialAction.NoAction);
                 });
 

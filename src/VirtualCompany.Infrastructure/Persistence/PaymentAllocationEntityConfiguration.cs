@@ -45,19 +45,19 @@ internal sealed class PaymentAllocationEntityConfiguration : IEntityTypeConfigur
             .WithMany(x => x.Allocations)
             .HasForeignKey(x => new { x.CompanyId, x.PaymentId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
 
         builder.HasOne(x => x.Invoice)
             .WithMany(x => x.Allocations)
             .HasForeignKey(x => new { x.CompanyId, x.InvoiceId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
 
         builder.HasOne(x => x.Bill)
             .WithMany(x => x.Allocations)
             .HasForeignKey(x => new { x.CompanyId, x.BillId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
 
         builder.HasOne(x => x.SourceSimulationEventRecord)
             .WithMany()

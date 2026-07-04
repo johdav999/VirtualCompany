@@ -97,6 +97,37 @@ public sealed class FortnoxApiClientTests
     }
 
     [Fact]
+    public async Task Invoice_payment_endpoint_parses_payment_rows()
+    {
+        var handler = new CapturingHandler(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = Json("""
+                {
+                  "InvoicePayments": [
+                    { "Number": "8", "InvoiceNumber": 5, "Amount": 50000.00, "Currency": "SEK", "Booked": false, "PaymentDate": "2026-05-19" }
+                  ],
+                  "MetaInformation": {
+                    "@CurrentPage": 1,
+                    "@TotalPages": 1,
+                    "@TotalResources": 1,
+                    "@Limit": 100
+                  }
+                }
+                """)
+        });
+        var client = CreateClient(handler);
+
+        var page = await client.GetInvoicePaymentsAsync(new FortnoxRequestContext(Guid.NewGuid()), new FortnoxPageOptions(Page: 1, Limit: 100), CancellationToken.None);
+
+        var payment = Assert.Single(page.Items);
+        Assert.Equal("8", payment.Number);
+        Assert.Equal("5", payment.InvoiceNumber);
+        Assert.Equal(50000.00m, payment.Amount);
+        Assert.False(payment.Booked);
+        Assert.Equal(new Uri("https://api.fortnox.se/3/invoicepayments?page=1&limit=100"), Assert.Single(handler.Requests).RequestUri);
+    }
+
+    [Fact]
     public async Task Retries_transient_server_failures()
     {
         var handler = new CapturingHandler(

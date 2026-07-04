@@ -373,8 +373,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
                  (x.Status == BackgroundExecutionStatus.InProgress &&
-                  x.HeartbeatUtc != null &&
-                  x.HeartbeatUtc <= staleBeforeUtc)))
+                  (x.HeartbeatUtc == null || x.HeartbeatUtc <= staleBeforeUtc))))
             .OrderBy(x => x.NextRetryUtc ?? x.CreatedUtc)
             .ThenBy(x => x.CreatedUtc)
             .Take(Math.Max(1, _options.Value.BatchSize))
@@ -394,8 +393,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
                  (x.Status == BackgroundExecutionStatus.InProgress &&
-                  x.HeartbeatUtc != null &&
-                  x.HeartbeatUtc <= staleBeforeUtc)))
+                  (x.HeartbeatUtc == null || x.HeartbeatUtc <= staleBeforeUtc))))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
                 .SetProperty(x => x.StartedUtc, nowUtc)

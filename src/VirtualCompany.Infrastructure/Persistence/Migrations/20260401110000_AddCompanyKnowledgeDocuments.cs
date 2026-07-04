@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260401110000_AddCompanyKnowledgeDocuments")]
     public partial class AddCompanyKnowledgeDocuments : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

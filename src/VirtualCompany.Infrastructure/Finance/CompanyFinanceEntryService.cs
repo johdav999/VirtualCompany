@@ -1,4 +1,5 @@
 using System.Data;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Auditing;
@@ -18,6 +19,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
     private const string FinanceSeedRequestedAction = "finance.seed.job.requested";
     private const string FinanceSeedSkippedAction = "finance.seed.job.skipped";
     private const string FinanceSeedRejectedAction = "finance.seed.job.rejected";
+    private static readonly TimeSpan FinanceSeedActiveExecutionTimeout = TimeSpan.FromMinutes(5);
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFinanceSeedingStateService _financeSeedingStateService;
@@ -105,14 +107,26 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
                 return await executionStrategy.ExecuteAsync(async () =>
                 {
                     await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+                    await AcquireFinanceSeedRequestLockAsync(query.CompanyId, cancellationToken);
                     var result = await EnsureSeedRequestedCoreAsync(query, checkedAtUtc, cancellationToken);
                     await transaction.CommitAsync(cancellationToken);
                     return result;
                 });
             }
-            catch (DbUpdateException)
+            catch (DbUpdateException ex)
             {
                 _dbContext.ChangeTracker.Clear();
+                if (IsBackgroundExecutionDuplicate(ex) &&
+                    await TryRecoverDuplicateSeedExecutionAsync(query, checkedAtUtc, cancellationToken) is { } recoveredResult)
+                {
+                    return recoveredResult;
+                }
+
+                return await CreateExistingSeedRequestResultAsync(
+                    query,
+                    normalizedSeedMode,
+                    fallbackTriggered,
+                    cancellationToken);
             }
         }
 
@@ -120,11 +134,142 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
         {
             return await EnsureSeedRequestedCoreAsync(query, checkedAtUtc, cancellationToken);
         }
-        catch (DbUpdateException)
+        catch (DbUpdateException ex)
         {
             _dbContext.ChangeTracker.Clear();
+            if (IsBackgroundExecutionDuplicate(ex) &&
+                await TryRecoverDuplicateSeedExecutionAsync(query, checkedAtUtc, cancellationToken) is { } recoveredResult)
+            {
+                return recoveredResult;
+            }
         }
 
+        var existingState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
+        var existingExecution = await FindExecutionAsync(query.CompanyId, cancellationToken);
+        return (
+            existingState,
+            existingExecution,
+            false,
+            existingState.State == FinanceSeedingState.Seeded,
+            normalizedSeedMode,
+            existingExecution is null ? FinanceSeedOperationContractValues.Skipped : FinanceSeedOperationContractValues.Reused,
+            false,
+            fallbackTriggered);
+    }
+
+    private async Task AcquireFinanceSeedRequestLockAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        if (!IsSqlServerDatabase())
+        {
+            return;
+        }
+
+        await _dbContext.Database.ExecuteSqlRawAsync(
+            """
+            DECLARE @lockResult int;
+            EXEC @lockResult = sp_getapplock
+                @Resource = {0},
+                @LockMode = 'Exclusive',
+                @LockOwner = 'Transaction',
+                @LockTimeout = 15000;
+            IF @lockResult < 0
+                THROW 51000, 'Could not acquire the finance seed request lock.', 1;
+            """,
+            [$"finance-seed:{companyId:N}"],
+            cancellationToken);
+    }
+
+    private async Task<(FinanceSeedingStateResultDto State, BackgroundExecution? Execution, bool SeedJobEnqueued, bool DataAlreadyExists, string SeedMode, string SeedOperation, bool ConfirmationRequired, bool FallbackTriggered)?> TryRecoverDuplicateSeedExecutionAsync(
+        GetFinanceEntryStateQuery query,
+        DateTime checkedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var execution = await FindExecutionAsync(query.CompanyId, cancellationToken);
+        if (execution is null)
+        {
+            return null;
+        }
+
+        var company = await _dbContext.Companies
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.Id == query.CompanyId, cancellationToken);
+        var seedingState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
+        var seedStateBefore = seedingState.State;
+        var normalizedSeedMode = FinanceSeedRequestModes.Normalize(query.SeedMode);
+        var fallbackTriggered = string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase);
+        var actor = ResolveActor(query.Source);
+        var seedJobEnqueued = false;
+        var seedOperation = FinanceSeedOperationContractValues.Reused;
+
+        if (!IsExecutionActive(execution) && seedingState.State != FinanceSeedingState.Seeded)
+        {
+            execution.Queue(
+                checkedAtUtc,
+                _identityFactory.EnsureCorrelationId(_correlationContextAccessor?.CorrelationId),
+                resetAttempts: true);
+            FinanceSeedingMetadata.MarkSeeding(
+                company,
+                checkedAtUtc,
+                requestedAtUtc: checkedAtUtc,
+                triggerSource: query.Source,
+                jobId: execution.Id,
+                correlationId: execution.CorrelationId);
+            seedJobEnqueued = true;
+            seedOperation = FinanceSeedOperationContractValues.Started;
+            await WriteRequestedAuditAsync(
+                query.CompanyId,
+                execution,
+                query.Source,
+                normalizedSeedMode,
+                actor.ActorType,
+                actor.ActorId,
+                seedStateBefore,
+                FinanceSeedingState.Seeding,
+                isRetry: false,
+                cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await EmitRequestedInstrumentationAsync(
+                query,
+                execution,
+                seedStateBefore,
+                FinanceSeedingState.Seeding,
+                cancellationToken);
+        }
+        else
+        {
+            await WriteDecisionAuditAsync(
+                query.CompanyId,
+                execution,
+                FinanceSeedSkippedAction,
+                "skipped",
+                "Finance seed request reused an existing deterministic background execution after a duplicate insert race.",
+                query.Source,
+                normalizedSeedMode,
+                actor.ActorType,
+                actor.ActorId,
+                cancellationToken,
+                new Dictionary<string, string?> { ["reason"] = "duplicate_execution_reused" });
+        }
+
+        var refreshedState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
+        var refreshedExecution = await FindExecutionAsync(query.CompanyId, cancellationToken);
+        return (
+            refreshedState,
+            refreshedExecution,
+            seedJobEnqueued,
+            refreshedState.State == FinanceSeedingState.Seeded,
+            normalizedSeedMode,
+            seedOperation,
+            false,
+            fallbackTriggered);
+    }
+
+    private async Task<(FinanceSeedingStateResultDto State, BackgroundExecution? Execution, bool SeedJobEnqueued, bool DataAlreadyExists, string SeedMode, string SeedOperation, bool ConfirmationRequired, bool FallbackTriggered)> CreateExistingSeedRequestResultAsync(
+        GetFinanceEntryStateQuery query,
+        string normalizedSeedMode,
+        bool fallbackTriggered,
+        CancellationToken cancellationToken)
+    {
         var existingState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
         var existingExecution = await FindExecutionAsync(query.CompanyId, cancellationToken);
         return (
@@ -195,8 +340,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
         {
             if (execution is null)
             {
-                execution = CreateExecution(query.CompanyId);
-                _dbContext.BackgroundExecutions.Add(execution);
+                execution = await EnsureSeedExecutionAsync(query.CompanyId, checkedAtUtc, cancellationToken);
             }
             else
             {
@@ -233,8 +377,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
         {
             if (execution is null)
             {
-                execution = CreateExecution(query.CompanyId);
-                _dbContext.BackgroundExecutions.Add(execution);
+                execution = await EnsureSeedExecutionAsync(query.CompanyId, checkedAtUtc, cancellationToken);
             }
             else
             {
@@ -274,7 +417,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
         }
         else if (ShouldEnqueueInitialRequest(seedingState.State, execution))
         {
-            execution = CreateExecution(query.CompanyId);
+            execution = await EnsureSeedExecutionAsync(query.CompanyId, checkedAtUtc, cancellationToken);
             FinanceSeedingMetadata.MarkSeeding(
                 company,
                 checkedAtUtc,
@@ -282,7 +425,6 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
                 triggerSource: query.Source,
                 jobId: execution.Id,
                 correlationId: execution.CorrelationId);
-            _dbContext.BackgroundExecutions.Add(execution);
             seedJobEnqueued = true;
             await WriteRequestedAuditAsync(
                 query.CompanyId,
@@ -300,6 +442,48 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
                 "Queued finance seed background execution {ExecutionId} for company {CompanyId}.",
                 execution.Id,
                 query.CompanyId);
+            await EmitRequestedInstrumentationAsync(
+                query,
+                execution,
+                seedStateBefore,
+                FinanceSeedingState.Seeding,
+                cancellationToken);
+            seedOperation = FinanceSeedOperationContractValues.Started;
+        }
+        else if (ShouldRepairStaleFallback(query, seedingState.State, execution, checkedAtUtc))
+        {
+            if (execution is null)
+            {
+                execution = await EnsureSeedExecutionAsync(query.CompanyId, checkedAtUtc, cancellationToken);
+            }
+            else
+            {
+                execution.Queue(
+                    checkedAtUtc,
+                    _identityFactory.EnsureCorrelationId(_correlationContextAccessor?.CorrelationId),
+                    resetAttempts: true);
+            }
+
+            FinanceSeedingMetadata.MarkSeeding(
+                company,
+                checkedAtUtc,
+                requestedAtUtc: checkedAtUtc,
+                triggerSource: query.Source,
+                jobId: execution.Id,
+                correlationId: execution.CorrelationId);
+            seedJobEnqueued = true;
+            await WriteRequestedAuditAsync(
+                query.CompanyId,
+                execution,
+                query.Source,
+                normalizedSeedMode,
+                actor.ActorType,
+                actor.ActorId,
+                seedStateBefore,
+                FinanceSeedingState.Seeding,
+                isRetry: false,
+                cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
             await EmitRequestedInstrumentationAsync(
                 query,
                 execution,
@@ -372,6 +556,97 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
             seedOperation,
             confirmationRequired,
             fallbackTriggered);
+    }
+
+    private async Task<BackgroundExecution> EnsureSeedExecutionAsync(
+        Guid companyId,
+        DateTime checkedAtUtc,
+        CancellationToken cancellationToken)
+    {
+        var existingExecution = await FindExecutionAsync(companyId, cancellationToken);
+        if (existingExecution is not null)
+        {
+            return existingExecution;
+        }
+
+        if (IsSqlServerDatabase())
+        {
+            var identity = CreateIdentity(companyId);
+            var executionId = Guid.NewGuid();
+            var executionType = BackgroundExecutionType.FinanceSeed.ToStorageValue();
+            var relatedEntityType = BackgroundExecutionRelatedEntityTypes.FinanceSeed;
+            var relatedEntityId = companyId.ToString("D");
+            var status = BackgroundExecutionStatus.Pending.ToStorageValue();
+            var normalizedCheckedAtUtc = checkedAtUtc.Kind == DateTimeKind.Utc
+                ? checkedAtUtc
+                : checkedAtUtc.ToUniversalTime();
+
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                IF NOT EXISTS (
+                    SELECT 1
+                    FROM [background_executions] WITH (UPDLOCK, HOLDLOCK)
+                    WHERE [company_id] = {companyId}
+                      AND [execution_type] = {executionType}
+                      AND [idempotency_key] = {identity.IdempotencyKey}
+                )
+                BEGIN
+                    INSERT INTO [background_executions] (
+                        [id],
+                        [company_id],
+                        [execution_type],
+                        [related_entity_type],
+                        [related_entity_id],
+                        [correlation_id],
+                        [idempotency_key],
+                        [status],
+                        [attempt_count],
+                        [max_attempts],
+                        [next_retry_at],
+                        [started_at],
+                        [heartbeat_at],
+                        [completed_at],
+                        [failure_category],
+                        [failure_code],
+                        [failure_message],
+                        [escalation_id],
+                        [created_at],
+                        [updated_at])
+                    VALUES (
+                        {executionId},
+                        {companyId},
+                        {executionType},
+                        {relatedEntityType},
+                        {relatedEntityId},
+                        {identity.CorrelationId},
+                        {identity.IdempotencyKey},
+                        {status},
+                        0,
+                        5,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        NULL,
+                        {normalizedCheckedAtUtc},
+                        {normalizedCheckedAtUtc});
+                END
+                """,
+                cancellationToken);
+
+            existingExecution = await FindExecutionAsync(companyId, cancellationToken);
+            if (existingExecution is not null)
+            {
+                return existingExecution;
+            }
+        }
+
+        var execution = CreateExecution(companyId);
+        _dbContext.BackgroundExecutions.Add(execution);
+        return execution;
     }
 
     private BackgroundExecution CreateExecution(Guid companyId)
@@ -558,17 +833,14 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
 
     private async Task<BackgroundExecution?> FindExecutionAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        var identity = _identityFactory.CreateIdempotencyKey(
-            "finance-seed",
-            BackgroundExecutionType.FinanceSeed.ToStorageValue(),
-            companyId.ToString("N"));
+        var identity = CreateIdentity(companyId);
 
         return await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .SingleOrDefaultAsync(
                 x => x.CompanyId == companyId &&
                      x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
-                     x.IdempotencyKey == identity,
+                     x.IdempotencyKey == identity.IdempotencyKey,
                 cancellationToken);
     }
 
@@ -586,6 +858,23 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
          string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase)) &&
         seedingState == FinanceSeedingState.Failed &&
         (execution is null || execution.Status is BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Blocked);
+
+    private static bool ShouldRepairStaleFallback(GetFinanceEntryStateQuery query, FinanceSeedingState seedingState, BackgroundExecution? execution, DateTime checkedAtUtc) =>
+        string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase) &&
+        seedingState != FinanceSeedingState.Seeded &&
+        (!IsExecutionActive(execution) || IsStaleInProgressExecution(execution, checkedAtUtc));
+
+    private static bool IsStaleInProgressExecution(BackgroundExecution? execution, DateTime checkedAtUtc) =>
+        execution?.Status == BackgroundExecutionStatus.InProgress &&
+        (!execution.HeartbeatUtc.HasValue ||
+         execution.HeartbeatUtc.Value <= checkedAtUtc.Subtract(FinanceSeedActiveExecutionTimeout));
+
+    private static bool IsBackgroundExecutionDuplicate(DbUpdateException exception) =>
+        exception.InnerException is SqlException { Number: 2601 or 2627 } sqlException &&
+        sqlException.Message.Contains("background_executions", StringComparison.OrdinalIgnoreCase);
+
+    private bool IsSqlServerDatabase() =>
+        string.Equals(_dbContext.Database.ProviderName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal);
 
     private FinanceEntryStateDto CreateEntryState(
         Guid companyId,

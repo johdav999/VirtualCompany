@@ -5,12 +5,14 @@ public static class FinanceSettlementStatuses
     public const string Unpaid = "unpaid";
     public const string PartiallyPaid = "partially_paid";
     public const string Paid = "paid";
+    public const string Credited = "credited";
 
     private static readonly string[] AllowedValuesInternal =
     [
         Unpaid,
         PartiallyPaid,
-        Paid
+        Paid,
+        Credited
     ];
 
     private static readonly HashSet<string> AllowedValueSet = new(AllowedValuesInternal, StringComparer.OrdinalIgnoreCase);
@@ -33,6 +35,6 @@ public static class FinanceSettlementStatuses
             throw new ArgumentException("Column name is required.", nameof(columnName));
         }
 
-        return $"{columnName} IN ('{Unpaid}', '{PartiallyPaid}', '{Paid}')";
+        return $"{columnName} IN ('{Unpaid}', '{PartiallyPaid}', '{Paid}', '{Credited}')";
     }
 }

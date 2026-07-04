@@ -102,7 +102,7 @@ internal sealed class DetectedBillFieldEntityConfiguration : IEntityTypeConfigur
         builder.HasIndex(x => new { x.CompanyId, x.DetectedBillId, x.FieldName }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.FieldName });
 
-        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.DetectedBill).WithMany(x => x.Fields).HasForeignKey(x => x.DetectedBillId).OnDelete(DeleteBehavior.Cascade);
     }
 }

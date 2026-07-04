@@ -6,17 +6,22 @@ namespace VirtualCompany.Application.Finance;
 public sealed class BillInformationExtractor : IBillInformationExtractor
 {
     private static readonly RegexOptions MatchOptions = RegexOptions.IgnoreCase | RegexOptions.CultureInvariant;
+    private const string TotalAmountFieldName = "totalAmount";
+
+    private static readonly Regex TotalAmountPattern = new(
+        @"(?<label>total\s+amount\s+due|amount\s+due|total\s+due|balance\s+due|amount\s+to\s+pay|att\s+betala|summa\s+att\s+betala|totalt\s+att\s+betala|totalt|total|subtotal|sub\s*total|unit\s+price|amount)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)",
+        MatchOptions);
 
     private static readonly FieldPattern[] FieldPatterns =
     [
-        new("supplierName", @"(?:supplier|vendor|from|leverant.r)\s*[:\-]\s*(?<value>[^\r\n]{2,120})", BillFieldConfidence.High),
+        new("supplierName", @"(?:supplier|vendor|from|leverant.r)\s*[:\-]\s*(?<value>[^\r\n]{2,200}?)(?=\s*(?:org\.?|org(?:anisation)?(?: number| no)?|organisationsnummer|vat no|tax id|address|email|phone|customer|invoice\s*(?:number|no|#)|inv\s*#|faktura(?:nummer|nr)?|bill\s*(?:number|no)?)\b|[\r\n]|$)", BillFieldConfidence.High),
         new("supplierOrgNumber", @"(?:org(?:anisation)?(?:\.| number| no)?|organisationsnummer|vat no|tax id)\s*[:\-]?\s*(?<value>(?:SE)?\d{6}[- ]?\d{4}|\d{10,12})", BillFieldConfidence.High),
-        new("invoiceNumber", @"(?:invoice\s*(?:number|no|#)?|inv\s*#|faktura(?:nummer|nr)?|bill\s*(?:number|no)?)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\-\/]{2,63})", BillFieldConfidence.High),
+        new("invoiceNumber", @"(?:invoice\s*(?:number|no|#)|inv\s*#|faktura(?:nummer|nr)|bill\s*(?:number|no))\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\-\/]{2,63})", BillFieldConfidence.High),
         new("invoiceDate", @"(?:invoice\s*date|issued|fakturadatum|datum)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
         new("dueDate", @"(?:due\s*date|payment\s*due|pay\s*by|f.rfallodatum|forfallodatum|senast\s*betala)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
         new("currency", @"\b(?<value>SEK|EUR|USD|GBP|NOK|DKK)\b|(?<value>kr)\b", BillFieldConfidence.Medium),
-        new("totalAmount", @"(?:total\s*(?:amount)?|amount\s*(?:to\s*)?pay|amount\s*due|att\s*betala|summa(?:\s*att\s*betala)?|totalt)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)", BillFieldConfidence.High),
-        new("vatAmount", @"(?:vat|moms)\s*[:\-]?\s*(?<value>-?\d[\d\s.,']*)", BillFieldConfidence.High),
+        new("totalAmount", @"(?:total\s*(?:amount)?(?:\s*due)?|amount\s*(?:to\s*)?pay|amount\s*due|att\s*betala|summa(?:\s*att\s*betala)?|totalt)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)", BillFieldConfidence.High),
+        new("vatAmount", @"(?:vat|moms)(?:\s*\([^)]*\))?\s*[:\-]?\s*(?<value>-?\d[\d\s.,']*)", BillFieldConfidence.High),
         new("paymentReference", @"(?:ocr|payment\s*reference|reference|referens|meddelande)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\- ]{2,64})", BillFieldConfidence.High),
         new("bankgiro", @"(?:bankgiro|bg)\s*[:\-]?\s*(?<value>\d{3,4}[- ]?\d{4})", BillFieldConfidence.High),
         new("plusgiro", @"(?:plusgiro|pg)\s*[:\-]?\s*(?<value>\d{2,8}[- ]?\d{1,4})", BillFieldConfidence.High),
@@ -115,6 +120,12 @@ public sealed class BillInformationExtractor : IBillInformationExtractor
 
         foreach (var pattern in FieldPatterns)
         {
+            if (string.Equals(pattern.FieldName, TotalAmountFieldName, StringComparison.OrdinalIgnoreCase))
+            {
+                TryAddBestTotalAmount(document, command, values, evidence);
+                continue;
+            }
+
             var match = Regex.Match(document.FullText, pattern.Pattern, MatchOptions);
             if (!match.Success)
             {
@@ -191,6 +202,77 @@ public sealed class BillInformationExtractor : IBillInformationExtractor
             NormalizeIban(Get(values, "iban")),
             NormalizeBic(Get(values, "bic")),
             evidence);
+    }
+
+    private static void TryAddBestTotalAmount(
+        ExtractedDocumentText document,
+        DetectedBillCandidateCommand command,
+        Dictionary<string, string> values,
+        List<BillFieldEvidenceDto> evidence)
+    {
+        var match = FindBestTotalAmountMatch(document.FullText);
+        if (match is null)
+        {
+            return;
+        }
+
+        values.TryAdd(TotalAmountFieldName, match.Value.Value);
+        var section = FindSection(document, match.Value.Index);
+        evidence.Add(new BillFieldEvidenceDto(
+            TotalAmountFieldName,
+            match.Value.Value,
+            command.SourceDocumentId ?? command.SourceDocumentName,
+            document.SourceDocumentType,
+            section.Reference,
+            $"{match.Value.Index}:{match.Value.Length}",
+            "Regex",
+            match.Value.Confidence,
+            BuildSnippet(document.FullText, match.Value.Index, match.Value.Length)));
+    }
+
+    private static TotalAmountMatch? FindBestTotalAmountMatch(string text)
+    {
+        TotalAmountMatch? best = null;
+        foreach (Match match in TotalAmountPattern.Matches(text))
+        {
+            var value = NormalizeValue(match.Groups["value"].Value);
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                continue;
+            }
+
+            var score = ScoreTotalAmountLabel(match.Groups["label"].Value);
+            if (score <= 0)
+            {
+                continue;
+            }
+
+            var confidence = score >= 80 ? BillFieldConfidence.High : BillFieldConfidence.Medium;
+            var candidate = new TotalAmountMatch(value, match.Index, match.Length, score, confidence);
+            if (best is null ||
+                candidate.Score > best.Value.Score ||
+                (candidate.Score == best.Value.Score && candidate.Index > best.Value.Index))
+            {
+                best = candidate;
+            }
+        }
+
+        return best;
+    }
+
+    private static int ScoreTotalAmountLabel(string label)
+    {
+        var normalized = Regex.Replace(label.Trim().ToLowerInvariant(), @"\s+", " ");
+        return normalized switch
+        {
+            "total amount due" or "amount due" or "total due" or "balance due" or "amount to pay" or
+                "att betala" or "summa att betala" or "totalt att betala" => 100,
+            "total" or "totalt" => 80,
+            "subtotal" or "sub total" => 20,
+            "amount" => 10,
+            "unit price" => 0,
+            _ => 0
+        };
     }
 
     private List<BillValidationFindingDto> Validate(RawBillCandidate candidate)
@@ -349,12 +431,28 @@ public sealed class BillInformationExtractor : IBillInformationExtractor
         }
         else if (normalized.Contains(','))
         {
-            normalized = normalized.Replace(',', '.');
+            normalized = IsLikelyThousandsSeparated(normalized, ',')
+                ? normalized.Replace(",", string.Empty, StringComparison.Ordinal)
+                : normalized.Replace(',', '.');
+        }
+        else if (normalized.Contains('.') && IsLikelyThousandsSeparated(normalized, '.'))
+        {
+            normalized = normalized.Replace(".", string.Empty, StringComparison.Ordinal);
         }
 
         return decimal.TryParse(normalized, NumberStyles.Number | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : null;
+    }
+
+    private static bool IsLikelyThousandsSeparated(string value, char separator)
+    {
+        var unsigned = value.TrimStart('-');
+        var parts = unsigned.Split(separator);
+        return parts.Length > 1 &&
+            parts[^1].Length == 3 &&
+            parts.All(part => part.Length > 0 && part.All(char.IsDigit)) &&
+            parts.Skip(1).All(part => part.Length == 3);
     }
 
     private static string NormalizeValue(string value) =>
@@ -436,6 +534,13 @@ public sealed class BillInformationExtractor : IBillInformationExtractor
     }
 
     private sealed record FieldPattern(string FieldName, string Pattern, BillFieldConfidence Confidence);
+
+    private readonly record struct TotalAmountMatch(
+        string Value,
+        int Index,
+        int Length,
+        int Score,
+        BillFieldConfidence Confidence);
 
     private sealed record RawBillCandidate(
         string? SupplierName,

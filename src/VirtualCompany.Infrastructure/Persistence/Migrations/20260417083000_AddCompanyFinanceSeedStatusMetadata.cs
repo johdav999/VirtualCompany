@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260417083000_AddCompanyFinanceSeedStatusMetadata")]
     public partial class AddCompanyFinanceSeedStatusMetadata : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

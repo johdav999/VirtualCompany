@@ -317,7 +317,12 @@ public sealed class InvoiceReviewWorkbenchPageTests
                 DueUtc = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
                 Amount = 15420.50m,
                 Currency = "USD",
-                Status = "pending_approval"
+                Status = "approved",
+                PostingStatus = "booked",
+                SettlementStatus = "unpaid",
+                DueStatus = "overdue",
+                DocumentKind = "invoice",
+                ProviderStatus = "booked=true;cancelled=false;fullyPaid=false;credit=false;balance=15420.5"
             }],
             new FinanceInvoiceDetailResponse
             {
@@ -329,7 +334,12 @@ public sealed class InvoiceReviewWorkbenchPageTests
                 DueUtc = new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc),
                 Amount = 15420.50m,
                 Currency = "USD",
-                Status = "pending_approval",
+                Status = "approved",
+                PostingStatus = "booked",
+                SettlementStatus = "unpaid",
+                DueStatus = "overdue",
+                DocumentKind = "invoice",
+                ProviderStatus = "booked=true;cancelled=false;fullyPaid=false;credit=false;balance=15420.5",
                 RecommendationDetails = new FinanceInvoiceRecommendationDetailsResponse
                 {
                     Classification = "overdue_invoice",
@@ -371,6 +381,10 @@ public sealed class InvoiceReviewWorkbenchPageTests
         {
             Assert.Contains("Recommendation details", cut.Markup);
             Assert.Contains("Overdue invoice", cut.Markup);
+            Assert.Contains("Overdue", cut.Markup);
+            Assert.Contains("Document type", cut.Markup);
+            Assert.Contains("Invoice", cut.Markup);
+            Assert.Contains("Provider status: booked=true;cancelled=false;fullyPaid=false;credit=false;balance=15420.5", cut.Markup);
             Assert.Contains("Workflow history", cut.Markup);
             Assert.Contains($"/audit/{auditId:D}?companyId={companyId:D}", cut.Markup);
             Assert.Contains($"/approvals?companyId={companyId:D}&approvalId={approvalId:D}", cut.Markup);

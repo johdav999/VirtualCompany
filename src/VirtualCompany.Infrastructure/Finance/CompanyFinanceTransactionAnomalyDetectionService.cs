@@ -380,7 +380,8 @@ public sealed class CompanyFinanceTransactionAnomalyDetectionService : IFinanceT
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
-                x.CanReceiveAssignments &&
+                x.Status != AgentStatus.Paused &&
+                x.Status != AgentStatus.Archived &&
                 (x.TemplateId == "laura-finance" ||
                  x.DisplayName.Contains("Laura") ||
                  x.Department == "Finance"))

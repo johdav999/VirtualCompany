@@ -204,8 +204,140 @@ public sealed class FinanceInsightsServiceTests
         Assert.Equal(1, executionCount);
     }
 
+    [Fact]
+    public async Task Supplier_bill_due_monitoring_uses_normalized_statuses_and_deduplicates_per_bill()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var dbContext = new VirtualCompanyDbContext(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
+        await dbContext.Database.EnsureCreatedAsync();
+
+        var company = new Company(companyId, "Fortnox Due Monitor Company");
+        dbContext.Companies.Add(company);
+        var supplierId = Guid.NewGuid();
+        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(
+            supplierId,
+            companyId,
+            "Nordic IT",
+            "supplier",
+            "billing@nordicit.example"));
+        var now = new DateTime(2026, 5, 21, 8, 0, 0, DateTimeKind.Utc);
+        var notDueBill = CreateBill(companyId, supplierId, "BILL-NOT-DUE", now.AddDays(20), FinanceDocumentDueStatuses.NotDue, FinanceSettlementStatuses.Unpaid);
+        var dueSoonBill = CreateBill(companyId, supplierId, "BILL-DUE-SOON", now.AddDays(3), FinanceDocumentDueStatuses.DueSoon, FinanceSettlementStatuses.Unpaid);
+        var overdueBill = CreateBill(companyId, supplierId, "BILL-OVERDUE", now.AddDays(-2), FinanceDocumentDueStatuses.Overdue, FinanceSettlementStatuses.Unpaid);
+        var paidBill = CreateBill(companyId, supplierId, "BILL-PAID", now.AddDays(-1), FinanceDocumentDueStatuses.NotDue, FinanceSettlementStatuses.Paid, paidAmount: 100m);
+        var cancelledBill = CreateBill(
+            companyId,
+            supplierId,
+            "BILL-CANCELLED",
+            now.AddDays(-1),
+            FinanceDocumentDueStatuses.Overdue,
+            FinanceSettlementStatuses.Unpaid,
+            FinanceDocumentPostingStatuses.Cancelled,
+            status: "cancelled");
+        dbContext.FinanceBills.AddRange(notDueBill, dueSoonBill, overdueBill, paidBill, cancelledBill);
+
+        var connectionId = Guid.NewGuid();
+        dbContext.FinanceIntegrationConnections.Add(new FinanceIntegrationConnection(
+            connectionId,
+            companyId,
+            FinanceIntegrationProviderKeys.Fortnox,
+            FinanceIntegrationConnectionStatuses.Connected,
+            null,
+            now));
+        dbContext.FinanceExternalReferences.Add(new FinanceExternalReference(
+            Guid.NewGuid(),
+            companyId,
+            connectionId,
+            FinanceIntegrationProviderKeys.Fortnox,
+            "supplier_invoice",
+            dueSoonBill.Id,
+            "fortnox-due-soon",
+            dueSoonBill.BillNumber,
+            now,
+            now));
+        await dbContext.SaveChangesAsync();
+
+        var service = new CompanyFinanceReadService(dbContext, new TestCompanyContextAccessor(companyId), null, null, new NullFinanceSeedingStateService());
+        var first = await service.GetInsightsAsync(
+            new GetFinanceInsightsQuery(companyId, AsOfUtc: now, IncludeResolved: true, PreferSnapshot: false),
+            CancellationToken.None);
+        var second = await service.GetInsightsAsync(
+            new GetFinanceInsightsQuery(companyId, AsOfUtc: now, IncludeResolved: true, PreferSnapshot: false),
+            CancellationToken.None);
+
+        var dueInsights = first.Items
+            .Where(x => x.CheckCode == FinancialCheckDefinitions.SupplierBillDueMonitoring.Code)
+            .OrderBy(x => x.ConditionKey, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(2, dueInsights.Length);
+        Assert.Contains(dueInsights, x => x.ConditionKey == $"supplier_bill_due:{dueSoonBill.Id:N}" && x.Severity == FinancialCheckSeverity.Low.ToStorageValue());
+        Assert.Contains(dueInsights, x => x.ConditionKey == $"supplier_bill_due:{overdueBill.Id:N}" && x.Severity == FinancialCheckSeverity.Medium.ToStorageValue());
+        Assert.DoesNotContain(first.Items, x => x.ConditionKey == $"supplier_bill_due:{notDueBill.Id:N}");
+        Assert.DoesNotContain(first.Items, x => x.ConditionKey == $"supplier_bill_due:{paidBill.Id:N}");
+        Assert.DoesNotContain(first.Items, x => x.ConditionKey == $"supplier_bill_due:{cancelledBill.Id:N}");
+        Assert.Equal(
+            dueInsights.Select(x => x.Id).OrderBy(x => x).ToArray(),
+            second.Items
+                .Where(x => x.CheckCode == FinancialCheckDefinitions.SupplierBillDueMonitoring.Code)
+                .Select(x => x.Id)
+                .OrderBy(x => x)
+                .ToArray());
+    }
+
     private static IDistributedCache CreateDistributedCache() =>
         new MemoryDistributedCache(Options.Create(new MemoryDistributedCacheOptions()));
+
+    private static FinanceBill CreateBill(
+        Guid companyId,
+        Guid supplierId,
+        string billNumber,
+        DateTime dueUtc,
+        string dueStatus,
+        string settlementStatus,
+        string postingStatus = FinanceDocumentPostingStatuses.Booked,
+        string status = "open",
+        decimal paidAmount = 0m) =>
+        new(
+            Guid.NewGuid(),
+            companyId,
+            supplierId,
+            billNumber,
+            dueUtc.AddDays(-10),
+            dueUtc,
+            100m,
+            "SEK",
+            status,
+            settlementStatus: settlementStatus,
+            postingStatus: postingStatus,
+            dueStatus: dueStatus,
+            documentKind: FinanceDocumentKinds.SupplierInvoice,
+            paidAmount: paidAmount);
+
+    private sealed class NullFinanceSeedingStateService : IFinanceSeedingStateService
+    {
+        public Task<FinanceSeedingStateResultDto> GetCompanyFinanceSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+            Task.FromResult(new FinanceSeedingStateResultDto(
+                companyId,
+                FinanceSeedingState.NotStarted,
+                FinanceSeedingStateDerivedFromValues.RecordChecks,
+                DateTime.UtcNow,
+                new FinanceSeedingStateDiagnosticsDto(
+                    false,
+                    null,
+                    null,
+                    false,
+                    false,
+                    "test_unseeded_fortnox_company",
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false,
+                    false)));
+    }
 
     private sealed class TestCompanyContextAccessor : ICompanyContextAccessor
     {

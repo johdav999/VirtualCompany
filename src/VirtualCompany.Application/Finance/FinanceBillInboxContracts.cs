@@ -25,6 +25,18 @@ public sealed record RequestFinanceBillClarificationCommand(
     string ActorDisplayName,
     string Rationale);
 
+public sealed record RequestFinanceBillFortnoxRegistrationCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string Rationale);
+
+public sealed record ExecuteFinanceBillFortnoxRegistrationCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId = null);
+
 public sealed record FinanceBillInboxRowDto(
     Guid Id,
     string SupplierName,
@@ -54,9 +66,33 @@ public sealed record FinanceBillInboxDetailDto(
     IReadOnlyList<FinanceBillWarningDto> ValidationWarnings,
     IReadOnlyList<FinanceBillWarningDto> DuplicateWarnings,
     FinanceBillProposalSummaryDto ProposalSummary,
+    FinanceBillSourcePreviewDto? SourcePreview,
     IReadOnlyList<FinanceBillReviewActionDto> ActionHistory,
     bool CanApprove,
-    string? ApprovalBlockedReason);
+    string? ApprovalBlockedReason,
+    FinanceBillFortnoxRegistrationDto? FortnoxRegistration);
+
+public sealed record FinanceBillSourcePreviewDto(
+    string Title,
+    string? From,
+    DateTime? ReceivedUtc,
+    string? BodyText,
+    string SourceLabel = "Email body",
+    string? FileName = null);
+
+public sealed record FinanceBillFortnoxRegistrationDto(
+    Guid? WriteRequestId,
+    Guid? ApprovalId,
+    string Status,
+    string Message,
+    bool CanRequest,
+    bool CanSendDirect,
+    bool CanExecute,
+    bool HasPendingRequest,
+    bool HasExecuted,
+    string? FortnoxPath,
+    string? ExternalId = null,
+    string? ActionKind = null);
 
 public sealed record FinanceBillExtractedFieldDto(
     string FieldName,
@@ -113,4 +149,7 @@ public interface IFinanceBillInboxService
     Task<FinanceBillReviewActionResultDto> ApproveAsync(ApproveFinanceBillCommand command, CancellationToken cancellationToken);
     Task<FinanceBillReviewActionResultDto> RejectAsync(RejectFinanceBillCommand command, CancellationToken cancellationToken);
     Task<FinanceBillReviewActionResultDto> RequestClarificationAsync(RequestFinanceBillClarificationCommand command, CancellationToken cancellationToken);
+    Task<FinanceBillFortnoxRegistrationDto> RequestFortnoxRegistrationAsync(RequestFinanceBillFortnoxRegistrationCommand command, CancellationToken cancellationToken);
+    Task<FinanceBillFortnoxRegistrationDto> ExecuteFortnoxRegistrationAsync(ExecuteFinanceBillFortnoxRegistrationCommand command, CancellationToken cancellationToken);
+    Task<FinanceBillFortnoxRegistrationDto> SendFortnoxRegistrationDirectAsync(ExecuteFinanceBillFortnoxRegistrationCommand command, CancellationToken cancellationToken);
 }

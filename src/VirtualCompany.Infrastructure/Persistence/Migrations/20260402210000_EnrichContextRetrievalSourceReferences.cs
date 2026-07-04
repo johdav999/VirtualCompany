@@ -4,10 +4,70 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260402210000_EnrichContextRetrievalSourceReferences")]
     public partial class EnrichContextRetrievalSourceReferences : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            if (ActiveProvider != "Npgsql.EntityFrameworkCore.PostgreSQL")
+            {
+                migrationBuilder.Sql(
+                    """
+                    IF OBJECT_ID(N'[context_retrievals]', N'U') IS NULL
+                    BEGIN
+                        CREATE TABLE [context_retrievals] (
+                            [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_context_retrievals] PRIMARY KEY,
+                            [CompanyId] uniqueidentifier NOT NULL,
+                            [AgentId] uniqueidentifier NOT NULL,
+                            [ActorUserId] uniqueidentifier NULL,
+                            [TaskId] uniqueidentifier NULL,
+                            [QueryText] nvarchar(4000) NOT NULL,
+                            [QueryHash] nvarchar(128) NOT NULL,
+                            [CorrelationId] nvarchar(128) NULL,
+                            [RetrievalPurpose] nvarchar(256) NULL,
+                            [CreatedUtc] datetime2 NOT NULL,
+                            CONSTRAINT [FK_context_retrievals_companies_CompanyId]
+                                FOREIGN KEY ([CompanyId]) REFERENCES [companies] ([Id]) ON DELETE CASCADE
+                        );
+
+                        CREATE INDEX [IX_context_retrievals_CompanyId_AgentId_CreatedUtc]
+                            ON [context_retrievals] ([CompanyId], [AgentId], [CreatedUtc]);
+
+                        CREATE INDEX [IX_context_retrievals_CompanyId_TaskId_CreatedUtc]
+                            ON [context_retrievals] ([CompanyId], [TaskId], [CreatedUtc]);
+                    END;
+
+                    IF OBJECT_ID(N'[context_retrieval_sources]', N'U') IS NULL
+                    BEGIN
+                        CREATE TABLE [context_retrieval_sources] (
+                            [Id] uniqueidentifier NOT NULL CONSTRAINT [PK_context_retrieval_sources] PRIMARY KEY,
+                            [CompanyId] uniqueidentifier NOT NULL,
+                            [RetrievalId] uniqueidentifier NOT NULL,
+                            [SourceType] nvarchar(64) NOT NULL,
+                            [SourceEntityId] nvarchar(128) NOT NULL,
+                            [Title] nvarchar(256) NOT NULL,
+                            [Snippet] nvarchar(4000) NOT NULL,
+                            [Rank] int NOT NULL,
+                            [Score] decimal(18,6) NULL,
+                            [TimestampUtc] datetime2 NULL,
+                            [CreatedUtc] datetime2 NOT NULL,
+                            [metadata_json] nvarchar(max) NOT NULL CONSTRAINT [DF_context_retrieval_sources_metadata_json_startup] DEFAULT (N'{}'),
+                            CONSTRAINT [FK_context_retrieval_sources_companies_CompanyId]
+                                FOREIGN KEY ([CompanyId]) REFERENCES [companies] ([Id]) ON DELETE NO ACTION,
+                            CONSTRAINT [FK_context_retrieval_sources_context_retrievals_RetrievalId]
+                                FOREIGN KEY ([RetrievalId]) REFERENCES [context_retrievals] ([Id]) ON DELETE CASCADE
+                        );
+
+                        CREATE UNIQUE INDEX [IX_context_retrieval_sources_CompanyId_RetrievalId_Rank]
+                            ON [context_retrieval_sources] ([CompanyId], [RetrievalId], [Rank]);
+
+                        CREATE INDEX [IX_context_retrieval_sources_CompanyId_SourceType_SourceEntityId]
+                            ON [context_retrieval_sources] ([CompanyId], [SourceType], [SourceEntityId]);
+                    END;
+                    """);
+            }
+
             migrationBuilder.AddColumn<string>(
                 name: "Locator",
                 table: "context_retrieval_sources",

@@ -94,7 +94,7 @@ public sealed class OnboardingApiClient
             using var response = await _httpClient.GetAsync("api/onboarding/templates", cancellationToken);
             if (response.IsSuccessStatusCode)
             {
-                return await response.Content.ReadFromJsonAsync<IReadOnlyList<OnboardingTemplateViewModel>>(SerializerOptions, cancellationToken) ?? [];
+                return await ReadJsonOrDefaultAsync<IReadOnlyList<OnboardingTemplateViewModel>>(response.Content, cancellationToken) ?? [];
             }
 
             throw await CreateExceptionAsync(response, cancellationToken);
@@ -125,7 +125,7 @@ public sealed class OnboardingApiClient
             using var response = await _httpClient.GetAsync(uri, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
-                return await response.Content.ReadFromJsonAsync<OnboardingTemplateRecommendationViewModel?>(SerializerOptions, cancellationToken);
+                return await ReadJsonOrDefaultAsync<OnboardingTemplateRecommendationViewModel?>(response.Content, cancellationToken);
             }
 
             throw await CreateExceptionAsync(response, cancellationToken);
@@ -154,7 +154,7 @@ public sealed class OnboardingApiClient
                     return null;
                 }
 
-                return await response.Content.ReadFromJsonAsync<OnboardingProgressViewModel?>(SerializerOptions, cancellationToken);
+                return await ReadJsonOrDefaultAsync<OnboardingProgressViewModel?>(response.Content, cancellationToken);
             }
 
             throw await CreateExceptionAsync(response, cancellationToken);
@@ -177,7 +177,7 @@ public sealed class OnboardingApiClient
 
             if (response.IsSuccessStatusCode)
             {
-                return await response.Content.ReadFromJsonAsync<CurrentUserContextViewModel?>(SerializerOptions, cancellationToken);
+                return await ReadJsonOrDefaultAsync<CurrentUserContextViewModel?>(response.Content, cancellationToken);
             }
 
             throw await CreateExceptionAsync(response, cancellationToken);
@@ -204,7 +204,7 @@ public sealed class OnboardingApiClient
                 throw await CreateExceptionAsync(response, cancellationToken);
             }
 
-            return await response.Content.ReadFromJsonAsync<CompanyAccessViewModel>(SerializerOptions, cancellationToken);
+            return await ReadJsonOrDefaultAsync<CompanyAccessViewModel>(response.Content, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
@@ -228,7 +228,7 @@ public sealed class OnboardingApiClient
                 throw await CreateExceptionAsync(response, cancellationToken);
             }
 
-            return await response.Content.ReadFromJsonAsync<CompanyDashboardEntryViewModel>(SerializerOptions, cancellationToken);
+            return await ReadJsonOrDefaultAsync<CompanyDashboardEntryViewModel>(response.Content, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
@@ -251,7 +251,7 @@ public sealed class OnboardingApiClient
                 throw await CreateExceptionAsync(response, cancellationToken);
             }
 
-            return await response.Content.ReadFromJsonAsync<DashboardBriefingCardViewModel>(SerializerOptions, cancellationToken);
+            return await ReadJsonOrDefaultAsync<DashboardBriefingCardViewModel>(response.Content, cancellationToken);
         }
         catch (HttpRequestException ex) { throw CreateNetworkException(ex); }
     }
@@ -271,7 +271,7 @@ public sealed class OnboardingApiClient
                 throw await CreateExceptionAsync(response, cancellationToken);
             }
 
-            return await response.Content.ReadFromJsonAsync<BriefingPreferenceViewModel>(SerializerOptions, cancellationToken);
+            return await ReadJsonOrDefaultAsync<BriefingPreferenceViewModel>(response.Content, cancellationToken);
         }
         catch (HttpRequestException ex)
         {
@@ -291,10 +291,10 @@ public sealed class OnboardingApiClient
             using var response = await _httpClient.SendAsync(request, cancellationToken);
             if (response.IsSuccessStatusCode)
             {
-                var result = await response.Content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
+                var result = await ReadJsonOrDefaultAsync<T>(response.Content, cancellationToken);
                 if (result is null)
                 {
-                    throw new InvalidOperationException("The server returned an empty response.");
+                    throw new OnboardingApiException("The server returned an empty response.");
                 }
 
                 return result;
@@ -318,7 +318,7 @@ public sealed class OnboardingApiClient
             return new OnboardingApiException($"The request failed with status code {(int)response.StatusCode}.");
         }
 
-        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+        var problem = await ReadJsonOrDefaultAsync<ApiProblemResponse>(response.Content, cancellationToken);
         if (problem?.Errors is { Count: > 0 })
         {
             return new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
@@ -331,6 +331,23 @@ public sealed class OnboardingApiClient
     {
         var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
+    }
+
+    private static async Task<T?> ReadJsonOrDefaultAsync<T>(HttpContent content, CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is 0)
+        {
+            return default;
+        }
+
+        try
+        {
+            return await content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
     }
 
     private sealed class ApiProblemResponse

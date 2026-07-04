@@ -5,6 +5,9 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations;
 
+[Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260331220000_AddAgentExecutionPolicyGuardrails")]
+
 public partial class AddAgentExecutionPolicyGuardrails : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
@@ -79,7 +82,7 @@ public partial class AddAgentExecutionPolicyGuardrails : Migration
                     column: x => x.ToolExecutionAttemptId,
                     principalTable: "tool_execution_attempts",
                     principalColumn: "Id",
-                    onDelete: ReferentialAction.Cascade);
+                    onDelete: ReferentialAction.NoAction);
             });
 
         migrationBuilder.CreateIndex(

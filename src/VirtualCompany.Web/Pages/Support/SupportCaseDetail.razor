@@ -1,0 +1,355 @@
+@page "/support/cases/{CaseId:guid}"
+@rendermode InteractiveServer
+@inherits SupportPageBase
+@using System.Globalization
+
+<PageTitle>Support case</PageTitle>
+
+<section class="py-4 dashboard-hero">
+    <div class="dashboard-shell">
+        <div class="wizard-card dashboard-summary">
+            @if (isLoading)
+            {
+                <p class="text-body-secondary mb-0">Loading support case...</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(ShellErrorMessage) || !string.IsNullOrWhiteSpace(errorMessage))
+            {
+                <div class="alert alert-danger mb-0">@(ShellErrorMessage ?? errorMessage)</div>
+            }
+            else if (supportCase is not null)
+            {
+                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                    <div>
+                        <span class="dashboard-kicker">Support case @supportCase.CaseNumber</span>
+                        <h1>@supportCase.Subject</h1>
+                        <p class="text-body-secondary mb-0">@supportCase.Summary</p>
+                    </div>
+                    <div class="d-flex flex-wrap gap-2">
+                        <span class="@PriorityBadge(supportCase.Priority)">@supportCase.PriorityLabel</span>
+                        <span class="badge text-bg-light">@supportCase.StatusLabel</span>
+                        @if (supportCase.IsSlaBreached)
+                        {
+                            <span class="badge text-bg-danger">SLA breached</span>
+                        }
+                        else if (supportCase.IsSlaRisk)
+                        {
+                            <span class="badge text-bg-warning">SLA at risk</span>
+                        }
+                    </div>
+                </div>
+
+                <div class="row g-4 mt-2">
+                    <div class="col-12 col-xl-8">
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Customer message timeline</h2>
+                            @if (supportCase.Messages.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">No messages have been recorded for this case.</p>
+                            }
+                            else
+                            {
+                                <div class="list-group list-group-flush">
+                                    @foreach (var message in supportCase.Messages)
+                                    {
+                                        <div class="list-group-item px-0">
+                                            <div class="d-flex justify-content-between gap-3">
+                                                <strong>@MessageHeading(message)</strong>
+                                                <span class="small text-body-secondary">@message.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                                            </div>
+                                            <p class="mb-0 mt-2">@message.Body</p>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </section>
+
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Internal note</h2>
+                            <textarea class="form-control" rows="4" @bind="noteBody" placeholder="Add a note for the support team"></textarea>
+                            <button class="btn btn-primary mt-3" @onclick="AddNoteAsync" disabled="@isBusy">Add note</button>
+                        </section>
+
+                        <section class="border rounded bg-white p-3">
+                            <div class="d-flex flex-wrap justify-content-between gap-3">
+                                <div>
+                                    <h2 class="h5">Reply drafts</h2>
+                                    <p class="text-body-secondary mb-0">Drafts must be approved before human send. Autonomous send is governed by backend policy.</p>
+                                </div>
+                                <button class="btn btn-outline-primary" @onclick="GenerateDraftAsync" disabled="@isBusy">Draft reply</button>
+                            </div>
+                            <label class="form-label mt-3" for="support-reply-to">Reply to</label>
+                            <input id="support-reply-to" class="form-control" type="email" @bind="replyToEmail" placeholder="Customer email" disabled="@isBusy" />
+
+                            @if (supportCase.ReplyDrafts.Count == 0)
+                            {
+                                <p class="text-body-secondary mt-3 mb-0">No reply draft exists yet.</p>
+                            }
+                            else
+                            {
+                                <div class="list-group mt-3">
+                                    @foreach (var draft in supportCase.ReplyDrafts)
+                                    {
+                                        <div class="list-group-item">
+                                            <div class="d-flex flex-wrap justify-content-between gap-2">
+                                                <strong>@draft.StatusLabel</strong>
+                                                <span class="small text-body-secondary">Confidence @Percent(draft.Confidence) | Answerability @Percent(draft.Answerability)</span>
+                                            </div>
+                                            <pre class="bg-light border rounded p-3 mt-3 mb-3 text-wrap">@draft.DraftBody</pre>
+                                            @if (!string.IsNullOrWhiteSpace(draft.RationaleSummary))
+                                            {
+                                                <p class="small text-body-secondary">@draft.RationaleSummary</p>
+                                            }
+                                            @if (!string.IsNullOrWhiteSpace(draft.SendFailureSummary))
+                                            {
+                                                <div class="alert alert-danger py-2 mb-3">@draft.SendFailureSummary</div>
+                                            }
+                                            <div class="d-flex flex-wrap gap-2">
+                                                <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@isBusy">Approve</button>
+                                                <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">Send</button>
+                                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">Send and resolve</button>
+                                            </div>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </section>
+                    </div>
+
+                    <div class="col-12 col-xl-4">
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Case controls</h2>
+                            <label class="form-label mt-2">Status</label>
+                            <select class="form-select" @bind="selectedStatus">
+                                <option value="new">New</option>
+                                <option value="triaged">Triaged</option>
+                                <option value="waiting_for_customer">Waiting for customer</option>
+                                <option value="waiting_internal">Waiting internally</option>
+                                <option value="escalated">Escalated</option>
+                                <option value="awaiting_approval">Awaiting approval</option>
+                                <option value="resolved">Resolved</option>
+                                <option value="closed">Closed</option>
+                            </select>
+
+                            <label class="form-label mt-3">Priority</label>
+                            <select class="form-select" @bind="selectedPriority">
+                                <option value="low">Low</option>
+                                <option value="normal">Normal</option>
+                                <option value="high">High</option>
+                                <option value="urgent">Urgent</option>
+                            </select>
+
+                            <label class="form-label mt-3">Category</label>
+                            <select class="form-select" @bind="selectedCategory">
+                                <option value="general_question">General question</option>
+                                <option value="billing">Billing</option>
+                                <option value="refund">Refund</option>
+                                <option value="technical_issue">Technical issue</option>
+                                <option value="account_access">Account access</option>
+                                <option value="complaint">Complaint</option>
+                                <option value="bug_report">Bug report</option>
+                                <option value="churn_risk">Churn risk</option>
+                            </select>
+
+                            <div class="d-grid gap-2 mt-3">
+                                <button class="btn btn-primary" @onclick="SaveControlsAsync" disabled="@isBusy">Save changes</button>
+                                <button class="btn btn-outline-secondary" @onclick="TriageAsync" disabled="@isBusy">Run triage</button>
+                            </div>
+                        </section>
+
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Customer context</h2>
+                            <dl class="mb-0">
+                                <dt>Customer</dt>
+                                <dd>@(supportCase.CustomerName ?? "No customer linked")</dd>
+                                <dt>Contact</dt>
+                                <dd>@(supportCase.ContactName ?? "No contact linked")</dd>
+                                <dt>Email</dt>
+                                <dd>@(supportCase.ContactEmail ?? "No email linked")</dd>
+                                <dt>Match</dt>
+                                <dd>@supportCase.Context.MatchRationale</dd>
+                            </dl>
+                        </section>
+
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Refund or credit handoff</h2>
+                            <input class="form-control mb-2" type="number" step="0.01" @bind="refundAmount" placeholder="Amount" />
+                            <input class="form-control mb-2" @bind="refundCurrency" placeholder="Currency" />
+                            <input class="form-control mb-2" @bind="refundReason" placeholder="Reason code" />
+                            <textarea class="form-control mb-2" rows="3" @bind="refundExplanation" placeholder="Explanation"></textarea>
+                            <button class="btn btn-outline-primary" @onclick="RequestRefundAsync" disabled="@isBusy">Request finance review</button>
+                        </section>
+
+                        <section class="border rounded bg-white p-3">
+                            <h2 class="h5">Activity</h2>
+                            @if (supportCase.Events.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">No activity yet.</p>
+                            }
+                            else
+                            {
+                                <div class="list-group list-group-flush">
+                                    @foreach (var evt in supportCase.Events.Take(12))
+                                    {
+                                        <div class="list-group-item px-0">
+                                            <strong>@evt.EventLabel</strong>
+                                            <div>@evt.Summary</div>
+                                            <small class="text-body-secondary">@evt.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </section>
+                    </div>
+                </div>
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    [Parameter] public Guid CaseId { get; set; }
+
+    private SupportCaseDetailResponse? supportCase;
+    private bool isLoading = true;
+    private bool isBusy;
+    private string? errorMessage;
+    private string? noteBody;
+    private string selectedStatus = "new";
+    private string selectedPriority = "normal";
+    private string selectedCategory = "general_question";
+    private decimal refundAmount;
+    private string refundCurrency = "SEK";
+    private string refundReason = "customer_request";
+    private string? refundExplanation;
+    private string? replyToEmail;
+    private Guid? loadedCaseId;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = supportCase is null;
+        errorMessage = null;
+
+        try
+        {
+            if (!await ResolveCompanyAsync() || ResolvedCompanyId is not Guid companyId)
+            {
+                return;
+            }
+
+            supportCase = await SupportApiClient.GetCaseAsync(companyId, CaseId);
+            if (supportCase is null)
+            {
+                errorMessage = "The support case was not found.";
+                return;
+            }
+
+            if (loadedCaseId != supportCase.Id)
+            {
+                replyToEmail = null;
+                loadedCaseId = supportCase.Id;
+            }
+
+            selectedStatus = supportCase.Status;
+            selectedPriority = supportCase.Priority;
+            selectedCategory = supportCase.Category;
+            replyToEmail = FirstNonBlank(replyToEmail, supportCase.ContactEmail, LatestInboundMessage()?.Sender);
+        }
+        catch (SupportApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task RunActionAsync(Func<Guid, Task> action)
+    {
+        if (ResolvedCompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isBusy = true;
+        errorMessage = null;
+        try
+        {
+            await action(companyId);
+            await LoadAsync();
+        }
+        catch (SupportApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private Task SaveControlsAsync() => RunActionAsync(async companyId =>
+    {
+        await SupportApiClient.ChangeStatusAsync(companyId, CaseId, selectedStatus);
+        await SupportApiClient.ChangePriorityAsync(companyId, CaseId, selectedPriority);
+        await SupportApiClient.ChangeCategoryAsync(companyId, CaseId, selectedCategory);
+    });
+
+    private Task AddNoteAsync() => string.IsNullOrWhiteSpace(noteBody)
+        ? Task.CompletedTask
+        : RunActionAsync(async companyId =>
+        {
+            await SupportApiClient.AddNoteAsync(companyId, CaseId, noteBody);
+            noteBody = null;
+        });
+
+    private Task TriageAsync() => RunActionAsync(companyId => SupportApiClient.TriageAsync(companyId, CaseId));
+    private Task GenerateDraftAsync() => RunActionAsync(companyId => SupportApiClient.GenerateDraftAsync(companyId, CaseId, "Helpful"));
+    private Task ApproveDraftAsync(Guid draftId) => RunActionAsync(companyId => SupportApiClient.ApproveDraftAsync(companyId, draftId));
+    private Task SendDraftAsync(Guid draftId, bool resolveAfterSend) => RunActionAsync(companyId =>
+    {
+        var latestInbound = LatestInboundMessage();
+        return SupportApiClient.SendDraftAsync(
+            companyId,
+            draftId,
+            resolveAfterSend,
+            toEmail: FirstNonBlank(replyToEmail, supportCase?.ContactEmail, latestInbound?.Sender),
+            toDisplayName: supportCase?.ContactName,
+            subject: supportCase is null ? null : $"Re: {supportCase.Subject}",
+            originalMessageId: latestInbound?.ProviderMessageId,
+            providerThreadId: latestInbound?.ProviderThreadId);
+    });
+    private Task RequestRefundAsync() => refundAmount <= 0 || string.IsNullOrWhiteSpace(refundExplanation)
+        ? Task.CompletedTask
+        : RunActionAsync(companyId => SupportApiClient.RequestRefundAsync(companyId, CaseId, new CreateSupportRefundRequest(refundAmount, refundCurrency, refundReason, refundExplanation)));
+
+    private static string MessageHeading(SupportMessageDto message) =>
+        message.Direction switch
+        {
+            "inbound" => $"Customer via {message.Channel}",
+            "outbound" => $"Support reply via {message.Channel}",
+            _ => "Internal note"
+        };
+
+    private static string PriorityBadge(string priority) => priority switch
+    {
+        "urgent" => "badge text-bg-danger",
+        "high" => "badge text-bg-warning",
+        "low" => "badge text-bg-light",
+        _ => "badge text-bg-primary"
+    };
+
+    private static string Percent(decimal value) =>
+        value.ToString("P0", CultureInfo.CurrentCulture);
+
+    private SupportMessageDto? LatestInboundMessage() =>
+        supportCase?.Messages
+            .Where(message => string.Equals(message.Direction, "inbound", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(message => message.OccurredUtc)
+            .FirstOrDefault();
+
+    private static string? FirstNonBlank(params string?[] values) =>
+        values.Select(value => value?.Trim()).FirstOrDefault(value => !string.IsNullOrWhiteSpace(value));
+}

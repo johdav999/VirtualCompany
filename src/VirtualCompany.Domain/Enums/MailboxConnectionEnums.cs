@@ -32,7 +32,8 @@ public enum BillSourceType
 {
     PdfAttachment = 1,
     DocxAttachment = 2,
-    EmailBodyOnly = 3
+    EmailBodyOnly = 3,
+    ImageAttachment = 4
 }
 
 public enum BillDetectionRuleMatch
@@ -236,12 +237,14 @@ public static class BillSourceTypeValues
     public const string PdfAttachment = "pdf_attachment";
     public const string DocxAttachment = "docx_attachment";
     public const string EmailBodyOnly = "email_body_only";
+    public const string ImageAttachment = "image_attachment";
 
     private static readonly string[] AllowedStorageValues =
     [
         PdfAttachment,
         DocxAttachment,
-        EmailBodyOnly
+        EmailBodyOnly,
+        ImageAttachment
     ];
 
     public static IReadOnlyList<string> AllowedValues => AllowedStorageValues;
@@ -252,6 +255,7 @@ public static class BillSourceTypeValues
             BillSourceType.PdfAttachment => PdfAttachment,
             BillSourceType.DocxAttachment => DocxAttachment,
             BillSourceType.EmailBodyOnly => EmailBodyOnly,
+            BillSourceType.ImageAttachment => ImageAttachment,
             _ => throw new ArgumentOutOfRangeException(nameof(sourceType), "Unsupported bill source type.")
         };
 
@@ -261,6 +265,7 @@ public static class BillSourceTypeValues
             PdfAttachment => BillSourceType.PdfAttachment,
             DocxAttachment => BillSourceType.DocxAttachment,
             EmailBodyOnly => BillSourceType.EmailBodyOnly,
+            ImageAttachment => BillSourceType.ImageAttachment,
             _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported bill source type.")
         };
 

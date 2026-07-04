@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260416090000_AddFinanceDomainSchema")]
     public partial class AddFinanceDomainSchema : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -110,7 +112,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         columns: x => new { x.company_id, x.account_id },
                         principalTable: "finance_accounts",
                         principalColumns: new[] { "company_id", "id" },
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateTable(

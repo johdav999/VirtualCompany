@@ -133,6 +133,11 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceBillReviewState> FinanceBillReviewStates => Set<FinanceBillReviewState>();
     public DbSet<FinanceBillReviewAction> FinanceBillReviewActions => Set<FinanceBillReviewAction>();
     public DbSet<BillApprovalProposal> BillApprovalProposals => Set<BillApprovalProposal>();
+    public DbSet<SupplierInvoicePaymentProposal> SupplierInvoicePaymentProposals => Set<SupplierInvoicePaymentProposal>();
+    public DbSet<SupplierInvoiceSourceDocumentAttachment> SupplierInvoiceSourceDocumentAttachments => Set<SupplierInvoiceSourceDocumentAttachment>();
+    public DbSet<SupplierInvoiceDraftAction> SupplierInvoiceDraftActions => Set<SupplierInvoiceDraftAction>();
+    public DbSet<SupplierInvoiceCorrectionAction> SupplierInvoiceCorrectionActions => Set<SupplierInvoiceCorrectionAction>();
+    public DbSet<SupplierInvoiceEnrichmentAction> SupplierInvoiceEnrichmentActions => Set<SupplierInvoiceEnrichmentAction>();
     public DbSet<CompanySimulationRunTransition> CompanySimulationRunTransitions => Set<CompanySimulationRunTransition>();
     public DbSet<CompanySimulationRunDayLog> CompanySimulationRunDayLogs => Set<CompanySimulationRunDayLog>();
     public DbSet<SimulationCashDeltaRecord> SimulationCashDeltaRecords => Set<SimulationCashDeltaRecord>();
@@ -166,6 +171,15 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<RevenueForecastSnapshot> RevenueForecastSnapshots => Set<RevenueForecastSnapshot>();
     public DbSet<DealRiskScoreSnapshot> DealRiskScoreSnapshots => Set<DealRiskScoreSnapshot>();
     public DbSet<DealIntelligenceSignal> DealIntelligenceSignals => Set<DealIntelligenceSignal>();
+    public DbSet<SupportCase> SupportCases => Set<SupportCase>();
+    public DbSet<SupportMessage> SupportMessages => Set<SupportMessage>();
+    public DbSet<SupportCaseEvent> SupportCaseEvents => Set<SupportCaseEvent>();
+    public DbSet<SupportCaseAssignment> SupportCaseAssignments => Set<SupportCaseAssignment>();
+    public DbSet<SupportSlaPolicy> SupportSlaPolicies => Set<SupportSlaPolicy>();
+    public DbSet<SupportCaseResolution> SupportCaseResolutions => Set<SupportCaseResolution>();
+    public DbSet<SupportReplyDraft> SupportReplyDrafts => Set<SupportReplyDraft>();
+    public DbSet<SupportRefundRequest> SupportRefundRequests => Set<SupportRefundRequest>();
+    public DbSet<SupportKnowledgeGap> SupportKnowledgeGaps => Set<SupportKnowledgeGap>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -233,7 +247,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     {
         foreach (var entry in ChangeTracker.Entries().Where(entry => entry.State == EntityState.Added))
         {
-            if (entry.Metadata.FindProperty("SourceType") is null)
+            var sourceMetadata = entry.Metadata.FindProperty("SourceType");
+            if (sourceMetadata is null || sourceMetadata.ClrType != typeof(string))
             {
                 continue;
             }
@@ -347,6 +362,11 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceBillReviewState ||
                 entry.Entity is FinanceBillReviewAction ||
                 entry.Entity is BillApprovalProposal ||
+                entry.Entity is SupplierInvoicePaymentProposal ||
+                entry.Entity is SupplierInvoiceSourceDocumentAttachment ||
+                entry.Entity is SupplierInvoiceDraftAction ||
+                entry.Entity is SupplierInvoiceCorrectionAction ||
+                entry.Entity is SupplierInvoiceEnrichmentAction ||
                 entry.Entity is EmailAttachmentSnapshot ||
                 entry.Entity is SimulationCashDeltaRecord ||
                 entry.Entity is SimulationEventRecord ||
@@ -377,7 +397,16 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is SalesActionApproval ||
                 entry.Entity is SalesFinanceHandoff ||
                 entry.Entity is SalesEmailLink ||
-                entry.Entity is DealIntelligenceSignal)
+                entry.Entity is DealIntelligenceSignal ||
+                entry.Entity is SupportCase ||
+                entry.Entity is SupportMessage ||
+                entry.Entity is SupportCaseEvent ||
+                entry.Entity is SupportCaseAssignment ||
+                entry.Entity is SupportSlaPolicy ||
+                entry.Entity is SupportCaseResolution ||
+                entry.Entity is SupportReplyDraft ||
+                entry.Entity is SupportRefundRequest ||
+                entry.Entity is SupportKnowledgeGap)
             .Select(entry =>
             {
                 var property = entry.Properties.FirstOrDefault(x => x.Metadata.Name == nameof(ICompanyOwnedEntity.CompanyId));
@@ -689,6 +718,21 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<BillApprovalProposal>()
             .HasQueryFilter(proposal =>
                 CurrentCompanyId.HasValue && proposal.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupplierInvoicePaymentProposal>()
+            .HasQueryFilter(proposal =>
+                CurrentCompanyId.HasValue && proposal.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupplierInvoiceSourceDocumentAttachment>()
+            .HasQueryFilter(attachment =>
+                CurrentCompanyId.HasValue && attachment.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupplierInvoiceDraftAction>()
+            .HasQueryFilter(action =>
+                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupplierInvoiceCorrectionAction>()
+            .HasQueryFilter(action =>
+                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupplierInvoiceEnrichmentAction>()
+            .HasQueryFilter(action =>
+                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<CompanySimulationRunHistory>()
             .HasQueryFilter(history =>
                 CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
@@ -787,5 +831,32 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<DealRiskScoreSnapshot>()
             .HasQueryFilter(snapshot =>
                 CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportCase>()
+            .HasQueryFilter(supportCase =>
+                CurrentCompanyId.HasValue && supportCase.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportMessage>()
+            .HasQueryFilter(message =>
+                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportCaseEvent>()
+            .HasQueryFilter(supportEvent =>
+                CurrentCompanyId.HasValue && supportEvent.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportCaseAssignment>()
+            .HasQueryFilter(assignment =>
+                CurrentCompanyId.HasValue && assignment.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportSlaPolicy>()
+            .HasQueryFilter(policy =>
+                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportCaseResolution>()
+            .HasQueryFilter(resolution =>
+                CurrentCompanyId.HasValue && resolution.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportReplyDraft>()
+            .HasQueryFilter(draft =>
+                CurrentCompanyId.HasValue && draft.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportRefundRequest>()
+            .HasQueryFilter(refund =>
+                CurrentCompanyId.HasValue && refund.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SupportKnowledgeGap>()
+            .HasQueryFilter(gap =>
+                CurrentCompanyId.HasValue && gap.CompanyId == CurrentCompanyId.Value);
     }
 }

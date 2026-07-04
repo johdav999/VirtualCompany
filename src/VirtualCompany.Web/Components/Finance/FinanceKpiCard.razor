@@ -1,8 +1,8 @@
 @using VirtualCompany.Web.Services
 
-<a class="wizard-card finance-metric-card text-decoration-none text-reset" href="@Kpi.Href">
+<a class="@CardClass" href="@Kpi.Href">
     <div class="finance-kpi-card__top">
-        <span class="@IconClass" aria-hidden="true">@Kpi.Icon</span>
+        <span class="@IconClass" aria-hidden="true">@DisplayIcon</span>
         <span class="finance-kpi-card__label">@Kpi.Label</span>
     </div>
     <div class="finance-kpi-card__value">@Kpi.Value</div>
@@ -16,8 +16,16 @@
     [Parameter, EditorRequired]
     public FinanceKpiViewModel Kpi { get; set; } = default!;
 
+    private string CardClass => Kpi.Emphasis switch
+    {
+        FinanceKpiEmphasis.Primary => "wizard-card finance-metric-card finance-metric-card--priority text-decoration-none text-reset",
+        FinanceKpiEmphasis.Subdued => "wizard-card finance-metric-card finance-metric-card--subdued text-decoration-none text-reset",
+        _ => "wizard-card finance-metric-card text-decoration-none text-reset"
+    };
+
     private string IconClass => $"finance-overview-icon finance-overview-icon--{ToneClass}";
     private string ComparisonClass => $"finance-kpi-card__trend finance-overview-tone--{ToneClass}";
+    private string DisplayIcon => string.IsNullOrWhiteSpace(Kpi.Icon) || Kpi.Icon.Any(character => character > 127) ? "ok" : Kpi.Icon;
     private string TrendPrefix => Kpi.Tone switch
     {
         FinanceKpiTone.Positive => "+",

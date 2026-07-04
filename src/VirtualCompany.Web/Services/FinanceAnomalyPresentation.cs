@@ -14,6 +14,8 @@ public static class FinanceAnomalyPresentation
         ["missing_receipt"] = "Receipt is missing",
         ["suspicious_payment_timing"] = "Payment timing looks unusual",
         ["multiple_payments"] = "Multiple payments may refer to the same item",
+        ["partially_paid"] = "Invoice is partially paid",
+        ["payment_sync_blocked"] = "Payment sync is blocked",
         ["payment_before_expected_state_transition"] = "Payment was made before the bill or invoice was ready",
         ["baseline"] = "Baseline threshold check",
         ["historical_baseline_deviation"] = "Transaction differs from the historical baseline"

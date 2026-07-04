@@ -132,6 +132,60 @@ public sealed class DetectedBill : ICompanyOwnedEntity
         _fields.Add(field);
     }
 
+    public void ReplaceExtraction(
+        string? supplierName,
+        string? supplierOrgNumber,
+        string? invoiceNumber,
+        DateTime? invoiceDateUtc,
+        DateTime? dueDateUtc,
+        string? currency,
+        decimal? totalAmount,
+        decimal? vatAmount,
+        string? paymentReference,
+        string? bankgiro,
+        string? plusgiro,
+        string? iban,
+        string? bic,
+        decimal? confidence,
+        string confidenceLevel,
+        string validationStatus,
+        string reviewStatus,
+        bool requiresReview,
+        bool isEligibleForApprovalProposal,
+        bool validationStatusPersisted,
+        string validationIssuesJson,
+        Guid? duplicateCheckId,
+        DateTime? validationStatusPersistedAtUtc,
+        DateTime updatedUtc)
+    {
+        SupplierName = NormalizeOptional(supplierName, nameof(supplierName), 200);
+        SupplierOrgNumber = NormalizeOptional(supplierOrgNumber, nameof(supplierOrgNumber), 64);
+        InvoiceNumber = NormalizeOptional(invoiceNumber, nameof(invoiceNumber), 64);
+        InvoiceDateUtc = NormalizeOptionalUtc(invoiceDateUtc, nameof(invoiceDateUtc));
+        DueDateUtc = NormalizeOptionalUtc(dueDateUtc, nameof(dueDateUtc));
+        Currency = NormalizeOptional(currency, nameof(currency), 3)?.ToUpperInvariant();
+        TotalAmount = totalAmount;
+        VatAmount = vatAmount;
+        PaymentReference = NormalizeOptional(paymentReference, nameof(paymentReference), 128);
+        Bankgiro = NormalizeOptional(bankgiro, nameof(bankgiro), 32);
+        Plusgiro = NormalizeOptional(plusgiro, nameof(plusgiro), 32);
+        Iban = NormalizeOptional(iban, nameof(iban), 34)?.ToUpperInvariant();
+        Bic = NormalizeOptional(bic, nameof(bic), 11)?.ToUpperInvariant();
+        Confidence = NormalizeScore(confidence, nameof(confidence));
+        ConfidenceLevel = NormalizeConfidenceLevel(confidenceLevel);
+        ValidationStatus = NormalizeValidationStatus(validationStatus);
+        ReviewStatus = NormalizeReviewStatus(reviewStatus);
+        RequiresReview = requiresReview;
+        ValidationStatusPersisted = validationStatusPersisted;
+        ValidationStatusPersistedAtUtc = validationStatusPersistedAtUtc.HasValue
+            ? EntityTimestampNormalizer.NormalizeUtc(validationStatusPersistedAtUtc.Value, nameof(validationStatusPersistedAtUtc))
+            : null;
+        IsEligibleForApprovalProposal = validationStatusPersisted && ValidationStatusPersistedAtUtc.HasValue && isEligibleForApprovalProposal;
+        ValidationIssuesJson = NormalizeJsonArray(validationIssuesJson, nameof(validationIssuesJson));
+        DuplicateCheckId = duplicateCheckId == Guid.Empty ? null : duplicateCheckId;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
     private static DateTime? NormalizeOptionalUtc(DateTime? value, string name) =>
         value.HasValue ? EntityTimestampNormalizer.NormalizeUtc(value.Value, name) : null;
 

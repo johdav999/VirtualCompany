@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260421110000_AddFinanceAssets")]
     public partial class AddFinanceAssets : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -55,12 +57,6 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_finance_assets_finance_counterparties_company_id_counterparty_id",
                         columns: x => new { x.company_id, x.counterparty_id },
                         principalTable: "finance_counterparties",
-                        principalColumns: new[] { "company_id", "id" },
-                        onDelete: ReferentialAction.Restrict);
-                    table.ForeignKey(
-                        name: "FK_finance_assets_simulation_event_records_company_id_source_simulation_event_record_id",
-                        columns: x => new { x.company_id, x.source_simulation_event_record_id },
-                        principalTable: "simulation_event_records",
                         principalColumns: new[] { "company_id", "id" },
                         onDelete: ReferentialAction.Restrict);
                 });

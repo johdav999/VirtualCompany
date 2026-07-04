@@ -223,7 +223,13 @@ public sealed class FinanceSummaryConsistencyChecker
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.TransactionUtc <= asOfUtc)
-            .Select(x => new TransactionRow(x.AccountId, x.TransactionUtc, x.Amount))
+            .Select(x => new TransactionRow(
+                x.AccountId,
+                x.TransactionUtc,
+                x.TransactionType,
+                x.Amount,
+                x.Description,
+                x.ExternalReference))
             .ToListAsync(cancellationToken);
 
         var latestBalanceByAccount = balances
@@ -238,10 +244,13 @@ public sealed class FinanceSummaryConsistencyChecker
             var accountTransactions = transactionsByAccount.GetValueOrDefault(account.Id) ?? [];
             if (latestBalanceByAccount.TryGetValue(account.Id, out var balance))
             {
-                return balance.Amount + accountTransactions.Where(x => x.TransactionUtc > balance.AsOfUtc).Sum(x => x.Amount);
+                return balance.Amount + accountTransactions
+                    .Where(x => x.TransactionUtc > balance.AsOfUtc)
+                    .Where(IsCashMovementTransaction)
+                    .Sum(x => x.Amount);
             }
 
-            return account.OpeningBalance + accountTransactions.Sum(x => x.Amount);
+            return account.OpeningBalance + accountTransactions.Where(IsCashMovementTransaction).Sum(x => x.Amount);
         });
 
         return Round(expectedCash);
@@ -251,9 +260,35 @@ public sealed class FinanceSummaryConsistencyChecker
         new(metricKey, Round(expectedValue), Round(actualValue), Round(expectedValue) == Round(actualValue));
 
     private static bool IsCashAccount(CashAccountRow account) =>
-        string.Equals(account.AccountType, "cash", StringComparison.OrdinalIgnoreCase) ||
-        account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
-        account.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
+        (string.Equals(account.AccountType, "cash", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(account.AccountType, "asset", StringComparison.OrdinalIgnoreCase)) &&
+        (account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("kassa", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("plusgiro", StringComparison.OrdinalIgnoreCase) ||
+            account.Code.StartsWith("19", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(account.Code, "1000", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsCashMovementTransaction(TransactionRow transaction) =>
+        !string.Equals(transaction.TransactionType, "voucher", StringComparison.OrdinalIgnoreCase) ||
+        IsExplicitBankPaymentVoucher(transaction.Description, transaction.ExternalReference);
+
+    private static bool IsExplicitBankPaymentVoucher(string description, string externalReference)
+    {
+        var text = string.Concat(description, " ", externalReference);
+        var mentionsBank =
+            text.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("bankgiro", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("plusgiro", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("kassa", StringComparison.OrdinalIgnoreCase);
+        var mentionsPayment =
+            text.Contains("payment", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("betal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("inbetal", StringComparison.OrdinalIgnoreCase) ||
+            text.Contains("utbetal", StringComparison.OrdinalIgnoreCase);
+
+        return mentionsBank && mentionsPayment;
+    }
 
     private static bool IsIncludedReceivable(string status, string settlementStatus) =>
         !string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) &&
@@ -291,7 +326,13 @@ public sealed class FinanceSummaryConsistencyChecker
     private sealed record CashDeltaRow(DateTime SimulationDateUtc, DateTime CreatedUtc, decimal CashAfter);
     private sealed record CashAccountRow(Guid Id, string Code, string Name, string AccountType, decimal OpeningBalance);
     private sealed record BalanceRow(Guid AccountId, DateTime AsOfUtc, decimal Amount);
-    private sealed record TransactionRow(Guid AccountId, DateTime TransactionUtc, decimal Amount);
+    private sealed record TransactionRow(
+        Guid AccountId,
+        DateTime TransactionUtc,
+        string TransactionType,
+        decimal Amount,
+        string Description,
+        string ExternalReference);
     private sealed record AllocationRow(Guid DocumentId, decimal Amount);
     private sealed record InvoiceRow(Guid Id, DateTime IssuedUtc, DateTime DueUtc, decimal Amount, string Status, string SettlementStatus);
     private sealed record BillRow(Guid Id, DateTime ReceivedUtc, DateTime DueUtc, decimal Amount, string Status, string SettlementStatus);

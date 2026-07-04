@@ -6,6 +6,8 @@ using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260420103000_AddFinancialStatementMappings")]
     public partial class AddFinancialStatementMappings : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

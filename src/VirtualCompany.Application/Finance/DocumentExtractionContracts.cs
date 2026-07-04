@@ -5,7 +5,8 @@ public enum BillDocumentInputType
     Pdf,
     Docx,
     EmailBodyText,
-    EmailBodyHtml
+    EmailBodyHtml,
+    Image
 }
 
 public enum BillExtractionConfidence

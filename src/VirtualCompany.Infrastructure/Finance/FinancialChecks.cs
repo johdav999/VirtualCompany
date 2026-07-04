@@ -388,3 +388,165 @@ internal sealed class PayablesFinancialCheck : IFinancialCheck
 
     private sealed record AllocationRow(Guid DocumentId, decimal Amount);
 }
+
+internal sealed class SupplierBillDueMonitoringFinancialCheck : IFinancialCheck
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+
+    public SupplierBillDueMonitoringFinancialCheck(VirtualCompanyDbContext dbContext)
+    {
+        _dbContext = dbContext;
+    }
+
+    public FinancialCheckDefinition Definition => FinancialCheckDefinitions.SupplierBillDueMonitoring;
+    public string CheckCode => Definition.Code;
+
+    public async Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken)
+    {
+        var bills = await _dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == context.CompanyId)
+            .Select(x => new BillDueRow(
+                x.Id,
+                x.CounterpartyId,
+                x.Counterparty == null ? "Unknown supplier" : x.Counterparty.Name,
+                x.BillNumber,
+                x.DueUtc,
+                x.Amount,
+                x.PaidAmount,
+                x.Currency,
+                x.Status,
+                x.PostingStatus,
+                x.SettlementStatus,
+                x.DueStatus,
+                x.DocumentKind))
+            .ToListAsync(cancellationToken);
+
+        var outgoingAllocations = await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == context.CompanyId &&
+                x.BillId.HasValue &&
+                x.Payment.Status == PaymentStatuses.Completed &&
+                x.Payment.PaymentType == PaymentTypes.Outgoing &&
+                x.Payment.PaymentDate <= context.AsOfUtc)
+            .GroupBy(x => x.BillId!.Value)
+            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount)))
+            .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
+
+        return bills
+            .Where(IsDueAttentionBill)
+            .Select(x => new
+            {
+                Bill = x,
+                Outstanding = CalculateOutstanding(x, outgoingAllocations.GetValueOrDefault(x.Id))
+            })
+            .Where(x => x.Outstanding > 0m)
+            .OrderBy(x => DueStatusRank(x.Bill.DueStatus))
+            .ThenBy(x => x.Bill.DueUtc)
+            .ThenBy(x => x.Bill.BillNumber, StringComparer.OrdinalIgnoreCase)
+            .Select(x => MapResult(context, x.Bill, x.Outstanding))
+            .ToArray();
+    }
+
+    private static FinancialCheckResult MapResult(FinancialCheckContext context, BillDueRow bill, decimal outstanding)
+    {
+        var normalizedDue = Normalize(bill.DueStatus);
+        var overdue = normalizedDue == FinanceDocumentDueStatuses.Overdue;
+        var dueDate = bill.DueUtc.Date;
+        var days = overdue
+            ? Math.Max(1, (context.AsOfUtc.Date - dueDate).Days)
+            : Math.Max(0, (dueDate - context.AsOfUtc.Date).Days);
+        var primaryEntity = new FinanceInsightEntityReferenceDto(
+            "bill",
+            bill.Id.ToString("N"),
+            bill.BillNumber,
+            true);
+        var affectedEntities = new[]
+        {
+            primaryEntity,
+            new FinanceInsightEntityReferenceDto("counterparty", bill.CounterpartyId.ToString("N"), bill.CounterpartyName)
+        };
+        var duePhrase = overdue
+            ? $"{days} day{(days == 1 ? string.Empty : "s")} overdue"
+            : days == 0
+                ? "due today"
+                : $"due in {days} day{(days == 1 ? string.Empty : "s")}";
+
+        return new FinancialCheckResult(
+            FinancialCheckDefinitions.SupplierBillDueMonitoring,
+            $"supplier_bill_due:{bill.Id:N}",
+            "bill",
+            bill.Id.ToString("N"),
+            overdue ? FinancialCheckSeverity.Medium : FinancialCheckSeverity.Low,
+            $"Supplier bill {bill.BillNumber} from {bill.CounterpartyName} is unpaid and {duePhrase}.",
+            overdue
+                ? "Prioritize this supplier bill and confirm whether payment has been scheduled or completed."
+                : "Schedule the supplier payment or confirm it is already in the payment run.",
+            overdue ? 0.9m : 0.82m,
+            primaryEntity,
+            affectedEntities,
+            ObservedAtUtc: context.AsOfUtc,
+            MetadataJson: new JsonObject
+            {
+                ["dueStatus"] = JsonValue.Create(normalizedDue),
+                ["dueUtc"] = JsonValue.Create(bill.DueUtc),
+                ["outstandingAmount"] = JsonValue.Create(outstanding),
+                ["currency"] = JsonValue.Create(bill.Currency),
+                ["settlementStatus"] = JsonValue.Create(Normalize(bill.SettlementStatus))
+            }.ToJsonString());
+    }
+
+    private static bool IsDueAttentionBill(BillDueRow bill)
+    {
+        var posting = Normalize(bill.PostingStatus);
+        var settlement = Normalize(bill.SettlementStatus);
+        var due = Normalize(bill.DueStatus);
+        var kind = Normalize(bill.DocumentKind);
+        var status = Normalize(bill.Status);
+
+        return due is FinanceDocumentDueStatuses.DueSoon or FinanceDocumentDueStatuses.Overdue &&
+               settlement is not FinanceSettlementStatuses.Paid and not FinanceSettlementStatuses.Credited &&
+               posting != FinanceDocumentPostingStatuses.Cancelled &&
+               kind != FinanceDocumentKinds.SupplierCreditNote &&
+               status is not ("paid" or "void" or "cancelled" or "canceled");
+    }
+
+    private static decimal CalculateOutstanding(BillDueRow bill, decimal allocatedAmount)
+    {
+        var paidAmount = Math.Max(Math.Abs(bill.PaidAmount), Math.Abs(allocatedAmount));
+        return Math.Max(0m, decimal.Round(Math.Abs(bill.Amount) - paidAmount, 2, MidpointRounding.AwayFromZero));
+    }
+
+    private static int DueStatusRank(string dueStatus) =>
+        Normalize(dueStatus) switch
+        {
+            FinanceDocumentDueStatuses.Overdue => 0,
+            FinanceDocumentDueStatuses.DueSoon => 1,
+            _ => 2
+        };
+
+    private static string Normalize(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().Replace('-', '_').ToLowerInvariant();
+
+    private sealed record BillDueRow(
+        Guid Id,
+        Guid CounterpartyId,
+        string CounterpartyName,
+        string BillNumber,
+        DateTime DueUtc,
+        decimal Amount,
+        decimal PaidAmount,
+        string Currency,
+        string Status,
+        string PostingStatus,
+        string SettlementStatus,
+        string DueStatus,
+        string DocumentKind);
+
+    private sealed record AllocationRow(Guid DocumentId, decimal Amount);
+}

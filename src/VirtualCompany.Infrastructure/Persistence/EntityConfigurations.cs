@@ -53,8 +53,39 @@ internal static class CompanyJsonColumnConfiguration
         return propertyBuilder;
     }
 
+    public static PropertyBuilder<JsonArray> HasJsonArrayConversion(this PropertyBuilder<JsonArray> propertyBuilder)
+    {
+        var converter = new ValueConverter<JsonArray, string>(
+            value => SerializeArray(value),
+            value => DeserializeArray(value));
+
+        var comparer = new ValueComparer<JsonArray>(
+            (left, right) => SerializeArray(left) == SerializeArray(right),
+            value => StringComparer.Ordinal.GetHashCode(SerializeArray(value)),
+            value => DeserializeArray(SerializeArray(value)));
+
+        propertyBuilder.HasColumnType("nvarchar(max)");
+        propertyBuilder.HasConversion(converter);
+        propertyBuilder.Metadata.SetValueComparer(comparer);
+        return propertyBuilder;
+    }
+
     public static string JsonObjectDefault => JsonObjectDefaultSql;
     public static string JsonArrayDefault => JsonArrayDefaultSql;
+
+    private static string SerializeArray(JsonArray? value) =>
+        JsonSerializer.Serialize(value ?? new JsonArray(), SerializerOptions);
+
+    private static JsonArray DeserializeArray(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new JsonArray();
+        }
+
+        var node = JsonNode.Parse(json);
+        return node is JsonArray array ? array : new JsonArray();
+    }
 
     private static string Serialize<T>(T? value)
         where T : class, new() =>
@@ -2005,7 +2036,7 @@ internal sealed class ProactiveMessageConfiguration : IEntityTypeConfiguration<P
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.RecipientUser).WithMany().HasForeignKey(x => x.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.OriginatingAgent).WithMany().HasForeignKey(x => x.OriginatingAgentId).OnDelete(DeleteBehavior.Restrict);
-        builder.HasOne(x => x.Notification).WithMany().HasForeignKey(x => x.NotificationId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(x => x.Notification).WithMany().HasForeignKey(x => x.NotificationId).OnDelete(DeleteBehavior.NoAction);
     }
 }
 
@@ -2060,7 +2091,7 @@ internal sealed class ProactiveMessagePolicyDecisionConfiguration : IEntityTypeC
         builder.HasIndex(x => x.ProactiveMessageId);
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.ProactiveMessage).WithMany().HasForeignKey(x => x.ProactiveMessageId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne(x => x.ProactiveMessage).WithMany().HasForeignKey(x => x.ProactiveMessageId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.RecipientUser).WithMany().HasForeignKey(x => x.RecipientUserId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.OriginatingAgent).WithMany().HasForeignKey(x => x.OriginatingAgentId).OnDelete(DeleteBehavior.Restrict);
     }
@@ -2529,7 +2560,7 @@ internal sealed class FinanceAccountConfigurationLegacy : IEntityTypeConfigurati
         builder.HasIndex(x => new { x.CompanyId, x.AccountType });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
-        builder.HasMany(x => x.Balances).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(x => x.Balances).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -2570,13 +2601,23 @@ internal sealed class FinanceInvoiceConfigurationLegacy : IEntityTypeConfigurati
         builder.Property(x => x.IssuedUtc).HasColumnName("issued_at").IsRequired();
         builder.Property(x => x.DueUtc).HasColumnName("due_at").IsRequired();
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.PaidAmount).HasColumnName("paid_amount").HasColumnType("decimal(18,2)").HasDefaultValue(0m).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.PostingStatus).HasColumnName("posting_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentPostingStatuses.Booked).IsRequired();
+        builder.Property(x => x.SettlementStatus).HasColumnName("settlement_status").HasMaxLength(32).HasDefaultValue(FinanceSettlementStatuses.Unpaid).IsRequired();
+        builder.Property(x => x.DueStatus).HasColumnName("due_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentDueStatuses.NotDue).IsRequired();
+        builder.Property(x => x.DocumentKind).HasColumnName("document_kind").HasMaxLength(32).HasDefaultValue(FinanceDocumentKinds.Invoice).IsRequired();
+        builder.Property(x => x.ProviderStatus).HasColumnName("provider_status").HasMaxLength(128);
+        builder.Property(x => x.ProcessingStatus).HasColumnName("processing_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentProcessingStatuses.None).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.PostingStatus, x.SettlementStatus, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentKind, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.ProcessingStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Invoices).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Invoice).HasForeignKey(x => new { x.CompanyId, x.InvoiceId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
@@ -2598,13 +2639,23 @@ internal sealed class FinanceBillConfigurationLegacy : IEntityTypeConfiguration<
         builder.Property(x => x.ReceivedUtc).HasColumnName("received_at").IsRequired();
         builder.Property(x => x.DueUtc).HasColumnName("due_at").IsRequired();
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.PaidAmount).HasColumnName("paid_amount").HasColumnType("decimal(18,2)").HasDefaultValue(0m).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.PostingStatus).HasColumnName("posting_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentPostingStatuses.Booked).IsRequired();
+        builder.Property(x => x.SettlementStatus).HasColumnName("settlement_status").HasMaxLength(32).HasDefaultValue(FinanceSettlementStatuses.Unpaid).IsRequired();
+        builder.Property(x => x.DueStatus).HasColumnName("due_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentDueStatuses.NotDue).IsRequired();
+        builder.Property(x => x.DocumentKind).HasColumnName("document_kind").HasMaxLength(32).HasDefaultValue(FinanceDocumentKinds.SupplierInvoice).IsRequired();
+        builder.Property(x => x.ProviderStatus).HasColumnName("provider_status").HasMaxLength(128);
+        builder.Property(x => x.ProcessingStatus).HasColumnName("processing_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentProcessingStatuses.None).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.BillNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.PostingStatus, x.SettlementStatus, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentKind, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.ProcessingStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Bills).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Bill).HasForeignKey(x => new { x.CompanyId, x.BillId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
@@ -2708,7 +2759,7 @@ internal sealed class FinanceAccountConfigurationDuplicate : IEntityTypeConfigur
         builder.HasIndex(x => new { x.CompanyId, x.AccountType });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
-        builder.HasMany(x => x.Balances).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(x => x.Balances).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -2749,6 +2800,7 @@ internal sealed class FinanceInvoiceConfigurationDuplicate : IEntityTypeConfigur
         builder.Property(x => x.IssuedUtc).HasColumnName("issued_at").IsRequired();
         builder.Property(x => x.DueUtc).HasColumnName("due_at").IsRequired();
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.PaidAmount).HasColumnName("paid_amount").HasColumnType("decimal(18,2)").HasDefaultValue(0m).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
@@ -2777,16 +2829,33 @@ internal sealed class FinanceBillConfiguration : IEntityTypeConfiguration<Financ
         builder.Property(x => x.ReceivedUtc).HasColumnName("received_at").IsRequired();
         builder.Property(x => x.DueUtc).HasColumnName("due_at").IsRequired();
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.PaidAmount).HasColumnName("paid_amount").HasColumnType("decimal(18,2)").HasDefaultValue(0m).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         builder.Property(x => x.SettlementStatus).HasColumnName("settlement_status").HasMaxLength(32).HasDefaultValue(FinanceSettlementStatuses.Unpaid).IsRequired();
+        builder.Property(x => x.PostingStatus).HasColumnName("posting_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentPostingStatuses.Booked).IsRequired();
+        builder.Property(x => x.DueStatus).HasColumnName("due_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentDueStatuses.NotDue).IsRequired();
+        builder.Property(x => x.DocumentKind).HasColumnName("document_kind").HasMaxLength(32).HasDefaultValue(FinanceDocumentKinds.SupplierInvoice).IsRequired();
+        builder.Property(x => x.ProviderStatus).HasColumnName("provider_status").HasMaxLength(128);
+        builder.Property(x => x.ProcessingStatus).HasColumnName("processing_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentProcessingStatuses.None).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
-        builder.ToTable(t => t.HasCheckConstraint("CK_finance_bills_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status")));
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_finance_bills_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status"));
+            t.HasCheckConstraint("CK_finance_bills_posting_status", FinanceDocumentPostingStatuses.BuildCheckConstraintSql("posting_status"));
+            t.HasCheckConstraint("CK_finance_bills_due_status", FinanceDocumentDueStatuses.BuildCheckConstraintSql("due_status"));
+            t.HasCheckConstraint("CK_finance_bills_document_kind", FinanceDocumentKinds.BuildCheckConstraintSql("document_kind"));
+            t.HasCheckConstraint("CK_finance_bills_processing_status", FinanceDocumentProcessingStatuses.BuildCheckConstraintSql("processing_status"));
+            t.HasCheckConstraint("CK_finance_bills_paid_amount_non_negative", "paid_amount >= 0");
+        });
         builder.HasIndex(x => new { x.CompanyId, x.BillNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.PostingStatus, x.SettlementStatus, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentKind, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.ProcessingStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Bills).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Bill).HasForeignKey(x => new { x.CompanyId, x.BillId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
@@ -2988,16 +3057,33 @@ internal sealed class FinanceInvoiceConfiguration : IEntityTypeConfiguration<Fin
         builder.Property(x => x.IssuedUtc).HasColumnName("issued_at").IsRequired();
         builder.Property(x => x.DueUtc).HasColumnName("due_at").IsRequired();
         builder.Property(x => x.Amount).HasColumnName("amount").HasColumnType("decimal(18,2)").IsRequired();
+        builder.Property(x => x.PaidAmount).HasColumnName("paid_amount").HasColumnType("decimal(18,2)").HasDefaultValue(0m).IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         builder.Property(x => x.SettlementStatus).HasColumnName("settlement_status").HasMaxLength(32).HasDefaultValue(FinanceSettlementStatuses.Unpaid).IsRequired();
+        builder.Property(x => x.PostingStatus).HasColumnName("posting_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentPostingStatuses.Booked).IsRequired();
+        builder.Property(x => x.DueStatus).HasColumnName("due_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentDueStatuses.NotDue).IsRequired();
+        builder.Property(x => x.DocumentKind).HasColumnName("document_kind").HasMaxLength(32).HasDefaultValue(FinanceDocumentKinds.Invoice).IsRequired();
+        builder.Property(x => x.ProviderStatus).HasColumnName("provider_status").HasMaxLength(128);
+        builder.Property(x => x.ProcessingStatus).HasColumnName("processing_status").HasMaxLength(32).HasDefaultValue(FinanceDocumentProcessingStatuses.None).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
-        builder.ToTable(t => t.HasCheckConstraint("CK_finance_invoices_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status")));
+        builder.ToTable(t =>
+        {
+            t.HasCheckConstraint("CK_finance_invoices_settlement_status", FinanceSettlementStatuses.BuildCheckConstraintSql("settlement_status"));
+            t.HasCheckConstraint("CK_finance_invoices_posting_status", FinanceDocumentPostingStatuses.BuildCheckConstraintSql("posting_status"));
+            t.HasCheckConstraint("CK_finance_invoices_due_status", FinanceDocumentDueStatuses.BuildCheckConstraintSql("due_status"));
+            t.HasCheckConstraint("CK_finance_invoices_document_kind", FinanceDocumentKinds.BuildCheckConstraintSql("document_kind"));
+            t.HasCheckConstraint("CK_finance_invoices_processing_status", FinanceDocumentProcessingStatuses.BuildCheckConstraintSql("processing_status"));
+            t.HasCheckConstraint("CK_finance_invoices_paid_amount_non_negative", "paid_amount >= 0");
+        });
         builder.HasIndex(x => new { x.CompanyId, x.InvoiceNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.DueUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SettlementStatus, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.PostingStatus, x.SettlementStatus, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentKind, x.DueUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.ProcessingStatus, x.DueUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Counterparty).WithMany(x => x.Invoices).HasForeignKey(x => new { x.CompanyId, x.CounterpartyId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Invoice).HasForeignKey(x => new { x.CompanyId, x.InvoiceId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
@@ -3111,6 +3197,7 @@ internal sealed class LedgerEntrySourceMappingConfiguration : IEntityTypeConfigu
         builder.Property(x => x.SourceId).HasColumnName("source_id").HasMaxLength(128).IsRequired();
         builder.Property(x => x.PostedAtUtc).HasColumnName("posted_at").IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId, x.PostedAtUtc }).IsUnique();
@@ -3119,7 +3206,7 @@ internal sealed class LedgerEntrySourceMappingConfiguration : IEntityTypeConfigu
             .WithMany(x => x.SourceMappings)
             .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }
 
@@ -3149,7 +3236,7 @@ internal sealed class LedgerEntryLineConfiguration : IEntityTypeConfiguration<Le
             .WithMany(x => x.Lines)
             .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.FinanceAccount)
             .WithMany()
             .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
@@ -3208,7 +3295,7 @@ internal sealed class FinancialStatementSnapshotConfiguration : IEntityTypeConfi
         builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.FiscalPeriodId, x.GeneratedAtUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.FiscalPeriod).WithMany().HasForeignKey(x => new { x.CompanyId, x.FiscalPeriodId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
-        builder.HasMany(x => x.Lines).WithOne(x => x.Snapshot).HasForeignKey(x => x.SnapshotId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasMany(x => x.Lines).WithOne(x => x.Snapshot).HasForeignKey(x => x.SnapshotId).OnDelete(DeleteBehavior.NoAction);
     }
 }
 

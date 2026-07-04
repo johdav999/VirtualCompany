@@ -19,6 +19,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
     private readonly IMailboxProviderRegistry _providerRegistry;
     private readonly IFieldEncryptionService _fieldEncryption;
     private readonly IManualInboxBillScanJobScheduler _scanJobScheduler;
+    private readonly IConnectedMailboxInboxScanJobScheduler _connectedMailboxScanJobScheduler;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyMailboxConnectionService> _logger;
 
@@ -29,6 +30,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
         IMailboxProviderRegistry providerRegistry,
         IFieldEncryptionService fieldEncryption,
         IManualInboxBillScanJobScheduler scanJobScheduler,
+        IConnectedMailboxInboxScanJobScheduler connectedMailboxScanJobScheduler,
         TimeProvider timeProvider,
         ILogger<CompanyMailboxConnectionService> logger)
     {
@@ -38,8 +40,31 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
         _providerRegistry = providerRegistry;
         _fieldEncryption = fieldEncryption;
         _scanJobScheduler = scanJobScheduler;
+        _connectedMailboxScanJobScheduler = connectedMailboxScanJobScheduler;
         _timeProvider = timeProvider;
         _logger = logger;
+    }
+
+    public CompanyMailboxConnectionService(
+        VirtualCompanyDbContext dbContext,
+        ICompanyContextAccessor companyContextAccessor,
+        IMailboxOAuthStateProtector stateProtector,
+        IMailboxProviderRegistry providerRegistry,
+        IFieldEncryptionService fieldEncryption,
+        IManualInboxBillScanJobScheduler scanJobScheduler,
+        TimeProvider timeProvider,
+        ILogger<CompanyMailboxConnectionService> logger)
+        : this(
+            dbContext,
+            companyContextAccessor,
+            stateProtector,
+            providerRegistry,
+            fieldEncryption,
+            scanJobScheduler,
+            NoOpConnectedMailboxInboxScanJobScheduler.Instance,
+            timeProvider,
+            logger)
+    {
     }
 
     public Task<MailboxOAuthStartResult> StartOAuthConnectionAsync(
@@ -158,6 +183,17 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             .Take(limit)
             .ToArrayAsync(cancellationToken);
 
+        var snapshotSourceIds = snapshots.Select(snapshot => snapshot.Id.ToString("D")).ToArray();
+        var detectedBillIdsBySourceEmailId = await _dbContext.DetectedBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId &&
+                x.SourceEmailId != null &&
+                snapshotSourceIds.Contains(x.SourceEmailId))
+            .GroupBy(x => x.SourceEmailId!)
+            .Select(x => new { SourceEmailId = x.Key, BillId = x.OrderByDescending(bill => bill.UpdatedUtc).Select(bill => bill.Id).First() })
+            .ToDictionaryAsync(x => x.SourceEmailId, x => x.BillId, StringComparer.OrdinalIgnoreCase, cancellationToken);
+
         return snapshots
             .Select(snapshot => new MailboxScannedMessageSummary(
                 snapshot.Id,
@@ -183,6 +219,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
                         attachment.SourceType.ToStorageValue(),
                         attachment.IsDuplicateByHash))
                     .ToArray(),
+                detectedBillIdsBySourceEmailId.TryGetValue(snapshot.Id.ToString("D"), out var detectedBillId) ? detectedBillId : null,
                 snapshot.CreatedUtc))
             .ToArray();
     }
@@ -259,6 +296,8 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             state.Provider,
             connection.Id);
 
+        await EnqueueConnectedMailboxScanAsync(connection, cancellationToken);
+
         return new MailboxOAuthCompletionResult(
             connection.Id,
             state.CompanyId,
@@ -285,7 +324,9 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
         }
 
         var connection = await query
-            .OrderByDescending(x => x.UpdatedUtc)
+            .OrderByDescending(x => x.Status == MailboxConnectionStatus.Active)
+            .ThenByDescending(x => x.Status == MailboxConnectionStatus.Failed)
+            .ThenByDescending(x => x.UpdatedUtc)
             .FirstOrDefaultAsync(cancellationToken);
 
         if (connection is null)
@@ -293,7 +334,7 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             throw new KeyNotFoundException("Mailbox connection was not found.");
         }
 
-        if (connection.Status != MailboxConnectionStatus.Active)
+        if (!CanRunManualScan(connection.Status))
         {
             throw new InvalidOperationException("Mailbox connection is not active.");
         }
@@ -317,22 +358,18 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             new ManualInboxBillScanJob(command.CompanyId, command.UserId, connection.Id, run.Id, scanFromUtc, scanToUtc),
             cancellationToken);
 
-        var completedRun = await _dbContext.EmailIngestionRuns
-            .AsNoTracking()
-            .SingleAsync(x => x.CompanyId == command.CompanyId && x.Id == run.Id, cancellationToken);
-
         return new ManualMailboxScanResult(
-            completedRun.Id,
+            run.Id,
             connection.Id,
             scanFromUtc,
             scanToUtc,
-            completedRun.ScannedMessageCount,
-            completedRun.DetectedCandidateCount,
-            completedRun.NonCandidateMessageCount,
-            completedRun.CandidateAttachmentSnapshotCount,
-            completedRun.DeduplicatedAttachmentCount,
-            completedRun.FailureDetails,
-            completedRun.CompletedUtc.HasValue ? "completed" : "started");
+            run.ScannedMessageCount,
+            run.DetectedCandidateCount,
+            run.NonCandidateMessageCount,
+            run.CandidateAttachmentSnapshotCount,
+            run.DeduplicatedAttachmentCount,
+            run.FailureDetails,
+            run.CompletedUtc.HasValue ? "completed" : "started");
     }
 
     private void EnsureCurrentTenantUser(Guid companyId, Guid userId)
@@ -344,6 +381,9 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             throw new UnauthorizedAccessException("Mailbox connections are scoped to the current tenant and user.");
         }
     }
+
+    private static bool CanRunManualScan(MailboxConnectionStatus status) =>
+        status is MailboxConnectionStatus.Active or MailboxConnectionStatus.Failed;
 
     private void ResolveCompletionTenantUserFromState(MailboxOAuthState state)
     {
@@ -371,6 +411,37 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
 
     private DateTime UtcNow() => _timeProvider.GetUtcNow().UtcDateTime;
 
+    private async Task EnqueueConnectedMailboxScanAsync(MailboxConnection connection, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _connectedMailboxScanJobScheduler.EnqueueConnectedMailboxScanAsync(
+                new ConnectedMailboxInboxScanJob(
+                    connection.CompanyId,
+                    connection.UserId,
+                    connection.Id,
+                    connection.Provider),
+                cancellationToken);
+
+            _logger.LogInformation(
+                "Laura mailbox scan task queued after mailbox connection. CompanyId: {CompanyId}. UserId: {UserId}. Provider: {Provider}. ConnectionId: {ConnectionId}.",
+                connection.CompanyId,
+                connection.UserId,
+                connection.Provider,
+                connection.Id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Mailbox connected, but Laura's automatic inbox scan could not be queued. CompanyId: {CompanyId}. UserId: {UserId}. Provider: {Provider}. ConnectionId: {ConnectionId}.",
+                connection.CompanyId,
+                connection.UserId,
+                connection.Provider,
+                connection.Id);
+        }
+    }
+
     public static IReadOnlyCollection<MailboxFolderSelection> NormalizeFolders(
         IReadOnlyCollection<MailboxFolderSelection>? folders,
         MailboxProvider provider)
@@ -387,4 +458,16 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
 
     public static string BuildTokenPurpose(MailboxProvider provider, string tokenKind) =>
         $"mailbox:{provider.ToStorageValue()}:{tokenKind}";
+
+    private sealed class NoOpConnectedMailboxInboxScanJobScheduler : IConnectedMailboxInboxScanJobScheduler
+    {
+        public static readonly NoOpConnectedMailboxInboxScanJobScheduler Instance = new();
+
+        private NoOpConnectedMailboxInboxScanJobScheduler()
+        {
+        }
+
+        public Task EnqueueConnectedMailboxScanAsync(ConnectedMailboxInboxScanJob job, CancellationToken cancellationToken) =>
+            Task.CompletedTask;
+    }
 }

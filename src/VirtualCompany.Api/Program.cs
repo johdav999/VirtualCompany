@@ -1031,6 +1031,11 @@ static async Task EnsureSqlServerFinanceSeedSchemaAsync(VirtualCompanyDbContext 
 
     try
     {
+        if (!await SqlServerTableExistsAsync(connection, "companies"))
+        {
+            return;
+        }
+
         await EnsureSqlServerFinanceDomainSchemaAsync(dbContext, connection);
         await EnsureSqlServerCompanySimulationSchemaAsync(dbContext, connection);
 
@@ -2691,9 +2696,17 @@ static async Task EnsureSqlServerLedgerReportingSchemaAsync(VirtualCompanyDbCont
                 [source_id] nvarchar(128) NOT NULL,
                 [posted_at] datetime2 NOT NULL,
                 [created_at] datetime2 NOT NULL,
+                [updated_at] datetime2 NOT NULL,
                 CONSTRAINT [FK_ledger_entry_source_mappings_companies_company_id] FOREIGN KEY ([company_id]) REFERENCES [companies] ([Id]) ON DELETE CASCADE,
                 CONSTRAINT [FK_ledger_entry_source_mappings_ledger_entries_company_id_ledger_entry_id] FOREIGN KEY ([company_id], [ledger_entry_id]) REFERENCES [ledger_entries] ([company_id], [id])
             );
+            """);
+    }
+    else if (!await SqlServerColumnExistsAsync(connection, "ledger_entry_source_mappings", "updated_at"))
+    {
+        await dbContext.Database.ExecuteSqlRawAsync(
+            """
+            ALTER TABLE [ledger_entry_source_mappings] ADD [updated_at] datetime2 NOT NULL CONSTRAINT [DF_ledger_entry_source_mappings_updated_at] DEFAULT (SYSUTCDATETIME());
             """);
     }
 
@@ -3102,7 +3115,7 @@ static async Task InitializeDatabaseAsync(
     if (dbContext.Database.IsRelational())
     {
         await WaitForSqlServerReadyAsync(dbContext, logger, app.Lifetime.ApplicationStopping);
-        await EnsureSqlServerFinanceSeedSchemaAsync(dbContext);
+        await EnsureSqlServerDatabaseExistsAsync(dbContext, logger, app.Lifetime.ApplicationStopping);
 
         if (applyMigrationsOnStartup)
         {
@@ -3498,6 +3511,7 @@ static async Task WaitForSqlServerReadyAsync(
 
     var builder = new SqlConnectionStringBuilder(connectionString)
     {
+        InitialCatalog = "master",
         ConnectRetryCount = 0
     };
 
@@ -3532,6 +3546,52 @@ static async Task WaitForSqlServerReadyAsync(
     }
 
     throw new InvalidOperationException("SQL Server did not become ready before database initialization completed.");
+}
+
+static async Task EnsureSqlServerDatabaseExistsAsync(
+    VirtualCompanyDbContext dbContext,
+    ILogger logger,
+    CancellationToken cancellationToken)
+{
+    var providerName = dbContext.Database.ProviderName;
+    if (!string.Equals(providerName, "Microsoft.EntityFrameworkCore.SqlServer", StringComparison.Ordinal))
+    {
+        return;
+    }
+
+    var connectionString = dbContext.Database.GetConnectionString();
+    if (string.IsNullOrWhiteSpace(connectionString))
+    {
+        throw new InvalidOperationException("The VirtualCompanyDb connection string is not configured.");
+    }
+
+    var builder = new SqlConnectionStringBuilder(connectionString);
+    var databaseName = builder.InitialCatalog;
+    if (string.IsNullOrWhiteSpace(databaseName))
+    {
+        throw new InvalidOperationException("The VirtualCompanyDb connection string must include a database name.");
+    }
+
+    builder.InitialCatalog = "master";
+    builder.ConnectRetryCount = 0;
+
+    await using var connection = new SqlConnection(builder.ConnectionString);
+    await connection.OpenAsync(cancellationToken);
+
+    await using var existsCommand = connection.CreateCommand();
+    existsCommand.CommandText = "SELECT DB_ID(@databaseName);";
+    existsCommand.Parameters.Add(new SqlParameter("@databaseName", databaseName));
+    var databaseId = await existsCommand.ExecuteScalarAsync(cancellationToken);
+    if (databaseId is not null && databaseId is not DBNull)
+    {
+        return;
+    }
+
+    await using var createCommand = connection.CreateCommand();
+    createCommand.CommandText = $"CREATE DATABASE [{databaseName.Replace("]", "]]", StringComparison.Ordinal)}];";
+    await createCommand.ExecuteNonQueryAsync(cancellationToken);
+
+    logger.LogInformation("Created SQL Server database {DatabaseName} for application startup.", databaseName);
 }
 
 static bool IsTransientSqlStartupException(Exception exception)

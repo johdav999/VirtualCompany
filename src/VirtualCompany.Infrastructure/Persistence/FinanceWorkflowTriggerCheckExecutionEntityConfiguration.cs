@@ -46,6 +46,6 @@ internal sealed class FinanceWorkflowTriggerCheckExecutionEntityConfiguration : 
         builder.HasOne(x => x.TriggerExecution)
             .WithMany()
             .HasForeignKey(x => x.TriggerExecutionId)
-            .OnDelete(DeleteBehavior.Cascade);
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }

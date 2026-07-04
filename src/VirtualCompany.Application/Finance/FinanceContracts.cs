@@ -484,6 +484,7 @@ public static class FinancialCheckDefinitions
     public static readonly FinancialCheckDefinition TransactionAnomaly = new("transaction_anomaly", "Transaction anomaly", "finance_transaction");
     public static readonly FinancialCheckDefinition OverdueReceivables = new("overdue_receivables", "Overdue receivables", "counterparty");
     public static readonly FinancialCheckDefinition PayablesPressure = new("payables_pressure", "Payables pressure", "counterparty");
+    public static readonly FinancialCheckDefinition SupplierBillDueMonitoring = new("supplier_bill_due_monitoring", "Supplier bill due monitoring", "bill");
     public static readonly FinancialCheckDefinition TopExpenseConcentration = new("top_expense_concentration", "Top expense concentration", "company");
     public static readonly FinancialCheckDefinition RevenueTrend = new("revenue_trend", "Revenue trend", "company");
     public static readonly FinancialCheckDefinition BurnRunwayRisk = new("burn_runway_risk", "Burn runway risk", "company");
@@ -504,6 +505,7 @@ public static class FinancialCheckDefinitions
                 [TransactionAnomaly.Code] = TransactionAnomaly,
                 [OverdueReceivables.Code] = OverdueReceivables,
                 [PayablesPressure.Code] = PayablesPressure,
+                [SupplierBillDueMonitoring.Code] = SupplierBillDueMonitoring,
                 [TopExpenseConcentration.Code] = TopExpenseConcentration,
                 [RevenueTrend.Code] = RevenueTrend,
                 [BurnRunwayRisk.Code] = BurnRunwayRisk,
@@ -1406,7 +1408,14 @@ public sealed record FinanceInvoiceDto(
     string Currency,
     string Status,
     FinanceLinkedDocumentDto? LinkedDocument,
-    string Source = FinanceDataSources.Simulation);
+    string Source = FinanceDataSources.Simulation,
+    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
+    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
+    string DueStatus = FinanceDocumentDueStatuses.NotDue,
+    string DocumentKind = FinanceDocumentKinds.Invoice,
+    string? ProviderStatus = null,
+    string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
+    FinanceTransactionPaymentContextDto? PaymentContext = null);
 
 public sealed record FinanceBillDto(
     Guid Id,
@@ -1419,7 +1428,19 @@ public sealed record FinanceBillDto(
     string Currency,
     string Status,
     FinanceLinkedDocumentDto? LinkedDocument,
-    string Source = FinanceDataSources.Simulation);
+    string Source = FinanceDataSources.Simulation,
+    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
+    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
+    string DueStatus = FinanceDocumentDueStatuses.NotDue,
+    string DocumentKind = FinanceDocumentKinds.SupplierInvoice,
+    string? ProviderStatus = null,
+    string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
+    FinanceTransactionPaymentContextDto? PaymentContext = null,
+    SupplierInvoicePaymentProposalDto? PaymentProposal = null,
+    SupplierInvoiceSourceDocumentAttachmentDto? SourceDocumentAttachment = null,
+    SupplierInvoiceDraftActionDto? DraftAction = null,
+    IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
+    SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null);
 
 public sealed record FinanceBillDetailDto(
     Guid Id,
@@ -1433,7 +1454,478 @@ public sealed record FinanceBillDetailDto(
     string Status,
     FinanceActionPermissionsDto Permissions,
     FinanceLinkedDocumentAccessDto LinkedDocument,
-    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights);
+    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights,
+    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
+    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
+    string DueStatus = FinanceDocumentDueStatuses.NotDue,
+    string DocumentKind = FinanceDocumentKinds.SupplierInvoice,
+    string? ProviderStatus = null,
+    string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
+    FinanceTransactionPaymentContextDto? PaymentContext = null,
+    IReadOnlyList<FinanceInvoiceRelatedTransactionDto>? RelatedTransactions = null,
+    SupplierInvoicePaymentProposalDto? PaymentProposal = null,
+    SupplierInvoiceSourceDocumentAttachmentDto? SourceDocumentAttachment = null,
+    SupplierInvoiceDraftActionDto? DraftAction = null,
+    IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
+    SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null);
+
+public sealed record SupplierInvoicePaymentProposalDto(
+    Guid Id,
+    Guid BillId,
+    Guid SupplierId,
+    string SupplierName,
+    decimal Amount,
+    string Currency,
+    DateTime DueUtc,
+    string PaymentReference,
+    string Status,
+    Guid? TaskId,
+    Guid? ApprovalRequestId,
+    Guid? RequestedByUserId,
+    Guid? DecidedByUserId,
+    DateTime? DecidedUtc,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc,
+    string ExportMode = "register_payment",
+    string ExportStatus = "not_exported",
+    string? ExportProviderKey = null,
+    Guid? ExportConnectionId = null,
+    Guid? ExportRequestedByUserId = null,
+    DateTime? ExportRequestedUtc = null,
+    DateTime? ExportedUtc = null,
+    string? ExportResponseSummary = null);
+
+public sealed record RequestSupplierInvoicePaymentProposalCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName = "Finance user");
+
+public sealed record ExportSupplierInvoicePaymentInstructionCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ExportMode = "register_payment",
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record SupplierInvoicePaymentExportProviderRequest(
+    Guid CompanyId,
+    Guid ProposalId,
+    Guid BillId,
+    string SourceBillNumber,
+    Guid SupplierId,
+    string SupplierName,
+    decimal Amount,
+    string Currency,
+    DateTime DueUtc,
+    string PaymentReference,
+    Guid ConnectionId,
+    Guid? ActorUserId,
+    string ExportMode = "register_payment",
+    string? ExistingProviderPaymentNumber = null,
+    bool BookkeepExistingProviderPayment = false);
+
+public sealed record SupplierInvoicePaymentExportProviderResult(
+    string ProviderKey,
+    Guid? ConnectionId,
+    string ExportMode,
+    string ExportStatus,
+    string ResponseSummary,
+    JsonObject ProviderMetadata);
+
+public interface IFinanceSupplierPaymentProposalService
+{
+    Task<SupplierInvoicePaymentProposalDto> RequestPaymentProposalAsync(
+        RequestSupplierInvoicePaymentProposalCommand command,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoicePaymentProposalDto> ExportPaymentInstructionAsync(
+        ExportSupplierInvoicePaymentInstructionCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface ISupplierInvoicePaymentExportProvider
+{
+    string ProviderKey { get; }
+
+    Task<SupplierInvoicePaymentExportProviderResult> ExportAsync(
+        SupplierInvoicePaymentExportProviderRequest request,
+        CancellationToken cancellationToken);
+}
+
+public sealed record SupplierInvoiceSourceDocumentAttachmentDto(
+    Guid Id,
+    Guid BillId,
+    Guid? DocumentId,
+    string Status,
+    string? ProviderKey,
+    Guid? ConnectionId,
+    Guid? RequestedByUserId,
+    DateTime? RequestedUtc,
+    DateTime? AttachedUtc,
+    string? ResponseSummary,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record RequestSupplierInvoiceSourceDocumentAttachmentCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record SupplierInvoiceSourceDocumentAttachmentProviderRequest(
+    Guid CompanyId,
+    Guid AttachmentId,
+    Guid BillId,
+    Guid DocumentId,
+    string SourceBillNumber,
+    Guid ConnectionId,
+    Guid? ActorUserId,
+    string OriginalFileName,
+    string? ContentType,
+    long FileSizeBytes,
+    Stream Content);
+
+public sealed record SupplierInvoiceSourceDocumentAttachmentProviderResult(
+    string ProviderKey,
+    Guid? ConnectionId,
+    string Status,
+    string ResponseSummary,
+    JsonObject ProviderMetadata);
+
+public interface IFinanceSupplierInvoiceSourceDocumentAttachmentService
+{
+    Task<SupplierInvoiceSourceDocumentAttachmentDto> RequestAttachmentAsync(
+        RequestSupplierInvoiceSourceDocumentAttachmentCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface ISupplierInvoiceSourceDocumentAttachmentProvider
+{
+    string ProviderKey { get; }
+
+    Task<SupplierInvoiceSourceDocumentAttachmentProviderResult> AttachAsync(
+        SupplierInvoiceSourceDocumentAttachmentProviderRequest request,
+        CancellationToken cancellationToken);
+}
+
+public sealed record SupplierInvoiceDraftActionDto(
+    Guid Id,
+    Guid BillId,
+    string Status,
+    string? ProviderKey,
+    Guid? ConnectionId,
+    Guid? RequestedByUserId,
+    DateTime? RequestedUtc,
+    DateTime? UpdatedInProviderUtc,
+    DateTime? BookedUtc,
+    string? ResponseSummary,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record UpdateSupplierInvoiceDraftCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record BookkeepSupplierInvoiceDraftCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record SupplierInvoiceDraftActionProviderRequest(
+    Guid CompanyId,
+    Guid ActionId,
+    Guid BillId,
+    string SourceBillNumber,
+    Guid SupplierId,
+    string SupplierName,
+    string? SupplierNumber,
+    decimal Amount,
+    string Currency,
+    DateTime ReceivedUtc,
+    DateTime DueUtc,
+    string InvoiceNumber,
+    string? PaymentReference,
+    decimal? VatAmount,
+    string? AccountCode,
+    string? CostCenter,
+    string? Project,
+    Guid ConnectionId,
+    Guid? ActorUserId);
+
+public sealed record SupplierInvoiceDraftActionProviderResult(
+    string ProviderKey,
+    Guid? ConnectionId,
+    string Status,
+    string ResponseSummary,
+    JsonObject ProviderMetadata);
+
+public interface IFinanceSupplierInvoiceDraftActionService
+{
+    Task<SupplierInvoiceDraftActionDto> UpdateDraftAsync(
+        UpdateSupplierInvoiceDraftCommand command,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoiceDraftActionDto> BookkeepAsync(
+        BookkeepSupplierInvoiceDraftCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface ISupplierInvoiceDraftActionProvider
+{
+    string ProviderKey { get; }
+
+    Task<SupplierInvoiceDraftActionProviderResult> UpdateDraftAsync(
+        SupplierInvoiceDraftActionProviderRequest request,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoiceDraftActionProviderResult> BookkeepAsync(
+        SupplierInvoiceDraftActionProviderRequest request,
+        CancellationToken cancellationToken);
+}
+
+public sealed record CustomerInvoiceFortnoxActionDto(
+    Guid InvoiceId,
+    Guid? CreateWriteRequestId,
+    Guid? CreateApprovalId,
+    string CreateStatus,
+    Guid? BookkeepWriteRequestId,
+    Guid? BookkeepApprovalId,
+    string? BookkeepStatus,
+    string Message,
+    bool CanRequestCreate,
+    bool CanExecuteCreate,
+    bool CanRequestBookkeep,
+    bool CanExecuteBookkeep,
+    string? FortnoxInvoiceNumber,
+    DateTime? LastSyncedUtc);
+
+public sealed record RequestCustomerInvoiceFortnoxExportCommand(
+    Guid CompanyId,
+    Guid InvoiceId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record ExecuteCustomerInvoiceFortnoxExportCommand(
+    Guid CompanyId,
+    Guid InvoiceId,
+    Guid? ActorUserId,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record RequestCustomerInvoiceFortnoxBookkeepCommand(
+    Guid CompanyId,
+    Guid InvoiceId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record ExecuteCustomerInvoiceFortnoxBookkeepCommand(
+    Guid CompanyId,
+    Guid InvoiceId,
+    Guid? ActorUserId,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public interface IFinanceCustomerInvoiceFortnoxActionService
+{
+    Task<CustomerInvoiceFortnoxActionDto> RequestExportAsync(
+        RequestCustomerInvoiceFortnoxExportCommand command,
+        CancellationToken cancellationToken);
+
+    Task<CustomerInvoiceFortnoxActionDto> ExecuteExportAsync(
+        ExecuteCustomerInvoiceFortnoxExportCommand command,
+        CancellationToken cancellationToken);
+
+    Task<CustomerInvoiceFortnoxActionDto> RequestBookkeepAsync(
+        RequestCustomerInvoiceFortnoxBookkeepCommand command,
+        CancellationToken cancellationToken);
+
+    Task<CustomerInvoiceFortnoxActionDto> ExecuteBookkeepAsync(
+        ExecuteCustomerInvoiceFortnoxBookkeepCommand command,
+        CancellationToken cancellationToken);
+}
+
+public sealed record SupplierInvoiceEnrichmentActionDto(
+    Guid Id,
+    Guid BillId,
+    string Status,
+    string? ProviderKey,
+    Guid? ConnectionId,
+    Guid? RequestedByUserId,
+    Guid? ApprovedByUserId,
+    Guid? TaskId,
+    Guid? ApprovalRequestId,
+    DateTime? RequestedUtc,
+    DateTime? ApprovedUtc,
+    DateTime? SyncedUtc,
+    string? ResponseSummary,
+    JsonObject SuggestionPayload,
+    JsonArray ReconciliationWarnings,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record SuggestSupplierInvoiceEnrichmentCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record SyncSupplierInvoiceEnrichmentCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record ReconcileSupplierInvoiceCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName);
+
+public sealed record SupplierInvoiceEnrichmentProviderRequest(
+    Guid CompanyId,
+    Guid ActionId,
+    Guid BillId,
+    string SourceBillNumber,
+    Guid SupplierId,
+    string SupplierName,
+    string? SupplierNumber,
+    string? SupplierEmail,
+    string? SupplierTaxId,
+    string? SupplierPaymentTerms,
+    string? SupplierPaymentMethod,
+    string? AccountCode,
+    string? CostCenter,
+    string? Project,
+    string? ReviewComment,
+    Guid ConnectionId,
+    Guid? ActorUserId,
+    JsonObject SuggestionPayload);
+
+public sealed record SupplierInvoiceEnrichmentProviderResult(
+    string ProviderKey,
+    Guid? ConnectionId,
+    string Status,
+    string ResponseSummary,
+    JsonObject ProviderMetadata);
+
+public interface IFinanceSupplierInvoiceEnrichmentService
+{
+    Task<SupplierInvoiceEnrichmentActionDto> SuggestAsync(
+        SuggestSupplierInvoiceEnrichmentCommand command,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoiceEnrichmentActionDto> SyncApprovedAsync(
+        SyncSupplierInvoiceEnrichmentCommand command,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoiceEnrichmentActionDto> ReconcileAsync(
+        ReconcileSupplierInvoiceCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface ISupplierInvoiceEnrichmentProvider
+{
+    string ProviderKey { get; }
+
+    Task<SupplierInvoiceEnrichmentProviderResult> SyncAsync(
+        SupplierInvoiceEnrichmentProviderRequest request,
+        CancellationToken cancellationToken);
+}
+
+public sealed record SupplierInvoiceCorrectionActionDto(
+    Guid Id,
+    Guid BillId,
+    string ActionType,
+    string Status,
+    string? ProviderKey,
+    Guid? ConnectionId,
+    Guid? RequestedByUserId,
+    Guid? ApprovedByUserId,
+    Guid? TaskId,
+    Guid? ApprovalRequestId,
+    DateTime? RequestedUtc,
+    DateTime? ApprovedUtc,
+    DateTime? CompletedUtc,
+    Guid? CreditNoteBillId,
+    string? ProviderCreditNoteNumber,
+    string? ResponseSummary,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record RequestSupplierInvoiceCancellationCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record RequestSupplierInvoiceCreditNoteCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string Reason = "Correction",
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record SupplierInvoiceCorrectionProviderRequest(
+    Guid CompanyId,
+    Guid ActionId,
+    Guid BillId,
+    string SourceBillNumber,
+    Guid SupplierId,
+    string SupplierName,
+    string? SupplierNumber,
+    decimal Amount,
+    string Currency,
+    DateTime ReceivedUtc,
+    DateTime DueUtc,
+    string InvoiceNumber,
+    string? PaymentReference,
+    Guid ConnectionId,
+    Guid? ActorUserId,
+    string? Reason);
+
+public sealed record SupplierInvoiceCorrectionProviderResult(
+    string ProviderKey,
+    Guid? ConnectionId,
+    string Status,
+    string ResponseSummary,
+    JsonObject ProviderMetadata,
+    string? ProviderCreditNoteNumber = null);
+
+public interface IFinanceSupplierInvoiceCorrectionService
+{
+    Task<SupplierInvoiceCorrectionActionDto> RequestCancellationAsync(
+        RequestSupplierInvoiceCancellationCommand command,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoiceCorrectionActionDto> RequestCreditNoteAsync(
+        RequestSupplierInvoiceCreditNoteCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface ISupplierInvoiceCorrectionProvider
+{
+    string ProviderKey { get; }
+
+    Task<SupplierInvoiceCorrectionProviderResult> CancelAsync(
+        SupplierInvoiceCorrectionProviderRequest request,
+        CancellationToken cancellationToken);
+
+    Task<SupplierInvoiceCorrectionProviderResult> CreateCreditNoteAsync(
+        SupplierInvoiceCorrectionProviderRequest request,
+        CancellationToken cancellationToken);
+}
 
 public sealed record FinanceCounterpartyDto(
     Guid Id,
@@ -1476,7 +1968,15 @@ public sealed record FinanceTransactionDetailDto(
     string AnomalyState,
     IReadOnlyList<string> Flags,
     FinanceActionPermissionsDto Permissions,
-    FinanceLinkedDocumentAccessDto LinkedDocument);
+    FinanceLinkedDocumentAccessDto LinkedDocument,
+    FinanceTransactionPaymentContextDto? PaymentContext = null);
+
+public sealed record FinanceTransactionPaymentContextDto(
+    bool IsPartiallyPaid,
+    decimal PaidAmount,
+    decimal TotalAmount,
+    decimal RemainingAmount,
+    string Currency);
 
 public sealed record FinanceActionPermissionsDto(
     bool CanChangeTransactionCategory,
@@ -1519,7 +2019,24 @@ public sealed record FinanceInvoiceDetailDto(
     FinanceInvoiceWorkflowContextDto? WorkflowContext,
     FinanceActionPermissionsDto Permissions,
     FinanceLinkedDocumentAccessDto LinkedDocument,
-    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights);
+    IReadOnlyList<NormalizedFinanceInsightDto> AgentInsights,
+    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
+    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
+    string DueStatus = FinanceDocumentDueStatuses.NotDue,
+    string DocumentKind = FinanceDocumentKinds.Invoice,
+    string? ProviderStatus = null,
+    string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
+    FinanceTransactionPaymentContextDto? PaymentContext = null,
+    IReadOnlyList<FinanceInvoiceRelatedTransactionDto>? RelatedTransactions = null);
+
+public sealed record FinanceInvoiceRelatedTransactionDto(
+    Guid Id,
+    DateTime TransactionUtc,
+    string TransactionType,
+    decimal Amount,
+    string Currency,
+    string Description,
+    string ExternalReference);
 
 public sealed record FinancePolicyConfigurationDto(
     Guid CompanyId,

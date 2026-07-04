@@ -119,6 +119,24 @@ public sealed class BillDetectionServiceTests
     }
 
     [Fact]
+    public void Detects_invoice_keyword_with_supported_pdf_attachment_from_untrusted_sender()
+    {
+        var result = _service.Detect(new MailboxMessageSummary(
+            "msg-4bb",
+            "Invoice IT Services",
+            null,
+            null,
+            ["test-supplier-invoice.pdf"],
+            "Johan Davidsson <johandavidsson@hotmail.se>",
+            Attachments: [new MailboxAttachmentSummary("att-4bb", "test-supplier-invoice.pdf", "application/pdf", 42177, IsTextExtractable: true)]));
+
+        Assert.True(result.IsCandidate);
+        Assert.Contains(BillSourceType.PdfAttachment, result.DetectedSourceTypes);
+        Assert.Contains(BillDetectionRuleMatch.KeywordMatch, result.MatchedRules);
+        Assert.Contains(BillDetectionRuleMatch.AttachmentPresent, result.MatchedRules);
+    }
+
+    [Fact]
     public void Rejects_sender_only_without_keyword_or_attachment_signal()
     {
         var result = _service.Detect(new MailboxMessageSummary(
@@ -171,7 +189,7 @@ public sealed class BillDetectionServiceTests
     }
 
     [Fact]
-    public void Rejects_image_only_pdf_as_supported_source()
+    public void Detects_scanned_pdf_bill_attachment_before_ocr_text_exists()
     {
         var result = _service.Detect(new MailboxMessageSummary(
             "msg-5",
@@ -182,7 +200,28 @@ public sealed class BillDetectionServiceTests
             "billing@supplier.example",
             Attachments: [new MailboxAttachmentSummary("att-5", "invoice.pdf", "application/pdf", 5000, IsTextExtractable: false)]));
 
-        Assert.False(result.IsCandidate);
-        Assert.Empty(result.CandidateAttachments);
+        Assert.True(result.IsCandidate);
+        Assert.Contains(BillSourceType.PdfAttachment, result.DetectedSourceTypes);
+        Assert.Contains(BillDetectionRuleMatch.AttachmentPresent, result.MatchedRules);
+        Assert.Single(result.CandidateAttachments);
+    }
+
+    [Fact]
+    public void Detects_scanned_image_bill_attachment_before_ocr_text_exists()
+    {
+        var result = _service.Detect(new MailboxMessageSummary(
+            "msg-6",
+            "Invoice",
+            null,
+            null,
+            ["scanned-supplier-invoice-nordic-cloud.png"],
+            "Johan Davidsson <johandavidsson@hotmail.se>",
+            Attachments: [new MailboxAttachmentSummary("att-6", "scanned-supplier-invoice-nordic-cloud.png", "image/png", 275384, IsTextExtractable: true)]));
+
+        Assert.True(result.IsCandidate);
+        Assert.Contains(BillSourceType.ImageAttachment, result.DetectedSourceTypes);
+        Assert.Contains(BillDetectionRuleMatch.KeywordMatch, result.MatchedRules);
+        Assert.Contains(BillDetectionRuleMatch.AttachmentPresent, result.MatchedRules);
+        Assert.Single(result.CandidateAttachments);
     }
 }

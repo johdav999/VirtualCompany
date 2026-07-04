@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260420233000_AddPaymentAllocationsAndSettlementStatuses")]
     public partial class AddPaymentAllocationsAndSettlementStatuses : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -82,19 +84,19 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         column: x => x.payment_id,
                         principalTable: "finance_payments",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_payment_allocations_finance_invoices_invoice_id",
                         column: x => x.invoice_id,
                         principalTable: "finance_invoices",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_payment_allocations_finance_bills_bill_id",
                         column: x => x.bill_id,
                         principalTable: "finance_bills",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateIndex(

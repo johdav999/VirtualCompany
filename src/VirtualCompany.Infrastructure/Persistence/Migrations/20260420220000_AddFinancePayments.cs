@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260420220000_AddFinancePayments")]
     public partial class AddFinancePayments : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -17,6 +19,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
             var string32Type = isPostgres ? "character varying(32)" : "nvarchar(32)";
             var string64Type = isPostgres ? "character varying(64)" : "nvarchar(64)";
             var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
+            var companyPrincipalColumn = isPostgres ? "id" : "Id";
 
             migrationBuilder.CreateTable(
                 name: "finance_payments",
@@ -44,9 +47,17 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_finance_payments_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
+                        principalColumn: companyPrincipalColumn,
                         onDelete: ReferentialAction.Cascade);
                 });
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_payment_cash_ledger_links_payments_payment_id",
+                table: "payment_cash_ledger_links",
+                column: "payment_id",
+                principalTable: "finance_payments",
+                principalColumn: "id",
+                onDelete: ReferentialAction.NoAction);
 
             migrationBuilder.CreateIndex(
                 name: "IX_finance_payments_company_id",
@@ -66,6 +77,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropForeignKey(
+                name: "FK_payment_cash_ledger_links_payments_payment_id",
+                table: "payment_cash_ledger_links");
+
             migrationBuilder.DropTable(
                 name: "finance_payments");
         }

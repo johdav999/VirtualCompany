@@ -195,6 +195,10 @@
                             <div><dt>Category</dt><dd>@detail.CategoryLabel</dd></div>
                             <div><dt>External reference</dt><dd>@detail.ExternalReference</dd></div>
                             <div><dt>Source</dt><dd>@detail.SourceLabel</dd></div>
+                            @if (!string.IsNullOrWhiteSpace(detail.PaymentSummary))
+                            {
+                                <div><dt>Payment status</dt><dd>@detail.PaymentSummary</dd></div>
+                            }
                             <div><dt>Anomaly state</dt><dd>@detail.AnomalyLabel</dd></div>
                         </dl>
 
@@ -207,14 +211,22 @@
                             <h3>Flags</h3>
                             @if (detail.Flags.Count == 0)
                             {
-                                <p>No review flags are recorded for this transaction.</p>
+                                <div class="transactions-flag-list">
+                                    <div class="transactions-flag-item">
+                                        <span>@detail.StatusLabel</span>
+                                        <p>@detail.ReviewReason</p>
+                                    </div>
+                                </div>
                             }
                             else
                             {
                                 <div class="transactions-flag-list">
                                     @foreach (var flag in detail.Flags)
                                     {
-                                        <span>@FormatLabel(flag)</span>
+                                        <div class="transactions-flag-item">
+                                            <span>@FormatLabel(flag)</span>
+                                            <p>@FormatFlagReason(flag, SelectedTransaction.PaymentContext)</p>
+                                        </div>
                                     }
                                 </div>
                             }

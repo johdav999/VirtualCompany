@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260417111500_ExpandFinanceSeedLifecycleStates")]
     public partial class ExpandFinanceSeedLifecycleStates : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

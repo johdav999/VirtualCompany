@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260421090000_AddBankTransactionsAndMappings")]
     public partial class AddBankTransactionsAndMappings : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -21,6 +23,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
             var string160Type = isPostgres ? "character varying(160)" : "nvarchar(160)";
             var string200Type = isPostgres ? "character varying(200)" : "nvarchar(200)";
             var string240Type = isPostgres ? "character varying(240)" : "nvarchar(240)";
+            var companyPrincipalColumn = isPostgres ? "id" : "Id";
 
             migrationBuilder.CreateTable(
                 name: "company_bank_accounts",
@@ -46,7 +49,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_company_bank_accounts_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
+                        principalColumn: companyPrincipalColumn,
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_company_bank_accounts_finance_accounts_finance_account_id",
@@ -85,7 +88,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_bank_transactions_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
+                        principalColumn: companyPrincipalColumn,
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_bank_transactions_company_bank_accounts_bank_account_id",
@@ -94,6 +97,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         principalColumn: "id",
                         onDelete: ReferentialAction.Restrict);
                 });
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_bank_transaction_posting_states_bank_transactions_bank_transaction_id",
+                table: "bank_transaction_posting_states",
+                column: "bank_transaction_id",
+                principalTable: "bank_transactions",
+                principalColumn: "id",
+                onDelete: ReferentialAction.NoAction);
 
             migrationBuilder.CreateTable(
                 name: "bank_transaction_payment_links",
@@ -115,14 +126,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_bank_transaction_payment_links_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
+                        principalColumn: companyPrincipalColumn,
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_bank_transaction_payment_links_bank_transactions_bank_transaction_id",
                         column: x => x.bank_transaction_id,
                         principalTable: "bank_transactions",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_bank_transaction_payment_links_finance_payments_payment_id",
                         column: x => x.payment_id,
@@ -149,20 +160,20 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_bank_transaction_cash_ledger_links_companies_company_id",
                         column: x => x.company_id,
                         principalTable: "companies",
-                        principalColumn: "id",
+                        principalColumn: companyPrincipalColumn,
                         onDelete: ReferentialAction.Cascade);
                     table.ForeignKey(
                         name: "FK_bank_transaction_cash_ledger_links_bank_transactions_bank_transaction_id",
                         column: x => x.bank_transaction_id,
                         principalTable: "bank_transactions",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_bank_transaction_cash_ledger_links_ledger_entries_ledger_entry_id",
                         column: x => x.ledger_entry_id,
                         principalTable: "ledger_entries",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateIndex(name: "IX_company_bank_accounts_company_id", table: "company_bank_accounts", column: "company_id");
@@ -192,6 +203,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropForeignKey(
+                name: "FK_bank_transaction_posting_states_bank_transactions_bank_transaction_id",
+                table: "bank_transaction_posting_states");
+
             migrationBuilder.DropTable(name: "bank_transaction_cash_ledger_links");
             migrationBuilder.DropTable(name: "bank_transaction_payment_links");
             migrationBuilder.DropTable(name: "bank_transactions");

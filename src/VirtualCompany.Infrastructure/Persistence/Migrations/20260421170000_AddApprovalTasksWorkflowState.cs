@@ -6,6 +6,8 @@ using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260421170000_AddApprovalTasksWorkflowState")]
     public partial class AddApprovalTasksWorkflowState : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

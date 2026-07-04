@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260420190000_AddFinancialStatementSnapshots")]
     public partial class AddFinancialStatementSnapshots : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -90,7 +92,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         column: x => x.snapshot_id,
                         principalTable: "financial_statement_snapshots",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateIndex(

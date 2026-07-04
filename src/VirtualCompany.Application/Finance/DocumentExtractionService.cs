@@ -11,12 +11,12 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
     [
         new("supplierName", @"(?:supplier|vendor|from|leverant(?:o|ö)r)\s*[:\-]\s*(?<value>[^\r\n]{2,120})", BillFieldConfidence.High),
         new("supplierOrgNumber", @"(?:org(?:anisation)?(?:\.| number| no)?|organisationsnummer|vat no|tax id)\s*[:\-]?\s*(?<value>(?:SE)?\d{6}[- ]?\d{4}|\d{10,12})", BillFieldConfidence.High),
-        new("invoiceNumber", @"(?:invoice\s*(?:number|no|#)?|inv\s*#|faktura(?:nummer|nr)?|bill\s*(?:number|no)?)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\-\/]{2,63})", BillFieldConfidence.High),
+        new("invoiceNumber", @"(?:invoice\s*(?:number|no|#)|inv\s*#|faktura(?:nummer|nr)|bill\s*(?:number|no))\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\-\/]{2,63})", BillFieldConfidence.High),
         new("invoiceDate", @"(?:invoice\s*date|issued|fakturadatum|datum)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
         new("dueDate", @"(?:due\s*date|payment\s*due|pay\s*by|förfallodatum|forfallodatum|senast\s*betala)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
         new("currency", @"\b(?<value>SEK|EUR|USD|GBP|NOK|DKK)\b|(?<value>kr)\b", BillFieldConfidence.Medium),
-        new("totalAmount", @"(?:total\s*(?:amount)?|amount\s*(?:to\s*)?pay|amount\s*due|att\s*betala|summa(?:\s*att\s*betala)?|totalt)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)", BillFieldConfidence.High),
-        new("vatAmount", @"(?:vat|moms)\s*[:\-]?\s*(?<value>-?\d[\d\s.,']*)", BillFieldConfidence.High),
+        new("totalAmount", @"(?:total\s*(?:amount)?(?:\s*due)?|amount\s*(?:to\s*)?pay|amount\s*due|att\s*betala|summa(?:\s*att\s*betala)?|totalt)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)", BillFieldConfidence.High),
+        new("vatAmount", @"(?:vat|moms)(?:\s*\([^)]*\))?\s*[:\-]?\s*(?<value>-?\d[\d\s.,']*)", BillFieldConfidence.High),
         new("paymentReference", @"(?:ocr|payment\s*reference|reference|referens|meddelande)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\- ]{2,64})", BillFieldConfidence.High),
         new("bankgiro", @"(?:bankgiro|bg)\s*[:\-]?\s*(?<value>\d{3,4}[- ]?\d{4})", BillFieldConfidence.High),
         new("plusgiro", @"(?:plusgiro|pg)\s*[:\-]?\s*(?<value>\d{2,8}[- ]?\d{1,4})", BillFieldConfidence.High),
@@ -66,16 +66,31 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
             throw new ArgumentException("CompanyId is required.", nameof(command));
         }
 
-        var extractor = _textExtractors.FirstOrDefault(x => x.Supports(command.InputType))
-            ?? throw new UnsupportedBillDocumentException($"No text extractor supports '{command.InputType}'.");
+        var extractors = _textExtractors.Where(x => x.Supports(command.InputType)).ToArray();
+        if (extractors.Length == 0)
+        {
+            throw new UnsupportedBillDocumentException($"No text extractor supports '{command.InputType}'.");
+        }
 
-        var document = await extractor.ExtractAsync(
-            command.Content,
-            command.SourceDocumentName,
-            command.InputType,
-            cancellationToken);
+        await using var bufferedContent = new MemoryStream();
+        await command.Content.CopyToAsync(bufferedContent, cancellationToken);
 
-        if (string.IsNullOrWhiteSpace(document.FullText))
+        ExtractedDocumentText? document = null;
+        foreach (var extractor in extractors)
+        {
+            bufferedContent.Position = 0;
+            document = await extractor.ExtractAsync(
+                bufferedContent,
+                command.SourceDocumentName,
+                command.InputType,
+                cancellationToken);
+            if (!string.IsNullOrWhiteSpace(document.FullText))
+            {
+                break;
+            }
+        }
+
+        if (document is null || string.IsNullOrWhiteSpace(document.FullText))
         {
             return new DocumentExtractionResult(command.CompanyId, []);
         }
@@ -366,12 +381,28 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
         }
         else if (normalized.Contains(','))
         {
-            normalized = normalized.Replace(',', '.');
+            normalized = IsLikelyThousandsSeparated(normalized, ',')
+                ? normalized.Replace(",", string.Empty, StringComparison.Ordinal)
+                : normalized.Replace(',', '.');
+        }
+        else if (normalized.Contains('.') && IsLikelyThousandsSeparated(normalized, '.'))
+        {
+            normalized = normalized.Replace(".", string.Empty, StringComparison.Ordinal);
         }
 
         return decimal.TryParse(normalized, NumberStyles.Number | NumberStyles.AllowLeadingSign, CultureInfo.InvariantCulture, out var parsed)
             ? parsed
             : null;
+    }
+
+    private static bool IsLikelyThousandsSeparated(string value, char separator)
+    {
+        var unsigned = value.TrimStart('-');
+        var parts = unsigned.Split(separator);
+        return parts.Length > 1 &&
+            parts[^1].Length == 3 &&
+            parts.All(part => part.Length > 0 && part.All(char.IsDigit)) &&
+            parts.Skip(1).All(part => part.Length == 3);
     }
 
     private static string NormalizeValue(string value) =>

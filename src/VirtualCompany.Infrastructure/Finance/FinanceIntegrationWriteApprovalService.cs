@@ -54,9 +54,44 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
         var existing = await _dbContext.FinanceIntegrationWriteCommands
             .SingleOrDefaultAsync(x => x.CompanyId == request.CompanyId && x.Id == request.WriteRequestId, cancellationToken);
 
-        if (existing?.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
+        if (existing?.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed &&
+            string.Equals(existing.PayloadHash, request.PayloadHash, StringComparison.OrdinalIgnoreCase))
         {
             return new FinanceIntegrationWriteResult(request.ProviderKey, existing.Id, existing.ApprovalId, existing.Status, "This accounting-system action has already completed.", false);
+        }
+
+        if (existing?.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
+        {
+            existing.ReplaceOutdatedExecutedRequest(
+                request.ConnectionId,
+                request.ActorUserId,
+                request.HttpMethod,
+                request.Path,
+                await ResolveTargetCompanyAsync(request.CompanyId, cancellationToken),
+                request.PayloadSummary,
+                request.PayloadHash,
+                request.Payload.SanitizedJson,
+                request.CorrelationId,
+                now);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        if (existing is not null &&
+            CanReplaceExistingRequest(existing.Status) &&
+            !string.Equals(existing.PayloadHash, request.PayloadHash, StringComparison.OrdinalIgnoreCase))
+        {
+            existing.ReplaceUnexecutedRequest(
+                request.ConnectionId,
+                request.ActorUserId,
+                request.HttpMethod,
+                request.Path,
+                await ResolveTargetCompanyAsync(request.CompanyId, cancellationToken),
+                request.PayloadSummary,
+                request.PayloadHash,
+                request.Payload.SanitizedJson,
+                request.CorrelationId,
+                now);
+            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         if (existing?.ApprovalId is Guid existingApprovalId)
@@ -94,6 +129,11 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
         }
         return new FinanceIntegrationWriteResult(request.ProviderKey, command.Id, approval.Id, command.Status, "Approve this action before data is sent to the accounting system.", false);
     }
+
+    private static bool CanReplaceExistingRequest(string status) =>
+        status is FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval or
+            FinanceIntegrationWriteCommandRecordStatuses.Approved or
+            FinanceIntegrationWriteCommandRecordStatuses.Failed;
 
     public async Task<FinanceIntegrationWriteResult> EnsureApprovedForExecutionAsync(
         FinanceIntegrationWriteCommand request,

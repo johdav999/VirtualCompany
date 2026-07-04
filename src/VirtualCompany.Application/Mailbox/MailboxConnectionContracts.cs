@@ -105,6 +105,7 @@ public sealed record MailboxScannedMessageSummary(
     string ReasonSummary,
     string? BodyPreview,
     IReadOnlyCollection<MailboxScannedAttachmentSummary> Attachments,
+    Guid? DetectedBillId,
     DateTime CreatedUtc);
 
 public sealed record MailboxScannedAttachmentSummary(
@@ -191,6 +192,18 @@ public sealed record MailboxInboundThread(
 public sealed record MailboxMessageFetchRequest(
     string MessageId);
 
+public sealed record MailboxAttachmentFetchRequest(
+    string MessageId,
+    string AttachmentId,
+    string? FileName = null,
+    string? MimeType = null);
+
+public sealed record MailboxAttachmentContent(
+    string ExternalAttachmentId,
+    string? FileName,
+    string? MimeType,
+    byte[] Content);
+
 public sealed record MailboxThreadFetchRequest(
     string ThreadId);
 
@@ -232,7 +245,16 @@ public sealed record ManualInboxBillScanJob(
     Guid MailboxConnectionId,
     Guid EmailIngestionRunId,
     DateTime ScanFromUtc,
-    DateTime ScanToUtc);
+    DateTime ScanToUtc,
+    Guid? AgentTaskId = null,
+    Guid? AgentId = null,
+    string TriggerSource = "manual");
+
+public sealed record ConnectedMailboxInboxScanJob(
+    Guid CompanyId,
+    Guid UserId,
+    Guid MailboxConnectionId,
+    MailboxProvider Provider);
 
 public interface IMailboxConnectionService
 {
@@ -246,6 +268,16 @@ public interface IMailboxConnectionService
 public interface IManualInboxBillScanJobScheduler
 {
     Task EnqueueManualScanAsync(ManualInboxBillScanJob job, CancellationToken cancellationToken);
+}
+
+public interface IConnectedMailboxInboxScanJobScheduler
+{
+    Task EnqueueConnectedMailboxScanAsync(ConnectedMailboxInboxScanJob job, CancellationToken cancellationToken);
+}
+
+public interface IConnectedMailboxInboxScanOrchestrator
+{
+    Task ExecuteConnectedMailboxScanAsync(ConnectedMailboxInboxScanJob job, CancellationToken cancellationToken);
 }
 
 public interface IManualInboxBillScanOrchestrator
@@ -323,6 +355,8 @@ public interface IMailboxProviderClient
     Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken);
     Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken);
     Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken);
+    Task<MailboxAttachmentContent?> GetAttachmentContentAsync(string accessToken, MailboxAttachmentFetchRequest request, CancellationToken cancellationToken) =>
+        Task.FromResult<MailboxAttachmentContent?>(null);
     Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken);
     Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
     Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);

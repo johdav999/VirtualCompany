@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260402010000_AddKnowledgeChunksAndSemanticRetrieval")]
     public partial class AddKnowledgeChunksAndSemanticRetrieval : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -121,7 +123,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                             column: x => x.CompanyId,
                             principalTable: "companies",
                             principalColumn: "Id",
-                            onDelete: ReferentialAction.Cascade);
+                            onDelete: ReferentialAction.NoAction);
                         table.ForeignKey(
                             name: "FK_knowledge_chunks_knowledge_documents_DocumentId",
                             column: x => x.DocumentId,
@@ -162,7 +164,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                             column: x => x.CompanyId,
                             principalTable: "companies",
                             principalColumn: "Id",
-                            onDelete: ReferentialAction.Cascade);
+                            onDelete: ReferentialAction.NoAction);
                         table.ForeignKey(
                             name: "FK_knowledge_chunks_knowledge_documents_DocumentId",
                             column: x => x.DocumentId,

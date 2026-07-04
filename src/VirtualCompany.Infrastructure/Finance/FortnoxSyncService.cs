@@ -1,4 +1,5 @@
 using System.Net;
+using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -21,6 +22,9 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     private const string FortnoxScopeProject = "project";
     private const string FortnoxScopeSupplier = "supplier";
     private const string FortnoxScopeSupplierInvoice = "supplierinvoice";
+    private const string FortnoxScopePayment = "payment";
+    private const string InvoicePaymentExternalPrefix = "invoice-payment-resource-";
+    private const string SupplierInvoicePaymentExternalPrefix = "supplier-invoice-payment-resource-";
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFortnoxApiClient _apiClient;
@@ -77,6 +81,8 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         entityResults.Add(await SyncEntityAsync(connection, "projects", FortnoxScopeProject, grantedScopes, state => SyncProjectsAsync(context, state, command.FullSync, cancellationToken), cancellationToken));
         entityResults.Add(await SyncEntityAsync(connection, "invoices", FortnoxScopeInvoice, grantedScopes, state => SyncInvoicesAsync(context, state, command.FullSync, cancellationToken), cancellationToken));
         entityResults.Add(await SyncEntityAsync(connection, "supplier_invoices", FortnoxScopeSupplierInvoice, grantedScopes, state => SyncSupplierInvoicesAsync(context, state, command.FullSync, cancellationToken), cancellationToken));
+        entityResults.Add(await SyncEntityAsync(connection, "invoice_payments", FortnoxScopePayment, grantedScopes, state => SyncInvoicePaymentsAsync(context, state, command.FullSync, cancellationToken), cancellationToken));
+        entityResults.Add(await SyncEntityAsync(connection, "supplier_invoice_payments", FortnoxScopePayment, grantedScopes, state => SyncSupplierInvoicePaymentsAsync(context, state, command.FullSync, cancellationToken), cancellationToken));
         entityResults.Add(await SyncEntityAsync(connection, "vouchers", FortnoxScopeBookkeeping, grantedScopes, state => SyncVouchersAsync(context, state, command.FullSync, cancellationToken), cancellationToken));
         entityResults.Add(await SyncEntityAsync(connection, "payments", state => SyncPaymentActivityAsync(context, state, cancellationToken), cancellationToken));
 
@@ -473,10 +479,17 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         connection.SetStatus(FortnoxConnectionStatus.NeedsReconnect, safeReason, nowUtc);
     }
 
-    private static bool IsMissingGrantedScope(string? requiredScope, IReadOnlySet<string>? grantedScopes) =>
-        !string.IsNullOrWhiteSpace(requiredScope) &&
-        grantedScopes is { Count: > 0 } &&
-        !grantedScopes.Contains(requiredScope);
+    private static bool IsMissingGrantedScope(string? requiredScope, IReadOnlySet<string>? grantedScopes)
+    {
+        if (string.IsNullOrWhiteSpace(requiredScope) || grantedScopes is not { Count: > 0 })
+        {
+            return false;
+        }
+
+        return !grantedScopes.Contains(requiredScope) &&
+            !(string.Equals(requiredScope, FortnoxScopePayment, StringComparison.OrdinalIgnoreCase) &&
+              grantedScopes.Contains("payments"));
+    }
 
     private async Task<EntityCounters> SyncCompanyInformationAsync(
         FortnoxRequestContext context,
@@ -560,6 +573,22 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
             fullSync,
             cancellationToken);
 
+    private async Task<EntityCounters> SyncInvoicePaymentsAsync(FortnoxRequestContext context, FinanceIntegrationSyncState state, bool fullSync, CancellationToken cancellationToken) =>
+        await SyncPagedAsync(
+            state,
+            options => _apiClient.GetInvoicePaymentsAsync(context, options, cancellationToken),
+            async payment => await UpsertInvoicePaymentAsync(context.CompanyId, context.ConnectionId!.Value, _mappingService.MapInvoicePayment(payment), cancellationToken),
+            fullSync,
+            cancellationToken);
+
+    private async Task<EntityCounters> SyncSupplierInvoicePaymentsAsync(FortnoxRequestContext context, FinanceIntegrationSyncState state, bool fullSync, CancellationToken cancellationToken) =>
+        await SyncPagedAsync(
+            state,
+            options => _apiClient.GetSupplierInvoicePaymentsAsync(context, options, cancellationToken),
+            async payment => await UpsertSupplierInvoicePaymentAsync(context.CompanyId, context.ConnectionId!.Value, _mappingService.MapSupplierInvoicePayment(payment), cancellationToken),
+            fullSync,
+            cancellationToken);
+
     private async Task<EntityCounters> SyncVouchersAsync(FortnoxRequestContext context, FinanceIntegrationSyncState state, bool fullSync, CancellationToken cancellationToken) =>
         await SyncPagedAsync(
             state,
@@ -571,48 +600,108 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     private async Task<EntityCounters> SyncPaymentActivityAsync(FortnoxRequestContext context, FinanceIntegrationSyncState state, CancellationToken cancellationToken)
     {
         var counters = new EntityCounters { NextCursor = state.Cursor };
-        var paidInvoices = await _dbContext.FinanceInvoices
-            .Where(x => x.CompanyId == context.CompanyId && x.SettlementStatus == FinanceSettlementStatuses.Paid)
+        var invoicesWithPayments = await _dbContext.FinanceInvoices
+            .Where(x => x.CompanyId == context.CompanyId && x.PaidAmount > 0m)
             .ToListAsync(cancellationToken);
-        var paidBills = await _dbContext.FinanceBills
-            .Where(x => x.CompanyId == context.CompanyId && x.SettlementStatus == FinanceSettlementStatuses.Paid)
+        var billsWithPayments = await _dbContext.FinanceBills
+            .Where(x => x.CompanyId == context.CompanyId && x.PaidAmount > 0m)
             .ToListAsync(cancellationToken);
 
-        foreach (var invoice in paidInvoices)
+        var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == context.CompanyId && x.Code == "1930", cancellationToken)
+            ?? await EnsureSystemAccountAsync(context.CompanyId, cancellationToken);
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+
+        foreach (var invoice in invoicesWithPayments)
         {
+            if (await HasDirectFortnoxPaymentActivityAsync(context.CompanyId, invoice.Id, null, cancellationToken))
+            {
+                continue;
+            }
+
+            var paidAmount = ResolveSyncedPaymentAmount(invoice.PaidAmount, invoice.Amount, invoice.ProviderStatus);
+            if (paidAmount <= 0m)
+            {
+                continue;
+            }
+
             var payment = new Payment(
                 Guid.NewGuid(),
                 context.CompanyId,
                 PaymentTypes.Incoming,
-                Math.Abs(invoice.Amount),
+                paidAmount,
                 invoice.Currency,
-                invoice.DueUtc,
+                now,
                 "bank_transfer",
                 PaymentStatuses.Completed,
                 invoice.InvoiceNumber,
-                _timeProvider.GetUtcNow().UtcDateTime);
+                now);
 
-            counters.Add(await UpsertPaymentAsync(context.CompanyId, context.ConnectionId!.Value, $"invoice-payment-{invoice.InvoiceNumber}", invoice.InvoiceNumber, payment, cancellationToken));
+            var paymentResult = await UpsertPaymentAsync(context.CompanyId, context.ConnectionId!.Value, $"invoice-payment-{invoice.InvoiceNumber}", invoice.InvoiceNumber, payment, cancellationToken);
+            counters.Add(paymentResult.Result);
+            counters.Add(await UpsertPaymentAllocationAsync(context.CompanyId, paymentResult.Payment.Id, invoice.Id, null, paidAmount, invoice.Currency, cancellationToken));
+            counters.Add(await UpsertPaymentTransactionAsync(
+                context.CompanyId,
+                context.ConnectionId!.Value,
+                $"invoice-payment-transaction-{invoice.InvoiceNumber}",
+                $"payment-in-{invoice.InvoiceNumber}",
+                account,
+                invoice.CounterpartyId,
+                invoice.Id,
+                null,
+                paidAmount,
+                invoice.Currency,
+                now,
+                "customer_payment",
+                $"Customer payment for invoice {invoice.InvoiceNumber}",
+                cancellationToken));
         }
 
-        foreach (var bill in paidBills)
+        foreach (var bill in billsWithPayments)
         {
+            if (await HasDirectFortnoxPaymentActivityAsync(context.CompanyId, null, bill.Id, cancellationToken))
+            {
+                continue;
+            }
+
+            var paidAmount = ResolveSyncedPaymentAmount(bill.PaidAmount, bill.Amount, bill.ProviderStatus);
+            if (paidAmount <= 0m)
+            {
+                continue;
+            }
+
             var payment = new Payment(
                 Guid.NewGuid(),
                 context.CompanyId,
                 PaymentTypes.Outgoing,
-                Math.Abs(bill.Amount),
+                paidAmount,
                 bill.Currency,
-                bill.DueUtc,
+                now,
                 "bank_transfer",
                 PaymentStatuses.Completed,
                 bill.BillNumber,
-                _timeProvider.GetUtcNow().UtcDateTime);
+                now);
 
-            counters.Add(await UpsertPaymentAsync(context.CompanyId, context.ConnectionId!.Value, $"bill-payment-{bill.BillNumber}", bill.BillNumber, payment, cancellationToken));
+            var paymentResult = await UpsertPaymentAsync(context.CompanyId, context.ConnectionId!.Value, $"bill-payment-{bill.BillNumber}", bill.BillNumber, payment, cancellationToken);
+            counters.Add(paymentResult.Result);
+            counters.Add(await UpsertPaymentAllocationAsync(context.CompanyId, paymentResult.Payment.Id, null, bill.Id, paidAmount, bill.Currency, cancellationToken));
+            counters.Add(await UpsertPaymentTransactionAsync(
+                context.CompanyId,
+                context.ConnectionId!.Value,
+                $"bill-payment-transaction-{bill.BillNumber}",
+                $"payment-out-{bill.BillNumber}",
+                account,
+                bill.CounterpartyId,
+                null,
+                bill.Id,
+                -paidAmount,
+                bill.Currency,
+                now,
+                "supplier_payment",
+                $"Supplier payment for bill {bill.BillNumber}",
+                cancellationToken));
         }
 
-        counters.NextCursor = _timeProvider.GetUtcNow().UtcDateTime.ToString("O");
+        counters.NextCursor = now.ToString("O");
         return counters;
     }
 
@@ -713,7 +802,19 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     {
         model = NormalizeAccountModel(model);
         var existing = await FindReferenceAsync(companyId, connectionId, "account", model.ExternalId, cancellationToken);
-        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        if (existing is not null && existing.IsCurrent(model.ExternalUpdatedUtc))
+        {
+            var currentAccount = await _dbContext.FinanceAccounts
+                .SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken)
+                ?? await FindFinanceAccountByCodeAsync(companyId, model.Code, cancellationToken);
+            if (currentAccount is not null)
+            {
+                await UpsertFortnoxAccountBalanceSnapshotAsync(companyId, currentAccount, model, cancellationToken);
+            }
+
+            existing.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
 
         FinanceAccount account;
         if (existing is null)
@@ -731,6 +832,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
                 account.ApplySyncedSnapshot(model.Code, model.Name, model.AccountType, "SEK", account.OpeningBalance, account.OpenedUtc, _timeProvider.GetUtcNow().UtcDateTime);
             }
 
+            await UpsertFortnoxAccountBalanceSnapshotAsync(companyId, account, model, cancellationToken);
             await AddReferenceAsync(companyId, connectionId, "account", account.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
             return created
                 ? SyncMutationResult.FromCreated(model.ExternalUpdatedUtc)
@@ -751,14 +853,51 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
                 account.ApplySyncedSnapshot(model.Code, model.Name, model.AccountType, "SEK", account.OpeningBalance, account.OpenedUtc, _timeProvider.GetUtcNow().UtcDateTime);
             }
 
+            await UpsertFortnoxAccountBalanceSnapshotAsync(companyId, account, model, cancellationToken);
             existing.RepointToInternalRecord(account.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
             AttachSource(account, "account", model.ExternalId, existing.Id);
             return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);
         }
         account.ApplySyncedSnapshot(model.Code, model.Name, model.AccountType, "SEK", account.OpeningBalance, account.OpenedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+        await UpsertFortnoxAccountBalanceSnapshotAsync(companyId, account, model, cancellationToken);
         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
         AttachSource(account, "account", model.ExternalId, existing.Id);
         return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);
+    }
+
+    private async Task UpsertFortnoxAccountBalanceSnapshotAsync(
+        Guid companyId,
+        FinanceAccount account,
+        FortnoxAccountSyncModel model,
+        CancellationToken cancellationToken)
+    {
+        if (!model.BalanceSnapshotAmount.HasValue || !IsFortnoxCashAccount(model.Code, model.AccountType))
+        {
+            return;
+        }
+
+        var asOfUtc = model.BalanceSnapshotUtc ?? _timeProvider.GetUtcNow().UtcDateTime;
+        var existing = await _dbContext.FinanceBalances
+            .IgnoreQueryFilters()
+            .SingleOrDefaultAsync(x =>
+                x.CompanyId == companyId &&
+                x.AccountId == account.Id &&
+                x.AsOfUtc == asOfUtc,
+                cancellationToken);
+
+        if (existing is not null)
+        {
+            _dbContext.FinanceBalances.Remove(existing);
+        }
+
+        _dbContext.FinanceBalances.Add(new FinanceBalance(
+            Guid.NewGuid(),
+            companyId,
+            account.Id,
+            asOfUtc,
+            model.BalanceSnapshotAmount.Value,
+            account.Currency,
+            _timeProvider.GetUtcNow().UtcDateTime));
     }
 
     private async Task<SyncMutationResult> UpsertArticleAsync(Guid companyId, Guid connectionId, FortnoxArticleSyncModel model, CancellationToken cancellationToken) =>
@@ -767,16 +906,151 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     private async Task<SyncMutationResult> UpsertProjectAsync(Guid companyId, Guid connectionId, FortnoxProjectSyncModel model, CancellationToken cancellationToken) =>
         await UpsertReferenceOnlyAsync(companyId, connectionId, "project", model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
 
+    private async Task<SyncMutationResult> UpsertInvoicePaymentAsync(Guid companyId, Guid connectionId, FortnoxInvoicePaymentSyncModel model, CancellationToken cancellationToken)
+    {
+        if (model.Amount <= 0m)
+        {
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
+
+        var invoiceReference = await FindDocumentReferenceAsync(companyId, connectionId, "invoice", model.InvoiceNumber, cancellationToken);
+        if (invoiceReference is null)
+        {
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
+
+        var invoice = await _dbContext.FinanceInvoices.SingleOrDefaultAsync(x => x.Id == invoiceReference.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+        if (invoice is null)
+        {
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
+
+        var payment = new Payment(
+            Guid.NewGuid(),
+            companyId,
+            PaymentTypes.Incoming,
+            model.Amount,
+            model.Currency,
+            model.PaymentUtc,
+            PaymentMethods.Normalize("bank_transfer"),
+            model.Status,
+            invoice.InvoiceNumber,
+            model.PaymentUtc);
+
+        var paymentResult = await UpsertPaymentAsync(companyId, connectionId, $"{InvoicePaymentExternalPrefix}{model.ExternalId}", model.ExternalNumber, payment, cancellationToken);
+        var allocationResult = await UpsertPaymentAllocationAsync(companyId, paymentResult.Payment.Id, invoice.Id, null, model.Amount, model.Currency, cancellationToken);
+        var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Code == "1930", cancellationToken)
+            ?? await EnsureSystemAccountAsync(companyId, cancellationToken);
+
+        var transactionResult = await UpsertPaymentTransactionAsync(
+            companyId,
+            connectionId,
+            $"invoice-payment-transaction-resource-{model.ExternalId}",
+            BuildPaymentTransactionExternalNumber("invoice", model.ExternalNumber),
+            account,
+            invoice.CounterpartyId,
+            invoice.Id,
+            null,
+            model.Amount,
+            model.Currency,
+            model.PaymentUtc,
+            "customer_payment",
+            $"Customer payment for invoice {invoice.InvoiceNumber}",
+            cancellationToken);
+
+        await RefreshInvoiceSettlementFromAllocationsAsync(invoice, cancellationToken);
+        return MergeMutationResults(model.ExternalUpdatedUtc, paymentResult.Result, allocationResult, transactionResult);
+    }
+
+    private async Task<SyncMutationResult> UpsertSupplierInvoicePaymentAsync(Guid companyId, Guid connectionId, FortnoxSupplierInvoicePaymentSyncModel model, CancellationToken cancellationToken)
+    {
+        if (model.Amount <= 0m)
+        {
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
+
+        var billReference = await FindDocumentReferenceAsync(companyId, connectionId, "supplier_invoice", model.InvoiceNumber, cancellationToken);
+        if (billReference is null)
+        {
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
+
+        var bill = await _dbContext.FinanceBills.SingleOrDefaultAsync(x => x.Id == billReference.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+        if (bill is null)
+        {
+            return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        }
+
+        var payment = new Payment(
+            Guid.NewGuid(),
+            companyId,
+            PaymentTypes.Outgoing,
+            model.Amount,
+            model.Currency,
+            model.PaymentUtc,
+            PaymentMethods.Normalize("bank_transfer"),
+            model.Status,
+            bill.BillNumber,
+            model.PaymentUtc);
+
+        var paymentResult = await UpsertPaymentAsync(companyId, connectionId, $"{SupplierInvoicePaymentExternalPrefix}{model.ExternalId}", model.ExternalNumber, payment, cancellationToken);
+        var allocationResult = await UpsertPaymentAllocationAsync(companyId, paymentResult.Payment.Id, null, bill.Id, model.Amount, model.Currency, cancellationToken);
+        var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Code == "1930", cancellationToken)
+            ?? await EnsureSystemAccountAsync(companyId, cancellationToken);
+
+        var transactionResult = await UpsertPaymentTransactionAsync(
+            companyId,
+            connectionId,
+            $"supplier-invoice-payment-transaction-resource-{model.ExternalId}",
+            BuildPaymentTransactionExternalNumber("supplier-invoice", model.ExternalNumber),
+            account,
+            bill.CounterpartyId,
+            null,
+            bill.Id,
+            -model.Amount,
+            model.Currency,
+            model.PaymentUtc,
+            "supplier_payment",
+            $"Supplier payment for bill {bill.BillNumber}",
+            cancellationToken);
+
+        return MergeMutationResults(model.ExternalUpdatedUtc, paymentResult.Result, allocationResult, transactionResult);
+    }
+
     private async Task<SyncMutationResult> UpsertInvoiceAsync(Guid companyId, Guid connectionId, FortnoxInvoiceSyncModel model, CancellationToken cancellationToken)
     {
         var existing = await FindReferenceAsync(companyId, connectionId, "invoice", model.ExternalId, cancellationToken);
-        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        if (existing is not null && existing.IsCurrent(model.ExternalUpdatedUtc))
+        {
+            var current = await _dbContext.FinanceInvoices.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+            if (current is not null && !InvoiceNeedsSyncRefresh(current, model))
+            {
+                existing.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
+                return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+            }
+        }
 
         var counterparty = await EnsureCounterpartyAsync(companyId, connectionId, "customer", model.CustomerNumber, model.CustomerName, cancellationToken);
         FinanceInvoice invoice;
         if (existing is null)
         {
-            invoice = new FinanceInvoice(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
+            invoice = new FinanceInvoice(
+                Guid.NewGuid(),
+                companyId,
+                counterparty.Id,
+                model.ExternalNumber,
+                model.IssuedUtc,
+                model.DueUtc,
+                model.Amount,
+                model.Currency,
+                model.Status,
+                settlementStatus: model.SettlementStatus,
+                postingStatus: model.PostingStatus,
+                dueStatus: model.DueStatus,
+                documentKind: model.DocumentKind,
+                providerStatus: model.ProviderStatus,
+                processingStatus: model.ProcessingStatus,
+                paidAmount: model.PaidAmount);
             _dbContext.FinanceInvoices.Add(invoice);
             await AddReferenceAsync(companyId, connectionId, "invoice", invoice.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
@@ -785,13 +1059,51 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         invoice = await _dbContext.FinanceInvoices.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
         if (invoice is null)
         {
-            invoice = new FinanceInvoice(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
+            invoice = new FinanceInvoice(
+                Guid.NewGuid(),
+                companyId,
+                counterparty.Id,
+                model.ExternalNumber,
+                model.IssuedUtc,
+                model.DueUtc,
+                model.Amount,
+                model.Currency,
+                model.Status,
+                settlementStatus: model.SettlementStatus,
+                postingStatus: model.PostingStatus,
+                dueStatus: model.DueStatus,
+                documentKind: model.DocumentKind,
+                providerStatus: model.ProviderStatus,
+                processingStatus: model.ProcessingStatus,
+                paidAmount: model.PaidAmount);
             _dbContext.FinanceInvoices.Add(invoice);
             existing.RepointToInternalRecord(invoice.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
             AttachSource(invoice, "invoice", model.ExternalId, existing.Id);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
         }
-        invoice.ApplySyncedSnapshot(counterparty.Id, model.IssuedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, model.SettlementStatus);
+        var allocatedPaidAmount = await GetAllocatedAmountAsync(companyId, invoice.Id, null, cancellationToken);
+        var syncedPaidAmount = Math.Max(model.PaidAmount, allocatedPaidAmount);
+        var syncedSettlementStatus = syncedPaidAmount > model.PaidAmount
+            ? ResolveSettlementStatus(model.Amount, syncedPaidAmount)
+            : model.SettlementStatus;
+        var syncedStatus = syncedPaidAmount > model.PaidAmount
+            ? ResolveDocumentStatusFromSettlement(model.Status, model.Amount, syncedPaidAmount)
+            : model.Status;
+
+        invoice.ApplySyncedSnapshot(
+            counterparty.Id,
+            model.IssuedUtc,
+            model.DueUtc,
+            model.Amount,
+            model.Currency,
+            syncedStatus,
+            syncedSettlementStatus,
+            model.PostingStatus,
+            model.DueStatus,
+            model.DocumentKind,
+            model.ProviderStatus,
+            model.ProcessingStatus,
+            syncedPaidAmount);
         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
         AttachSource(invoice, "invoice", model.ExternalId, existing.Id);
         return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);
@@ -800,43 +1112,157 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     private async Task<SyncMutationResult> UpsertSupplierInvoiceAsync(Guid companyId, Guid connectionId, FortnoxSupplierInvoiceSyncModel model, CancellationToken cancellationToken)
     {
         var existing = await FindReferenceAsync(companyId, connectionId, "supplier_invoice", model.ExternalId, cancellationToken);
-        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        if (existing is not null && existing.IsCurrent(model.ExternalUpdatedUtc))
+        {
+            var current = await _dbContext.FinanceBills.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+            if (current is not null &&
+                !BillNeedsSyncRefresh(current, model) &&
+                !ReferenceNeedsMetadataRefresh(existing, model.ProviderMetadata))
+            {
+                existing.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
+                return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+            }
+        }
 
         var counterparty = await EnsureCounterpartyAsync(companyId, connectionId, "supplier", model.SupplierNumber, model.SupplierName, cancellationToken);
         FinanceBill bill;
         if (existing is null)
         {
-            bill = new FinanceBill(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
+            bill = new FinanceBill(
+                Guid.NewGuid(),
+                companyId,
+                counterparty.Id,
+                model.ExternalNumber,
+                model.ReceivedUtc,
+                model.DueUtc,
+                model.Amount,
+                model.Currency,
+                model.Status,
+                settlementStatus: model.SettlementStatus,
+                postingStatus: model.PostingStatus,
+                dueStatus: model.DueStatus,
+                documentKind: model.DocumentKind,
+                providerStatus: model.ProviderStatus,
+                processingStatus: model.ProcessingStatus,
+                paidAmount: model.PaidAmount);
             _dbContext.FinanceBills.Add(bill);
-            await AddReferenceAsync(companyId, connectionId, "supplier_invoice", bill.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
+            await AddReferenceAsync(companyId, connectionId, "supplier_invoice", bill.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken, model.ProviderMetadata);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
         }
 
         bill = await _dbContext.FinanceBills.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
         if (bill is null)
         {
-            bill = new FinanceBill(Guid.NewGuid(), companyId, counterparty.Id, model.ExternalNumber, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, settlementStatus: model.SettlementStatus);
+            bill = new FinanceBill(
+                Guid.NewGuid(),
+                companyId,
+                counterparty.Id,
+                model.ExternalNumber,
+                model.ReceivedUtc,
+                model.DueUtc,
+                model.Amount,
+                model.Currency,
+                model.Status,
+                settlementStatus: model.SettlementStatus,
+                postingStatus: model.PostingStatus,
+                dueStatus: model.DueStatus,
+                documentKind: model.DocumentKind,
+                providerStatus: model.ProviderStatus,
+                processingStatus: model.ProcessingStatus,
+                paidAmount: model.PaidAmount);
             _dbContext.FinanceBills.Add(bill);
             existing.RepointToInternalRecord(bill.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+            existing.ReplaceMetadata(model.ProviderMetadata, _timeProvider.GetUtcNow().UtcDateTime);
             AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
         }
-        bill.ApplySyncedSnapshot(counterparty.Id, model.ReceivedUtc, model.DueUtc, model.Amount, model.Currency, model.Status, model.SettlementStatus);
+        bill.ApplySyncedSnapshot(
+            counterparty.Id,
+            model.ReceivedUtc,
+            model.DueUtc,
+            model.Amount,
+            model.Currency,
+            model.Status,
+            model.SettlementStatus,
+            model.PostingStatus,
+            model.DueStatus,
+            model.DocumentKind,
+            model.ProviderStatus,
+            model.ProcessingStatus,
+            model.PaidAmount);
         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+        existing.ReplaceMetadata(model.ProviderMetadata, _timeProvider.GetUtcNow().UtcDateTime);
         AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
         return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);
     }
+
+    private static bool InvoiceNeedsSyncRefresh(FinanceInvoice invoice, FortnoxInvoiceSyncModel model) =>
+        invoice.CounterpartyId == Guid.Empty ||
+        !DatesEqual(invoice.IssuedUtc, model.IssuedUtc) ||
+        !DatesEqual(invoice.DueUtc, model.DueUtc) ||
+        !MoneyEqual(invoice.Amount, model.Amount) ||
+        !MoneyEqual(invoice.PaidAmount, model.PaidAmount) ||
+        !TextEqual(invoice.Currency, model.Currency) ||
+        !TextEqual(invoice.Status, model.Status) ||
+        !TextEqual(invoice.SettlementStatus, model.SettlementStatus) ||
+        !TextEqual(invoice.PostingStatus, model.PostingStatus) ||
+        !TextEqual(invoice.DueStatus, model.DueStatus) ||
+        !TextEqual(invoice.DocumentKind, model.DocumentKind) ||
+        !TextEqual(invoice.ProviderStatus, model.ProviderStatus) ||
+        !TextEqual(invoice.ProcessingStatus, model.ProcessingStatus);
+
+    private static bool BillNeedsSyncRefresh(FinanceBill bill, FortnoxSupplierInvoiceSyncModel model) =>
+        bill.CounterpartyId == Guid.Empty ||
+        !DatesEqual(bill.ReceivedUtc, model.ReceivedUtc) ||
+        !DatesEqual(bill.DueUtc, model.DueUtc) ||
+        !MoneyEqual(bill.Amount, model.Amount) ||
+        !MoneyEqual(bill.PaidAmount, model.PaidAmount) ||
+        !TextEqual(bill.Currency, model.Currency) ||
+        !TextEqual(bill.Status, model.Status) ||
+        !TextEqual(bill.SettlementStatus, model.SettlementStatus) ||
+        !TextEqual(bill.PostingStatus, model.PostingStatus) ||
+        !TextEqual(bill.DueStatus, model.DueStatus) ||
+        !TextEqual(bill.DocumentKind, model.DocumentKind) ||
+        !TextEqual(bill.ProviderStatus, model.ProviderStatus) ||
+        !TextEqual(bill.ProcessingStatus, model.ProcessingStatus);
+
+    private static bool ReferenceNeedsMetadataRefresh(FinanceExternalReference reference, JsonObject? metadata) =>
+        metadata is not null &&
+        !string.Equals(reference.Metadata.ToJsonString(), metadata.ToJsonString(), StringComparison.Ordinal);
+
+    private static bool MoneyEqual(decimal left, decimal right) =>
+        decimal.Round(left, 2, MidpointRounding.AwayFromZero) == decimal.Round(right, 2, MidpointRounding.AwayFromZero);
+
+    private static bool DatesEqual(DateTime left, DateTime right) =>
+        DateTime.SpecifyKind(left, DateTimeKind.Utc) == DateTime.SpecifyKind(right, DateTimeKind.Utc);
+
+    private static bool TextEqual(string? left, string? right) =>
+        string.Equals(left?.Trim(), right?.Trim(), StringComparison.OrdinalIgnoreCase);
 
     private async Task<SyncMutationResult> UpsertVoucherAsync(Guid companyId, Guid connectionId, FortnoxVoucherSyncModel model, CancellationToken cancellationToken)
     {
         var account = await _dbContext.FinanceAccounts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Code == "1930", cancellationToken) ?? await EnsureSystemAccountAsync(companyId, cancellationToken);
         var existing = await FindReferenceAsync(companyId, connectionId, "voucher", model.ExternalId, cancellationToken);
-        if (MarkReferenceSyncedIfCurrent(existing, model.ExternalUpdatedUtc)) return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+        var linkedDocument = await ResolveVoucherLinkedDocumentAsync(companyId, connectionId, model, cancellationToken);
+        var amount = model.Amount != 0m
+            ? model.Amount
+            : linkedDocument?.Amount ?? 0m;
+        if (existing is not null && existing.IsCurrent(model.ExternalUpdatedUtc))
+        {
+            var current = await _dbContext.FinanceTransactions.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+            if (current is not null &&
+                current.Amount == amount &&
+                VoucherLinkMatches(current, linkedDocument))
+            {
+                existing.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
+                return SyncMutationResult.FromSkipped(model.ExternalUpdatedUtc);
+            }
+        }
 
         FinanceTransaction transaction;
         if (existing is null)
         {
-            transaction = new FinanceTransaction(Guid.NewGuid(), companyId, account.Id, null, null, null, model.TransactionUtc, "voucher", model.Amount, "SEK", model.Description, model.ExternalNumber);
+            transaction = new FinanceTransaction(Guid.NewGuid(), companyId, account.Id, linkedDocument?.CounterpartyId, linkedDocument?.InvoiceId, linkedDocument?.BillId, model.TransactionUtc, "voucher", amount, "SEK", model.Description, model.ExternalNumber);
             _dbContext.FinanceTransactions.Add(transaction);
             await AddReferenceAsync(companyId, connectionId, "voucher", transaction.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
@@ -845,26 +1271,157 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         transaction = await _dbContext.FinanceTransactions.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
         if (transaction is null)
         {
-            transaction = new FinanceTransaction(Guid.NewGuid(), companyId, account.Id, null, null, null, model.TransactionUtc, "voucher", model.Amount, "SEK", model.Description, model.ExternalNumber);
+            transaction = new FinanceTransaction(Guid.NewGuid(), companyId, account.Id, linkedDocument?.CounterpartyId, linkedDocument?.InvoiceId, linkedDocument?.BillId, model.TransactionUtc, "voucher", amount, "SEK", model.Description, model.ExternalNumber);
             _dbContext.FinanceTransactions.Add(transaction);
             existing.RepointToInternalRecord(transaction.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
             AttachSource(transaction, "voucher", model.ExternalId, existing.Id);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
         }
-        transaction.ChangeCategory("voucher");
+        transaction.ApplySyncedSnapshot(account.Id, linkedDocument?.CounterpartyId, linkedDocument?.InvoiceId, linkedDocument?.BillId, model.TransactionUtc, "voucher", amount, "SEK", model.Description, model.ExternalNumber);
         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
         AttachSource(transaction, "voucher", model.ExternalId, existing.Id);
         return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);
     }
 
-    private async Task<SyncMutationResult> UpsertPaymentAsync(Guid companyId, Guid connectionId, string externalId, string externalNumber, Payment incoming, CancellationToken cancellationToken)
+    private async Task<VoucherLinkedDocument?> ResolveVoucherLinkedDocumentAsync(
+        Guid companyId,
+        Guid connectionId,
+        FortnoxVoucherSyncModel model,
+        CancellationToken cancellationToken)
+    {
+        var documentNumber = ResolveVoucherDocumentNumber(model);
+        if (string.IsNullOrWhiteSpace(documentNumber))
+        {
+            return await ResolveVoucherLinkedDocumentByUniqueAmountAsync(companyId, model, cancellationToken);
+        }
+
+        var invoiceReference = await FindDocumentReferenceAsync(companyId, connectionId, "invoice", documentNumber, cancellationToken);
+        if (invoiceReference is not null)
+        {
+            var invoice = await _dbContext.FinanceInvoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && x.Id == invoiceReference.InternalRecordId)
+                .Select(x => new { x.Id, x.CounterpartyId, x.Amount })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            return invoice is null
+                ? null
+                : new VoucherLinkedDocument(invoice.CounterpartyId, invoice.Id, null, Math.Abs(invoice.Amount));
+        }
+
+        var supplierInvoiceReference = await FindDocumentReferenceAsync(companyId, connectionId, "supplier_invoice", documentNumber, cancellationToken);
+        if (supplierInvoiceReference is not null)
+        {
+            var bill = await _dbContext.FinanceBills
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && x.Id == supplierInvoiceReference.InternalRecordId)
+                .Select(x => new { x.Id, x.CounterpartyId, x.Amount })
+                .SingleOrDefaultAsync(cancellationToken);
+
+            return bill is null
+                ? null
+                : new VoucherLinkedDocument(bill.CounterpartyId, null, bill.Id, -Math.Abs(bill.Amount));
+        }
+
+        return await ResolveVoucherLinkedDocumentByUniqueAmountAsync(companyId, model, cancellationToken);
+    }
+
+    private async Task<VoucherLinkedDocument?> ResolveVoucherLinkedDocumentByUniqueAmountAsync(
+        Guid companyId,
+        FortnoxVoucherSyncModel model,
+        CancellationToken cancellationToken)
+    {
+        var amount = decimal.Round(Math.Abs(model.Amount), 2, MidpointRounding.AwayFromZero);
+        if (amount <= 0m)
+        {
+            return null;
+        }
+
+        var dateFloor = model.TransactionUtc.Date.AddDays(-45);
+        var dateCeiling = model.TransactionUtc.Date.AddDays(45);
+        var invoiceCandidates = await _dbContext.FinanceInvoices
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                x.IssuedUtc >= dateFloor &&
+                x.IssuedUtc <= dateCeiling &&
+                x.Amount >= amount - 0.01m &&
+                x.Amount <= amount + 0.01m)
+            .Select(x => new VoucherLinkedDocument(x.CounterpartyId, x.Id, null, Math.Abs(x.Amount)))
+            .ToListAsync(cancellationToken);
+
+        var billCandidates = await _dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                x.ReceivedUtc >= dateFloor &&
+                x.ReceivedUtc <= dateCeiling &&
+                x.Amount >= amount - 0.01m &&
+                x.Amount <= amount + 0.01m)
+            .Select(x => new VoucherLinkedDocument(x.CounterpartyId, null, x.Id, -Math.Abs(x.Amount)))
+            .ToListAsync(cancellationToken);
+
+        var candidates = invoiceCandidates.Concat(billCandidates).ToArray();
+        return candidates.Length == 1 ? candidates[0] : null;
+    }
+
+    private static bool VoucherLinkMatches(FinanceTransaction transaction, VoucherLinkedDocument? linkedDocument) =>
+        transaction.CounterpartyId == linkedDocument?.CounterpartyId &&
+        transaction.InvoiceId == linkedDocument?.InvoiceId &&
+        transaction.BillId == linkedDocument?.BillId;
+
+    private async Task<FinanceExternalReference?> FindDocumentReferenceAsync(
+        Guid companyId,
+        Guid connectionId,
+        string entityType,
+        string documentNumber,
+        CancellationToken cancellationToken) =>
+        await _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                x.ConnectionId == connectionId &&
+                x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                x.EntityType == entityType &&
+                (x.ExternalId == documentNumber || x.ExternalNumber == documentNumber))
+            .SingleOrDefaultAsync(cancellationToken);
+
+    private static string? ResolveVoucherDocumentNumber(FortnoxVoucherSyncModel model)
+    {
+        if (!string.IsNullOrWhiteSpace(model.ReferenceNumber))
+        {
+            return model.ReferenceNumber.Trim();
+        }
+
+        var description = model.Description.Trim();
+        var closing = description.LastIndexOf(')');
+        if (closing <= 0)
+        {
+            return null;
+        }
+
+        var opening = description.LastIndexOf('(', closing);
+        if (opening < 0 || opening + 1 >= closing)
+        {
+            return null;
+        }
+
+        var value = description[(opening + 1)..closing].Trim();
+        return string.IsNullOrWhiteSpace(value) ? null : value;
+    }
+
+    private async Task<PaymentMutationResult> UpsertPaymentAsync(Guid companyId, Guid connectionId, string externalId, string externalNumber, Payment incoming, CancellationToken cancellationToken)
     {
         var existing = await FindReferenceAsync(companyId, connectionId, "payment", externalId, cancellationToken);
         if (existing is null)
         {
             _dbContext.Payments.Add(incoming);
             await AddReferenceAsync(companyId, connectionId, "payment", incoming.Id, externalId, externalNumber, null, cancellationToken);
-            return SyncMutationResult.FromCreated(null);
+            return new PaymentMutationResult(SyncMutationResult.FromCreated(null), incoming);
         }
 
         var payment = await _dbContext.Payments.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
@@ -872,11 +1429,217 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         {
             _dbContext.Payments.Add(incoming);
             existing.RepointToInternalRecord(incoming.Id, externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
+            AttachSource(incoming, "payment", externalId, existing.Id);
+            return new PaymentMutationResult(SyncMutationResult.FromCreated(null), incoming);
+        }
+
+        payment.ApplySyncedSnapshot(
+            incoming.PaymentType,
+            incoming.Amount,
+            incoming.Currency,
+            incoming.PaymentDate,
+            incoming.Method,
+            incoming.Status,
+            incoming.CounterpartyReference);
+        existing.Refresh(externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
+        AttachSource(payment, "payment", externalId, existing.Id);
+        return new PaymentMutationResult(SyncMutationResult.FromUpdated(null), payment);
+    }
+
+    private async Task<SyncMutationResult> UpsertPaymentAllocationAsync(
+        Guid companyId,
+        Guid paymentId,
+        Guid? invoiceId,
+        Guid? billId,
+        decimal amount,
+        string currency,
+        CancellationToken cancellationToken)
+    {
+        var allocation = await _dbContext.PaymentAllocations.SingleOrDefaultAsync(
+            x =>
+                x.CompanyId == companyId &&
+                x.PaymentId == paymentId &&
+                x.InvoiceId == invoiceId &&
+                x.BillId == billId,
+            cancellationToken);
+
+        if (allocation is null)
+        {
+            _dbContext.PaymentAllocations.Add(new PaymentAllocation(Guid.NewGuid(), companyId, paymentId, invoiceId, billId, amount, currency));
             return SyncMutationResult.FromCreated(null);
         }
-        existing.MarkSynced(_timeProvider.GetUtcNow().UtcDateTime);
-        AttachSource(payment, "payment", externalId, existing.Id);
-        return SyncMutationResult.FromSkipped(null);
+
+        allocation.Update(paymentId, invoiceId, billId, amount, currency, _timeProvider.GetUtcNow().UtcDateTime);
+        return SyncMutationResult.FromUpdated(null);
+    }
+
+    private async Task RefreshInvoiceSettlementFromAllocationsAsync(FinanceInvoice invoice, CancellationToken cancellationToken)
+    {
+        var paidAmount = await GetAllocatedAmountAsync(invoice.CompanyId, invoice.Id, null, cancellationToken);
+        invoice.ApplySyncedSnapshot(
+            invoice.CounterpartyId,
+            invoice.IssuedUtc,
+            invoice.DueUtc,
+            invoice.Amount,
+            invoice.Currency,
+            ResolveDocumentStatusFromSettlement(invoice.Status, invoice.Amount, paidAmount),
+            ResolveSettlementStatus(invoice.Amount, paidAmount),
+            invoice.PostingStatus,
+            null,
+            invoice.DocumentKind,
+            invoice.ProviderStatus,
+            invoice.ProcessingStatus,
+            paidAmount);
+    }
+
+    private async Task RefreshBillSettlementFromAllocationsAsync(FinanceBill bill, CancellationToken cancellationToken)
+    {
+        var paidAmount = await GetAllocatedAmountAsync(bill.CompanyId, null, bill.Id, cancellationToken);
+        bill.ApplySyncedSnapshot(
+            bill.CounterpartyId,
+            bill.ReceivedUtc,
+            bill.DueUtc,
+            bill.Amount,
+            bill.Currency,
+            ResolveDocumentStatusFromSettlement(bill.Status, bill.Amount, paidAmount),
+            ResolveSettlementStatus(bill.Amount, paidAmount),
+            bill.PostingStatus,
+            null,
+            bill.DocumentKind,
+            bill.ProviderStatus,
+            bill.ProcessingStatus,
+            paidAmount);
+    }
+
+    private async Task<decimal> GetAllocatedAmountAsync(Guid companyId, Guid? invoiceId, Guid? billId, CancellationToken cancellationToken)
+    {
+        var localAllocations = _dbContext.PaymentAllocations.Local
+            .Where(x => x.CompanyId == companyId && x.InvoiceId == invoiceId && x.BillId == billId)
+            .ToArray();
+        var localIds = localAllocations.Select(x => x.Id).ToArray();
+        var persistedAmount = await _dbContext.PaymentAllocations
+            .Where(x => x.CompanyId == companyId && x.InvoiceId == invoiceId && x.BillId == billId && !localIds.Contains(x.Id))
+            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
+
+        return decimal.Round(persistedAmount + localAllocations.Sum(x => x.AllocatedAmount), 2, MidpointRounding.AwayFromZero);
+    }
+
+    private async Task<bool> HasDirectFortnoxPaymentActivityAsync(Guid companyId, Guid? invoiceId, Guid? billId, CancellationToken cancellationToken)
+    {
+        var paymentIds = await _dbContext.PaymentAllocations
+            .Where(x => x.CompanyId == companyId && x.InvoiceId == invoiceId && x.BillId == billId)
+            .Select(x => x.PaymentId)
+            .ToArrayAsync(cancellationToken);
+
+        return paymentIds.Length > 0 &&
+            await _dbContext.FinanceExternalReferences
+                .AnyAsync(x =>
+                    x.CompanyId == companyId &&
+                    x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                    x.EntityType == "payment" &&
+                    paymentIds.Contains(x.InternalRecordId) &&
+                    (x.ExternalId.StartsWith(InvoicePaymentExternalPrefix) ||
+                     x.ExternalId.StartsWith(SupplierInvoicePaymentExternalPrefix)),
+                    cancellationToken);
+    }
+
+    private static string ResolveSettlementStatus(decimal totalAmount, decimal paidAmount)
+    {
+        var total = decimal.Round(Math.Abs(totalAmount), 2, MidpointRounding.AwayFromZero);
+        var paid = decimal.Round(Math.Abs(paidAmount), 2, MidpointRounding.AwayFromZero);
+        if (total == 0m || paid <= 0m)
+        {
+            return FinanceSettlementStatuses.Unpaid;
+        }
+
+        return paid + 0.01m >= total
+            ? FinanceSettlementStatuses.Paid
+            : FinanceSettlementStatuses.PartiallyPaid;
+    }
+
+    private static string ResolveDocumentStatusFromSettlement(string currentStatus, decimal totalAmount, decimal paidAmount) =>
+        string.Equals(ResolveSettlementStatus(totalAmount, paidAmount), FinanceSettlementStatuses.Paid, StringComparison.Ordinal)
+            ? "paid"
+            : currentStatus;
+
+    private static string BuildPaymentTransactionExternalNumber(string paymentKind, string externalNumber) =>
+        $"fortnox-{paymentKind}-payment-{externalNumber}";
+
+    private static SyncMutationResult MergeMutationResults(DateTime? externalUpdatedUtc, params SyncMutationResult[] results)
+    {
+        var created = results.Any(x => x.Created);
+        var updated = !created && results.Any(x => x.Updated);
+        return new(
+            created,
+            updated,
+            !created && !updated && results.All(x => x.Skipped),
+            results.Any(x => x.Error),
+            externalUpdatedUtc);
+    }
+
+    private async Task<SyncMutationResult> UpsertPaymentTransactionAsync(
+        Guid companyId,
+        Guid connectionId,
+        string externalId,
+        string externalNumber,
+        FinanceAccount account,
+        Guid? counterpartyId,
+        Guid? invoiceId,
+        Guid? billId,
+        decimal amount,
+        string currency,
+        DateTime transactionUtc,
+        string transactionType,
+        string description,
+        CancellationToken cancellationToken)
+    {
+        var existing = await FindReferenceAsync(companyId, connectionId, "payment", externalId, cancellationToken);
+        if (existing is null)
+        {
+            var transaction = new FinanceTransaction(
+                Guid.NewGuid(),
+                companyId,
+                account.Id,
+                counterpartyId,
+                invoiceId,
+                billId,
+                transactionUtc,
+                transactionType,
+                amount,
+                currency,
+                description,
+                externalNumber);
+            _dbContext.FinanceTransactions.Add(transaction);
+            await AddReferenceAsync(companyId, connectionId, "payment", transaction.Id, externalId, externalNumber, null, cancellationToken);
+            return SyncMutationResult.FromCreated(null);
+        }
+
+        var current = await _dbContext.FinanceTransactions.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
+        if (current is null)
+        {
+            var transaction = new FinanceTransaction(
+                Guid.NewGuid(),
+                companyId,
+                account.Id,
+                counterpartyId,
+                invoiceId,
+                billId,
+                transactionUtc,
+                transactionType,
+                amount,
+                currency,
+                description,
+                externalNumber);
+            _dbContext.FinanceTransactions.Add(transaction);
+            existing.RepointToInternalRecord(transaction.Id, externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
+            AttachSource(transaction, "payment", externalId, existing.Id);
+            return SyncMutationResult.FromCreated(null);
+        }
+
+        current.ApplySyncedSnapshot(account.Id, counterpartyId, invoiceId, billId, transactionUtc, transactionType, amount, currency, description, externalNumber);
+        existing.Refresh(externalNumber, null, _timeProvider.GetUtcNow().UtcDateTime);
+        AttachSource(current, "payment", externalId, existing.Id);
+        return SyncMutationResult.FromUpdated(null);
     }
 
     private async Task<SyncMutationResult> UpsertReferenceOnlyAsync(Guid companyId, Guid connectionId, string entityType, string externalId, string externalNumber, DateTime? externalUpdatedUtc, CancellationToken cancellationToken)
@@ -996,15 +1759,35 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
             }
             : "expense";
 
+    private static bool IsFortnoxCashAccount(string code, string accountType) =>
+        (string.Equals(accountType, "cash", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(accountType, "asset", StringComparison.OrdinalIgnoreCase)) &&
+        (code.StartsWith("19", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(code, "1000", StringComparison.OrdinalIgnoreCase));
+
     private static string TrimTo(string value, int maxLength)
     {
         var trimmed = value.Trim();
         return trimmed.Length <= maxLength ? trimmed : trimmed[..maxLength];
     }
 
-    private async Task AddReferenceAsync(Guid companyId, Guid connectionId, string entityType, Guid internalRecordId, string externalId, string? externalNumber, DateTime? externalUpdatedUtc, CancellationToken cancellationToken)
+    private async Task AddReferenceAsync(
+        Guid companyId,
+        Guid connectionId,
+        string entityType,
+        Guid internalRecordId,
+        string externalId,
+        string? externalNumber,
+        DateTime? externalUpdatedUtc,
+        CancellationToken cancellationToken,
+        JsonObject? metadata = null)
     {
         var reference = new FinanceExternalReference(Guid.NewGuid(), companyId, connectionId, FinanceIntegrationProviderKeys.Fortnox, entityType, internalRecordId, externalId, externalNumber, externalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
+        if (metadata is not null)
+        {
+            reference.ReplaceMetadata(metadata, _timeProvider.GetUtcNow().UtcDateTime);
+        }
+
         _dbContext.FinanceExternalReferences.Add(reference);
         AttachSource(internalRecordId, entityType, externalId, reference.Id);
         await Task.CompletedTask;
@@ -1143,6 +1926,34 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         return $"Created {created}, updated {updated}, skipped {skipped}, errors {history.RecordsFailed}.";
     }
 
+    private static decimal ResolveSyncedPaymentAmount(decimal paidAmount, decimal totalAmount, string? providerStatus)
+    {
+        var normalized = paidAmount > 0m
+            ? decimal.Round(Math.Abs(paidAmount), 2, MidpointRounding.AwayFromZero)
+            : ResolvePaidAmountFromProviderStatus(totalAmount, providerStatus);
+        var cap = decimal.Round(Math.Abs(totalAmount), 2, MidpointRounding.AwayFromZero);
+        return cap == 0m ? 0m : Math.Min(normalized, cap);
+    }
+
+    private static decimal ResolvePaidAmountFromProviderStatus(decimal totalAmount, string? providerStatus)
+    {
+        if (string.IsNullOrWhiteSpace(providerStatus))
+        {
+            return 0m;
+        }
+
+        var balancePart = providerStatus
+            .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .FirstOrDefault(part => part.StartsWith("balance=", StringComparison.OrdinalIgnoreCase));
+        if (balancePart is null ||
+            !decimal.TryParse(balancePart["balance=".Length..], NumberStyles.Number, CultureInfo.InvariantCulture, out var balance))
+        {
+            return 0m;
+        }
+
+        return Math.Max(0m, decimal.Round(Math.Abs(totalAmount) - Math.Abs(balance), 2, MidpointRounding.AwayFromZero));
+    }
+
     private sealed class EntityCounters
     {
         public int Created { get; private set; }
@@ -1166,4 +1977,12 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         public static SyncMutationResult FromUpdated(DateTime? externalUpdatedUtc) => new(false, true, false, false, externalUpdatedUtc);
         public static SyncMutationResult FromSkipped(DateTime? externalUpdatedUtc) => new(false, false, true, false, externalUpdatedUtc);
     }
+
+    private sealed record PaymentMutationResult(SyncMutationResult Result, Payment Payment);
+
+    private sealed record VoucherLinkedDocument(
+        Guid CounterpartyId,
+        Guid? InvoiceId,
+        Guid? BillId,
+        decimal Amount);
 }

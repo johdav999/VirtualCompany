@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260416140000_AddToolExecutionVersionAndDenialReason")]
     public partial class AddToolExecutionVersionAndDenialReason : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

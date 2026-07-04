@@ -6,6 +6,9 @@ using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations;
 
+[Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260421103000_AddReconciliationSuggestionPersistence")]
+
 public partial class AddReconciliationSuggestionPersistence : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)

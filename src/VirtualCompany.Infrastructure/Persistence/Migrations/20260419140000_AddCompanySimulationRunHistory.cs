@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260419140000_AddCompanySimulationRunHistory")]
     public partial class AddCompanySimulationRunHistory : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

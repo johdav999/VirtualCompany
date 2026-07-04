@@ -136,7 +136,7 @@ public sealed class ActionInsightApiClient
 
     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
-        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+        var problem = await ReadJsonOrDefaultAsync<ApiProblemResponse>(response.Content, cancellationToken);
         return new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
     }
 
@@ -144,6 +144,23 @@ public sealed class ActionInsightApiClient
     {
         var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
+    }
+
+    private static async Task<T?> ReadJsonOrDefaultAsync<T>(HttpContent content, CancellationToken cancellationToken)
+    {
+        if (content.Headers.ContentLength is 0)
+        {
+            return default;
+        }
+
+        try
+        {
+            return await content.ReadFromJsonAsync<T>(SerializerOptions, cancellationToken);
+        }
+        catch (JsonException)
+        {
+            return default;
+        }
     }
 
     private IReadOnlyList<ActionQueueItemViewModel> EnsureOfflineQueue(Guid companyId)

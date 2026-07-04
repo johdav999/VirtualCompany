@@ -5,6 +5,9 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations;
 
+[Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260414170000_AddProactiveMessages")]
+
 public partial class AddProactiveMessages : Migration
 {
     protected override void Up(MigrationBuilder migrationBuilder)
@@ -50,7 +53,7 @@ public partial class AddProactiveMessages : Migration
                     column: x => x.notification_id,
                     principalTable: "company_notifications",
                     principalColumn: "id",
-                    onDelete: ReferentialAction.SetNull);
+                    onDelete: ReferentialAction.NoAction);
                 table.ForeignKey(
                     name: "FK_proactive_messages_users_recipient_user_id",
                     column: x => x.recipient_user_id,

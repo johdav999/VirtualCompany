@@ -681,11 +681,30 @@ public sealed class MailboxConnectionFlowTests
                 CreateContext(connection, new TestCompanyContextAccessor(companyId, userId)),
                 new FakeProviderRegistry(provider),
                 new BillDetectionService(),
+                CreateDocumentExtractionService(connection, companyId, userId, nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
                 CreateEncryption(),
                 new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
                 NullLogger<CompanyManualInboxBillScanOrchestrator>.Instance)),
             new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
             NullLogger<CompanyMailboxConnectionService>.Instance);
+
+    private static DocumentExtractionService CreateDocumentExtractionService(
+        SqliteConnection connection,
+        Guid companyId,
+        Guid userId,
+        DateTime nowUtc)
+    {
+        var timeProvider = new FakeTimeProvider(nowUtc);
+        var duplicateContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+        var persistenceContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+        var duplicateRepository = new BillDuplicateCheckRepository(duplicateContext, timeProvider);
+        return new DocumentExtractionService(
+            [new EmailBodyTextExtractor(), new DocxDocumentTextExtractor(), new PdfDocumentTextExtractor()],
+            duplicateRepository,
+            timeProvider,
+            new BillInformationExtractor(duplicateRepository, timeProvider),
+            new BillExtractionPersistenceRepository(persistenceContext, timeProvider));
+    }
 
     private static async Task<SqliteConnection> OpenConnectionAsync()
     {

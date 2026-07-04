@@ -566,9 +566,14 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
     }
 
     private static bool IsCashAccount(FinanceAccountSnapshotRow account) =>
-        account.AccountType.Equals("cash", StringComparison.OrdinalIgnoreCase) ||
-        account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
-        account.Code.StartsWith("10", StringComparison.OrdinalIgnoreCase);
+        (account.AccountType.Equals("cash", StringComparison.OrdinalIgnoreCase) ||
+            account.AccountType.Equals("asset", StringComparison.OrdinalIgnoreCase)) &&
+        (account.Name.Contains("cash", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("bank", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("kassa", StringComparison.OrdinalIgnoreCase) ||
+            account.Name.Contains("plusgiro", StringComparison.OrdinalIgnoreCase) ||
+            account.Code.StartsWith("19", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(account.Code, "1000", StringComparison.OrdinalIgnoreCase));
 
     private static bool IsIncludedReceivable(string status, string settlementStatus)
     {

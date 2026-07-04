@@ -29,7 +29,12 @@ public sealed class FinanceBillsPageTests
                 DueUtc = new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc),
                 Amount = 845.30m,
                 Currency = "USD",
-                Status = "open"
+                Status = "approved",
+                PostingStatus = "booked",
+                SettlementStatus = "partially_paid",
+                DueStatus = "not_due",
+                DocumentKind = "supplier_invoice",
+                ProviderStatus = "booked=true;cancelled=false;fullyPaid=false;credit=false;balance=400"
             }
         };
 
@@ -44,6 +49,11 @@ public sealed class FinanceBillsPageTests
             Amount = bills[0].Amount,
             Currency = bills[0].Currency,
             Status = bills[0].Status,
+            PostingStatus = bills[0].PostingStatus,
+            SettlementStatus = bills[0].SettlementStatus,
+            DueStatus = bills[0].DueStatus,
+            DocumentKind = bills[0].DocumentKind,
+            ProviderStatus = bills[0].ProviderStatus,
             LinkedDocument = new FinanceLinkedDocumentAccessResponse
             {
                 Availability = "missing",
@@ -78,6 +88,9 @@ public sealed class FinanceBillsPageTests
             Assert.Contains("BILL-24018", cut.Markup);
             Assert.Contains("Northwind Supplies", cut.Markup);
             Assert.Contains("USD 845.30", cut.Markup);
+            Assert.Contains("Partially paid", cut.Markup);
+            Assert.Contains("Supplier invoice", cut.Markup);
+            Assert.Contains("Provider status: booked=true;cancelled=false;fullyPaid=false;credit=false;balance=400", cut.Markup);
             Assert.Contains("Agent insights", cut.Markup);
             Assert.Contains("This bill is overdue and needs attention.", cut.Markup);
             Assert.Contains("Prioritize payment timing with treasury.", cut.Markup);

@@ -1,0 +1,250 @@
+@page "/support"
+@page "/support/cases"
+@rendermode InteractiveServer
+@inherits SupportPageBase
+@using System.Globalization
+
+<PageTitle>Support</PageTitle>
+
+<section class="py-4 dashboard-hero">
+    <div class="dashboard-shell">
+        <div class="wizard-card dashboard-summary">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                <div>
+                    <span class="dashboard-kicker">Support</span>
+                    <h1>Customer support</h1>
+                    <p class="text-body-secondary mb-0">Review cases, Ben's triage, SLA risk, and replies that need action.</p>
+                </div>
+                <button class="btn btn-primary" @onclick="CreateCaseAsync" disabled="@isBusy">Create case</button>
+            </div>
+
+            @if (isLoading)
+            {
+                <p class="text-body-secondary mt-4 mb-0">Loading support cases...</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(ShellErrorMessage) || !string.IsNullOrWhiteSpace(errorMessage))
+            {
+                <div class="alert alert-danger mt-4 mb-0">@(ShellErrorMessage ?? errorMessage)</div>
+            }
+            else if (cases is not null)
+            {
+                <div class="row g-3 mt-4">
+                    <div class="col-6 col-xl-2">@MetricCard("Open", cases.Summary.Open)</div>
+                    <div class="col-6 col-xl-2">@MetricCard("SLA risk", cases.Summary.SlaRisk)</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Breached", cases.Summary.SlaBreached)</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Escalated", cases.Summary.Escalated)</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Approvals", cases.Summary.AwaitingApproval)</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Resolved today", cases.Summary.ResolvedToday)</div>
+                </div>
+
+                <div class="border rounded p-3 mt-4 bg-white">
+                    <div class="row g-3 align-items-end">
+                        <div class="col-12 col-lg-4">
+                            <label class="form-label" for="support-search">Search</label>
+                            <input id="support-search" class="form-control" value="@search" @onchange="OnSearchChanged" placeholder="Case number, subject, or summary" />
+                        </div>
+                        <div class="col-6 col-lg-2">
+                            <label class="form-label" for="support-status">Status</label>
+                            <select id="support-status" class="form-select" @bind="status">
+                                <option value="">All</option>
+                                <option value="new">New</option>
+                                <option value="triaged">Triaged</option>
+                                <option value="waiting_for_customer">Waiting for customer</option>
+                                <option value="waiting_internal">Waiting internally</option>
+                                <option value="escalated">Escalated</option>
+                                <option value="awaiting_approval">Awaiting approval</option>
+                            </select>
+                        </div>
+                        <div class="col-6 col-lg-2">
+                            <label class="form-label" for="support-priority">Priority</label>
+                            <select id="support-priority" class="form-select" @bind="priority">
+                                <option value="">All</option>
+                                <option value="urgent">Urgent</option>
+                                <option value="high">High</option>
+                                <option value="normal">Normal</option>
+                                <option value="low">Low</option>
+                            </select>
+                        </div>
+                        <div class="col-6 col-lg-2">
+                            <label class="form-label" for="support-category">Category</label>
+                            <select id="support-category" class="form-select" @bind="category">
+                                <option value="">All</option>
+                                <option value="billing">Billing</option>
+                                <option value="refund">Refund</option>
+                                <option value="technical_issue">Technical issue</option>
+                                <option value="account_access">Account access</option>
+                                <option value="complaint">Complaint</option>
+                                <option value="bug_report">Bug report</option>
+                                <option value="churn_risk">Churn risk</option>
+                            </select>
+                        </div>
+                        <div class="col-6 col-lg-2 d-flex gap-2">
+                            <button class="btn btn-outline-secondary flex-fill" @onclick="LoadAsync" disabled="@isBusy">Apply</button>
+                            <button class="btn btn-outline-secondary flex-fill" @onclick="ClearFiltersAsync" disabled="@isBusy">Clear</button>
+                        </div>
+                    </div>
+                </div>
+
+                @if (analytics is not null && analytics.Insights.Count > 0)
+                {
+                    <div class="alert alert-warning mt-4 mb-0">
+                        <strong>@analytics.Insights[0].Title</strong>
+                        <div>@analytics.Insights[0].Summary @analytics.Insights[0].SuggestedAction</div>
+                    </div>
+                }
+
+                <div class="table-responsive mt-4">
+                    <table class="table align-middle">
+                        <thead>
+                            <tr>
+                                <th>Case</th>
+                                <th>Customer</th>
+                                <th>Category</th>
+                                <th>Priority</th>
+                                <th>Status</th>
+                                <th>Due</th>
+                                <th>Updated</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @if (cases.Items.Count == 0)
+                            {
+                                <tr>
+                                    <td colspan="8" class="text-body-secondary py-4">No support cases match the current filters.</td>
+                                </tr>
+                            }
+                            else
+                            {
+                                @foreach (var item in cases.Items)
+                                {
+                                    <tr>
+                                        <td>
+                                            <strong>@item.CaseNumber</strong>
+                                            <div>@item.Subject</div>
+                                        </td>
+                                        <td>
+                                            @(item.CustomerName ?? item.ContactName ?? "Unmatched")
+                                            <div class="small text-body-secondary">@item.ContactEmail</div>
+                                        </td>
+                                        <td>@item.CategoryLabel</td>
+                                        <td><span class="@PriorityBadge(item.Priority)">@item.PriorityLabel</span></td>
+                                        <td><span class="badge text-bg-light">@item.StatusLabel</span></td>
+                                        <td>
+                                            @if (item.IsSlaBreached)
+                                            {
+                                                <span class="badge text-bg-danger">Breached</span>
+                                            }
+                                            else if (item.IsSlaRisk)
+                                            {
+                                                <span class="badge text-bg-warning">At risk</span>
+                                            }
+                                            else
+                                            {
+                                                <span class="text-body-secondary">@FormatDue(item.ResolutionDueUtc)</span>
+                                            }
+                                        </td>
+                                        <td>@item.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                                        <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@BuildPath($"/support/cases/{item.Id:D}")">Open</a></td>
+                                    </tr>
+                                }
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    private SupportCaseListResponse? cases;
+    private SupportAnalyticsDashboardResponse? analytics;
+    private bool isLoading = true;
+    private bool isBusy;
+    private string? errorMessage;
+    private string? search;
+    private string? status;
+    private string? priority;
+    private string? category;
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = cases is null;
+        isBusy = true;
+        errorMessage = null;
+
+        try
+        {
+            if (!await ResolveCompanyAsync() || ResolvedCompanyId is not Guid companyId)
+            {
+                return;
+            }
+
+            cases = await SupportApiClient.ListCasesAsync(companyId, new SupportCaseListQuery(status, priority, category, search));
+            analytics = await SupportApiClient.GetAnalyticsAsync(companyId);
+        }
+        catch (SupportApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+            isBusy = false;
+        }
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        search = status = priority = category = null;
+        await LoadAsync();
+    }
+
+    private async Task OnSearchChanged(ChangeEventArgs args)
+    {
+        search = args.Value?.ToString();
+        await LoadAsync();
+    }
+
+    private async Task CreateCaseAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isBusy = true;
+        try
+        {
+            var created = await SupportApiClient.CreateCaseAsync(companyId, new CreateSupportCaseRequest("New support case", "Add the customer question or issue here.", "Manual"));
+            Navigation.NavigateTo(BuildPath($"/support/cases/{created.Id:D}"));
+        }
+        catch (SupportApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private static string FormatDue(DateTime? value) =>
+        value is DateTime due ? due.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "Not set";
+
+    private static string PriorityBadge(string priority) => priority switch
+    {
+        "urgent" => "badge text-bg-danger",
+        "high" => "badge text-bg-warning",
+        "low" => "badge text-bg-light",
+        _ => "badge text-bg-primary"
+    };
+
+    private static RenderFragment MetricCard(string label, int value) => @<article class="border rounded bg-white p-3 h-100">
+        <div class="small text-body-secondary">@label</div>
+        <strong class="fs-3">@value.ToString(CultureInfo.CurrentCulture)</strong>
+    </article>;
+}

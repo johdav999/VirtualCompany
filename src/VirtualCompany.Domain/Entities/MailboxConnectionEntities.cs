@@ -114,6 +114,7 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
 
     public void MarkScanSucceeded(DateTime completedUtc)
     {
+        Status = MailboxConnectionStatus.Active;
         LastSuccessfulScanUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
         LastErrorSummary = null;
         UpdatedUtc = LastSuccessfulScanUtc.Value;
@@ -396,6 +397,11 @@ public sealed class EmailMessageSnapshot : ICompanyOwnedEntity
     public EmailIngestionRun EmailIngestionRun { get; private set; } = null!;
     public ICollection<EmailAttachmentSnapshot> Attachments { get; } = new List<EmailAttachmentSnapshot>();
 
+    public void UpdateUntrustedBodyText(string? untrustedBodyText)
+    {
+        UntrustedBodyText = NormalizeOptional(untrustedBodyText, nameof(untrustedBodyText), 16000);
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -516,6 +522,11 @@ public sealed class EmailAttachmentSnapshot : ICompanyOwnedEntity
     public DateTime CreatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public EmailMessageSnapshot EmailMessageSnapshot { get; private set; } = null!;
+
+    public void UpdateUntrustedExtractedText(string? untrustedExtractedText)
+    {
+        UntrustedExtractedText = NormalizeOptional(untrustedExtractedText, nameof(untrustedExtractedText), 16000);
+    }
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {

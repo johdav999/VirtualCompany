@@ -1,3 +1,5 @@
+using System.Text.Json.Nodes;
+
 namespace VirtualCompany.Application.Finance;
 
 public sealed record RunFortnoxSyncCommand(
@@ -70,7 +72,9 @@ public interface IFortnoxMappingService
     FortnoxArticleSyncModel MapArticle(FortnoxArticle article);
     FortnoxProjectSyncModel MapProject(FortnoxProject project);
     FortnoxInvoiceSyncModel MapInvoice(FortnoxInvoice invoice);
+    FortnoxInvoicePaymentSyncModel MapInvoicePayment(FortnoxInvoicePayment payment);
     FortnoxSupplierInvoiceSyncModel MapSupplierInvoice(FortnoxSupplierInvoice invoice);
+    FortnoxSupplierInvoicePaymentSyncModel MapSupplierInvoicePayment(FortnoxSupplierInvoicePayment payment);
     FortnoxVoucherSyncModel MapVoucher(FortnoxVoucher voucher);
 }
 
@@ -89,6 +93,8 @@ public sealed record FortnoxAccountSyncModel(
     string Code,
     string Name,
     string AccountType,
+    decimal? BalanceSnapshotAmount,
+    DateTime? BalanceSnapshotUtc,
     DateTime? ExternalUpdatedUtc);
 
 public sealed record FortnoxArticleSyncModel(
@@ -116,6 +122,11 @@ public sealed record FortnoxInvoiceSyncModel(
     string Currency,
     string Status,
     string SettlementStatus,
+    string PostingStatus,
+    string DueStatus,
+    string DocumentKind,
+    string? ProviderStatus,
+    string ProcessingStatus,
     decimal PaidAmount,
     DateTime? ExternalUpdatedUtc);
 
@@ -130,12 +141,39 @@ public sealed record FortnoxSupplierInvoiceSyncModel(
     string Currency,
     string Status,
     string SettlementStatus,
+    string PostingStatus,
+    string DueStatus,
+    string DocumentKind,
+    string? ProviderStatus,
+    string ProcessingStatus,
     decimal PaidAmount,
+    DateTime? ExternalUpdatedUtc,
+    JsonObject? ProviderMetadata = null);
+
+public sealed record FortnoxInvoicePaymentSyncModel(
+    string ExternalId,
+    string ExternalNumber,
+    string InvoiceNumber,
+    decimal Amount,
+    string Currency,
+    DateTime PaymentUtc,
+    string Status,
+    DateTime? ExternalUpdatedUtc);
+
+public sealed record FortnoxSupplierInvoicePaymentSyncModel(
+    string ExternalId,
+    string ExternalNumber,
+    string InvoiceNumber,
+    decimal Amount,
+    string Currency,
+    DateTime PaymentUtc,
+    string Status,
     DateTime? ExternalUpdatedUtc);
 
 public sealed record FortnoxVoucherSyncModel(
     string ExternalId,
     string ExternalNumber,
+    string? ReferenceNumber,
     DateTime TransactionUtc,
     string Description,
     decimal Amount,

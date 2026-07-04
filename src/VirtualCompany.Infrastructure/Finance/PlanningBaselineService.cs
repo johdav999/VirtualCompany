@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Data.SqlClient;
 using System.Data;
 using VirtualCompany.Application.Finance;
@@ -222,6 +223,7 @@ public sealed class PlanningBaselineService : IPlanningBaselineService
         try
         {
             await using var command = connection.CreateCommand();
+            command.Transaction = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
             command.CommandText = """
                 SELECT CASE WHEN EXISTS (
                     SELECT 1

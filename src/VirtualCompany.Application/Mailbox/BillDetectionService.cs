@@ -95,8 +95,8 @@ public sealed class BillDetectionService : IBillDetectionService
         }
 
         var qualifiesWithAttachment =
-            supportedAttachments.Length > 0 && 
-            hasKeywordMatch && (senderMatch || folderMatch);
+            supportedAttachments.Length > 0 &&
+            (hasKeywordMatch || senderMatch || folderMatch);
         var qualifiesBodyOnly =
             supportedAttachments.Length == 0 &&
             IsBodyOnlyCandidate(message, keywordScore, senderMatch, folderMatch);
@@ -155,21 +155,33 @@ public sealed class BillDetectionService : IBillDetectionService
             mimeType.Equals("application/pdf", StringComparison.OrdinalIgnoreCase);
         var isDocx = fileName.EndsWith(".docx", StringComparison.OrdinalIgnoreCase) ||
             mimeType.Equals("application/vnd.openxmlformats-officedocument.wordprocessingml.document", StringComparison.OrdinalIgnoreCase);
-        var hasExtractableText = attachment.IsTextExtractable == true ||
-            !string.IsNullOrWhiteSpace(attachment.UntrustedExtractedText);
-
-        if (isPdf && hasExtractableText)
+        var isImage = IsSupportedImageAttachment(fileName, mimeType);
+        if (isPdf)
         {
             return BillSourceType.PdfAttachment;
         }
 
-        if (isDocx && hasExtractableText)
+        if (isDocx)
         {
             return BillSourceType.DocxAttachment;
         }
 
+        if (isImage)
+        {
+            return BillSourceType.ImageAttachment;
+        }
+
         return null;
     }
+
+    private static bool IsSupportedImageAttachment(string fileName, string mimeType) =>
+        fileName.EndsWith(".png", StringComparison.OrdinalIgnoreCase) ||
+        fileName.EndsWith(".jpg", StringComparison.OrdinalIgnoreCase) ||
+        fileName.EndsWith(".jpeg", StringComparison.OrdinalIgnoreCase) ||
+        fileName.EndsWith(".webp", StringComparison.OrdinalIgnoreCase) ||
+        mimeType.Equals("image/png", StringComparison.OrdinalIgnoreCase) ||
+        mimeType.Equals("image/jpeg", StringComparison.OrdinalIgnoreCase) ||
+        mimeType.Equals("image/webp", StringComparison.OrdinalIgnoreCase);
 
     private static int CountKeywordMatches(MailboxMessageSummary message)
     {
@@ -267,6 +279,7 @@ public sealed class BillDetectionService : IBillDetectionService
         {
             BillSourceType.PdfAttachment => 0,
             BillSourceType.DocxAttachment => 1,
-            _ => 2
+            BillSourceType.ImageAttachment => 2,
+            _ => 3
         };
 }

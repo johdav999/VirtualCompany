@@ -1,4 +1,4 @@
-using VirtualCompany.Application.CustomerMemory;
+﻿using VirtualCompany.Application.CustomerMemory;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.AspNetCore.Authorization;
@@ -33,6 +33,7 @@ using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Memory;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
@@ -52,6 +53,7 @@ using VirtualCompany.Infrastructure.Mailbox;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Memory;
 using VirtualCompany.Infrastructure.Sales;
+using VirtualCompany.Infrastructure.Support;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -187,6 +189,28 @@ public static class DependencyInjection
             });
         services.AddOptions<FinanceTransactionCreationOptions>()
             .Bind(configuration.GetSection(FinanceTransactionCreationOptions.SectionName));
+        services.AddOptions<OpenAiPdfOcrTextExtractor.FinanceDocumentOcrOptions>()
+            .Bind(configuration.GetSection(OpenAiPdfOcrTextExtractor.FinanceDocumentOcrOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                if (string.IsNullOrWhiteSpace(options.ApiKey))
+                {
+                    options.ApiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+                }
+            });
+        services.AddOptions<FinanceIntegrationStartupSyncOptions>()
+            .Bind(configuration.GetSection(FinanceIntegrationStartupSyncOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.StartupDelaySeconds = Math.Max(0, options.StartupDelaySeconds);
+                options.SyncTimeoutSeconds = Math.Max(1, options.SyncTimeoutSeconds);
+                options.LockTtlSeconds = Math.Max(options.SyncTimeoutSeconds, options.LockTtlSeconds);
+                options.ProviderKeys = options.ProviderKeys?
+                    .Where(providerKey => !string.IsNullOrWhiteSpace(providerKey))
+                    .Select(providerKey => providerKey.Trim().ToLowerInvariant())
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray() ?? [];
+            });
         services.AddOptions<FinanceSeedBackfillWorkerOptions>()
             .Bind(configuration.GetSection(FinanceSeedBackfillWorkerOptions.SectionName))
             .PostConfigure(options =>
@@ -286,6 +310,7 @@ public static class DependencyInjection
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
         services.AddHttpClient(OpenAiSalesEmailIntentExtractionService.ClientName);
+        services.AddHttpClient(OpenAiPdfOcrTextExtractor.ClientName);
         services.AddHttpClient(GmailMailboxProviderClient.ClientName);
         services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
         services.AddHostedService<CompanyOutboxDispatcherBackgroundService>();
@@ -315,6 +340,7 @@ public static class DependencyInjection
         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
+        services.AddHostedService<FinanceIntegrationStartupSyncBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
         services.AddHostedService<PipelineRiskScoringBackgroundService>();
 
@@ -364,11 +390,14 @@ public static class DependencyInjection
         services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
         services.AddScoped<IBillDetectionService, BillDetectionService>();
         services.AddScoped<IManualInboxBillScanOrchestrator, CompanyManualInboxBillScanOrchestrator>();
+        services.AddScoped<IConnectedMailboxInboxScanOrchestrator, CompanyConnectedMailboxInboxScanOrchestrator>();
+        services.AddScoped<IConnectedMailboxInboxScanJobScheduler, ScopedConnectedMailboxInboxScanJobScheduler>();
         services.AddScoped<IDocumentExtractionService, DocumentExtractionService>();
         services.AddScoped<IBillInformationExtractor, BillInformationExtractor>();
         services.AddScoped<IBillDuplicateCheckRepository, BillDuplicateCheckRepository>();
         services.AddScoped<IBillExtractionPersistenceRepository, BillExtractionPersistenceRepository>();
         services.AddScoped<IDocumentTextExtractor, PdfDocumentTextExtractor>();
+        services.AddScoped<IDocumentTextExtractor, OpenAiPdfOcrTextExtractor>();
         services.AddScoped<IDocumentTextExtractor, DocxDocumentTextExtractor>();
         services.AddScoped<IDocumentTextExtractor, EmailBodyTextExtractor>();
         services.AddScoped<IManualInboxBillScanJobScheduler, InlineManualInboxBillScanJobScheduler>();
@@ -490,6 +519,22 @@ public static class DependencyInjection
         services.AddScoped<IDealIntelligenceSignalRepository, DealIntelligenceSignalRepository>();
         services.AddScoped<ISalesOperationsService, SalesOperationsService>();
         services.AddSingleton<ISalesAutomationPolicyEvaluator, SalesAutomationPolicyEvaluator>();
+        services.Configure<SupportOperationsWorkerOptions>(configuration.GetSection(SupportOperationsWorkerOptions.SectionName));
+        services.AddHostedService<SupportOperationsBackgroundService>();
+        services.AddScoped<ISupportCaseService, SupportCaseService>();
+        services.AddScoped<ISupportMailboxIngestionService, SupportMailboxIngestionService>();
+        services.AddScoped<ISupportContextResolutionService, SupportContextResolutionService>();
+        services.AddScoped<ISupportTriageService, SupportTriageService>();
+        services.AddScoped<ISupportOutboundEmailSender, SupportMailboxOutboundEmailSender>();
+        services.AddScoped<ISupportKnowledgeContextProvider, SupportKnowledgeContextProvider>();
+        services.AddScoped<ISupportMailboxRoutingService, SupportMailboxRoutingService>();
+        services.AddScoped<ISupportReplyDraftService, SupportReplyDraftService>();
+        services.AddScoped<ISupportToolActionService, SupportToolActionService>();
+        services.AddScoped<ISupportRefundWorkflowService, SupportRefundWorkflowService>();
+        services.AddScoped<ISupportSlaMonitor, SupportSlaMonitor>();
+        services.AddScoped<ISupportKnowledgeGapService, SupportKnowledgeGapService>();
+        services.AddScoped<ISupportAnalyticsService, SupportAnalyticsService>();
+        services.AddScoped<ISupportMemoryUpdateService, SupportMemoryUpdateService>();
 
         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
         services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
@@ -527,6 +572,17 @@ public static class DependencyInjection
         services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
         services.AddScoped<ISalesPersistenceRepository, SalesPersistenceRepository>();
         services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
+        services.AddScoped<ISupplierInvoicePaymentExportProvider, FortnoxSupplierInvoicePaymentExportProvider>();
+        services.AddScoped<IFinanceSupplierPaymentProposalService, SupplierInvoicePaymentProposalService>();
+        services.AddScoped<ISupplierInvoiceSourceDocumentAttachmentProvider, FortnoxSupplierInvoiceSourceDocumentAttachmentProvider>();
+        services.AddScoped<IFinanceSupplierInvoiceSourceDocumentAttachmentService, SupplierInvoiceSourceDocumentAttachmentService>();
+        services.AddScoped<ISupplierInvoiceDraftActionProvider, FortnoxSupplierInvoiceDraftActionProvider>();
+        services.AddScoped<IFinanceSupplierInvoiceDraftActionService, SupplierInvoiceDraftActionService>();
+        services.AddScoped<IFinanceCustomerInvoiceFortnoxActionService, CustomerInvoiceFortnoxActionService>();
+        services.AddScoped<ISupplierInvoiceCorrectionProvider, FortnoxSupplierInvoiceCorrectionProvider>();
+        services.AddScoped<IFinanceSupplierInvoiceCorrectionService, SupplierInvoiceCorrectionService>();
+        services.AddScoped<ISupplierInvoiceEnrichmentProvider, FortnoxSupplierInvoiceEnrichmentProvider>();
+        services.AddScoped<IFinanceSupplierInvoiceEnrichmentService, SupplierInvoiceEnrichmentService>();
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
@@ -637,3 +693,4 @@ public static class DependencyInjection
 
     private enum DatabaseProvider { SqlServer, PostgreSql, Sqlite }
 }
+

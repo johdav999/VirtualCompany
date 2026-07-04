@@ -113,6 +113,15 @@ public static class DeterministicFinanceSeedDatasetGenerator
         dbContext.FinanceBalances.AddRange(balances);
         dbContext.FinancePolicyConfigurations.Add(policy);
         dbContext.FinanceSeedAnomalies.AddRange(anomalies);
+        MarkSeedRecordsAsSimulation(
+            dbContext,
+            accounts,
+            counterparties,
+            payments,
+            invoices,
+            bills,
+            transactions,
+            balances);
 
         var validationErrors = FinanceSeedDatasetConsistencyValidator.Validate(
             new FinanceSeedDatasetValidationInput(
@@ -149,6 +158,20 @@ public static class DeterministicFinanceSeedDatasetGenerator
             policy.Id,
             validationErrors,
             anomalies);
+    }
+
+    private static void MarkSeedRecordsAsSimulation(
+        VirtualCompanyDbContext dbContext,
+        params IEnumerable<object>[] recordGroups)
+    {
+        foreach (var record in recordGroups.SelectMany(group => group))
+        {
+            var entry = dbContext.Entry(record);
+            if (entry.Metadata.FindProperty("SourceType") is not null)
+            {
+                entry.Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Simulation;
+            }
+        }
     }
 
     private static IReadOnlyList<FinanceAccount> CreateAccounts(Guid companyId, DateTime windowStartUtc) =>

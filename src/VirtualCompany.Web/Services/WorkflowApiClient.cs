@@ -133,10 +133,45 @@ public sealed class WorkflowApiClient
 
     private async Task<OnboardingApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
-        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+        var body = await response.Content.ReadAsStringAsync(cancellationToken);
+        var problem = TryReadProblem(body);
         return problem?.Errors is { Count: > 0 }
             ? new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors)
-            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? $"The request failed with status code {(int)response.StatusCode}.");
+            : new OnboardingApiException(problem?.Detail ?? problem?.Title ?? BuildFallbackErrorMessage(response, body));
+    }
+
+    private static ApiProblemResponse? TryReadProblem(string body)
+    {
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return null;
+        }
+
+        try
+        {
+            return JsonSerializer.Deserialize<ApiProblemResponse>(body, SerializerOptions);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+    }
+
+    private static string BuildFallbackErrorMessage(HttpResponseMessage response, string body)
+    {
+        var statusMessage = $"The request failed with status code {(int)response.StatusCode}.";
+        if (string.IsNullOrWhiteSpace(body))
+        {
+            return statusMessage;
+        }
+
+        var trimmed = body.Trim();
+        if (trimmed.StartsWith('<'))
+        {
+            return statusMessage;
+        }
+
+        return $"{statusMessage} {trimmed}";
     }
 
     private OnboardingApiException CreateNetworkException(HttpRequestException ex)

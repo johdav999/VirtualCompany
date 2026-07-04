@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260426090000_AddMailboxConnectionPersistence")]
     public partial class AddMailboxConnectionPersistence : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -88,7 +90,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         column: x => x.mailbox_connection_id,
                         principalTable: "mailbox_connections",
                         principalColumn: "id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.NoAction);
                     table.ForeignKey(
                         name: "FK_email_ingestion_runs_users_triggered_by_user_id",
                         column: x => x.triggered_by_user_id,

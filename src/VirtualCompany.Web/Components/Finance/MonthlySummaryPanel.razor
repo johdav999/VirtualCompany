@@ -4,24 +4,38 @@
     <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
         <div>
             <h2 class="h5 mb-1">Monthly summary</h2>
-            <p class="text-body-secondary small mb-0">@MonthlySummary.Period</p>
+            <p class="text-body-secondary small mb-0">@(MonthlySummary.IsAvailable ? MonthlySummary.Period : MonthlySummary.EmptyTitle)</p>
         </div>
-        <a class="btn btn-sm btn-outline-secondary" href="@MonthlySummary.Href">View report</a>
+        <a class="btn btn-sm btn-outline-secondary" href="@MonthlySummary.Href">@MonthlySummary.ActionLabel</a>
     </div>
-    <dl class="finance-overview-summary-list mb-0">
-        <div>
-            <dt>Total income</dt>
-            <dd class="finance-overview-tone--positive">@MonthlySummary.TotalIncome</dd>
+    @if (MonthlySummary.IsAvailable)
+    {
+        @if (!string.IsNullOrWhiteSpace(MonthlySummary.CurrencyNote))
+        {
+            <p class="text-body-secondary small mb-2">@MonthlySummary.CurrencyNote</p>
+        }
+        <dl class="finance-overview-summary-list mb-0">
+            <div>
+                <dt>Total income</dt>
+                <dd class="finance-overview-tone--positive">@MonthlySummary.TotalIncome</dd>
+            </div>
+            <div>
+                <dt>Total expenses</dt>
+                <dd class="finance-overview-tone--danger">@MonthlySummary.TotalExpenses</dd>
+            </div>
+            <div>
+                <dt>Net cash flow</dt>
+                <dd class="@NetClass">@MonthlySummary.NetResult</dd>
+            </div>
+        </dl>
+    }
+    else
+    {
+        <div class="finance-overview-empty-state">
+            <strong>@MonthlySummary.EmptyTitle</strong>
+            <p>@MonthlySummary.EmptyMessage</p>
         </div>
-        <div>
-            <dt>Total expenses</dt>
-            <dd class="finance-overview-tone--danger">@MonthlySummary.TotalExpenses</dd>
-        </div>
-        <div>
-            <dt>Net cash flow</dt>
-            <dd class="@NetClass">@MonthlySummary.NetResult</dd>
-        </div>
-    </dl>
+    }
 </article>
 
 @code {

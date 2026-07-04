@@ -106,14 +106,26 @@ public interface IFortnoxApiClient
     Task<FortnoxPagedResponse<FortnoxCustomer>> GetCustomersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxSupplier>> GetSuppliersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxInvoice>> GetInvoicesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
+    Task<FortnoxPagedResponse<FortnoxInvoicePayment>> GetInvoicePaymentsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxSupplierInvoice>> GetSupplierInvoicesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
+    Task<FortnoxPagedResponse<FortnoxSupplierInvoicePayment>> GetSupplierInvoicePaymentsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxVoucher>> GetVouchersAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxAccount>> GetAccountsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxArticle>> GetArticlesAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<FortnoxPagedResponse<FortnoxProject>> GetProjectsAsync(FortnoxRequestContext context, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<TResponse?> GetAsync<TResponse>(FortnoxRequestContext context, string path, FortnoxPageOptions? options, CancellationToken cancellationToken);
     Task<TResponse?> PostAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
+    Task<TResponse?> PostDirectAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
+    Task<TResponse?> PostMultipartFileDirectAsync<TResponse>(
+        FortnoxRequestContext context,
+        string path,
+        string formFieldName,
+        string fileName,
+        string? contentType,
+        Stream content,
+        CancellationToken cancellationToken);
     Task<TResponse?> PutAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
+    Task<TResponse?> PutDirectAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
     Task DeleteAsync(FortnoxRequestContext context, string path, CancellationToken cancellationToken);
 }
 
@@ -239,6 +251,7 @@ public sealed class FortnoxInvoice
     public bool? Booked { get; set; }
     public decimal? Balance { get; set; }
     public bool? FullyPaid { get; set; }
+    public bool? Sent { get; set; }
     public string? LastModified { get; set; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
 }
@@ -258,6 +271,60 @@ public sealed class FortnoxSupplierInvoice
     public bool? Booked { get; set; }
     public decimal? Balance { get; set; }
     public bool? FullyPaid { get; set; }
+    public bool? PaymentPending { get; set; }
+    public bool? AuthorizePending { get; set; }
+    public string? AuthorizerName { get; set; }
+    public string? LastModified { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
+}
+
+public sealed class FortnoxInvoicePayment
+{
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
+    public string? Number { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
+    public string? InvoiceNumber { get; set; }
+    public string? InvoiceCustomerName { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
+    public string? InvoiceCustomerNumber { get; set; }
+    public string? InvoiceOCR { get; set; }
+    public string? InvoiceDueDate { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? AmountCurrency { get; set; }
+    public string? Currency { get; set; }
+    public bool? Booked { get; set; }
+    public string? ModeOfPayment { get; set; }
+    public string? PaymentDate { get; set; }
+    public string? Source { get; set; }
+    public string? VoucherSeries { get; set; }
+    public int? VoucherNumber { get; set; }
+    public int? VoucherYear { get; set; }
+    public string? LastModified { get; set; }
+    [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
+}
+
+public sealed class FortnoxSupplierInvoicePayment
+{
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
+    public string? Number { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
+    public string? InvoiceNumber { get; set; }
+    public string? InvoiceSupplierName { get; set; }
+    [JsonConverter(typeof(FortnoxFlexibleStringConverter))]
+    public string? InvoiceSupplierNumber { get; set; }
+    public string? InvoiceOCR { get; set; }
+    public string? InvoiceDueDate { get; set; }
+    public decimal? Amount { get; set; }
+    public decimal? AmountCurrency { get; set; }
+    public string? Currency { get; set; }
+    public bool? Booked { get; set; }
+    public string? Information { get; set; }
+    public string? ModeOfPayment { get; set; }
+    public string? PaymentDate { get; set; }
+    public string? Source { get; set; }
+    public string? VoucherSeries { get; set; }
+    public int? VoucherNumber { get; set; }
+    public int? VoucherYear { get; set; }
     public string? LastModified { get; set; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
 }
@@ -280,6 +347,12 @@ public sealed class FortnoxAccount
     public string? Description { get; set; }
     public bool? Active { get; set; }
     public string? Type { get; set; }
+    public decimal? Balance { get; set; }
+    public decimal? CurrentBalance { get; set; }
+    public decimal? BalanceBroughtForward { get; set; }
+    public decimal? BalanceCarriedForward { get; set; }
+    public decimal? OpeningBalance { get; set; }
+    public decimal? ClosingBalance { get; set; }
     public string? LastModified { get; set; }
     [JsonExtensionData] public Dictionary<string, JsonElement>? AdditionalData { get; set; }
 }

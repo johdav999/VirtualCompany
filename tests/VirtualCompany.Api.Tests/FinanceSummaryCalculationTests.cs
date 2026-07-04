@@ -106,6 +106,77 @@ public sealed class FinanceSummaryCalculationTests
     }
 
     [Fact]
+    public async Task Cash_balance_uses_bank_accounts_instead_of_ten_series_assets()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = new SqliteConnection("Data Source=:memory:");
+        await connection.OpenAsync();
+        await using var dbContext = CreateContext(connection);
+        await dbContext.Database.EnsureCreatedAsync();
+
+        var developmentAssetId = Guid.Parse("99999999-9999-9999-9999-999999999998");
+        var bankAccountId = Guid.Parse("99999999-9999-9999-9999-999999999997");
+        var customerId = Guid.Parse("88888888-8888-8888-8888-888888888887");
+
+        dbContext.Companies.Add(new Company(companyId, "Swedish Ledger Company"));
+        dbContext.FinanceAccounts.AddRange(
+            new FinanceAccount(
+                developmentAssetId,
+                companyId,
+                "1010",
+                "Development expenditure",
+                "asset",
+                "SEK",
+                0m,
+                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
+            new FinanceAccount(
+                bankAccountId,
+                companyId,
+                "1930",
+                "Business bank account",
+                "asset",
+                "SEK",
+                0m,
+                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(customerId, companyId, "Customer", "customer", "customer@example.com"));
+        dbContext.FinanceTransactions.Add(new FinanceTransaction(
+            Guid.Parse("66666666-6666-6666-6666-666666666665"),
+            companyId,
+            bankAccountId,
+            customerId,
+            null,
+            null,
+            new DateTime(2026, 1, 5, 0, 0, 0, DateTimeKind.Utc),
+            "customer_payment",
+            318484m,
+            "SEK",
+            "Customer receipt",
+            "BANK-001"));
+        dbContext.FinanceTransactions.Add(new FinanceTransaction(
+            Guid.Parse("66666666-6666-6666-6666-666666666664"),
+            companyId,
+            bankAccountId,
+            customerId,
+            null,
+            null,
+            new DateTime(2026, 1, 6, 0, 0, 0, DateTimeKind.Utc),
+            "voucher",
+            112500m,
+            "SEK",
+            "Customer invoice posting",
+            "VOUCHER-001"));
+        await dbContext.SaveChangesAsync();
+
+        var service = new CompanyFinanceReadService(dbContext);
+        var result = await service.GetCashBalanceAsync(new GetFinanceCashBalanceQuery(companyId, new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc)), CancellationToken.None);
+
+        Assert.Equal(318484m, result.Amount);
+        Assert.Equal("SEK", result.Currency);
+        Assert.DoesNotContain(result.Accounts, x => x.AccountCode == "1010");
+        Assert.Contains(result.Accounts, x => x.AccountCode == "1930");
+    }
+
+    [Fact]
     public async Task Monthly_profit_and_loss_returns_positive_and_negative_net_income_months()
     {
         var companyId = Guid.NewGuid();

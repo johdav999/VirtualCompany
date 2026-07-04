@@ -38,6 +38,10 @@ public sealed class FinanceInvoiceDetailMappingIntegrationTests : IClassFixture<
         Assert.Equal(2725m, invoice.Amount);
         Assert.Equal("USD", invoice.Currency);
         Assert.Equal("open", invoice.Status);
+        Assert.Equal("booked", invoice.PostingStatus);
+        Assert.Equal("unpaid", invoice.SettlementStatus);
+        Assert.Equal("overdue", invoice.DueStatus);
+        Assert.Equal("invoice", invoice.DocumentKind);
         Assert.NotNull(invoice.LinkedDocument);
         Assert.Equal("Finance supporting document 001", invoice.LinkedDocument!.Title);
         Assert.Equal("finance-document-001.pdf", invoice.LinkedDocument.OriginalFileName);
@@ -57,6 +61,10 @@ public sealed class FinanceInvoiceDetailMappingIntegrationTests : IClassFixture<
         Assert.Equal(invoice.Amount, detail.Amount);
         Assert.Equal(invoice.Currency, detail.Currency);
         Assert.Equal(invoice.Status, detail.Status);
+        Assert.Equal(invoice.PostingStatus, detail.PostingStatus);
+        Assert.Equal(invoice.SettlementStatus, detail.SettlementStatus);
+        Assert.Equal(invoice.DueStatus, detail.DueStatus);
+        Assert.Equal(invoice.DocumentKind, detail.DocumentKind);
         Assert.NotNull(detail.Permissions);
         Assert.True(detail.Permissions.CanEditTransactionCategory);
         Assert.True(detail.Permissions.CanChangeInvoiceApprovalStatus);

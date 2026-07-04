@@ -350,6 +350,50 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
         TransactionType = NormalizeRequired(category, nameof(category), 64);
     }
 
+    public void ApplySyncedSnapshot(
+        Guid accountId,
+        Guid? counterpartyId,
+        Guid? invoiceId,
+        Guid? billId,
+        DateTime transactionUtc,
+        string transactionType,
+        decimal amount,
+        string currency,
+        string description,
+        string externalReference)
+    {
+        if (accountId == Guid.Empty)
+        {
+            throw new ArgumentException("AccountId is required.", nameof(accountId));
+        }
+
+        if (counterpartyId == Guid.Empty)
+        {
+            throw new ArgumentException("CounterpartyId cannot be empty.", nameof(counterpartyId));
+        }
+
+        if (invoiceId == Guid.Empty)
+        {
+            throw new ArgumentException("InvoiceId cannot be empty.", nameof(invoiceId));
+        }
+
+        if (billId == Guid.Empty)
+        {
+            throw new ArgumentException("BillId cannot be empty.", nameof(billId));
+        }
+
+        AccountId = accountId;
+        CounterpartyId = counterpartyId;
+        InvoiceId = invoiceId;
+        BillId = billId;
+        TransactionUtc = EntityTimestampNormalizer.NormalizeUtc(transactionUtc, nameof(transactionUtc));
+        TransactionType = NormalizeRequired(transactionType, nameof(transactionType), 64);
+        Amount = amount;
+        Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
+        Description = NormalizeRequired(description, nameof(description), 500);
+        ExternalReference = NormalizeRequired(externalReference, nameof(externalReference), 100);
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -387,7 +431,13 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         DateTime? createdUtc = null,
         DateTime? updatedUtc = null,
         string? settlementStatus = null,
-        Guid? sourceSimulationEventRecordId = null)
+        Guid? sourceSimulationEventRecordId = null,
+        string? postingStatus = null,
+        string? dueStatus = null,
+        string? documentKind = null,
+        string? providerStatus = null,
+        string? processingStatus = null,
+        decimal paidAmount = 0m)
     {
         if (companyId == Guid.Empty)
         {
@@ -411,9 +461,15 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         IssuedUtc = EntityTimestampNormalizer.NormalizeUtc(issuedUtc, nameof(issuedUtc));
         DueUtc = EntityTimestampNormalizer.NormalizeUtc(dueUtc, nameof(dueUtc));
         Amount = amount;
+        PaidAmount = NormalizePaidAmount(paidAmount, amount);
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Status = NormalizeRequired(status, nameof(status), 32);
         SettlementStatus = ResolveInitialSettlementStatus(status, settlementStatus);
+        PostingStatus = ResolveInitialPostingStatus(status, postingStatus);
+        DueStatus = ResolveInitialDueStatus(DueUtc, SettlementStatus, dueStatus);
+        DocumentKind = NormalizeDocumentKind(documentKind ?? FinanceDocumentKinds.Invoice);
+        ProviderStatus = NormalizeOptional(providerStatus, nameof(providerStatus), 128);
+        ProcessingStatus = ResolveInitialProcessingStatus(processingStatus);
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? IssuedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
@@ -432,9 +488,15 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
     public DateTime IssuedUtc { get; private set; }
     public DateTime DueUtc { get; private set; }
     public decimal Amount { get; private set; }
+    public decimal PaidAmount { get; private set; }
     public string Currency { get; private set; } = null!;
     public string Status { get; private set; } = null!;
     public string SettlementStatus { get; private set; } = null!;
+    public string PostingStatus { get; private set; } = null!;
+    public string DueStatus { get; private set; } = null!;
+    public string DocumentKind { get; private set; } = null!;
+    public string? ProviderStatus { get; private set; }
+    public string ProcessingStatus { get; private set; } = null!;
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
@@ -453,15 +515,36 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         decimal amount,
         string currency,
         string status,
-        string settlementStatus)
+        string settlementStatus,
+        string? postingStatus = null,
+        string? dueStatus = null,
+        string? documentKind = null,
+        string? providerStatus = null,
+        string? processingStatus = null,
+        decimal? paidAmount = null)
     {
         CounterpartyId = counterpartyId == Guid.Empty ? throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId)) : counterpartyId;
         IssuedUtc = EntityTimestampNormalizer.NormalizeUtc(issuedUtc, nameof(issuedUtc));
         DueUtc = EntityTimestampNormalizer.NormalizeUtc(dueUtc, nameof(dueUtc));
         Amount = amount;
+        if (paidAmount.HasValue)
+        {
+            PaidAmount = NormalizePaidAmount(paidAmount.Value, amount);
+        }
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Status = NormalizeRequired(status, nameof(status), 32);
         SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        PostingStatus = postingStatus is null
+            ? ResolvePostingStatus(Status)
+            : NormalizePostingStatus(postingStatus);
+        DueStatus = dueStatus is null
+            ? ResolveDueStatus(DueUtc, SettlementStatus)
+            : NormalizeDueStatus(dueStatus);
+        DocumentKind = documentKind is null
+            ? ResolveDocumentKind(FinanceDocumentKinds.Invoice, Amount)
+            : NormalizeDocumentKind(documentKind);
+        ProviderStatus = NormalizeOptional(providerStatus, nameof(providerStatus), 128);
+        ProcessingStatus = ResolveInitialProcessingStatus(processingStatus);
         UpdatedUtc = DateTime.UtcNow;
     }
 
@@ -474,12 +557,15 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         }
 
         Status = normalized;
+        PostingStatus = ResolvePostingStatus(normalized);
+        DueStatus = ResolveDueStatus(DueUtc, SettlementStatus);
         UpdatedUtc = DateTime.UtcNow;
     }
 
     public void ApplySettlementStatus(string settlementStatus)
     {
         SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        DueStatus = ResolveDueStatus(DueUtc, SettlementStatus);
         UpdatedUtc = DateTime.UtcNow;
     }
 
@@ -518,6 +604,29 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         return trimmed;
     }
 
+    private static decimal NormalizePaidAmount(decimal paidAmount, decimal totalAmount)
+    {
+        var normalized = decimal.Round(Math.Abs(paidAmount), 2, MidpointRounding.AwayFromZero);
+        var cap = decimal.Round(Math.Abs(totalAmount), 2, MidpointRounding.AwayFromZero);
+        return cap == 0m ? 0m : Math.Min(normalized, cap);
+    }
+
+    private static string? NormalizeOptional(string? value, string name, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > maxLength)
+        {
+            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+        }
+
+        return trimmed;
+    }
+
     private static string ResolveInitialSettlementStatus(string status, string? settlementStatus)
     {
         if (!string.IsNullOrWhiteSpace(settlementStatus))
@@ -536,6 +645,91 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         return FinanceSettlementStatuses.IsSupported(normalized)
             ? normalized
             : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported settlement status.");
+    }
+
+    private static string ResolveInitialPostingStatus(string status, string? postingStatus) =>
+        string.IsNullOrWhiteSpace(postingStatus)
+            ? ResolvePostingStatus(status)
+            : NormalizePostingStatus(postingStatus);
+
+    private static string ResolvePostingStatus(string status)
+    {
+        var normalized = NormalizeRequired(status, nameof(status), 32).Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
+        return normalized switch
+        {
+            "draft" or "unbooked" or "pending" or "pending_approval" => FinanceDocumentPostingStatuses.Draft,
+            "cancelled" or "canceled" or "void" or "rejected" => FinanceDocumentPostingStatuses.Cancelled,
+            _ => FinanceDocumentPostingStatuses.Booked
+        };
+    }
+
+    private static string NormalizePostingStatus(string value)
+    {
+        var normalized = FinanceDocumentPostingStatuses.Normalize(value);
+        return FinanceDocumentPostingStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document posting status.");
+    }
+
+    private static string ResolveInitialDueStatus(DateTime dueUtc, string settlementStatus, string? dueStatus) =>
+        string.IsNullOrWhiteSpace(dueStatus)
+            ? ResolveDueStatus(dueUtc, settlementStatus)
+            : NormalizeDueStatus(dueStatus);
+
+    private static string ResolveDueStatus(DateTime dueUtc, string settlementStatus)
+    {
+        if (string.Equals(settlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(settlementStatus, FinanceSettlementStatuses.Credited, StringComparison.OrdinalIgnoreCase))
+        {
+            return FinanceDocumentDueStatuses.NotDue;
+        }
+
+        var dueDate = dueUtc.Date;
+        var today = DateTime.UtcNow.Date;
+        if (dueDate < today)
+        {
+            return FinanceDocumentDueStatuses.Overdue;
+        }
+
+        return dueDate <= today.AddDays(7)
+            ? FinanceDocumentDueStatuses.DueSoon
+            : FinanceDocumentDueStatuses.NotDue;
+    }
+
+    private static string NormalizeDueStatus(string value)
+    {
+        var normalized = FinanceDocumentDueStatuses.Normalize(value);
+        return FinanceDocumentDueStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document due status.");
+    }
+
+    private static string ResolveDocumentKind(string defaultKind, decimal amount) =>
+        amount < 0m && string.Equals(defaultKind, FinanceDocumentKinds.Invoice, StringComparison.OrdinalIgnoreCase)
+            ? FinanceDocumentKinds.CreditNote
+            : amount < 0m && string.Equals(defaultKind, FinanceDocumentKinds.SupplierInvoice, StringComparison.OrdinalIgnoreCase)
+                ? FinanceDocumentKinds.SupplierCreditNote
+                : defaultKind;
+
+    private static string ResolveInitialProcessingStatus(string? processingStatus) =>
+        string.IsNullOrWhiteSpace(processingStatus)
+            ? FinanceDocumentProcessingStatuses.None
+            : NormalizeProcessingStatus(processingStatus);
+
+    private static string NormalizeProcessingStatus(string value)
+    {
+        var normalized = FinanceDocumentProcessingStatuses.Normalize(value);
+        return FinanceDocumentProcessingStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document processing status.");
+    }
+
+    private static string NormalizeDocumentKind(string value)
+    {
+        var normalized = FinanceDocumentKinds.Normalize(value);
+        return FinanceDocumentKinds.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported finance document kind.");
     }
 }
 
@@ -559,7 +753,13 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         DateTime? createdUtc = null,
         DateTime? updatedUtc = null,
         string? settlementStatus = null,
-        Guid? sourceSimulationEventRecordId = null)
+        Guid? sourceSimulationEventRecordId = null,
+        string? postingStatus = null,
+        string? dueStatus = null,
+        string? documentKind = null,
+        string? providerStatus = null,
+        string? processingStatus = null,
+        decimal paidAmount = 0m)
     {
         if (companyId == Guid.Empty)
         {
@@ -583,9 +783,15 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         ReceivedUtc = EntityTimestampNormalizer.NormalizeUtc(receivedUtc, nameof(receivedUtc));
         DueUtc = EntityTimestampNormalizer.NormalizeUtc(dueUtc, nameof(dueUtc));
         Amount = amount;
+        PaidAmount = NormalizePaidAmount(paidAmount, amount);
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Status = NormalizeRequired(status, nameof(status), 32);
         SettlementStatus = ResolveInitialSettlementStatus(status, settlementStatus);
+        PostingStatus = ResolveInitialPostingStatus(status, postingStatus);
+        DueStatus = ResolveInitialDueStatus(DueUtc, SettlementStatus, dueStatus);
+        DocumentKind = NormalizeDocumentKind(documentKind ?? FinanceDocumentKinds.SupplierInvoice);
+        ProviderStatus = NormalizeOptional(providerStatus, nameof(providerStatus), 128);
+        ProcessingStatus = ResolveInitialProcessingStatus(processingStatus);
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? ReceivedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
@@ -604,9 +810,15 @@ public sealed class FinanceBill : ICompanyOwnedEntity
     public DateTime ReceivedUtc { get; private set; }
     public DateTime DueUtc { get; private set; }
     public decimal Amount { get; private set; }
+    public decimal PaidAmount { get; private set; }
     public string Currency { get; private set; } = null!;
     public string Status { get; private set; } = null!;
     public string SettlementStatus { get; private set; } = null!;
+    public string PostingStatus { get; private set; } = null!;
+    public string DueStatus { get; private set; } = null!;
+    public string DocumentKind { get; private set; } = null!;
+    public string? ProviderStatus { get; private set; }
+    public string ProcessingStatus { get; private set; } = null!;
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
@@ -625,15 +837,36 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         decimal amount,
         string currency,
         string status,
-        string settlementStatus)
+        string settlementStatus,
+        string? postingStatus = null,
+        string? dueStatus = null,
+        string? documentKind = null,
+        string? providerStatus = null,
+        string? processingStatus = null,
+        decimal? paidAmount = null)
     {
         CounterpartyId = counterpartyId == Guid.Empty ? throw new ArgumentException("CounterpartyId is required.", nameof(counterpartyId)) : counterpartyId;
         ReceivedUtc = EntityTimestampNormalizer.NormalizeUtc(receivedUtc, nameof(receivedUtc));
         DueUtc = EntityTimestampNormalizer.NormalizeUtc(dueUtc, nameof(dueUtc));
         Amount = amount;
+        if (paidAmount.HasValue)
+        {
+            PaidAmount = NormalizePaidAmount(paidAmount.Value, amount);
+        }
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Status = NormalizeRequired(status, nameof(status), 32);
         SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        PostingStatus = postingStatus is null
+            ? ResolvePostingStatus(Status)
+            : NormalizePostingStatus(postingStatus);
+        DueStatus = dueStatus is null
+            ? ResolveDueStatus(DueUtc, SettlementStatus)
+            : NormalizeDueStatus(dueStatus);
+        DocumentKind = documentKind is null
+            ? ResolveDocumentKind(FinanceDocumentKinds.SupplierInvoice, Amount)
+            : NormalizeDocumentKind(documentKind);
+        ProviderStatus = NormalizeOptional(providerStatus, nameof(providerStatus), 128);
+        ProcessingStatus = ResolveInitialProcessingStatus(processingStatus);
         UpdatedUtc = DateTime.UtcNow;
     }
 
@@ -653,9 +886,33 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         return trimmed;
     }
 
+    private static decimal NormalizePaidAmount(decimal paidAmount, decimal totalAmount)
+    {
+        var normalized = decimal.Round(Math.Abs(paidAmount), 2, MidpointRounding.AwayFromZero);
+        var cap = decimal.Round(Math.Abs(totalAmount), 2, MidpointRounding.AwayFromZero);
+        return cap == 0m ? 0m : Math.Min(normalized, cap);
+    }
+
+    private static string? NormalizeOptional(string? value, string name, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        if (trimmed.Length > maxLength)
+        {
+            throw new ArgumentOutOfRangeException(name, $"{name} must be {maxLength} characters or fewer.");
+        }
+
+        return trimmed;
+    }
+
     public void ApplySettlementStatus(string settlementStatus)
     {
         SettlementStatus = NormalizeSettlementStatus(settlementStatus);
+        DueStatus = ResolveDueStatus(DueUtc, SettlementStatus);
         UpdatedUtc = DateTime.UtcNow;
     }
 
@@ -675,6 +932,79 @@ public sealed class FinanceBill : ICompanyOwnedEntity
         FinanceSettlementStatuses.Normalize(value) is var normalized && FinanceSettlementStatuses.IsSupported(normalized)
             ? normalized
             : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported settlement status.");
+
+    private static string ResolveInitialPostingStatus(string status, string? postingStatus) =>
+        string.IsNullOrWhiteSpace(postingStatus)
+            ? ResolvePostingStatus(status)
+            : NormalizePostingStatus(postingStatus);
+
+    private static string ResolvePostingStatus(string status)
+    {
+        var normalized = NormalizeRequired(status, nameof(status), 32).Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
+        return normalized switch
+        {
+            "draft" or "unbooked" or "pending" or "pending_approval" => FinanceDocumentPostingStatuses.Draft,
+            "cancelled" or "canceled" or "void" or "rejected" => FinanceDocumentPostingStatuses.Cancelled,
+            _ => FinanceDocumentPostingStatuses.Booked
+        };
+    }
+
+    private static string NormalizePostingStatus(string value) =>
+        FinanceDocumentPostingStatuses.Normalize(value) is var normalized && FinanceDocumentPostingStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document posting status.");
+
+    private static string ResolveInitialDueStatus(DateTime dueUtc, string settlementStatus, string? dueStatus) =>
+        string.IsNullOrWhiteSpace(dueStatus)
+            ? ResolveDueStatus(dueUtc, settlementStatus)
+            : NormalizeDueStatus(dueStatus);
+
+    private static string ResolveDueStatus(DateTime dueUtc, string settlementStatus)
+    {
+        if (string.Equals(settlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(settlementStatus, FinanceSettlementStatuses.Credited, StringComparison.OrdinalIgnoreCase))
+        {
+            return FinanceDocumentDueStatuses.NotDue;
+        }
+
+        var dueDate = dueUtc.Date;
+        var today = DateTime.UtcNow.Date;
+        if (dueDate < today)
+        {
+            return FinanceDocumentDueStatuses.Overdue;
+        }
+
+        return dueDate <= today.AddDays(7)
+            ? FinanceDocumentDueStatuses.DueSoon
+            : FinanceDocumentDueStatuses.NotDue;
+    }
+
+    private static string NormalizeDueStatus(string value) =>
+        FinanceDocumentDueStatuses.Normalize(value) is var normalized && FinanceDocumentDueStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document due status.");
+
+    private static string ResolveDocumentKind(string defaultKind, decimal amount) =>
+        amount < 0m && string.Equals(defaultKind, FinanceDocumentKinds.SupplierInvoice, StringComparison.OrdinalIgnoreCase)
+            ? FinanceDocumentKinds.SupplierCreditNote
+            : amount < 0m && string.Equals(defaultKind, FinanceDocumentKinds.Invoice, StringComparison.OrdinalIgnoreCase)
+                ? FinanceDocumentKinds.CreditNote
+                : defaultKind;
+
+    private static string ResolveInitialProcessingStatus(string? processingStatus) =>
+        string.IsNullOrWhiteSpace(processingStatus)
+            ? FinanceDocumentProcessingStatuses.None
+            : NormalizeProcessingStatus(processingStatus);
+
+    private static string NormalizeProcessingStatus(string value) =>
+        FinanceDocumentProcessingStatuses.Normalize(value) is var normalized && FinanceDocumentProcessingStatuses.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported document processing status.");
+
+    private static string NormalizeDocumentKind(string value) =>
+        FinanceDocumentKinds.Normalize(value) is var normalized && FinanceDocumentKinds.IsSupported(normalized)
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported finance document kind.");
 }
 
 public sealed class FinanceBalance : ICompanyOwnedEntity

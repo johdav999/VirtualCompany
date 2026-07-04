@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Application.Finance;
@@ -181,6 +182,37 @@ public sealed class FinanceSeedDatasetGeneratorTests
             var account = accounts.Single(x => x.Id == balance.AccountId);
             Assert.Equal(account.OpeningBalance + transactions.Where(x => x.AccountId == account.Id).Sum(x => x.Amount), balance.Amount);
         });
+    }
+
+    [Fact]
+    public async Task Bootstrap_seed_includes_transactions_when_runtime_transaction_creation_is_disabled()
+    {
+        var companyId = Guid.Parse("99999999-aaaa-bbbb-cccc-dddddddddddd");
+        await using var connection = await OpenConnectionAsync();
+        await using var dbContext = CreateContext(connection);
+        await dbContext.Database.EnsureCreatedAsync();
+        dbContext.Companies.Add(new Company(companyId, "Disabled Transaction Creation Seed Company"));
+        await dbContext.SaveChangesAsync();
+
+        var service = new CompanyFinanceSeedBootstrapService(
+            dbContext,
+            outboxEnqueuer: null,
+            planningBaselineService: null,
+            Options.Create(new FinanceTransactionCreationOptions
+            {
+                AllowNonSimulationTransactionCreation = false
+            }));
+
+        var result = await service.GenerateAsync(
+            new FinanceSeedBootstrapCommand(
+                companyId,
+                913,
+                SeedAnchorUtc: new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
+            CancellationToken.None);
+
+        Assert.Empty(result.ValidationErrors);
+        Assert.NotEqual(0, result.TransactionCount);
+        Assert.NotEmpty(await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync());
     }
 
     [Fact]

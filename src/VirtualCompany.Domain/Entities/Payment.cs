@@ -99,6 +99,7 @@ public sealed class Payment : ICompanyOwnedEntity
     {
         PaymentType = PaymentTypes.Normalize(paymentType);
         if (!PaymentTypes.IsSupported(PaymentType)) throw new ArgumentOutOfRangeException(nameof(paymentType), paymentType, "Unsupported payment type.");
+        if (amount <= 0m) throw new ArgumentOutOfRangeException(nameof(amount), "Amount must be greater than zero.");
         Amount = decimal.Round(amount, 2, MidpointRounding.AwayFromZero);
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         PaymentDate = EntityTimestampNormalizer.NormalizeUtc(paymentDate, nameof(paymentDate));

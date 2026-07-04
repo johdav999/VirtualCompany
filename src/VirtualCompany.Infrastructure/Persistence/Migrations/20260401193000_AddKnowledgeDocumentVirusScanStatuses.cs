@@ -4,6 +4,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260401193000_AddKnowledgeDocumentVirusScanStatuses")]
     public partial class AddKnowledgeDocumentVirusScanStatuses : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

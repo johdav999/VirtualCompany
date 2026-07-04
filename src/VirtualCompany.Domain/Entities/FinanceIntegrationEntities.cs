@@ -256,6 +256,14 @@ public sealed class FinanceExternalReference : ICompanyOwnedEntity
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
     }
 
+    public void ReplaceMetadata(JsonObject? metadata, DateTime updatedUtc)
+    {
+        Metadata = metadata is null
+            ? []
+            : JsonNode.Parse(metadata.ToJsonString())?.AsObject() ?? [];
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
     public void MarkSynced(DateTime syncedUtc)
     {
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(syncedUtc, nameof(syncedUtc));
@@ -528,6 +536,98 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
         UpdatedUtc = FailedUtc.Value;
     }
 
+    public void ReplaceUnexecutedRequest(
+        Guid? connectionId,
+        Guid? actorUserId,
+        string httpMethod,
+        string path,
+        string targetCompany,
+        string payloadSummary,
+        string payloadHash,
+        string sanitizedPayloadJson,
+        string? correlationId,
+        DateTime updatedUtc)
+    {
+        if (Status is FinanceIntegrationWriteCommandRecordStatuses.Executing or FinanceIntegrationWriteCommandRecordStatuses.Executed)
+        {
+            throw new InvalidOperationException("Executing or executed finance integration write commands cannot be replaced.");
+        }
+
+        if (Status is FinanceIntegrationWriteCommandRecordStatuses.Rejected or FinanceIntegrationWriteCommandRecordStatuses.Expired or FinanceIntegrationWriteCommandRecordStatuses.Cancelled)
+        {
+            throw new InvalidOperationException("Terminal finance integration write commands cannot be replaced.");
+        }
+
+        ConnectionId = connectionId == Guid.Empty ? null : connectionId;
+        ActorUserId = actorUserId == Guid.Empty ? null : actorUserId;
+        HttpMethod = NormalizeRequired(httpMethod, nameof(httpMethod), 16).ToUpperInvariant();
+        Path = NormalizeRequired(path, nameof(path), 512);
+        TargetCompany = NormalizeRequired(targetCompany, nameof(targetCompany), 160);
+        PayloadSummary = NormalizeRequired(payloadSummary, nameof(payloadSummary), 1000);
+        PayloadHash = NormalizeRequired(payloadHash, nameof(payloadHash), 128).ToLowerInvariant();
+        SanitizedPayloadJson = NormalizeRequired(sanitizedPayloadJson, nameof(sanitizedPayloadJson), 8000);
+        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+        ApprovalId = null;
+        ApprovedByUserId = null;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval;
+        FailureCategory = null;
+        SafeFailureSummary = null;
+        ResponseStatusCode = null;
+        SafeResponseSummary = null;
+        ExternalId = null;
+        ApprovedUtc = null;
+        ExecutionStartedUtc = null;
+        ExecutedUtc = null;
+        FailedUtc = null;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
+    public void ReplaceOutdatedExecutedRequest(
+        Guid? connectionId,
+        Guid? actorUserId,
+        string httpMethod,
+        string path,
+        string targetCompany,
+        string payloadSummary,
+        string payloadHash,
+        string sanitizedPayloadJson,
+        string? correlationId,
+        DateTime updatedUtc)
+    {
+        if (Status != FinanceIntegrationWriteCommandRecordStatuses.Executed)
+        {
+            throw new InvalidOperationException("Only executed finance integration write commands can be refreshed as outdated.");
+        }
+
+        if (string.Equals(PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Executed finance integration write command payload is already current.");
+        }
+
+        ConnectionId = connectionId == Guid.Empty ? null : connectionId;
+        ActorUserId = actorUserId == Guid.Empty ? null : actorUserId;
+        HttpMethod = NormalizeRequired(httpMethod, nameof(httpMethod), 16).ToUpperInvariant();
+        Path = NormalizeRequired(path, nameof(path), 512);
+        TargetCompany = NormalizeRequired(targetCompany, nameof(targetCompany), 160);
+        PayloadSummary = NormalizeRequired(payloadSummary, nameof(payloadSummary), 1000);
+        PayloadHash = NormalizeRequired(payloadHash, nameof(payloadHash), 128).ToLowerInvariant();
+        SanitizedPayloadJson = NormalizeRequired(sanitizedPayloadJson, nameof(sanitizedPayloadJson), 8000);
+        CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+        ApprovalId = null;
+        ApprovedByUserId = null;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval;
+        FailureCategory = null;
+        SafeFailureSummary = null;
+        ResponseStatusCode = null;
+        SafeResponseSummary = null;
+        ExternalId = null;
+        ApprovedUtc = null;
+        ExecutionStartedUtc = null;
+        ExecutedUtc = null;
+        FailedUtc = null;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
     public void MarkRejected(DateTime updatedUtc)
     {
         MarkTerminalWithoutExecution(FinanceIntegrationWriteCommandRecordStatuses.Rejected, updatedUtc);
@@ -653,7 +753,7 @@ public static class FinanceIntegrationWriteRetryPolicyValues
 public static class FinanceIntegrationWriteRetryPolicies
 {
     public static string ForCommandType(string commandType) =>
-        commandType is "payment" or "invoice_export" or "voucher_create"
+        commandType is "payment" or "invoice_export" or "supplier_master_data" or "voucher_create"
             ? FinanceIntegrationWriteRetryPolicyValues.None
             : FinanceIntegrationWriteRetryPolicyValues.TransientOnly;
 }

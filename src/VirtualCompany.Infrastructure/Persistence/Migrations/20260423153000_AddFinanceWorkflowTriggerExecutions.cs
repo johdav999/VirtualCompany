@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260423153000_AddFinanceWorkflowTriggerExecutions")]
     public partial class AddFinanceWorkflowTriggerExecutions : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -68,10 +70,22 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                 table: "finance_workflow_trigger_executions",
                 columns: new[] { "company_id", "trigger_type", "source_entity_id", "source_entity_version" },
                 unique: true);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_finance_workflow_trigger_check_executions_finance_workflow_trigger_executions_trigger_execution_id",
+                table: "finance_workflow_trigger_check_executions",
+                column: "trigger_execution_id",
+                principalTable: "finance_workflow_trigger_executions",
+                principalColumn: "id",
+                onDelete: ReferentialAction.NoAction);
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropForeignKey(
+                name: "FK_finance_workflow_trigger_check_executions_finance_workflow_trigger_executions_trigger_execution_id",
+                table: "finance_workflow_trigger_check_executions");
+
             migrationBuilder.DropTable(
                 name: "finance_workflow_trigger_executions");
         }

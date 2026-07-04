@@ -267,18 +267,21 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             if (approval.Status == ApprovalRequestStatus.Approved)
             {
                 task.UpdateStatus(WorkTaskStatus.InProgress);
+                await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: true, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
 
             if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired)
             {
                 task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
+                await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: false, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
 
             if (approval.Status == ApprovalRequestStatus.Cancelled)
             {
                 task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
+                await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: false, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
         }
@@ -389,6 +392,38 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         }
 
         return null;
+    }
+
+    private async Task UpdateSupplierPaymentProposalAfterTaskApprovalAsync(
+        ApprovalRequest approval,
+        WorkTask task,
+        bool approved,
+        CancellationToken cancellationToken)
+    {
+        if (!task.InputPayload.TryGetValue("paymentProposalId", out var value) ||
+            value is null ||
+            !Guid.TryParse(value.GetValue<string>(), out var proposalId))
+        {
+            return;
+        }
+
+        var proposal = await _dbContext.SupplierInvoicePaymentProposals
+            .SingleOrDefaultAsync(x => x.CompanyId == approval.CompanyId && x.Id == proposalId, cancellationToken);
+        if (proposal is null)
+        {
+            return;
+        }
+
+        var decidedBy = approval.Steps.FirstOrDefault(step => step.DecidedByUserId.HasValue)?.DecidedByUserId;
+        var decidedUtc = approval.DecidedUtc ?? DateTime.UtcNow;
+        if (approved)
+        {
+            proposal.MarkReadyForPayment(decidedBy, decidedUtc, approval.DecisionSummary);
+        }
+        else
+        {
+            proposal.MarkRejected(decidedBy, decidedUtc, approval.DecisionSummary);
+        }
     }
 
     private async Task MarkApprovalNotificationsActionedAsync(Guid companyId, Guid approvalId, Guid actionedByUserId, CancellationToken cancellationToken)

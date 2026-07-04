@@ -145,7 +145,7 @@ internal sealed class EmailIngestionRunEntityConfiguration : IEntityTypeConfigur
         builder.HasIndex(x => new { x.CompanyId, x.TriggeredByUserId, x.StartedUtc });
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.NoAction);
-        builder.HasOne(x => x.MailboxConnection).WithMany(x => x.IngestionRuns).HasForeignKey(x => x.MailboxConnectionId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.MailboxConnection).WithMany(x => x.IngestionRuns).HasForeignKey(x => x.MailboxConnectionId).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.TriggeredByUser).WithMany().HasForeignKey(x => x.TriggeredByUserId).OnDelete(DeleteBehavior.Restrict);
     }
 }

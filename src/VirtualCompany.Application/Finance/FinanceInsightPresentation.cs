@@ -76,6 +76,12 @@ public static class FinanceInsightPresentation
                     ? $"Supplier payment pressure is affecting multiple payables.{occurrenceSuffix}"
                     : $"{entityLabel} needs payment follow-up.{occurrenceSuffix}",
                 "Review due dates and schedule the next supplier payment."),
+            "supplier_bill_due_monitoring" => new FinanceInsightDashboardText(
+                occurrenceCount > 1 ? "Supplier bills need payment follow-up" : "Supplier bill needs payment follow-up",
+                occurrenceCount > 1
+                    ? $"Unpaid supplier bills are due soon or overdue.{occurrenceSuffix}"
+                    : $"{NormalizeSentence(rawMessage)}{occurrenceSuffix}",
+                "Review supplier bills and schedule payment before they age further."),
             "cash_risk" => new FinanceInsightDashboardText(
                 "Cash position needs review",
                 occurrenceCount > 1

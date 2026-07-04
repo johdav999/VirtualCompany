@@ -238,6 +238,7 @@ public static class FinanceIntegrationWriteCommandTypes
 {
     public const string Payment = "payment";
     public const string InvoiceExport = "invoice_export";
+    public const string SupplierMasterData = "supplier_master_data";
     public const string VoucherCreate = "voucher_create";
     public const string AccountingRecord = "accounting_record";
 

@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260426193000_AddFinanceBillInboxReview")]
     public partial class AddFinanceBillInboxReview : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -26,8 +28,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     table.PrimaryKey("PK_finance_bill_review_states", x => x.id);
                     table.UniqueConstraint("AK_finance_bill_review_states_company_id_id", x => new { x.company_id, x.id });
                     table.CheckConstraint("CK_finance_bill_review_states_status", "status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
-                    table.ForeignKey("FK_finance_bill_review_states_companies_company_id", x => x.company_id, "companies", "id", onDelete: ReferentialAction.Cascade);
-                    table.ForeignKey("FK_finance_bill_review_states_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey("FK_finance_bill_review_states_companies_company_id", x => x.company_id, "companies", "Id", onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey("FK_finance_bill_review_states_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.NoAction);
                 });
 
             migrationBuilder.CreateTable(
@@ -51,7 +53,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     table.PrimaryKey("PK_finance_bill_review_actions", x => x.id);
                     table.CheckConstraint("CK_finance_bill_review_actions_new_status", "new_status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
                     table.CheckConstraint("CK_finance_bill_review_actions_prior_status", "prior_status IN ('detected', 'extracted', 'needs_review', 'proposed_for_approval', 'approved', 'rejected', 'sent_to_payment_exported')");
-                    table.ForeignKey("FK_finance_bill_review_actions_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey("FK_finance_bill_review_actions_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.NoAction);
                     table.ForeignKey("FK_finance_bill_review_actions_finance_bill_review_states_review_state_id", x => x.review_state_id, "finance_bill_review_states", "id", onDelete: ReferentialAction.Cascade);
                 });
 
@@ -72,7 +74,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                 {
                     table.PrimaryKey("PK_bill_approval_proposals", x => x.id);
                     table.CheckConstraint("CK_bill_approval_proposals_no_payment_execution", "payment_execution_requested = 0");
-                    table.ForeignKey("FK_bill_approval_proposals_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.Cascade);
+                    table.ForeignKey("FK_bill_approval_proposals_detected_bills_detected_bill_id", x => x.detected_bill_id, "detected_bills", "id", onDelete: ReferentialAction.NoAction);
                     table.ForeignKey("FK_bill_approval_proposals_finance_bill_review_states_review_state_id", x => x.review_state_id, "finance_bill_review_states", "id", onDelete: ReferentialAction.Cascade);
                 });
 

@@ -10,7 +10,6 @@ public sealed partial class CompanyFinanceReadService
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
         if (query.BillId == Guid.Empty)
         {
             throw new ArgumentException("Bill id is required.", nameof(query));
@@ -30,6 +29,12 @@ public sealed partial class CompanyFinanceReadService
                 x.Amount,
                 x.Currency,
                 x.Status,
+                x.PostingStatus,
+                x.SettlementStatus,
+                x.DueStatus,
+                x.DocumentKind,
+                x.ProviderStatus,
+                x.ProcessingStatus,
                 x.DocumentId,
                 EF.Property<string>(x, "SourceType"),
                 EF.Property<string?>(x, "ProviderKey"),
@@ -41,8 +46,28 @@ public sealed partial class CompanyFinanceReadService
             return null;
         }
 
+        var hasFortnoxReference = await HasFortnoxReferenceAsync(query.CompanyId, ["supplier_invoice", "bill"], row.Id, cancellationToken);
+        await EnsureFinanceInitializedForRecordAsync(
+            query.CompanyId,
+            row.SourceType,
+            row.ProviderKey,
+            hasFortnoxReference,
+            cancellationToken);
+
         var linkedDocuments = await LoadLinkedDocumentsAsync(query.CompanyId, [row.DocumentId], cancellationToken);
         var documentAccess = await BuildDocumentAccessAsync(query.CompanyId, row.DocumentId, linkedDocuments, cancellationToken);
+        var billReviewStates = await LoadBillReviewStatesAsync(query.CompanyId, [row.Id], cancellationToken);
+        var paymentContext = BuildPaymentContext(
+            null,
+            row.Id,
+            new Dictionary<Guid, TransactionDocumentReviewState>(),
+            billReviewStates);
+        var relatedTransactions = await LoadBillRelatedTransactionsAsync(query.CompanyId, row.Id, cancellationToken);
+        var paymentProposals = await LoadSupplierPaymentProposalsAsync(query.CompanyId, [row.Id], cancellationToken);
+        var sourceDocumentAttachments = await LoadSupplierInvoiceSourceDocumentAttachmentsAsync(query.CompanyId, [row.Id], cancellationToken);
+        var draftActions = await LoadSupplierInvoiceDraftActionsAsync(query.CompanyId, [row.Id], cancellationToken);
+        var correctionActions = await LoadSupplierInvoiceCorrectionActionsAsync(query.CompanyId, [row.Id], cancellationToken);
+        var enrichmentActions = await LoadSupplierInvoiceEnrichmentActionsAsync(query.CompanyId, [row.Id], cancellationToken);
 
         return new FinanceBillDetailDto(
             row.Id,
@@ -56,7 +81,20 @@ public sealed partial class CompanyFinanceReadService
             row.Status,
             BuildActionPermissions(),
             documentAccess,
-            await LoadEntityAgentInsightsAsync(query.CompanyId, "bill", row.Id, cancellationToken));
+            await LoadEntityAgentInsightsAsync(query.CompanyId, "bill", row.Id, cancellationToken),
+            row.PostingStatus,
+            row.SettlementStatus,
+            row.DueStatus,
+            row.DocumentKind,
+            row.ProviderStatus,
+            row.ProcessingStatus,
+            paymentContext,
+            relatedTransactions,
+            paymentProposals.GetValueOrDefault(row.Id),
+            sourceDocumentAttachments.GetValueOrDefault(row.Id),
+            draftActions.GetValueOrDefault(row.Id),
+            correctionActions.GetValueOrDefault(row.Id),
+            enrichmentActions.GetValueOrDefault(row.Id));
     }
 
     private async Task<IReadOnlyList<NormalizedFinanceInsightDto>> LoadEntityAgentInsightsAsync(

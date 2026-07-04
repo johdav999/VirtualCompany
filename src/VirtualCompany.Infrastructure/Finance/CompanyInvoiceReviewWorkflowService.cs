@@ -376,7 +376,8 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
-                x.CanReceiveAssignments &&
+                x.Status != AgentStatus.Paused &&
+                x.Status != AgentStatus.Archived &&
                 (x.TemplateId == LauraFinanceAgentSeedData.TemplateId ||
                  x.DisplayName.Contains("Laura") ||
                  x.Department == "Finance"))

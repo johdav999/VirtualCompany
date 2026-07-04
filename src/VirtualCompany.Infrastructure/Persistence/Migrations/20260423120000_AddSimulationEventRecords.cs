@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+[Microsoft.EntityFrameworkCore.Migrations.Migration("20260423120000_AddSimulationEventRecords")]
     public partial class AddSimulationEventRecords : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -148,10 +150,19 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                 principalTable: "simulation_event_records",
                 principalColumns: new[] { "company_id", "id" },
                 onDelete: ReferentialAction.Restrict);
+
+            migrationBuilder.AddForeignKey(
+                name: "FK_finance_assets_simulation_event_records_company_id_source_simulation_event_record_id",
+                table: "finance_assets",
+                columns: new[] { "company_id", "source_simulation_event_record_id" },
+                principalTable: "simulation_event_records",
+                principalColumns: new[] { "company_id", "id" },
+                onDelete: ReferentialAction.Restrict);
         }
 
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.DropForeignKey(name: "FK_finance_assets_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_assets");
             migrationBuilder.DropForeignKey(name: "FK_finance_payments_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_payments");
             migrationBuilder.DropForeignKey(name: "FK_finance_invoices_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_invoices");
             migrationBuilder.DropForeignKey(name: "FK_finance_bills_simulation_event_records_company_id_source_simulation_event_record_id", table: "finance_bills");

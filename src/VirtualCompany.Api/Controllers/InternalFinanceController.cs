@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
@@ -37,6 +38,12 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IFinanceCommandService _financeCommandService;
     private readonly IFinancePaymentReadService _financePaymentReadService;
     private readonly IFinancePaymentCommandService _financePaymentCommandService;
+    private readonly IFinanceSupplierPaymentProposalService _supplierPaymentProposalService;
+    private readonly IFinanceSupplierInvoiceSourceDocumentAttachmentService _supplierInvoiceSourceDocumentAttachmentService;
+    private readonly IFinanceSupplierInvoiceDraftActionService _supplierInvoiceDraftActionService;
+    private readonly IFinanceCustomerInvoiceFortnoxActionService _customerInvoiceFortnoxActionService;
+    private readonly IFinanceSupplierInvoiceCorrectionService _supplierInvoiceCorrectionService;
+    private readonly IFinanceSupplierInvoiceEnrichmentService _supplierInvoiceEnrichmentService;
     private readonly IAuditQueryService _auditQueryService;
     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
@@ -62,6 +69,12 @@ public sealed partial class InternalFinanceController : ControllerBase
         IFinanceCommandService financeCommandService,
         IFinancePaymentReadService financePaymentReadService,
         IFinancePaymentCommandService financePaymentCommandService,
+        IFinanceSupplierPaymentProposalService supplierPaymentProposalService,
+        IFinanceSupplierInvoiceSourceDocumentAttachmentService supplierInvoiceSourceDocumentAttachmentService,
+        IFinanceSupplierInvoiceDraftActionService supplierInvoiceDraftActionService,
+        IFinanceCustomerInvoiceFortnoxActionService customerInvoiceFortnoxActionService,
+        IFinanceSupplierInvoiceCorrectionService supplierInvoiceCorrectionService,
+        IFinanceSupplierInvoiceEnrichmentService supplierInvoiceEnrichmentService,
         IAuditQueryService auditQueryService,
         IFinancePolicyConfigurationService financePolicyConfigurationService,
         IFinanceEntryService financeEntryService,
@@ -86,6 +99,12 @@ public sealed partial class InternalFinanceController : ControllerBase
         _toolRegistry = toolRegistry;
         _financePaymentReadService = financePaymentReadService;
         _financePaymentCommandService = financePaymentCommandService;
+        _supplierPaymentProposalService = supplierPaymentProposalService;
+        _supplierInvoiceSourceDocumentAttachmentService = supplierInvoiceSourceDocumentAttachmentService;
+        _supplierInvoiceDraftActionService = supplierInvoiceDraftActionService;
+        _customerInvoiceFortnoxActionService = customerInvoiceFortnoxActionService;
+        _supplierInvoiceCorrectionService = supplierInvoiceCorrectionService;
+        _supplierInvoiceEnrichmentService = supplierInvoiceEnrichmentService;
         _financeToolProvider = financeToolProvider;
         _financeCommandService = financeCommandService;
         _auditQueryService = auditQueryService;
@@ -635,7 +654,12 @@ public sealed partial class InternalFinanceController : ControllerBase
                 detail.LinkedDocument,
                 recommendationDetails,
                 workflowHistory,
-                detail.AgentInsights));
+                detail.AgentInsights,
+                detail.PostingStatus,
+                detail.SettlementStatus,
+                detail.DueStatus,
+                detail.DocumentKind,
+                detail.ProviderStatus));
         }
         catch (UnauthorizedAccessException)
         {
@@ -670,6 +694,84 @@ public sealed partial class InternalFinanceController : ControllerBase
                     request?.AgentId,
                     request?.Payload),
                 cancellationToken));
+
+    [HttpPost("invoices/{invoiceId:guid}/fortnox-export")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<CustomerInvoiceFortnoxActionDto>> RequestCustomerInvoiceFortnoxExportAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Customer invoice Fortnox export API request received. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            invoiceId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _customerInvoiceFortnoxActionService.RequestExportAsync(
+                new RequestCustomerInvoiceFortnoxExportCommand(companyId, invoiceId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("invoices/{invoiceId:guid}/fortnox-export/execute")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<CustomerInvoiceFortnoxActionDto>> ExecuteCustomerInvoiceFortnoxExportAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Customer invoice Fortnox export execution API request received. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}. ActorUserId: {ActorUserId}.",
+            companyId,
+            invoiceId,
+            ResolveActorId());
+
+        return await ExecuteWriteAsync(
+            () => _customerInvoiceFortnoxActionService.ExecuteExportAsync(
+                new ExecuteCustomerInvoiceFortnoxExportCommand(companyId, invoiceId, ResolveActorId()),
+                cancellationToken));
+    }
+
+    [HttpPost("invoices/{invoiceId:guid}/fortnox-bookkeep")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<CustomerInvoiceFortnoxActionDto>> RequestCustomerInvoiceFortnoxBookkeepAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Customer invoice Fortnox bookkeeping API request received. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            invoiceId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _customerInvoiceFortnoxActionService.RequestBookkeepAsync(
+                new RequestCustomerInvoiceFortnoxBookkeepCommand(companyId, invoiceId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("invoices/{invoiceId:guid}/fortnox-bookkeep/execute")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<CustomerInvoiceFortnoxActionDto>> ExecuteCustomerInvoiceFortnoxBookkeepAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Customer invoice Fortnox bookkeeping execution API request received. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}. ActorUserId: {ActorUserId}.",
+            companyId,
+            invoiceId,
+            ResolveActorId());
+
+        return await ExecuteWriteAsync(
+            () => _customerInvoiceFortnoxActionService.ExecuteBookkeepAsync(
+                new ExecuteCustomerInvoiceFortnoxBookkeepCommand(companyId, invoiceId, ResolveActorId()),
+                cancellationToken));
+    }
 
     [HttpGet("anomalies")]
     public async Task<ActionResult<IReadOnlyList<FinanceSeedAnomalyDto>>> GetSeedAnomaliesAsync(
@@ -756,6 +858,213 @@ public sealed partial class InternalFinanceController : ControllerBase
                 new GetFinanceBillDetailQuery(companyId, billId),
                 cancellationToken),
             "Finance bill was not found.");
+
+    [HttpPost("bills/{billId:guid}/payment-proposal")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoicePaymentProposalDto>> RequestBillPaymentProposalAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill payment proposal API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierPaymentProposalService.RequestPaymentProposalAsync(
+                new RequestSupplierInvoicePaymentProposalCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/payment-proposal/export")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoicePaymentProposalDto>> ExportBillPaymentInstructionAsync(
+        Guid companyId,
+        Guid billId,
+        [FromBody] ExportSupplierInvoicePaymentInstructionRequest? request,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill payment export API request received. CompanyId: {CompanyId}. BillId: {BillId}. ExportMode: {ExportMode}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            request?.ExportMode,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierPaymentProposalService.ExportPaymentInstructionAsync(
+                new ExportSupplierInvoicePaymentInstructionCommand(
+                    companyId,
+                    billId,
+                    ResolveActorId(),
+                    ResolveActorDisplayName(),
+                    request?.ExportMode ?? SupplierInvoicePaymentExportModes.RegisterPayment),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/source-document-attachment")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceSourceDocumentAttachmentDto>> AttachBillSourceDocumentAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill source document attachment API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceSourceDocumentAttachmentService.RequestAttachmentAsync(
+                new RequestSupplierInvoiceSourceDocumentAttachmentCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/fortnox-draft/update")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceDraftActionDto>> UpdateBillFortnoxDraftAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill Fortnox draft update API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceDraftActionService.UpdateDraftAsync(
+                new UpdateSupplierInvoiceDraftCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/fortnox-draft/bookkeep")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceDraftActionDto>> BookkeepBillFortnoxDraftAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill Fortnox bookkeeping API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceDraftActionService.BookkeepAsync(
+                new BookkeepSupplierInvoiceDraftCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/corrections/cancel")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceCorrectionActionDto>> CancelSupplierInvoiceAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill cancellation API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceCorrectionService.RequestCancellationAsync(
+                new RequestSupplierInvoiceCancellationCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/corrections/credit-note")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceCorrectionActionDto>> CreateSupplierCreditNoteAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill credit note API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceCorrectionService.RequestCreditNoteAsync(
+                new RequestSupplierInvoiceCreditNoteCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/enrichment/suggest")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceEnrichmentActionDto>> SuggestSupplierInvoiceEnrichmentAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill enrichment suggestion API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceEnrichmentService.SuggestAsync(
+                new SuggestSupplierInvoiceEnrichmentCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/enrichment/sync")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceEnrichmentActionDto>> SyncSupplierInvoiceEnrichmentAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill enrichment sync API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceEnrichmentService.SyncApprovedAsync(
+                new SyncSupplierInvoiceEnrichmentCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/enrichment/reconcile")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierInvoiceEnrichmentActionDto>> ReconcileSupplierInvoiceAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Supplier bill reconciliation API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _supplierInvoiceEnrichmentService.ReconcileAsync(
+                new ReconcileSupplierInvoiceCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
 
     [HttpGet("bills/{billId:guid}/allocations")]
     public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetBillAllocationsAsync(
@@ -3119,6 +3428,18 @@ public sealed partial class InternalFinanceController : ControllerBase
                 .Replace("-", "_", StringComparison.Ordinal)
                 .Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
+    private Guid? ResolveActorId()
+    {
+        var value = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+        return Guid.TryParse(value, out var userId) ? userId : null;
+    }
+
+    private string ResolveActorDisplayName() =>
+        User.Identity?.Name ??
+        User.FindFirstValue("name") ??
+        User.FindFirstValue(ClaimTypes.Email) ??
+        "Finance user";
+
     private ProblemDetails CreateProblemDetails(string detail) =>
         CreateProblemDetails(detail, "Invalid finance read request.", StatusCodes.Status400BadRequest);
 
@@ -3442,7 +3763,12 @@ public sealed record FinanceInvoiceDetailResponse(
     FinanceLinkedDocumentAccessDto LinkedDocument,
     FinanceInvoiceRecommendationDetailsResponse? RecommendationDetails = null,
     IReadOnlyList<FinanceInvoiceWorkflowHistoryItemResponse>? WorkflowHistory = null,
-    IReadOnlyList<NormalizedFinanceInsightDto>? AgentInsights = null);
+    IReadOnlyList<NormalizedFinanceInsightDto>? AgentInsights = null,
+    string PostingStatus = FinanceDocumentPostingStatuses.Booked,
+    string SettlementStatus = FinanceSettlementStatuses.Unpaid,
+    string DueStatus = FinanceDocumentDueStatuses.NotDue,
+    string DocumentKind = FinanceDocumentKinds.Invoice,
+    string? ProviderStatus = null);
 
 public sealed record FinanceInvoiceReviewListItemResponse(
     Guid Id,
@@ -3499,6 +3825,8 @@ public sealed record FinanceInvoiceWorkflowHistoryItemResponse(
     Guid? RelatedApprovalId);
 
 public sealed record UpdateFinanceInvoiceApprovalStatusRequest(string Status);
+
+public sealed record ExportSupplierInvoicePaymentInstructionRequest(string? ExportMode);
 
 public sealed record ReviewFinanceInvoiceWorkflowRequest(
     Guid? WorkflowInstanceId,
