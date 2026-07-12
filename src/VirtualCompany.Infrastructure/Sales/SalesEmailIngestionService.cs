@@ -25,6 +25,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
     private readonly ISalesEmailIntentExtractionService _intentExtraction;
     private readonly IReplySignalDetectionPipeline _replySignalDetection;
     private readonly TimeProvider _timeProvider;
+    private readonly ISalesSourceService _sources;
 
     public SalesEmailIngestionService(
         VirtualCompanyDbContext dbContext,
@@ -33,7 +34,8 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
         ICompanyOutboxEnqueuer outbox,
         ISalesEmailIntentExtractionService intentExtraction,
         IReplySignalDetectionPipeline replySignalDetection,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        ISalesSourceService sources)
     {
         _dbContext = dbContext;
         _providerRegistry = providerRegistry;
@@ -42,6 +44,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
         _intentExtraction = intentExtraction;
         _replySignalDetection = replySignalDetection;
         _timeProvider = timeProvider;
+        _sources = sources;
     }
 
     public async Task<SalesEmailIngestionResult> ProcessMessageAsync(
@@ -134,6 +137,12 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
                 ?? await CreateLeadAsync(companyId, signal, contact?.Id, customerCompany?.Id, cancellationToken);
 
         lead.ApplyEmailSignal(BuildLeadTitle(signal), contact?.Id, customerCompany?.Id, signal.Confidence, "sales email");
+        await _sources.StageAsync(companyId, new RecordSalesSourceTouchRequest("lead", lead.Id,
+            SalesSourceCategories.Email, connection.Provider.ToStorageValue(), "email", "inquiry",
+            providerMessageId, _timeProvider.GetUtcNow().UtcDateTime, "visitor", signal.SenderEmail,
+            Evidence: $"Inbound sales email classified as {signal.Intent} with confidence {signal.Confidence:0.00}.",
+            MetadataJson: System.Text.Json.JsonSerializer.Serialize(new { signal.Intent, signal.Confidence, threadIdentity }),
+            IsConversion: true), cancellationToken);
 
         var existingActivityId = await FindDetectionActivityIdAsync(companyId, lead.Id, providerMessageId, cancellationToken);
         Guid? activityId = existingActivityId;

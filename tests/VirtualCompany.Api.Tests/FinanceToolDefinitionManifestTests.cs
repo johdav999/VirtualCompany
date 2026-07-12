@@ -20,7 +20,8 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
         ["recommend_transaction_category"] = ToolActionType.Recommend,
         ["recommend_invoice_approval_decision"] = ToolActionType.Recommend,
         ["categorize_transaction"] = ToolActionType.Execute,
-        ["approve_invoice"] = ToolActionType.Execute
+        ["approve_invoice"] = ToolActionType.Execute,
+        ["post_paid_supplier_bill_expense"] = ToolActionType.Execute
     ];
 
     private readonly TestWebApplicationFactory _factory;
@@ -203,6 +204,17 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
                 ["status"] = JsonValue.Create("approved")
             }
         ];
+
+        yield return
+        [
+            "post_paid_supplier_bill_expense",
+            ToolActionType.Execute,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["billId"] = JsonValue.Create(Guid.NewGuid()),
+                ["providerKey"] = JsonValue.Create("fortnox")
+            }
+        ];
     }
 
     public static IEnumerable<object[]> InvalidFinanceRequests()
@@ -309,6 +321,17 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
                 ["status"] = JsonValue.Create("pending_review")
             }
         ];
+
+        yield return
+        [
+            "post_paid_supplier_bill_expense",
+            ToolActionType.Execute,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["billId"] = JsonValue.Create(Guid.NewGuid()),
+                ["providerKey"] = JsonValue.Create("other")
+            }
+        ];
     }
 
     private static ToolExecutionRequest CreateRequest(string toolName, ToolActionType actionType, Dictionary<string, JsonNode?> payload) =>
@@ -384,6 +407,14 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
                     ["invoice"] = new JsonObject
                     {
                         ["status"] = JsonValue.Create("approved")
+                    }
+                },
+                "post_paid_supplier_bill_expense" => new(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["expensePosting"] = new JsonObject
+                    {
+                        ["status"] = JsonValue.Create("booked"),
+                        ["posted"] = JsonValue.Create(true)
                     }
                 },
                 _ => []

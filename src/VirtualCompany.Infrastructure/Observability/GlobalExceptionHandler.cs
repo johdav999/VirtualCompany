@@ -6,6 +6,7 @@ using Microsoft.Extensions.Options;
 using System.Text.Json;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Documents;
+using VirtualCompany.Application.Sales;
 
 namespace VirtualCompany.Infrastructure.Observability;
 
@@ -106,6 +107,10 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 operationException.Detail),
 
             CompanyMembershipAdministrationValidationException validationException => ValidationFailure(validationException.Errors),
+            LeadGenerationValidationException validationException => new ExceptionHandlingResult(
+                StatusCodes.Status400BadRequest,
+                "Lead generation request could not be completed",
+                validationException.Message),
             UnauthorizedAccessException => new ExceptionHandlingResult(
                 StatusCodes.Status403Forbidden,
                 "Forbidden",

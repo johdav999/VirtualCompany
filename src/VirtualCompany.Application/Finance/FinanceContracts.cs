@@ -1467,7 +1467,16 @@ public sealed record FinanceBillDetailDto(
     SupplierInvoiceSourceDocumentAttachmentDto? SourceDocumentAttachment = null,
     SupplierInvoiceDraftActionDto? DraftAction = null,
     IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
-    SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null);
+    SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null,
+    PaidSupplierBillExpenseAvailabilityDto? PaidExpensePostingAvailability = null);
+
+public sealed record PaidSupplierBillExpenseAvailabilityDto(
+    bool CanPost,
+    string StatusLabel,
+    string StatusTone,
+    string Message,
+    string? AccountCode = null,
+    IReadOnlyList<string>? BlockingReasons = null);
 
 public sealed record SupplierInvoicePaymentProposalDto(
     Guid Id,
@@ -1637,7 +1646,27 @@ public sealed record BookkeepSupplierInvoiceDraftCommand(
     Guid BillId,
     Guid? ActorUserId,
     string ActorDisplayName,
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox,
+    bool AllowPaidBill = false);
+
+public sealed record PostPaidSupplierBillExpenseCommand(
+    Guid CompanyId,
+    Guid BillId,
+    Guid? ActorUserId,
+    string ActorDisplayName,
     string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+
+public sealed record PaidSupplierBillExpensePostingDto(
+    Guid BillId,
+    Guid DraftActionId,
+    string Status,
+    bool Posted,
+    string ProviderKey,
+    Guid? ConnectionId,
+    string Summary,
+    DateTime? RequestedUtc,
+    DateTime? BookedUtc,
+    SupplierInvoiceDraftActionDto DraftAction);
 
 public sealed record SupplierInvoiceDraftActionProviderRequest(
     Guid CompanyId,
@@ -1675,6 +1704,13 @@ public interface IFinanceSupplierInvoiceDraftActionService
 
     Task<SupplierInvoiceDraftActionDto> BookkeepAsync(
         BookkeepSupplierInvoiceDraftCommand command,
+        CancellationToken cancellationToken);
+}
+
+public interface IPaidSupplierBillExpensePostingService
+{
+    Task<PaidSupplierBillExpensePostingDto> PostAsync(
+        PostPaidSupplierBillExpenseCommand command,
         CancellationToken cancellationToken);
 }
 
@@ -2720,6 +2756,8 @@ public interface IFinanceToolProvider
     Task<FinanceTransactionDto> UpdateTransactionCategoryAsync(UpdateFinanceTransactionCategoryCommand command, CancellationToken cancellationToken);
 
     Task<FinanceInvoiceDto> UpdateInvoiceApprovalStatusAsync(UpdateFinanceInvoiceApprovalStatusCommand command, CancellationToken cancellationToken);
+
+    Task<PaidSupplierBillExpensePostingDto> PostPaidSupplierBillExpenseAsync(PostPaidSupplierBillExpenseCommand command, CancellationToken cancellationToken);
 }
 
 public interface IFinanceCommandService

@@ -349,11 +349,13 @@ public sealed class WebsiteLeadCaptureService : IWebsiteLeadCaptureService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyOutboxEnqueuer _outbox;
+    private readonly ISalesSourceService _sources;
 
-    public WebsiteLeadCaptureService(VirtualCompanyDbContext dbContext, ICompanyOutboxEnqueuer outbox)
+    public WebsiteLeadCaptureService(VirtualCompanyDbContext dbContext, ICompanyOutboxEnqueuer outbox, ISalesSourceService sources)
     {
         _dbContext = dbContext;
         _outbox = outbox;
+        _sources = sources;
     }
 
     public async Task<WebsiteLeadSubmissionResponse> SubmitAsync(WebsiteLeadSubmissionRequest request, CancellationToken cancellationToken)
@@ -461,7 +463,23 @@ public sealed class WebsiteLeadCaptureService : IWebsiteLeadCaptureService
 
         Guid? sequenceExecutionId = null;
 
-        if (policy.WebsiteLeadFollowUpSequenceId is Guid sequenceId)
+        string? Utm(string key) => request.Utm is not null && request.Utm.TryGetValue(key, out var value) ? value : null;
+        await _sources.StageAsync(companyId, new RecordSalesSourceTouchRequest(
+            "lead", lead.Id, SalesSourceCategories.Website, "virtual_company_website", "web_form", "inquiry",
+            externalSubmissionId ?? $"website-submission:{submission.Id:D}", submission.ReceivedUtc, "visitor", email,
+            Evidence: string.IsNullOrWhiteSpace(request.Message) ? "Public website inquiry submitted." : request.Message,
+            LandingPage: request.SourceUrl, Referrer: request.Referrer, UtmSource: Utm("source"), UtmMedium: Utm("medium"),
+            UtmCampaign: Utm("campaign"), UtmContent: Utm("content"), UtmTerm: Utm("term"),
+            MetadataJson: BuildSourceMetadataJson(request), IsConversion: true), cancellationToken);
+
+        var permission = await _dbContext.SalesContactPermissions.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+            x.CompanyId == companyId && x.ContactId == contact.Id && x.Channel == "email" && x.Address == email, cancellationToken);
+        var permissionStatus = request.ContactConsent ? "granted" : "not_granted";
+        var legalBasis = request.ContactConsent ? (request.ConsentLegalBasis ?? "consent") : "none";
+        if (permission is null) _dbContext.SalesContactPermissions.Add(new SalesContactPermission(Guid.NewGuid(), companyId, contact.Id, "email", email, permissionStatus, legalBasis, $"website-submission:{submission.Id:D}", now));
+        else if (request.ContactConsent) permission.Update(permissionStatus, legalBasis, $"website-submission:{submission.Id:D}", now);
+
+        if (request.ContactConsent && policy.WebsiteLeadFollowUpSequenceId is Guid sequenceId)
         {
             sequenceExecutionId = await EnrollFollowUpSequenceAsync(companyId, sequenceId, contact, submission, lead, now, cancellationToken);
         }

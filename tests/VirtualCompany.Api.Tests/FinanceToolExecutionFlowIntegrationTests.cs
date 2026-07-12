@@ -823,5 +823,37 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
                 scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>());
             return await service.UpdateInvoiceApprovalStatusAsync(command, cancellationToken);
         }
+
+        public Task<PaidSupplierBillExpensePostingDto> PostPaidSupplierBillExpenseAsync(
+            PostPaidSupplierBillExpenseCommand command,
+            CancellationToken cancellationToken)
+        {
+            _callNames.Enqueue(nameof(PostPaidSupplierBillExpenseAsync));
+            var now = new DateTime(2026, 4, 16, 0, 0, 0, DateTimeKind.Utc);
+            var draftAction = new SupplierInvoiceDraftActionDto(
+                Guid.Parse("abababab-abab-abab-abab-abababababab"),
+                command.BillId,
+                "booked",
+                FinanceIntegrationProviderKeys.Fortnox,
+                Guid.Parse("cdcdcdcd-cdcd-cdcd-cdcd-cdcdcdcdcdcd"),
+                command.ActorUserId,
+                now,
+                null,
+                now,
+                "Tracked Fortnox booked supplier invoice.",
+                now,
+                now);
+            return Task.FromResult(new PaidSupplierBillExpensePostingDto(
+                command.BillId,
+                draftAction.Id,
+                draftAction.Status,
+                Posted: true,
+                FinanceIntegrationProviderKeys.Fortnox,
+                draftAction.ConnectionId,
+                "Tracked Fortnox booked supplier invoice.",
+                draftAction.RequestedUtc,
+                draftAction.BookedUtc,
+                draftAction));
+        }
     }
 }

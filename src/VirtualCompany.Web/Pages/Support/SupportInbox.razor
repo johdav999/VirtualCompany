@@ -3,6 +3,7 @@
 @rendermode InteractiveServer
 @inherits SupportPageBase
 @using System.Globalization
+@using Microsoft.AspNetCore.Components
 
 <PageTitle>Support</PageTitle>
 
@@ -16,6 +17,9 @@
                     <p class="text-body-secondary mb-0">Review cases, Ben's triage, SLA risk, and replies that need action.</p>
                 </div>
                 <button class="btn btn-primary" @onclick="CreateCaseAsync" disabled="@isBusy">Create case</button>
+                <a class="btn btn-outline-secondary" href="/support/knowledge-gaps">Knowledge gaps</a>
+                <a class="btn btn-outline-secondary" href="@BuildPath("/support/memory")">Memory review</a>
+                <a class="btn btn-outline-secondary" href="/support/settings/sla">SLA settings</a>
             </div>
 
             @if (isLoading)
@@ -29,12 +33,12 @@
             else if (cases is not null)
             {
                 <div class="row g-3 mt-4">
-                    <div class="col-6 col-xl-2">@MetricCard("Open", cases.Summary.Open)</div>
-                    <div class="col-6 col-xl-2">@MetricCard("SLA risk", cases.Summary.SlaRisk)</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Breached", cases.Summary.SlaBreached)</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Escalated", cases.Summary.Escalated)</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Approvals", cases.Summary.AwaitingApproval)</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Resolved today", cases.Summary.ResolvedToday)</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Open", cases.Summary.Open, "open")</div>
+                    <div class="col-6 col-xl-2">@MetricCard("SLA risk", cases.Summary.SlaRisk, "sla-risk")</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Breached", cases.Summary.SlaBreached, "breached")</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Escalated", cases.Summary.Escalated, "escalated")</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Approvals", cases.Summary.AwaitingApproval, "approvals")</div>
+                    <div class="col-6 col-xl-2">@MetricCard("Resolved today", cases.Summary.ResolvedToday, "resolved")</div>
                 </div>
 
                 <div class="border rounded p-3 mt-4 bg-white">
@@ -53,6 +57,7 @@
                                 <option value="waiting_internal">Waiting internally</option>
                                 <option value="escalated">Escalated</option>
                                 <option value="awaiting_approval">Awaiting approval</option>
+                                <option value="resolved">Resolved</option>
                             </select>
                         </div>
                         <div class="col-6 col-lg-2">
@@ -78,8 +83,18 @@
                                 <option value="churn_risk">Churn risk</option>
                             </select>
                         </div>
-                        <div class="col-6 col-lg-2 d-flex gap-2">
-                            <button class="btn btn-outline-secondary flex-fill" @onclick="LoadAsync" disabled="@isBusy">Apply</button>
+                        <div class="col-6 col-lg-2">
+                            <label class="form-label" for="support-owner">Owner</label>
+                            <select id="support-owner" class="form-select" @bind="ownerFilter">
+                                <option value="">All</option>
+                                <option value="unassigned">Unassigned</option>
+                                <option value="mine">Assigned to me</option>
+                            </select>
+                        </div>
+                        <div class="col-6 col-lg-2"><label class="form-label" for="support-view">Attention view</label><select id="support-view" class="form-select" @bind="attentionView"><option value="">All cases</option><option value="open">Open cases</option><option value="waiting">Waiting too long</option><option value="failed-reply">Failed replies</option><option value="sla-risk">SLA risk</option><option value="breached">Breached</option><option value="approvals">Awaiting approval</option><option value="escalated">Escalated</option><option value="resolved">Resolved today</option></select></div>
+                        <div class="col-6 col-lg-2"><label class="form-label" for="support-sort">Sort</label><select id="support-sort" class="form-select" @bind="sortBy"><option value="attention">Attention</option><option value="updated">Recently updated</option><option value="created">Recently created</option><option value="due">Due date</option></select></div>
+                        <div class="col-12 d-flex gap-2 justify-content-end">
+                            <button class="btn btn-outline-secondary flex-fill" @onclick="ApplyFiltersAsync" disabled="@isBusy">Apply</button>
                             <button class="btn btn-outline-secondary flex-fill" @onclick="ClearFiltersAsync" disabled="@isBusy">Clear</button>
                         </div>
                     </div>
@@ -90,6 +105,45 @@
                     <div class="alert alert-warning mt-4 mb-0">
                         <strong>@analytics.Insights[0].Title</strong>
                         <div>@analytics.Insights[0].Summary @analytics.Insights[0].SuggestedAction</div>
+                    </div>
+                }
+
+                @if (analytics is not null)
+                {
+                    <div class="border rounded p-3 mt-4 bg-white">
+                        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                            <div>
+                                <h2 class="h6 mb-1">SLA performance</h2>
+                                <p class="text-body-secondary mb-0">@analytics.SlaPerformance.Rationale</p>
+                            </div>
+                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/settings/sla")">Review targets</a>
+                        </div>
+                        <div class="row g-3 mt-2">
+                            <div class="col-6 col-lg-2">@MetricCard("At risk now", analytics.SlaPerformance.OpenAtRisk, "sla-risk")</div>
+                            <div class="col-6 col-lg-2">@MetricCard("Breached now", analytics.SlaPerformance.OpenBreached, "breached")</div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Responses met</div><strong>@analytics.SlaPerformance.FirstResponsesMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Responses missed</div><strong>@analytics.SlaPerformance.FirstResponsesMissed.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Resolutions met</div><strong>@analytics.SlaPerformance.ResolutionsMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Missing targets</div><strong>@analytics.SlaPerformance.MissingTargets.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                        </div>
+                    </div>
+
+                    <div class="border rounded p-3 mt-4 bg-white">
+                        <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                            <div>
+                                <h2 class="h6 mb-1">Learning impact</h2>
+                                <p class="text-body-secondary mb-0">@analytics.Learning.Rationale</p>
+                            </div>
+                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/memory")">Review memory</a>
+                        </div>
+                        <div class="row g-3 mt-2">
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Memory used</div><strong>@analytics.Learning.DraftsUsingMemory.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Needs review</div><strong>@analytics.Learning.ReviewMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Approved memory</div><strong>@analytics.Learning.ApprovedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Rejected memory</div><strong>@analytics.Learning.RejectedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Answerability with memory</div><strong>@FormatPercent(analytics.Learning.AverageAnswerabilityWithMemory)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Reopened cases</div><strong>@analytics.Learning.ReopenedCases.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                        </div>
                     </div>
                 }
 
@@ -152,6 +206,16 @@
                         </tbody>
                     </table>
                 </div>
+                @if (cases.TotalCount > pageSize)
+                {
+                    <nav class="d-flex align-items-center justify-content-between gap-3 mt-3" aria-label="Support case pages">
+                        <span class="small text-body-secondary">Showing @(pageIndex * pageSize + 1)-@(Math.Min(cases.TotalCount, (pageIndex + 1) * pageSize)) of @cases.TotalCount</span>
+                        <div class="btn-group">
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="PreviousPageAsync" disabled="@(isBusy || pageIndex == 0)">Previous</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="NextPageAsync" disabled="@(isBusy || (pageIndex + 1) * pageSize >= cases.TotalCount)">Next</button>
+                        </div>
+                    </nav>
+                }
             }
         </div>
     </div>
@@ -167,11 +231,41 @@
     private string? status;
     private string? priority;
     private string? category;
+    private string? ownerFilter;
+    private string? attentionView;
+    private string sortBy = "attention";
+    private int pageIndex;
+    private const int pageSize = 25;
+
+    [SupplyParameterFromQuery(Name = "q")]
+    public string? SearchQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "status")]
+    public string? StatusQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "priority")]
+    public string? PriorityQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "category")]
+    public string? CategoryQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "owner")]
+    public string? OwnerQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "view")]
+    public string? ViewQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "sort")]
+    public string? SortQuery { get; set; }
+
+    [SupplyParameterFromQuery(Name = "page")]
+    public int? PageQuery { get; set; }
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
     private async Task LoadAsync()
     {
+        ReadQueryState();
         isLoading = cases is null;
         isBusy = true;
         errorMessage = null;
@@ -183,7 +277,29 @@
                 return;
             }
 
-            cases = await SupportApiClient.ListCasesAsync(companyId, new SupportCaseListQuery(status, priority, category, search));
+            var effectiveStatus = attentionView switch
+            {
+                "approvals" => "awaiting_approval",
+                "escalated" => "escalated",
+                "resolved" => "resolved",
+                _ => status
+            };
+            cases = await SupportApiClient.ListCasesAsync(companyId, new SupportCaseListQuery(
+                Status: effectiveStatus,
+                Priority: priority,
+                Category: category,
+                Search: search,
+                OpenOnly: attentionView == "open",
+                ResolvedToday: attentionView == "resolved",
+                Unassigned: ownerFilter == "unassigned",
+                AssignedToMe: ownerFilter == "mine",
+                SlaRisk: attentionView == "sla-risk" ? true : null,
+                SlaBreached: attentionView == "breached" ? true : null,
+                WaitingTooLong: attentionView == "waiting",
+                FailedReply: attentionView == "failed-reply",
+                SortBy: sortBy == "attention" ? null : sortBy,
+                Skip: pageIndex * pageSize,
+                Take: pageSize));
             analytics = await SupportApiClient.GetAnalyticsAsync(companyId);
         }
         catch (SupportApiException ex)
@@ -199,14 +315,35 @@
 
     private async Task ClearFiltersAsync()
     {
-        search = status = priority = category = null;
-        await LoadAsync();
+        search = status = priority = category = ownerFilter = attentionView = null;
+        sortBy = "attention";
+        pageIndex = 0;
+        await NavigateWithStateAsync(replace: false);
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        pageIndex = 0;
+        await NavigateWithStateAsync(replace: false);
     }
 
     private async Task OnSearchChanged(ChangeEventArgs args)
     {
         search = args.Value?.ToString();
-        await LoadAsync();
+        pageIndex = 0;
+        await NavigateWithStateAsync(replace: false);
+    }
+
+    private async Task PreviousPageAsync()
+    {
+        if (pageIndex > 0) pageIndex--;
+        await NavigateWithStateAsync(replace: false);
+    }
+
+    private async Task NextPageAsync()
+    {
+        if (cases is not null && (pageIndex + 1) * pageSize < cases.TotalCount) pageIndex++;
+        await NavigateWithStateAsync(replace: false);
     }
 
     private async Task CreateCaseAsync()
@@ -243,8 +380,63 @@
         _ => "badge text-bg-primary"
     };
 
-    private static RenderFragment MetricCard(string label, int value) => @<article class="border rounded bg-white p-3 h-100">
+    private static string FormatPercent(decimal? value) =>
+        value is decimal actual ? actual.ToString("P0", CultureInfo.CurrentCulture) : "No data";
+
+    private RenderFragment MetricCard(string label, int value, string view) => @<button type="button" class="border rounded bg-white p-3 h-100 w-100 text-start" @onclick="() => ApplyViewAsync(view)">
         <div class="small text-body-secondary">@label</div>
         <strong class="fs-3">@value.ToString(CultureInfo.CurrentCulture)</strong>
-    </article>;
+    </button>;
+
+    private async Task ApplyViewAsync(string view)
+    {
+        status = view switch { "escalated" => "escalated", "approvals" => "awaiting_approval", "resolved" => "resolved", _ => null };
+        attentionView = view switch { "open" => "open", "sla-risk" => "sla-risk", "breached" => "breached", "waiting" => "waiting", "failed-reply" => "failed-reply", "approvals" => "approvals", "escalated" => "escalated", "resolved" => "resolved", _ => null };
+        pageIndex = 0;
+        await NavigateWithStateAsync(replace: false);
+    }
+
+    private void ReadQueryState()
+    {
+        search = SearchQuery;
+        status = StatusQuery;
+        priority = PriorityQuery;
+        category = CategoryQuery;
+        ownerFilter = NormalizeKnown(OwnerQuery, ["mine", "unassigned"]);
+        attentionView = NormalizeKnown(ViewQuery, ["open", "sla-risk", "breached", "waiting", "failed-reply", "approvals", "escalated", "resolved"]);
+        sortBy = NormalizeKnown(SortQuery, ["attention", "updated", "created", "due"]) ?? "attention";
+        pageIndex = Math.Max(0, (PageQuery ?? 1) - 1);
+    }
+
+    private async Task NavigateWithStateAsync(bool replace)
+    {
+        var companyId = ResolvedCompanyId ?? CompanyId;
+
+        var uri = Navigation.GetUriWithQueryParameters(new Dictionary<string, object?>
+        {
+            ["companyId"] = companyId,
+            ["q"] = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            ["status"] = string.IsNullOrWhiteSpace(status) ? null : status,
+            ["priority"] = string.IsNullOrWhiteSpace(priority) ? null : priority,
+            ["category"] = string.IsNullOrWhiteSpace(category) ? null : category,
+            ["owner"] = string.IsNullOrWhiteSpace(ownerFilter) ? null : ownerFilter,
+            ["view"] = string.IsNullOrWhiteSpace(attentionView) ? null : attentionView,
+            ["sort"] = sortBy == "attention" ? null : sortBy,
+            ["page"] = pageIndex <= 0 ? null : pageIndex + 1
+        });
+        if (string.Equals(uri, Navigation.Uri, StringComparison.Ordinal))
+        {
+            await LoadAsync();
+            return;
+        }
+
+        Navigation.NavigateTo(uri, replace);
+    }
+
+    private static string? NormalizeKnown(string? value, IReadOnlyCollection<string> allowed)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = value.Trim().ToLowerInvariant();
+        return allowed.Contains(normalized) ? normalized : null;
+    }
 }

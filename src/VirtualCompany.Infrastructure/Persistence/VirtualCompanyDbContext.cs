@@ -171,6 +171,17 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<RevenueForecastSnapshot> RevenueForecastSnapshots => Set<RevenueForecastSnapshot>();
     public DbSet<DealRiskScoreSnapshot> DealRiskScoreSnapshots => Set<DealRiskScoreSnapshot>();
     public DbSet<DealIntelligenceSignal> DealIntelligenceSignals => Set<DealIntelligenceSignal>();
+    public DbSet<IdealCustomerProfile> IdealCustomerProfiles => Set<IdealCustomerProfile>();
+    public DbSet<ProspectSourcePolicy> ProspectSourcePolicies => Set<ProspectSourcePolicy>();
+    public DbSet<ProspectingRun> ProspectingRuns => Set<ProspectingRun>();
+    public DbSet<ProspectAccount> ProspectAccounts => Set<ProspectAccount>();
+    public DbSet<ProspectContact> ProspectContacts => Set<ProspectContact>();
+    public DbSet<ProspectSignal> ProspectSignals => Set<ProspectSignal>();
+    public DbSet<SalesSuppression> SalesSuppressions => Set<SalesSuppression>();
+    public DbSet<SalesAcquisitionCampaign> SalesAcquisitionCampaigns => Set<SalesAcquisitionCampaign>();
+    public DbSet<SalesSourceTouch> SalesSourceTouches => Set<SalesSourceTouch>();
+    public DbSet<SalesSourceAttribution> SalesSourceAttributions => Set<SalesSourceAttribution>();
+    public DbSet<SalesContactPermission> SalesContactPermissions => Set<SalesContactPermission>();
     public DbSet<SupportCase> SupportCases => Set<SupportCase>();
     public DbSet<SupportMessage> SupportMessages => Set<SupportMessage>();
     public DbSet<SupportCaseEvent> SupportCaseEvents => Set<SupportCaseEvent>();
@@ -180,6 +191,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SupportReplyDraft> SupportReplyDrafts => Set<SupportReplyDraft>();
     public DbSet<SupportRefundRequest> SupportRefundRequests => Set<SupportRefundRequest>();
     public DbSet<SupportKnowledgeGap> SupportKnowledgeGaps => Set<SupportKnowledgeGap>();
+    public DbSet<SupportMemoryUpdateJob> SupportMemoryUpdateJobs => Set<SupportMemoryUpdateJob>();
+    public DbSet<SupportMemoryObservation> SupportMemoryObservations => Set<SupportMemoryObservation>();
+    public DbSet<SupportAgentExecution> SupportAgentExecutions => Set<SupportAgentExecution>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -439,6 +453,10 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesAcquisitionCampaign>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesSourceTouch>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesSourceAttribution>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
+        modelBuilder.Entity<SalesContactPermission>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
         modelBuilder.Entity<ToolExecutionAttempt>()
             .HasQueryFilter(attempt =>
                 CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);

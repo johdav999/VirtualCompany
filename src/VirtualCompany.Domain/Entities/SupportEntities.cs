@@ -331,7 +331,7 @@ public sealed class SupportSlaPolicy : ICompanyOwnedEntity
     {
     }
 
-    public SupportSlaPolicy(Guid id, Guid companyId, string name, string category, string priority, int firstResponseMinutes, int resolutionMinutes, string? customerTier = null, bool isActive = true)
+    public SupportSlaPolicy(Guid id, Guid companyId, string name, string category, string priority, int firstResponseMinutes, int resolutionMinutes, string? customerTier = null, bool isActive = true, string timeBasis = "elapsed", int riskThresholdMinutes = 240, string escalationRecipientRole = "support_supervisor")
     {
         SupportEntityText.EnsureCompany(companyId);
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -343,6 +343,9 @@ public sealed class SupportSlaPolicy : ICompanyOwnedEntity
         FirstResponseMinutes = firstResponseMinutes <= 0 ? throw new ArgumentOutOfRangeException(nameof(firstResponseMinutes)) : firstResponseMinutes;
         ResolutionMinutes = resolutionMinutes <= 0 ? throw new ArgumentOutOfRangeException(nameof(resolutionMinutes)) : resolutionMinutes;
         IsActive = isActive;
+        TimeBasis = NormalizeTimeBasis(timeBasis);
+        RiskThresholdMinutes = riskThresholdMinutes > 0 ? riskThresholdMinutes : throw new ArgumentOutOfRangeException(nameof(riskThresholdMinutes));
+        EscalationRecipientRole = SupportEntityText.NormalizeRequired(escalationRecipientRole, nameof(escalationRecipientRole), 80);
         CreatedUtc = DateTime.UtcNow;
         UpdatedUtc = CreatedUtc;
     }
@@ -356,8 +359,39 @@ public sealed class SupportSlaPolicy : ICompanyOwnedEntity
     public int FirstResponseMinutes { get; private set; }
     public int ResolutionMinutes { get; private set; }
     public bool IsActive { get; private set; }
+    public string TimeBasis { get; private set; } = "elapsed";
+    public int RiskThresholdMinutes { get; private set; } = 240;
+    public string EscalationRecipientRole { get; private set; } = "support_supervisor";
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+
+    public void Update(string name, string category, string priority, int firstResponseMinutes, int resolutionMinutes, string? customerTier, bool isActive, string timeBasis = "elapsed", int riskThresholdMinutes = 240, string escalationRecipientRole = "support_supervisor")
+    {
+        Name = SupportEntityText.NormalizeRequired(name, nameof(name), 160);
+        Category = SupportCaseCategories.Normalize(category);
+        Priority = SupportPriorities.Normalize(priority);
+        CustomerTier = SupportEntityText.NormalizeOptional(customerTier, nameof(customerTier), 80);
+        FirstResponseMinutes = firstResponseMinutes > 0 ? firstResponseMinutes : throw new ArgumentOutOfRangeException(nameof(firstResponseMinutes));
+        ResolutionMinutes = resolutionMinutes > 0 ? resolutionMinutes : throw new ArgumentOutOfRangeException(nameof(resolutionMinutes));
+        IsActive = isActive;
+        TimeBasis = NormalizeTimeBasis(timeBasis);
+        RiskThresholdMinutes = riskThresholdMinutes > 0 ? riskThresholdMinutes : throw new ArgumentOutOfRangeException(nameof(riskThresholdMinutes));
+        EscalationRecipientRole = SupportEntityText.NormalizeRequired(escalationRecipientRole, nameof(escalationRecipientRole), 80);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void Deactivate()
+    {
+        IsActive = false;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    private static string NormalizeTimeBasis(string value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "elapsed" => "elapsed",
+        "business" => "business",
+        _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Time basis must be elapsed or business.")
+    };
 }
 
 public sealed class SupportCaseResolution : ICompanyOwnedEntity
@@ -366,7 +400,7 @@ public sealed class SupportCaseResolution : ICompanyOwnedEntity
     {
     }
 
-    public SupportCaseResolution(Guid id, Guid companyId, Guid supportCaseId, string summary, string outcome, Guid resolvedByUserId, DateTime resolvedUtc)
+    public SupportCaseResolution(Guid id, Guid companyId, Guid supportCaseId, string summary, string outcome, Guid resolvedByUserId, DateTime resolvedUtc, string rootCauseCategory = "other", string? actionTaken = null, string? reusableAnswer = null, string? customerPreferenceObservations = null, string? relevantLinksJson = null, bool reuseEligible = false)
     {
         SupportEntityText.EnsureCompany(companyId);
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -374,6 +408,12 @@ public sealed class SupportCaseResolution : ICompanyOwnedEntity
         SupportCaseId = supportCaseId == Guid.Empty ? throw new ArgumentException("SupportCaseId is required.", nameof(supportCaseId)) : supportCaseId;
         Summary = SupportEntityText.NormalizeRequired(summary, nameof(summary), 2000);
         Outcome = SupportEntityText.NormalizeRequired(outcome, nameof(outcome), 120);
+        RootCauseCategory = SupportEntityText.NormalizeRequired(rootCauseCategory, nameof(rootCauseCategory), 80).ToLowerInvariant();
+        ActionTaken = SupportEntityText.NormalizeOptional(actionTaken, nameof(actionTaken), 2000);
+        ReusableAnswer = SupportEntityText.NormalizeOptional(reusableAnswer, nameof(reusableAnswer), 4000);
+        CustomerPreferenceObservations = SupportEntityText.NormalizeOptional(customerPreferenceObservations, nameof(customerPreferenceObservations), 2000);
+        RelevantLinksJson = SupportEntityText.NormalizeOptional(relevantLinksJson, nameof(relevantLinksJson), 4000);
+        ReuseEligible = reuseEligible && !string.IsNullOrWhiteSpace(ReusableAnswer);
         ResolvedByUserId = resolvedByUserId == Guid.Empty ? throw new ArgumentException("ResolvedByUserId is required.", nameof(resolvedByUserId)) : resolvedByUserId;
         ResolvedUtc = SupportEntityText.NormalizeUtc(resolvedUtc, nameof(resolvedUtc));
     }
@@ -383,6 +423,12 @@ public sealed class SupportCaseResolution : ICompanyOwnedEntity
     public Guid SupportCaseId { get; private set; }
     public string Summary { get; private set; } = null!;
     public string Outcome { get; private set; } = null!;
+    public string RootCauseCategory { get; private set; } = "other";
+    public string? ActionTaken { get; private set; }
+    public string? ReusableAnswer { get; private set; }
+    public string? CustomerPreferenceObservations { get; private set; }
+    public string? RelevantLinksJson { get; private set; }
+    public bool ReuseEligible { get; private set; }
     public Guid ResolvedByUserId { get; private set; }
     public DateTime ResolvedUtc { get; private set; }
     public SupportCase SupportCase { get; private set; } = null!;
@@ -425,6 +471,10 @@ public sealed class SupportReplyDraft : ICompanyOwnedEntity
     public decimal Answerability { get; private set; }
     public string? RationaleSummary { get; private set; }
     public string? SourceReferencesJson { get; private set; }
+    public string? SafetyDecision { get; private set; }
+    public string? SafetyReasonCodesJson { get; private set; }
+    public string? SafetyPolicyVersion { get; private set; }
+    public DateTime? SafetyEvaluatedUtc { get; private set; }
     public Guid? CreatedByAgentId { get; private set; }
     public Guid? CreatedByUserId { get; private set; }
     public Guid? ApprovedByUserId { get; private set; }
@@ -437,14 +487,26 @@ public sealed class SupportReplyDraft : ICompanyOwnedEntity
 
     public void Edit(string body, string tone)
     {
+        if (SentUtc.HasValue || Status is SupportReplyDraftStatuses.Approved or SupportReplyDraftStatuses.Rejected or SupportReplyDraftStatuses.Superseded)
+        {
+            throw new InvalidOperationException("Only an unsent draft awaiting review can be edited.");
+        }
         DraftBody = SupportEntityText.NormalizeRequired(body, nameof(body), 8000);
         Tone = SupportEntityText.NormalizeRequired(tone, nameof(tone), 80);
         Status = SupportReplyDraftStatuses.Draft;
+        SafetyDecision = null;
+        SafetyReasonCodesJson = null;
+        SafetyPolicyVersion = null;
+        SafetyEvaluatedUtc = null;
         UpdatedUtc = DateTime.UtcNow;
     }
 
     public void Approve(Guid userId)
     {
+        if (SentUtc.HasValue || Status is SupportReplyDraftStatuses.Rejected or SupportReplyDraftStatuses.Superseded)
+        {
+            throw new InvalidOperationException("This draft can no longer be approved.");
+        }
         ApprovedByUserId = userId == Guid.Empty ? throw new ArgumentException("UserId is required.", nameof(userId)) : userId;
         ApprovedUtc = DateTime.UtcNow;
         Status = SupportReplyDraftStatuses.Approved;
@@ -453,6 +515,10 @@ public sealed class SupportReplyDraft : ICompanyOwnedEntity
 
     public void Reject()
     {
+        if (SentUtc.HasValue || Status == SupportReplyDraftStatuses.Superseded)
+        {
+            throw new InvalidOperationException("A sent or superseded draft cannot be rejected.");
+        }
         Status = SupportReplyDraftStatuses.Rejected;
         UpdatedUtc = DateTime.UtcNow;
     }
@@ -467,6 +533,15 @@ public sealed class SupportReplyDraft : ICompanyOwnedEntity
     public void MarkSendFailed(string failureSummary)
     {
         SendFailureSummary = SupportEntityText.NormalizeRequired(failureSummary, nameof(failureSummary), 1000);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void RecordSafetyDecision(string decision, string reasonCodesJson, string policyVersion, DateTime evaluatedUtc)
+    {
+        SafetyDecision = SupportEntityText.NormalizeRequired(decision, nameof(decision), 40);
+        SafetyReasonCodesJson = SupportEntityText.NormalizeRequired(reasonCodesJson, nameof(reasonCodesJson), 1000);
+        SafetyPolicyVersion = SupportEntityText.NormalizeRequired(policyVersion, nameof(policyVersion), 40);
+        SafetyEvaluatedUtc = SupportEntityText.NormalizeUtc(evaluatedUtc, nameof(evaluatedUtc));
         UpdatedUtc = DateTime.UtcNow;
     }
 }
@@ -509,15 +584,166 @@ public sealed class SupportRefundRequest : ICompanyOwnedEntity
     public Guid? RequestedByUserId { get; private set; }
     public Guid? ApprovalRequestId { get; private set; }
     public Guid? FinanceActionReferenceId { get; private set; }
+    public Guid? ProviderWriteRequestId { get; private set; }
+    public Guid? ProviderApprovalRequestId { get; private set; }
     public string Status { get; private set; } = null!;
+    public string? LastFailureSummary { get; private set; }
+    public DateTime? ExecutionRequestedUtc { get; private set; }
+    public DateTime? CompletedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public SupportCase SupportCase { get; private set; } = null!;
 
     public void LinkApproval(Guid approvalRequestId)
     {
+        if (ApprovalRequestId.HasValue && ApprovalRequestId.Value != approvalRequestId)
+        {
+            throw new InvalidOperationException("The refund request is already linked to another approval.");
+        }
+
         ApprovalRequestId = approvalRequestId == Guid.Empty ? throw new ArgumentException("ApprovalRequestId is required.", nameof(approvalRequestId)) : approvalRequestId;
         UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public bool ApplyApprovalOutcome(string approvalStatus)
+    {
+        var next = approvalStatus?.Trim().ToLowerInvariant() switch
+        {
+            "approved" => SupportRefundRequestStatuses.Approved,
+            "rejected" => SupportRefundRequestStatuses.Rejected,
+            "expired" => SupportRefundRequestStatuses.Expired,
+            "cancelled" => SupportRefundRequestStatuses.Cancelled,
+            _ => throw new ArgumentOutOfRangeException(nameof(approvalStatus), approvalStatus, "Unsupported refund approval outcome.")
+        };
+
+        if (string.Equals(Status, next, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        if (string.Equals(next, SupportRefundRequestStatuses.Approved, StringComparison.OrdinalIgnoreCase) &&
+            Status is (SupportRefundRequestStatuses.Queued or
+                SupportRefundRequestStatuses.Executing or
+                SupportRefundRequestStatuses.ReconciliationRequired or
+                SupportRefundRequestStatuses.Completed or
+                SupportRefundRequestStatuses.Executed))
+        {
+            return false;
+        }
+
+        if (!string.Equals(Status, SupportRefundRequestStatuses.PendingApproval, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Refund approval cannot transition from '{Status}' to '{next}'.");
+        }
+
+        Status = next;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public bool LinkFinanceAction(Guid financeActionReferenceId)
+    {
+        if (financeActionReferenceId == Guid.Empty)
+        {
+            throw new ArgumentException("Finance action reference is required.", nameof(financeActionReferenceId));
+        }
+
+        if (FinanceActionReferenceId.HasValue)
+        {
+            if (FinanceActionReferenceId.Value == financeActionReferenceId)
+            {
+                return false;
+            }
+
+            throw new InvalidOperationException("The refund request is already linked to another finance action.");
+        }
+
+        if (!string.Equals(Status, SupportRefundRequestStatuses.Approved, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Only approved refund requests can create finance actions.");
+        }
+
+        FinanceActionReferenceId = financeActionReferenceId;
+        Status = SupportRefundRequestStatuses.Queued;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public bool MarkPendingFinanceApproval(Guid? providerWriteRequestId = null, Guid? providerApprovalRequestId = null)
+    {
+        if (Status == SupportRefundRequestStatuses.PendingFinanceApproval)
+        {
+            return false;
+        }
+
+        EnsureExecutionState(SupportRefundRequestStatuses.Queued, SupportRefundRequestStatuses.Failed);
+        Status = SupportRefundRequestStatuses.PendingFinanceApproval;
+        ProviderWriteRequestId = providerWriteRequestId == Guid.Empty ? null : providerWriteRequestId ?? ProviderWriteRequestId;
+        ProviderApprovalRequestId = providerApprovalRequestId == Guid.Empty ? null : providerApprovalRequestId ?? ProviderApprovalRequestId;
+        ExecutionRequestedUtc ??= DateTime.UtcNow;
+        LastFailureSummary = null;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public bool ApplyFinanceExecutionStatus(string financeStatus, string? safeFailureSummary = null)
+    {
+        var next = financeStatus?.Trim().ToLowerInvariant() switch
+        {
+            "awaiting_approval" => SupportRefundRequestStatuses.PendingFinanceApproval,
+            "approved" or "executing" => SupportRefundRequestStatuses.Executing,
+            "executed" => SupportRefundRequestStatuses.Completed,
+            "failed" => SupportRefundRequestStatuses.Failed,
+            "rejected" or "expired" or "cancelled" => SupportRefundRequestStatuses.Cancelled,
+            _ => SupportRefundRequestStatuses.ReconciliationRequired
+        };
+        if (Status == next)
+        {
+            return false;
+        }
+
+        if (Status is SupportRefundRequestStatuses.Completed or SupportRefundRequestStatuses.Cancelled)
+        {
+            throw new InvalidOperationException($"Completed or cancelled refunds cannot transition to '{next}'.");
+        }
+
+        Status = next;
+        LastFailureSummary = next is SupportRefundRequestStatuses.Failed or SupportRefundRequestStatuses.ReconciliationRequired
+            ? SupportEntityText.NormalizeOptional(safeFailureSummary, nameof(safeFailureSummary), 1000) ?? "The accounting-system action needs review."
+            : null;
+        CompletedUtc = next == SupportRefundRequestStatuses.Completed ? DateTime.UtcNow : null;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public bool CancelBeforeExecution()
+    {
+        if (Status == SupportRefundRequestStatuses.Cancelled) return false;
+        EnsureExecutionState(SupportRefundRequestStatuses.PendingApproval, SupportRefundRequestStatuses.Approved, SupportRefundRequestStatuses.Queued, SupportRefundRequestStatuses.Failed);
+        if (ProviderWriteRequestId.HasValue && Status != SupportRefundRequestStatuses.Failed)
+            throw new InvalidOperationException("Reconcile the accounting-system request before cancelling it.");
+        Status = SupportRefundRequestStatuses.Cancelled;
+        LastFailureSummary = null;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public bool MarkReconciliationRequired(string? safeSummary)
+    {
+        if (Status == SupportRefundRequestStatuses.Completed) return false;
+        if (Status == SupportRefundRequestStatuses.Cancelled) throw new InvalidOperationException("Cancelled refunds cannot be reconciled.");
+        Status = SupportRefundRequestStatuses.ReconciliationRequired;
+        LastFailureSummary = SupportEntityText.NormalizeOptional(safeSummary, nameof(safeSummary), 1000) ?? "The accounting-system outcome could not be confirmed.";
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    private void EnsureExecutionState(params string[] allowed)
+    {
+        if (!allowed.Contains(Status, StringComparer.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException($"Refund action cannot continue from '{Status}'.");
+        }
     }
 }
 
@@ -558,6 +784,7 @@ public sealed class SupportKnowledgeGap : ICompanyOwnedEntity
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? ResolvedUtc { get; private set; }
     public Guid? LinkedTaskId { get; private set; }
+    public Guid? LinkedKnowledgeDocumentId { get; private set; }
 
     public void Increment()
     {
@@ -570,6 +797,177 @@ public sealed class SupportKnowledgeGap : ICompanyOwnedEntity
         LinkedTaskId = taskId == Guid.Empty ? throw new ArgumentException("TaskId is required.", nameof(taskId)) : taskId;
         Status = SupportKnowledgeGapStatuses.LinkedToTask;
         UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void Resolve(Guid knowledgeDocumentId)
+    {
+        LinkedKnowledgeDocumentId = knowledgeDocumentId == Guid.Empty ? throw new ArgumentException("KnowledgeDocumentId is required.", nameof(knowledgeDocumentId)) : knowledgeDocumentId;
+        Status = SupportKnowledgeGapStatuses.Resolved;
+        ResolvedUtc = DateTime.UtcNow;
+        UpdatedUtc = ResolvedUtc.Value;
+    }
+
+    public void Reopen()
+    {
+        if (Status != SupportKnowledgeGapStatuses.Resolved) throw new InvalidOperationException("Only resolved knowledge gaps can be reopened.");
+        Status = LinkedTaskId.HasValue ? SupportKnowledgeGapStatuses.LinkedToTask : SupportKnowledgeGapStatuses.Open;
+        LinkedKnowledgeDocumentId = null;
+        ResolvedUtc = null;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+}
+
+public sealed class SupportMemoryUpdateJob : ICompanyOwnedEntity
+{
+    private SupportMemoryUpdateJob() { }
+    public SupportMemoryUpdateJob(Guid id, Guid companyId, Guid supportCaseId, string eventKey)
+    {
+        SupportEntityText.EnsureCompany(companyId);
+        Id = id == Guid.Empty ? Guid.NewGuid() : id;
+        CompanyId = companyId;
+        SupportCaseId = supportCaseId == Guid.Empty ? throw new ArgumentException("SupportCaseId is required.", nameof(supportCaseId)) : supportCaseId;
+        EventKey = SupportEntityText.NormalizeRequired(eventKey, nameof(eventKey), 200);
+        Status = "pending";
+        CreatedUtc = UpdatedUtc = DateTime.UtcNow;
+    }
+    public Guid Id { get; private set; }
+    public Guid CompanyId { get; private set; }
+    public Guid SupportCaseId { get; private set; }
+    public string EventKey { get; private set; } = null!;
+    public string Status { get; private set; } = null!;
+    public int AttemptCount { get; private set; }
+    public string? SafeFailureSummary { get; private set; }
+    public DateTime CreatedUtc { get; private set; }
+    public DateTime UpdatedUtc { get; private set; }
+    public DateTime? CompletedUtc { get; private set; }
+    public void Start() { if (Status == "completed" || Status == "skipped") return; Status = "processing"; AttemptCount++; SafeFailureSummary = null; UpdatedUtc = DateTime.UtcNow; }
+    public void Complete(bool skipped = false) { Status = skipped ? "skipped" : "completed"; CompletedUtc = UpdatedUtc = DateTime.UtcNow; SafeFailureSummary = null; }
+    public void Fail(string summary) { Status = "failed"; SafeFailureSummary = SupportEntityText.NormalizeRequired(summary, nameof(summary), 1000); UpdatedUtc = DateTime.UtcNow; }
+}
+
+public sealed class SupportMemoryObservation : ICompanyOwnedEntity
+{
+    private SupportMemoryObservation() { }
+
+    public SupportMemoryObservation(
+        Guid id,
+        Guid companyId,
+        Guid supportCaseId,
+        Guid supportCaseResolutionId,
+        Guid contactId,
+        string status,
+        string? value,
+        string evidenceSummary,
+        decimal confidence,
+        DateTime observedUtc,
+        DateTime? validUntilUtc,
+        string policyVersion,
+        string sourceEventKey)
+    {
+        SupportEntityText.EnsureCompany(companyId);
+        Id = id == Guid.Empty ? Guid.NewGuid() : id;
+        CompanyId = companyId;
+        SupportCaseId = supportCaseId == Guid.Empty ? throw new ArgumentException("SupportCaseId is required.", nameof(supportCaseId)) : supportCaseId;
+        SupportCaseResolutionId = supportCaseResolutionId == Guid.Empty ? throw new ArgumentException("SupportCaseResolutionId is required.", nameof(supportCaseResolutionId)) : supportCaseResolutionId;
+        ContactId = contactId == Guid.Empty ? throw new ArgumentException("ContactId is required.", nameof(contactId)) : contactId;
+        Status = SupportMemoryObservationStatuses.Normalize(status);
+        Value = value is null ? null : SupportEntityText.NormalizeRequired(value, nameof(value), 1000);
+        EvidenceSummary = SupportEntityText.NormalizeRequired(evidenceSummary, nameof(evidenceSummary), 500);
+        Confidence = confidence is < 0 or > 1 ? throw new ArgumentOutOfRangeException(nameof(confidence)) : decimal.Round(confidence, 3, MidpointRounding.AwayFromZero);
+        ObservedUtc = SupportEntityText.NormalizeUtc(observedUtc, nameof(observedUtc));
+        ValidUntilUtc = validUntilUtc is null ? null : SupportEntityText.NormalizeUtc(validUntilUtc.Value, nameof(validUntilUtc));
+        PolicyVersion = SupportEntityText.NormalizeRequired(policyVersion, nameof(policyVersion), 40);
+        SourceEventKey = SupportEntityText.NormalizeRequired(sourceEventKey, nameof(sourceEventKey), 200);
+        CreatedUtc = UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid CompanyId { get; private set; }
+    public Guid SupportCaseId { get; private set; }
+    public Guid SupportCaseResolutionId { get; private set; }
+    public Guid ContactId { get; private set; }
+    public Guid? CustomerMemoryProfilePreferenceId { get; private set; }
+    public string Status { get; private set; } = null!;
+    public string? Value { get; private set; }
+    public string EvidenceSummary { get; private set; } = null!;
+    public decimal Confidence { get; private set; }
+    public DateTime ObservedUtc { get; private set; }
+    public DateTime? ValidUntilUtc { get; private set; }
+    public string PolicyVersion { get; private set; } = null!;
+    public string SourceEventKey { get; private set; } = null!;
+    public DateTime CreatedUtc { get; private set; }
+    public DateTime UpdatedUtc { get; private set; }
+    public byte[] RowVersion { get; private set; } = [];
+
+    public void Approve(Guid preferenceId)
+    {
+        CustomerMemoryProfilePreferenceId = preferenceId == Guid.Empty ? throw new ArgumentException("PreferenceId is required.", nameof(preferenceId)) : preferenceId;
+        Status = SupportMemoryObservationStatuses.Approved;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void MarkReviewRequired() { Status = SupportMemoryObservationStatuses.Review; UpdatedUtc = DateTime.UtcNow; }
+    public void Reject() { Status = SupportMemoryObservationStatuses.Rejected; Value = null; UpdatedUtc = DateTime.UtcNow; }
+    public void Expire() { Status = SupportMemoryObservationStatuses.Expired; UpdatedUtc = DateTime.UtcNow; }
+    public void Delete() { Status = SupportMemoryObservationStatuses.Deleted; Value = null; UpdatedUtc = DateTime.UtcNow; }
+}
+
+public sealed class SupportAgentExecution : ICompanyOwnedEntity
+{
+    private SupportAgentExecution() { }
+
+    public SupportAgentExecution(Guid id, Guid companyId, Guid supportCaseId, Guid? agentId, string idempotencyKey)
+    {
+        SupportEntityText.EnsureCompany(companyId);
+        Id = id == Guid.Empty ? Guid.NewGuid() : id;
+        CompanyId = companyId;
+        SupportCaseId = supportCaseId == Guid.Empty ? throw new ArgumentException("SupportCaseId is required.", nameof(supportCaseId)) : supportCaseId;
+        AgentId = SupportEntityText.NormalizeOptionalId(agentId, nameof(agentId));
+        IdempotencyKey = SupportEntityText.NormalizeRequired(idempotencyKey, nameof(idempotencyKey), 200);
+        Status = "running";
+        CurrentStep = "started";
+        Summary = "Support agent run started.";
+        CreatedUtc = UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public Guid Id { get; private set; }
+    public Guid CompanyId { get; private set; }
+    public Guid SupportCaseId { get; private set; }
+    public Guid? AgentId { get; private set; }
+    public string IdempotencyKey { get; private set; } = null!;
+    public string Status { get; private set; } = null!;
+    public string CurrentStep { get; private set; } = null!;
+    public Guid? CreatedDraftId { get; private set; }
+    public string Summary { get; private set; } = null!;
+    public string? FailureSummary { get; private set; }
+    public DateTime CreatedUtc { get; private set; }
+    public DateTime UpdatedUtc { get; private set; }
+    public DateTime? CompletedUtc { get; private set; }
+
+    public void MoveTo(string step, string summary)
+    {
+        CurrentStep = SupportEntityText.NormalizeRequired(step, nameof(step), 80);
+        Summary = SupportEntityText.NormalizeRequired(summary, nameof(summary), 1000);
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void Complete(Guid? createdDraftId, string summary)
+    {
+        CreatedDraftId = SupportEntityText.NormalizeOptionalId(createdDraftId, nameof(createdDraftId));
+        Summary = SupportEntityText.NormalizeRequired(summary, nameof(summary), 1000);
+        Status = "completed";
+        CurrentStep = "completed";
+        CompletedUtc = UpdatedUtc = DateTime.UtcNow;
+        FailureSummary = null;
+    }
+
+    public void Fail(string step, string summary)
+    {
+        CurrentStep = SupportEntityText.NormalizeRequired(step, nameof(step), 80);
+        FailureSummary = SupportEntityText.NormalizeRequired(summary, nameof(summary), 1000);
+        Summary = FailureSummary;
+        Status = "failed";
+        CompletedUtc = UpdatedUtc = DateTime.UtcNow;
     }
 }
 
@@ -659,7 +1057,14 @@ public static class SupportRefundRequestStatuses
 {
     public const string PendingApproval = "pending_approval";
     public const string Approved = "approved";
+    public const string Queued = "queued";
+    public const string PendingFinanceApproval = "pending_finance_approval";
+    public const string Executing = "executing";
+    public const string ReconciliationRequired = "reconciliation_required";
+    public const string Completed = "completed";
     public const string Rejected = "rejected";
+    public const string Expired = "expired";
+    public const string Cancelled = "cancelled";
     public const string Executed = "executed";
     public const string Failed = "failed";
 }
@@ -670,6 +1075,16 @@ public static class SupportKnowledgeGapStatuses
     public const string LinkedToTask = "linked_to_task";
     public const string Resolved = "resolved";
     public const string Ignored = "ignored";
+}
+
+public static class SupportMemoryObservationStatuses
+{
+    public const string Review = "review";
+    public const string Approved = "approved";
+    public const string Rejected = "rejected";
+    public const string Expired = "expired";
+    public const string Deleted = "deleted";
+    public static string Normalize(string value) => SupportCaseStatuses.NormalizeKnownForSupport(value, [Review, Approved, Rejected, Expired, Deleted], nameof(value));
 }
 
 internal static class SupportEntityText

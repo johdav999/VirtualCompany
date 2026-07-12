@@ -23,6 +23,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         var knowledgeScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "knowledge" };
         var paymentsScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "payments" };
         var financeScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "finance" };
+        var salesScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "sales", "prospecting" };
 
         var registrations = new[]
         {
@@ -39,10 +40,11 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                 financeScopes,
                 definition.Version,
                 definition.InputSchema,
-                definition.OutputSchema)));
+                definition.OutputSchema)))
+          .Concat(SalesToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, salesScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
 
         _tools = registrations.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
-        _definitions = FinanceToolDefinitions.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
+        _definitions = FinanceToolDefinitions.Concat(SalesToolDefinitions).ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<ToolDefinitionManifest> FinanceToolDefinitions { get; } =
@@ -57,8 +59,32 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         FinanceDefinition("recommend_invoice_approval_decision", ToolActionType.Recommend, FinanceInputSchemas.InvoiceRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation")),
         FinanceDefinition("evaluate_transaction_anomaly", ToolActionType.Recommend, FinanceInputSchemas.TransactionAnomalyEvaluation(), FinanceOutputSchemas.WithDataProperty("anomalyEvaluation")),
         FinanceDefinition("categorize_transaction", ToolActionType.Execute, FinanceInputSchemas.CategorizeTransaction(), FinanceOutputSchemas.WithDataProperty("transaction")),
-        FinanceDefinition("approve_invoice", ToolActionType.Execute, FinanceInputSchemas.ApproveInvoice(), FinanceOutputSchemas.WithDataProperty("invoice"))
+        FinanceDefinition("approve_invoice", ToolActionType.Execute, FinanceInputSchemas.ApproveInvoice(), FinanceOutputSchemas.WithDataProperty("invoice")),
+        FinanceDefinition("post_paid_supplier_bill_expense", ToolActionType.Execute, FinanceInputSchemas.PostPaidSupplierBillExpense(), FinanceOutputSchemas.WithDataProperty("expensePosting"))
     ];
+
+    private static IReadOnlyList<ToolDefinitionManifest> SalesToolDefinitions { get; } =
+    [
+        SalesDefinition("sales.plan_prospecting_run", ToolActionType.Recommend, """{"type":"object","additionalProperties":false,"required":["icpProfileId","name","accountLimit","sources"],"properties":{"icpProfileId":{"type":"string","format":"uuid"},"name":{"type":"string","minLength":1,"maxLength":160},"accountLimit":{"type":"integer","minimum":1,"maximum":10000},"contactLimit":{"type":"integer","minimum":0,"maximum":50000},"sources":{"type":"string"},"geography":{"type":"string"},"freshnessDays":{"type":"integer","minimum":1,"maximum":365},"estimatedCost":{"type":"number","minimum":0},"schedule":{"type":"string"}}}""", "prospectingRun"),
+        SalesDefinition("sales.start_prospecting_run", ToolActionType.Execute, """{"type":"object","additionalProperties":false,"required":["runId"],"properties":{"runId":{"type":"string","format":"uuid"}}}""", "prospectingRun"),
+        SalesDefinition("sales.list_prospects", ToolActionType.Read, """{"type":"object","additionalProperties":false,"properties":{"search":{"type":"string"},"status":{"type":"string"},"country":{"type":"string"},"source":{"type":"string"},"page":{"type":"integer","minimum":1},"pageSize":{"type":"integer","minimum":1,"maximum":100}}}""", "prospects"),
+        SalesDefinition("sales.research_prospect", ToolActionType.Recommend, """{"type":"object","additionalProperties":false,"required":["prospectId"],"properties":{"prospectId":{"type":"string","format":"uuid"}}}""", "prospect"),
+        SalesDefinition("sales.recommend_prospect_decision", ToolActionType.Recommend, """{"type":"object","additionalProperties":false,"required":["prospectId"],"properties":{"prospectId":{"type":"string","format":"uuid"}}}""", "recommendation")
+    ];
+
+    private static ToolDefinitionManifest SalesDefinition(string name, ToolActionType action, string input, string property) =>
+        new(name, "1.0.0", action, ParseSchema(input), new JsonObject
+        {
+            ["type"] = "object",
+            ["required"] = new JsonArray("schemaVersion", "status", "success", "data"),
+            ["properties"] = new JsonObject
+            {
+                ["schemaVersion"] = new JsonObject { ["type"] = "string" },
+                ["status"] = new JsonObject { ["type"] = "string" },
+                ["success"] = new JsonObject { ["type"] = "boolean" },
+                ["data"] = new JsonObject { ["type"] = "object", ["required"] = new JsonArray(property) }
+            }
+        });
 
     public bool TryGetToolDefinition(string toolName, out ToolDefinitionManifest definition)
     {
@@ -237,6 +263,23 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                     "status": {
                       "type": "string",
                       "enum": [ "approved", "rejected" ]
+                    }
+                  }
+                }
+                """);
+
+        public static JsonObject PostPaidSupplierBillExpense() =>
+            ParseSchema(
+                """
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "billId" ],
+                  "properties": {
+                    "billId": { "type": "string", "format": "uuid" },
+                    "providerKey": {
+                      "type": "string",
+                      "enum": [ "fortnox" ]
                     }
                   }
                 }

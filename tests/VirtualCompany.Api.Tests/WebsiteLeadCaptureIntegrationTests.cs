@@ -38,7 +38,9 @@ public sealed class WebsiteLeadCaptureIntegrationTests : IClassFixture<TestWebAp
             ExecutionCount = await dbContext.SalesSequenceExecutions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId),
             StepCount = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId),
             AuditCreated = await dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyId && x.Action == "sales.website_lead.submitted"),
-            AuditEnrolled = await dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyId && x.Action == "sales.website_lead.enrolled")
+            AuditEnrolled = await dbContext.AuditEvents.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == seed.CompanyId && x.Action == "sales.website_lead.enrolled"),
+            SourceTouches = await dbContext.SalesSourceTouches.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId && x.Category == SalesSourceCategories.Website),
+            Permissions = await dbContext.SalesContactPermissions.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId && x.Status == "granted")
         });
 
         Assert.Equal(1, state.LeadCount);
@@ -47,6 +49,8 @@ public sealed class WebsiteLeadCaptureIntegrationTests : IClassFixture<TestWebAp
         Assert.Equal(4, state.StepCount);
         Assert.True(state.AuditCreated);
         Assert.True(state.AuditEnrolled);
+        Assert.Equal(1, state.SourceTouches);
+        Assert.Equal(1, state.Permissions);
     }
 
     [Fact]
@@ -175,7 +179,9 @@ public sealed class WebsiteLeadCaptureIntegrationTests : IClassFixture<TestWebAp
             "contact-us",
             Phone: "+1 555 0100",
             ExternalSubmissionId: externalSubmissionId,
-            Utm: new Dictionary<string, string?> { ["utm_source"] = "website" });
+            Utm: new Dictionary<string, string?> { ["source"] = "website" },
+            ContactConsent: true,
+            ConsentLegalBasis: "consent");
 
     private sealed record Seed(Guid CompanyId, string FormKey, Guid SequenceId);
 }

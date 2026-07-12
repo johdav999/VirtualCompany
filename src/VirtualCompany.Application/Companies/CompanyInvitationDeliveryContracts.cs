@@ -12,6 +12,7 @@ public static class CompanyOutboxTopics
     public const string InvitationAccepted = "company.invitation.accepted";
     public const string MembershipRoleChanged = "company.membership.role_changed";
     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
+    public const string SupportMemoryUpdateRequested = "support.memory.update_requested";
     public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
     public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
@@ -58,6 +59,8 @@ public sealed record NotificationDeliveryRequestedMessage(
     string? MetadataJson,
     string DedupeKey,
     string? CorrelationId);
+
+public sealed record SupportMemoryUpdateRequestedMessage(Guid CompanyId, Guid SupportCaseId, Guid JobId, string EventKey, string? CorrelationId);
 
 public sealed record CompanyInvitationSendResult(string? ProviderMessageId);
 

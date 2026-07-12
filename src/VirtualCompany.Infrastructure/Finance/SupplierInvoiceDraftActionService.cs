@@ -86,7 +86,7 @@ public sealed class SupplierInvoiceDraftActionService : IFinanceSupplierInvoiceD
         var providerKey = NormalizeProviderKey(command.ProviderKey);
         var provider = ResolveProvider(providerKey);
         var bill = await LoadBillAsync(command.CompanyId, command.BillId, cancellationToken);
-        ValidateCanBookkeep(bill);
+        ValidateCanBookkeep(bill, command.AllowPaidBill);
         var connection = await ResolveActiveConnectionAsync(command.CompanyId, providerKey, cancellationToken);
         var action = await LoadOrCreateActionAsync(command.CompanyId, bill.Id, cancellationToken);
 
@@ -191,7 +191,7 @@ public sealed class SupplierInvoiceDraftActionService : IFinanceSupplierInvoiceD
         }
     }
 
-    private static void ValidateCanBookkeep(FinanceBill bill)
+    private static void ValidateCanBookkeep(FinanceBill bill, bool allowPaidBill)
     {
         if (!string.Equals(bill.DocumentKind, FinanceDocumentKinds.SupplierInvoice, StringComparison.OrdinalIgnoreCase))
         {
@@ -203,11 +203,18 @@ public sealed class SupplierInvoiceDraftActionService : IFinanceSupplierInvoiceD
             throw new InvalidOperationException("This supplier invoice is already booked.");
         }
 
-        if (IsClosedForDraftAction(bill))
+        if (IsClosedForBookkeeping(bill, allowPaidBill))
         {
-            throw new InvalidOperationException("Cancelled, credited, or paid supplier invoices cannot be bookkept.");
+            throw new InvalidOperationException(allowPaidBill
+                ? "Cancelled or credited supplier invoices cannot be bookkept."
+                : "Cancelled, credited, or paid supplier invoices cannot be bookkept.");
         }
     }
+
+    private static bool IsClosedForBookkeeping(FinanceBill bill, bool allowPaidBill) =>
+        string.Equals(bill.PostingStatus, FinanceDocumentPostingStatuses.Cancelled, StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(bill.SettlementStatus, FinanceSettlementStatuses.Credited, StringComparison.OrdinalIgnoreCase) ||
+        (!allowPaidBill && string.Equals(bill.SettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase));
 
     private static bool IsClosedForDraftAction(FinanceBill bill) =>
         string.Equals(bill.PostingStatus, FinanceDocumentPostingStatuses.Cancelled, StringComparison.OrdinalIgnoreCase) ||
@@ -226,6 +233,10 @@ public sealed class SupplierInvoiceDraftActionService : IFinanceSupplierInvoiceD
         var supplierReference = await ResolveProviderSupplierReferenceAsync(bill.CompanyId, bill.CounterpartyId, providerKey, cancellationToken);
         var paymentReference = await ResolveLatestPaymentReferenceAsync(bill.CompanyId, bill.Id, cancellationToken);
         var metadata = invoiceReference?.Metadata;
+        var accountCode = await ResolveExpenseAccountCodeAsync(
+            bill,
+            ReadString(metadata, "accountCode", "Account", "account"),
+            cancellationToken);
         return new SupplierInvoiceDraftActionProviderRequest(
             bill.CompanyId,
             action.Id,
@@ -241,11 +252,42 @@ public sealed class SupplierInvoiceDraftActionService : IFinanceSupplierInvoiceD
             bill.BillNumber,
             paymentReference,
             ReadDecimal(metadata, "vatAmount", "rawVatAmount", "VAT"),
-            bill.Counterparty.DefaultAccountMapping,
+            accountCode,
             ReadString(metadata, "costCenter", "CostCenter", "cost_center"),
             ReadString(metadata, "project", "Project"),
             connectionId,
             actorUserId);
+    }
+
+    private async Task<string?> ResolveExpenseAccountCodeAsync(
+        FinanceBill bill,
+        string? metadataAccountCode,
+        CancellationToken cancellationToken)
+    {
+        var enrichmentAction = await _dbContext.SupplierInvoiceEnrichmentActions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == bill.CompanyId && x.BillId == bill.Id)
+            .OrderByDescending(x => x.UpdatedUtc)
+            .FirstOrDefaultAsync(cancellationToken);
+        var coding = enrichmentAction?.SuggestionPayload["coding"] as JsonObject;
+        var suggestedAccount = ReadString(coding, "ledgerAccount");
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(suggestedAccount))
+        {
+            return FinanceAccountCodePolicy.NormalizeAccountCode(suggestedAccount);
+        }
+
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(bill.Counterparty.DefaultAccountMapping))
+        {
+            return FinanceAccountCodePolicy.NormalizeAccountCode(bill.Counterparty.DefaultAccountMapping);
+        }
+
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(metadataAccountCode))
+        {
+            return FinanceAccountCodePolicy.NormalizeAccountCode(metadataAccountCode);
+        }
+
+        return FinanceAccountCodePolicy.DefaultSupplierExpenseAccount;
     }
 
     private async Task<FinanceExternalReference?> ResolveProviderSupplierInvoiceReferenceAsync(

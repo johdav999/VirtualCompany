@@ -41,6 +41,7 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IFinanceSupplierPaymentProposalService _supplierPaymentProposalService;
     private readonly IFinanceSupplierInvoiceSourceDocumentAttachmentService _supplierInvoiceSourceDocumentAttachmentService;
     private readonly IFinanceSupplierInvoiceDraftActionService _supplierInvoiceDraftActionService;
+    private readonly IPaidSupplierBillExpensePostingService _paidSupplierBillExpensePostingService;
     private readonly IFinanceCustomerInvoiceFortnoxActionService _customerInvoiceFortnoxActionService;
     private readonly IFinanceSupplierInvoiceCorrectionService _supplierInvoiceCorrectionService;
     private readonly IFinanceSupplierInvoiceEnrichmentService _supplierInvoiceEnrichmentService;
@@ -72,6 +73,7 @@ public sealed partial class InternalFinanceController : ControllerBase
         IFinanceSupplierPaymentProposalService supplierPaymentProposalService,
         IFinanceSupplierInvoiceSourceDocumentAttachmentService supplierInvoiceSourceDocumentAttachmentService,
         IFinanceSupplierInvoiceDraftActionService supplierInvoiceDraftActionService,
+        IPaidSupplierBillExpensePostingService paidSupplierBillExpensePostingService,
         IFinanceCustomerInvoiceFortnoxActionService customerInvoiceFortnoxActionService,
         IFinanceSupplierInvoiceCorrectionService supplierInvoiceCorrectionService,
         IFinanceSupplierInvoiceEnrichmentService supplierInvoiceEnrichmentService,
@@ -102,6 +104,7 @@ public sealed partial class InternalFinanceController : ControllerBase
         _supplierPaymentProposalService = supplierPaymentProposalService;
         _supplierInvoiceSourceDocumentAttachmentService = supplierInvoiceSourceDocumentAttachmentService;
         _supplierInvoiceDraftActionService = supplierInvoiceDraftActionService;
+        _paidSupplierBillExpensePostingService = paidSupplierBillExpensePostingService;
         _customerInvoiceFortnoxActionService = customerInvoiceFortnoxActionService;
         _supplierInvoiceCorrectionService = supplierInvoiceCorrectionService;
         _supplierInvoiceEnrichmentService = supplierInvoiceEnrichmentService;
@@ -963,6 +966,26 @@ public sealed partial class InternalFinanceController : ControllerBase
         return await ExecuteWriteAsync(
             () => _supplierInvoiceDraftActionService.BookkeepAsync(
                 new BookkeepSupplierInvoiceDraftCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
+                cancellationToken));
+    }
+
+    [HttpPost("bills/{billId:guid}/paid-expense-posting")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<PaidSupplierBillExpensePostingDto>> PostPaidSupplierBillExpenseAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation(
+            "Paid supplier bill expense posting API request received. CompanyId: {CompanyId}. BillId: {BillId}. ActorUserId: {ActorUserId}. ActorDisplayName: {ActorDisplayName}.",
+            companyId,
+            billId,
+            ResolveActorId(),
+            ResolveActorDisplayName());
+
+        return await ExecuteWriteAsync(
+            () => _paidSupplierBillExpensePostingService.PostAsync(
+                new PostPaidSupplierBillExpenseCommand(companyId, billId, ResolveActorId(), ResolveActorDisplayName()),
                 cancellationToken));
     }
 

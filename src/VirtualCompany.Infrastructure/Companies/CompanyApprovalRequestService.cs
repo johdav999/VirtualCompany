@@ -8,6 +8,7 @@ using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -192,6 +193,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) == ApprovalTargetEntityType.FinanceIntegrationWrite)
         {
             await _serviceProvider.GetRequiredService<IFortnoxOutboundActionExecutor>().ExecuteApprovedAsync(companyId, approval.TargetEntityId, cancellationToken);
+            await _serviceProvider.GetRequiredService<ISupportRefundFinanceService>()
+                .RefreshByWriteRequestAsync(companyId, approval.TargetEntityId, cancellationToken);
         }
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
@@ -268,6 +271,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             {
                 task.UpdateStatus(WorkTaskStatus.InProgress);
                 await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: true, cancellationToken);
+                await UpdateSupportRefundAfterTaskApprovalAsync(approval, task, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
 
@@ -275,6 +279,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             {
                 task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
                 await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: false, cancellationToken);
+                await UpdateSupportRefundAfterTaskApprovalAsync(approval, task, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
 
@@ -282,6 +287,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             {
                 task.UpdateStatus(WorkTaskStatus.Blocked, rationaleSummary: approval.DecisionSummary);
                 await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: false, cancellationToken);
+                await UpdateSupportRefundAfterTaskApprovalAsync(approval, task, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());
             }
         }
@@ -424,6 +430,28 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
         {
             proposal.MarkRejected(decidedBy, decidedUtc, approval.DecisionSummary);
         }
+    }
+
+    private async Task UpdateSupportRefundAfterTaskApprovalAsync(
+        ApprovalRequest approval,
+        WorkTask task,
+        CancellationToken cancellationToken)
+    {
+        if (!string.Equals(approval.ApprovalType, "support_refund_credit", StringComparison.OrdinalIgnoreCase) ||
+            !task.InputPayload.ContainsKey("refundRequestId"))
+        {
+            return;
+        }
+
+        var handler = _serviceProvider.GetRequiredService<ISupportRefundApprovalOutcomeHandler>();
+        var decidedBy = approval.Steps.FirstOrDefault(step => step.DecidedByUserId.HasValue)?.DecidedByUserId;
+        await handler.ProcessAsync(
+            approval.CompanyId,
+            approval.Id,
+            approval.Status.ToStorageValue(),
+            decidedBy,
+            approval.DecisionSummary,
+            cancellationToken);
     }
 
     private async Task MarkApprovalNotificationsActionedAsync(Guid companyId, Guid approvalId, Guid actionedByUserId, CancellationToken cancellationToken)

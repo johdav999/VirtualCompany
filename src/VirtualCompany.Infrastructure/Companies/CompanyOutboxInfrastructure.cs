@@ -16,6 +16,7 @@ using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Observability;
@@ -193,6 +194,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IBackgroundExecutionIdentityFactory _identityFactory;
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
+    private readonly ISupportMemoryUpdateService? _supportMemory;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -210,7 +212,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         IBackgroundExecutionIdentityFactory identityFactory,
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
         IBriefingUpdateJobProducer briefingUpdateJobProducer,
-        ILogger<CompanyOutboxProcessor> logger)
+        ILogger<CompanyOutboxProcessor> logger,
+        ISupportMemoryUpdateService? supportMemory = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -228,6 +231,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
         _briefingUpdateJobProducer = briefingUpdateJobProducer;
         _logger = logger;
+        _supportMemory = supportMemory;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -492,6 +496,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 await _notificationDispatcher.DispatchAsync(payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
                 await EnqueueBriefingJobForNotificationAsync(message, payload, cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SupportMemoryUpdateRequested:
+            {
+                var payload = Deserialize<SupportMemoryUpdateRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Support memory payload tenant does not match the outbox message tenant.");
+                if (_supportMemory is null) throw new InvalidOperationException("Support memory processing is not configured.");
+                await _supportMemory.ProcessJobAsync(payload.CompanyId, payload.JobId, cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.TaskCreated:

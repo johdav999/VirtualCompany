@@ -131,7 +131,10 @@ public sealed record WebsiteLeadSubmissionRequest(
     string? Phone = null,
     string? ExternalSubmissionId = null,
     IReadOnlyDictionary<string, string?>? Utm = null,
-    IReadOnlyDictionary<string, string?>? Metadata = null);
+    IReadOnlyDictionary<string, string?>? Metadata = null,
+    bool ContactConsent = false,
+    string? ConsentLegalBasis = null,
+    string? Referrer = null);
 
 public sealed record WebsiteLeadSubmissionResponse(
     string Status,

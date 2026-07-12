@@ -12,6 +12,14 @@ When changing backend, data, workflow, agent, integration, approval, or AI orche
 
 - Existing repository implementation wins if it conflicts with older planning documents
 
+## Database Compatibility
+
+When updating database schema, data models, EF migrations, seed data, backup/restore scripts, or local database setup:
+
+- Always preserve a clear path to restore and run the database in Docker.
+- Keep Docker SQL Server restore flows compatible with local SQL Server changes unless explicitly told otherwise.
+- If a change requires local SQL Server-specific handling, also document or implement the equivalent Docker path.
+
 
 
 ## Design / UI
@@ -33,6 +41,29 @@ When implementing a sequence of prompts or a multi-part implementation plan:
 - Continue through the ordered prompts until the full requested implementation sequence is complete, genuinely blocked, or the user explicitly asks to pause or stop.
 - If a build or test fails, diagnose and fix the failure when it is in scope for the current implementation sequence, then continue.
 - Only stop when further progress requires missing external credentials, unavailable services, an unsafe/destructive action without approval, or a user decision that cannot reasonably be inferred.
+
+## Prompt generation standard
+
+When creating implementation prompts, prompt packs, phased delivery prompts, or prompts intended for another coding agent:
+
+- Inspect the current repository before writing prompts. Prompts must describe the existing implementation accurately and must not assume missing systems are absent or completed.
+- Order multi-prompt packs by dependency and risk. Each prompt must state its prerequisites and the behavior delivered independently at that stage.
+- Make every prompt self-contained enough to execute without relying on conversational context. Shared instructions may be referenced only when they are included in the same prompt document.
+- Use this structure for every implementation prompt:
+  1. **Title and outcome**: name one bounded outcome and explain the user or business value.
+  2. **Current context**: identify relevant existing modules, services, entities, endpoints, UI surfaces, tests, and known gaps.
+  3. **Dependencies**: list earlier prompts, migrations, integrations, configuration, or external credentials required; write `None` when there are none.
+  4. **Implementation requirements**: specify concrete backend, data, workflow, integration, UI, authorization, audit, observability, and documentation work that is in scope.
+  5. **Constraints and preservation rules**: state architecture boundaries, tenant isolation, approval and policy requirements, idempotency, security, compatibility, and behavior that must remain unchanged.
+  6. **Acceptance criteria**: provide observable, testable conditions using `Given / When / Then` or equally precise statements; avoid subjective criteria such as "works well."
+  7. **Verification**: name required unit, integration, authorization, tenant-isolation, migration, build, and UI/browser checks in proportion to the change.
+  8. **Definition of done**: require production implementation with no scaffolding, mock production data, silent failures, unhandled intermediate states, or deferred in-scope TODOs.
+- Always include and follow `production-implementation.md` in generated implementation prompts.
+- Include and follow `architecture-inst.md` and `/docs/architecture-rules.md` for architecture-sensitive prompts.
+- Include and follow `ui-instructions.md` and `/docs/design.md` for UI prompts, including the mandatory screenshot-first workflow when it applies.
+- For database prompts, explicitly require an EF migration when needed and equivalent local SQL Server and Docker restore/run compatibility.
+- For external side effects, explicitly require approval boundaries where applicable, outbox/background execution, idempotency, retries, reconciliation, and safe operator-visible failures.
+- Do not combine unrelated outcomes merely to reduce the number of prompts. Do not create prompts that only produce scaffolding, analysis, or a plan when implementation is requested.
 
 <!-- design-addin-instructions:start -->
 # Design Add-in Workspace Instructions

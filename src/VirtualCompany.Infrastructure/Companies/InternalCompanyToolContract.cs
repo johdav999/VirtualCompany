@@ -4,6 +4,7 @@ using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Domain.Enums;
 
@@ -17,6 +18,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
     private readonly IFinanceToolProvider _financeToolProvider;
     private readonly IFinanceTransactionAnomalyDetectionService _financeAnomalyDetectionService;
+    private readonly ILeadGenerationService _leadGenerationService;
 
     public InternalCompanyToolContract(
         ICompanyTaskQueryService taskQueryService,
@@ -24,7 +26,8 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         IApprovalRequestService approvalRequestService,
         ICompanyKnowledgeSearchService knowledgeSearchService,
         IFinanceToolProvider financeToolProvider,
-        IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService)
+        IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService,
+        ILeadGenerationService leadGenerationService)
     {
         _taskQueryService = taskQueryService;
         _taskCommandService = taskCommandService;
@@ -32,6 +35,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         _knowledgeSearchService = knowledgeSearchService;
         _financeToolProvider = financeToolProvider;
         _financeAnomalyDetectionService = financeAnomalyDetectionService;
+        _leadGenerationService = leadGenerationService;
     }
 
     public async Task<InternalToolExecutionResponse> ExecuteAsync(
@@ -73,6 +77,12 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "evaluate_transaction_anomaly" => await ExecuteEvaluateTransactionAnomalyAsync(request, cancellationToken),
                 "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
                 "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
+                "post_paid_supplier_bill_expense" => await ExecutePostPaidSupplierBillExpenseAsync(request, cancellationToken),
+                "sales.plan_prospecting_run" => await ExecutePlanProspectingRunAsync(request, cancellationToken),
+                "sales.start_prospecting_run" => await ExecuteStartProspectingRunAsync(request, cancellationToken),
+                "sales.list_prospects" => await ExecuteListProspectsAsync(request, cancellationToken),
+                "sales.research_prospect" => await ExecuteResearchProspectAsync(request, cancellationToken),
+                "sales.recommend_prospect_decision" => await ExecuteRecommendProspectDecisionAsync(request, cancellationToken),
                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
             };
         }
@@ -100,6 +110,52 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         {
             return Failed("tool_access_denied", "The requested internal tool could not access the requested company record.");
         }
+        catch (LeadGenerationValidationException ex)
+        {
+            return Failed("sales_tool_validation_failed", ex.Message);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Failed("finance_tool_not_available", ex.Message);
+        }
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecutePlanProspectingRunAsync(InternalToolExecutionRequest request, CancellationToken ct)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var failure)) return failure;
+        var profileId = ReadGuid(request.Payload, "icpProfileId");
+        if (profileId is null) return Failed("icp_profile_required", "An ideal customer profile is required.");
+        var run = await _leadGenerationService.CreateRunAsync(request.CompanyId, request.AgentId, new CreateProspectingRunRequest(profileId.Value, ReadString(request.Payload,"name") ?? "Alex prospecting plan", Math.Clamp(ReadInt(request.Payload,"accountLimit") ?? 50,1,10000), Math.Clamp(ReadInt(request.Payload,"contactLimit") ?? 100,0,50000), ReadString(request.Payload,"sources") ?? "first_party", ReadString(request.Payload,"geography") ?? "", Math.Clamp(ReadInt(request.Payload,"freshnessDays") ?? 30,1,365), ReadDecimal(request.Payload,"estimatedCost") ?? 0, ReadString(request.Payload,"schedule")), ct);
+        return InternalToolExecutionResponse.Succeeded("Prospecting run planned.", new Dictionary<string,JsonNode?> { ["prospectingRun"] = Serialize(run) }, Metadata(request,"lead_generation_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteStartProspectingRunAsync(InternalToolExecutionRequest request, CancellationToken ct)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var failure)) return failure;
+        var id=ReadGuid(request.Payload,"runId"); if(id is null) return Failed("run_id_required","A prospecting run is required.");
+        var run=await _leadGenerationService.StartRunAsync(request.CompanyId,request.AgentId,id.Value,ct);
+        return InternalToolExecutionResponse.Succeeded(run.Status == "Planned" ? "Prospecting run is waiting for approval." : "Prospecting run started.",new Dictionary<string,JsonNode?>{{"prospectingRun",Serialize(run)}},Metadata(request,"lead_generation_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteListProspectsAsync(InternalToolExecutionRequest request,CancellationToken ct)
+    {
+        if(!EnsureAction(request,ToolActionType.Read,out var failure)) return failure;
+        var result=await _leadGenerationService.ListAccountsAsync(request.CompanyId,new ProspectQuery(ReadString(request.Payload,"search"),ReadString(request.Payload,"status"),ReadString(request.Payload,"country"),ReadString(request.Payload,"source"),ReadInt(request.Payload,"page")??1,Math.Clamp(ReadInt(request.Payload,"pageSize")??50,1,100)),ct);
+        return InternalToolExecutionResponse.Succeeded("Prospects retrieved.",new Dictionary<string,JsonNode?>{{"prospects",Serialize(result)}},Metadata(request,"lead_generation_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteResearchProspectAsync(InternalToolExecutionRequest request,CancellationToken ct)
+    {
+        if(!EnsureAction(request,ToolActionType.Recommend,out var failure)) return failure; var id=ReadGuid(request.Payload,"prospectId"); if(id is null)return Failed("prospect_id_required","A prospect is required.");
+        var prospect=await _leadGenerationService.RefreshResearchAndScoreAsync(request.CompanyId,request.AgentId,id.Value,ct);
+        return InternalToolExecutionResponse.Succeeded("Prospect research refreshed.",new Dictionary<string,JsonNode?>{{"prospect",Serialize(prospect)}},Metadata(request,"lead_generation_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteRecommendProspectDecisionAsync(InternalToolExecutionRequest request,CancellationToken ct)
+    {
+        if(!EnsureAction(request,ToolActionType.Recommend,out var failure)) return failure; var id=ReadGuid(request.Payload,"prospectId"); if(id is null)return Failed("prospect_id_required","A prospect is required."); var p=await _leadGenerationService.GetAccountAsync(request.CompanyId,id.Value,ct); if(p is null)return Failed("prospect_not_found","The prospect was not found.");
+        var decision=p.FitOutcome=="disqualified"||p.OverallScore<40?"reject":p.OverallScore>=70?"accept":"review"; var explanation=decision switch{"accept"=>$"Strong fit with an overall score of {p.OverallScore:0}.","reject"=>$"Low fit or disqualifying criteria with an overall score of {p.OverallScore:0}.",_=>$"More evidence is needed before deciding; current score is {p.OverallScore:0}."};
+        return InternalToolExecutionResponse.Succeeded("Prospect decision prepared.",new Dictionary<string,JsonNode?>{{"recommendation",Serialize(new{prospectId=p.Id,decision,explanation,p.OverallScore,p.DataConfidenceScore})}},Metadata(request,"lead_generation_service"));
     }
 
     private async Task<InternalToolExecutionResponse> ExecuteTaskGetAsync(
@@ -631,6 +687,43 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 ["invoice"] = Serialize(invoice),
                 ["invoiceId"] = JsonValue.Create(invoice.Id),
                 ["status"] = JsonValue.Create(invoice.Status)
+            },
+            Metadata(request, "finance_tool_provider"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecutePostPaidSupplierBillExpenseAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var actionFailure))
+        {
+            return actionFailure;
+        }
+
+        var billId = ReadGuid(request.Payload, "billId");
+        if (!billId.HasValue)
+        {
+            return Failed("bill_id_required", "A supplier bill id is required to post an expense.");
+        }
+
+        var posting = await _financeToolProvider.PostPaidSupplierBillExpenseAsync(
+            new PostPaidSupplierBillExpenseCommand(
+                request.CompanyId,
+                billId.Value,
+                null,
+                "Laura",
+                ReadString(request.Payload, "providerKey") ?? FinanceIntegrationProviderKeys.Fortnox),
+            cancellationToken);
+
+        return InternalToolExecutionResponse.Succeeded(
+            posting.Summary,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["expensePosting"] = Serialize(posting),
+                ["billId"] = JsonValue.Create(posting.BillId),
+                ["draftActionId"] = JsonValue.Create(posting.DraftActionId),
+                ["status"] = JsonValue.Create(posting.Status),
+                ["posted"] = JsonValue.Create(posting.Posted)
             },
             Metadata(request, "finance_tool_provider"));
     }

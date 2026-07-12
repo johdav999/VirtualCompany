@@ -573,6 +573,21 @@ public sealed class FinanceApiClient
             cancellationToken);
     }
 
+    public Task<PaidSupplierBillExpensePostingResponse> PostPaidSupplierBillExpenseAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
+    {
+        _logger?.LogInformation(
+            "Sending paid supplier bill expense posting request. CompanyId: {CompanyId}. BillId: {BillId}.",
+            companyId,
+            billId);
+
+        return SendCompanyScopedAsync<object, PaidSupplierBillExpensePostingResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/bills/{billId}/paid-expense-posting",
+            new { },
+            cancellationToken);
+    }
+
     public Task<SupplierInvoiceCorrectionActionResponse> CancelSupplierInvoiceAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation(
@@ -1617,6 +1632,17 @@ public sealed class FinanceBillDetailResponse
     public SupplierInvoiceDraftActionResponse? DraftAction { get; set; }
     public List<SupplierInvoiceCorrectionActionResponse> CorrectionActions { get; set; } = [];
     public SupplierInvoiceEnrichmentActionResponse? EnrichmentAction { get; set; }
+    public PaidSupplierBillExpenseAvailabilityResponse? PaidExpensePostingAvailability { get; set; }
+}
+
+public sealed class PaidSupplierBillExpenseAvailabilityResponse
+{
+    public bool CanPost { get; set; }
+    public string StatusLabel { get; set; } = string.Empty;
+    public string StatusTone { get; set; } = "neutral";
+    public string Message { get; set; } = string.Empty;
+    public string? AccountCode { get; set; }
+    public List<string> BlockingReasons { get; set; } = [];
 }
 
 public sealed class SupplierInvoicePaymentProposalResponse
@@ -1703,6 +1729,20 @@ public sealed class SupplierInvoiceDraftActionResponse
     public string? ResponseSummary { get; set; }
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class PaidSupplierBillExpensePostingResponse
+{
+    public Guid BillId { get; set; }
+    public Guid DraftActionId { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public bool Posted { get; set; }
+    public string ProviderKey { get; set; } = string.Empty;
+    public Guid? ConnectionId { get; set; }
+    public string Summary { get; set; } = string.Empty;
+    public DateTime? RequestedUtc { get; set; }
+    public DateTime? BookedUtc { get; set; }
+    public SupplierInvoiceDraftActionResponse DraftAction { get; set; } = new();
 }
 
 public sealed class SupplierInvoiceCorrectionActionResponse

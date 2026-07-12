@@ -25,6 +25,7 @@
                         <p class="text-body-secondary mb-0">@supportCase.Summary</p>
                     </div>
                     <div class="d-flex flex-wrap gap-2">
+                        <button class="btn btn-outline-primary btn-sm" @onclick="RunSupportAgentAsync" disabled="@isBusy">Ask Ben to prepare reply</button>
                         <span class="@PriorityBadge(supportCase.Priority)">@supportCase.PriorityLabel</span>
                         <span class="badge text-bg-light">@supportCase.StatusLabel</span>
                         @if (supportCase.IsSlaBreached)
@@ -69,7 +70,7 @@
                             <button class="btn btn-primary mt-3" @onclick="AddNoteAsync" disabled="@isBusy">Add note</button>
                         </section>
 
-                        <section class="border rounded bg-white p-3">
+                        <section class="border rounded bg-white p-3 mb-4">
                             <div class="d-flex flex-wrap justify-content-between gap-3">
                                 <div>
                                     <h2 class="h5">Reply drafts</h2>
@@ -94,41 +95,142 @@
                                                 <strong>@draft.StatusLabel</strong>
                                                 <span class="small text-body-secondary">Confidence @Percent(draft.Confidence) | Answerability @Percent(draft.Answerability)</span>
                                             </div>
-                                            <pre class="bg-light border rounded p-3 mt-3 mb-3 text-wrap">@draft.DraftBody</pre>
+                                            @if (DraftEditable(draft))
+                                            {
+                                                <label class="form-label mt-3" for="@($"support-draft-{draft.Id:D}")">Reply text</label>
+                                                <textarea id="@($"support-draft-{draft.Id:D}")" class="form-control" rows="8" value="@DraftBody(draft)" @onchange="eventArgs => SetDraftBody(draft.Id, eventArgs.Value?.ToString())"></textarea>
+                                                <label class="form-label mt-2" for="@($"support-tone-{draft.Id:D}")">Tone</label>
+                                                <select id="@($"support-tone-{draft.Id:D}")" class="form-select" value="@DraftTone(draft)" @onchange="eventArgs => SetDraftTone(draft.Id, eventArgs.Value?.ToString())">
+                                                    <option value="Helpful">Helpful</option>
+                                                    <option value="Concise">Concise</option>
+                                                    <option value="Empathetic">Empathetic</option>
+                                                    <option value="Formal">Formal</option>
+                                                </select>
+                                            }
+                                            else
+                                            {
+                                                <pre class="bg-light border rounded p-3 mt-3 mb-3 text-wrap">@draft.DraftBody</pre>
+                                            }
                                             @if (!string.IsNullOrWhiteSpace(draft.RationaleSummary))
                                             {
                                                 <p class="small text-body-secondary">@draft.RationaleSummary</p>
+                                            }
+                                            <p class="small text-body-secondary">@DraftSourceSummary(draft)</p>
+                                            @if (!string.IsNullOrWhiteSpace(draft.SafetyDecision))
+                                            {
+                                                <div class="@SafetyAlertClass(draft.SafetyDecision)">
+                                                    Safety: @SafetyLabel(draft.SafetyDecision)
+                                                    @if (!string.IsNullOrWhiteSpace(draft.SafetyReasonCodesJson))
+                                                    {
+                                                        <span class="d-block small">@draft.SafetyReasonCodesJson</span>
+                                                    }
+                                                </div>
                                             }
                                             @if (!string.IsNullOrWhiteSpace(draft.SendFailureSummary))
                                             {
                                                 <div class="alert alert-danger py-2 mb-3">@draft.SendFailureSummary</div>
                                             }
                                             <div class="d-flex flex-wrap gap-2">
-                                                <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@isBusy">Approve</button>
-                                                <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">Send</button>
-                                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">Send and resolve</button>
+                                                @if (DraftEditable(draft))
+                                                {
+                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SaveDraftAsync(draft.Id)" disabled="@isBusy">Save draft</button>
+                                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@isBusy">Approve</button>
+                                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => RejectDraftAsync(draft.Id)" disabled="@isBusy">Reject</button>
+                                                }
+                                                @if (draft.Status == "approved" && !draft.SentUtc.HasValue)
+                                                {
+                                                    <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">Send</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">Send and resolve</button>
+                                                }
                                             </div>
                                         </div>
                                     }
                                 </div>
                             }
                         </section>
+
+                        @if (LatestRefund() is { } refund)
+                        {
+                            <section class="support-refund-panel" aria-labelledby="support-refund-title">
+                                <div class="support-refund-heading">
+                                    <div>
+                                        <span class="dashboard-kicker">Finance handoff</span>
+                                        <h2 id="support-refund-title" class="h5 mb-1">Refund or credit</h2>
+                                        <p class="text-body-secondary mb-0">@RefundStatusMessage(refund)</p>
+                                    </div>
+                                    <span class="@RefundStatusBadge(refund.Status)">@refund.StatusLabel</span>
+                                </div>
+
+                                <dl class="support-refund-facts">
+                                    <div><dt>Amount</dt><dd>@refund.Currency @refund.Amount.ToString("N2", CultureInfo.CurrentCulture)</dd></div>
+                                    <div><dt>Customer invoice</dt><dd>@(refund.InvoiceId.HasValue ? "Linked" : "Not linked")</dd></div>
+                                    <div><dt>Support approval</dt><dd>@(refund.ApprovalRequestId.HasValue ? "Requested" : "Not requested")</dd></div>
+                                    <div><dt>Accounting system</dt><dd>@ProviderStepLabel(refund)</dd></div>
+                                </dl>
+
+                                <ol class="support-refund-progress" aria-label="Refund progress">
+                                    @RefundStep("Requested", true)
+                                    @RefundStep("Support approved", RefundAtLeast(refund, 1))
+                                    @RefundStep("Finance approval", RefundAtLeast(refund, 2))
+                                    @RefundStep("Fortnox", RefundAtLeast(refund, 3))
+                                    @RefundStep("Completed", refund.Status == "completed")
+                                </ol>
+
+                                @if (!string.IsNullOrWhiteSpace(refund.LastFailureSummary))
+                                {
+                                    <div class="alert alert-danger py-2 mt-3 mb-0" role="alert">@refund.LastFailureSummary</div>
+                                }
+
+                                <div class="support-refund-footer">
+                                    <div class="support-refund-data-used">
+                                        <strong>Data used</strong>
+                                        @if (refund.InvoiceId is Guid invoiceId)
+                                        {
+                                            <a href="@($"/finance/invoices/{invoiceId:D}")">Customer invoice</a>
+                                        }
+                                        @if (refund.PaymentId.HasValue)
+                                        {
+                                            <span>Linked payment</span>
+                                        }
+                                    </div>
+                                    <div class="d-flex flex-wrap gap-2">
+                                        @if (RefundApprovalId(refund) is Guid approvalId)
+                                        {
+                                            <a class="btn btn-sm btn-outline-secondary" href="@BuildApprovalHref(approvalId)">Open approval</a>
+                                        }
+                                        @if (refund.AllowedActions.Contains("request_execution") || refund.AllowedActions.Contains("retry"))
+                                        {
+                                            <button class="btn btn-sm btn-primary" @onclick="() => RequestRefundExecutionAsync(refund.Id)" disabled="@isBusy">
+                                                @(refund.AllowedActions.Contains("retry") ? "Retry safely" : "Request finance execution")
+                                            </button>
+                                        }
+                                        @if (refund.AllowedActions.Contains("reconcile"))
+                                        {
+                                            <button class="btn btn-sm btn-outline-warning" @onclick="() => ReconcileRefundAsync(refund.Id)" disabled="@isBusy">Reconcile</button>
+                                        }
+                                        @if (refund.AllowedActions.Contains("cancel"))
+                                        {
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelRefundAsync(refund.Id)" disabled="@(isBusy || string.IsNullOrWhiteSpace(caseActionNote))">Cancel</button>
+                                        }
+                                    </div>
+                                </div>
+                            </section>
+                        }
                     </div>
 
                     <div class="col-12 col-xl-4">
                         <section class="border rounded bg-white p-3 mb-4">
                             <h2 class="h5">Case controls</h2>
-                            <label class="form-label mt-2">Status</label>
-                            <select class="form-select" @bind="selectedStatus">
-                                <option value="new">New</option>
-                                <option value="triaged">Triaged</option>
-                                <option value="waiting_for_customer">Waiting for customer</option>
-                                <option value="waiting_internal">Waiting internally</option>
-                                <option value="escalated">Escalated</option>
-                                <option value="awaiting_approval">Awaiting approval</option>
-                                <option value="resolved">Resolved</option>
-                                <option value="closed">Closed</option>
+                            <label class="form-label mt-2" for="support-assignee">Owner</label>
+                            <select id="support-assignee" class="form-select" @bind="selectedAssignee">
+                                <option value="">Unassigned</option>
+                                @foreach (var option in assignees)
+                                {
+                                    <option value="@AssigneeKey(option)" disabled="@(!option.Available)">@option.DisplayName · @option.SecondaryText · @option.OpenCaseCount open</option>
+                                }
                             </select>
+                            <input class="form-control mt-2" @bind="assignmentReason" placeholder="Reason for assignment" />
+                            <button class="btn btn-outline-primary w-100 mt-2" @onclick="SaveAssignmentAsync" disabled="@isBusy">Save owner</button>
 
                             <label class="form-label mt-3">Priority</label>
                             <select class="form-select" @bind="selectedPriority">
@@ -153,6 +255,52 @@
                             <div class="d-grid gap-2 mt-3">
                                 <button class="btn btn-primary" @onclick="SaveControlsAsync" disabled="@isBusy">Save changes</button>
                                 <button class="btn btn-outline-secondary" @onclick="TriageAsync" disabled="@isBusy">Run triage</button>
+                            </div>
+                        </section>
+
+                        <section class="border rounded bg-white p-3 mb-4">
+                            <h2 class="h5">Next action</h2>
+                            @if (supportCase.AllowedActions.Contains("resolve"))
+                            {
+                                <label class="form-label mt-2" for="support-resolution-summary">Resolution summary</label>
+                                <textarea id="support-resolution-summary" class="form-control" rows="3" @bind="resolutionSummary" placeholder="What solved the customer’s issue?"></textarea>
+                                <label class="form-label mt-2" for="support-resolution-outcome">Outcome</label>
+                                <input id="support-resolution-outcome" class="form-control" @bind="resolutionOutcome" placeholder="Resolved for customer" />
+                                <label class="form-label mt-2" for="support-root-cause">Root cause</label>
+                                <select id="support-root-cause" class="form-select" @bind="resolutionRootCause"><option value="product_guidance">Product guidance</option><option value="configuration">Configuration</option><option value="billing_error">Billing error</option><option value="product_defect">Product defect</option><option value="customer_error">Customer error</option><option value="third_party">Third party</option><option value="other">Other</option></select>
+                                <label class="form-label mt-2" for="support-action-taken">Action taken</label>
+                                <textarea id="support-action-taken" class="form-control" rows="2" @bind="resolutionActionTaken"></textarea>
+                                <label class="form-label mt-2" for="support-reusable-answer">Reusable answer</label>
+                                <textarea id="support-reusable-answer" class="form-control" rows="3" @bind="resolutionReusableAnswer"></textarea>
+                                <label class="form-label mt-2" for="support-preference-observation">Explicit customer preference (optional)</label>
+                                <textarea id="support-preference-observation" class="form-control" rows="2" @bind="resolutionPreferenceObservation"></textarea>
+                                <label class="form-check mt-2"><input class="form-check-input" type="checkbox" @bind="resolutionReuseEligible" /> <span class="form-check-label">Eligible for approved answer reuse</span></label>
+                                <button class="btn btn-primary w-100 mt-2" @onclick="ResolveCaseAsync" disabled="@isBusy">Resolve case</button>
+                            }
+
+                            <label class="form-label mt-3" for="support-action-note">Reason or note</label>
+                            <textarea id="support-action-note" class="form-control" rows="2" @bind="caseActionNote" placeholder="Explain why this action is needed"></textarea>
+                            <div class="d-grid gap-2 mt-2">
+                                @if (supportCase.AllowedActions.Contains("wait_for_customer"))
+                                {
+                                    <button class="btn btn-outline-secondary" @onclick='() => ChangeCaseStateAsync("waiting_for_customer")' disabled="@isBusy">Wait for customer</button>
+                                }
+                                @if (supportCase.AllowedActions.Contains("wait_internally"))
+                                {
+                                    <button class="btn btn-outline-secondary" @onclick='() => ChangeCaseStateAsync("waiting_internal")' disabled="@isBusy">Wait internally</button>
+                                }
+                                @if (supportCase.AllowedActions.Contains("escalate"))
+                                {
+                                    <button class="btn btn-outline-warning" @onclick='() => ChangeCaseStateAsync("escalated")' disabled="@isBusy">Escalate</button>
+                                }
+                                @if (supportCase.AllowedActions.Contains("reopen"))
+                                {
+                                    <button class="btn btn-outline-primary" @onclick="ReopenCaseAsync" disabled="@isBusy">Reopen case</button>
+                                }
+                                @if (supportCase.AllowedActions.Contains("close"))
+                                {
+                                    <button class="btn btn-outline-secondary" @onclick="CloseCaseAsync" disabled="@isBusy">Close case</button>
+                                }
                             </div>
                         </section>
 
@@ -214,15 +362,27 @@
     private bool isBusy;
     private string? errorMessage;
     private string? noteBody;
-    private string selectedStatus = "new";
     private string selectedPriority = "normal";
     private string selectedCategory = "general_question";
+    private IReadOnlyList<SupportAssigneeOptionDto> assignees = [];
+    private string selectedAssignee = string.Empty;
+    private string? assignmentReason;
+    private string? resolutionSummary;
+    private string resolutionOutcome = "Resolved for customer";
+    private string resolutionRootCause = "other";
+    private string? resolutionActionTaken;
+    private string? resolutionReusableAnswer;
+    private string? resolutionPreferenceObservation;
+    private bool resolutionReuseEligible;
+    private string? caseActionNote;
     private decimal refundAmount;
     private string refundCurrency = "SEK";
     private string refundReason = "customer_request";
     private string? refundExplanation;
     private string? replyToEmail;
     private Guid? loadedCaseId;
+    private readonly Dictionary<Guid, string> draftBodies = [];
+    private readonly Dictionary<Guid, string> draftTones = [];
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
@@ -251,10 +411,20 @@
                 loadedCaseId = supportCase.Id;
             }
 
-            selectedStatus = supportCase.Status;
+            assignees = await SupportApiClient.ListAssigneesAsync(companyId);
+            selectedAssignee = supportCase.AssignedAgentId is Guid agentId
+                ? $"agent:{agentId:D}"
+                : supportCase.AssignedUserId is Guid userId
+                    ? $"user:{userId:D}"
+                    : string.Empty;
             selectedPriority = supportCase.Priority;
             selectedCategory = supportCase.Category;
             replyToEmail = FirstNonBlank(replyToEmail, supportCase.ContactEmail, LatestInboundMessage()?.Sender);
+            foreach (var draft in supportCase.ReplyDrafts)
+            {
+                draftBodies.TryAdd(draft.Id, draft.DraftBody);
+                draftTones.TryAdd(draft.Id, draft.Tone);
+            }
         }
         catch (SupportApiException ex)
         {
@@ -292,10 +462,88 @@
 
     private Task SaveControlsAsync() => RunActionAsync(async companyId =>
     {
-        await SupportApiClient.ChangeStatusAsync(companyId, CaseId, selectedStatus);
         await SupportApiClient.ChangePriorityAsync(companyId, CaseId, selectedPriority);
         await SupportApiClient.ChangeCategoryAsync(companyId, CaseId, selectedCategory);
     });
+
+    private Task SaveAssignmentAsync() => RunActionAsync(companyId =>
+    {
+        var parts = selectedAssignee.Split(':', 2);
+        var id = Guid.Empty;
+        var hasSelection = parts.Length == 2 && Guid.TryParse(parts[1], out id);
+        return SupportApiClient.AssignAsync(
+            companyId,
+            CaseId,
+            new AssignSupportCaseRequest(
+                hasSelection && parts[0] == "agent" ? id : null,
+                hasSelection && parts[0] == "user" ? id : null,
+                assignmentReason));
+    });
+
+    private Task ResolveCaseAsync() => string.IsNullOrWhiteSpace(resolutionSummary) || string.IsNullOrWhiteSpace(resolutionOutcome)
+        ? Task.CompletedTask
+        : RunActionAsync(companyId => SupportApiClient.ResolveAsync(companyId, CaseId, new ResolveSupportCaseRequest(resolutionSummary, resolutionOutcome, resolutionRootCause, resolutionActionTaken, resolutionReusableAnswer, resolutionPreferenceObservation, null, resolutionReuseEligible)));
+
+    private Task ChangeCaseStateAsync(string status) => string.IsNullOrWhiteSpace(caseActionNote)
+        ? Task.CompletedTask
+        : RunActionAsync(companyId => SupportApiClient.ChangeStatusAsync(companyId, CaseId, status, caseActionNote));
+
+    private Task ReopenCaseAsync() => string.IsNullOrWhiteSpace(caseActionNote)
+        ? Task.CompletedTask
+        : RunActionAsync(companyId => SupportApiClient.ReopenAsync(companyId, CaseId, caseActionNote));
+
+    private Task CloseCaseAsync() => string.IsNullOrWhiteSpace(caseActionNote)
+        ? Task.CompletedTask
+        : RunActionAsync(companyId => SupportApiClient.CloseAsync(companyId, CaseId, caseActionNote));
+
+    private static string AssigneeKey(SupportAssigneeOptionDto option) => $"{option.Type}:{option.Id:D}";
+
+    private static bool DraftEditable(SupportReplyDraftDto draft) =>
+        (draft.Status is "draft" or "needs_review") && !draft.SentUtc.HasValue;
+    private string DraftBody(SupportReplyDraftDto draft) => draftBodies.GetValueOrDefault(draft.Id, draft.DraftBody);
+    private string DraftTone(SupportReplyDraftDto draft) => draftTones.GetValueOrDefault(draft.Id, draft.Tone);
+    private void SetDraftBody(Guid id, string? value) => draftBodies[id] = value ?? string.Empty;
+    private void SetDraftTone(Guid id, string? value) => draftTones[id] = string.IsNullOrWhiteSpace(value) ? "Helpful" : value;
+
+    private static string DraftSourceSummary(SupportReplyDraftDto draft)
+    {
+        if (string.IsNullOrWhiteSpace(draft.SourceReferencesJson))
+        {
+            return "No approved knowledge sources were attached to this draft.";
+        }
+
+        try
+        {
+            var trustedSources = System.Text.Json.Nodes.JsonNode.Parse(draft.SourceReferencesJson)?.AsArray()
+                .Where(x => x?["trusted"]?.GetValue<bool>() == true)
+                .Select(x => x?["label"]?.GetValue<string>())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList() ?? [];
+            return trustedSources.Count == 0
+                ? "No approved knowledge sources support this draft. Review is required."
+                : $"Approved sources: {string.Join(", ", trustedSources)}.";
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return "Source details need review.";
+        }
+    }
+
+    private static string SafetyAlertClass(string decision) => decision switch
+    {
+        "allow" => "alert alert-success py-2 mb-3",
+        "review" => "alert alert-warning py-2 mb-3",
+        _ => "alert alert-danger py-2 mb-3"
+    };
+
+    private static string SafetyLabel(string decision) => decision switch
+    {
+        "allow" => "passed",
+        "review" => "needs review",
+        "block" => "blocked",
+        _ => decision
+    };
 
     private Task AddNoteAsync() => string.IsNullOrWhiteSpace(noteBody)
         ? Task.CompletedTask
@@ -308,6 +556,9 @@
     private Task TriageAsync() => RunActionAsync(companyId => SupportApiClient.TriageAsync(companyId, CaseId));
     private Task GenerateDraftAsync() => RunActionAsync(companyId => SupportApiClient.GenerateDraftAsync(companyId, CaseId, "Helpful"));
     private Task ApproveDraftAsync(Guid draftId) => RunActionAsync(companyId => SupportApiClient.ApproveDraftAsync(companyId, draftId));
+    private Task SaveDraftAsync(Guid draftId) => RunActionAsync(companyId => SupportApiClient.EditDraftAsync(companyId, draftId, draftBodies[draftId], draftTones[draftId]));
+    private Task RejectDraftAsync(Guid draftId) => RunActionAsync(companyId => SupportApiClient.RejectDraftAsync(companyId, draftId, "Rejected during support review."));
+    private Task RunSupportAgentAsync() => RunActionAsync(companyId => SupportApiClient.RunSupportAgentAsync(companyId, CaseId));
     private Task SendDraftAsync(Guid draftId, bool resolveAfterSend) => RunActionAsync(companyId =>
     {
         var latestInbound = LatestInboundMessage();
@@ -323,7 +574,88 @@
     });
     private Task RequestRefundAsync() => refundAmount <= 0 || string.IsNullOrWhiteSpace(refundExplanation)
         ? Task.CompletedTask
-        : RunActionAsync(companyId => SupportApiClient.RequestRefundAsync(companyId, CaseId, new CreateSupportRefundRequest(refundAmount, refundCurrency, refundReason, refundExplanation)));
+        : RunActionAsync(companyId => SupportApiClient.RequestRefundAsync(companyId, CaseId, new CreateSupportRefundRequest(
+            refundAmount,
+            refundCurrency,
+            refundReason,
+            refundExplanation,
+            InvoiceId: supportCase?.RelatedInvoiceId,
+            PaymentId: supportCase?.RelatedPaymentId)));
+
+    private Task RequestRefundExecutionAsync(Guid refundRequestId) =>
+        RunActionAsync(companyId => SupportApiClient.RequestRefundExecutionAsync(companyId, refundRequestId));
+
+    private Task ReconcileRefundAsync(Guid refundRequestId) =>
+        RunActionAsync(companyId => SupportApiClient.ReconcileRefundAsync(companyId, refundRequestId));
+
+    private Task CancelRefundAsync(Guid refundRequestId) => string.IsNullOrWhiteSpace(caseActionNote)
+        ? Task.CompletedTask
+        : RunActionAsync(companyId => SupportApiClient.CancelRefundAsync(companyId, refundRequestId, caseActionNote));
+
+    private SupportRefundRequestDto? LatestRefund() =>
+        supportCase?.RefundRequests.OrderByDescending(x => x.CreatedUtc).FirstOrDefault();
+
+    private string BuildApprovalHref(Guid approvalId) =>
+        ResolvedCompanyId is Guid companyId
+            ? $"/approvals?companyId={companyId:D}&approvalId={approvalId:D}"
+            : "/approvals";
+
+    private static Guid? RefundApprovalId(SupportRefundRequestDto refund) =>
+        refund.Status is "pending_finance_approval" or "executing"
+            ? refund.ProviderApprovalRequestId ?? refund.ApprovalRequestId
+            : refund.ApprovalRequestId;
+
+    private static string RefundStatusMessage(SupportRefundRequestDto refund) => refund.Status switch
+    {
+        "pending_approval" => "Support approval is required before finance can validate this request.",
+        "queued" => "Support approved this request. The customer credit is ready for finance execution.",
+        "pending_finance_approval" => "The customer credit is waiting for finance approval before Fortnox receives it.",
+        "executing" => "The approved customer credit is being sent to Fortnox.",
+        "completed" => "The customer credit was completed in Fortnox.",
+        "failed" => "The accounting-system action failed safely and can be retried after review.",
+        "reconciliation_required" => "Confirm the Fortnox outcome before attempting another export.",
+        "rejected" or "expired" or "cancelled" => "This request will not continue without a new review.",
+        _ => "Review the refund or credit details and next action."
+    };
+
+    private static string ProviderStepLabel(SupportRefundRequestDto refund) => refund.Status switch
+    {
+        "completed" => "Completed",
+        "executing" => "Sending",
+        "failed" => "Needs attention",
+        "reconciliation_required" => "Needs reconciliation",
+        _ when refund.ProviderWriteRequestId.HasValue => "Waiting",
+        _ => "Not requested"
+    };
+
+    private static string RefundStatusBadge(string status) => status switch
+    {
+        "completed" => "badge text-bg-success",
+        "failed" or "reconciliation_required" => "badge text-bg-danger",
+        "pending_approval" or "pending_finance_approval" or "executing" => "badge text-bg-warning",
+        _ => "badge text-bg-light"
+    };
+
+    private static bool RefundAtLeast(SupportRefundRequestDto refund, int step) => step switch
+    {
+        1 => refund.Status is not "pending_approval" and not "rejected" and not "expired" and not "cancelled",
+        2 => refund.Status is "pending_finance_approval" or "executing" or "completed" or "failed" or "reconciliation_required",
+        3 => refund.Status is "executing" or "completed" or "failed" or "reconciliation_required",
+        _ => false
+    };
+
+    private static RenderFragment RefundStep(string label, bool complete) => builder =>
+    {
+        builder.OpenElement(0, "li");
+        builder.AddAttribute(1, "class", complete ? "is-complete" : null);
+        builder.OpenElement(2, "span");
+        builder.AddContent(3, complete ? "OK" : "");
+        builder.CloseElement();
+        builder.OpenElement(4, "small");
+        builder.AddContent(5, label);
+        builder.CloseElement();
+        builder.CloseElement();
+    };
 
     private static string MessageHeading(SupportMessageDto message) =>
         message.Direction switch

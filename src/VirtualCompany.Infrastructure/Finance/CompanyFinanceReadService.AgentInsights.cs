@@ -23,6 +23,7 @@ public sealed partial class CompanyFinanceReadService
                 x.Id,
                 x.CounterpartyId,
                 x.Counterparty == null ? MissingCounterpartyName : x.Counterparty.Name,
+                x.Counterparty == null ? null : x.Counterparty.DefaultAccountMapping,
                 x.BillNumber,
                 x.ReceivedUtc,
                 x.DueUtc,
@@ -68,6 +69,22 @@ public sealed partial class CompanyFinanceReadService
         var draftActions = await LoadSupplierInvoiceDraftActionsAsync(query.CompanyId, [row.Id], cancellationToken);
         var correctionActions = await LoadSupplierInvoiceCorrectionActionsAsync(query.CompanyId, [row.Id], cancellationToken);
         var enrichmentActions = await LoadSupplierInvoiceEnrichmentActionsAsync(query.CompanyId, [row.Id], cancellationToken);
+        var enrichmentAction = enrichmentActions.GetValueOrDefault(row.Id);
+        var paidExpenseAccount = PaidSupplierBillExpensePostingEligibility.ResolveExpenseAccountCode(
+            enrichmentAction,
+            row.CounterpartyDefaultAccountMapping);
+        var isFullyPaid = paymentContext is not null &&
+            paymentContext.TotalAmount > 0m &&
+            paymentContext.PaidAmount >= paymentContext.TotalAmount &&
+            paymentContext.RemainingAmount == 0m;
+        var paidExpenseAvailability = PaidSupplierBillExpensePostingEligibility.Evaluate(
+            row.DocumentKind,
+            row.PostingStatus,
+            row.SettlementStatus,
+            row.Status,
+            isFullyPaid,
+            paidExpenseAccount,
+            PaidSupplierBillExpensePostingEligibility.ExtractWarnings(enrichmentAction));
 
         return new FinanceBillDetailDto(
             row.Id,
@@ -94,7 +111,8 @@ public sealed partial class CompanyFinanceReadService
             sourceDocumentAttachments.GetValueOrDefault(row.Id),
             draftActions.GetValueOrDefault(row.Id),
             correctionActions.GetValueOrDefault(row.Id),
-            enrichmentActions.GetValueOrDefault(row.Id));
+            enrichmentAction,
+            paidExpenseAvailability);
     }
 
     private async Task<IReadOnlyList<NormalizedFinanceInsightDto>> LoadEntityAgentInsightsAsync(

@@ -311,6 +311,14 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
 
     private async Task RemoveExistingFinanceSeedAsync(Guid companyId, CancellationToken cancellationToken)
     {
+        var budgets = await _dbContext.Budgets
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToListAsync(cancellationToken);
+        var forecasts = await _dbContext.Forecasts
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToListAsync(cancellationToken);
         var transactions = await _dbContext.FinanceTransactions
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
@@ -326,6 +334,28 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
         var bills = await _dbContext.FinanceBills
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
+            .ToListAsync(cancellationToken);
+        var billIds = bills.Select(x => x.Id).ToArray();
+        var supplierInvoicePaymentProposals = await _dbContext.SupplierInvoicePaymentProposals
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId && billIds.Contains(x.BillId))
+            .ToListAsync(cancellationToken);
+        var supplierInvoiceSourceDocumentAttachments = await _dbContext.SupplierInvoiceSourceDocumentAttachments
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId && billIds.Contains(x.BillId))
+            .ToListAsync(cancellationToken);
+        var supplierInvoiceDraftActions = await _dbContext.SupplierInvoiceDraftActions
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId && billIds.Contains(x.BillId))
+            .ToListAsync(cancellationToken);
+        var supplierInvoiceCorrectionActions = await _dbContext.SupplierInvoiceCorrectionActions
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId &&
+                (billIds.Contains(x.BillId) || (x.CreditNoteBillId.HasValue && billIds.Contains(x.CreditNoteBillId.Value))))
+            .ToListAsync(cancellationToken);
+        var supplierInvoiceEnrichmentActions = await _dbContext.SupplierInvoiceEnrichmentActions
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId && billIds.Contains(x.BillId))
             .ToListAsync(cancellationToken);
         var bankTransactionPaymentLinks = await _dbContext.BankTransactionPaymentLinks
             .IgnoreQueryFilters()
@@ -378,11 +408,19 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ToListAsync(cancellationToken);
+        var paymentAllocations = await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToListAsync(cancellationToken);
         var policies = await _dbContext.FinancePolicyConfigurations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ToListAsync(cancellationToken);
         var counterparties = await _dbContext.FinanceCounterparties
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToListAsync(cancellationToken);
+        var assets = await _dbContext.FinanceAssets
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ToListAsync(cancellationToken);
@@ -420,11 +458,20 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
         _dbContext.FinanceSeedAnomalies.RemoveRange(anomalies);
         _dbContext.FinanceTransactions.RemoveRange(transactions);
         _dbContext.FinanceBalances.RemoveRange(balances);
+        _dbContext.PaymentAllocations.RemoveRange(paymentAllocations);
         _dbContext.Payments.RemoveRange(payments);
         _dbContext.FinanceInvoices.RemoveRange(invoices);
+        _dbContext.SupplierInvoicePaymentProposals.RemoveRange(supplierInvoicePaymentProposals);
+        _dbContext.SupplierInvoiceSourceDocumentAttachments.RemoveRange(supplierInvoiceSourceDocumentAttachments);
+        _dbContext.SupplierInvoiceDraftActions.RemoveRange(supplierInvoiceDraftActions);
+        _dbContext.SupplierInvoiceCorrectionActions.RemoveRange(supplierInvoiceCorrectionActions);
+        _dbContext.SupplierInvoiceEnrichmentActions.RemoveRange(supplierInvoiceEnrichmentActions);
         _dbContext.FinanceBills.RemoveRange(bills);
         _dbContext.FinancePolicyConfigurations.RemoveRange(policies);
+        _dbContext.FinanceAssets.RemoveRange(assets);
         _dbContext.FinanceCounterparties.RemoveRange(counterparties);
+        _dbContext.Budgets.RemoveRange(budgets);
+        _dbContext.Forecasts.RemoveRange(forecasts);
         _dbContext.FinanceAccounts.RemoveRange(accounts);
         _dbContext.CompanyKnowledgeDocuments.RemoveRange(seedDocuments);
         FinanceSeedingMetadata.MarkNotSeeded(company);

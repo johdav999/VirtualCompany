@@ -1,0 +1,173 @@
+@page "/support/memory"
+@rendermode InteractiveServer
+@inherits SupportPageBase
+@using System.Globalization
+
+<PageTitle>Support Memory</PageTitle>
+
+<section class="py-4 dashboard-hero">
+    <div class="dashboard-shell">
+        <div class="wizard-card dashboard-summary">
+            <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                <div>
+                    <span class="dashboard-kicker">Support</span>
+                    <h1>Memory review</h1>
+                    <p class="text-body-secondary mb-0">Review customer-support observations before they affect future replies.</p>
+                </div>
+                <a class="btn btn-outline-secondary" href="@BuildPath("/support")">Back to support</a>
+            </div>
+
+            <div class="border rounded p-3 mt-4 bg-white">
+                <div class="row g-3 align-items-end">
+                    <div class="col-12 col-md-4">
+                        <label class="form-label" for="support-memory-status">Status</label>
+                        <select id="support-memory-status" class="form-select" @bind="statusFilter">
+                            <option value="">All</option>
+                            <option value="review">Needs review</option>
+                            <option value="approved">Approved</option>
+                            <option value="rejected">Rejected</option>
+                            <option value="expired">Expired</option>
+                            <option value="deleted">Deleted</option>
+                        </select>
+                    </div>
+                    <div class="col-12 col-md-8 d-flex justify-content-end gap-2">
+                        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@isBusy">Apply</button>
+                    </div>
+                </div>
+            </div>
+
+            @if (isLoading)
+            {
+                <p class="text-body-secondary mt-4 mb-0">Loading memory observations...</p>
+            }
+            else if (!string.IsNullOrWhiteSpace(errorMessage) || !string.IsNullOrWhiteSpace(ShellErrorMessage))
+            {
+                <div class="alert alert-danger mt-4 mb-0">@(ShellErrorMessage ?? errorMessage)</div>
+            }
+            else if (observations.Count == 0)
+            {
+                <div class="alert alert-light border mt-4 mb-0">No support memory observations match this filter.</div>
+            }
+            else
+            {
+                <div class="table-responsive mt-4">
+                    <table class="table align-middle">
+                        <thead>
+                            <tr>
+                                <th>Observation</th>
+                                <th>Status</th>
+                                <th>Evidence</th>
+                                <th>Observed</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            @foreach (var item in observations)
+                            {
+                                <tr>
+                                    <td>
+                                        <strong>@(item.Value ?? "Value hidden")</strong>
+                                        <div class="small text-body-secondary">Confidence @item.Confidence.ToString("P0", CultureInfo.CurrentCulture)</div>
+                                        <a class="small" href="@BuildPath($"/support/cases/{item.SupportCaseId:D}")">Open source case</a>
+                                    </td>
+                                    <td><span class="badge text-bg-light">@item.StatusLabel</span></td>
+                                    <td>@item.EvidenceSummary</td>
+                                    <td>
+                                        @item.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
+                                        @if (item.ValidUntilUtc is DateTime validUntil)
+                                        {
+                                            <div class="small text-body-secondary">Valid until @validUntil.ToLocalTime().ToString("d", CultureInfo.CurrentCulture)</div>
+                                        }
+                                    </td>
+                                    <td class="text-end">
+                                        <div class="btn-group btn-group-sm">
+                                            @if (item.AllowedActions.Contains("approve"))
+                                            {
+                                                <button class="btn btn-outline-primary" @onclick="() => ApproveAsync(item.Id)" disabled="@isBusy">Approve</button>
+                                            }
+                                            @if (item.AllowedActions.Contains("reject"))
+                                            {
+                                                <button class="btn btn-outline-secondary" @onclick="() => RejectAsync(item.Id)" disabled="@isBusy">Reject</button>
+                                            }
+                                            @if (item.AllowedActions.Contains("expire"))
+                                            {
+                                                <button class="btn btn-outline-secondary" @onclick="() => ExpireAsync(item.Id)" disabled="@isBusy">Expire</button>
+                                            }
+                                            @if (item.AllowedActions.Contains("delete"))
+                                            {
+                                                <button class="btn btn-outline-danger" @onclick="() => DeleteAsync(item.Id)" disabled="@isBusy">Delete</button>
+                                            }
+                                        </div>
+                                    </td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            }
+        </div>
+    </div>
+</section>
+
+@code {
+    private IReadOnlyList<SupportMemoryObservationDto> observations = [];
+    private bool isLoading = true;
+    private bool isBusy;
+    private string? errorMessage;
+    private string? statusFilter = "review";
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isBusy = true;
+        errorMessage = null;
+        try
+        {
+            if (!await ResolveCompanyAsync() || ResolvedCompanyId is not Guid companyId)
+            {
+                return;
+            }
+
+            observations = await SupportApiClient.ListMemoryObservationsAsync(companyId, statusFilter);
+        }
+        catch (SupportApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+            isBusy = false;
+        }
+    }
+
+    private Task ApproveAsync(Guid id) => RunActionAsync(companyId => SupportApiClient.ApproveMemoryObservationAsync(companyId, id, "Approved from support memory review."));
+    private Task RejectAsync(Guid id) => RunActionAsync(companyId => SupportApiClient.RejectMemoryObservationAsync(companyId, id, "Rejected from support memory review."));
+    private Task ExpireAsync(Guid id) => RunActionAsync(companyId => SupportApiClient.ExpireMemoryObservationAsync(companyId, id, "Expired from support memory review."));
+    private Task DeleteAsync(Guid id) => RunActionAsync(companyId => SupportApiClient.DeleteMemoryObservationAsync(companyId, id, "Deleted from support memory review."));
+
+    private async Task RunActionAsync(Func<Guid, Task> action)
+    {
+        if (ResolvedCompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isBusy = true;
+        errorMessage = null;
+        try
+        {
+            await action(companyId);
+            await LoadAsync();
+        }
+        catch (SupportApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+}

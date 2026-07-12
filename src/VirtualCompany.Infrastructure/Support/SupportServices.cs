@@ -1,4 +1,7 @@
 using System.Text.Json.Nodes;
+using System.Text.Json;
+using System.Security.Cryptography;
+using System.Text;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
@@ -6,11 +9,15 @@ using VirtualCompany.Application.Approvals;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Documents;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Mailbox;
+using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Security;
 
@@ -20,21 +27,23 @@ public sealed class SupportCaseService : ISupportCaseService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAuditEventWriter _audit;
+    private readonly ISupportSlaPolicyService? _slaPolicies;
+    private readonly ICompanyOutboxEnqueuer? _outbox;
 
-    public SupportCaseService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit)
+    public SupportCaseService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit, ISupportSlaPolicyService? slaPolicies = null, ICompanyOutboxEnqueuer? outbox = null)
     {
         _dbContext = dbContext;
         _audit = audit;
+        _slaPolicies = slaPolicies;
+        _outbox = outbox;
     }
 
     public async Task<SupportCaseListResponse> ListCasesAsync(Guid companyId, SupportCaseListQuery query, CancellationToken cancellationToken)
     {
         var cases = ApplyFilters(_dbContext.SupportCases.AsNoTracking().Where(x => x.CompanyId == companyId), query);
         var total = await cases.CountAsync(cancellationToken);
-        var items = await cases
-            .OrderByDescending(x => x.IsSlaBreached)
-            .ThenByDescending(x => x.IsSlaRisk)
-            .ThenByDescending(x => x.UpdatedUtc)
+        var ordered = ApplySorting(cases, query);
+        var items = await ordered
             .Skip(Math.Max(0, query.Skip))
             .Take(Math.Clamp(query.Take, 1, 200))
             .Select(x => new
@@ -78,6 +87,7 @@ public sealed class SupportCaseService : ISupportCaseService
 
         supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Created, "Support case created.", userId == Guid.Empty ? AuditActorTypes.System : AuditActorTypes.Human, userId == Guid.Empty ? null : userId, now));
         _dbContext.SupportCases.Add(supportCase);
+        await ApplySlaAsync(companyId, supportCase, now, cancellationToken);
         await AddAuditAsync(companyId, userId, "support.case.created", supportCase.Id, AuditEventOutcomes.Succeeded, "Support case created.", cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return (await GetCaseAsync(companyId, supportCase.Id, cancellationToken))!;
@@ -97,84 +107,184 @@ public sealed class SupportCaseService : ISupportCaseService
         return await GetCaseAsync(companyId, supportCase.Id, cancellationToken);
     }
 
-    public Task<SupportCaseDetailResponse?> ChangeStatusAsync(Guid companyId, Guid userId, Guid supportCaseId, ChangeSupportStatusRequest request, CancellationToken cancellationToken) =>
-        MutateCaseAsync(companyId, userId, supportCaseId, "support.case.status_changed", SupportCaseEventTypes.StatusChanged, $"Status changed to {SupportLabels.Status(request.Status)}.", c => c.SetStatus(request.Status), cancellationToken);
+    public Task<SupportCaseDetailResponse?> ChangeStatusAsync(Guid companyId, Guid userId, Guid supportCaseId, ChangeSupportStatusRequest request, CancellationToken cancellationToken)
+    {
+        var normalized = SupportCaseStatuses.Normalize(request.Status);
+        if (normalized is SupportCaseStatuses.Resolved or SupportCaseStatuses.Closed or SupportCaseStatuses.Reopened)
+        {
+            throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.Status)] = ["Use the resolve, close, or reopen action so the required reason is recorded."] });
+        }
 
-    public Task<SupportCaseDetailResponse?> ChangePriorityAsync(Guid companyId, Guid userId, Guid supportCaseId, ChangeSupportPriorityRequest request, CancellationToken cancellationToken) =>
-        MutateCaseAsync(companyId, userId, supportCaseId, "support.case.priority_changed", SupportCaseEventTypes.PriorityChanged, $"Priority changed to {SupportLabels.Priority(request.Priority)}.", c => c.SetPriority(request.Priority), cancellationToken);
+        return MutateCaseAsync(companyId, userId, supportCaseId, "support.case.status_changed", SupportCaseEventTypes.StatusChanged, request.Note ?? $"Status changed to {SupportLabels.Status(normalized)}.", c => c.SetStatus(normalized), cancellationToken);
+    }
 
-    public Task<SupportCaseDetailResponse?> ChangeCategoryAsync(Guid companyId, Guid userId, Guid supportCaseId, ChangeSupportCategoryRequest request, CancellationToken cancellationToken) =>
-        MutateCaseAsync(companyId, userId, supportCaseId, "support.case.category_changed", SupportCaseEventTypes.Triaged, $"Category changed to {SupportLabels.Category(request.Category)}.", c => c.SetCategory(request.Category), cancellationToken);
+    public async Task<SupportCaseDetailResponse?> ChangePriorityAsync(Guid companyId, Guid userId, Guid supportCaseId, ChangeSupportPriorityRequest request, CancellationToken cancellationToken)
+    {
+        var result = await MutateCaseAsync(companyId, userId, supportCaseId, "support.case.priority_changed", SupportCaseEventTypes.PriorityChanged, $"Priority changed to {SupportLabels.Priority(request.Priority)}.", c => c.SetPriority(request.Priority), cancellationToken);
+        return result is null ? null : await RecalculateSlaAsync(companyId, supportCaseId, cancellationToken);
+    }
+
+    public async Task<SupportCaseDetailResponse?> ChangeCategoryAsync(Guid companyId, Guid userId, Guid supportCaseId, ChangeSupportCategoryRequest request, CancellationToken cancellationToken)
+    {
+        var result = await MutateCaseAsync(companyId, userId, supportCaseId, "support.case.category_changed", SupportCaseEventTypes.Triaged, $"Category changed to {SupportLabels.Category(request.Category)}.", c => c.SetCategory(request.Category), cancellationToken);
+        return result is null ? null : await RecalculateSlaAsync(companyId, supportCaseId, cancellationToken);
+    }
 
     public async Task<SupportCaseDetailResponse?> AssignAsync(Guid companyId, Guid userId, Guid supportCaseId, AssignSupportCaseRequest request, CancellationToken cancellationToken)
     {
         var supportCase = await LoadCaseAsync(companyId, supportCaseId, cancellationToken);
         if (supportCase is null) return null;
-        if (request.AssignedAgentId is null && request.AssignedUserId is null)
+        if (supportCase.Status is SupportCaseStatuses.Resolved or SupportCaseStatuses.Closed)
         {
-            throw new SupportValidationException(new Dictionary<string, string[]> { ["assigned"] = ["Assign an agent or a user."] });
+            throw new InvalidOperationException("This case is already resolved or closed.");
+        }
+        if (request.AssignedAgentId.HasValue && request.AssignedUserId.HasValue)
+        {
+            throw new SupportValidationException(new Dictionary<string, string[]> { ["assigned"] = ["Assign either an agent or a person, not both."] });
+        }
+
+        if (request.AssignedAgentId is Guid agentId)
+        {
+            var validAgent = await _dbContext.Agents.AsNoTracking().AnyAsync(x =>
+                x.CompanyId == companyId &&
+                x.Id == agentId &&
+                x.Department == "Support" &&
+                x.Status != AgentStatus.Paused &&
+                x.Status != AgentStatus.Archived,
+                cancellationToken);
+            if (!validAgent)
+            {
+                throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.AssignedAgentId)] = ["Select an available support agent."] });
+            }
+        }
+
+        if (request.AssignedUserId is Guid assignedUserId)
+        {
+            var validUser = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(x =>
+                x.CompanyId == companyId && x.UserId == assignedUserId && x.Status == CompanyMembershipStatus.Active,
+                cancellationToken);
+            if (!validUser)
+            {
+                throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.AssignedUserId)] = ["Select an active company member."] });
+            }
         }
 
         supportCase.Assign(request.AssignedAgentId, request.AssignedUserId);
         supportCase.Assignments.Add(new SupportCaseAssignment(Guid.NewGuid(), companyId, supportCase.Id, request.AssignedAgentId, request.AssignedUserId, userId, DateTime.UtcNow, request.Reason));
-        supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Assigned, "Support case assigned.", AuditActorTypes.Human, userId, DateTime.UtcNow));
-        await AddAuditAsync(companyId, userId, "support.case.assigned", supportCase.Id, AuditEventOutcomes.Succeeded, "Support case assigned.", cancellationToken);
+        var summary = request.AssignedAgentId is null && request.AssignedUserId is null ? "Support case unassigned." : "Support case assigned.";
+        supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Assigned, summary, AuditActorTypes.Human, userId, DateTime.UtcNow));
+        await AddAuditAsync(companyId, userId, "support.case.assigned", supportCase.Id, AuditEventOutcomes.Succeeded, summary, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return await GetCaseAsync(companyId, supportCase.Id, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<SupportAssigneeOptionDto>> ListAssigneesAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var agentRows = await _dbContext.Agents.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Department == "Support")
+            .Select(x => new
+            {
+                x.Id,
+                x.DisplayName,
+                x.RoleName,
+                x.Status,
+                OpenCaseCount = _dbContext.SupportCases.Count(c => c.CompanyId == companyId && c.AssignedAgentId == x.Id && c.Status != SupportCaseStatuses.Resolved && c.Status != SupportCaseStatuses.Closed)
+            })
+            .ToListAsync(cancellationToken);
+        var people = await _dbContext.CompanyMemberships.AsNoTracking()
+            .Include(x => x.User)
+            .Where(x => x.CompanyId == companyId && x.Status == CompanyMembershipStatus.Active && x.UserId != null && x.User != null)
+            .Select(x => new
+            {
+                Id = x.UserId!.Value,
+                x.User!.DisplayName,
+                Role = x.Role,
+                OpenCaseCount = _dbContext.SupportCases.Count(c => c.CompanyId == companyId && c.AssignedUserId == x.UserId && c.Status != SupportCaseStatuses.Resolved && c.Status != SupportCaseStatuses.Closed)
+            })
+            .ToListAsync(cancellationToken);
+
+        return agentRows.Select(x => new SupportAssigneeOptionDto(
+                x.Id,
+                "agent",
+                x.DisplayName,
+                x.RoleName,
+                x.Status is not AgentStatus.Paused and not AgentStatus.Archived,
+                x.OpenCaseCount))
+            .Concat(people.Select(x => new SupportAssigneeOptionDto(x.Id, "user", x.DisplayName, CompanyMembershipRoles.ToDisplayName(x.Role), true, x.OpenCaseCount)))
+            .OrderByDescending(x => x.Type == "agent")
+            .ThenBy(x => x.DisplayName)
+            .ToList();
     }
 
     public async Task<SupportCaseDetailResponse?> ResolveAsync(Guid companyId, Guid userId, Guid supportCaseId, ResolveSupportCaseRequest request, CancellationToken cancellationToken)
     {
         SupportValidationException.ThrowIfBlank(request.Summary, nameof(request.Summary));
+        SupportValidationException.ThrowIfBlank(request.Outcome, nameof(request.Outcome));
         var supportCase = await LoadCaseAsync(companyId, supportCaseId, cancellationToken);
         if (supportCase is null) return null;
-        var resolution = new SupportCaseResolution(Guid.NewGuid(), companyId, supportCase.Id, request.Summary, string.IsNullOrWhiteSpace(request.Outcome) ? "Resolved" : request.Outcome, userId, DateTime.UtcNow);
+        if (supportCase.Status is SupportCaseStatuses.Resolved or SupportCaseStatuses.Closed)
+        {
+            throw new InvalidOperationException("This case is already resolved or closed.");
+        }
+        var links = request.RelevantEntityIds?.Where(x => x != Guid.Empty).Distinct().ToArray() ?? [];
+        foreach (var linkedId in links)
+        {
+            var owned = await _dbContext.FinanceInvoices.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.Id == linkedId, cancellationToken) ||
+                        await _dbContext.Payments.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.Id == linkedId, cancellationToken) ||
+                        await _dbContext.CompanyKnowledgeDocuments.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.Id == linkedId, cancellationToken);
+            if (!owned) throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.RelevantEntityIds)] = ["Every linked record must exist in this company."] });
+        }
+        var resolution = new SupportCaseResolution(Guid.NewGuid(), companyId, supportCase.Id, request.Summary, request.Outcome, userId, DateTime.UtcNow, request.RootCauseCategory, request.ActionTaken, request.ReusableAnswer, request.CustomerPreferenceObservations, links.Length == 0 ? null : System.Text.Json.JsonSerializer.Serialize(links), request.ReuseEligible);
         _dbContext.SupportCaseResolutions.Add(resolution);
         supportCase.SetStatus(SupportCaseStatuses.Resolved);
         supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Resolved, "Support case resolved.", AuditActorTypes.Human, userId, DateTime.UtcNow));
         await AddAuditAsync(companyId, userId, "support.case.resolved", supportCase.Id, AuditEventOutcomes.Succeeded, request.Summary, cancellationToken);
+        var eventKey = $"support-case-resolved:v1:{supportCase.Id:N}";
+        var job = await _dbContext.SupportMemoryUpdateJobs.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.EventKey == eventKey, cancellationToken);
+        if (job is null)
+        {
+            job = new SupportMemoryUpdateJob(Guid.NewGuid(), companyId, supportCase.Id, eventKey);
+            _dbContext.SupportMemoryUpdateJobs.Add(job);
+            _outbox?.Enqueue(companyId, CompanyOutboxTopics.SupportMemoryUpdateRequested, new SupportMemoryUpdateRequestedMessage(companyId, supportCase.Id, job.Id, eventKey, null), idempotencyKey: eventKey, causationId: supportCase.Id.ToString("N"));
+        }
         await _dbContext.SaveChangesAsync(cancellationToken);
         return await GetCaseAsync(companyId, supportCase.Id, cancellationToken);
     }
 
-    public Task<SupportCaseDetailResponse?> ReopenAsync(Guid companyId, Guid userId, Guid supportCaseId, SupportActionRequest request, CancellationToken cancellationToken) =>
-        MutateCaseAsync(companyId, userId, supportCaseId, "support.case.reopened", SupportCaseEventTypes.Reopened, request.Note ?? "Support case reopened.", c => c.SetStatus(SupportCaseStatuses.Reopened), cancellationToken);
-
-    public Task<SupportCaseDetailResponse?> CloseAsync(Guid companyId, Guid userId, Guid supportCaseId, SupportActionRequest request, CancellationToken cancellationToken) =>
-        MutateCaseAsync(companyId, userId, supportCaseId, "support.case.closed", SupportCaseEventTypes.Closed, request.Note ?? "Support case closed.", c => c.SetStatus(SupportCaseStatuses.Closed), cancellationToken);
-
-    private async Task UpdateMemoryFromResolvedCaseAsync(Guid companyId, SupportCase supportCase, ResolveSupportCaseRequest request, CancellationToken cancellationToken)
+    public async Task<SupportCaseDetailResponse?> ReopenAsync(Guid companyId, Guid userId, Guid supportCaseId, SupportActionRequest request, CancellationToken cancellationToken)
     {
-        if (supportCase.ContactId is not Guid contactId)
+        SupportValidationException.ThrowIfBlank(request.Note, nameof(request.Note));
+        var supportCase = await LoadCaseAsync(companyId, supportCaseId, cancellationToken);
+        if (supportCase is null) return null;
+        if (supportCase.Status is not (SupportCaseStatuses.Resolved or SupportCaseStatuses.Closed))
         {
-            return;
+            throw new InvalidOperationException("Only resolved or closed cases can be reopened.");
         }
 
-        var profile = await _dbContext.CustomerMemoryProfiles
-            .Include(x => x.Preferences)
-            .FirstOrDefaultAsync(x => x.CompanyId == companyId && x.ContactId == contactId, cancellationToken);
-        if (profile is null)
-        {
-            return;
-        }
-
-        var value = $"Resolved support case {supportCase.CaseNumber}: {request.Summary}. Outcome: {(string.IsNullOrWhiteSpace(request.Outcome) ? "Resolved" : request.Outcome)}";
-        if (profile.Preferences.Any(x => x.PreferenceKey == "support_context" && x.PreferenceValue == value))
-        {
-            return;
-        }
-
-        _dbContext.CustomerMemoryProfilePreferences.Add(new CustomerMemoryProfilePreference(
-            Guid.NewGuid(),
-            companyId,
-            profile.Id,
-            "support_context",
-            value,
-            $"Support case {supportCase.CaseNumber}",
-            0.85m,
-            DateTime.UtcNow));
-        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.System, null, "support.memory.updated", "support_case", supportCase.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Customer support memory updated from resolved case outcome.", ["support", "memory"]), cancellationToken);
+        supportCase.SetStatus(SupportCaseStatuses.Reopened);
+        supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Reopened, request.Note!, AuditActorTypes.Human, userId, DateTime.UtcNow));
+        await AddAuditAsync(companyId, userId, "support.case.reopened", supportCase.Id, AuditEventOutcomes.Succeeded, request.Note!, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return await GetCaseAsync(companyId, supportCase.Id, cancellationToken);
     }
+
+    public async Task<SupportCaseDetailResponse?> CloseAsync(Guid companyId, Guid userId, Guid supportCaseId, SupportActionRequest request, CancellationToken cancellationToken)
+    {
+        SupportValidationException.ThrowIfBlank(request.Note, nameof(request.Note));
+        var supportCase = await LoadCaseAsync(companyId, supportCaseId, cancellationToken);
+        if (supportCase is null) return null;
+        if (supportCase.Status != SupportCaseStatuses.Resolved)
+        {
+            throw new InvalidOperationException("Resolve this case before closing it.");
+        }
+
+        supportCase.SetStatus(SupportCaseStatuses.Closed);
+        supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), companyId, supportCase.Id, SupportCaseEventTypes.Closed, request.Note!, AuditActorTypes.Human, userId, DateTime.UtcNow));
+        await AddAuditAsync(companyId, userId, "support.case.closed", supportCase.Id, AuditEventOutcomes.Succeeded, request.Note!, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return await GetCaseAsync(companyId, supportCase.Id, cancellationToken);
+    }
+
     private async Task<SupportCaseDetailResponse?> MutateCaseAsync(Guid companyId, Guid userId, Guid supportCaseId, string auditAction, string eventType, string summary, Action<SupportCase> mutation, CancellationToken cancellationToken)
     {
         var supportCase = await LoadCaseAsync(companyId, supportCaseId, cancellationToken);
@@ -198,12 +308,35 @@ public sealed class SupportCaseService : ISupportCaseService
         if (filter.SlaRisk is bool slaRisk) query = query.Where(x => x.IsSlaRisk == slaRisk || x.IsSlaBreached == slaRisk);
         if (filter.CreatedFromUtc is DateTime from) query = query.Where(x => x.CreatedUtc >= from);
         if (filter.CreatedToUtc is DateTime to) query = query.Where(x => x.CreatedUtc <= to);
+        if (filter.OpenOnly) query = query.Where(x => x.Status != SupportCaseStatuses.Resolved && x.Status != SupportCaseStatuses.Closed);
+        if (filter.ResolvedToday)
+        {
+            var today = DateTime.UtcNow.Date;
+            query = query.Where(x => x.ResolvedUtc >= today);
+        }
+        if (filter.Unassigned is true) query = query.Where(x => x.AssignedAgentId == null && x.AssignedUserId == null);
+        if (filter.SlaBreached is bool breached) query = query.Where(x => x.IsSlaBreached == breached);
+        if (filter.WaitingTooLong) query = query.Where(x => (x.Status == SupportCaseStatuses.WaitingForCustomer || x.Status == SupportCaseStatuses.WaitingInternal) && x.UpdatedUtc < DateTime.UtcNow.AddHours(-24));
+        if (filter.FailedReply) query = query.Where(x => x.ReplyDrafts.Any(d => d.SendFailureSummary != null));
         if (!string.IsNullOrWhiteSpace(filter.Search))
         {
             var search = filter.Search.Trim();
             query = query.Where(x => x.Subject.Contains(search) || x.CaseNumber.Contains(search) || x.Summary.Contains(search));
         }
         return query;
+    }
+
+    private static IOrderedQueryable<SupportCase> ApplySorting(IQueryable<SupportCase> query, SupportCaseListQuery filter)
+    {
+        var descending = !string.Equals(filter.SortDirection, "asc", StringComparison.OrdinalIgnoreCase);
+        return filter.SortBy?.Trim().ToLowerInvariant() switch
+        {
+            "created" => descending ? query.OrderByDescending(x => x.CreatedUtc) : query.OrderBy(x => x.CreatedUtc),
+            "updated" => descending ? query.OrderByDescending(x => x.UpdatedUtc) : query.OrderBy(x => x.UpdatedUtc),
+            "due" => descending ? query.OrderByDescending(x => x.ResolutionDueUtc) : query.OrderBy(x => x.ResolutionDueUtc),
+            "priority" => descending ? query.OrderByDescending(x => x.Priority) : query.OrderBy(x => x.Priority),
+            _ => query.OrderByDescending(x => x.IsSlaBreached).ThenByDescending(x => x.IsSlaRisk).ThenByDescending(x => x.UpdatedUtc)
+        };
     }
 
     private async Task<SupportCase?> LoadCaseAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken) =>
@@ -214,6 +347,22 @@ public sealed class SupportCaseService : ISupportCaseService
             .Include(x => x.RefundRequests)
             .Include(x => x.KnowledgeGaps)
             .FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == supportCaseId, cancellationToken);
+
+    private async Task ApplySlaAsync(Guid companyId, SupportCase supportCase, DateTime startUtc, CancellationToken cancellationToken)
+    {
+        if (_slaPolicies is null) return;
+        var resolved = await _slaPolicies.ResolveAsync(companyId, supportCase.Category, supportCase.Priority, null, startUtc, cancellationToken);
+        supportCase.SetSla(resolved.FirstResponseDueUtc, resolved.ResolutionDueUtc);
+    }
+
+    private async Task<SupportCaseDetailResponse?> RecalculateSlaAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken)
+    {
+        var supportCase = await LoadCaseAsync(companyId, supportCaseId, cancellationToken);
+        if (supportCase is null) return null;
+        await ApplySlaAsync(companyId, supportCase, supportCase.CreatedUtc, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return await GetCaseAsync(companyId, supportCaseId, cancellationToken);
+    }
 
     private async Task<string> NextCaseNumberAsync(Guid companyId, CancellationToken cancellationToken)
     {
@@ -282,6 +431,7 @@ public sealed class SupportCaseService : ISupportCaseService
             supportCase.IsSlaBreached,
             supportCase.IsChurnRisk,
             supportCase.IsVipRisk,
+            ResolveCaseAllowedActions(supportCase),
             supportCase.CreatedUtc,
             supportCase.UpdatedUtc,
             supportCase.Messages.OrderBy(x => x.OccurredUtc).Select(MapMessage).ToList(),
@@ -290,6 +440,27 @@ public sealed class SupportCaseService : ISupportCaseService
             supportCase.RefundRequests.OrderByDescending(x => x.CreatedUtc).Select(MapRefund).ToList(),
             supportCase.KnowledgeGaps.OrderByDescending(x => x.CreatedUtc).Select(MapGap).ToList(),
             context);
+    }
+
+    private static IReadOnlyList<string> ResolveCaseAllowedActions(SupportCase supportCase)
+    {
+        var actions = new List<string> { "assign", "change_priority", "change_category" };
+        if (supportCase.Status is SupportCaseStatuses.Resolved or SupportCaseStatuses.Closed)
+        {
+            actions.Add("reopen");
+            if (supportCase.Status == SupportCaseStatuses.Resolved)
+            {
+                actions.Add("close");
+            }
+            return actions;
+        }
+
+        actions.AddRange(["resolve", "wait_for_customer", "wait_internally"]);
+        if (supportCase.Status != SupportCaseStatuses.Escalated)
+        {
+            actions.Add("escalate");
+        }
+        return actions;
     }
 
     internal static SupportCaseListItem MapListItem(SupportCase supportCase, Contact? contact, CustomerCompany? customer) =>
@@ -325,13 +496,42 @@ public sealed class SupportCaseService : ISupportCaseService
         new(evt.Id, evt.EventType, SupportLabels.Event(evt.EventType), evt.Summary, evt.ActorType, evt.ActorId, evt.OccurredUtc);
 
     internal static SupportReplyDraftDto MapDraft(SupportReplyDraft draft) =>
-        new(draft.Id, draft.SupportCaseId, draft.DraftBody, draft.Tone, draft.Status, SupportLabels.DraftStatus(draft.Status), draft.Confidence, draft.Answerability, draft.RationaleSummary, draft.SourceReferencesJson, draft.CreatedByAgentId, draft.CreatedByUserId, draft.ApprovedByUserId, draft.ApprovedUtc, draft.SentUtc, draft.SendFailureSummary, draft.CreatedUtc, draft.UpdatedUtc);
+        new(draft.Id, draft.SupportCaseId, draft.DraftBody, draft.Tone, draft.Status, SupportLabels.DraftStatus(draft.Status), draft.Confidence, draft.Answerability, draft.RationaleSummary, draft.SourceReferencesJson, draft.CreatedByAgentId, draft.CreatedByUserId, draft.ApprovedByUserId, draft.ApprovedUtc, draft.SentUtc, draft.SendFailureSummary, draft.CreatedUtc, draft.UpdatedUtc, draft.SafetyDecision, draft.SafetyReasonCodesJson, draft.SafetyPolicyVersion, draft.SafetyEvaluatedUtc);
 
     internal static SupportRefundRequestDto MapRefund(SupportRefundRequest refund) =>
-        new(refund.Id, refund.SupportCaseId, refund.Amount, refund.Currency, refund.ReasonCode, refund.Explanation, refund.InvoiceId, refund.PaymentId, refund.ApprovalRequestId, refund.FinanceActionReferenceId, refund.Status, refund.CreatedUtc, refund.UpdatedUtc);
+        new(
+            refund.Id,
+            refund.SupportCaseId,
+            refund.Amount,
+            refund.Currency,
+            refund.ReasonCode,
+            refund.Explanation,
+            refund.InvoiceId,
+            refund.PaymentId,
+            refund.ApprovalRequestId,
+            refund.FinanceActionReferenceId,
+            refund.ProviderWriteRequestId,
+            refund.ProviderApprovalRequestId,
+            refund.Status,
+            SupportLabels.Status(refund.Status),
+            refund.LastFailureSummary,
+            refund.ExecutionRequestedUtc,
+            refund.CompletedUtc,
+            ResolveRefundAllowedActions(refund),
+            refund.CreatedUtc,
+            refund.UpdatedUtc);
+
+    private static IReadOnlyList<string> ResolveRefundAllowedActions(SupportRefundRequest refund) => refund.Status switch
+    {
+        SupportRefundRequestStatuses.Queued => ["request_execution", "cancel"],
+        SupportRefundRequestStatuses.Failed => ["retry", "reconcile"],
+        SupportRefundRequestStatuses.ReconciliationRequired => ["reconcile"],
+        SupportRefundRequestStatuses.PendingApproval => ["cancel"],
+        _ => []
+    };
 
     internal static SupportKnowledgeGapDto MapGap(SupportKnowledgeGap gap) =>
-        new(gap.Id, gap.SupportCaseId, gap.SupportReplyDraftId, gap.Category, SupportLabels.Category(gap.Category), gap.QuestionSummary, gap.MissingInformationSummary, gap.RetrievalSourceSummary, gap.FrequencyCount, gap.Status, SupportLabels.KnowledgeGapStatus(gap.Status), gap.CreatedUtc, gap.UpdatedUtc, gap.LinkedTaskId);
+        new(gap.Id, gap.SupportCaseId, gap.SupportReplyDraftId, gap.Category, SupportLabels.Category(gap.Category), gap.QuestionSummary, gap.MissingInformationSummary, gap.RetrievalSourceSummary, gap.FrequencyCount, gap.Status, SupportLabels.KnowledgeGapStatus(gap.Status), gap.CreatedUtc, gap.UpdatedUtc, gap.LinkedTaskId, gap.LinkedKnowledgeDocumentId);
 
     internal static IReadOnlyList<SupportContextReference> BuildReferences(SupportCase supportCase, Contact? contact, CustomerCompany? customer)
     {
@@ -419,11 +619,25 @@ public sealed class SupportMailboxRoutingService : ISupportMailboxRoutingService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ISupportMailboxIngestionService _ingestion;
+    private readonly ISupportAgentOrchestrationService? _agentOrchestration;
+    private readonly ILogger<SupportMailboxRoutingService>? _logger;
 
     public SupportMailboxRoutingService(VirtualCompanyDbContext dbContext, ISupportMailboxIngestionService ingestion)
     {
         _dbContext = dbContext;
         _ingestion = ingestion;
+    }
+
+    public SupportMailboxRoutingService(
+        VirtualCompanyDbContext dbContext,
+        ISupportMailboxIngestionService ingestion,
+        ISupportAgentOrchestrationService agentOrchestration,
+        ILogger<SupportMailboxRoutingService> logger)
+    {
+        _dbContext = dbContext;
+        _ingestion = ingestion;
+        _agentOrchestration = agentOrchestration;
+        _logger = logger;
     }
 
     public async Task<SupportMailboxRoutingResult> RouteUnlinkedInboundMessagesAsync(DateTime sinceUtc, int batchSize, CancellationToken cancellationToken)
@@ -438,11 +652,12 @@ public sealed class SupportMailboxRoutingService : ISupportMailboxRoutingService
         var duplicates = 0;
         foreach (var snapshot in snapshots)
         {
-            var alreadyRouted = await _dbContext.SupportMessages.IgnoreQueryFilters().AsNoTracking()
-                .AnyAsync(x => x.CompanyId == snapshot.CompanyId && x.EmailMessageSnapshotId == snapshot.Id, cancellationToken);
-            if (alreadyRouted)
+            var existingSupportMessage = await _dbContext.SupportMessages.IgnoreQueryFilters().AsNoTracking()
+                .FirstOrDefaultAsync(x => x.CompanyId == snapshot.CompanyId && x.EmailMessageSnapshotId == snapshot.Id, cancellationToken);
+            if (existingSupportMessage is not null)
             {
                 duplicates++;
+                await TryRunAgentAsync(snapshot.CompanyId, existingSupportMessage.SupportCaseId, existingSupportMessage.Id, cancellationToken);
                 continue;
             }
 
@@ -462,9 +677,35 @@ public sealed class SupportMailboxRoutingService : ISupportMailboxRoutingService
             {
                 created++;
             }
+
+            await TryRunAgentAsync(snapshot.CompanyId, result.SupportCaseId, result.SupportMessageId, cancellationToken);
         }
 
         return new SupportMailboxRoutingResult(snapshots.Count, routed, created, duplicates);
+    }
+
+    private async Task TryRunAgentAsync(Guid companyId, Guid supportCaseId, Guid supportMessageId, CancellationToken cancellationToken)
+    {
+        if (_agentOrchestration is null) return;
+        try
+        {
+            await _agentOrchestration.RunAsync(
+                companyId,
+                Guid.Empty,
+                supportCaseId,
+                new RunSupportAgentRequest($"support-inbound:{supportMessageId:N}"),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Message ingestion remains durable; the next polling pass retries the same idempotent execution.
+            _logger?.LogError(
+                ex,
+                "Support agent drafting failed after mailbox routing. CompanyId: {CompanyId}, SupportCaseId: {SupportCaseId}, SupportMessageId: {SupportMessageId}.",
+                companyId,
+                supportCaseId,
+                supportMessageId);
+        }
     }
 }
 
@@ -593,8 +834,20 @@ public sealed class SupportTriageService : ISupportTriageService
 public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextProvider
 {
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly ICompanyKnowledgeSearchService? _knowledgeSearch;
 
-    public SupportKnowledgeContextProvider(VirtualCompanyDbContext dbContext) => _dbContext = dbContext;
+    public SupportKnowledgeContextProvider(VirtualCompanyDbContext dbContext)
+    {
+        _dbContext = dbContext;
+    }
+
+    public SupportKnowledgeContextProvider(
+        VirtualCompanyDbContext dbContext,
+        ICompanyKnowledgeSearchService knowledgeSearch)
+    {
+        _dbContext = dbContext;
+        _knowledgeSearch = knowledgeSearch;
+    }
 
     public async Task<SupportKnowledgeContext> RetrieveAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken)
     {
@@ -612,18 +865,31 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
             new("support_case", $"Support case {supportCase.CaseNumber}", supportCase.Id, TrimForExcerpt($"{supportCase.Subject}. {supportCase.Summary} {supportCase.Description}"), 1m)
         };
 
-        var chunks = await _dbContext.CompanyKnowledgeChunks.AsNoTracking()
-            .Include(x => x.Document)
-            .Where(x => x.CompanyId == companyId && x.IsActive)
-            .OrderByDescending(x => x.CreatedUtc)
-            .Take(200)
-            .ToListAsync(cancellationToken);
-        sources.AddRange(chunks
-            .Select(chunk => new { Chunk = chunk, Score = ScoreText(chunk.Content + " " + chunk.Document.Title, queryTerms) })
-            .Where(x => x.Score > 0)
-            .OrderByDescending(x => x.Score)
-            .Take(4)
-            .Select(x => new SupportKnowledgeSourceReference("knowledge_chunk", x.Chunk.Document.Title, x.Chunk.Id, TrimForExcerpt(x.Chunk.Content), Math.Min(0.95m, 0.45m + x.Score / 10m))));
+        var queryText = string.Join(' ', queryTerms);
+        if (!string.IsNullOrWhiteSpace(queryText))
+        {
+            var searchResults = _knowledgeSearch is null
+                ? await SearchIndexedKnowledgeForTestsAsync(companyId, queryTerms, cancellationToken)
+                : await _knowledgeSearch.SearchAsync(
+                    new CompanyKnowledgeSemanticSearchQuery(
+                        companyId,
+                        queryText,
+                        6,
+                        new CompanyKnowledgeAccessContext(companyId, DataScopes: ["support", "knowledge"])),
+                    cancellationToken);
+            sources.AddRange(searchResults
+                .Where(x => x.Score >= 0.25d)
+                .Take(4)
+                .Select(x => new SupportKnowledgeSourceReference(
+                    "knowledge_chunk",
+                    x.DocumentTitle,
+                    x.ChunkId,
+                    TrimForExcerpt(x.Content),
+                    Math.Min(0.98m, Math.Max(0.55m, Convert.ToDecimal(x.Score))),
+                    true,
+                    x.DocumentId,
+                    x.SourceReference)));
+        }
 
         var similarCases = await _dbContext.SupportCases.AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.Id != supportCase.Id && x.Category == supportCase.Category && (x.Status == SupportCaseStatuses.Resolved || x.Status == SupportCaseStatuses.Closed))
@@ -658,11 +924,43 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
             sources.Add(new SupportKnowledgeSourceReference("customer_memory", "Customer support memory", supportCase.ContactId, TrimForExcerpt(memory), 0.7m));
         }
 
-        var confidence = sources.Count <= 1 ? 0.45m : Math.Min(0.92m, sources.Average(x => x.Relevance));
-        var rationale = sources.Count <= 1
-            ? "No policy, memory, or similar-case knowledge was found beyond the support case itself."
+        var trustedSources = sources.Where(x => x.IsTrusted).ToList();
+        var confidence = trustedSources.Count == 0 ? 0.35m : Math.Min(0.92m, trustedSources.Average(x => x.Relevance));
+        var rationale = trustedSources.Count == 0
+            ? "No processed, indexed, and accessible company knowledge was found for this question."
             : "Retrieved support case context, customer memory, similar outcomes, and relevant knowledge snippets for grounded drafting.";
         return new SupportKnowledgeContext(supportCase.Id, sources, memories, similarCases, confidence, rationale);
+    }
+
+    private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchIndexedKnowledgeForTestsAsync(
+        Guid companyId,
+        IReadOnlyCollection<string> queryTerms,
+        CancellationToken cancellationToken)
+    {
+        var chunks = await _dbContext.CompanyKnowledgeChunks.AsNoTracking()
+            .Include(x => x.Document)
+            .Where(x => x.CompanyId == companyId && x.IsActive &&
+                x.Document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed &&
+                x.Document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed)
+            .Take(200)
+            .ToListAsync(cancellationToken);
+        return chunks
+            .Select(x => new { Chunk = x, Score = queryTerms.Count(term => (x.Content + " " + x.Document.Title).Contains(term, StringComparison.OrdinalIgnoreCase)) })
+            .Where(x => x.Score > 0)
+            .OrderByDescending(x => x.Score)
+            .Take(6)
+            .Select(x => new CompanyKnowledgeSearchResultDto(
+                x.Chunk.Id,
+                x.Chunk.Content,
+                Math.Min(0.95d, 0.45d + x.Score / 10d),
+                x.Chunk.DocumentId,
+                x.Chunk.Document.Title,
+                x.Chunk.ChunkIndex,
+                x.Chunk.SourceReference,
+                new Dictionary<string, JsonNode?>(),
+                new CompanyKnowledgeSourceReferenceDto(x.Chunk.DocumentId, x.Chunk.Document.Title, x.Chunk.Document.DocumentType.ToStorageValue(), x.Chunk.Document.SourceType.ToStorageValue(), null, x.Chunk.Id, x.Chunk.ChunkIndex, x.Chunk.SourceReference),
+                new CompanyKnowledgeSourceDocumentDto(x.Chunk.DocumentId, x.Chunk.Document.Title, x.Chunk.Document.DocumentType.ToStorageValue(), x.Chunk.Document.SourceType.ToStorageValue(), null)))
+            .ToList();
     }
 
     private static string[] BuildQueryTerms(SupportCase supportCase)
@@ -674,13 +972,6 @@ public sealed class SupportKnowledgeContextProvider : ISupportKnowledgeContextPr
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(24)
             .ToArray();
-    }
-
-    private static int ScoreText(string text, IReadOnlyCollection<string> terms)
-    {
-        if (terms.Count == 0) return 0;
-        var lowered = text.ToLowerInvariant();
-        return terms.Count(lowered.Contains);
     }
 
     private static string TrimForExcerpt(string? value)
@@ -696,19 +987,22 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
     private readonly ISupportOutboundEmailSender _outboundEmailSender;
     private readonly ISupportKnowledgeContextProvider _knowledgeContextProvider;
     private readonly ISupportKnowledgeGapService _knowledgeGaps;
+    private readonly ISupportReplySafetyPolicy _safetyPolicy;
 
     public SupportReplyDraftService(
         VirtualCompanyDbContext dbContext,
         IAuditEventWriter audit,
         ISupportOutboundEmailSender outboundEmailSender,
         ISupportKnowledgeContextProvider knowledgeContextProvider,
-        ISupportKnowledgeGapService knowledgeGaps)
+        ISupportKnowledgeGapService knowledgeGaps,
+        ISupportReplySafetyPolicy? safetyPolicy = null)
     {
         _dbContext = dbContext;
         _audit = audit;
         _outboundEmailSender = outboundEmailSender;
         _knowledgeContextProvider = knowledgeContextProvider;
         _knowledgeGaps = knowledgeGaps;
+        _safetyPolicy = safetyPolicy ?? new DeterministicSupportReplySafetyPolicy(dbContext);
     }
 
     public async Task<SupportReplyDraftDto?> GenerateDraftAsync(Guid companyId, Guid userId, Guid supportCaseId, GenerateSupportReplyDraftRequest request, CancellationToken cancellationToken)
@@ -749,7 +1043,7 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
     private static decimal ResolveAnswerability(SupportCase supportCase, SupportKnowledgeContext context, bool forceReview)
     {
         if (forceReview) return 0.62m;
-        if (!context.HasGrounding) return 0.45m;
+        if (!context.HasTrustedGrounding) return 0.45m;
         if (supportCase.Category is SupportCaseCategories.Refund or SupportCaseCategories.Billing) return Math.Min(0.82m, context.RetrievalConfidence);
         return Math.Min(0.88m, Math.Max(0.72m, context.RetrievalConfidence));
     }
@@ -758,13 +1052,13 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
     {
         var greeting = "Hello";
         var sourceLines = context.Sources
-            .Where(x => !string.IsNullOrWhiteSpace(x.Excerpt) && x.Type != "support_case")
+            .Where(x => x.IsTrusted && !string.IsNullOrWhiteSpace(x.Excerpt))
             .Take(3)
-            .Select(x => $"- {x.Excerpt}")
+            .Select((x, index) => $"[{index + 1}] {x.Excerpt}")
             .ToList();
         var grounding = sourceLines.Count == 0
             ? "I need to verify the right policy or account details before giving a final answer."
-            : "I checked the available support context:\n" + string.Join("\n", sourceLines);
+            : "Based on the company information available to me:\n" + string.Join("\n", sourceLines);
         var nextStep = supportCase.Category switch
         {
             SupportCaseCategories.Refund => "If a refund or credit is needed, I will route it for approval before any financial action is taken.",
@@ -788,7 +1082,10 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
                 ["label"] = source.Label,
                 ["entityId"] = source.EntityId?.ToString("D"),
                 ["excerpt"] = source.Excerpt,
-                ["relevance"] = source.Relevance
+                ["relevance"] = source.Relevance,
+                ["trusted"] = source.IsTrusted,
+                ["documentId"] = source.DocumentId?.ToString("D"),
+                ["sourceReference"] = source.SourceReference
             });
         }
 
@@ -815,6 +1112,15 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
     {
         var draft = await _dbContext.SupportReplyDrafts.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == draftId, cancellationToken);
         if (draft is null) return null;
+        var supportCase = await _dbContext.SupportCases.AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == draft.SupportCaseId, cancellationToken);
+        if (supportCase is null) return null;
+        var safety = await EvaluateAndRecordSafetyAsync(companyId, draft, supportCase.Id, cancellationToken);
+        if (safety.Decision != "allow")
+        {
+            await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.reply.approval_blocked", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Blocked, string.Join(" ", safety.Explanations), ["support", "safety"], Metadata: new Dictionary<string, string?> { ["policyVersion"] = safety.PolicyVersion, ["decision"] = safety.Decision }), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            throw new InvalidOperationException("This reply needs changes before it can be approved: " + string.Join(" ", safety.Explanations));
+        }
         draft.Approve(userId);
         await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.reply.approved", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Approved, request.Note ?? "Support reply approved.", ["support"]), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -837,6 +1143,13 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
         if (draft is null) return null;
         var supportCase = await _dbContext.SupportCases.Include(x => x.Messages).Include(x => x.Events).FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == draft.SupportCaseId, cancellationToken);
         if (supportCase is null) return null;
+        var safety = await EvaluateAndRecordSafetyAsync(companyId, draft, supportCase.Id, cancellationToken);
+        if (safety.Decision != "allow")
+        {
+            await _audit.WriteAsync(new AuditEventWriteRequest(companyId, request.Autonomous ? AuditActorTypes.Agent : AuditActorTypes.Human, request.Autonomous ? null : userId, "support.reply.send_blocked", "support_reply_draft", draft.Id.ToString("D"), AuditEventOutcomes.Blocked, string.Join(" ", safety.Explanations), ["support", "safety"], Metadata: new Dictionary<string, string?> { ["policyVersion"] = safety.PolicyVersion, ["decision"] = safety.Decision }), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            throw new InvalidOperationException("This reply needs changes before it can be sent: " + string.Join(" ", safety.Explanations));
+        }
         var lowRisk = supportCase.Category == SupportCaseCategories.GeneralQuestion ||
             supportCase.Category == SupportCaseCategories.AccountAccess ||
             supportCase.Category == SupportCaseCategories.BugReport;
@@ -907,6 +1220,29 @@ public sealed class SupportReplyDraftService : ISupportReplyDraftService
 
     private static string? FirstNonEmptyOrNull(params string?[] values) =>
         values.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x))?.Trim();
+
+    private async Task<SupportReplySafetyDecision> EvaluateAndRecordSafetyAsync(Guid companyId, SupportReplyDraft draft, Guid supportCaseId, CancellationToken cancellationToken)
+    {
+        var decision = await _safetyPolicy.EvaluateAsync(companyId, supportCaseId, draft.DraftBody, draft.SourceReferencesJson, cancellationToken);
+        var reasonJson = System.Text.Json.JsonSerializer.Serialize(decision.ReasonCodes);
+        draft.RecordSafetyDecision(decision.Decision, reasonJson, decision.PolicyVersion, DateTime.UtcNow);
+        return decision;
+    }
+}
+
+public sealed class DeterministicSupportReplySafetyPolicy : ISupportReplySafetyPolicy
+{
+    public const string Version = SupportReplySafetyRules.PolicyVersion;
+    private readonly VirtualCompanyDbContext _dbContext;
+
+    public DeterministicSupportReplySafetyPolicy(VirtualCompanyDbContext dbContext) => _dbContext = dbContext;
+
+    public async Task<SupportReplySafetyDecision> EvaluateAsync(Guid companyId, Guid supportCaseId, string draftBody, string? sourceReferencesJson, CancellationToken cancellationToken)
+    {
+        var supportCase = await _dbContext.SupportCases.AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == supportCaseId, cancellationToken)
+            ?? throw new InvalidOperationException("Support case was not found for safety evaluation.");
+        return SupportReplySafetyRules.Evaluate(supportCase.Category, draftBody, sourceReferencesJson);
+    }
 }
 
 public sealed class SupportMailboxOutboundEmailSender : ISupportOutboundEmailSender
@@ -1241,6 +1577,89 @@ public sealed class SupportToolActionService : ISupportToolActionService
         bool.TryParse(OptionalPayload(request, key), out var value) && value;
 }
 
+public sealed class SupportAgentOrchestrationService : ISupportAgentOrchestrationService
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+    private readonly ISupportContextResolutionService _context;
+    private readonly ISupportTriageService _triage;
+    private readonly ISupportReplyDraftService _drafts;
+    private readonly ISupportReplySafetyPolicy _safety;
+    private readonly IAuditEventWriter _audit;
+
+    public SupportAgentOrchestrationService(
+        VirtualCompanyDbContext dbContext,
+        ISupportContextResolutionService context,
+        ISupportTriageService triage,
+        ISupportReplyDraftService drafts,
+        ISupportReplySafetyPolicy safety,
+        IAuditEventWriter audit)
+    {
+        _dbContext = dbContext;
+        _context = context;
+        _triage = triage;
+        _drafts = drafts;
+        _safety = safety;
+        _audit = audit;
+    }
+
+    public async Task<SupportAgentExecutionDto?> RunAsync(Guid companyId, Guid userId, Guid supportCaseId, RunSupportAgentRequest request, CancellationToken cancellationToken)
+    {
+        var exists = await _dbContext.SupportCases.AsNoTracking().AnyAsync(x => x.CompanyId == companyId && x.Id == supportCaseId, cancellationToken);
+        if (!exists) return null;
+        var idempotencyKey = string.IsNullOrWhiteSpace(request.IdempotencyKey) ? $"support-agent:{supportCaseId:N}" : request.IdempotencyKey.Trim();
+        var execution = await _dbContext.SupportAgentExecutions.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.IdempotencyKey == idempotencyKey, cancellationToken);
+        if (execution is { Status: "completed" }) return Map(execution);
+
+        var agentId = await _dbContext.Agents.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Department == "Support")
+            .OrderByDescending(x => x.UpdatedUtc)
+            .Select(x => (Guid?)x.Id)
+            .FirstOrDefaultAsync(cancellationToken);
+        if (execution is null)
+        {
+            execution = new SupportAgentExecution(Guid.NewGuid(), companyId, supportCaseId, agentId, idempotencyKey);
+            _dbContext.SupportAgentExecutions.Add(execution);
+        }
+
+        try
+        {
+            execution.MoveTo("context", "Resolved tenant-scoped customer and case context.");
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _context.ResolveAsync(companyId, supportCaseId, cancellationToken);
+
+            execution.MoveTo("triage", "Classified case priority, category, and risk.");
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _triage.TriageAsync(companyId, userId, supportCaseId, cancellationToken);
+
+            execution.MoveTo("draft", "Generated a grounded reply draft for human review.");
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            var draft = await _drafts.GenerateDraftAsync(companyId, userId, supportCaseId, new GenerateSupportReplyDraftRequest("Helpful", request.ForceReview), cancellationToken);
+
+            if (draft is not null)
+            {
+                execution.MoveTo("safety", "Evaluated draft safety policy.");
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await _safety.EvaluateAsync(companyId, supportCaseId, draft.DraftBody, draft.SourceReferencesJson, cancellationToken);
+            }
+
+            execution.Complete(draft?.Id, draft is null ? "Support agent completed without creating a draft." : "Support agent created a policy-evaluated reply draft.");
+            await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Agent, agentId, "support.agent.run_completed", "support_case", supportCaseId.ToString("D"), AuditEventOutcomes.Succeeded, execution.Summary, ["support", "agent"], Metadata: new Dictionary<string, string?> { ["executionId"] = execution.Id.ToString("D") }), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return Map(execution);
+        }
+        catch (Exception ex)
+        {
+            execution.Fail(execution.CurrentStep, "Support agent run stopped before an unsafe follow-up could run.");
+            await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Agent, agentId, "support.agent.run_failed", "support_case", supportCaseId.ToString("D"), AuditEventOutcomes.Failed, execution.FailureSummary, ["support", "agent"], Metadata: new Dictionary<string, string?> { ["executionId"] = execution.Id.ToString("D"), ["exceptionType"] = ex.GetType().Name }), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            throw;
+        }
+    }
+
+    private static SupportAgentExecutionDto Map(SupportAgentExecution execution) =>
+        new(execution.Id, execution.SupportCaseId, execution.AgentId, execution.Status, execution.CurrentStep, execution.CreatedDraftId, execution.Summary, execution.FailureSummary, execution.CreatedUtc, execution.UpdatedUtc, execution.CompletedUtc);
+}
+
 public sealed class SupportRefundWorkflowService : ISupportRefundWorkflowService
 {
     private readonly VirtualCompanyDbContext _dbContext;
@@ -1319,15 +1738,587 @@ public sealed class SupportRefundWorkflowService : ISupportRefundWorkflowService
     }
 }
 
+public sealed class SupportRefundApprovalOutcomeHandler : ISupportRefundApprovalOutcomeHandler
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAuditEventWriter _audit;
+    private readonly ISupportRefundFinanceService _finance;
+
+    public SupportRefundApprovalOutcomeHandler(VirtualCompanyDbContext dbContext, IAuditEventWriter audit, ISupportRefundFinanceService finance)
+    {
+        _dbContext = dbContext;
+        _audit = audit;
+        _finance = finance;
+    }
+
+    public async Task<bool> ProcessAsync(
+        Guid companyId,
+        Guid approvalRequestId,
+        string approvalStatus,
+        Guid? decidedByUserId,
+        string? decisionSummary,
+        CancellationToken cancellationToken)
+    {
+        if (companyId == Guid.Empty || approvalRequestId == Guid.Empty)
+        {
+            throw new ArgumentException("Company and approval identifiers are required.");
+        }
+
+        var refund = await _dbContext.SupportRefundRequests
+            .Include(x => x.SupportCase)
+            .ThenInclude(x => x.Events)
+            .SingleOrDefaultAsync(
+                x => x.CompanyId == companyId && x.ApprovalRequestId == approvalRequestId,
+                cancellationToken);
+        if (refund is null)
+        {
+            return false;
+        }
+
+        if (!refund.ApplyApprovalOutcome(approvalStatus))
+        {
+            return false;
+        }
+
+        var isApproved = string.Equals(refund.Status, SupportRefundRequestStatuses.Approved, StringComparison.OrdinalIgnoreCase);
+        var summary = string.IsNullOrWhiteSpace(decisionSummary)
+            ? isApproved
+                ? "Refund or credit approved and ready for finance validation."
+                : $"Refund or credit approval ended as {SupportLabels.Status(refund.Status).ToLowerInvariant()}."
+            : decisionSummary.Trim();
+        refund.SupportCase.Events.Add(new SupportCaseEvent(
+            Guid.NewGuid(),
+            companyId,
+            refund.SupportCaseId,
+            SupportCaseEventTypes.ApprovalResolved,
+            summary,
+            decidedByUserId.HasValue ? AuditActorTypes.Human : AuditActorTypes.System,
+            decidedByUserId,
+            DateTime.UtcNow));
+
+        if (!isApproved && string.Equals(refund.SupportCase.Status, SupportCaseStatuses.AwaitingApproval, StringComparison.OrdinalIgnoreCase))
+        {
+            refund.SupportCase.SetStatus(SupportCaseStatuses.WaitingInternal);
+        }
+
+        await _audit.WriteAsync(new AuditEventWriteRequest(
+            companyId,
+            decidedByUserId.HasValue ? AuditActorTypes.Human : AuditActorTypes.System,
+            decidedByUserId,
+            "support.refund.approval_resolved",
+            "support_refund_request",
+            refund.Id.ToString("D"),
+            isApproved ? AuditEventOutcomes.Approved : AuditEventOutcomes.Rejected,
+            summary,
+            ["support", "finance", "approvals"],
+            Metadata: new Dictionary<string, string?>
+            {
+                ["approvalRequestId"] = approvalRequestId.ToString("D"),
+                ["refundRequestId"] = refund.Id.ToString("D"),
+                ["status"] = refund.Status
+            }), cancellationToken);
+
+        if (isApproved)
+        {
+            await _finance.CreateApprovedActionAsync(companyId, refund.Id, cancellationToken);
+        }
+
+        return true;
+    }
+}
+
+public sealed class SupportRefundFinanceService : ISupportRefundFinanceService
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAuditEventWriter _audit;
+    private readonly TimeProvider _timeProvider;
+    private readonly IFinanceCustomerInvoiceFortnoxActionService? _customerInvoiceActions;
+
+    public SupportRefundFinanceService(
+        VirtualCompanyDbContext dbContext,
+        IAuditEventWriter audit,
+        TimeProvider timeProvider,
+        IFinanceCustomerInvoiceFortnoxActionService? customerInvoiceActions = null)
+    {
+        _dbContext = dbContext;
+        _audit = audit;
+        _timeProvider = timeProvider;
+        _customerInvoiceActions = customerInvoiceActions;
+    }
+
+    public async Task<SupportRefundFinanceActionResult> CreateApprovedActionAsync(Guid companyId, Guid refundRequestId, CancellationToken cancellationToken)
+    {
+        var refund = await _dbContext.SupportRefundRequests
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == refundRequestId, cancellationToken)
+            ?? throw new KeyNotFoundException("Support refund request was not found.");
+        if (refund.FinanceActionReferenceId is Guid existingActionId)
+        {
+            return new SupportRefundFinanceActionResult(refund.Id, existingActionId, false, 0m, refund.Status, "The finance action already exists.");
+        }
+
+        if (!string.Equals(refund.Status, SupportRefundRequestStatuses.Approved, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("Only approved support refunds can create finance actions.");
+        }
+
+        if (refund.InvoiceId is not Guid invoiceId)
+        {
+            throw new InvalidOperationException("Link a customer invoice before creating the refund or credit action.");
+        }
+
+        var invoice = await _dbContext.FinanceInvoices
+            .Include(x => x.Allocations)
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == invoiceId, cancellationToken)
+            ?? throw new InvalidOperationException("The linked customer invoice was not found.");
+        if (!string.Equals(invoice.DocumentKind, FinanceDocumentKinds.Invoice, StringComparison.OrdinalIgnoreCase) || invoice.Amount <= 0m)
+        {
+            throw new InvalidOperationException("The linked record is not an eligible customer invoice.");
+        }
+
+        if (!string.Equals(invoice.Currency, refund.Currency, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException("The refund currency must match the customer invoice currency.");
+        }
+
+        if (refund.PaymentId is Guid paymentId)
+        {
+            var paymentMatches = await _dbContext.Payments.AnyAsync(x =>
+                x.CompanyId == companyId && x.Id == paymentId && x.Currency == refund.Currency,
+                cancellationToken);
+            if (!paymentMatches)
+            {
+                throw new InvalidOperationException("The linked payment was not found or uses another currency.");
+            }
+        }
+
+        var paidAmount = Math.Max(invoice.PaidAmount, invoice.Allocations.Sum(x => x.AllocatedAmount));
+        if (paidAmount <= 0m)
+        {
+            throw new InvalidOperationException("The customer invoice has no recorded payment to refund.");
+        }
+
+        var committedAmount = await _dbContext.SupportRefundRequests
+            .Where(x => x.CompanyId == companyId && x.InvoiceId == invoice.Id && x.Id != refund.Id && x.FinanceActionReferenceId != null)
+            .SumAsync(x => (decimal?)x.Amount, cancellationToken) ?? 0m;
+        var refundableBalance = Math.Max(0m, decimal.Round(paidAmount - committedAmount, 2, MidpointRounding.AwayFromZero));
+        if (refund.Amount > refundableBalance)
+        {
+            throw new InvalidOperationException($"The refund amount exceeds the refundable balance of {refundableBalance:0.00} {refund.Currency}.");
+        }
+
+        var actionId = CreateDeterministicId("support-refund-credit", companyId, refund.Id);
+        var existing = await _dbContext.FinanceInvoices.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == actionId, cancellationToken);
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        if (existing is null)
+        {
+            existing = new FinanceInvoice(
+                actionId,
+                companyId,
+                invoice.CounterpartyId,
+                $"SUP-CR-{refund.Id:N}"[..Math.Min(64, $"SUP-CR-{refund.Id:N}".Length)],
+                now,
+                now,
+                -refund.Amount,
+                refund.Currency,
+                "approved",
+                settlementStatus: FinanceSettlementStatuses.Unpaid,
+                postingStatus: FinanceDocumentPostingStatuses.Draft,
+                dueStatus: FinanceDocumentDueStatuses.NotDue,
+                documentKind: FinanceDocumentKinds.CreditNote,
+                processingStatus: FinanceDocumentProcessingStatuses.None);
+            _dbContext.FinanceInvoices.Add(existing);
+        }
+
+        var created = refund.LinkFinanceAction(existing.Id);
+        await _audit.WriteAsync(new AuditEventWriteRequest(
+            companyId,
+            AuditActorTypes.System,
+            null,
+            "support.refund.finance_action_created",
+            "support_refund_request",
+            refund.Id.ToString("D"),
+            AuditEventOutcomes.Succeeded,
+            "Approved support refund was converted into an internal customer credit action.",
+            ["support", "finance"],
+            Metadata: new Dictionary<string, string?>
+            {
+                ["financeActionReferenceId"] = existing.Id.ToString("D"),
+                ["sourceInvoiceId"] = invoice.Id.ToString("D"),
+                ["refundableBalance"] = refundableBalance.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)
+            }), cancellationToken);
+        return new SupportRefundFinanceActionResult(refund.Id, existing.Id, created, refundableBalance, refund.Status, "Customer credit action is ready for finance execution.");
+    }
+
+    public async Task<SupportRefundRequestDto> RequestExecutionAsync(
+        Guid companyId,
+        Guid refundRequestId,
+        Guid? actorUserId,
+        string actorDisplayName,
+        CancellationToken cancellationToken)
+    {
+        var refund = await _dbContext.SupportRefundRequests
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == refundRequestId, cancellationToken)
+            ?? throw new KeyNotFoundException("Support refund request was not found.");
+        if (refund.FinanceActionReferenceId is not Guid creditActionId)
+        {
+            throw new InvalidOperationException("Create the internal customer credit action before requesting provider execution.");
+        }
+
+        var customerInvoiceActions = _customerInvoiceActions
+            ?? throw new InvalidOperationException("Customer credit provider execution is not configured.");
+        var state = await customerInvoiceActions.RequestExportAsync(
+            new RequestCustomerInvoiceFortnoxExportCommand(companyId, creditActionId, actorUserId, actorDisplayName),
+            cancellationToken);
+        refund.MarkPendingFinanceApproval(state.CreateWriteRequestId, state.CreateApprovalId);
+        await _audit.WriteAsync(new AuditEventWriteRequest(
+            companyId,
+            actorUserId.HasValue ? AuditActorTypes.Human : AuditActorTypes.System,
+            actorUserId,
+            "support.refund.finance_execution_requested",
+            "support_refund_request",
+            refund.Id.ToString("D"),
+            AuditEventOutcomes.Pending,
+            "Customer credit is waiting for accounting-system approval.",
+            ["support", "finance", "approvals", "fortnox"],
+            Metadata: new Dictionary<string, string?>
+            {
+                ["financeActionReferenceId"] = creditActionId.ToString("D"),
+                ["writeRequestId"] = state.CreateWriteRequestId?.ToString("D"),
+                ["approvalRequestId"] = state.CreateApprovalId?.ToString("D")
+            }), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return SupportCaseService.MapRefund(refund);
+    }
+
+    public async Task<SupportRefundRequestDto?> RefreshExecutionAsync(Guid companyId, Guid financeActionReferenceId, CancellationToken cancellationToken)
+    {
+        var refund = await _dbContext.SupportRefundRequests
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.FinanceActionReferenceId == financeActionReferenceId, cancellationToken);
+        if (refund is null)
+        {
+            return null;
+        }
+
+        var writeRequestId = CustomerInvoiceFortnoxActionService.CreateWriteRequestId("create", financeActionReferenceId, null);
+        var write = await _dbContext.FinanceIntegrationWriteCommands
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == writeRequestId, cancellationToken);
+        if (write is null)
+        {
+            return SupportCaseService.MapRefund(refund);
+        }
+
+        if (refund.ApplyFinanceExecutionStatus(write.Status, write.SafeFailureSummary))
+        {
+            await _audit.WriteAsync(new AuditEventWriteRequest(
+                companyId,
+                AuditActorTypes.System,
+                null,
+                "support.refund.finance_execution_updated",
+                "support_refund_request",
+                refund.Id.ToString("D"),
+                write.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Pending,
+                BuildSafeExecutionSummary(refund.Status),
+                ["support", "finance", "fortnox"],
+                Metadata: new Dictionary<string, string?>
+                {
+                    ["financeActionReferenceId"] = financeActionReferenceId.ToString("D"),
+                    ["writeRequestId"] = write.Id.ToString("D"),
+                    ["writeStatus"] = write.Status
+                }), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return SupportCaseService.MapRefund(refund);
+    }
+
+    public async Task<SupportRefundRequestDto?> RefreshByWriteRequestAsync(Guid companyId, Guid writeRequestId, CancellationToken cancellationToken)
+    {
+        var actionIds = await _dbContext.SupportRefundRequests
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.FinanceActionReferenceId != null)
+            .Select(x => x.FinanceActionReferenceId!.Value)
+            .ToListAsync(cancellationToken);
+        var actionId = actionIds.FirstOrDefault(id =>
+            CustomerInvoiceFortnoxActionService.CreateWriteRequestId("create", id, null) == writeRequestId);
+        return actionId == Guid.Empty
+            ? null
+            : await RefreshExecutionAsync(companyId, actionId, cancellationToken);
+    }
+
+    public async Task<SupportRefundRequestDto> CancelAsync(Guid companyId, Guid refundRequestId, Guid actorUserId, string reason, CancellationToken cancellationToken)
+    {
+        SupportValidationException.ThrowIfBlank(reason, nameof(reason));
+        var refund = await _dbContext.SupportRefundRequests.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == refundRequestId, cancellationToken)
+            ?? throw new KeyNotFoundException("Support refund request was not found.");
+        if (refund.CancelBeforeExecution())
+        {
+            await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, actorUserId, "support.refund.cancelled", "support_refund_request", refund.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Refund or credit request cancelled before provider execution.", ["support", "finance"], Metadata: new Dictionary<string, string?> { ["reason"] = reason.Trim()[..Math.Min(reason.Trim().Length, 500)] }), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        return SupportCaseService.MapRefund(refund);
+    }
+
+    public async Task<SupportRefundRequestDto> ReconcileAsync(Guid companyId, Guid refundRequestId, Guid actorUserId, CancellationToken cancellationToken)
+    {
+        var refund = await _dbContext.SupportRefundRequests.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == refundRequestId, cancellationToken)
+            ?? throw new KeyNotFoundException("Support refund request was not found.");
+        if (refund.FinanceActionReferenceId is not Guid actionId) throw new InvalidOperationException("No accounting-system action exists to reconcile.");
+        var refreshed = await RefreshExecutionAsync(companyId, actionId, cancellationToken);
+        if (refreshed is not null && refreshed.Status is not (SupportRefundRequestStatuses.Failed or SupportRefundRequestStatuses.ReconciliationRequired)) return refreshed;
+        refund.MarkReconciliationRequired("The accounting-system result is missing or inconclusive. Verify the provider record before retrying.");
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, actorUserId, "support.refund.reconciliation_requested", "support_refund_request", refund.Id.ToString("D"), AuditEventOutcomes.Pending, "Refund or credit requires accounting-system reconciliation.", ["support", "finance", "reconciliation"]), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return SupportCaseService.MapRefund(refund);
+    }
+
+    private static string BuildSafeExecutionSummary(string status) => status switch
+    {
+        SupportRefundRequestStatuses.Completed => "Customer credit was completed in the accounting system.",
+        SupportRefundRequestStatuses.Failed => "Customer credit execution failed and can be reviewed safely.",
+        SupportRefundRequestStatuses.Cancelled => "Customer credit execution did not receive final approval.",
+        SupportRefundRequestStatuses.ReconciliationRequired => "Customer credit outcome needs reconciliation before retrying.",
+        _ => "Customer credit execution state was updated."
+    };
+
+    private static Guid CreateDeterministicId(string purpose, Guid companyId, Guid sourceId)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"{purpose}:{companyId:N}:{sourceId:N}"));
+        Span<byte> bytes = stackalloc byte[16];
+        hash.AsSpan(0, 16).CopyTo(bytes);
+        return new Guid(bytes);
+    }
+}
+
+public sealed class SupportSlaPolicyService : ISupportSlaPolicyService
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAuditEventWriter _audit;
+
+    public SupportSlaPolicyService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit)
+    {
+        _dbContext = dbContext;
+        _audit = audit;
+    }
+
+    public async Task<IReadOnlyList<SupportSlaPolicyDto>> ListAsync(Guid companyId, CancellationToken cancellationToken) =>
+        (await _dbContext.SupportSlaPolicies.AsNoTracking()
+            .Where(x => x.CompanyId == companyId)
+            .OrderByDescending(x => x.IsActive)
+            .ThenBy(x => x.Priority)
+            .ThenBy(x => x.Category)
+            .ToListAsync(cancellationToken))
+        .Select(Map)
+        .ToList();
+
+    public async Task<SupportSlaPolicyDto> UpsertAsync(Guid companyId, Guid userId, UpsertSupportSlaPolicyRequest request, CancellationToken cancellationToken)
+    {
+        if (request.FirstResponseMinutes <= 0 || request.ResolutionMinutes <= 0 || request.ResolutionMinutes < request.FirstResponseMinutes)
+        {
+            throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.ResolutionMinutes)] = ["Resolution time must be at least the first-response time and both must be positive."] });
+        }
+
+        var category = SupportCaseCategories.Normalize(request.Category);
+        var priority = SupportPriorities.Normalize(request.Priority);
+        var tier = string.IsNullOrWhiteSpace(request.CustomerTier) ? null : request.CustomerTier.Trim();
+        if (request.RiskThresholdMinutes <= 0 || request.RiskThresholdMinutes >= request.ResolutionMinutes)
+            throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.RiskThresholdMinutes)] = ["Risk threshold must be positive and shorter than the resolution target."] });
+        string recipientRole;
+        try
+        {
+            recipientRole = CompanyMembershipRoles.ToStorageValue(CompanyMembershipRoles.Parse(request.EscalationRecipientRole));
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.EscalationRecipientRole)] = ["Choose a supported company role for escalation."] });
+        }
+        var duplicate = await _dbContext.SupportSlaPolicies.AsNoTracking().AnyAsync(x =>
+            x.CompanyId == companyId && x.Id != request.Id && x.IsActive && request.IsActive &&
+            x.Category == category && x.Priority == priority && x.CustomerTier == tier,
+            cancellationToken);
+        if (duplicate)
+        {
+            throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.Category)] = ["An active SLA policy already covers this category, priority, and customer tier."] });
+        }
+
+        SupportSlaPolicy policy;
+        if (request.Id is Guid policyId)
+        {
+            policy = await _dbContext.SupportSlaPolicies.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == policyId, cancellationToken)
+                ?? throw new KeyNotFoundException("SLA policy was not found.");
+            policy.Update(request.Name, category, priority, request.FirstResponseMinutes, request.ResolutionMinutes, tier, request.IsActive, request.TimeBasis, request.RiskThresholdMinutes, recipientRole);
+        }
+        else
+        {
+            policy = new SupportSlaPolicy(Guid.NewGuid(), companyId, request.Name, category, priority, request.FirstResponseMinutes, request.ResolutionMinutes, tier, request.IsActive, request.TimeBasis, request.RiskThresholdMinutes, recipientRole);
+            _dbContext.SupportSlaPolicies.Add(policy);
+        }
+
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.sla_policy.saved", "support_sla_policy", policy.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Support SLA policy saved.", ["support", "settings"]), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return Map(policy);
+    }
+
+    public async Task<SupportSlaPolicyDto?> DeactivateAsync(Guid companyId, Guid userId, Guid policyId, CancellationToken cancellationToken)
+    {
+        var policy = await _dbContext.SupportSlaPolicies.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == policyId, cancellationToken);
+        if (policy is null) return null;
+        policy.Deactivate();
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.sla_policy.deactivated", "support_sla_policy", policy.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Support SLA policy deactivated.", ["support", "settings"]), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return Map(policy);
+    }
+
+    public async Task<SupportSlaResolutionDto> ResolveAsync(Guid companyId, string category, string priority, string? customerTier, DateTime startUtc, CancellationToken cancellationToken)
+    {
+        category = SupportCaseCategories.Normalize(category);
+        priority = SupportPriorities.Normalize(priority);
+        var tier = string.IsNullOrWhiteSpace(customerTier) ? null : customerTier.Trim();
+        var policies = await _dbContext.SupportSlaPolicies.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.IsActive && x.Category == category && x.Priority == priority)
+            .ToListAsync(cancellationToken);
+        var selected = policies
+            .OrderByDescending(x => tier is not null && x.CustomerTier == tier)
+            .ThenByDescending(x => x.CustomerTier == null)
+            .FirstOrDefault(x => x.CustomerTier == null || x.CustomerTier == tier);
+        var defaults = DefaultDurations(priority);
+        var first = selected?.FirstResponseMinutes ?? defaults.First;
+        var resolution = selected?.ResolutionMinutes ?? defaults.Resolution;
+        var start = startUtc.Kind == DateTimeKind.Utc ? startUtc : startUtc.ToUniversalTime();
+        var useBusinessTime = string.Equals(selected?.TimeBasis, "business", StringComparison.OrdinalIgnoreCase);
+        var calendar = useBusinessTime ? await GetCalendarAsync(companyId, cancellationToken) : null;
+        var firstDue = calendar is null ? start.AddMinutes(first) : AddBusinessMinutes(start, first, calendar);
+        var resolutionDue = calendar is null ? start.AddMinutes(resolution) : AddBusinessMinutes(start, resolution, calendar);
+        return new SupportSlaResolutionDto(
+            selected?.Id,
+            selected?.Name ?? "Default support SLA",
+            first,
+            resolution,
+            firstDue,
+            resolutionDue,
+            selected is null ? "No matching company policy was found, so the documented default target applies." : useBusinessTime ? "Matched the company policy and calculated deadlines in configured working time." : "Matched category, priority, and customer tier using the company SLA policy.",
+            selected?.RiskThresholdMinutes ?? Math.Min(240, Math.Max(15, resolution / 4)),
+            selected?.EscalationRecipientRole ?? "support_supervisor");
+    }
+
+    public async Task<SupportBusinessCalendarDto> GetCalendarAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var company = await _dbContext.Companies.AsNoTracking().SingleAsync(x => x.Id == companyId, cancellationToken);
+        var fallback = new SupportBusinessCalendarDto(
+            string.IsNullOrWhiteSpace(company.Timezone) ? TimeZoneInfo.Utc.Id : company.Timezone,
+            new TimeOnly(8, 0),
+            new TimeOnly(17, 0),
+            [DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday],
+            []);
+        if (!company.Settings.Extensions.TryGetValue("supportBusinessCalendar", out var value) || value is not JsonObject calendar)
+        {
+            return fallback;
+        }
+
+        var zone = calendar["timeZoneId"]?.GetValue<string>() ?? fallback.TimeZoneId;
+        var start = TimeOnly.TryParse(calendar["workdayStart"]?.GetValue<string>(), out var parsedStart) ? parsedStart : fallback.WorkdayStart;
+        var end = TimeOnly.TryParse(calendar["workdayEnd"]?.GetValue<string>(), out var parsedEnd) ? parsedEnd : fallback.WorkdayEnd;
+        var days = calendar["workingDays"] is JsonArray dayArray
+            ? dayArray.Select(x => x?.GetValue<int>()).Where(x => x.HasValue && Enum.IsDefined((DayOfWeek)x.Value)).Select(x => (DayOfWeek)x!.Value).Distinct().ToList()
+            : fallback.WorkingDays.ToList();
+        var holidays = calendar["holidays"] is JsonArray holidayArray
+            ? holidayArray.Select(x => DateOnly.TryParse(x?.GetValue<string>(), out var date) ? date : (DateOnly?)null).Where(x => x.HasValue).Select(x => x!.Value).Distinct().ToList()
+            : [];
+        return new SupportBusinessCalendarDto(zone, start, end, days.Count == 0 ? fallback.WorkingDays : days, holidays);
+    }
+
+    public async Task<SupportBusinessCalendarDto> SaveCalendarAsync(Guid companyId, Guid userId, SaveSupportBusinessCalendarRequest request, CancellationToken cancellationToken)
+    {
+        _ = ResolveTimeZone(request.TimeZoneId);
+        if (request.WorkdayEnd <= request.WorkdayStart || request.WorkingDays.Count == 0)
+        {
+            throw new SupportValidationException(new Dictionary<string, string[]> { [nameof(request.WorkdayEnd)] = ["Working hours need at least one day and an end time after the start time."] });
+        }
+
+        var company = await _dbContext.Companies.SingleAsync(x => x.Id == companyId, cancellationToken);
+        company.Settings.Extensions["supportBusinessCalendar"] = new JsonObject
+        {
+            ["timeZoneId"] = request.TimeZoneId,
+            ["workdayStart"] = request.WorkdayStart.ToString("HH:mm"),
+            ["workdayEnd"] = request.WorkdayEnd.ToString("HH:mm"),
+            ["workingDays"] = new JsonArray(request.WorkingDays.Distinct().Select(x => (JsonNode?)JsonValue.Create((int)x)).ToArray()),
+            ["holidays"] = new JsonArray(request.Holidays.Distinct().OrderBy(x => x).Select(x => (JsonNode?)JsonValue.Create(x.ToString("yyyy-MM-dd"))).ToArray())
+        };
+        company.UpdateBrandingAndSettings(company.Branding, company.Settings);
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.business_calendar.saved", "company", companyId.ToString("D"), AuditEventOutcomes.Succeeded, "Support working calendar saved.", ["support", "settings"]), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return await GetCalendarAsync(companyId, cancellationToken);
+    }
+
+    private static DateTime AddBusinessMinutes(DateTime startUtc, int minutes, SupportBusinessCalendarDto calendar)
+    {
+        var zone = ResolveTimeZone(calendar.TimeZoneId);
+        var cursor = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(startUtc, DateTimeKind.Utc), zone);
+        var remaining = minutes;
+        var holidays = calendar.Holidays.ToHashSet();
+        for (var guard = 0; guard < 3660 && remaining > 0; guard++)
+        {
+            var date = DateOnly.FromDateTime(cursor);
+            if (calendar.WorkingDays.Contains(cursor.DayOfWeek) && !holidays.Contains(date))
+            {
+                var dayStart = date.ToDateTime(calendar.WorkdayStart, DateTimeKind.Unspecified);
+                var dayEnd = date.ToDateTime(calendar.WorkdayEnd, DateTimeKind.Unspecified);
+                var effective = cursor < dayStart ? dayStart : cursor;
+                if (effective < dayEnd)
+                {
+                    var available = (int)Math.Floor((dayEnd - effective).TotalMinutes);
+                    var consumed = Math.Min(remaining, available);
+                    effective = effective.AddMinutes(consumed);
+                    remaining -= consumed;
+                    cursor = effective;
+                    if (remaining == 0) return TimeZoneInfo.ConvertTimeToUtc(AdjustInvalidLocalTime(cursor, zone), zone);
+                }
+            }
+
+            cursor = date.AddDays(1).ToDateTime(calendar.WorkdayStart, DateTimeKind.Unspecified);
+        }
+
+        throw new InvalidOperationException("The support working calendar could not produce a deadline within ten years.");
+    }
+
+    private static DateTime AdjustInvalidLocalTime(DateTime value, TimeZoneInfo zone)
+    {
+        while (zone.IsInvalidTime(value)) value = value.AddMinutes(30);
+        return value;
+    }
+
+    private static TimeZoneInfo ResolveTimeZone(string id)
+    {
+        try { return TimeZoneInfo.FindSystemTimeZoneById(id); }
+        catch (TimeZoneNotFoundException) { throw new SupportValidationException(new Dictionary<string, string[]> { ["timeZoneId"] = ["Choose a valid timezone."] }); }
+        catch (InvalidTimeZoneException) { throw new SupportValidationException(new Dictionary<string, string[]> { ["timeZoneId"] = ["Choose a valid timezone."] }); }
+    }
+
+    private static (int First, int Resolution) DefaultDurations(string priority) => priority switch
+    {
+        SupportPriorities.Urgent => (60, 480),
+        SupportPriorities.High => (120, 1440),
+        SupportPriorities.Low => (1440, 10080),
+        _ => (480, 4320)
+    };
+
+    private static SupportSlaPolicyDto Map(SupportSlaPolicy policy) =>
+        new(policy.Id, policy.Name, policy.Category, SupportLabels.Category(policy.Category), policy.Priority, SupportLabels.Priority(policy.Priority), policy.CustomerTier, policy.FirstResponseMinutes, policy.ResolutionMinutes, policy.IsActive, policy.UpdatedUtc, policy.TimeBasis, policy.RiskThresholdMinutes, policy.EscalationRecipientRole);
+}
+
 public sealed class SupportSlaMonitor : ISupportSlaMonitor
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ILogger<SupportSlaMonitor> _logger;
+    private readonly ISupportSlaPolicyService? _slaPolicies;
+    private readonly ICompanyOutboxEnqueuer? _outbox;
 
-    public SupportSlaMonitor(VirtualCompanyDbContext dbContext, ILogger<SupportSlaMonitor> logger)
+    public SupportSlaMonitor(VirtualCompanyDbContext dbContext, ILogger<SupportSlaMonitor> logger, ISupportSlaPolicyService? slaPolicies = null, ICompanyOutboxEnqueuer? outbox = null)
     {
         _dbContext = dbContext;
         _logger = logger;
+        _slaPolicies = slaPolicies;
+        _outbox = outbox;
     }
 
     public async Task<SupportSlaMonitorResult> RunAsync(DateTime nowUtc, CancellationToken cancellationToken)
@@ -1337,17 +2328,36 @@ public sealed class SupportSlaMonitor : ISupportSlaMonitor
             .ToListAsync(cancellationToken);
         var risks = 0;
         var breaches = 0;
+        var notifications = 0;
         foreach (var supportCase in cases)
         {
+            var riskThresholdMinutes = 240;
+            var recipientRole = "support_supervisor";
+            SupportSlaResolutionDto? appliedPolicy = null;
+            if (_slaPolicies is not null)
+            {
+                appliedPolicy = await _slaPolicies.ResolveAsync(supportCase.CompanyId, supportCase.Category, supportCase.Priority, null, supportCase.CreatedUtc, cancellationToken);
+                riskThresholdMinutes = appliedPolicy.RiskThresholdMinutes;
+                recipientRole = appliedPolicy.EscalationRecipientRole;
+            }
             if (supportCase.FirstResponseDueUtc is null || supportCase.ResolutionDueUtc is null)
             {
-                var first = supportCase.CreatedUtc.AddHours(supportCase.Priority == SupportPriorities.High ? 2 : 8);
-                var resolution = supportCase.CreatedUtc.AddHours(supportCase.Priority == SupportPriorities.High ? 24 : 72);
-                supportCase.SetSla(first, resolution);
+                if (appliedPolicy is not null)
+                {
+                    supportCase.SetSla(appliedPolicy.FirstResponseDueUtc, appliedPolicy.ResolutionDueUtc);
+                }
+                else
+                {
+                    var first = supportCase.CreatedUtc.AddHours(supportCase.Priority == SupportPriorities.High ? 2 : 8);
+                    var resolution = supportCase.CreatedUtc.AddHours(supportCase.Priority == SupportPriorities.High ? 24 : 72);
+                    supportCase.SetSla(first, resolution);
+                }
             }
 
+            var previousRisk = supportCase.IsSlaRisk;
+            var previousBreach = supportCase.IsSlaBreached;
             var breached = (supportCase.FirstResponseSentUtc is null && supportCase.FirstResponseDueUtc < nowUtc) || supportCase.ResolutionDueUtc < nowUtc;
-            var risk = !breached && supportCase.ResolutionDueUtc <= nowUtc.AddHours(4);
+            var risk = !breached && supportCase.ResolutionDueUtc <= nowUtc.AddMinutes(riskThresholdMinutes);
             if (breached && !supportCase.IsSlaBreached)
             {
                 breaches++;
@@ -1358,12 +2368,24 @@ public sealed class SupportSlaMonitor : ISupportSlaMonitor
                 risks++;
                 supportCase.Events.Add(new SupportCaseEvent(Guid.NewGuid(), supportCase.CompanyId, supportCase.Id, SupportCaseEventTypes.SlaRisk, "Support SLA is at risk.", AuditActorTypes.System, null, nowUtc));
             }
+            if (_outbox is not null && (breached != previousBreach || risk != previousRisk))
+            {
+                var transition = breached ? "breached" : risk ? "risk" : "recovered";
+                var priority = breached ? CompanyNotificationPriority.Critical : CompanyNotificationPriority.High;
+                var title = breached ? $"Support case {supportCase.CaseNumber} breached its target" : risk ? $"Support case {supportCase.CaseNumber} is at risk" : $"Support case {supportCase.CaseNumber} SLA recovered";
+                var dueVersion = supportCase.ResolutionDueUtc?.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) ?? "none";
+                var dedupe = $"support-sla:{supportCase.Id:N}:{transition}:{dueVersion}";
+                _outbox.Enqueue(supportCase.CompanyId, CompanyOutboxTopics.NotificationDeliveryRequested,
+                    new NotificationDeliveryRequestedMessage(supportCase.CompanyId, CompanyNotificationType.Escalation.ToStorageValue(), priority.ToStorageValue(), title, $"Open {supportCase.CaseNumber} to review its response and resolution target.", "support_case", supportCase.Id, $"/support/cases/{supportCase.Id:D}", supportCase.AssignedUserId, supportCase.AssignedUserId.HasValue ? null : recipientRole, null, null, dedupe, null),
+                    idempotencyKey: $"notification:{dedupe}", causationId: supportCase.Id.ToString("N"));
+                notifications++;
+            }
             supportCase.MarkSlaState(risk, breached);
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         _logger.LogInformation("Support SLA monitor scanned {Count} cases, created {Risks} risks and {Breaches} breaches.", cases.Count, risks, breaches);
-        return new SupportSlaMonitorResult(cases.Count, risks, breaches, risks + breaches);
+        return new SupportSlaMonitorResult(cases.Count, risks, breaches, notifications);
     }
 }
 
@@ -1409,6 +2431,31 @@ public sealed class SupportKnowledgeGapService : ISupportKnowledgeGapService
         var gap = await _dbContext.SupportKnowledgeGaps.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == knowledgeGapId, cancellationToken);
         if (gap is null) return null;
         await EnsureDocumentationTaskAsync(companyId, userId, gap, cancellationToken, force: true);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return SupportCaseService.MapGap(gap);
+    }
+
+    public async Task<SupportKnowledgeGapDto?> ResolveAsync(Guid companyId, Guid userId, Guid knowledgeGapId, ResolveSupportKnowledgeGapRequest request, CancellationToken cancellationToken)
+    {
+        var gap = await _dbContext.SupportKnowledgeGaps.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == knowledgeGapId, cancellationToken);
+        if (gap is null) return null;
+        var approvedKnowledge = await _dbContext.CompanyKnowledgeDocuments.AsNoTracking().AnyAsync(x =>
+            x.CompanyId == companyId && x.Id == request.KnowledgeDocumentId &&
+            x.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed &&
+            x.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed, cancellationToken);
+        if (!approvedKnowledge) throw new InvalidOperationException("Select a processed and indexed knowledge document from this company before resolving the gap.");
+        gap.Resolve(request.KnowledgeDocumentId);
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.knowledge_gap.resolved", "support_knowledge_gap", gap.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Knowledge gap resolved with approved knowledge.", ["support", "knowledge"], Metadata: new Dictionary<string, string?> { ["knowledgeDocumentId"] = request.KnowledgeDocumentId.ToString("D") }), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return SupportCaseService.MapGap(gap);
+    }
+
+    public async Task<SupportKnowledgeGapDto?> ReopenAsync(Guid companyId, Guid userId, Guid knowledgeGapId, CancellationToken cancellationToken)
+    {
+        var gap = await _dbContext.SupportKnowledgeGaps.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == knowledgeGapId, cancellationToken);
+        if (gap is null) return null;
+        gap.Reopen();
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, "support.knowledge_gap.reopened", "support_knowledge_gap", gap.Id.ToString("D"), AuditEventOutcomes.Succeeded, "Knowledge gap reopened for further documentation.", ["support", "knowledge"]), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return SupportCaseService.MapGap(gap);
     }
@@ -1462,8 +2509,76 @@ public sealed class SupportAnalyticsService : ISupportAnalyticsService
         var byStatus = await BucketAsync(companyId, x => x.Status, cancellationToken);
         var byCategory = await BucketAsync(companyId, x => x.Category, cancellationToken);
         var byPriority = await BucketAsync(companyId, x => x.Priority, cancellationToken);
+        var sla = await BuildSlaPerformanceAsync(companyId, cancellationToken);
+        var learning = await BuildLearningEffectivenessAsync(companyId, cancellationToken);
         var insights = byCategory.Where(x => x.Count >= 3).Select(x => new SupportRootCauseInsight($"Recurring {x.Label.ToLowerInvariant()} cases", $"{x.Count} support cases share this category.", x.Key, x.Count, "Review related support knowledge and workflow steps.")).ToList();
-        return new SupportAnalyticsDashboardResponse(summary.Summary, byStatus, byCategory, byPriority, insights);
+        return new SupportAnalyticsDashboardResponse(summary.Summary, byStatus, byCategory, byPriority, sla, learning, insights);
+    }
+
+    private async Task<SupportSlaPerformanceSummary> BuildSlaPerformanceAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var rows = await _dbContext.SupportCases.AsNoTracking()
+            .Where(x => x.CompanyId == companyId)
+            .Select(x => new
+            {
+                x.Status,
+                x.IsSlaRisk,
+                x.IsSlaBreached,
+                x.FirstResponseDueUtc,
+                x.FirstResponseSentUtc,
+                x.ResolutionDueUtc,
+                x.ResolvedUtc
+            })
+            .ToListAsync(cancellationToken);
+        var open = rows.Where(x => x.Status != SupportCaseStatuses.Resolved && x.Status != SupportCaseStatuses.Closed).ToList();
+        var responded = rows.Where(x => x.FirstResponseDueUtc.HasValue && x.FirstResponseSentUtc.HasValue).ToList();
+        var resolved = rows.Where(x => x.ResolutionDueUtc.HasValue && x.ResolvedUtc.HasValue).ToList();
+        var missingTargets = rows.Count(x => !x.FirstResponseDueUtc.HasValue || !x.ResolutionDueUtc.HasValue);
+        return new SupportSlaPerformanceSummary(
+            open.Count(x => x.IsSlaRisk),
+            open.Count(x => x.IsSlaBreached),
+            responded.Count(x => x.FirstResponseSentUtc <= x.FirstResponseDueUtc),
+            responded.Count(x => x.FirstResponseSentUtc > x.FirstResponseDueUtc),
+            resolved.Count(x => x.ResolvedUtc <= x.ResolutionDueUtc),
+            resolved.Count(x => x.ResolvedUtc > x.ResolutionDueUtc),
+            missingTargets,
+            missingTargets == 0
+                ? "SLA reporting uses the targets stored on each support case."
+                : "Some historical cases do not have stored SLA targets, so they are labeled as missing instead of counted as met or missed.");
+    }
+
+    private async Task<SupportLearningEffectivenessSummary> BuildLearningEffectivenessAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var observations = await _dbContext.SupportMemoryObservations.AsNoTracking()
+            .Where(x => x.CompanyId == companyId)
+            .GroupBy(x => x.Status)
+            .Select(x => new { Status = x.Key, Count = x.Count() })
+            .ToListAsync(cancellationToken);
+        var drafts = await _dbContext.SupportReplyDrafts.AsNoTracking()
+            .Where(x => x.CompanyId == companyId)
+            .Select(x => new
+            {
+                x.Status,
+                x.Answerability,
+                x.SourceReferencesJson,
+                x.SentUtc
+            })
+            .ToListAsync(cancellationToken);
+        var withMemory = drafts.Where(x => !string.IsNullOrWhiteSpace(x.SourceReferencesJson) && x.SourceReferencesJson.Contains("customer_memory", StringComparison.OrdinalIgnoreCase)).ToList();
+        var withoutMemory = drafts.Except(withMemory).ToList();
+        var reopened = await _dbContext.SupportCases.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.Status == SupportCaseStatuses.Reopened, cancellationToken);
+        return new SupportLearningEffectivenessSummary(
+            observations.FirstOrDefault(x => x.Status == SupportMemoryObservationStatuses.Approved)?.Count ?? 0,
+            observations.FirstOrDefault(x => x.Status == SupportMemoryObservationStatuses.Review)?.Count ?? 0,
+            observations.FirstOrDefault(x => x.Status == SupportMemoryObservationStatuses.Rejected)?.Count ?? 0,
+            withMemory.Count,
+            withMemory.Count == 0 ? null : decimal.Round(withMemory.Average(x => x.Answerability), 3, MidpointRounding.AwayFromZero),
+            withoutMemory.Count == 0 ? null : decimal.Round(withoutMemory.Average(x => x.Answerability), 3, MidpointRounding.AwayFromZero),
+            drafts.Count(x => x.Status == SupportReplyDraftStatuses.Approved),
+            drafts.Count(x => x.Status == SupportReplyDraftStatuses.Rejected),
+            drafts.Count(x => x.SentUtc.HasValue),
+            reopened,
+            "Learning metrics use draft metadata and governed memory observations only; they show association, not guaranteed causation.");
     }
 
     private async Task<IReadOnlyList<SupportMetricBucket>> BucketAsync(Guid companyId, System.Linq.Expressions.Expression<Func<SupportCase, string>> selector, CancellationToken cancellationToken)
@@ -1479,26 +2594,238 @@ public sealed class SupportAnalyticsService : ISupportAnalyticsService
 public sealed class SupportMemoryUpdateService : ISupportMemoryUpdateService
 {
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAuditEventWriter _audit;
 
-    public SupportMemoryUpdateService(VirtualCompanyDbContext dbContext) => _dbContext = dbContext;
+    public SupportMemoryUpdateService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit) { _dbContext = dbContext; _audit = audit; }
 
     public async Task UpdateFromResolvedCaseAsync(Guid companyId, Guid supportCaseId, CancellationToken cancellationToken)
     {
-        var supportCase = await _dbContext.SupportCases.AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == supportCaseId && x.Status == SupportCaseStatuses.Resolved, cancellationToken);
-        if (supportCase?.ContactId is not Guid contactId) return;
-        var profile = await _dbContext.CustomerMemoryProfiles.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.ContactId == contactId, cancellationToken);
-        if (profile is null) return;
-        _dbContext.CustomerMemoryProfilePreferences.Add(new CustomerMemoryProfilePreference(
-            Guid.NewGuid(),
-            companyId,
-            profile.Id,
-            "support_context",
-            $"Resolved support case {supportCase.CaseNumber}: {supportCase.Summary}",
-            $"Support case {supportCase.CaseNumber}",
-            0.85m,
-            DateTime.UtcNow));
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        var job = await _dbContext.SupportMemoryUpdateJobs.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.SupportCaseId == supportCaseId, cancellationToken);
+        if (job is not null) await ProcessJobAsync(companyId, job.Id, cancellationToken);
     }
+
+    public async Task ProcessJobAsync(Guid companyId, Guid jobId, CancellationToken cancellationToken)
+    {
+        var job = await _dbContext.SupportMemoryUpdateJobs.SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == jobId, cancellationToken)
+            ?? throw new KeyNotFoundException("Support memory update job was not found.");
+        if (job.Status is "completed" or "skipped") return;
+        job.Start();
+        try
+        {
+            var supportCase = await _dbContext.SupportCases.AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == job.SupportCaseId && x.Status == SupportCaseStatuses.Resolved, cancellationToken);
+            var resolution = await _dbContext.SupportCaseResolutions.AsNoTracking().FirstOrDefaultAsync(x => x.CompanyId == companyId && x.SupportCaseId == job.SupportCaseId, cancellationToken);
+            if (supportCase?.ContactId is not Guid contactId || resolution is null || string.IsNullOrWhiteSpace(resolution.CustomerPreferenceObservations))
+            {
+                job.Complete(skipped: true);
+                await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.System, null, "support.memory.skipped", "support_case", job.SupportCaseId.ToString("D"), AuditEventOutcomes.Succeeded, "No eligible explicit customer preference was available for memory.", ["support", "memory"]), cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return;
+            }
+            var candidate = resolution.CustomerPreferenceObservations.Trim();
+            var existingObservation = await _dbContext.SupportMemoryObservations.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.SourceEventKey == job.EventKey && x.ContactId == contactId, cancellationToken);
+            if (existingObservation is { Status: SupportMemoryObservationStatuses.Approved or SupportMemoryObservationStatuses.Rejected or SupportMemoryObservationStatuses.Deleted })
+            {
+                job.Complete(skipped: true);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return;
+            }
+
+            var decision = SupportMemorySafetyPolicy.Evaluate(candidate);
+            if (decision.Status == SupportMemoryObservationStatuses.Rejected)
+            {
+                if (existingObservation is null)
+                {
+                    _dbContext.SupportMemoryObservations.Add(new SupportMemoryObservation(Guid.NewGuid(), companyId, supportCase.Id, resolution.Id, contactId, SupportMemoryObservationStatuses.Rejected, null, decision.EvidenceSummary, 0m, resolution.ResolvedUtc, null, SupportMemorySafetyPolicy.PolicyVersion, job.EventKey));
+                }
+                else
+                {
+                    existingObservation.Reject();
+                }
+                job.Complete(skipped: true);
+                await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.System, null, "support.memory.rejected", "support_case", job.SupportCaseId.ToString("D"), AuditEventOutcomes.Succeeded, "A support memory candidate was rejected by policy.", ["support", "memory", "privacy"]), cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return;
+            }
+            var profile = await _dbContext.CustomerMemoryProfiles.Include(x => x.Preferences).FirstOrDefaultAsync(x => x.CompanyId == companyId && x.ContactId == contactId, cancellationToken);
+            if (profile is null) { job.Complete(skipped: true); await _dbContext.SaveChangesAsync(cancellationToken); return; }
+            var source = $"Support case {supportCase.CaseNumber}; {job.EventKey}";
+            var duplicate = profile.Preferences.FirstOrDefault(x => x.PreferenceKey == "support_preference" && (x.PreferenceValue == candidate || x.SourceSummary == source));
+            var contradictory = profile.Preferences.Any(x => x.PreferenceKey == "support_preference" && x.PreferenceValue != candidate);
+            if (existingObservation is null)
+            {
+                var status = decision.Status == SupportMemoryObservationStatuses.Approved && !contradictory
+                    ? SupportMemoryObservationStatuses.Approved
+                    : SupportMemoryObservationStatuses.Review;
+                existingObservation = new SupportMemoryObservation(Guid.NewGuid(), companyId, supportCase.Id, resolution.Id, contactId, status, candidate, contradictory ? "A different support preference already exists and needs review." : decision.EvidenceSummary, decision.Confidence, resolution.ResolvedUtc, decision.ValidUntilUtc, SupportMemorySafetyPolicy.PolicyVersion, job.EventKey);
+                _dbContext.SupportMemoryObservations.Add(existingObservation);
+            }
+            if (duplicate is not null)
+            {
+                existingObservation.Approve(duplicate.Id);
+            }
+            else if (existingObservation.Status == SupportMemoryObservationStatuses.Approved)
+            {
+                var preference = new CustomerMemoryProfilePreference(Guid.NewGuid(), companyId, profile.Id, "support_preference", candidate, source, decision.Confidence, resolution.ResolvedUtc);
+                _dbContext.CustomerMemoryProfilePreferences.Add(preference);
+                existingObservation.Approve(preference.Id);
+            }
+            else
+            {
+                existingObservation.MarkReviewRequired();
+            }
+            job.Complete();
+            var summary = existingObservation.Status == SupportMemoryObservationStatuses.Approved
+                ? "An explicit support preference was added to customer memory."
+                : "A support memory candidate was queued for review.";
+            await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.System, null, "support.memory.processed", "support_case", job.SupportCaseId.ToString("D"), AuditEventOutcomes.Succeeded, summary, ["support", "memory"]), cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            job.Fail(ex is DbUpdateException ? "Memory persistence failed and will be retried." : "Memory processing failed and will be retried.");
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            throw;
+        }
+    }
+}
+
+public sealed class SupportMemoryReviewService : ISupportMemoryReviewService
+{
+    private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAuditEventWriter _audit;
+
+    public SupportMemoryReviewService(VirtualCompanyDbContext dbContext, IAuditEventWriter audit)
+    {
+        _dbContext = dbContext;
+        _audit = audit;
+    }
+
+    public async Task<IReadOnlyList<SupportMemoryObservationDto>> ListAsync(Guid companyId, Guid? contactId, string? status, CancellationToken cancellationToken)
+    {
+        var query = _dbContext.SupportMemoryObservations.AsNoTracking().Where(x => x.CompanyId == companyId);
+        if (contactId is Guid id) query = query.Where(x => x.ContactId == id);
+        if (!string.IsNullOrWhiteSpace(status)) query = query.Where(x => x.Status == SupportMemoryObservationStatuses.Normalize(status));
+        return await query.OrderByDescending(x => x.UpdatedUtc).Take(200).Select(x => MapMemoryObservation(x)).ToListAsync(cancellationToken);
+    }
+
+    public Task<SupportMemoryObservationDto?> ApproveAsync(Guid companyId, Guid userId, Guid observationId, SupportActionRequest request, CancellationToken cancellationToken) =>
+        MutateAsync(companyId, userId, observationId, "support.memory.approved", request.Note ?? "Support memory approved.", async observation =>
+        {
+            if (observation.Status is SupportMemoryObservationStatuses.Deleted or SupportMemoryObservationStatuses.Rejected)
+            {
+                throw new SupportValidationException(new Dictionary<string, string[]> { ["status"] = ["This memory observation cannot be approved."] });
+            }
+
+            if (string.IsNullOrWhiteSpace(observation.Value))
+            {
+                throw new SupportValidationException(new Dictionary<string, string[]> { ["value"] = ["There is no safe value to approve."] });
+            }
+
+            var profile = await _dbContext.CustomerMemoryProfiles.Include(x => x.Preferences).FirstOrDefaultAsync(x => x.CompanyId == companyId && x.ContactId == observation.ContactId, cancellationToken);
+            if (profile is null)
+            {
+                profile = new CustomerMemoryProfile(Guid.NewGuid(), companyId, observation.ContactId);
+                _dbContext.CustomerMemoryProfiles.Add(profile);
+            }
+
+            var source = $"Support memory observation {observation.Id:D}";
+            var preference = profile.Preferences.FirstOrDefault(x => x.PreferenceKey == "support_preference" && x.PreferenceValue == observation.Value)
+                ?? new CustomerMemoryProfilePreference(Guid.NewGuid(), companyId, profile.Id, "support_preference", observation.Value, source, observation.Confidence, observation.ObservedUtc);
+            if (preference.Id != Guid.Empty && !profile.Preferences.Any(x => x.Id == preference.Id))
+            {
+                _dbContext.CustomerMemoryProfilePreferences.Add(preference);
+            }
+
+            observation.Approve(preference.Id);
+        }, cancellationToken);
+
+    public Task<SupportMemoryObservationDto?> RejectAsync(Guid companyId, Guid userId, Guid observationId, SupportActionRequest request, CancellationToken cancellationToken) =>
+        MutateAsync(companyId, userId, observationId, "support.memory.rejected", request.Note ?? "Support memory rejected.", observation => { observation.Reject(); return Task.CompletedTask; }, cancellationToken);
+
+    public Task<SupportMemoryObservationDto?> ExpireAsync(Guid companyId, Guid userId, Guid observationId, SupportActionRequest request, CancellationToken cancellationToken) =>
+        MutateAsync(companyId, userId, observationId, "support.memory.expired", request.Note ?? "Support memory expired.", async observation => { await RemoveLinkedPreferenceAsync(companyId, observation, cancellationToken); observation.Expire(); }, cancellationToken);
+
+    public Task<SupportMemoryObservationDto?> DeleteAsync(Guid companyId, Guid userId, Guid observationId, SupportActionRequest request, CancellationToken cancellationToken) =>
+        MutateAsync(companyId, userId, observationId, "support.memory.deleted", request.Note ?? "Support memory deleted.", async observation => { await RemoveLinkedPreferenceAsync(companyId, observation, cancellationToken); observation.Delete(); }, cancellationToken);
+
+    private async Task<SupportMemoryObservationDto?> MutateAsync(Guid companyId, Guid userId, Guid observationId, string action, string summary, Func<SupportMemoryObservation, Task> mutation, CancellationToken cancellationToken)
+    {
+        var observation = await _dbContext.SupportMemoryObservations.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == observationId, cancellationToken);
+        if (observation is null) return null;
+        await mutation(observation);
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.Human, userId, action, "support_memory_observation", observation.Id.ToString("D"), AuditEventOutcomes.Succeeded, summary, ["support", "memory"]), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return MapMemoryObservation(observation);
+    }
+
+    private async Task RemoveLinkedPreferenceAsync(Guid companyId, SupportMemoryObservation observation, CancellationToken cancellationToken)
+    {
+        if (observation.CustomerMemoryProfilePreferenceId is not Guid preferenceId)
+        {
+            return;
+        }
+
+        var preference = await _dbContext.CustomerMemoryProfilePreferences.FirstOrDefaultAsync(x => x.CompanyId == companyId && x.Id == preferenceId, cancellationToken);
+        if (preference is not null)
+        {
+            _dbContext.CustomerMemoryProfilePreferences.Remove(preference);
+        }
+    }
+
+    private static SupportMemoryObservationDto MapMemoryObservation(SupportMemoryObservation observation) =>
+        new(
+            observation.Id,
+            observation.SupportCaseId,
+            observation.SupportCaseResolutionId,
+            observation.ContactId,
+            observation.CustomerMemoryProfilePreferenceId,
+            observation.Status,
+            SupportLabels.Event(observation.Status),
+            observation.Status is SupportMemoryObservationStatuses.Rejected or SupportMemoryObservationStatuses.Deleted ? null : observation.Value,
+            observation.EvidenceSummary,
+            observation.Confidence,
+            observation.ObservedUtc,
+            observation.ValidUntilUtc,
+            observation.PolicyVersion,
+            observation.SourceEventKey,
+            observation.UpdatedUtc,
+            observation.Status switch
+            {
+                SupportMemoryObservationStatuses.Review => ["approve", "reject"],
+                SupportMemoryObservationStatuses.Approved => ["expire", "delete"],
+                SupportMemoryObservationStatuses.Expired => ["delete"],
+                _ => []
+            });
+}
+
+internal static class SupportMemorySafetyPolicy
+{
+    private static readonly string[] BlockedTerms = ["password", "passcode", "secret", "api key", "token", "credit card", "card number", "cvv", "iban", "bank account", "social security", "personnummer"];
+    private static readonly string[] ReviewTerms = ["maybe", "probably", "seems", "appears", "angry", "upset", "temporary", "for now", "until"];
+    public const string PolicyVersion = "support-memory-v1";
+
+    public static SupportMemoryPolicyDecision Evaluate(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value) || value.Length > 1000)
+        {
+            return new SupportMemoryPolicyDecision(SupportMemoryObservationStatuses.Rejected, "Candidate was blank or too long.", 0m, null);
+        }
+
+        var normalized = value.ToLowerInvariant();
+        if (BlockedTerms.Any(normalized.Contains) || System.Text.RegularExpressions.Regex.IsMatch(value, @"\b(?:\d[ -]*?){13,19}\b"))
+        {
+            return new SupportMemoryPolicyDecision(SupportMemoryObservationStatuses.Rejected, "Candidate contained sensitive information blocked by policy.", 0m, null);
+        }
+
+        if (ReviewTerms.Any(normalized.Contains))
+        {
+            return new SupportMemoryPolicyDecision(SupportMemoryObservationStatuses.Review, "Candidate may be temporary or inferred and needs review.", 0.65m, DateTime.UtcNow.AddDays(90));
+        }
+
+        return new SupportMemoryPolicyDecision(SupportMemoryObservationStatuses.Approved, "Explicit support preference passed deterministic safety checks.", 0.85m, null);
+    }
+
+    public sealed record SupportMemoryPolicyDecision(string Status, string EvidenceSummary, decimal Confidence, DateTime? ValidUntilUtc);
 }
 
 file sealed class NoopAuditEventWriter : IAuditEventWriter

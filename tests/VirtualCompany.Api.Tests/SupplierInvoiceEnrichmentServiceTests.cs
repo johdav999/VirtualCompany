@@ -138,6 +138,34 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         Assert.NotNull(result.ApprovalRequestId);
     }
 
+    [Fact]
+    public async Task SuggestAsync_ignores_supplier_default_liability_account()
+    {
+        await using var fixture = await SupplierInvoiceEnrichmentFixture.CreateAsync(new CapturingEnrichmentProvider(), supplierDefaultAccount: "2000");
+        var bill = await fixture.AddSupplierBillAsync(metadataAccountCode: null);
+
+        var result = await fixture.Service.SuggestAsync(
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            CancellationToken.None);
+
+        Assert.Equal("4010", result.SuggestionPayload["coding"]?["ledgerAccount"]?.ToString());
+        Assert.Contains(result.ReconciliationWarnings.OfType<JsonObject>(), warning => warning["code"]?.ToString() == "invalid_expense_account");
+    }
+
+    [Fact]
+    public async Task SuggestAsync_uses_valid_provider_metadata_when_supplier_default_is_invalid()
+    {
+        await using var fixture = await SupplierInvoiceEnrichmentFixture.CreateAsync(new CapturingEnrichmentProvider(), supplierDefaultAccount: "2000");
+        var bill = await fixture.AddSupplierBillAsync(metadataAccountCode: "6540");
+
+        var result = await fixture.Service.SuggestAsync(
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            CancellationToken.None);
+
+        Assert.Equal("6540", result.SuggestionPayload["coding"]?["ledgerAccount"]?.ToString());
+        Assert.Contains(result.ReconciliationWarnings.OfType<JsonObject>(), warning => warning["code"]?.ToString() == "invalid_expense_account");
+    }
+
     private sealed class SupplierInvoiceEnrichmentFixture : IAsyncDisposable
     {
         private readonly SqliteConnection _connection;
@@ -166,7 +194,9 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         public PersistingApprovalRequestService ApprovalService { get; }
         public SupplierInvoiceEnrichmentService Service { get; }
 
-        public static async Task<SupplierInvoiceEnrichmentFixture> CreateAsync(ISupplierInvoiceEnrichmentProvider provider)
+        public static async Task<SupplierInvoiceEnrichmentFixture> CreateAsync(
+            ISupplierInvoiceEnrichmentProvider provider,
+            string supplierDefaultAccount = "4010")
         {
             var connection = new SqliteConnection("Data Source=:memory:");
             await connection.OpenAsync();
@@ -196,7 +226,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
                 paymentTerms: "14",
                 taxId: "559999-1234",
                 preferredPaymentMethod: "bank_transfer",
-                defaultAccountMapping: "4010"));
+                defaultAccountMapping: supplierDefaultAccount));
             db.FinanceIntegrationConnections.Add(new FinanceIntegrationConnection(
                 fixture.ConnectionId,
                 fixture.CompanyId,
@@ -213,7 +243,8 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
             DateTime? dueUtc = null,
             string settlementStatus = FinanceSettlementStatuses.Unpaid,
             decimal paidAmount = 0m,
-            string processingStatus = FinanceDocumentProcessingStatuses.None)
+            string processingStatus = FinanceDocumentProcessingStatuses.None,
+            string? metadataAccountCode = "4010")
         {
             var now = DateTime.UtcNow;
             var bill = new FinanceBill(
@@ -248,7 +279,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
             invoiceReference.ReplaceMetadata(
                 new JsonObject
                 {
-                    ["accountCode"] = "4010",
+                    ["accountCode"] = metadataAccountCode,
                     ["costCenter"] = "KST-10",
                     ["project"] = "P-20"
                 },

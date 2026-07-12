@@ -380,6 +380,40 @@
                                     }
                                 </div>
                             }
+                            <div class="bill-paid-expense-status">
+                                <div class="bill-detail-section__header">
+                                    <h4>Expense posting</h4>
+                                    <span class="@($"bill-status-badge bill-status-badge--{detail.PaidExpensePosting.StatusTone}")">@detail.PaidExpensePosting.StatusLabel</span>
+                                </div>
+                                <p>@detail.PaidExpensePosting.Message</p>
+                                @if (!string.IsNullOrWhiteSpace(detail.PaidExpensePosting.AccountCode))
+                                {
+                                    <dl class="bill-detail-list bill-source-detail-list">
+                                        <div><dt>Expense account</dt><dd>@detail.PaidExpensePosting.AccountCode</dd></div>
+                                    </dl>
+                                }
+                                @if (detail.PaidExpensePosting.CanPost)
+                                {
+                                    <div class="bill-action-row">
+                                        <button
+                                            type="button"
+                                            class="btn btn-primary"
+                                            disabled="@IsPaidExpensePostingSubmitting"
+                                            @onclick="PostPaidSupplierBillExpenseAsync">
+                                            @(IsPaidExpensePostingSubmitting ? "Working..." : "Ask Laura to post expense")
+                                        </button>
+                                    </div>
+                                }
+                                else if (detail.PaidExpensePosting.BlockingReasons.Count > 1)
+                                {
+                                    <ul class="bill-detail-list-simple">
+                                        @foreach (var reason in detail.PaidExpensePosting.BlockingReasons)
+                                        {
+                                            <li>@reason</li>
+                                        }
+                                    </ul>
+                                }
+                            </div>
                             @if (!string.IsNullOrWhiteSpace(detail.DraftAction.ProviderKey) ||
                                  detail.DraftAction.RequestedUtc is not null ||
                                  detail.DraftAction.UpdatedInProviderUtc is not null ||

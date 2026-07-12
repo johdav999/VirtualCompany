@@ -146,6 +146,65 @@ public sealed class SupportAgentServiceTests
     }
 
     [Fact]
+    public async Task Refund_approval_outcome_is_tenant_scoped_and_idempotent()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var companyId = Guid.NewGuid();
+        var otherCompanyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        await using var dbContext = CreateContext(connection, companyId, userId);
+        await dbContext.Database.EnsureCreatedAsync();
+        dbContext.Companies.AddRange(new Company(companyId, "Support Company"), new Company(otherCompanyId, "Other Company"));
+        var customerId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(customerId, companyId, "Customer", "customer"));
+        dbContext.FinanceInvoices.Add(new FinanceInvoice(
+            invoiceId,
+            companyId,
+            customerId,
+            "INV-SUPPORT-1",
+            DateTime.UtcNow.AddDays(-10),
+            DateTime.UtcNow.AddDays(-1),
+            200m,
+            "SEK",
+            "paid",
+            settlementStatus: FinanceSettlementStatuses.Paid,
+            paidAmount: 200m));
+        await dbContext.SaveChangesAsync();
+        var audit = new CaptureAuditEventWriter();
+        var cases = new SupportCaseService(dbContext, audit);
+        var supportCase = await cases.CreateCaseAsync(
+            companyId,
+            userId,
+            new CreateSupportCaseRequest("Refund request", "Please refund the duplicate charge.", "Manual"),
+            CancellationToken.None);
+        var workflow = new SupportRefundWorkflowService(dbContext, audit);
+        var requested = await workflow.RequestRefundAsync(
+            companyId,
+            userId,
+            supportCase.Id,
+            new CreateSupportRefundRequest(125.50m, "SEK", "duplicate_charge", "Duplicate charge confirmed.", InvoiceId: invoiceId),
+            CancellationToken.None);
+        var finance = new SupportRefundFinanceService(dbContext, audit, TimeProvider.System);
+        var handler = new SupportRefundApprovalOutcomeHandler(dbContext, audit, finance);
+
+        var wrongTenant = await handler.ProcessAsync(otherCompanyId, requested!.ApprovalRequestId!.Value, "approved", userId, "Approved.", CancellationToken.None);
+        var processed = await handler.ProcessAsync(companyId, requested.ApprovalRequestId.Value, "approved", userId, "Approved.", CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+        var duplicate = await handler.ProcessAsync(companyId, requested.ApprovalRequestId.Value, "approved", userId, "Approved.", CancellationToken.None);
+        var persisted = await dbContext.SupportRefundRequests.SingleAsync(x => x.Id == requested.Id);
+        var events = await dbContext.SupportCaseEvents.Where(x => x.SupportCaseId == supportCase.Id && x.EventType == SupportCaseEventTypes.ApprovalResolved).ToListAsync();
+
+        Assert.False(wrongTenant);
+        Assert.True(processed);
+        Assert.False(duplicate);
+        Assert.NotNull(persisted.FinanceActionReferenceId);
+        Assert.Equal(SupportRefundRequestStatuses.Queued, persisted.Status);
+        Assert.Single(events);
+        Assert.Contains(audit.Events, x => x.Action == "support.refund.approval_resolved");
+    }
+
+    [Fact]
     public async Task Send_draft_uses_outbound_sender_and_persists_provider_message_ids()
     {
         await using var connection = await OpenConnectionAsync();

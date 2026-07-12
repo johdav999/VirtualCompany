@@ -337,6 +337,26 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var toolPermissions = CloneNodes(runtimeProfile.ToolPermissions);
         var dataScopes = CloneNodes(runtimeProfile.DataScopes);
 
+        if (IsAlexSalesAgent(runtimeProfile))
+        {
+            var definitions = _companyToolRegistry.ListToolDefinitions().Where(x => x.ToolName.StartsWith("sales.", StringComparison.OrdinalIgnoreCase)).ToArray();
+            return (
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["allowed"] = ToJsonArray(definitions.Select(x => x.ToolName).ToArray()),
+                    ["actions"] = ToJsonArray(definitions.Select(x => x.ActionType.ToStorageValue()).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()),
+                    ["denied"] = ToJsonArray(_companyToolRegistry.ListTools().Select(x => x.ToolName).Except(definitions.Select(x => x.ToolName), StringComparer.OrdinalIgnoreCase).ToArray()),
+                    ["deniedActions"] = new JsonArray()
+                },
+                new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["read"] = new JsonArray("sales", "prospecting"),
+                    ["recommend"] = new JsonArray("sales", "prospecting"),
+                    ["execute"] = new JsonArray("sales", "prospecting"),
+                    ["write"] = new JsonArray()
+                });
+        }
+
         if (!IsLauraFinanceAgent(runtimeProfile))
         {
             return (toolPermissions, dataScopes);
@@ -385,6 +405,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         string.Equals(runtimeProfile.TemplateId, LauraFinanceAgentSeedData.TemplateId, StringComparison.OrdinalIgnoreCase) ||
         (string.Equals(runtimeProfile.DisplayName, "Laura", StringComparison.OrdinalIgnoreCase) &&
          string.Equals(runtimeProfile.Department, "Finance", StringComparison.OrdinalIgnoreCase));
+
+    private static bool IsAlexSalesAgent(AgentRuntimeProfileDto runtimeProfile) =>
+        string.Equals(runtimeProfile.TemplateId, "sales", StringComparison.OrdinalIgnoreCase) ||
+        (string.Equals(runtimeProfile.DisplayName, "Alex", StringComparison.OrdinalIgnoreCase) &&
+         string.Equals(runtimeProfile.Department, "Sales", StringComparison.OrdinalIgnoreCase));
 
     private Task WriteBoundaryEnforcementAuditAsync(
         Guid companyId,

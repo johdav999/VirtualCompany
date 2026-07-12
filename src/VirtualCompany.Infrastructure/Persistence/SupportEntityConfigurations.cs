@@ -154,6 +154,9 @@ internal sealed class SupportSlaPolicyConfiguration : IEntityTypeConfiguration<S
         builder.Property(x => x.FirstResponseMinutes).HasColumnName("first_response_minutes").IsRequired();
         builder.Property(x => x.ResolutionMinutes).HasColumnName("resolution_minutes").IsRequired();
         builder.Property(x => x.IsActive).HasColumnName("is_active").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.TimeBasis).HasColumnName("time_basis").HasMaxLength(20).HasDefaultValue("elapsed").IsRequired();
+        builder.Property(x => x.RiskThresholdMinutes).HasColumnName("risk_threshold_minutes").HasDefaultValue(240).IsRequired();
+        builder.Property(x => x.EscalationRecipientRole).HasColumnName("escalation_recipient_role").HasMaxLength(80).HasDefaultValue("support_supervisor").IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.Category, x.Priority, x.CustomerTier, x.IsActive });
@@ -166,15 +169,102 @@ internal sealed class SupportCaseResolutionConfiguration : IEntityTypeConfigurat
     {
         builder.ToTable("support_case_resolutions");
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
         builder.Property(x => x.SupportCaseId).HasColumnName("support_case_id").IsRequired();
         builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(2000).IsRequired();
         builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(120).IsRequired();
+        builder.Property(x => x.RootCauseCategory).HasColumnName("root_cause_category").HasMaxLength(80).HasDefaultValue("other").IsRequired();
+        builder.Property(x => x.ActionTaken).HasColumnName("action_taken").HasMaxLength(2000);
+        builder.Property(x => x.ReusableAnswer).HasColumnName("reusable_answer").HasMaxLength(4000);
+        builder.Property(x => x.CustomerPreferenceObservations).HasColumnName("customer_preference_observations").HasMaxLength(2000);
+        builder.Property(x => x.RelevantLinksJson).HasColumnName("relevant_links_json").HasMaxLength(4000);
+        builder.Property(x => x.ReuseEligible).HasColumnName("reuse_eligible").HasDefaultValue(false).IsRequired();
         builder.Property(x => x.ResolvedByUserId).HasColumnName("resolved_by_user_id").IsRequired();
         builder.Property(x => x.ResolvedUtc).HasColumnName("resolved_at").IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId }).IsUnique();
         builder.HasOne(x => x.SupportCase).WithOne(x => x.Resolution).HasForeignKey<SupportCaseResolution>(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey<SupportCase>(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class SupportMemoryUpdateJobConfiguration : IEntityTypeConfiguration<SupportMemoryUpdateJob>
+{
+    public void Configure(EntityTypeBuilder<SupportMemoryUpdateJob> builder)
+    {
+        builder.ToTable("support_memory_update_jobs");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.SupportCaseId).HasColumnName("support_case_id").IsRequired();
+        builder.Property(x => x.EventKey).HasColumnName("event_key").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+        builder.Property(x => x.AttemptCount).HasColumnName("attempt_count").IsRequired();
+        builder.Property(x => x.SafeFailureSummary).HasColumnName("safe_failure_summary").HasMaxLength(1000);
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+        builder.HasIndex(x => new { x.CompanyId, x.EventKey }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
+    }
+}
+
+internal sealed class SupportMemoryObservationConfiguration : IEntityTypeConfiguration<SupportMemoryObservation>
+{
+    public void Configure(EntityTypeBuilder<SupportMemoryObservation> builder)
+    {
+        builder.ToTable("support_memory_observations");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.SupportCaseId).HasColumnName("support_case_id").IsRequired();
+        builder.Property(x => x.SupportCaseResolutionId).HasColumnName("support_case_resolution_id").IsRequired();
+        builder.Property(x => x.ContactId).HasColumnName("contact_id").IsRequired();
+        builder.Property(x => x.CustomerMemoryProfilePreferenceId).HasColumnName("customer_memory_profile_preference_id");
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+        builder.Property(x => x.Value).HasColumnName("value").HasMaxLength(1000);
+        builder.Property(x => x.EvidenceSummary).HasColumnName("evidence_summary").HasMaxLength(500).IsRequired();
+        builder.Property(x => x.Confidence).HasColumnName("confidence").HasColumnType("decimal(5,3)").IsRequired();
+        builder.Property(x => x.ObservedUtc).HasColumnName("observed_at").IsRequired();
+        builder.Property(x => x.ValidUntilUtc).HasColumnName("valid_until_at");
+        builder.Property(x => x.PolicyVersion).HasColumnName("policy_version").HasMaxLength(40).IsRequired();
+        builder.Property(x => x.SourceEventKey).HasColumnName("source_event_key").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.RowVersion).HasColumnName("row_version").IsRowVersion();
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.ContactId, x.Status });
+        builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId });
+        builder.HasIndex(x => new { x.CompanyId, x.SourceEventKey, x.ContactId }).IsUnique();
+        builder.HasOne<SupportCase>().WithMany().HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<SupportCaseResolution>().WithMany().HasForeignKey(x => new { x.CompanyId, x.SupportCaseResolutionId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne<Contact>().WithMany().HasForeignKey(x => new { x.CompanyId, x.ContactId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.NoAction);
+    }
+}
+
+internal sealed class SupportAgentExecutionConfiguration : IEntityTypeConfiguration<SupportAgentExecution>
+{
+    public void Configure(EntityTypeBuilder<SupportAgentExecution> builder)
+    {
+        builder.ToTable("support_agent_executions");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.SupportCaseId).HasColumnName("support_case_id").IsRequired();
+        builder.Property(x => x.AgentId).HasColumnName("agent_id");
+        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200).IsRequired();
+        builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(40).IsRequired();
+        builder.Property(x => x.CurrentStep).HasColumnName("current_step").HasMaxLength(80).IsRequired();
+        builder.Property(x => x.CreatedDraftId).HasColumnName("created_draft_id");
+        builder.Property(x => x.Summary).HasColumnName("summary").HasMaxLength(1000).IsRequired();
+        builder.Property(x => x.FailureSummary).HasColumnName("failure_summary").HasMaxLength(1000);
+        builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+        builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId, x.UpdatedUtc });
+        builder.HasOne<SupportCase>().WithMany().HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne<Agent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.SetNull);
     }
 }
 
@@ -194,6 +284,10 @@ internal sealed class SupportReplyDraftConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.Answerability).HasColumnName("answerability").HasColumnType("decimal(5,3)").IsRequired();
         builder.Property(x => x.RationaleSummary).HasColumnName("rationale_summary").HasMaxLength(2000);
         builder.Property(x => x.SourceReferencesJson).HasColumnName("source_references_json").HasColumnType("nvarchar(max)").HasMaxLength(8000);
+        builder.Property(x => x.SafetyDecision).HasColumnName("safety_decision").HasMaxLength(40);
+        builder.Property(x => x.SafetyReasonCodesJson).HasColumnName("safety_reason_codes_json").HasMaxLength(1000);
+        builder.Property(x => x.SafetyPolicyVersion).HasColumnName("safety_policy_version").HasMaxLength(40);
+        builder.Property(x => x.SafetyEvaluatedUtc).HasColumnName("safety_evaluated_at");
         builder.Property(x => x.CreatedByAgentId).HasColumnName("created_by_agent_id");
         builder.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id");
         builder.Property(x => x.ApprovedByUserId).HasColumnName("approved_by_user_id");
@@ -227,11 +321,17 @@ internal sealed class SupportRefundRequestConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.RequestedByUserId).HasColumnName("requested_by_user_id");
         builder.Property(x => x.ApprovalRequestId).HasColumnName("approval_request_id");
         builder.Property(x => x.FinanceActionReferenceId).HasColumnName("finance_action_reference_id");
+        builder.Property(x => x.ProviderWriteRequestId).HasColumnName("provider_write_request_id");
+        builder.Property(x => x.ProviderApprovalRequestId).HasColumnName("provider_approval_request_id");
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(80).IsRequired();
+        builder.Property(x => x.LastFailureSummary).HasColumnName("last_failure_summary").HasMaxLength(1000);
+        builder.Property(x => x.ExecutionRequestedUtc).HasColumnName("execution_requested_at");
+        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.Status });
+        builder.HasIndex(x => new { x.CompanyId, x.ProviderWriteRequestId }).IsUnique().HasFilter("provider_write_request_id IS NOT NULL");
         builder.HasOne(x => x.SupportCase).WithMany(x => x.RefundRequests).HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
     }
 }
@@ -256,10 +356,12 @@ internal sealed class SupportKnowledgeGapConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.Property(x => x.ResolvedUtc).HasColumnName("resolved_at");
         builder.Property(x => x.LinkedTaskId).HasColumnName("linked_task_id");
+        builder.Property(x => x.LinkedKnowledgeDocumentId).HasColumnName("linked_knowledge_document_id");
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.Category });
         builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId });
         builder.HasIndex(x => new { x.CompanyId, x.SupportReplyDraftId });
         builder.HasIndex(x => new { x.CompanyId, x.Category, x.QuestionSummary });
+        builder.HasIndex(x => new { x.CompanyId, x.LinkedKnowledgeDocumentId });
         builder.HasOne<SupportCase>().WithMany(x => x.KnowledgeGaps).HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.NoAction);
         builder.HasOne<SupportReplyDraft>().WithMany().HasForeignKey(x => new { x.CompanyId, x.SupportReplyDraftId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.NoAction);
     }

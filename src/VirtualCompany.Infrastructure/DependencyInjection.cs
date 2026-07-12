@@ -497,6 +497,7 @@ public static class DependencyInjection
         services.AddOptions<SequenceExecutionWorkerOptions>()
             .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
         services.AddHostedService<SequenceExecutionBackgroundService>();
+        services.AddHostedService<ProspectingRunBackgroundService>();
         services.AddOptions<CustomerMemoryOptions>()
             .Bind(configuration.GetSection(CustomerMemoryOptions.SectionName));
         services.AddScoped<ICustomerMemoryService, CustomerMemoryService>();
@@ -518,6 +519,11 @@ public static class DependencyInjection
         services.AddScoped<IReplySignalDetectionPipeline, ReplySignalDetectionPipeline>();
         services.AddScoped<IDealIntelligenceSignalRepository, DealIntelligenceSignalRepository>();
         services.AddScoped<ISalesOperationsService, SalesOperationsService>();
+        services.AddScoped<ILeadGenerationService, LeadGenerationService>();
+        services.AddScoped<ISalesSourceService, SalesSourceService>();
+        services.AddScoped<IProspectDataProvider, FirstPartyProspectDataProvider>();
+        services.AddScoped<IProspectDataProviderRegistry, ProspectDataProviderRegistry>();
+        services.AddScoped<ICrmLeadAdapterRegistry, CrmLeadAdapterRegistry>();
         services.AddSingleton<ISalesAutomationPolicyEvaluator, SalesAutomationPolicyEvaluator>();
         services.Configure<SupportOperationsWorkerOptions>(configuration.GetSection(SupportOperationsWorkerOptions.SectionName));
         services.AddHostedService<SupportOperationsBackgroundService>();
@@ -528,13 +534,19 @@ public static class DependencyInjection
         services.AddScoped<ISupportOutboundEmailSender, SupportMailboxOutboundEmailSender>();
         services.AddScoped<ISupportKnowledgeContextProvider, SupportKnowledgeContextProvider>();
         services.AddScoped<ISupportMailboxRoutingService, SupportMailboxRoutingService>();
+        services.AddScoped<ISupportReplySafetyPolicy, DeterministicSupportReplySafetyPolicy>();
         services.AddScoped<ISupportReplyDraftService, SupportReplyDraftService>();
         services.AddScoped<ISupportToolActionService, SupportToolActionService>();
+        services.AddScoped<ISupportAgentOrchestrationService, SupportAgentOrchestrationService>();
         services.AddScoped<ISupportRefundWorkflowService, SupportRefundWorkflowService>();
+        services.AddScoped<ISupportRefundApprovalOutcomeHandler, SupportRefundApprovalOutcomeHandler>();
+        services.AddScoped<ISupportRefundFinanceService, SupportRefundFinanceService>();
         services.AddScoped<ISupportSlaMonitor, SupportSlaMonitor>();
+        services.AddScoped<ISupportSlaPolicyService, SupportSlaPolicyService>();
         services.AddScoped<ISupportKnowledgeGapService, SupportKnowledgeGapService>();
         services.AddScoped<ISupportAnalyticsService, SupportAnalyticsService>();
         services.AddScoped<ISupportMemoryUpdateService, SupportMemoryUpdateService>();
+        services.AddScoped<ISupportMemoryReviewService, SupportMemoryReviewService>();
 
         services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
         services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
@@ -578,6 +590,7 @@ public static class DependencyInjection
         services.AddScoped<IFinanceSupplierInvoiceSourceDocumentAttachmentService, SupplierInvoiceSourceDocumentAttachmentService>();
         services.AddScoped<ISupplierInvoiceDraftActionProvider, FortnoxSupplierInvoiceDraftActionProvider>();
         services.AddScoped<IFinanceSupplierInvoiceDraftActionService, SupplierInvoiceDraftActionService>();
+        services.AddScoped<IPaidSupplierBillExpensePostingService, PaidSupplierBillExpensePostingService>();
         services.AddScoped<IFinanceCustomerInvoiceFortnoxActionService, CustomerInvoiceFortnoxActionService>();
         services.AddScoped<ISupplierInvoiceCorrectionProvider, FortnoxSupplierInvoiceCorrectionProvider>();
         services.AddScoped<IFinanceSupplierInvoiceCorrectionService, SupplierInvoiceCorrectionService>();

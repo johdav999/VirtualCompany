@@ -23,6 +23,7 @@ public partial class BillsPage : FinancePageBase
     private bool IsSourceDocumentAttachmentSubmitting { get; set; }
     private bool IsDraftUpdateSubmitting { get; set; }
     private bool IsDraftBookkeepingSubmitting { get; set; }
+    private bool IsPaidExpensePostingSubmitting { get; set; }
     private bool IsCancellationSubmitting { get; set; }
     private bool IsCreditNoteSubmitting { get; set; }
     private bool IsEnrichmentSubmitting { get; set; }
@@ -250,6 +251,15 @@ public partial class BillsPage : FinancePageBase
                 bill.DocumentKind,
                 effectiveFallbackStatus,
                 paymentSummary?.RemainingAmount ?? bill.Amount);
+        var canPostPaidExpense = CanPostPaidSupplierBillExpense(
+            bill.PostingStatus,
+            effectiveSettlementStatus,
+            bill.DocumentKind,
+            effectiveFallbackStatus,
+            paymentSummary?.IsFullyPaid == true);
+        var paidExpensePosting = BuildPaidExpensePostingViewModel(
+            bill.PaidExpensePostingAvailability,
+            canPostPaidExpense);
         return new BillDetailViewModel(
             string.IsNullOrWhiteSpace(bill.BillNumber) ? "Bill" : bill.BillNumber,
             string.IsNullOrWhiteSpace(bill.CounterpartyName) ? "Supplier not available" : bill.CounterpartyName,
@@ -273,6 +283,7 @@ public partial class BillsPage : FinancePageBase
             correctionActions,
             enrichment,
             canRequestPaymentProposal,
+            paidExpensePosting,
             needsPaymentReview ? "Needs review" : null,
             needsPaymentReview ? "danger" : "neutral",
             bill.RelatedTransactions.Select(ToRelatedTransactionViewModel).ToList());
@@ -504,6 +515,69 @@ public partial class BillsPage : FinancePageBase
         finally
         {
             IsDraftBookkeepingSubmitting = false;
+        }
+    }
+
+    private async Task PostPaidSupplierBillExpenseAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null)
+        {
+            Logger.LogWarning(
+                "Paid supplier bill expense posting click ignored because context is missing. CompanyId: {CompanyId}. HasSelectedBill: {HasSelectedBill}.",
+                AccessState.CompanyId,
+                SelectedBill is not null);
+            DraftActionMessage = "Laura could not post this expense because the selected bill context is missing. Reload and try again.";
+            return;
+        }
+
+        Logger.LogInformation(
+            "Paid supplier bill expense posting request started from UI. CompanyId: {CompanyId}. BillId: {BillId}. BillNumber: {BillNumber}. PostingStatus: {PostingStatus}. DraftActionStatus: {DraftActionStatus}.",
+            companyId,
+            SelectedBill.Id,
+            SelectedBill.BillNumber,
+            SelectedBill.PostingStatus,
+            SelectedBill.DraftAction?.Status);
+
+        IsPaidExpensePostingSubmitting = true;
+        DraftActionMessage = null;
+        try
+        {
+            var posting = await FinanceApiClient.PostPaidSupplierBillExpenseAsync(companyId, SelectedBill.Id);
+            SelectedBill.DraftAction = posting.DraftAction;
+            DraftActionMessage = string.IsNullOrWhiteSpace(posting.Summary)
+                ? "Laura recorded the expense posting state."
+                : posting.Summary;
+            Logger.LogInformation(
+                "Paid supplier bill expense posting request completed from UI. CompanyId: {CompanyId}. BillId: {BillId}. DraftActionId: {DraftActionId}. Status: {Status}. Posted: {Posted}.",
+                companyId,
+                SelectedBill.Id,
+                posting.DraftActionId,
+                posting.Status,
+                posting.Posted);
+            await LoadBillsAsync(companyId);
+            await LoadDetailAsync(companyId, SelectedBill.Id);
+        }
+        catch (FinanceApiException ex)
+        {
+            DraftActionMessage = ex.Message;
+            Logger.LogWarning(
+                ex,
+                "Paid supplier bill expense posting request failed in UI. CompanyId: {CompanyId}. BillId: {BillId}.",
+                companyId,
+                SelectedBill.Id);
+        }
+        catch (Exception ex)
+        {
+            DraftActionMessage = "Laura could not post the expense before the request completed. Check the logs for details.";
+            Logger.LogError(
+                ex,
+                "Paid supplier bill expense posting request failed unexpectedly in UI. CompanyId: {CompanyId}. BillId: {BillId}.",
+                companyId,
+                SelectedBill.Id);
+        }
+        finally
+        {
+            IsPaidExpensePostingSubmitting = false;
         }
     }
 
@@ -1550,6 +1624,59 @@ public partial class BillsPage : FinancePageBase
             fallback is not ("paid" or "cancelled" or "canceled" or "void" or "booked");
     }
 
+    private static bool CanPostPaidSupplierBillExpense(
+        string? postingStatus,
+        string? settlementStatus,
+        string? documentKind,
+        string? fallbackStatus,
+        bool isFullyPaid)
+    {
+        var posting = NormalizeStatusToken(postingStatus);
+        var settlement = NormalizeStatusToken(settlementStatus);
+        var kind = NormalizeStatusToken(documentKind);
+        var fallback = NormalizeStatusToken(fallbackStatus);
+
+        return isFullyPaid &&
+            kind == "supplier_invoice" &&
+            posting == "draft" &&
+            settlement == "paid" &&
+            fallback is not ("cancelled" or "canceled" or "void" or "booked");
+    }
+
+    private static PaidExpensePostingViewModel BuildPaidExpensePostingViewModel(
+        PaidSupplierBillExpenseAvailabilityResponse? availability,
+        bool fallbackCanPost)
+    {
+        if (availability is not null)
+        {
+            return new PaidExpensePostingViewModel(
+                availability.CanPost,
+                string.IsNullOrWhiteSpace(availability.StatusLabel)
+                    ? availability.CanPost ? "Ready to post" : "Not ready"
+                    : availability.StatusLabel,
+                string.IsNullOrWhiteSpace(availability.StatusTone)
+                    ? availability.CanPost ? "success" : "warning"
+                    : availability.StatusTone,
+                string.IsNullOrWhiteSpace(availability.Message)
+                    ? availability.CanPost
+                        ? "Laura can post this paid supplier bill as an expense."
+                        : "Resolve the listed items before Laura posts this expense."
+                    : availability.Message,
+                availability.AccountCode,
+                availability.BlockingReasons);
+        }
+
+        return new PaidExpensePostingViewModel(
+            fallbackCanPost,
+            fallbackCanPost ? "Ready to post" : "Not ready",
+            fallbackCanPost ? "success" : "warning",
+            fallbackCanPost
+                ? "Laura can post this paid supplier bill as an expense."
+                : "This bill is not currently eligible for paid expense posting.",
+            null,
+            []);
+    }
+
     private static BillStatusPresentation ResolveStatusPresentation(
         string? postingStatus,
         string? settlementStatus,
@@ -1694,6 +1821,7 @@ public partial class BillsPage : FinancePageBase
         SupplierInvoiceCorrectionActionsViewModel Corrections,
         SupplierInvoiceEnrichmentViewModel Enrichment,
         bool CanRequestPaymentProposal,
+        PaidExpensePostingViewModel PaidExpensePosting,
         string? ReviewBadgeLabel,
         string ReviewBadgeTone,
         IReadOnlyList<BillRelatedTransactionViewModel> RelatedTransactions);
@@ -1751,6 +1879,14 @@ public partial class BillsPage : FinancePageBase
         DateTime? RequestedUtc,
         DateTime? UpdatedInProviderUtc,
         DateTime? BookedUtc);
+
+    private sealed record PaidExpensePostingViewModel(
+        bool CanPost,
+        string StatusLabel,
+        string StatusTone,
+        string Message,
+        string? AccountCode,
+        IReadOnlyList<string> BlockingReasons);
 
     private sealed record SupplierInvoiceCorrectionActionsViewModel(
         string CancellationStatusLabel,

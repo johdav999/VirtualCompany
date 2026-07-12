@@ -145,6 +145,136 @@ else
             </div>
         </div>
 
+        <div class="wizard-card mt-4">
+            <div class="agent-roster-header">
+                <div>
+                    <span class="dashboard-kicker">Joint agent brief</span>
+                    <h2 class="h4 mb-0 mt-2">Agent source access</h2>
+                </div>
+                <div class="dashboard-actions">
+                    <a class="btn btn-outline-secondary" href="@BuildFinanceEmailSettingsHref()">Finance email auth</a>
+                    <a class="btn btn-outline-secondary" href="@BuildFinanceIntegrationSettingsHref()">Finance integrations</a>
+                </div>
+            </div>
+            <p class="text-body-secondary mt-3 mb-0">
+                Configure what finance, sales, and customer support agents can use from authenticated email, web enquiries, documents, and business systems.
+                Finance-specific email and accounting settings remain authoritative in Finance settings; this brief controls the selected agent's access scopes.
+            </p>
+
+            <div class="row g-3 mt-3">
+                @foreach (var source in BuildAgentSourceCards())
+                {
+                    <div class="col-12 col-xl-4">
+                        <article class="border rounded-3 p-3 h-100">
+                            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
+                                <h3 class="h6 mb-0">@source.Title</h3>
+                                <span class="@source.BadgeCss">@source.Badge</span>
+                            </div>
+                            <p class="small text-body-secondary mb-3">@source.Description</p>
+                            <dl class="small mb-0">
+                                <dt>Authentication</dt>
+                                <dd>@source.Authentication</dd>
+                                <dt>Configured in</dt>
+                                <dd class="mb-0">@source.Owner</dd>
+                            </dl>
+                        </article>
+                    </div>
+                }
+            </div>
+
+            @if (CanManageProfiles && selectedAgentProfile is not null)
+            {
+                <div class="border-top pt-3 mt-4">
+                    <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
+                        <div>
+                            <h3 class="h5 mb-1">Selected agent access brief</h3>
+                            <p class="text-body-secondary mb-0">
+                                Apply these source choices to @selectedAgentProfile.DisplayName. Review the generated JSON, then save the operating profile.
+                            </p>
+                        </div>
+                        <span class="badge text-bg-light">@selectedAgentProfile.Department</span>
+                    </div>
+
+                    <div class="row g-3">
+                        <div class="col-12 col-lg-4">
+                            <label class="form-label" for="brief-authentication">Email authentication</label>
+                            <InputSelect id="brief-authentication" class="form-select" @bind-Value="jointBriefModel.EmailAuthentication">
+                                <option value="oauth_user_mailbox">OAuth user mailbox connection</option>
+                                <option value="app_oauth_client">App-owned OAuth client</option>
+                                <option value="provider_api_key">Provider API key or secret-store credential</option>
+                                <option value="manual_upload_only">Manual upload only</option>
+                            </InputSelect>
+                            <div class="form-text">Secrets stay in provider settings or the secret store, not in the agent profile.</div>
+                        </div>
+                        <div class="col-12 col-lg-4">
+                            <label class="form-label" for="brief-source-owner">Primary owner</label>
+                            <InputSelect id="brief-source-owner" class="form-select" @bind-Value="jointBriefModel.PrimaryOwner">
+                                <option value="finance">Finance</option>
+                                <option value="sales">Sales</option>
+                                <option value="customer_support">Customer support</option>
+                                <option value="shared_operations">Shared operations</option>
+                            </InputSelect>
+                        </div>
+                        <div class="col-12 col-lg-4">
+                            <label class="form-label" for="brief-review">Review mode</label>
+                            <InputSelect id="brief-review" class="form-select" @bind-Value="jointBriefModel.ReviewMode">
+                                <option value="human_review_required">Human review required</option>
+                                <option value="low_risk_autonomous">Low-risk autonomous allowed</option>
+                                <option value="read_only">Read-only context</option>
+                            </InputSelect>
+                        </div>
+                    </div>
+
+                    <div class="row g-3 mt-1">
+                        <div class="col-12 col-lg-3">
+                            <fieldset class="border rounded-3 p-3 h-100">
+                                <legend class="h6 mb-3">Email sources</legend>
+                                @RenderBriefCheckbox("Finance mailbox", () => jointBriefModel.FinanceMailbox, value => jointBriefModel.FinanceMailbox = value)
+                                @RenderBriefCheckbox("Sales mailbox", () => jointBriefModel.SalesMailbox, value => jointBriefModel.SalesMailbox = value)
+                                @RenderBriefCheckbox("Support mailbox", () => jointBriefModel.SupportMailbox, value => jointBriefModel.SupportMailbox = value)
+                            </fieldset>
+                        </div>
+                        <div class="col-12 col-lg-3">
+                            <fieldset class="border rounded-3 p-3 h-100">
+                                <legend class="h6 mb-3">Web enquiries</legend>
+                                @RenderBriefCheckbox("Website contact forms", () => jointBriefModel.WebContactForms, value => jointBriefModel.WebContactForms = value)
+                                @RenderBriefCheckbox("Sales lead forms", () => jointBriefModel.SalesLeadForms, value => jointBriefModel.SalesLeadForms = value)
+                                @RenderBriefCheckbox("Support web requests", () => jointBriefModel.SupportWebRequests, value => jointBriefModel.SupportWebRequests = value)
+                            </fieldset>
+                        </div>
+                        <div class="col-12 col-lg-3">
+                            <fieldset class="border rounded-3 p-3 h-100">
+                                <legend class="h6 mb-3">Documents</legend>
+                                @RenderBriefCheckbox("Company policies", () => jointBriefModel.CompanyPolicies, value => jointBriefModel.CompanyPolicies = value)
+                                @RenderBriefCheckbox("Product catalog", () => jointBriefModel.ProductCatalog, value => jointBriefModel.ProductCatalog = value)
+                                @RenderBriefCheckbox("Uploaded knowledge docs", () => jointBriefModel.KnowledgeDocuments, value => jointBriefModel.KnowledgeDocuments = value)
+                            </fieldset>
+                        </div>
+                        <div class="col-12 col-lg-3">
+                            <fieldset class="border rounded-3 p-3 h-100">
+                                <legend class="h6 mb-3">Business systems</legend>
+                                @RenderBriefCheckbox("Fortnox finance data", () => jointBriefModel.FortnoxFinance, value => jointBriefModel.FortnoxFinance = value)
+                                @RenderBriefCheckbox("Customer records", () => jointBriefModel.CustomerRecords, value => jointBriefModel.CustomerRecords = value)
+                                @RenderBriefCheckbox("Order and invoice records", () => jointBriefModel.OrderAndInvoiceRecords, value => jointBriefModel.OrderAndInvoiceRecords = value)
+                            </fieldset>
+                        </div>
+                    </div>
+
+                    <div class="dashboard-actions mt-3">
+                        <button class="btn btn-primary" type="button" @onclick="ApplyJointBriefToSelectedAgent">Apply to selected agent</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="LoadRecommendedJointBriefForSelectedAgent">Use recommended access</button>
+                    </div>
+                    <p class="small text-body-secondary mb-0 mt-2">
+                        Applying updates the selected agent's data scopes and tool permissions. Use Save operating profile below to persist the change.
+                    </p>
+                </div>
+            }
+            else
+            {
+                <p class="text-body-secondary mb-0 mt-4">Select an agent from the roster to configure its access brief.</p>
+            }
+        </div>
+
         @if (CanManageProfiles)
         {
             <div class="wizard-card mt-4">
@@ -409,6 +539,7 @@ else
     private HireAgentFormModel hireModel = new();
     private AgentOperatingProfileViewModel? selectedAgentProfile;
     private AgentOperatingProfileFormModel profileModel = new();
+    private JointAgentBriefFormModel jointBriefModel = new();
     private Dictionary<string, string[]> profileErrors = new(StringComparer.OrdinalIgnoreCase);
     private Guid? selectedAgentId;
     private string? selectedTemplateId;
@@ -441,6 +572,58 @@ else
         string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
 
     private string BuildProfileUri(Guid agentId) => $"/agents/{agentId}?companyId={CompanyId}";
+
+    private string BuildFinanceEmailSettingsHref() =>
+        DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.EmailSettings);
+
+    private string BuildFinanceIntegrationSettingsHref() =>
+        FinanceRoutes.BuildFinanceIntegrationSettingsPath("fortnox", CompanyId);
+
+    private IReadOnlyList<AgentSourceCard> BuildAgentSourceCards() =>
+        [
+            new(
+                "Authenticated email",
+                "Gmail and Microsoft 365 mailbox access for finance intake, sales conversations, and support cases.",
+                "OAuth",
+                "Finance settings for OAuth clients; mailbox connection screens for user mailbox consent.",
+                "Configured",
+                "badge text-bg-success"),
+            new(
+                "Web enquiries",
+                "Website contact forms, sales lead forms, and support web requests that agents can triage or answer.",
+                "Signed webhook, API key, or trusted app submission",
+                "Sales and support source policies.",
+                "Policy",
+                "badge text-bg-light"),
+            new(
+                "Documents and knowledge",
+                "Company policies, product catalog, FAQ, uploaded knowledge documents, and approved support answers.",
+                "App access control",
+                "Knowledge management and agent data scopes.",
+                "Scoped",
+                "badge text-bg-light"),
+            new(
+                "Finance systems",
+                "Fortnox suppliers, customers, invoices, bills, accounts, payments, and activity used by the finance agent.",
+                "Provider OAuth or integration credential",
+                "Finance integration settings.",
+                "Finance-owned",
+                "badge text-bg-warning"),
+            new(
+                "Sales records",
+                "Customer activity, deals, sales emails, website submissions, and outbound follow-up context.",
+                "Mailbox consent and app access control",
+                "Sales workspace and sales automation policy.",
+                "Scoped",
+                "badge text-bg-light"),
+            new(
+                "Support records",
+                "Support cases, mailbox-routed emails, memory observations, SLA policies, and approved replies.",
+                "Mailbox routing policy and app access control",
+                "Support workspace and mailbox routing settings.",
+                "Scoped",
+                "badge text-bg-light")
+        ];
 
 
     protected override async Task OnParametersSetAsync()
@@ -556,6 +739,7 @@ else
         {
             selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+            LoadRecommendedJointBriefForSelectedAgent();
             NavigateIfChanged(BuildAgentsUri(companyId, Department, Status, agentId));
         }
         catch (OnboardingApiException ex)
@@ -800,6 +984,100 @@ else
         builder.CloseElement();
     };
 
+    private RenderFragment RenderBriefCheckbox(string label, Func<bool> valueAccessor, Action<bool> setter) => builder =>
+    {
+        var sequence = 0;
+        var id = $"brief-{NormalizeCssToken(label)}";
+
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "form-check mb-2");
+
+        builder.OpenElement(sequence++, "input");
+        builder.AddAttribute(sequence++, "id", id);
+        builder.AddAttribute(sequence++, "class", "form-check-input");
+        builder.AddAttribute(sequence++, "type", "checkbox");
+        builder.AddAttribute(sequence++, "checked", valueAccessor());
+        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<bool>(this, setter, valueAccessor()));
+        builder.CloseElement();
+
+        builder.OpenElement(sequence++, "label");
+        builder.AddAttribute(sequence++, "class", "form-check-label");
+        builder.AddAttribute(sequence++, "for", id);
+        builder.AddContent(sequence++, label);
+        builder.CloseElement();
+
+        builder.CloseElement();
+    };
+
+    private void LoadRecommendedJointBriefForSelectedAgent()
+    {
+        if (selectedAgentProfile is null)
+        {
+            jointBriefModel = new JointAgentBriefFormModel();
+            return;
+        }
+
+        jointBriefModel = JointAgentBriefFormModel.ForAgent(selectedAgentProfile);
+    }
+
+    private void ApplyJointBriefToSelectedAgent()
+    {
+        if (selectedAgentProfile is null)
+        {
+            profileErrorMessage = "Select an agent before applying the joint agent brief.";
+            profileSuccessMessage = null;
+            return;
+        }
+
+        profileModel.DataScopesJson = UpsertJsonSection(
+            profileModel.DataScopesJson,
+            "joint_agent_brief",
+            jointBriefModel.ToDataScopesPayload(selectedAgentProfile));
+
+        profileModel.ToolPermissionsJson = UpsertJsonSection(
+            profileModel.ToolPermissionsJson,
+            "joint_agent_brief",
+            jointBriefModel.ToToolPermissionsPayload(selectedAgentProfile));
+
+        profileErrorMessage = null;
+        profileSuccessMessage = $"{selectedAgentProfile.DisplayName} access brief was applied. Save the operating profile to persist it.";
+    }
+
+    private static string UpsertJsonSection(string json, string sectionName, object payload)
+    {
+        var root = ParseJsonObjectOrEmpty(json);
+        root[sectionName] = JsonSerializer.SerializeToNode(payload, JsonEditorOptions);
+        return root.ToJsonString(JsonEditorOptions);
+    }
+
+    private static JsonObject ParseJsonObjectOrEmpty(string? json)
+    {
+        if (string.IsNullOrWhiteSpace(json))
+        {
+            return new JsonObject();
+        }
+
+        try
+        {
+            return JsonNode.Parse(json) as JsonObject ?? new JsonObject();
+        }
+        catch (JsonException)
+        {
+            return new JsonObject();
+        }
+    }
+
+    private static string NormalizeCssToken(string value)
+    {
+        var chars = value
+            .Trim()
+            .ToLowerInvariant()
+            .Select(ch => char.IsLetterOrDigit(ch) ? ch : '-')
+            .ToArray();
+
+        return new string(chars).Trim('-');
+    }
+
     private async Task HandleHireAsync()
     {
         if (CompanyId is not Guid companyId)
@@ -836,6 +1114,150 @@ else
         {
             isSubmitting = false;
         }
+    }
+
+    private sealed record AgentSourceCard(
+        string Title,
+        string Description,
+        string Authentication,
+        string Owner,
+        string Badge,
+        string BadgeCss);
+
+    private sealed class JointAgentBriefFormModel
+    {
+        public string EmailAuthentication { get; set; } = "oauth_user_mailbox";
+        public string PrimaryOwner { get; set; } = "shared_operations";
+        public string ReviewMode { get; set; } = "human_review_required";
+        public bool FinanceMailbox { get; set; }
+        public bool SalesMailbox { get; set; }
+        public bool SupportMailbox { get; set; }
+        public bool WebContactForms { get; set; }
+        public bool SalesLeadForms { get; set; }
+        public bool SupportWebRequests { get; set; }
+        public bool CompanyPolicies { get; set; } = true;
+        public bool ProductCatalog { get; set; } = true;
+        public bool KnowledgeDocuments { get; set; } = true;
+        public bool FortnoxFinance { get; set; }
+        public bool CustomerRecords { get; set; }
+        public bool OrderAndInvoiceRecords { get; set; }
+
+        public static JointAgentBriefFormModel ForAgent(AgentOperatingProfileViewModel profile)
+        {
+            var department = profile.Department?.Trim().ToLowerInvariant() ?? string.Empty;
+            var role = $"{profile.RoleName} {profile.DisplayName}".Trim().ToLowerInvariant();
+
+            if (department.Contains("finance", StringComparison.OrdinalIgnoreCase) ||
+                role.Contains("finance", StringComparison.OrdinalIgnoreCase) ||
+                role.Contains("laura", StringComparison.OrdinalIgnoreCase))
+            {
+                return new JointAgentBriefFormModel
+                {
+                    PrimaryOwner = "finance",
+                    FinanceMailbox = true,
+                    CompanyPolicies = true,
+                    ProductCatalog = true,
+                    KnowledgeDocuments = true,
+                    FortnoxFinance = true,
+                    CustomerRecords = true,
+                    OrderAndInvoiceRecords = true,
+                    ReviewMode = "human_review_required"
+                };
+            }
+
+            if (department.Contains("sales", StringComparison.OrdinalIgnoreCase) ||
+                role.Contains("sales", StringComparison.OrdinalIgnoreCase))
+            {
+                return new JointAgentBriefFormModel
+                {
+                    PrimaryOwner = "sales",
+                    SalesMailbox = true,
+                    WebContactForms = true,
+                    SalesLeadForms = true,
+                    CompanyPolicies = true,
+                    ProductCatalog = true,
+                    KnowledgeDocuments = true,
+                    CustomerRecords = true,
+                    OrderAndInvoiceRecords = true,
+                    ReviewMode = "human_review_required"
+                };
+            }
+
+            if (department.Contains("support", StringComparison.OrdinalIgnoreCase) ||
+                department.Contains("customer", StringComparison.OrdinalIgnoreCase) ||
+                role.Contains("support", StringComparison.OrdinalIgnoreCase) ||
+                role.Contains("ben", StringComparison.OrdinalIgnoreCase))
+            {
+                return new JointAgentBriefFormModel
+                {
+                    PrimaryOwner = "customer_support",
+                    SupportMailbox = true,
+                    WebContactForms = true,
+                    SupportWebRequests = true,
+                    CompanyPolicies = true,
+                    ProductCatalog = true,
+                    KnowledgeDocuments = true,
+                    CustomerRecords = true,
+                    OrderAndInvoiceRecords = true,
+                    ReviewMode = "human_review_required"
+                };
+            }
+
+            return new JointAgentBriefFormModel();
+        }
+
+        public object ToDataScopesPayload(AgentOperatingProfileViewModel profile) =>
+            new
+            {
+                version = "joint-agent-brief-v1",
+                agentId = profile.Id,
+                department = profile.Department,
+                primaryOwner = PrimaryOwner,
+                reviewMode = ReviewMode,
+                sourceAccess = new
+                {
+                    email = new
+                    {
+                        financeMailbox = FinanceMailbox,
+                        salesMailbox = SalesMailbox,
+                        supportMailbox = SupportMailbox
+                    },
+                    webEnquiries = new
+                    {
+                        websiteContactForms = WebContactForms,
+                        salesLeadForms = SalesLeadForms,
+                        supportWebRequests = SupportWebRequests
+                    },
+                    documents = new
+                    {
+                        companyPolicies = CompanyPolicies,
+                        productCatalog = ProductCatalog,
+                        uploadedKnowledgeDocuments = KnowledgeDocuments
+                    },
+                    businessSystems = new
+                    {
+                        fortnoxFinance = FortnoxFinance,
+                        customerRecords = CustomerRecords,
+                        orderAndInvoiceRecords = OrderAndInvoiceRecords
+                    }
+                }
+            };
+
+        public object ToToolPermissionsPayload(AgentOperatingProfileViewModel profile) =>
+            new
+            {
+                version = "joint-agent-brief-v1",
+                agentId = profile.Id,
+                emailAuthentication = EmailAuthentication,
+                canReadAuthenticatedEmail = FinanceMailbox || SalesMailbox || SupportMailbox,
+                canReadWebEnquiries = WebContactForms || SalesLeadForms || SupportWebRequests,
+                canReadDocuments = CompanyPolicies || ProductCatalog || KnowledgeDocuments,
+                canReadFinanceSystems = FortnoxFinance,
+                canReadCustomerRecords = CustomerRecords,
+                canReadOrderAndInvoiceRecords = OrderAndInvoiceRecords,
+                secretsPolicy = "store_credentials_in_provider_settings_or_secret_store",
+                humanReviewRequired = string.Equals(ReviewMode, "human_review_required", StringComparison.OrdinalIgnoreCase)
+            };
     }
 
     private sealed class HireAgentFormModel : IValidatableObject

@@ -16,13 +16,16 @@ public sealed class InternalFinanceToolProvider : IFinanceToolProvider
 {
     private readonly IFinanceReadService _readService;
     private readonly IFinanceCommandService _commandService;
+    private readonly IPaidSupplierBillExpensePostingService _paidSupplierBillExpensePostingService;
 
     public InternalFinanceToolProvider(
         IFinanceReadService readService,
-        IFinanceCommandService commandService)
+        IFinanceCommandService commandService,
+        IPaidSupplierBillExpensePostingService paidSupplierBillExpensePostingService)
     {
         _readService = readService;
         _commandService = commandService;
+        _paidSupplierBillExpensePostingService = paidSupplierBillExpensePostingService;
     }
 
     public Task<FinanceCashBalanceDto> GetCashBalanceAsync(
@@ -92,6 +95,11 @@ public sealed class InternalFinanceToolProvider : IFinanceToolProvider
         UpdateFinanceInvoiceApprovalStatusCommand command,
         CancellationToken cancellationToken) =>
         _commandService.UpdateInvoiceApprovalStatusAsync(command, cancellationToken);
+
+    public Task<PaidSupplierBillExpensePostingDto> PostPaidSupplierBillExpenseAsync(
+        PostPaidSupplierBillExpenseCommand command,
+        CancellationToken cancellationToken) =>
+        _paidSupplierBillExpensePostingService.PostAsync(command, cancellationToken);
 
     private static string? ReadString(IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonNode?> payload, string key)
     {
@@ -469,6 +477,38 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
             "USD",
             command.Status,
             null));
+
+    public Task<PaidSupplierBillExpensePostingDto> PostPaidSupplierBillExpenseAsync(
+        PostPaidSupplierBillExpenseCommand command,
+        CancellationToken cancellationToken)
+    {
+        var now = DefaultAsOfUtc;
+        var draftAction = new SupplierInvoiceDraftActionDto(
+            Guid.Parse("80000000-0000-0000-0000-000000000001"),
+            command.BillId,
+            "booked",
+            FinanceIntegrationProviderKeys.Fortnox,
+            Guid.Parse("90000000-0000-0000-0000-000000000001"),
+            command.ActorUserId,
+            now,
+            null,
+            now,
+            "Mock Fortnox booked supplier invoice MOCK-BILL-001.",
+            now,
+            now);
+
+        return Task.FromResult(new PaidSupplierBillExpensePostingDto(
+            command.BillId,
+            draftAction.Id,
+            draftAction.Status,
+            Posted: true,
+            draftAction.ProviderKey!,
+            draftAction.ConnectionId,
+            "Mock Fortnox booked supplier invoice MOCK-BILL-001.",
+            draftAction.RequestedUtc,
+            draftAction.BookedUtc,
+            draftAction));
+    }
 
     private static string? ReadString(IReadOnlyDictionary<string, System.Text.Json.Nodes.JsonNode?> payload, string key)
     {

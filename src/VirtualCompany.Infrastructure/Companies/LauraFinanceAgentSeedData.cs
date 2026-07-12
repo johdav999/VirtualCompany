@@ -93,7 +93,8 @@ internal static class LauraFinanceAgentSeedData
                 JsonValue.Create("recommend_transaction_category"),
                 JsonValue.Create("recommend_invoice_approval_decision"),
                 JsonValue.Create("categorize_transaction"),
-                JsonValue.Create("approve_invoice")),
+                JsonValue.Create("approve_invoice"),
+                JsonValue.Create("post_paid_supplier_bill_expense")),
             ["actions"] = new JsonArray(
                 JsonValue.Create("read"),
                 JsonValue.Create("recommend"),
@@ -150,10 +151,12 @@ internal static class LauraFinanceAgentSeedData
                     JsonValue.Create("transaction_categorization_review"),
                     JsonValue.Create("invoice_approval_review"),
                     JsonValue.Create("profit_and_loss_summary"),
-                    JsonValue.Create("finance_risk_detection")),
+                    JsonValue.Create("finance_risk_detection"),
+                    JsonValue.Create("paid_supplier_bill_expense_posting")),
                 ["requiresApproval"] = new JsonArray(
                     JsonValue.Create("categorize_transaction"),
-                    JsonValue.Create("approve_invoice")),
+                    JsonValue.Create("approve_invoice"),
+                    JsonValue.Create("post_paid_supplier_bill_expense")),
                 ["financeBoundary"] = JsonValue.Create("finance")
             },
             ["conditions"] = new JsonArray()

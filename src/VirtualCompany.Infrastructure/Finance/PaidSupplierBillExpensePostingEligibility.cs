@@ -1,0 +1,155 @@
+using System.Text.Json.Nodes;
+using VirtualCompany.Application.Finance;
+using VirtualCompany.Domain.Enums;
+
+namespace VirtualCompany.Infrastructure.Finance;
+
+internal static class PaidSupplierBillExpensePostingEligibility
+{
+    private static readonly HashSet<string> BlockingWarningCodes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "duplicate_payment",
+        "wrong_amount",
+        "paid_without_approval"
+    };
+
+    public static PaidSupplierBillExpenseAvailabilityDto Evaluate(
+        string? documentKind,
+        string? postingStatus,
+        string? settlementStatus,
+        string? fallbackStatus,
+        bool isFullyPaid,
+        string? accountCode,
+        IReadOnlyList<JsonObject>? reconciliationWarnings)
+    {
+        var blockingReasons = new List<string>();
+        var kind = NormalizeStatusToken(documentKind);
+        var posting = NormalizeStatusToken(postingStatus);
+        var settlement = NormalizeStatusToken(settlementStatus);
+        var fallback = NormalizeStatusToken(fallbackStatus);
+        var normalizedAccountCode = FinanceAccountCodePolicy.NormalizeAccountCode(accountCode);
+
+        if (kind != FinanceDocumentKinds.SupplierInvoice)
+        {
+            blockingReasons.Add("Only supplier invoices can be posted as expenses.");
+        }
+
+        if (posting == FinanceDocumentPostingStatuses.Booked || fallback == "booked")
+        {
+            blockingReasons.Add("This supplier bill already appears booked in Fortnox.");
+        }
+
+        if (posting == FinanceDocumentPostingStatuses.Cancelled || fallback is "cancelled" or "canceled" or "void")
+        {
+            blockingReasons.Add("Cancelled supplier bills cannot be posted as expenses.");
+        }
+
+        if (settlement == FinanceSettlementStatuses.Credited)
+        {
+            blockingReasons.Add("Credited supplier bills cannot be posted as expenses.");
+        }
+
+        if (settlement != FinanceSettlementStatuses.Paid || !isFullyPaid)
+        {
+            blockingReasons.Add("The supplier bill must be fully paid before Laura can post the expense.");
+        }
+
+        if (!FinanceAccountCodePolicy.IsSupplierExpenseAccount(normalizedAccountCode))
+        {
+            blockingReasons.Add("Choose a supplier expense account before Laura posts this bill.");
+        }
+
+        foreach (var warning in reconciliationWarnings ?? [])
+        {
+            var code = ReadString(warning, "code");
+            if (!string.IsNullOrWhiteSpace(code) && BlockingWarningCodes.Contains(code))
+            {
+                blockingReasons.Add(ReadString(warning, "message") ?? "Resolve the payment review warning before posting this expense.");
+            }
+        }
+
+        if (blockingReasons.Count == 0)
+        {
+            return new PaidSupplierBillExpenseAvailabilityDto(
+                true,
+                "Ready to post",
+                "success",
+                "Laura can post this paid supplier bill as an expense.",
+                normalizedAccountCode,
+                []);
+        }
+
+        return new PaidSupplierBillExpenseAvailabilityDto(
+            false,
+            ResolveBlockedLabel(blockingReasons),
+            ResolveBlockedTone(blockingReasons),
+            blockingReasons[0],
+            normalizedAccountCode,
+            blockingReasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+    }
+
+    public static IReadOnlyList<JsonObject> ExtractWarnings(SupplierInvoiceEnrichmentActionDto? action)
+    {
+        if (action?.ReconciliationWarnings is null)
+        {
+            return [];
+        }
+
+        return action.ReconciliationWarnings
+            .OfType<JsonObject>()
+            .ToArray();
+    }
+
+    public static string? ResolveExpenseAccountCode(SupplierInvoiceEnrichmentActionDto? enrichmentAction, string? supplierDefaultAccount)
+    {
+        var suggestedAccount = ReadString(enrichmentAction?.SuggestionPayload?["coding"] as JsonObject, "ledgerAccount");
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(suggestedAccount))
+        {
+            return FinanceAccountCodePolicy.NormalizeAccountCode(suggestedAccount);
+        }
+
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(supplierDefaultAccount))
+        {
+            return FinanceAccountCodePolicy.NormalizeAccountCode(supplierDefaultAccount);
+        }
+
+        return null;
+    }
+
+    private static string ResolveBlockedLabel(IReadOnlyList<string> reasons)
+    {
+        if (reasons.Any(reason => reason.Contains("already appears booked", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Already booked";
+        }
+
+        if (reasons.Any(reason => reason.Contains("payment", StringComparison.OrdinalIgnoreCase) || reason.Contains("paid", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Needs payment review";
+        }
+
+        if (reasons.Any(reason => reason.Contains("expense account", StringComparison.OrdinalIgnoreCase)))
+        {
+            return "Needs account review";
+        }
+
+        return "Not ready";
+    }
+
+    private static string ResolveBlockedTone(IReadOnlyList<string> reasons) =>
+        reasons.Any(reason => reason.Contains("already appears booked", StringComparison.OrdinalIgnoreCase))
+            ? "success"
+            : "warning";
+
+    private static string? ReadString(JsonObject? node, string propertyName) =>
+        node is not null &&
+        node.TryGetPropertyValue(propertyName, out var value) &&
+        value is not null
+            ? value.ToString()
+            : null;
+
+    private static string NormalizeStatusToken(string? value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
+}

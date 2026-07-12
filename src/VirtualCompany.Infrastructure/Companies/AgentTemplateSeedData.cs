@@ -44,8 +44,7 @@ internal static class AgentTemplateSeedData
     private static AgentTemplateSeedCatalog LoadCatalog()
     {
         var assembly = typeof(AgentTemplateSeedData).Assembly;
-        using var stream = assembly.GetManifestResourceStream(ResourceName)
-            ?? throw new InvalidOperationException($"Embedded agent template seed '{ResourceName}' was not found.");
+        using var stream = OpenCatalogStream(assembly);
         using var reader = new StreamReader(stream);
         var json = reader.ReadToEnd();
         var catalog = JsonSerializer.Deserialize<AgentTemplateSeedCatalog>(json, SerializerOptions)
@@ -82,6 +81,24 @@ internal static class AgentTemplateSeedData
             StringComparer.OrdinalIgnoreCase);
 
         return catalog;
+    }
+
+    private static Stream OpenCatalogStream(Assembly assembly)
+    {
+        var embedded = assembly.GetManifestResourceStream(ResourceName);
+        if (embedded is not null)
+        {
+            return embedded;
+        }
+
+        var deployedPath = Path.Combine(AppContext.BaseDirectory, "SeedData", "agent-templates.json");
+        if (File.Exists(deployedPath))
+        {
+            return File.OpenRead(deployedPath);
+        }
+
+        throw new InvalidOperationException(
+            $"Agent template seed was not found as embedded resource '{ResourceName}' or deployed file '{deployedPath}'.");
     }
 
     private static Dictionary<string, JsonNode?> ClonePayload(IDictionary<string, JsonNode?> payload) =>

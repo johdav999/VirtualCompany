@@ -203,14 +203,11 @@ public sealed class CustomerInvoiceFortnoxActionService : IFinanceCustomerInvoic
 
     private static void ValidateCanCreate(FinanceInvoice invoice)
     {
-        if (!string.Equals(invoice.DocumentKind, FinanceDocumentKinds.Invoice, StringComparison.OrdinalIgnoreCase))
+        var isInvoice = string.Equals(invoice.DocumentKind, FinanceDocumentKinds.Invoice, StringComparison.OrdinalIgnoreCase) && invoice.Amount > 0m;
+        var isCreditNote = string.Equals(invoice.DocumentKind, FinanceDocumentKinds.CreditNote, StringComparison.OrdinalIgnoreCase) && invoice.Amount < 0m;
+        if (!isInvoice && !isCreditNote)
         {
-            throw new InvalidOperationException("Only customer invoices can be created in Fortnox.");
-        }
-
-        if (invoice.Amount <= 0m)
-        {
-            throw new InvalidOperationException("Only positive customer invoices can be created in Fortnox.");
+            throw new InvalidOperationException("Only valid customer invoices or customer credit notes can be created in Fortnox.");
         }
 
         if (string.Equals(invoice.SettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase) ||
@@ -418,7 +415,9 @@ public sealed class CustomerInvoiceFortnoxActionService : IFinanceCustomerInvoic
         var customerNumber = customerReference.ExternalNumber ?? customerReference.ExternalId;
         var line = new JsonObject
         {
-            ["Description"] = $"Invoice {invoice.InvoiceNumber}",
+            ["Description"] = invoice.DocumentKind == FinanceDocumentKinds.CreditNote
+                ? $"Credit note {invoice.InvoiceNumber}"
+                : $"Invoice {invoice.InvoiceNumber}",
             ["DeliveredQuantity"] = 1,
             ["Price"] = invoice.Amount,
             ["VAT"] = 0
@@ -431,7 +430,9 @@ public sealed class CustomerInvoiceFortnoxActionService : IFinanceCustomerInvoic
             ["DueDate"] = FormatDate(invoice.DueUtc),
             ["Currency"] = invoice.Currency,
             ["YourReference"] = invoice.Counterparty.Name,
-            ["Remarks"] = $"Created from Virtual Company invoice {invoice.InvoiceNumber}.",
+            ["Remarks"] = invoice.DocumentKind == FinanceDocumentKinds.CreditNote
+                ? $"Created from approved Virtual Company customer credit {invoice.InvoiceNumber}."
+                : $"Created from Virtual Company invoice {invoice.InvoiceNumber}.",
             ["InvoiceRows"] = new JsonArray(line)
         };
 
@@ -517,7 +518,7 @@ public sealed class CustomerInvoiceFortnoxActionService : IFinanceCustomerInvoic
         return merged;
     }
 
-    private static Guid CreateWriteRequestId(string action, Guid invoiceId, string? documentNumber)
+    internal static Guid CreateWriteRequestId(string action, Guid invoiceId, string? documentNumber)
     {
         var seed = string.IsNullOrWhiteSpace(documentNumber)
             ? $"fortnox-customer-invoice:{action}:{invoiceId:N}"

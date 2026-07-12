@@ -1,20 +1,32 @@
-Get-Process dotnet -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process dotnet -ErrorAction SilentlyContinue |
+    Where-Object { $_.Path -like (Join-Path $PSScriptRoot '*') } |
+    Stop-Process -Force -ErrorAction SilentlyContinue
 
 $sqlPassword = if ([string]::IsNullOrWhiteSpace($env:VC_SQL_SA_PASSWORD)) { "YourStrong!Passw0rd" } else { $env:VC_SQL_SA_PASSWORD }
+$env:VC_SQL_SA_PASSWORD = $sqlPassword
 $composeFile = Join-Path $PSScriptRoot "docker-compose.yml"
+$docker = "docker"
 
 if (-not (Get-Command docker -ErrorAction SilentlyContinue))
 {
-    throw "Docker CLI is not installed or not available on PATH."
+    $defaultDockerPath = "C:\Program Files\Docker\Docker\resources\bin\docker.exe"
+    if (Test-Path $defaultDockerPath)
+    {
+        $docker = $defaultDockerPath
+    }
+    else
+    {
+        throw "Docker CLI is not installed or not available on PATH."
+    }
 }
 
-& docker info *> $null
+& $docker info *> $null
 if ($LASTEXITCODE -ne 0)
 {
     throw "Docker Desktop is not running. Start Docker Desktop and try again."
 }
 
-& docker compose -f $composeFile up -d sqlserver
+& $docker compose -f $composeFile up -d sqlserver
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $maxAttempts = 30

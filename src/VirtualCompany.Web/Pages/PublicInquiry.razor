@@ -1,0 +1,74 @@
+@page "/company"
+@page "/contact"
+@layout PublicLayout
+@rendermode InteractiveServer
+@inject HttpClient Http
+@inject IConfiguration Configuration
+@inject NavigationManager Navigation
+
+<PageTitle>Virtual Company | AI management team for SMEs</PageTitle>
+
+<header class="public-nav">
+    <a class="public-brand" href="/company">Virtual Company</a>
+    <nav aria-label="Public navigation"><a href="#capabilities">Capabilities</a><a href="#inquiry">Contact</a></nav>
+    <a class="public-nav-action" href="#inquiry">Book a conversation</a>
+</header>
+
+<section class="public-hero">
+    <div class="public-hero-copy">
+        <span>AI management team for SMEs</span>
+        <h1>Run your company with an AI management team</h1>
+        <p>Give finance, sales, support, and operations to named AI managers while you retain approval and control.</p>
+        <a href="#inquiry">Talk to our team</a>
+    </div>
+    <div class="public-product-preview" aria-label="Virtual Company management dashboard preview">
+        <div class="preview-top"><strong>Good morning</strong><span>3 priorities need attention</span></div>
+        <div class="preview-metrics"><div><b>78 days</b><small>Cash runway</small></div><div><b>12</b><small>Open opportunities</small></div><div><b>94%</b><small>Support SLA</small></div></div>
+        <div class="preview-agents"><img src="/images/laura.png" alt="Laura, Finance Manager" /><div><strong>Laura</strong><small>Finance is up to date</small></div><img src="/images/paul.png" alt="Alex, Sales Manager" /><div><strong>Alex</strong><small>5 prospects ready to review</small></div></div>
+    </div>
+</section>
+
+<section class="public-contact" id="inquiry">
+    <div class="public-contact-copy">
+        <span>Start a conversation</span><h2>Tell us what you want to improve</h2>
+        <p>We will review your goals and respond within one business day.</p>
+        <ul><li>Built for small and medium-sized businesses</li><li>Human approval for sensitive actions</li><li>Your company data remains isolated</li></ul>
+    </div>
+    <EditForm Model="form" OnValidSubmit="SubmitAsync" class="public-inquiry-form">
+        <DataAnnotationsValidator />
+        @if (submitted) { <div class="inquiry-success" role="status"><strong>Thanks. Your inquiry has been sent.</strong><span>We will be in touch within one business day.</span></div> }
+        @if (!string.IsNullOrWhiteSpace(error)) { <div class="inquiry-error" role="alert">@error</div> }
+        <div class="form-pair"><label>Full name<InputText @bind-Value="form.Name" autocomplete="name" /></label><label>Work email<InputText @bind-Value="form.Email" type="email" autocomplete="email" /></label></div>
+        <div class="form-pair"><label>Company<InputText @bind-Value="form.CompanyName" autocomplete="organization" /></label><label>Phone<InputText @bind-Value="form.Phone" type="tel" autocomplete="tel" /></label></div>
+        <label>Message<InputTextArea @bind-Value="form.Message" rows="5" /></label>
+        <label class="consent"><InputCheckbox @bind-Value="form.ContactConsent" /> <span>I agree to be contacted by Virtual Company about this inquiry.</span></label>
+        <ValidationSummary />
+        <button type="submit" disabled="@sending">@(sending ? "Sending..." : "Send inquiry")</button>
+    </EditForm>
+</section>
+
+<section class="public-capabilities" id="capabilities"><h2>One team across your company</h2><div><article><b>Finance</b><span>Forecast cash and manage approvals</span></article><article><b>Sales</b><span>Find, research, and progress opportunities</span></article><article><b>Support</b><span>Respond quickly with company knowledge</span></article><article><b>Operations</b><span>Coordinate work and surface exceptions</span></article></div></section>
+
+@code {
+    private InquiryForm form = new(); private bool sending; private bool submitted; private string? error;
+    private async Task SubmitAsync()
+    {
+        submitted = false; error = null;
+        if (!form.ContactConsent) { error = "Please confirm that we may contact you about this inquiry."; return; }
+        var uri = new Uri(Navigation.Uri); var query = Microsoft.AspNetCore.WebUtilities.QueryHelpers.ParseQuery(uri.Query);
+        var key = query.TryGetValue("formKey", out var q) ? q.ToString() : Configuration["PublicWebsite:LeadFormKey"];
+        if (string.IsNullOrWhiteSpace(key)) { error = "This inquiry form is not configured. Add PublicWebsite:LeadFormKey or use ?formKey=..."; return; }
+        sending = true;
+        try
+        {
+            var request = new { TenantKey = key, form.Email, form.Name, form.CompanyName, form.Message, form.Phone, SourceUrl = Navigation.Uri, FormId = "virtual-company-public-inquiry", ExternalSubmissionId = $"public-{Guid.NewGuid():N}", Utm = ReadUtm(query), Metadata = new Dictionary<string,string?> { ["page"] = "public-company" }, ContactConsent = true, ConsentLegalBasis = "consent", Referrer = (string?)null };
+            var response = await Http.PostAsJsonAsync("api/public/website-leads", request);
+            if (!response.IsSuccessStatusCode) { error = "We could not accept the inquiry. Please check the form and try again."; return; }
+            submitted = true; form = new();
+        }
+        catch (HttpRequestException) { error = "The inquiry service is temporarily unavailable. Please try again."; }
+        finally { sending = false; }
+    }
+    private static Dictionary<string,string?> ReadUtm(Dictionary<string,Microsoft.Extensions.Primitives.StringValues> query) => new() { ["source"] = query.TryGetValue("utm_source", out var s) ? s.ToString() : null, ["medium"] = query.TryGetValue("utm_medium", out var m) ? m.ToString() : null, ["campaign"] = query.TryGetValue("utm_campaign", out var c) ? c.ToString() : null, ["content"] = query.TryGetValue("utm_content", out var x) ? x.ToString() : null, ["term"] = query.TryGetValue("utm_term", out var t) ? t.ToString() : null };
+    private sealed class InquiryForm { [System.ComponentModel.DataAnnotations.Required] public string Name { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required, System.ComponentModel.DataAnnotations.EmailAddress] public string Email { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required] public string CompanyName { get; set; } = ""; public string Phone { get; set; } = ""; [System.ComponentModel.DataAnnotations.Required] public string Message { get; set; } = ""; public bool ContactConsent { get; set; } }
+}

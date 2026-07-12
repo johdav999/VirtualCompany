@@ -54,8 +54,12 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
         }
 
         var providerKey = NormalizeProviderKey(command.ProviderKey);
-        var suggestion = await BuildSuggestionPayloadAsync(bill, providerKey, cancellationToken);
+        var (suggestion, accountWarnings) = await BuildSuggestionPayloadAsync(bill, providerKey, cancellationToken);
         var warnings = await BuildReconciliationWarningsAsync(bill, cancellationToken);
+        foreach (var warning in accountWarnings)
+        {
+            warnings.Add(warning);
+        }
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         action.MarkSuggested(
             suggestion,
@@ -249,7 +253,7 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
         action.MarkApproved(actorUserId, _timeProvider.GetUtcNow().UtcDateTime);
     }
 
-    private async Task<JsonObject> BuildSuggestionPayloadAsync(FinanceBill bill, string providerKey, CancellationToken cancellationToken)
+    private async Task<(JsonObject Payload, IReadOnlyList<JsonObject> Warnings)> BuildSuggestionPayloadAsync(FinanceBill bill, string providerKey, CancellationToken cancellationToken)
     {
         var latestSimilarBill = await _dbContext.FinanceBills
             .IgnoreQueryFilters()
@@ -260,21 +264,19 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
         var invoiceReference = await ResolveProviderSupplierInvoiceReferenceAsync(bill.CompanyId, bill.Id, providerKey, cancellationToken);
         var supplierReference = await ResolveProviderSupplierReferenceAsync(bill.CompanyId, bill.CounterpartyId, providerKey, cancellationToken);
         var metadata = invoiceReference?.Metadata;
-        var accountCode = FirstUseful(
-            bill.Counterparty.DefaultAccountMapping,
-            ReadString(metadata, "accountCode", "Account", "account"),
-            "4010");
+        var metadataAccount = ReadString(metadata, "accountCode", "Account", "account");
+        var accountSelection = ResolveSupplierExpenseAccount(bill.Counterparty.DefaultAccountMapping, metadataAccount);
         var costCenter = ReadString(metadata, "costCenter", "CostCenter", "cost_center");
         var project = ReadString(metadata, "project", "Project");
 
-        return new JsonObject
+        var payload = new JsonObject
         {
             ["coding"] = new JsonObject
             {
-                ["ledgerAccount"] = accountCode,
+                ["ledgerAccount"] = accountSelection.AccountCode,
                 ["costCenter"] = costCenter,
                 ["project"] = project,
-                ["basis"] = latestSimilarBill is null ? "Supplier default account and invoice metadata." : $"Based on supplier defaults and previous bill {latestSimilarBill.BillNumber}."
+                ["basis"] = latestSimilarBill is null ? accountSelection.Basis : $"{accountSelection.Basis} Previous bill reviewed: {latestSimilarBill.BillNumber}."
             },
             ["supplier"] = new JsonObject
             {
@@ -285,9 +287,52 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
                 ["paymentTerms"] = bill.Counterparty.PaymentTerms,
                 ["preferredPaymentMethod"] = bill.Counterparty.PreferredPaymentMethod
             },
-            ["comment"] = $"Laura reviewed supplier bill {bill.BillNumber}. Suggested account {accountCode}; verify supplier details before syncing.",
+            ["comment"] = $"Laura reviewed supplier bill {bill.BillNumber}. Suggested account {accountSelection.AccountCode}; verify supplier details before syncing.",
             ["provider"] = providerKey
         };
+        return (payload, accountSelection.Warnings);
+    }
+
+    private static SupplierExpenseAccountSelection ResolveSupplierExpenseAccount(string? supplierDefaultAccount, string? metadataAccount)
+    {
+        var warnings = new List<JsonObject>();
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(supplierDefaultAccount))
+        {
+            return new SupplierExpenseAccountSelection(
+                FinanceAccountCodePolicy.NormalizeAccountCode(supplierDefaultAccount)!,
+                "Supplier default expense account.",
+                warnings);
+        }
+
+        AddInvalidAccountWarning(warnings, supplierDefaultAccount, "supplier default account mapping");
+
+        if (FinanceAccountCodePolicy.IsSupplierExpenseAccount(metadataAccount))
+        {
+            return new SupplierExpenseAccountSelection(
+                FinanceAccountCodePolicy.NormalizeAccountCode(metadataAccount)!,
+                "Invoice metadata expense account.",
+                warnings);
+        }
+
+        AddInvalidAccountWarning(warnings, metadataAccount, "invoice metadata account");
+
+        return new SupplierExpenseAccountSelection(
+            FinanceAccountCodePolicy.DefaultSupplierExpenseAccount,
+            "Fallback supplier expense account because no valid expense account was available.",
+            warnings);
+    }
+
+    private static void AddInvalidAccountWarning(List<JsonObject> warnings, string? accountCode, string source)
+    {
+        if (string.IsNullOrWhiteSpace(accountCode) || FinanceAccountCodePolicy.IsSupplierExpenseAccount(accountCode))
+        {
+            return;
+        }
+
+        warnings.Add(CreateWarning(
+            "invalid_expense_account",
+            $"Laura ignored {source} {accountCode.Trim()} because it is not a supplier expense account.",
+            "warning"));
     }
 
     private async Task<JsonArray> BuildReconciliationWarningsAsync(FinanceBill bill, CancellationToken cancellationToken)
@@ -381,7 +426,7 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
             ReadString(supplier, "vatOrTaxId") ?? bill.Counterparty.TaxId,
             ReadString(supplier, "paymentTerms") ?? bill.Counterparty.PaymentTerms,
             ReadString(supplier, "preferredPaymentMethod") ?? bill.Counterparty.PreferredPaymentMethod,
-            ReadString(coding, "ledgerAccount") ?? bill.Counterparty.DefaultAccountMapping,
+            ResolveSupplierExpenseAccount(bill.Counterparty.DefaultAccountMapping, ReadString(coding, "ledgerAccount")).AccountCode,
             ReadString(coding, "costCenter"),
             ReadString(coding, "project"),
             ReadString(action.SuggestionPayload, "comment"),
@@ -547,9 +592,6 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
         });
     }
 
-    private static string? FirstUseful(params string?[] values) =>
-        values.FirstOrDefault(value => !string.IsNullOrWhiteSpace(value))?.Trim();
-
     private static string? ReadString(JsonObject? metadata, params string[] names)
     {
         if (metadata is null)
@@ -593,6 +635,11 @@ public sealed class SupplierInvoiceEnrichmentService : IFinanceSupplierInvoiceEn
             CloneArray(action.ReconciliationWarnings),
             action.CreatedUtc,
             action.UpdatedUtc);
+
+    private sealed record SupplierExpenseAccountSelection(
+        string AccountCode,
+        string Basis,
+        IReadOnlyList<JsonObject> Warnings);
 }
 
 public sealed class FortnoxSupplierInvoiceEnrichmentProvider : ISupplierInvoiceEnrichmentProvider

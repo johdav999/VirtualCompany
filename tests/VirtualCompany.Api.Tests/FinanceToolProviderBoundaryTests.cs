@@ -22,7 +22,8 @@ public sealed class FinanceToolProviderBoundaryTests
         ["recommend_transaction_category"] = nameof(IFinanceToolProvider.RecommendTransactionCategoryAsync),
         ["recommend_invoice_approval_decision"] = nameof(IFinanceToolProvider.RecommendInvoiceApprovalDecisionAsync),
         ["categorize_transaction"] = nameof(IFinanceToolProvider.UpdateTransactionCategoryAsync),
-        ["approve_invoice"] = nameof(IFinanceToolProvider.UpdateInvoiceApprovalStatusAsync)
+        ["approve_invoice"] = nameof(IFinanceToolProvider.UpdateInvoiceApprovalStatusAsync),
+        ["post_paid_supplier_bill_expense"] = nameof(IFinanceToolProvider.PostPaidSupplierBillExpenseAsync)
     };
 
     private static readonly string[] ForbiddenOrchestrationFinanceReferences =
@@ -218,6 +219,13 @@ public sealed class FinanceToolProviderBoundaryTests
             CancellationToken.None);
         Assert.Equal(invoiceId, approvedInvoice.Id);
         Assert.Equal("approved", approvedInvoice.Status);
+
+        var postedExpense = await provider.PostPaidSupplierBillExpenseAsync(
+            new PostPaidSupplierBillExpenseCommand(companyId, Guid.NewGuid(), null, "Laura"),
+            CancellationToken.None);
+        Assert.True(postedExpense.Posted);
+        Assert.Equal("booked", postedExpense.Status);
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, postedExpense.ProviderKey);
     }
 
     private static InternalToolExecutionRequest CreateFinanceToolRequest(

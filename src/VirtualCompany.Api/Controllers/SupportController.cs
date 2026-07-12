@@ -20,10 +20,14 @@ public sealed class SupportController : ControllerBase
     private readonly ISupportTriageService _triage;
     private readonly ISupportReplyDraftService _drafts;
     private readonly ISupportToolActionService _tools;
+    private readonly ISupportAgentOrchestrationService _agentRuns;
     private readonly ISupportRefundWorkflowService _refunds;
+    private readonly ISupportRefundFinanceService _refundFinance;
     private readonly ISupportSlaMonitor _sla;
+    private readonly ISupportSlaPolicyService _slaPolicies;
     private readonly ISupportKnowledgeGapService _knowledgeGaps;
     private readonly ISupportAnalyticsService _analytics;
+    private readonly ISupportMemoryReviewService _memoryReview;
 
     public SupportController(
         ICompanyContextAccessor companyContextAccessor,
@@ -33,10 +37,14 @@ public sealed class SupportController : ControllerBase
         ISupportTriageService triage,
         ISupportReplyDraftService drafts,
         ISupportToolActionService tools,
+        ISupportAgentOrchestrationService agentRuns,
         ISupportRefundWorkflowService refunds,
+        ISupportRefundFinanceService refundFinance,
         ISupportSlaMonitor sla,
+        ISupportSlaPolicyService slaPolicies,
         ISupportKnowledgeGapService knowledgeGaps,
-        ISupportAnalyticsService analytics)
+        ISupportAnalyticsService analytics,
+        ISupportMemoryReviewService memoryReview)
     {
         _companyContextAccessor = companyContextAccessor;
         _cases = cases;
@@ -45,15 +53,19 @@ public sealed class SupportController : ControllerBase
         _triage = triage;
         _drafts = drafts;
         _tools = tools;
+        _agentRuns = agentRuns;
         _refunds = refunds;
+        _refundFinance = refundFinance;
         _sla = sla;
+        _slaPolicies = slaPolicies;
         _knowledgeGaps = knowledgeGaps;
         _analytics = analytics;
+        _memoryReview = memoryReview;
     }
 
     [HttpGet("cases")]
     public Task<SupportCaseListResponse> ListCasesAsync([FromQuery] SupportCaseListQuery query, CancellationToken cancellationToken) =>
-        _cases.ListCasesAsync(CompanyId(), query, cancellationToken);
+        _cases.ListCasesAsync(CompanyId(), query.AssignedToMe ? query with { AssignedUserId = UserId() } : query, cancellationToken);
 
     [HttpPost("cases")]
     public async Task<ActionResult<SupportCaseDetailResponse>> CreateCaseAsync([FromBody] CreateSupportCaseRequest request, CancellationToken cancellationToken)
@@ -94,6 +106,10 @@ public sealed class SupportController : ControllerBase
     [HttpPost("cases/{id:guid}/assign")]
     public Task<ActionResult<SupportCaseDetailResponse>> AssignAsync(Guid id, [FromBody] AssignSupportCaseRequest request, CancellationToken cancellationToken) =>
         ExecuteCaseActionAsync(() => _cases.AssignAsync(CompanyId(), UserId(), id, request, cancellationToken));
+
+    [HttpGet("assignees")]
+    public Task<IReadOnlyList<SupportAssigneeOptionDto>> ListAssigneesAsync(CancellationToken cancellationToken) =>
+        _cases.ListAssigneesAsync(CompanyId(), cancellationToken);
 
     [HttpPost("cases/{id:guid}/resolve")]
     public Task<ActionResult<SupportCaseDetailResponse>> ResolveAsync(Guid id, [FromBody] ResolveSupportCaseRequest request, CancellationToken cancellationToken) =>
@@ -138,6 +154,20 @@ public sealed class SupportController : ControllerBase
     {
         var result = await _triage.TriageAsync(CompanyId(), UserId(), id, cancellationToken);
         return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpPost("cases/{id:guid}/agent/run")]
+    public async Task<ActionResult<SupportAgentExecutionDto>> RunAgentAsync(Guid id, [FromBody] RunSupportAgentRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _agentRuns.RunAsync(CompanyId(), UserId(), id, request, cancellationToken);
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Problem(title: "Support agent run could not be completed.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
     }
 
     [HttpPost("cases/{id:guid}/reply-drafts/generate")]
@@ -194,9 +224,99 @@ public sealed class SupportController : ControllerBase
         }
     }
 
+    [HttpPost("refund-requests/{id:guid}/execute")]
+    public async Task<ActionResult<SupportRefundRequestDto>> RequestRefundExecutionAsync(Guid id, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _refundFinance.RequestExecutionAsync(
+                CompanyId(),
+                id,
+                UserId(),
+                User.Identity?.Name ?? "Support user",
+                cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Problem(title: "Refund or credit could not continue.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    [HttpPost("refund-requests/{id:guid}/cancel")]
+    public async Task<ActionResult<SupportRefundRequestDto>> CancelRefundAsync(Guid id, [FromBody] SupportActionRequest request, CancellationToken cancellationToken)
+    {
+        try { return Ok(await _refundFinance.CancelAsync(CompanyId(), id, UserId(), request.Note ?? string.Empty, cancellationToken)); }
+        catch (KeyNotFoundException) { return NotFound(); }
+        catch (Exception ex) when (ex is InvalidOperationException or SupportValidationException) { return Problem(title: "Refund or credit could not be cancelled.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest); }
+    }
+
+    [HttpPost("refund-requests/{id:guid}/reconcile")]
+    public async Task<ActionResult<SupportRefundRequestDto>> ReconcileRefundAsync(Guid id, CancellationToken cancellationToken)
+    {
+        try { return Ok(await _refundFinance.ReconcileAsync(CompanyId(), id, UserId(), cancellationToken)); }
+        catch (KeyNotFoundException) { return NotFound(); }
+        catch (InvalidOperationException ex) { return Problem(title: "Refund or credit could not be reconciled.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest); }
+    }
+
     [HttpPost("sla/run")]
     public Task<SupportSlaMonitorResult> RunSlaAsync(CancellationToken cancellationToken) =>
         _sla.RunAsync(DateTime.UtcNow, cancellationToken);
+
+    [HttpGet("sla/policies")]
+    public Task<IReadOnlyList<SupportSlaPolicyDto>> ListSlaPoliciesAsync(CancellationToken cancellationToken) =>
+        _slaPolicies.ListAsync(CompanyId(), cancellationToken);
+
+    [HttpPost("sla/policies")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<SupportSlaPolicyDto>> SaveSlaPolicyAsync([FromBody] UpsertSupportSlaPolicyRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _slaPolicies.UpsertAsync(CompanyId(), UserId(), request, cancellationToken));
+        }
+        catch (SupportValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+    }
+
+    [HttpPost("sla/policies/{id:guid}/deactivate")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<SupportSlaPolicyDto>> DeactivateSlaPolicyAsync(Guid id, CancellationToken cancellationToken)
+    {
+        var result = await _slaPolicies.DeactivateAsync(CompanyId(), UserId(), id, cancellationToken);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpGet("sla/preview")]
+    public Task<SupportSlaResolutionDto> PreviewSlaAsync([FromQuery] string category, [FromQuery] string priority, [FromQuery] string? customerTier, CancellationToken cancellationToken) =>
+        _slaPolicies.ResolveAsync(CompanyId(), category, priority, customerTier, DateTime.UtcNow, cancellationToken);
+
+    [HttpGet("sla/calendar")]
+    public Task<SupportBusinessCalendarDto> GetSupportCalendarAsync(CancellationToken cancellationToken) =>
+        _slaPolicies.GetCalendarAsync(CompanyId(), cancellationToken);
+
+    [HttpPost("sla/calendar")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<SupportBusinessCalendarDto>> SaveSupportCalendarAsync([FromBody] SaveSupportBusinessCalendarRequest request, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _slaPolicies.SaveCalendarAsync(CompanyId(), UserId(), request, cancellationToken));
+        }
+        catch (SupportValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+    }
 
     [HttpGet("knowledge-gaps")]
     public Task<IReadOnlyList<SupportKnowledgeGapDto>> ListKnowledgeGapsAsync([FromQuery] string? status, CancellationToken cancellationToken) =>
@@ -213,9 +333,43 @@ public sealed class SupportController : ControllerBase
         return result is null ? NotFound() : Ok(result);
     }
 
+    [HttpPost("knowledge-gaps/{id:guid}/resolve")]
+    public async Task<ActionResult<SupportKnowledgeGapDto>> ResolveKnowledgeGapAsync(Guid id, [FromBody] ResolveSupportKnowledgeGapRequest request, CancellationToken cancellationToken)
+    {
+        try { var result = await _knowledgeGaps.ResolveAsync(CompanyId(), UserId(), id, request, cancellationToken); return result is null ? NotFound() : Ok(result); }
+        catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
+    }
+
+    [HttpPost("knowledge-gaps/{id:guid}/reopen")]
+    public async Task<ActionResult<SupportKnowledgeGapDto>> ReopenKnowledgeGapAsync(Guid id, CancellationToken cancellationToken)
+    {
+        try { var result = await _knowledgeGaps.ReopenAsync(CompanyId(), UserId(), id, cancellationToken); return result is null ? NotFound() : Ok(result); }
+        catch (InvalidOperationException ex) { return Conflict(new { message = ex.Message }); }
+    }
+
     [HttpGet("analytics")]
     public Task<SupportAnalyticsDashboardResponse> GetAnalyticsAsync(CancellationToken cancellationToken) =>
         _analytics.GetDashboardAsync(CompanyId(), cancellationToken);
+
+    [HttpGet("memory/observations")]
+    public Task<IReadOnlyList<SupportMemoryObservationDto>> ListMemoryObservationsAsync([FromQuery] Guid? contactId, [FromQuery] string? status, CancellationToken cancellationToken) =>
+        _memoryReview.ListAsync(CompanyId(), contactId, status, cancellationToken);
+
+    [HttpPost("memory/observations/{id:guid}/approve")]
+    public Task<ActionResult<SupportMemoryObservationDto>> ApproveMemoryObservationAsync(Guid id, [FromBody] SupportActionRequest request, CancellationToken cancellationToken) =>
+        ExecuteMemoryActionAsync(() => _memoryReview.ApproveAsync(CompanyId(), UserId(), id, request, cancellationToken));
+
+    [HttpPost("memory/observations/{id:guid}/reject")]
+    public Task<ActionResult<SupportMemoryObservationDto>> RejectMemoryObservationAsync(Guid id, [FromBody] SupportActionRequest request, CancellationToken cancellationToken) =>
+        ExecuteMemoryActionAsync(() => _memoryReview.RejectAsync(CompanyId(), UserId(), id, request, cancellationToken));
+
+    [HttpPost("memory/observations/{id:guid}/expire")]
+    public Task<ActionResult<SupportMemoryObservationDto>> ExpireMemoryObservationAsync(Guid id, [FromBody] SupportActionRequest request, CancellationToken cancellationToken) =>
+        ExecuteMemoryActionAsync(() => _memoryReview.ExpireAsync(CompanyId(), UserId(), id, request, cancellationToken));
+
+    [HttpPost("memory/observations/{id:guid}/delete")]
+    public Task<ActionResult<SupportMemoryObservationDto>> DeleteMemoryObservationAsync(Guid id, [FromBody] SupportActionRequest request, CancellationToken cancellationToken) =>
+        ExecuteMemoryActionAsync(() => _memoryReview.DeleteAsync(CompanyId(), UserId(), id, request, cancellationToken));
 
     private async Task<ActionResult<SupportCaseDetailResponse>> ExecuteCaseActionAsync(Func<Task<SupportCaseDetailResponse?>> action)
     {
@@ -235,6 +389,23 @@ public sealed class SupportController : ControllerBase
         catch (ArgumentException ex)
         {
             return Problem(title: "Support action could not be completed.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    private async Task<ActionResult<SupportMemoryObservationDto>> ExecuteMemoryActionAsync(Func<Task<SupportMemoryObservationDto?>> action)
+    {
+        try
+        {
+            var result = await action();
+            return result is null ? NotFound() : Ok(result);
+        }
+        catch (SupportValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (InvalidOperationException ex)
+        {
+            return Problem(title: "Support memory action could not be completed.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
         }
     }
 
