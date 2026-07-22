@@ -13,7 +13,7 @@ namespace VirtualCompany.Api.Tests;
 public sealed class FinanceMailboxPageTests
 {
     [Fact]
-    public void Mailbox_page_renders_status_connect_actions_and_scan_summary()
+    public void Mailbox_page_renders_status_agent_management_link_and_scan_summary()
     {
         var companyId = Guid.Parse("d53590ef-f7ff-4b98-a372-a9f3133e0f6c");
         var status = new MailboxConnectionStatusResponse
@@ -64,8 +64,9 @@ public sealed class FinanceMailboxPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("Mailbox connection", cut.Markup);
-            Assert.Contains("Connect Gmail", cut.Markup);
-            Assert.Contains("Connect Microsoft 365", cut.Markup);
+            Assert.Contains("Manage mailbox connection", cut.Markup);
+            Assert.DoesNotContain("Connect Gmail", cut.Markup);
+            Assert.DoesNotContain("Connect Microsoft 365", cut.Markup);
             Assert.Contains("Ask Laura to scan again", cut.Markup);
             Assert.Contains("Gmail", cut.Markup);
             Assert.Contains("Accounts Payable", cut.Markup);
@@ -97,7 +98,7 @@ public sealed class FinanceMailboxPageTests
     }
 
     [Fact]
-    public void Mailbox_page_keeps_connect_actions_enabled_when_provider_setup_is_missing()
+    public void Mailbox_page_routes_connection_setup_to_agent_management_when_provider_setup_is_missing()
     {
         var companyId = Guid.Parse("d53590ef-f7ff-4b98-a372-a9f3133e0f6c");
         using var harness = CreateHarness(
@@ -127,8 +128,9 @@ public sealed class FinanceMailboxPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("Admin setup required", cut.Markup);
-            Assert.False(cut.FindAll("button").Single(x => x.TextContent.Contains("Connect Gmail", StringComparison.Ordinal)).HasAttribute("disabled"));
-            Assert.False(cut.FindAll("button").Single(x => x.TextContent.Contains("Connect Microsoft 365", StringComparison.Ordinal)).HasAttribute("disabled"));
+            var manageLink = cut.FindAll("a").Single(x => x.TextContent.Contains("Manage mailbox connection", StringComparison.Ordinal));
+            Assert.Contains($"/agents/manage?companyId={companyId:D}", manageLink.GetAttribute("href"));
+            Assert.Empty(cut.FindAll("button").Where(x => x.TextContent.Contains("Connect Gmail", StringComparison.Ordinal)));
         });
     }
 

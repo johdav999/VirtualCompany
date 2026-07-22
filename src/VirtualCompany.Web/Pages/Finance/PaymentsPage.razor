@@ -2,27 +2,27 @@
 @page "/finance/payments/{PaymentId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Payments</PageTitle>
+<PageTitle>@FinanceText["Payments"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Payments"
-    Description="Track money coming in and going out."
-    LoadingMessage="Loading payments..."
+    Title="@FinanceText["Payments"]"
+    Description="@FinanceText["PaymentsDescription"]"
+    LoadingMessage="@FinanceText["LoadingPayments"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <section class="payments-dashboard" aria-labelledby="payments-heading">
         <div class="finance-overview-header">
             <div>
-                <span class="finance-overview-kicker">Finance module</span>
-                <h1 id="payments-heading" class="finance-overview-title">Payments</h1>
-                <p class="finance-overview-subtitle">Track money coming in and going out.</p>
+                <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                <h1 id="payments-heading" class="finance-overview-title">@FinanceText["Payments"]</h1>
+                <p class="finance-overview-subtitle">@FinanceText["PaymentsDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
-                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>
 
@@ -31,16 +31,16 @@
         <form method="get" class="payments-filter-bar">
             <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
             <div class="payments-filter-bar__field">
-                <label for="payment-filter-type">Type</label>
+                <label for="payment-filter-type">@FinanceText["Type"]</label>
                 <select id="payment-filter-type" name="type">
-                    <option value="" selected="@string.IsNullOrWhiteSpace(TypeFilterValue)">All</option>
-                    <option value="incoming" selected="@IsTypeSelected("incoming")">Incoming</option>
-                    <option value="outgoing" selected="@IsTypeSelected("outgoing")">Outgoing</option>
+                    <option value="" selected="@string.IsNullOrWhiteSpace(TypeFilterValue)">@FinanceText["All"]</option>
+                    <option value="incoming" selected="@IsTypeSelected("incoming")">@FinanceText["Incoming"]</option>
+                    <option value="outgoing" selected="@IsTypeSelected("outgoing")">@FinanceText["Outgoing"]</option>
                 </select>
             </div>
             <div class="payments-filter-bar__actions">
-                <button class="btn payments-button payments-button--primary" type="submit">Apply filters</button>
-                <a class="btn payments-button payments-button--secondary" href="@ClearFiltersHref">Clear</a>
+                <button class="btn payments-button payments-button--primary" type="submit">@FinanceText["ApplyFilters"]</button>
+                <a class="btn payments-button payments-button--secondary" href="@ClearFiltersHref">@FinanceText["Clear"]</a>
             </div>
         </form>
 
@@ -48,20 +48,20 @@
             <article class="payment-list-card">
                 <div class="payment-list-card__header">
                     <div>
-                        <h2>Payments</h2>
-                        <p>Review incoming and outgoing payments.</p>
+                        <h2>@FinanceText["Payments"]</h2>
+                        <p>@FinanceText["PaymentListDescription"]</p>
                     </div>
-                    <span>@Payments.Count item@(Payments.Count == 1 ? string.Empty : "s")</span>
+                    <span>@CommonText[Payments.Count == 1 ? "ItemCountOne" : "ItemCountMany", Payments.Count]</span>
                 </div>
 
                 <FinanceDataState
                     IsLoading="@IsListLoading"
                     IsEmpty="@IsListEmpty"
                     ErrorMessage="@ListErrorMessage"
-                    LoadingTitle="Loading payments"
-                    LoadingMessage="Fetching payment activity."
-                    EmptyTitle="No payments matched the active filter"
-                    EmptyMessage="Adjust the payment type filter and try again."
+                    LoadingTitle="@FinanceText["LoadingPayments"]"
+                    LoadingMessage="@FinanceText["FetchingPayments"]"
+                    EmptyTitle="@FinanceText["NoPaymentsMatched"]"
+                    EmptyMessage="@FinanceText["NoPaymentsMatchedDescription"]"
                     OnRetry="@ReloadAsync">
                     <div class="payment-list">
                         @foreach (var payment in PaymentItems)
@@ -87,18 +87,18 @@
                 <div class="payment-detail-card">
                     @if (IsDetailLoading)
                     {
-                        <FinanceLoadingState Title="Loading payment detail" Message="Opening the selected payment." />
+                        <FinanceLoadingState Title="@FinanceText["LoadingPaymentDetail"]" Message="@FinanceText["OpeningPayment"]" />
                     }
                     else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                     {
-                        <FinanceErrorState Title="Payment detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                        <FinanceErrorState Title="@FinanceText["PaymentDetailUnavailable"]" Message="@(DetailErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@ReloadAsync" />
                     }
                     else if (SelectedPayment is null)
                     {
                         <div class="payment-detail-empty">
                             <div class="payment-detail-empty__icon" aria-hidden="true">pay</div>
-                            <h2>No payment selected</h2>
-                            <p>Select a payment to see details.</p>
+                            <h2>@FinanceText["NoPaymentSelected"]</h2>
+                            <p>@FinanceText["SelectPayment"]</p>
                         </div>
                     }
                     else if (SelectedPaymentDisplay is { } detail)
@@ -107,7 +107,7 @@
                             <div class="payment-detail-panel__header">
                                 <div>
                                     <h2>@detail.Reference</h2>
-                                    <p>@detail.PaymentTypeLabel payment</p>
+                                    <p>@FinanceText["PaymentTypeSuffix", detail.PaymentTypeLabel]</p>
                                 </div>
                                 <span class="@($"payment-status-badge payment-status-badge--{detail.StatusTone}")">@detail.StatusLabel</span>
                             </div>
@@ -115,32 +115,32 @@
                             <div class="payment-detail-panel__amount">@detail.DisplayAmount</div>
 
                             <dl class="payment-detail-list">
-                                <div><dt>Payment type</dt><dd>@detail.PaymentTypeLabel</dd></div>
-                                <div><dt>Amount</dt><dd>@detail.DisplayAmount</dd></div>
-                                <div><dt>Status</dt><dd>@detail.StatusLabel</dd></div>
-                                <div><dt>Related invoice or bill</dt><dd>@detail.Reference</dd></div>
-                                <div><dt>Payment method</dt><dd>@detail.MethodLabel</dd></div>
-                                <div><dt>Date</dt><dd>@detail.DisplayDate</dd></div>
+                                <div><dt>@FinanceText["PaymentType"]</dt><dd>@detail.PaymentTypeLabel</dd></div>
+                                <div><dt>@FinanceText["Amount"]</dt><dd>@detail.DisplayAmount</dd></div>
+                                <div><dt>@FinanceText["Status"]</dt><dd>@detail.StatusLabel</dd></div>
+                                <div><dt>@FinanceText["RelatedInvoiceBill"]</dt><dd>@detail.Reference</dd></div>
+                                <div><dt>@FinanceText["PaymentMethod"]</dt><dd>@detail.MethodLabel</dd></div>
+                                <div><dt>@FinanceText["Date"]</dt><dd>@detail.DisplayDate</dd></div>
                             </dl>
 
                             <AgentInsightsPanel
-                                Title="Agent insights"
-                                Subtitle="Finance notes linked to this payment."
-                                EmptyMessage="No agent insights are linked to this payment."
+                                Title="@FinanceText["AgentInsights"]"
+                                Subtitle="@FinanceText["PaymentAgentInsightsSubtitle"]"
+                                EmptyMessage="@FinanceText["NoPaymentAgentInsights"]"
                                 TestId="payment-agent-insights-panel"
                                 Items="@SelectedPayment.AgentInsights" />
                         </div>
                     }
                 </div>
 
-                <section class="payments-laura-card" aria-label="Finance manager">
+                <section class="payments-laura-card" aria-label="@FinanceText["FinanceManager"]">
                     <div class="payments-laura-card__avatar" aria-hidden="true">L</div>
                     <div>
                         <h2>Laura</h2>
-                        <p class="payments-laura-card__role">Finance Manager</p>
+                        <p class="payments-laura-card__role">@FinanceText["FinanceManager"]</p>
                     </div>
-                    <p class="payments-laura-card__message">I'm here to watch your finances and let you know what needs attention.</p>
-                    <a class="btn payments-button payments-button--primary" href="@LauraHref">Message Laura</a>
+                    <p class="payments-laura-card__message">@FinanceText["LauraFinanceMessage"]</p>
+                    <a class="btn payments-button payments-button--primary" href="@LauraHref">@FinanceText["MessageLaura"]</a>
                 </section>
             </aside>
         </div>

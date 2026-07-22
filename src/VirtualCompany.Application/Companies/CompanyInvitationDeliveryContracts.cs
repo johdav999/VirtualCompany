@@ -13,6 +13,7 @@ public static class CompanyOutboxTopics
     public const string MembershipRoleChanged = "company.membership.role_changed";
     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
     public const string SupportMemoryUpdateRequested = "support.memory.update_requested";
+    public const string SupportReplyDeliveryRequested = "support.reply.delivery_requested";
     public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
     public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
@@ -62,6 +63,23 @@ public sealed record NotificationDeliveryRequestedMessage(
 
 public sealed record SupportMemoryUpdateRequestedMessage(Guid CompanyId, Guid SupportCaseId, Guid JobId, string EventKey, string? CorrelationId);
 
+public sealed record SupportReplyDeliveryRequestedMessage(
+    Guid CompanyId,
+    Guid SupportCaseId,
+    Guid DraftId,
+    Guid RequestedByUserId,
+    bool Autonomous,
+    bool ResolveAfterSend,
+    Guid? MailboxConnectionId,
+    string ToEmail,
+    string? ToDisplayName,
+    string Subject,
+    string OriginalMessageId,
+    string? ProviderThreadId,
+    string? InternetMessageId,
+    string IdempotencyKey,
+    string? CorrelationId);
+
 public sealed record CompanyInvitationSendResult(string? ProviderMessageId);
 
 public interface ICompanyOutboxEnqueuer
@@ -91,4 +109,9 @@ public interface ICompanyNotificationDispatcher
 public interface ICompanyInvitationSender
 {
     Task<CompanyInvitationSendResult> SendAsync(CompanyInvitationDeliveryRequestedMessage invitation, CancellationToken cancellationToken);
+}
+
+public interface ISupportReplyDeliveryDispatcher
+{
+    Task DispatchAsync(SupportReplyDeliveryRequestedMessage message, CancellationToken cancellationToken);
 }

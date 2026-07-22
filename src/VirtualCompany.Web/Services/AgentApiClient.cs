@@ -10,11 +10,13 @@ public sealed class AgentApiClient
     private static readonly OfflineAgentStore OfflineStore = new();
     private readonly HttpClient _httpClient;
     private readonly bool _useOfflineMode;
+    private readonly IApiProblemMessageResolver? _problemResolver;
 
-    public AgentApiClient(HttpClient httpClient, bool useOfflineMode = false)
+    public AgentApiClient(HttpClient httpClient, bool useOfflineMode = false, IApiProblemMessageResolver? problemResolver = null)
     {
         _httpClient = httpClient;
         _useOfflineMode = useOfflineMode;
+        _problemResolver = problemResolver;
     }
 
     public async Task<IReadOnlyList<AgentTemplateCatalogItemViewModel>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken = default)
@@ -94,6 +96,135 @@ public sealed class AgentApiClient
             ? OfflineStore.UpdateOperatingProfileAsync(companyId, agentId, request, cancellationToken)
             : SendAsync<AgentOperatingProfileViewModel>(HttpMethod.Put, $"api/companies/{companyId}/agents/{agentId}/profile", request, cancellationToken);
 
+    public Task<AgentOperatingProfileViewModel> UpdateBriefAsync(
+        Guid companyId,
+        Guid agentId,
+        UpdateAgentBriefRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<AgentOperatingProfileViewModel>(
+            HttpMethod.Put,
+            $"api/companies/{companyId}/agents/{agentId}/brief",
+            request,
+            cancellationToken);
+
+    public Task<AgentBriefDraftViewModel> GenerateBriefDraftAsync(
+        Guid companyId,
+        Guid agentId,
+        GenerateAgentBriefDraftRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<AgentBriefDraftViewModel>(
+            HttpMethod.Post,
+            $"api/companies/{companyId}/agents/{agentId}/brief/draft",
+            request,
+            cancellationToken);
+
+    public Task<IReadOnlyList<AgentBriefDocumentViewModel>> GetBriefDocumentsAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<IReadOnlyList<AgentBriefDocumentViewModel>>(
+            $"api/companies/{companyId}/documents",
+            cancellationToken);
+
+    public Task<AgentCapabilityCatalogViewModel> GetCapabilitiesAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<AgentCapabilityCatalogViewModel>(
+            $"api/companies/{companyId}/agents/{agentId}/capabilities",
+            cancellationToken);
+
+    public Task<AgentQuestionAnswerViewModel> AskQuestionAsync(Guid companyId, Guid agentId, AskAgentQuestionRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentQuestionAnswerViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/questions", request, cancellationToken);
+
+    public Task<IReadOnlyList<AgentWorkPriorityViewModel>> GetPrioritiesAsync(Guid companyId, Guid agentId, int take = 20, CancellationToken cancellationToken = default) =>
+        GetAsync<IReadOnlyList<AgentWorkPriorityViewModel>>($"api/companies/{companyId}/agents/{agentId}/priorities?take={Math.Clamp(take, 1, 50)}", cancellationToken);
+
+    public Task<AgentPlanViewModel> GeneratePlanAsync(Guid companyId, Guid agentId, GenerateAgentPlanRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentPlanViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/plans", request, cancellationToken);
+
+    public Task<AgentPlanViewModel> CommitPlanAsync(Guid companyId, Guid agentId, Guid runId, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentPlanViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/plans/{runId}/commit", new { }, cancellationToken);
+
+    public Task<IReadOnlyList<AgentHandoffViewModel>> GetHandoffsAsync(Guid companyId, Guid? agentId = null, CancellationToken cancellationToken = default) =>
+        GetAsync<IReadOnlyList<AgentHandoffViewModel>>($"api/companies/{companyId}/agents/handoffs{(agentId.HasValue ? $"?agentId={agentId}" : string.Empty)}", cancellationToken);
+
+    public Task<AgentHandoffViewModel> CreateHandoffAsync(Guid companyId, Guid requestingAgentId, CreateAgentHandoffRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentHandoffViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{requestingAgentId}/handoffs", request, cancellationToken);
+
+    public Task<AgentHandoffViewModel> TransitionHandoffAsync(Guid companyId, Guid handoffId, TransitionAgentHandoffRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentHandoffViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/handoffs/{handoffId}/transition", request, cancellationToken);
+
+    public Task<IReadOnlyList<AgentMemoryCandidateViewModel>> GetMemoryCandidatesAsync(Guid companyId, string? status = null, CancellationToken cancellationToken = default) =>
+        GetAsync<IReadOnlyList<AgentMemoryCandidateViewModel>>($"api/companies/{companyId}/agents/memory-candidates{(string.IsNullOrWhiteSpace(status) ? string.Empty : $"?status={Uri.EscapeDataString(status)}")}", cancellationToken);
+
+    public Task<AgentMemoryCandidateViewModel> ProposeMemoryAsync(Guid companyId, Guid agentId, ProposeAgentMemoryRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentMemoryCandidateViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/{agentId}/memory-candidates", request, cancellationToken);
+
+    public Task<AgentMemoryCandidateViewModel> ReviewMemoryAsync(Guid companyId, Guid candidateId, ReviewAgentMemoryRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<AgentMemoryCandidateViewModel>(HttpMethod.Post, $"api/companies/{companyId}/agents/memory-candidates/{candidateId}/review", request, cancellationToken);
+
+    public Task<AgentAiQualityMetricsViewModel> GetAiQualityAsync(Guid companyId, DateTime fromUtc, DateTime toUtc, Guid? agentId = null, CancellationToken cancellationToken = default) =>
+        GetAsync<AgentAiQualityMetricsViewModel>($"api/companies/{companyId}/agents/ai-quality?fromUtc={Uri.EscapeDataString(fromUtc.ToString("O"))}&toUtc={Uri.EscapeDataString(toUtc.ToString("O"))}{(agentId.HasValue ? $"&agentId={agentId}" : "")}", cancellationToken);
+
+    public async Task<AgentBriefDocumentViewModel> UploadBriefDocumentAsync(
+        Guid companyId,
+        Guid agentId,
+        string category,
+        bool shareWithAgentTeam,
+        string fileName,
+        string? contentType,
+        Stream stream,
+        CancellationToken cancellationToken = default)
+    {
+        using var content = new MultipartFormDataContent();
+        using var fileContent = new StreamContent(stream);
+        if (!string.IsNullOrWhiteSpace(contentType))
+        {
+            fileContent.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue(contentType);
+        }
+
+        content.Add(fileContent, "file", fileName);
+        content.Add(new StringContent(Path.GetFileNameWithoutExtension(fileName)), "title");
+        content.Add(new StringContent(ResolveDocumentType(category)), "document_type");
+
+        var accessScope = new Dictionary<string, object?>
+        {
+            ["visibility"] = "company",
+            ["data_scopes"] = new[] { "knowledge", category }
+        };
+
+        content.Add(new StringContent(JsonSerializer.Serialize(accessScope, SerializerOptions)), "access_scope");
+        content.Add(new StringContent(JsonSerializer.Serialize(new
+        {
+            purpose = "agent_brief",
+            agentId,
+            briefingCategory = category,
+            shareWithAgentTeam
+        }, SerializerOptions)), "metadata");
+
+        try
+        {
+            using var response = await _httpClient.PostAsync($"api/companies/{companyId}/documents", content, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                throw await CreateExceptionAsync(response, cancellationToken);
+            }
+
+            return await response.Content.ReadFromJsonAsync<AgentBriefDocumentViewModel>(SerializerOptions, cancellationToken)
+                ?? throw new OnboardingApiException("The server returned an empty document response.");
+        }
+        catch (HttpRequestException ex)
+        {
+            throw CreateNetworkException(ex);
+        }
+    }
+
+    private static string ResolveDocumentType(string category) =>
+        string.Equals(category, "policies", StringComparison.OrdinalIgnoreCase)
+            ? "policy"
+            : "reference";
+
     private const string OfflineTemplateCatalogPath = "offline/agent-templates.json";
 
     private async Task<T> GetAsync<T>(string uri, CancellationToken cancellationToken)
@@ -162,23 +293,16 @@ public sealed class AgentApiClient
         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
         if (problem?.Errors is { Count: > 0 })
         {
-            return new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
+            return new OnboardingApiException(_problemResolver?.Resolve(problem, "The request failed.") ?? problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
         }
 
-        return new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
+        return new OnboardingApiException(_problemResolver?.Resolve(problem, "The request failed.") ?? problem?.Detail ?? problem?.Title ?? "The request failed.");
     }
 
     private OnboardingApiException CreateNetworkException(HttpRequestException ex)
     {
         var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
         return new OnboardingApiException($"The web app could not reach the backend API at {baseAddress}. Start the API project or update the web app API base URL.");
-    }
-
-    private sealed class ApiProblemResponse
-    {
-        public string? Title { get; set; }
-        public string? Detail { get; set; }
-        public Dictionary<string, string[]>? Errors { get; set; }
     }
 
     private sealed class OfflineAgentStore
@@ -1003,6 +1127,7 @@ public sealed class AgentOperatingProfileViewModel
     public Dictionary<string, JsonNode?> EscalationRules { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> TriggerLogic { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> WorkingHours { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, JsonNode?> CommunicationProfile { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public AgentProfileVisibilityViewModel Visibility { get; set; } = new();
     public DateTime UpdatedUtc { get; set; }
     public bool CanReceiveAssignments { get; set; }
@@ -1022,7 +1147,96 @@ public sealed class UpdateAgentOperatingProfileRequest
     public Dictionary<string, JsonNode?>? EscalationRules { get; set; }
     public Dictionary<string, JsonNode?>? TriggerLogic { get; set; }
     public Dictionary<string, JsonNode?>? WorkingHours { get; set; }
+    public Dictionary<string, JsonNode?>? CommunicationProfile { get; set; }
 }
+
+public sealed class GenerateAgentBriefDraftRequest
+{
+    public string Category { get; set; } = string.Empty;
+    public string? ExistingText { get; set; }
+}
+
+public sealed class UpdateAgentBriefRequest
+{
+    public Dictionary<string, string> Sections { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+}
+
+public sealed class AgentBriefDraftViewModel
+{
+    public string Category { get; set; } = string.Empty;
+    public string Content { get; set; } = string.Empty;
+    public string Model { get; set; } = string.Empty;
+    public DateTime GeneratedUtc { get; set; }
+}
+
+public sealed class AgentBriefDocumentViewModel
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string Title { get; set; } = string.Empty;
+    public string OriginalFileName { get; set; } = string.Empty;
+    public long FileSizeBytes { get; set; }
+    public string IngestionStatus { get; set; } = string.Empty;
+    public string? FailureCode { get; set; }
+    public string? FailureMessage { get; set; }
+    public string? FailureAction { get; set; }
+    public bool CanRetry { get; set; }
+    public string IndexingStatus { get; set; } = string.Empty;
+    public string? IndexingFailureCode { get; set; }
+    public string? IndexingFailureMessage { get; set; }
+    public Dictionary<string, JsonNode?> Metadata { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public DateTime UpdatedUtc { get; set; }
+}
+
+public sealed class AgentCapabilityCatalogViewModel
+{
+    public Guid CompanyId { get; set; }
+    public Guid AgentId { get; set; }
+    public string AgentName { get; set; } = string.Empty;
+    public string AgentStatus { get; set; } = string.Empty;
+    public string AutonomyLevel { get; set; } = string.Empty;
+    public List<AgentCapabilityViewModel> Capabilities { get; set; } = [];
+    public DateTime GeneratedUtc { get; set; }
+}
+
+public sealed class AgentCapabilityViewModel
+{
+    public string Id { get; set; } = string.Empty;
+    public string Version { get; set; } = string.Empty;
+    public string Name { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string Category { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string ReasonCode { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public List<string> RequiredTools { get; set; } = [];
+    public List<string> RequiredDataScopes { get; set; } = [];
+    public List<string> MissingRequirements { get; set; } = [];
+    public string ApprovalBehavior { get; set; } = string.Empty;
+}
+
+public sealed class AskAgentQuestionRequest { public string Question { get; set; } = string.Empty; public string? RequestedDomain { get; set; } }
+public sealed class AgentQuestionAnswerViewModel
+{
+    public Guid RunId { get; set; } public string State { get; set; } = string.Empty; public string Answer { get; set; } = string.Empty;
+    public decimal Confidence { get; set; } public bool RequiresReview { get; set; }
+    public List<AgentAiClaimViewModel> Claims { get; set; } = []; public List<AgentAiSourceViewModel> Sources { get; set; } = [];
+    public List<string> MissingInformation { get; set; } = [];
+}
+public sealed class AgentAiClaimViewModel { public string Text { get; set; } = string.Empty; public string Type { get; set; } = string.Empty; public decimal Confidence { get; set; } public List<string> SourceIds { get; set; } = []; }
+public sealed class AgentAiSourceViewModel { public string Id { get; set; } = string.Empty; public string Type { get; set; } = string.Empty; public string Title { get; set; } = string.Empty; public string Snippet { get; set; } = string.Empty; }
+public sealed class AgentWorkPriorityViewModel { public string SourceId { get; set; } = string.Empty; public string Title { get; set; } = string.Empty; public string Status { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public int DeterministicScore { get; set; } public List<string> ReasonCodes { get; set; } = []; public string AiRationale { get; set; } = string.Empty; public decimal Confidence { get; set; } }
+public sealed class GenerateAgentPlanRequest { public string Objective { get; set; } = string.Empty; public DateTime? TargetUtc { get; set; } public int MaximumSteps { get; set; } = 8; }
+public sealed class AgentPlanViewModel { public Guid RunId { get; set; } public string Status { get; set; } = string.Empty; public string Objective { get; set; } = string.Empty; public bool RequiresReview { get; set; } public List<AgentPlanStepViewModel> Steps { get; set; } = []; public List<string> ValidationErrors { get; set; } = []; }
+public sealed class AgentPlanStepViewModel { public int Order { get; set; } public string Title { get; set; } = string.Empty; public string Description { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public bool RequiresApproval { get; set; } public string CompletionEvidence { get; set; } = string.Empty; public Guid? CommittedTaskId { get; set; } }
+public sealed class CreateAgentHandoffRequest { public string Type { get; set; } = string.Empty; public Guid ReceivingAgentId { get; set; } public string Objective { get; set; } = string.Empty; public string RequestedOutcome { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public List<string> SourceIds { get; set; } = []; }
+public sealed class TransitionAgentHandoffRequest { public string Status { get; set; } = string.Empty; public string? Summary { get; set; } public decimal? Confidence { get; set; } }
+public sealed class AgentHandoffViewModel { public Guid Id { get; set; } public string Type { get; set; } = string.Empty; public Guid RequestingAgentId { get; set; } public Guid ReceivingAgentId { get; set; } public string Objective { get; set; } = string.Empty; public string RequestedOutcome { get; set; } = string.Empty; public string Status { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public Guid? RelatedTaskId { get; set; } public string? CompletionSummary { get; set; } public DateTime UpdatedUtc { get; set; } }
+public sealed class ProposeAgentMemoryRequest { public string MemoryType { get; set; } = string.Empty; public string Scope { get; set; } = string.Empty; public string Content { get; set; } = string.Empty; public List<string> SourceIds { get; set; } = []; public decimal Confidence { get; set; } public string Sensitivity { get; set; } = "internal"; public int RetentionDays { get; set; } = 90; public Guid? OrchestrationRunId { get; set; } }
+public sealed class ReviewAgentMemoryRequest { public bool Approve { get; set; } public string? Reason { get; set; } }
+public sealed class AgentMemoryCandidateViewModel { public Guid Id { get; set; } public Guid ProposingAgentId { get; set; } public string MemoryType { get; set; } = string.Empty; public string Scope { get; set; } = string.Empty; public string Content { get; set; } = string.Empty; public decimal Confidence { get; set; } public string Sensitivity { get; set; } = string.Empty; public string Status { get; set; } = string.Empty; public DateTime ExpiresUtc { get; set; } public Guid? ActivatedMemoryItemId { get; set; } public DateTime UpdatedUtc { get; set; } }
+public sealed class AgentAiQualityMetricsViewModel { public int SampleSize { get; set; } public int Produced { get; set; } public int Accepted { get; set; } public int Rejected { get; set; } public int Corrected { get; set; } public int ValidationFailures { get; set; } public int PolicyBlocks { get; set; } public decimal? AcceptanceRate { get; set; } public bool HasSufficientEvidence { get; set; } public bool RecommendAutonomyReview { get; set; } }
 
 public sealed class CreateAgentFromTemplateRequest
 {

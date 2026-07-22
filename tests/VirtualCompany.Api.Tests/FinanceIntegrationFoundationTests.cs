@@ -4,6 +4,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using VirtualCompany.Api.Controllers;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
@@ -128,7 +129,7 @@ public sealed class FinanceIntegrationFoundationTests
             scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationSyncService>(),
             provider.Sync);
         Assert.Same(
-            scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationWriteCommandService>(),
+            scope.ServiceProvider.GetRequiredService<FinanceIntegrationWriteApprovalService>(),
             provider.WriteCommands);
         Assert.Same(
             scope.ServiceProvider.GetRequiredService<FortnoxFinanceIntegrationMapper>(),
@@ -320,8 +321,10 @@ public sealed class FinanceIntegrationFoundationTests
         IFinanceIntegrationProvider provider) =>
         new(
             new TestCompanyContextAccessor(companyId, userId),
+            null!,
             new SingleProviderRegistry(provider),
-            new TestWebHostEnvironment());
+            new TestWebHostEnvironment(),
+            NullLogger<FinanceIntegrationConnectionsController>.Instance);
 
     private sealed class StubFortnoxSyncService(Guid companyId, Guid connectionId) : IFortnoxSyncService
     {

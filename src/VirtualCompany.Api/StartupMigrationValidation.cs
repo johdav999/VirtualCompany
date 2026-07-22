@@ -30,10 +30,10 @@ public static class StartupMigrationValidation
         var pendingList = string.Join(", ", pending);
 
         logger.LogCritical(
-            "Pending EF Core migrations were detected during application startup in {EnvironmentName}. Pending migrations: {PendingMigrations}. Apply the migrations before starting the API or explicitly enable DatabaseInitialization:ApplyMigrationsOnStartup for this environment.",
+            "Pending EF Core migrations were detected during application startup in {EnvironmentName}. Pending migrations: {PendingMigrations}. Run dotnet ef database update before starting the API or explicitly enable DatabaseInitialization:ApplyMigrationsOnStartup for this environment.",
             normalizedEnvironmentName,
             pendingList);
         throw new InvalidOperationException(
-            $"Pending EF Core migrations were detected during application startup in {normalizedEnvironmentName}. Pending migrations: {pendingList}. Apply the migrations before starting the API or explicitly enable DatabaseInitialization:ApplyMigrationsOnStartup for this environment.");
+            $"Pending EF Core migrations were detected during application startup in {normalizedEnvironmentName}. Pending migrations: {pendingList}. Run dotnet ef database update before starting the API or explicitly enable DatabaseInitialization:ApplyMigrationsOnStartup for this environment.");
     }
 }

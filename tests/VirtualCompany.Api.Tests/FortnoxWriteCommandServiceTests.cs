@@ -1,5 +1,4 @@
 using System.Text.Json.Nodes;
-using FluentAssertions;
 using VirtualCompany.Application.Finance;
 using Xunit;
 
@@ -23,10 +22,10 @@ public sealed class FortnoxWriteCommandServiceTests
 
         var sanitized = FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload);
 
-        sanitized.Should().Contain("*** redacted ***");
-        sanitized.Should().Contain("Acme AB");
-        sanitized.Should().NotContain("secret-token");
-        sanitized.Should().NotContain("secret-client");
+        Assert.Contains("*** redacted ***", sanitized, StringComparison.Ordinal);
+        Assert.Contains("Acme AB", sanitized, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-token", sanitized, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret-client", sanitized, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -35,9 +34,9 @@ public sealed class FortnoxWriteCommandServiceTests
         var first = new { Customer = new { Name = "Acme AB", access_token = "one" } };
         var second = new { Customer = new { Name = "Acme AB", access_token = "two" } };
 
-        FortnoxWritePayloadSanitizer.CreatePayloadHash(first)
-            .Should()
-            .Be(FortnoxWritePayloadSanitizer.CreatePayloadHash(second));
+        Assert.Equal(
+            FortnoxWritePayloadSanitizer.CreatePayloadHash(first),
+            FortnoxWritePayloadSanitizer.CreatePayloadHash(second));
     }
 
     [Fact]
@@ -64,13 +63,13 @@ public sealed class FortnoxWriteCommandServiceTests
             Guid.NewGuid(),
             "correlation-1");
 
-        request.ProviderKey.Should().Be(FinanceIntegrationProviderKeys.Fortnox);
-        request.CompanyId.Should().Be(companyId);
-        request.CommandType.Should().Be(FinanceIntegrationWriteCommandTypes.InvoiceExport);
-        request.PayloadHash.Should().Be(hash);
-        request.Payload.SanitizedJson.Should().NotContain("access_token");
-        request.HttpMethod.Should().Be("POST");
-        request.Path.Should().Be("invoices");
+        Assert.Equal(FinanceIntegrationProviderKeys.Fortnox, request.ProviderKey);
+        Assert.Equal(companyId, request.CompanyId);
+        Assert.Equal(FinanceIntegrationWriteCommandTypes.InvoiceExport, request.CommandType);
+        Assert.Equal(hash, request.PayloadHash);
+        Assert.DoesNotContain("access_token", request.Payload.SanitizedJson, StringComparison.Ordinal);
+        Assert.Equal("POST", request.HttpMethod);
+        Assert.Equal("invoices", request.Path);
     }
 
     [Fact]
@@ -82,17 +81,17 @@ public sealed class FortnoxWriteCommandServiceTests
 
         var exception = await Assert.ThrowsAsync<FortnoxApprovalRequiredException>(() =>
             client.PostAsync<object, Dictionary<string, bool>>(
-                new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), actorUserId: Guid.NewGuid()),
+                new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), ActorUserId: Guid.NewGuid()),
                 "customers",
                 new { Customer = new { Name = "Acme AB" } },
                 CancellationToken.None));
 
-        exception.ApprovalId.Should().Be(approval.ApprovalId);
-        approval.EnsureApprovedCalls.Should().Be(1);
-        handler.Requests.Should().BeEmpty();
-        approval.LastCheck.Should().NotBeNull();
-        approval.LastCheck!.TargetCompany.Should().Be("Fortnox company");
-        approval.LastCheck.PayloadSummary.Should().Contain("Acme AB");
+        Assert.Equal(approval.ApprovalId, exception.ApprovalId);
+        Assert.Equal(1, approval.EnsureApprovedCalls);
+        Assert.Empty(handler.Requests);
+        Assert.NotNull(approval.LastCheck);
+        Assert.Equal("Fortnox company", approval.LastCheck!.TargetCompany);
+        Assert.Contains("Acme AB", approval.LastCheck.PayloadSummary, StringComparison.Ordinal);
     }
 
     private sealed class CapturingApprovalService : IFinanceIntegrationWriteApprovalService

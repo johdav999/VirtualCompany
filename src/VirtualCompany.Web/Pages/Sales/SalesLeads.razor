@@ -4,50 +4,50 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
-<PageTitle>Sales leads</PageTitle>
+<PageTitle>@SalesText["SalesLeads"]</PageTitle>
 
 <div class="sales-workspace">
     <main class="sales-main">
         <header class="sales-page-header">
-            <span>SALES</span>
-            <h1>Leads</h1>
-            <p>Review inbound opportunities and choose what Alex should do next.</p>
-            <nav class="sales-tabs" aria-label="Sales sections">
-                <a href="@BuildPath("/app/sales")">Overview</a>
-                <a class="active" href="@BuildPath("/app/sales/leads")">Leads</a>
-                <a href="@BuildPath("/app/sales/prospecting")">Prospecting</a>
-                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
-                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+            <h1>@SalesText["Leads"]</h1>
+            <p>@SalesText["LeadsDescription"]</p>
+            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
+                <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+                <a class="active" href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
+                <a href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
+                <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+                <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
         </header>
 
         @if (isLoading)
         {
-            <section class="sales-card sales-empty">Loading leads...</section>
+            <section class="sales-card sales-empty">@SalesText["LoadingLeads"]</section>
         }
         else if (!string.IsNullOrWhiteSpace(errorMessage))
         {
             <section class="sales-card sales-error">
-                <h2>Leads are unavailable</h2>
+                <h2>@SalesText["LeadsUnavailable"]</h2>
                 <p>@errorMessage</p>
-                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
             </section>
         }
         else
         {
             <section class="sales-card sales-filter-card">
                 <label>
-                    <span>Search leads</span>
-                    <input class="sales-input" @bind="searchText" @bind:event="oninput" placeholder="Search by lead, email, company, or action" />
+                    <span>@SalesText["SearchLeads"]</span>
+                    <input class="sales-input" @bind="searchText" @bind:event="oninput" placeholder="@SalesText["SearchLeadsPlaceholder"]" />
                 </label>
                 <label>
-                    <span>Status</span>
+                    <span>@SalesText["Status"]</span>
                     <select class="sales-input" @bind="statusFilter">
-                        <option value="">All statuses</option>
-                        <option value="Open">Open</option>
-                        <option value="Qualified">Qualified</option>
-                        <option value="Converted">Converted</option>
-                        <option value="Rejected">Rejected</option>
+                        <option value="">@SalesText["AllStatuses"]</option>
+                        <option value="Open">@SalesStatusPresenter.Present("Open", SalesText)</option>
+                        <option value="Qualified">@SalesStatusPresenter.Present("Qualified", SalesText)</option>
+                        <option value="Converted">@SalesStatusPresenter.Present("Converted", SalesText)</option>
+                        <option value="Rejected">@SalesStatusPresenter.Present("Rejected", SalesText)</option>
                     </select>
                 </label>
             </section>
@@ -56,8 +56,8 @@
                 @if (FilteredLeads.Count == 0)
                 {
                     <div class="sales-empty">
-                        <h2>No leads match this view</h2>
-                        <p>Clear the filters or wait for Alex to process new sales conversations.</p>
+                        <h2>@SalesText["NoMatchingLeads"]</h2>
+                        <p>@SalesText["NoMatchingLeadsMessage"]</p>
                     </div>
                 }
                 else
@@ -66,14 +66,14 @@
                         <table class="sales-table">
                             <thead>
                                 <tr>
-                                    <th>Lead</th>
-                                    <th>Source email</th>
-                                    <th>Temperature</th>
-                                    <th>Qualification</th>
-                                    <th>Confidence</th>
-                                    <th>Fit</th>
-                                    <th>Priority</th>
-                                    <th>Suggested next action</th>
+                                    <th>@SalesText["Lead"]</th>
+                                    <th>@SalesText["SourceEmail"]</th>
+                                    <th>@SalesText["Temperature"]</th>
+                                    <th>@SalesText["Qualification"]</th>
+                                    <th>@SalesText["Confidence"]</th>
+                                    <th>@SalesText["Fit"]</th>
+                                    <th>@SalesText["Priority"]</th>
+                                    <th>@SalesText["SuggestedNextAction"]</th>
                                     <th></th>
                                 </tr>
                             </thead>
@@ -85,18 +85,18 @@
                                             <strong>@lead.Title</strong>
                                             <span>@MoneyOrDash(lead.EstimatedValue, lead.Currency)</span>
                                         </td>
-                                        <td>@(lead.SourceEmail ?? "No email linked")</td>
-                                        <td><span class="@TemperatureClass(lead.Temperature)">@lead.Temperature</span></td>
-                                        <td><span class="@BadgeClass(lead.QualificationStatus)">@lead.QualificationStatus</span></td>
+                                        <td>@(lead.SourceEmail ?? SalesText["NoEmailLinked"])</td>
+                                        <td><span class="@TemperatureClass(lead.Temperature)">@SalesStatusPresenter.Present(lead.Temperature, SalesText)</span></td>
+                                        <td><span class="@BadgeClass(lead.QualificationStatus)">@SalesStatusPresenter.Present(lead.QualificationStatus, SalesText)</span></td>
                                         <td>@Confidence(lead.ConfidenceScore)</td>
-                                        <td>@(lead.Fit ?? "Not set")</td>
-                                        <td>@(lead.Priority ?? "Not set")</td>
+                                        <td>@(lead.Fit ?? SalesText["NotSet"])</td>
+                                        <td>@(lead.Priority is null ? SalesText["NotSet"] : SalesStatusPresenter.Present(lead.Priority, SalesText))</td>
                                         <td>@lead.SuggestedNextAction</td>
                                         <td>
                                             <div class="sales-row-actions">
-                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => QualifyAsync(lead.Id)">Qualify</button>
-                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => RejectAsync(lead.Id)">Reject</button>
-                                                <button class="sales-button sales-button--small sales-button--primary" disabled="@IsBusy(lead.Id)" @onclick="() => BeginConvert(lead)">Convert</button>
+                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => QualifyAsync(lead.Id)">@SalesText["Qualify"]</button>
+                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => RejectAsync(lead.Id)">@SalesText["Reject"]</button>
+                                                <button class="sales-button sales-button--small sales-button--primary" disabled="@IsBusy(lead.Id)" @onclick="() => BeginConvert(lead)">@SalesText["Convert"]</button>
                                             </div>
                                         </td>
                                     </tr>
@@ -111,25 +111,25 @@
             {
                 <section class="sales-card sales-convert-panel">
                     <div>
-                        <span>CONVERT LEAD</span>
+                        <span>@SalesText["ConvertLead"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
                         <h2>@leadToConvert.Title</h2>
-                        <p>Create a live deal from this qualified lead.</p>
+                        <p>@SalesText["ConvertLeadDescription"]</p>
                     </div>
                     <label>
-                        <span>Deal value</span>
+                        <span>@SalesText["DealValue"]</span>
                         <input class="sales-input" type="number" step="0.01" min="1" @bind="convertAmount" />
                     </label>
                     <label>
-                        <span>Currency</span>
+                        <span>@SalesText["Currency"]</span>
                         <input class="sales-input" maxlength="3" @bind="convertCurrency" />
                     </label>
                     <label>
-                        <span>Note</span>
-                        <input class="sales-input" @bind="actionNote" placeholder="Optional note for the audit trail" />
+                        <span>@SalesText["Note"]</span>
+                        <input class="sales-input" @bind="actionNote" placeholder="@SalesText["AuditNotePlaceholder"]" />
                     </label>
                     <div class="sales-actions">
-                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToConvert.Id)" @onclick="ConvertAsync">Create deal</button>
-                        <button class="sales-button" @onclick="CancelConvert">Cancel</button>
+                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToConvert.Id)" @onclick="ConvertAsync">@SalesText["CreateDeal"]</button>
+                        <button class="sales-button" @onclick="CancelConvert">@SalesText["Cancel"]</button>
                     </div>
                 </section>
             }
@@ -138,18 +138,18 @@
             {
                 <section class="sales-card sales-convert-panel">
                     <div>
-                        <span>QUALIFY LEAD</span>
+                        <span>@SalesText["QualifyLead"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
                         <h2>@leadToQualify.Title</h2>
-                        <p>Capture Alex's qualification so the next action is clear.</p>
+                        <p>@SalesText["QualifyLeadDescription"]</p>
                     </div>
-                    <label><span>Fit</span><input class="sales-input" @bind="qualificationFit" /></label>
-                    <label><span>Temperature</span><select class="sales-input" @bind="qualificationTemperature"><option>Warm</option><option>Hot</option><option>New</option></select></label>
-                    <label><span>Priority</span><select class="sales-input" @bind="qualificationPriority"><option>Medium</option><option>High</option><option>Low</option></select></label>
-                    <label><span>Suggested next action</span><input class="sales-input" @bind="qualificationNextAction" /></label>
-                    <label><span>Note</span><input class="sales-input" @bind="actionNote" placeholder="Optional note for the audit trail" /></label>
+                    <label><span>@SalesText["Fit"]</span><input class="sales-input" @bind="qualificationFit" /></label>
+                    <label><span>@SalesText["Temperature"]</span><select class="sales-input" @bind="qualificationTemperature"><option value="Warm">@SalesStatusPresenter.Present("Warm", SalesText)</option><option value="Hot">@SalesStatusPresenter.Present("Hot", SalesText)</option><option value="New">@SalesStatusPresenter.Present("New", SalesText)</option></select></label>
+                    <label><span>@SalesText["Priority"]</span><select class="sales-input" @bind="qualificationPriority"><option value="Medium">@SalesText["StatusMedium"]</option><option value="High">@SalesText["StatusHigh"]</option><option value="Low">@SalesText["StatusLow"]</option></select></label>
+                    <label><span>@SalesText["SuggestedNextAction"]</span><input class="sales-input" @bind="qualificationNextAction" /></label>
+                    <label><span>@SalesText["Note"]</span><input class="sales-input" @bind="actionNote" placeholder="@SalesText["AuditNotePlaceholder"]" /></label>
                     <div class="sales-actions">
-                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToQualify.Id)" @onclick="SaveQualificationAsync">Save qualification</button>
-                        <button class="sales-button" @onclick="CancelQualification">Cancel</button>
+                        <button class="sales-button sales-button--primary" disabled="@IsBusy(leadToQualify.Id)" @onclick="SaveQualificationAsync">@SalesText["SaveQualification"]</button>
+                        <button class="sales-button" @onclick="CancelQualification">@SalesText["Cancel"]</button>
                     </div>
                 </section>
             }
@@ -231,7 +231,7 @@
         try
         {
             await action(companyId);
-            actionMessage = "Lead updated.";
+            actionMessage = SalesText["LeadUpdated"];
             await LoadAsync();
         }
         catch (SalesApiException ex)
@@ -266,7 +266,7 @@
         try
         {
             await SalesApiClient.UpdateLeadQualificationAsync(companyId, leadToQualify.Id, new UpdateLeadQualificationRequest(qualificationFit, qualificationTemperature, qualificationPriority, qualificationNextAction, actionNote));
-            actionMessage = "Qualification saved.";
+            actionMessage = SalesText["QualificationSaved"];
             leadToQualify = null;
             await LoadAsync();
         }
@@ -308,8 +308,8 @@
 
     private bool IsBusy(Guid id) => busyId == id;
     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
-    private static string Confidence(decimal? confidence) => confidence.HasValue ? confidence.Value.ToString("P0", CultureInfo.CurrentCulture) : "Not scored";
-    private static string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? string.Create(CultureInfo.CurrentCulture, $"{value.Value:N0} {currency ?? "USD"}") : "No value yet";
+    private string Confidence(decimal? confidence) => confidence.HasValue ? LocalNumber.Percentage(confidence.Value) : SalesText["NotScored"];
+    private string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? LocalMoney.Format(value.Value, currency ?? "USD") : SalesText["NoValueYet"];
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
     private static string TemperatureClass(string temperature) => $"sales-badge sales-badge--{temperature.ToLowerInvariant()}";
 }

@@ -15,14 +15,13 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class WorkflowEventTriggerFoundationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class WorkflowEventTriggerFoundationTests : IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
 
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public WorkflowEventTriggerFoundationTests(TestWebApplicationFactory factory) =>
-        _factory = factory;
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public void Supported_event_registry_contains_canonical_platform_events()

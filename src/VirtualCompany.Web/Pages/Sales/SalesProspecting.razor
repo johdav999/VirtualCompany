@@ -6,31 +6,57 @@
 @using Microsoft.AspNetCore.Components.Forms
 @using VirtualCompany.Web.Components.Sales
 
-<PageTitle>Sales prospecting</PageTitle>
+<PageTitle>@SalesText["SalesProspecting"]</PageTitle>
 
 <div class="sales-workspace">
     <main class="sales-main">
         <header class="sales-page-header">
-            <span>SALES</span><h1>Prospecting</h1><p>Alex prioritizes accounts that match your ideal customer profile.</p>
-            <nav class="sales-tabs" aria-label="Sales sections">
-                <a href="@BuildPath("/app/sales")">Overview</a><a href="@BuildPath("/app/sales/leads")">Leads</a><a class="active" href="@BuildPath("/app/sales/prospecting")">Prospecting</a><a href="@BuildPath("/app/sales/pipeline")">Pipeline</a><a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+<h1>@SalesText["Prospecting"]</h1>
+<p>@SalesText["ProspectingDescription"]</p>
+            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
+                <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+<a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
+<a class="active" href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
+<a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+<a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
         </header>
 
-        @if (isLoading) { <section class="sales-card sales-empty">Loading the prospecting workspace...</section> }
-        else if (!string.IsNullOrWhiteSpace(errorMessage)) { <section class="sales-card sales-error"><h2>Prospecting is unavailable</h2><p>@errorMessage</p><button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button></section> }
+        @if (isLoading) { <section class="sales-card sales-empty">@SalesText["LoadingProspecting"]</section> }
+        else if (!string.IsNullOrWhiteSpace(errorMessage)) { <section class="sales-card sales-error">
+<h2>@SalesText["ProspectingUnavailable"]</h2>
+<p>@errorMessage</p>
+<button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
+</section> }
         else
         {
-            <section class="prospecting-kpis" aria-label="Lead generation performance">
-                <div><span>Candidates</span><strong>@metrics.Candidates</strong><small>Awaiting qualification</small></div>
-                <div><span>Qualified</span><strong>@metrics.Qualified</strong><small>Matched to an active ICP</small></div>
-                <div><span>Accepted</span><strong>@metrics.Accepted</strong><small>@metrics.AcceptanceRate.ToString("N0")% review acceptance</small></div>
-                <div><span>Converted</span><strong>@metrics.Converted</strong><small>@metrics.AverageCompleteness.ToString("N0")% average completeness</small></div>
+            <section class="prospecting-kpis" aria-label="@SalesText["LeadGenerationPerformance"]">
+                <div>
+<span>@SalesText["Candidates"]</span>
+<strong>@metrics.Candidates</strong>
+<small>@SalesText["AwaitingQualification"]</small>
+</div>
+                <div>
+<span>@SalesStatusPresenter.Present("Qualified", SalesText)</span>
+<strong>@metrics.Qualified</strong>
+<small>@SalesText["MatchedActiveIcp"]</small>
+</div>
+                <div>
+<span>@SalesText["Accepted"]</span>
+<strong>@metrics.Accepted</strong>
+<small>@SalesText["ReviewAcceptance", LocalNumber.Decimal(metrics.AcceptanceRate, 0)]</small>
+</div>
+                <div>
+<span>@SalesStatusPresenter.Present("Converted", SalesText)</span>
+<strong>@metrics.Converted</strong>
+<small>@SalesText["AverageCompleteness", LocalNumber.Decimal(metrics.AverageCompleteness, 0)]</small>
+</div>
             </section>
 
-            <nav class="prospecting-view-tabs" aria-label="Prospecting views">
+            <nav class="prospecting-view-tabs" aria-label="@SalesText["ProspectingViews"]">
                 @foreach (var view in new[] { "Accounts", "ICP", "Runs", "Data sources", "Suppressions" })
-                { <button class="@(activeView == view ? "active" : null)" @onclick="() => activeView = view">@view</button> }
+                { <button class="@(activeView == view ? "active" : null)" @onclick="() => activeView = view">@ProspectingViewLabel(view)</button> }
             </nav>
 
             @if (activeView == "Accounts") { @AccountsView() }
@@ -73,38 +99,259 @@
     }
 
     private RenderFragment AccountsView() => @<>
-        <section class="sales-card sales-filter-card prospecting-filter"><label><span>Search accounts</span><input class="sales-input" @bind="search" @bind:event="oninput" /></label><label><span>Status</span><select class="sales-input" @bind="statusFilter"><option value="">All statuses</option><option>Candidate</option><option>Ready For Review</option><option>Qualified</option><option>Accepted</option><option>Converted</option><option>Rejected</option></select></label><button class="sales-button sales-button--primary" @onclick="ApplyFilters">Apply</button><a class="sales-button" href="@ApiExportPath()">Export CSV</a></section>
+        <section class="sales-card sales-filter-card prospecting-filter">
+<label>
+<span>@SalesText["SearchAccounts"]</span>
+<input class="sales-input" @bind="search" @bind:event="oninput" />
+</label>
+<label>
+<span>@SalesText["Status"]</span>
+<select class="sales-input" @bind="statusFilter">
+<option value="">@SalesText["AllStatuses"]</option>
+<option value="Candidate">@SalesText["Candidates"]</option>
+<option value="Ready For Review">@SalesText["Review"]</option>
+<option value="Qualified">@SalesStatusPresenter.Present("Qualified", SalesText)</option>
+<option value="Accepted">@SalesText["Accepted"]</option>
+<option value="Converted">@SalesStatusPresenter.Present("Converted", SalesText)</option>
+<option value="Rejected">@SalesStatusPresenter.Present("Rejected", SalesText)</option>
+</select>
+</label>
+<button class="sales-button sales-button--primary" @onclick="ApplyFilters">@SalesText["Apply"]</button>
+<a class="sales-button" href="@ApiExportPath()">@SalesText["ExportCsv"]</a>
+</section>
         <section class="prospecting-split">
             <div class="sales-card prospecting-list">
-                @if (prospects.Items.Count == 0) { <div class="sales-empty"><h2>No prospects in this view</h2><p>Create an active ICP and run first-party discovery or import a CSV/XLSX file.</p></div> }
-                else { @foreach (var item in prospects.Items) { <button class="prospect-row @(selected?.Id == item.Id ? "selected" : null)" @onclick="() => selected = item"><span class="prospect-mark">@Initials(item.Name)</span><span class="prospect-main"><strong>@item.Name</strong><small>@(item.Industry ?? "Industry unknown") · @(item.Country ?? "Location unknown")</small></span><span><small>Fit</small><strong>@item.FitScore.ToString("N0")%</strong></span><span><small>Timing</small><strong>@item.TimingScore.ToString("N0")%</strong></span><span class="sales-badge @ScoreClass(item.ScoreBand)">@item.ScoreBand</span></button> } }
+                @if (prospects.Items.Count == 0) { <div class="sales-empty">
+<h2>@SalesText["NoProspects"]</h2>
+<p>@SalesText["NoProspectsMessage"]</p>
+</div> }
+                else { @foreach (var item in prospects.Items) { <button class="prospect-row @(selected?.Id == item.Id ? "selected" : null)" @onclick="() => selected = item">
+<span class="prospect-mark">@Initials(item.Name)</span>
+<span class="prospect-main">
+<strong>@item.Name</strong>
+<small>@(item.Industry ?? SalesText["IndustryUnknown"]) · @(item.Country ?? SalesText["LocationUnknown"])</small>
+</span>
+<span>
+<small>@SalesText["Fit"]</small>
+<strong>@LocalNumber.Decimal(item.FitScore, 0)%</strong>
+</span>
+<span>
+<small>@SalesText["Timing"]</small>
+<strong>@LocalNumber.Decimal(item.TimingScore, 0)%</strong>
+</span>
+<span class="sales-badge @ScoreClass(item.ScoreBand)">@item.ScoreBand</span>
+</button> } }
             </div>
             <div class="sales-card prospecting-detail">
-                @if (selected is null) { <div class="sales-empty"><h2>No account selected</h2><p>Select an account to review Alex's evidence.</p></div> }
-                else { <div class="prospect-detail-head"><div class="prospect-mark large">@Initials(selected.Name)</div><div><h2>@selected.Name</h2><p>@(selected.Domain ?? "Domain not verified") · @(selected.Employees?.ToString("N0") ?? "Size unknown") employees</p></div><strong>@selected.OverallScore.ToString("N0")%</strong></div>
-                    <div class="score-strip"><span>ICP fit <b>@selected.FitScore.ToString("N0")</b></span><span>Timing <b>@selected.TimingScore.ToString("N0")</b></span><span>Role coverage <b>@selected.RoleScore.ToString("N0")</b></span><span>Data confidence <b>@selected.DataConfidenceScore.ToString("N0")</b></span></div>
-                    <section><h3>Why this account</h3>@foreach (var line in BriefItems(selected.ResearchBriefJson, "confirmedFacts")) { <p class="evidence-line">Verified: @line</p> } @if (!BriefItems(selected.ResearchBriefJson, "confirmedFacts").Any()) { <p>Refresh research to create an evidence-backed account brief.</p> }</section>
-                    <div class="prospect-detail-grid"><section><h3>Buying group</h3>@if (selected.Contacts.Count == 0) { <p>No contacts reviewed yet.</p> } else { @foreach (var c in selected.Contacts) { <div class="compact-item"><strong>@c.FullName</strong><span>@(c.Title ?? "Role unknown") · @c.BuyingRoles</span><small>@c.EmailStatus · @c.Status</small></div> } }<button class="sales-button sales-button--small" @onclick="() => showContactForm = !showContactForm">Add contact</button></section>
-                    <section><h3>Recent signals</h3>@if (selected.Signals.Count == 0) { <p>No fresh buying signals.</p> } else { @foreach (var s in selected.Signals) { <div class="compact-item"><strong>@s.Type</strong><span>@s.Summary</span><small>@s.EventUtc.ToLocalTime().ToString("d") · @s.Source</small></div> } }<button class="sales-button sales-button--small" @onclick="() => showSignalForm = !showSignalForm">Add signal</button></section></div>
-                    @if (showContactForm) { <div class="inline-form"><input class="sales-input" placeholder="Full name" @bind="contactForm.FullName" /><input class="sales-input" placeholder="Title" @bind="contactForm.Title" /><input class="sales-input" placeholder="Business email" @bind="contactForm.Email" /><input class="sales-input" placeholder="Buying roles" @bind="contactForm.BuyingRoles" /><button class="sales-button sales-button--primary" @onclick="AddContact">Save contact</button></div> }
-                    @if (showSignalForm) { <div class="inline-form"><select class="sales-input" @bind="signalForm.Type"><option>hiring</option><option>funding</option><option>expansion</option><option>leadership_change</option><option>technology_adoption</option></select><input class="sales-input" placeholder="Evidence summary" @bind="signalForm.Summary" /><button class="sales-button sales-button--primary" @onclick="AddSignal">Save signal</button></div> }
-                    <section><h3>Data used</h3><p>@selected.Source · observed @selected.LastObservedUtc.ToLocalTime().ToString("g")</p></section>
-                    <div class="prospect-actions"><button class="sales-button sales-button--primary" disabled="@isBusy" @onclick="AcceptSelected">Accept</button><input class="sales-input" placeholder="Reason required for rejection" @bind="rejectionReason" /><button class="sales-button sales-button--danger" disabled="@isBusy" @onclick="RejectSelected">Reject</button><button class="sales-button" disabled="@isBusy" @onclick="RefreshSelected">Refresh research</button>@if (selected.Status == "Accepted") { <button class="sales-button sales-button--primary" disabled="@isBusy" @onclick="ConvertSelected">Create lead</button> }</div>
+                @if (selected is null) { <div class="sales-empty">
+<h2>@SalesText["NoAccountSelected"]</h2>
+<p>@SalesText["SelectAccountMessage"]</p>
+</div> }
+                else { <div class="prospect-detail-head">
+<div class="prospect-mark large">@Initials(selected.Name)</div>
+<div>
+<h2>@selected.Name</h2>
+<p>@(selected.Domain ?? SalesText["DomainNotVerified"]) · @(selected.Employees.HasValue ? LocalNumber.Integer(selected.Employees.Value) : SalesText["SizeUnknown"]) employees</p>
+</div>
+<strong>@LocalNumber.Decimal(selected.OverallScore, 0)%</strong>
+</div>
+                    <div class="score-strip">
+<span>@SalesText["IcpFit"] <b>@LocalNumber.Decimal(selected.FitScore, 0)</b>
+</span>
+<span>@SalesText["Timing"] <b>@LocalNumber.Decimal(selected.TimingScore, 0)</b>
+</span>
+<span>@SalesText["RoleCoverage"] <b>@LocalNumber.Decimal(selected.RoleScore, 0)</b>
+</span>
+<span>@SalesText["DataConfidence"] <b>@LocalNumber.Decimal(selected.DataConfidenceScore, 0)</b>
+</span>
+</div>
+                    <section>
+<h3>@SalesText["WhyThisAccount"]</h3>@foreach (var line in BriefItems(selected.ResearchBriefJson, "confirmedFacts")) { <p class="evidence-line">@SalesText["VerifiedEvidence", line]</p> } @if (!BriefItems(selected.ResearchBriefJson, "confirmedFacts").Any()) { <p>@SalesText["RefreshResearchBrief"]</p> }</section>
+                    <div class="prospect-detail-grid">
+<section>
+<h3>@SalesText["BuyingGroup"]</h3>@if (selected.Contacts.Count == 0) { <p>@SalesText["NoContactsReviewed"]</p> } else { @foreach (var c in selected.Contacts) { <div class="compact-item">
+<strong>@c.FullName</strong>
+<span>@(c.Title ?? SalesText["RoleUnknown"]) · @c.BuyingRoles</span>
+<small>@c.EmailStatus · @c.Status</small>
+</div> } }<button class="sales-button sales-button--small" @onclick="() => showContactForm = !showContactForm">@SalesText["AddContact"]</button>
+</section>
+                    <section>
+<h3>@SalesText["RecentSignals"]</h3>@if (selected.Signals.Count == 0) { <p>@SalesText["NoFreshSignals"]</p> } else { @foreach (var s in selected.Signals) { <div class="compact-item">
+<strong>@s.Type</strong>
+<span>@s.Summary</span>
+<small>@LocalDateTime.DateTime(s.EventUtc) | @s.Source</small>
+</div> } }<button class="sales-button sales-button--small" @onclick="() => showSignalForm = !showSignalForm">@SalesText["AddSignal"]</button>
+</section>
+</div>
+                    @if (showContactForm) { <div class="inline-form">
+<input class="sales-input" placeholder="@SalesText["FullName"]" @bind="contactForm.FullName" />
+<input class="sales-input" placeholder="@SalesText["Title"]" @bind="contactForm.Title" />
+<input class="sales-input" placeholder="@SalesText["BusinessEmail"]" @bind="contactForm.Email" />
+<input class="sales-input" placeholder="@SalesText["BuyingRoles"]" @bind="contactForm.BuyingRoles" />
+<button class="sales-button sales-button--primary" @onclick="AddContact">@SalesText["SaveContact"]</button>
+</div> }
+                    @if (showSignalForm) { <div class="inline-form">
+<select class="sales-input" @bind="signalForm.Type">
+<option value="hiring">@SalesText["SignalHiring"]</option>
+<option value="funding">@SalesText["SignalFunding"]</option>
+<option value="expansion">@SalesText["SignalExpansion"]</option>
+<option value="leadership_change">@SalesText["SignalLeadershipChange"]</option>
+<option value="technology_adoption">@SalesText["SignalTechnologyAdoption"]</option>
+</select>
+<input class="sales-input" placeholder="@SalesText["EvidenceSummary"]" @bind="signalForm.Summary" />
+<button class="sales-button sales-button--primary" @onclick="AddSignal">@SalesText["SaveSignal"]</button>
+</div> }
+                    <section>
+<h3>@SalesText["DataUsed"]</h3>
+<p>@SalesText["ObservedAt", selected.Source, LocalDateTime.DateTime(selected.LastObservedUtc)]</p>
+</section>
+                    <div class="prospect-actions">
+<button class="sales-button sales-button--primary" disabled="@isBusy" @onclick="AcceptSelected">@SalesText["Accept"]</button>
+<input class="sales-input" placeholder="@SalesText["RejectionReasonPlaceholder"]" @bind="rejectionReason" />
+<button class="sales-button sales-button--danger" disabled="@isBusy" @onclick="RejectSelected">@SalesText["Reject"]</button>
+<button class="sales-button" disabled="@isBusy" @onclick="RefreshSelected">@SalesText["RefreshResearch"]</button>@if (selected.Status == "Accepted") { <button class="sales-button sales-button--primary" disabled="@isBusy" @onclick="ConvertSelected">@SalesText["CreateLead"]</button> }</div>
                 }
             </div>
         </section>@ActionMessage()
     </>;
 
     private bool showContactForm, showSignalForm;
-    private RenderFragment IcpView() => @<section class="settings-grid"><div class="sales-card"><h2>Ideal customer profiles</h2>@if (profiles.Count == 0) { <p>No profiles yet. Create the criteria Alex should use.</p> }@foreach (var p in profiles) { <div class="settings-row"><div><strong>@p.Name · v@p.Version</strong><span>@p.Industries · @p.Countries</span></div><span class="sales-badge">@p.Status</span><button class="sales-button sales-button--small" @onclick="() => EditIcp(p)">Edit</button>@if (p.Status == "Draft") { <button class="sales-button sales-button--small sales-button--primary" @onclick="() => ActivateIcp(p.Id)">Activate</button> }<button class="sales-button sales-button--small" @onclick="() => CloneIcp(p.Id)">New version</button></div> }</div><div class="sales-card settings-form"><h2>@(editingIcpId.HasValue ? "Edit ICP draft" : "New ICP")</h2><label>Name<input class="sales-input" @bind="icpForm.Name" /></label><label>Countries<input class="sales-input" placeholder="Sweden, Norway" @bind="icpForm.Countries" /></label><label>Industries<input class="sales-input" placeholder="Manufacturing, SaaS" @bind="icpForm.Industries" /></label><div class="form-pair"><label>Minimum employees<input class="sales-input" type="number" @bind="icpForm.EmployeeMin" /></label><label>Maximum employees<input class="sales-input" type="number" @bind="icpForm.EmployeeMax" /></label></div><label>Buyer roles<input class="sales-input" placeholder="Operations director, CFO" @bind="icpForm.BuyerRoles" /></label><label>Technologies<input class="sales-input" @bind="icpForm.Technologies" /></label><label>Business problems<textarea class="sales-input" @bind="icpForm.PainHypotheses"></textarea></label><label>Positive indicators<textarea class="sales-input" @bind="icpForm.PositiveCriteria"></textarea></label><label>Exclusions<textarea class="sales-input" @bind="icpForm.Disqualifiers"></textarea></label><button class="sales-button sales-button--primary" @onclick="SaveIcp">Save draft</button></div>@ActionMessage()</section>;
-    private RenderFragment RunsView() => @<section class="settings-grid"><div class="sales-card"><h2>Prospecting runs</h2>@foreach (var r in runs) { <div class="settings-row"><div><strong>@r.Name</strong><span>@r.CurrentStep - @r.AccountsFound / @r.AccountLimit accounts</span></div><span class="sales-badge">@r.Status</span><label class="sales-button sales-button--small">Import CSV/XLSX<InputFile class="visually-hidden" OnChange="e => ImportFile(r.Id, e)" accept=".csv,.xlsx" /></label>@if (r.Status is "Planned" or "Paused" or "Failed") { <button class="sales-button sales-button--small sales-button--primary" @onclick="() => StartRun(r.Id)">Start</button> }@if (r.Status == "Running") { <button class="sales-button sales-button--small" @onclick="() => PauseRun(r.Id)">Pause</button> }</div> }@if (runs.Count == 0) { <p>No runs yet.</p> }</div><div class="sales-card settings-form"><h2>Plan a run</h2><label>Active ICP<select class="sales-input" @bind="runForm.IcpProfileId"><option value="@Guid.Empty">Choose a profile</option>@foreach (var p in profiles.Where(x => x.Status == "Active")) { <option value="@p.Id">@p.Name - v@p.Version</option> }</select></label><label>Run name<input class="sales-input" @bind="runForm.Name" /></label><div class="form-pair"><label>Account limit<input class="sales-input" type="number" @bind="runForm.AccountLimit" /></label><label>Contact limit<input class="sales-input" type="number" @bind="runForm.ContactLimit" /></label></div><label>Sources<input class="sales-input" @bind="runForm.Sources" /></label><label>Geography<input class="sales-input" @bind="runForm.Geography" /></label><button class="sales-button sales-button--primary" @onclick="CreateRun">Create plan</button><p class="form-help">Create the plan, then import company-owned CSV/XLSX data or start discovery.</p></div>@ActionMessage()</section>;
-    private RenderFragment SourcesView() => @<section class="settings-grid"><div class="sales-card"><h2>Available data sources</h2>@foreach (var p in sourcePolicy?.Providers ?? []) { <div class="settings-row"><div><strong>@p.Label</strong><span>@p.Health · @(p.Capabilities.IsPaid ? "Paid source" : "No provider charge")</span></div><span class="sales-badge">@(sourceForm.EnabledSources.Contains(p.Key) ? "Enabled" : "Paused")</span></div> }<div class="settings-row"><div><strong>Spreadsheet import</strong><span>CSV and XLSX files with row-level validation</span></div><span class="sales-badge">Enabled</span></div></div><div class="sales-card settings-form"><h2>Source governance</h2><label>Enabled sources<input class="sales-input" @bind="sourceForm.EnabledSources" /></label><label>Allowed countries<input class="sales-input" @bind="sourceForm.AllowedCountries" /></label><label>Allowed fields<input class="sales-input" @bind="sourceForm.AllowedFields" /></label><div class="form-pair"><label>Per-run budget<input class="sales-input" type="number" @bind="sourceForm.PerRunBudget" /></label><label>Monthly budget<input class="sales-input" type="number" @bind="sourceForm.MonthlyBudget" /></label></div><div class="form-pair"><label>Retention days<input class="sales-input" type="number" @bind="sourceForm.RetentionDays" /></label><label>Refresh interval<input class="sales-input" type="number" @bind="sourceForm.RefreshDays" /></label></div><button class="sales-button sales-button--primary" @onclick="SaveSources">Save policy</button></div>@ActionMessage()</section>;
-    private RenderFragment SuppressionsView() => @<section class="settings-grid"><div class="sales-card"><h2>Suppression list</h2>@foreach (var s in suppressions) { <div class="settings-row"><div><strong>@s.ScopeValue</strong><span>@s.ScopeType · @s.Reason</span></div><small>@(s.ExpiresUtc?.ToLocalTime().ToString("d") ?? "No expiry")</small></div> }@if (suppressions.Count == 0) { <p>No active suppressions.</p> }</div><div class="sales-card settings-form"><h2>Add suppression</h2><label>Scope<select class="sales-input" @bind="suppressionForm.ScopeType"><option>domain</option><option>company</option><option>email</option><option>person</option></select></label><label>Value<input class="sales-input" @bind="suppressionForm.ScopeValue" /></label><label>Reason<input class="sales-input" @bind="suppressionForm.Reason" /></label><button class="sales-button sales-button--primary" @onclick="AddSuppression">Suppress</button></div>@ActionMessage()</section>;
+    private RenderFragment IcpView() => @<section class="settings-grid">
+<div class="sales-card">
+<h2>@SalesText["IdealCustomerProfiles"]</h2>@if (profiles.Count == 0) { <p>@SalesText["NoIcpProfiles"]</p> }@foreach (var p in profiles) { <div class="settings-row">
+<div>
+<strong>@p.Name · v@p.Version</strong>
+<span>@p.Industries · @p.Countries</span>
+</div>
+<span class="sales-badge">@SalesStatusPresenter.Present(p.Status, SalesText)</span>
+<button class="sales-button sales-button--small" @onclick="() => EditIcp(p)">@SalesText["Edit"]</button>@if (p.Status == "Draft") { <button class="sales-button sales-button--small sales-button--primary" @onclick="() => ActivateIcp(p.Id)">@SalesText["Activate"]</button> }<button class="sales-button sales-button--small" @onclick="() => CloneIcp(p.Id)">@SalesText["NewVersion"]</button>
+</div> }</div>
+<div class="sales-card settings-form">
+<h2>@(editingIcpId.HasValue ? SalesText["EditIcpDraft"] : SalesText["NewIcp"])</h2>
+<label>@SalesText["Name"]<input class="sales-input" @bind="icpForm.Name" />
+</label>
+<label>@SalesText["Countries"]<input class="sales-input" placeholder="@SalesText["CountriesPlaceholder"]" @bind="icpForm.Countries" />
+</label>
+<label>@SalesText["Industries"]<input class="sales-input" placeholder="@SalesText["IndustriesPlaceholder"]" @bind="icpForm.Industries" />
+</label>
+<div class="form-pair">
+<label>@SalesText["MinimumEmployees"]<input class="sales-input" type="number" @bind="icpForm.EmployeeMin" />
+</label>
+<label>@SalesText["MaximumEmployees"]<input class="sales-input" type="number" @bind="icpForm.EmployeeMax" />
+</label>
+</div>
+<label>@SalesText["BuyerRolesLabel"]<input class="sales-input" placeholder="@SalesText["BuyerRolesPlaceholder"]" @bind="icpForm.BuyerRoles" />
+</label>
+<label>@SalesText["Technologies"]<input class="sales-input" @bind="icpForm.Technologies" />
+</label>
+<label>@SalesText["BusinessProblems"]<textarea class="sales-input" @bind="icpForm.PainHypotheses">
+</textarea>
+</label>
+<label>@SalesText["PositiveIndicators"]<textarea class="sales-input" @bind="icpForm.PositiveCriteria">
+</textarea>
+</label>
+<label>@SalesText["Exclusions"]<textarea class="sales-input" @bind="icpForm.Disqualifiers">
+</textarea>
+</label>
+<button class="sales-button sales-button--primary" @onclick="SaveIcp">@SalesText["SaveDraft"]</button>
+</div>@ActionMessage()</section>;
+    private RenderFragment RunsView() => @<section class="settings-grid">
+<div class="sales-card">
+<h2>@SalesText["ProspectingRuns"]</h2>@foreach (var r in runs) { <div class="settings-row">
+<div>
+<strong>@r.Name</strong>
+<span>@r.CurrentStep - @r.AccountsFound / @r.AccountLimit accounts</span>
+</div>
+<span class="sales-badge">@SalesStatusPresenter.Present(r.Status, SalesText)</span>
+<label class="sales-button sales-button--small">@SalesText["ImportSpreadsheet"]<InputFile class="visually-hidden" OnChange="e => ImportFile(r.Id, e)" accept=".csv,.xlsx" />
+</label>@if (r.Status is "Planned" or "Paused" or "Failed") { <button class="sales-button sales-button--small sales-button--primary" @onclick="() => StartRun(r.Id)">@SalesText["Start"]</button> }@if (r.Status == "Running") { <button class="sales-button sales-button--small" @onclick="() => PauseRun(r.Id)">@SalesText["Pause"]</button> }</div> }@if (runs.Count == 0) { <p>@SalesText["NoRuns"]</p> }</div>
+<div class="sales-card settings-form">
+<h2>@SalesText["PlanRun"]</h2>
+<label>@SalesText["ActiveIcp"]<select class="sales-input" @bind="runForm.IcpProfileId">
+<option value="@Guid.Empty">@SalesText["ChooseProfile"]</option>@foreach (var p in profiles.Where(x => x.Status == "Active")) { <option value="@p.Id">@p.Name - v@p.Version</option> }</select>
+</label>
+<label>@SalesText["RunName"]<input class="sales-input" @bind="runForm.Name" />
+</label>
+<div class="form-pair">
+<label>@SalesText["AccountLimit"]<input class="sales-input" type="number" @bind="runForm.AccountLimit" />
+</label>
+<label>@SalesText["ContactLimit"]<input class="sales-input" type="number" @bind="runForm.ContactLimit" />
+</label>
+</div>
+<label>@SalesText["Sources"]<input class="sales-input" @bind="runForm.Sources" />
+</label>
+<label>@SalesText["Geography"]<input class="sales-input" @bind="runForm.Geography" />
+</label>
+<button class="sales-button sales-button--primary" @onclick="CreateRun">@SalesText["CreatePlan"]</button>
+<p class="form-help">@SalesText["CreatePlanHelp"]</p>
+</div>@ActionMessage()</section>;
+    private RenderFragment SourcesView() => @<section class="settings-grid">
+<div class="sales-card">
+<h2>@SalesText["AvailableDataSources"]</h2>@foreach (var p in sourcePolicy?.Providers ?? []) { <div class="settings-row">
+<div>
+<strong>@p.Label</strong>
+<span>@p.Health · @(p.Capabilities.IsPaid ? "Paid source" : "No provider charge")</span>
+</div>
+<span class="sales-badge">@(sourceForm.EnabledSources.Contains(p.Key) ? SalesText["Enabled"] : SalesStatusPresenter.Present("Paused", SalesText))</span>
+</div> }<div class="settings-row">
+<div>
+<strong>@SalesText["SpreadsheetImport"]</strong>
+<span>@SalesText["SpreadsheetImportDescription"]</span>
+</div>
+<span class="sales-badge">@SalesText["Enabled"]</span>
+</div>
+</div>
+<div class="sales-card settings-form">
+<h2>@SalesText["SourceGovernance"]</h2>
+<label>@SalesText["EnabledSources"]<input class="sales-input" @bind="sourceForm.EnabledSources" />
+</label>
+<label>@SalesText["AllowedCountries"]<input class="sales-input" @bind="sourceForm.AllowedCountries" />
+</label>
+<label>@SalesText["AllowedFields"]<input class="sales-input" @bind="sourceForm.AllowedFields" />
+</label>
+<div class="form-pair">
+<label>@SalesText["PerRunBudget"]<input class="sales-input" type="number" @bind="sourceForm.PerRunBudget" />
+</label>
+<label>@SalesText["MonthlyBudget"]<input class="sales-input" type="number" @bind="sourceForm.MonthlyBudget" />
+</label>
+</div>
+<div class="form-pair">
+<label>@SalesText["RetentionDays"]<input class="sales-input" type="number" @bind="sourceForm.RetentionDays" />
+</label>
+<label>@SalesText["RefreshInterval"]<input class="sales-input" type="number" @bind="sourceForm.RefreshDays" />
+</label>
+</div>
+<button class="sales-button sales-button--primary" @onclick="SaveSources">@SalesText["SavePolicy"]</button>
+</div>@ActionMessage()</section>;
+    private RenderFragment SuppressionsView() => @<section class="settings-grid">
+<div class="sales-card">
+<h2>@SalesText["SuppressionList"]</h2>@foreach (var s in suppressions) { <div class="settings-row">
+<div>
+<strong>@s.ScopeValue</strong>
+<span>@s.ScopeType · @s.Reason</span>
+</div>
+<small>@(s.ExpiresUtc.HasValue ? LocalDateTime.DateTime(s.ExpiresUtc.Value) : SalesText["NoExpiry"])</small>
+</div> }@if (suppressions.Count == 0) { <p>@SalesText["NoSuppressions"]</p> }</div>
+<div class="sales-card settings-form">
+<h2>@SalesText["AddSuppression"]</h2>
+<label>@SalesText["Scope"]<select class="sales-input" @bind="suppressionForm.ScopeType">
+<option value="domain">@SalesText["ScopeDomain"]</option>
+<option value="company">@SalesText["ScopeCompany"]</option>
+<option value="email">@SalesText["ScopeEmail"]</option>
+<option value="person">@SalesText["ScopePerson"]</option>
+</select>
+</label>
+<label>@SalesText["Value"]<input class="sales-input" @bind="suppressionForm.ScopeValue" />
+</label>
+<label>@SalesText["Reason"]<input class="sales-input" @bind="suppressionForm.Reason" />
+</label>
+<button class="sales-button sales-button--primary" @onclick="AddSuppression">@SalesText["Suppress"]</button>
+</div>@ActionMessage()</section>;
     private RenderFragment ActionMessage() => @<>{@if (!string.IsNullOrWhiteSpace(actionMessage)) { <div class="sales-toast">@actionMessage</div> }}</>;
 
     private async Task ApplyFilters() => await LoadAsync();
     private async Task RunAction(Func<Guid, Task> action) { if (ResolvedCompanyId is not Guid companyId) return; isBusy = true; actionMessage = null; try { await action(companyId); await LoadAsync(); } catch (SalesApiException ex) { actionMessage = ex.Message; } finally { isBusy = false; } }
-    private async Task Review(string action) { if (selected is null) return; if (action == "reject" && string.IsNullOrWhiteSpace(rejectionReason)) { actionMessage = "Add a rejection reason so Alex can learn from the decision."; return; } await RunAction(async c => { selected = await SalesApiClient.ReviewProspectAsync(c, selected.Id, action, rejectionReason); }); }
+    private async Task Review(string action) { if (selected is null) return; if (action == "reject" && string.IsNullOrWhiteSpace(rejectionReason)) { actionMessage = SalesText["RejectionReasonRequired"]; return; } await RunAction(async c => { selected = await SalesApiClient.ReviewProspectAsync(c, selected.Id, action, rejectionReason); }); }
     private Task AcceptSelected() => Review("accept");
     private Task RejectSelected() => Review("reject");
     private async Task RefreshSelected() { if (selected is not null) await RunAction(async c => selected = await SalesApiClient.RefreshProspectAsync(c, selected.Id)); }
@@ -119,10 +366,19 @@
     private async Task StartRun(Guid id) => await RunAction(c => SalesApiClient.StartProspectingRunAsync(c, id));
     private async Task ChangeRun(Guid id, string action) => await RunAction(c => SalesApiClient.ChangeProspectingRunAsync(c, id, action));
     private Task PauseRun(Guid id) => ChangeRun(id, "pause");
-    private async Task ImportFile(Guid runId, InputFileChangeEventArgs e) { if (ResolvedCompanyId is not Guid companyId) return; isBusy = true; try { await using var stream = e.File.OpenReadStream(10_000_000); var result = await SalesApiClient.ImportProspectsAsync(companyId, runId, stream, e.File.Name); actionMessage = $"Imported {result.Imported} accounts. {result.Duplicates} duplicates skipped and {result.Rejected} rows need correction."; await LoadAsync(); } catch (Exception ex) when (ex is SalesApiException or IOException) { actionMessage = ex.Message; } finally { isBusy = false; } }
+    private async Task ImportFile(Guid runId, InputFileChangeEventArgs e) { if (ResolvedCompanyId is not Guid companyId) return; isBusy = true; try { await using var stream = e.File.OpenReadStream(10_000_000); var result = await SalesApiClient.ImportProspectsAsync(companyId, runId, stream, e.File.Name); actionMessage = SalesText["ImportSummary", result.Imported, result.Duplicates, result.Rejected]; await LoadAsync(); } catch (Exception ex) when (ex is SalesApiException or IOException) { actionMessage = ex.Message; } finally { isBusy = false; } }
     private async Task SaveSources() => await RunAction(c => SalesApiClient.SaveProspectSourcePolicyAsync(c, sourceForm));
     private async Task AddSuppression() => await RunAction(c => SalesApiClient.AddSuppressionAsync(c, suppressionForm));
     private string BuildPath(string path) => ResolvedCompanyId is Guid id ? $"{path}?companyId={id:D}" : path;
+    private string ProspectingViewLabel(string view) => view switch
+    {
+        "Accounts" => SalesText["Accounts"],
+        "ICP" => SalesText["Icp"],
+        "Runs" => SalesText["Runs"],
+        "Data sources" => SalesText["DataSources"],
+        "Suppressions" => SalesText["Suppressions"],
+        _ => view
+    };
     private string ApiExportPath() => ResolvedCompanyId is Guid id ? $"/api/sales/prospecting/export.csv?companyId={id:D}" : "#";
     private static string Initials(string name) => string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(x => char.ToUpperInvariant(x[0])));
     private static string ScoreClass(string score) => score.StartsWith("High", StringComparison.OrdinalIgnoreCase) ? "sales-badge--qualified" : score.StartsWith("Medium", StringComparison.OrdinalIgnoreCase) ? "sales-badge--warm" : "sales-badge--new";

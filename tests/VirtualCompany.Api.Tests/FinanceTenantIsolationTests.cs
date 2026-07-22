@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceTenantIsolationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceTenantIsolationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Finance_seed_creates_realistic_balanced_tenant_data()
@@ -180,8 +177,14 @@ public sealed class FinanceTenantIsolationTests : IClassFixture<TestWebApplicati
         });
     }
 
-    private static VirtualCompanyDbContext CreateFinanceSeedContext() =>
-        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+    private static VirtualCompanyDbContext CreateFinanceSeedContext()
+    {
+        var context = new VirtualCompanyDbContext(
+            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlite("Data Source=:memory:")
             .Options);
+        context.Database.OpenConnection();
+        context.Database.EnsureCreated();
+        return context;
+    }
 }

@@ -203,6 +203,7 @@ public sealed class SupplierInvoiceCorrectionServiceTests
             await db.Database.EnsureCreatedAsync();
             var fixture = new CorrectionFixture(connection, db, provider);
 
+            db.Users.Add(new User(fixture.ActorUserId, "correction-actor@example.test", "Correction Actor", "test", fixture.ActorUserId.ToString("N")));
             db.Companies.Add(new Company(fixture.CompanyId, "Fortnox-only company"));
             db.FinanceCounterparties.Add(new FinanceCounterparty(
                 fixture.SupplierId,
@@ -251,7 +252,7 @@ public sealed class SupplierInvoiceCorrectionServiceTests
                 dueStatus: FinanceDocumentDueStatuses.Overdue,
                 documentKind: FinanceDocumentKinds.SupplierInvoice,
                 providerStatus: "booked=true;balance=22000",
-                processingStatus: FinanceDocumentProcessingStatuses.Synced);
+                processingStatus: FinanceDocumentProcessingStatuses.None);
             Db.FinanceBills.Add(bill);
             Db.FinanceExternalReferences.Add(new FinanceExternalReference(
                 Guid.NewGuid(),
@@ -451,7 +452,7 @@ public sealed class SupplierInvoiceCorrectionServiceTests
                 steps,
                 steps.FirstOrDefault(),
                 approval.DecisionSummary,
-                approval.RejectionComment,
+                approval.DecisionSummary,
                 string.Empty,
                 string.Empty,
                 [],

@@ -17,7 +17,13 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
         builder.ToTable(t =>
         {
             t.HasCheckConstraint("CK_mailbox_connections_provider", MailboxProviderValues.BuildCheckConstraintSql("provider"));
+            t.HasCheckConstraint("CK_mailbox_connections_purpose", MailboxPurposeValues.BuildCheckConstraintSql("purpose"));
             t.HasCheckConstraint("CK_mailbox_connections_status", MailboxConnectionStatusValues.BuildCheckConstraintSql("status"));
+            t.HasCheckConstraint("CK_mailbox_connections_authentication_type", "authentication_type IS NULL OR authentication_type IN ('oauth2', 'application_password')");
+            t.HasCheckConstraint("CK_mailbox_connections_imap_tls_mode", "imap_tls_mode IS NULL OR imap_tls_mode IN ('implicit_tls', 'starttls')");
+            t.HasCheckConstraint("CK_mailbox_connections_smtp_tls_mode", "smtp_tls_mode IS NULL OR smtp_tls_mode IN ('implicit_tls', 'starttls')");
+            t.HasCheckConstraint("CK_mailbox_connections_imap_port", "imap_port IS NULL OR (imap_port >= 1 AND imap_port <= 65535)");
+            t.HasCheckConstraint("CK_mailbox_connections_smtp_port", "smtp_port IS NULL OR (smtp_port >= 1 AND smtp_port <= 65535)");
         });
 
         builder.HasKey(x => x.Id);
@@ -30,6 +36,12 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
             .HasConversion(provider => provider.ToStorageValue(), value => MailboxProviderValues.Parse(value))
             .HasMaxLength(32)
             .IsRequired();
+        builder.Property(x => x.Purpose)
+            .HasColumnName("purpose")
+            .HasConversion(purpose => purpose.ToStorageValue(), value => MailboxPurposeValues.Parse(value))
+            .HasMaxLength(32)
+            .HasDefaultValue(MailboxPurpose.Finance)
+            .IsRequired();
         builder.Property(x => x.Status)
             .HasColumnName("status")
             .HasConversion(status => status.ToStorageValue(), value => MailboxConnectionStatusValues.Parse(value))
@@ -41,6 +53,31 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
         builder.Property(x => x.EncryptedAccessToken).HasColumnName("encrypted_access_token");
         builder.Property(x => x.EncryptedRefreshToken).HasColumnName("encrypted_refresh_token");
         builder.Property(x => x.EncryptedCredentialEnvelope).HasColumnName("encrypted_credential_envelope");
+        builder.Property(x => x.ProfileKey).HasColumnName("profile_key").HasMaxLength(64);
+        builder.Property(x => x.AuthenticationType)
+            .HasColumnName("authentication_type")
+            .HasConversion(
+                value => value.HasValue ? value.Value.ToStorageValue() : null,
+                value => string.IsNullOrWhiteSpace(value) ? null : MailboxAuthenticationTypeValues.Parse(value))
+            .HasMaxLength(32);
+        builder.Property(x => x.AuthenticatedUsername).HasColumnName("authenticated_username").HasMaxLength(256);
+        builder.Property(x => x.ImapHost).HasColumnName("imap_host").HasMaxLength(253);
+        builder.Property(x => x.ImapPort).HasColumnName("imap_port");
+        builder.Property(x => x.ImapTlsMode)
+            .HasColumnName("imap_tls_mode")
+            .HasConversion(
+                value => value.HasValue ? value.Value.ToStorageValue() : null,
+                value => string.IsNullOrWhiteSpace(value) ? null : MailboxTlsModeValues.Parse(value))
+            .HasMaxLength(32);
+        builder.Property(x => x.SmtpHost).HasColumnName("smtp_host").HasMaxLength(253);
+        builder.Property(x => x.SmtpPort).HasColumnName("smtp_port");
+        builder.Property(x => x.SmtpTlsMode)
+            .HasColumnName("smtp_tls_mode")
+            .HasConversion(
+                value => value.HasValue ? value.Value.ToStorageValue() : null,
+                value => string.IsNullOrWhiteSpace(value) ? null : MailboxTlsModeValues.Parse(value))
+            .HasMaxLength(32);
+        builder.Property(x => x.CapabilityFlags).HasColumnName("capability_flags").HasDefaultValue(MailboxCapability.None).IsRequired();
         builder.Property(x => x.AccessTokenExpiresUtc).HasColumnName("access_token_expires_at");
         builder.Property(x => x.GrantedScopes)
             .HasColumnName("granted_scopes_json")
@@ -57,14 +94,18 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.LastSuccessfulScanUtc).HasColumnName("last_successful_scan_at");
+        builder.Property(x => x.LastHealthCheckUtc).HasColumnName("last_health_check_at");
+        builder.Property(x => x.LastErrorCode).HasColumnName("last_error_code").HasMaxLength(100);
         builder.Property(x => x.LastErrorSummary).HasColumnName("last_error_summary").HasMaxLength(1000);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => x.CompanyId);
         builder.HasIndex(x => new { x.CompanyId, x.UserId });
+        builder.HasIndex(x => new { x.CompanyId, x.UserId, x.Purpose, x.UpdatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.Provider, x.EmailAddress });
         builder.HasIndex(x => new { x.CompanyId, x.Status });
+        builder.HasIndex(x => new { x.CompanyId, x.ProfileKey });
 
         builder.HasOne(x => x.Company)
             .WithMany()

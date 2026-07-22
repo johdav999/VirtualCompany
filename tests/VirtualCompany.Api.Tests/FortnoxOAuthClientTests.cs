@@ -59,8 +59,8 @@ public sealed class FortnoxOAuthClientTests
         var request = Assert.Single(handler.Requests);
         Assert.Equal(HttpMethod.Post, request.Method);
         Assert.Equal("https://apps.fortnox.se/oauth-v1/token", request.RequestUri!.ToString());
-        Assert.Equal("Basic", request.Headers.Authorization!.Scheme);
-        Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes("client-id:client-secret")), request.Headers.Authorization.Parameter);
+        Assert.Equal("Basic", request.Authorization!.Scheme);
+        Assert.Equal(Convert.ToBase64String(Encoding.UTF8.GetBytes("client-id:client-secret")), request.Authorization.Parameter);
         Assert.Contains("grant_type=refresh_token", request.Body);
         Assert.Contains("refresh_token=old-refresh-token", request.Body);
         Assert.Equal("new-access-token", result.AccessToken);

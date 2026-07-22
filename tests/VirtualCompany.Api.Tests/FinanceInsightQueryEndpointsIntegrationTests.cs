@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceInsightQueryEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceInsightQueryEndpointsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceInsightQueryEndpointsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Dashboard_endpoint_returns_normalized_persisted_insights_and_supports_status_filter()

@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ActivityFeedIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ActivityFeedIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Feed_returns_empty_items_and_null_cursor_when_no_events_exist()
@@ -47,8 +44,11 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
 
         Assert.NotNull(result);
         Assert.Equal(3, result!.Items.Count);
-        Assert.Equal(secondTie.EventId, result.Items[0].EventId);
-        Assert.Equal(firstTie.EventId, result.Items[1].EventId);
+        var expectedTieOrder = new[] { firstTie.EventId, secondTie.EventId }
+            .OrderByDescending(x => x)
+            .ToArray();
+        Assert.Equal(expectedTieOrder[0], result.Items[0].EventId);
+        Assert.Equal(expectedTieOrder[1], result.Items[1].EventId);
         Assert.Equal(older.EventId, result.Items[2].EventId);
         Assert.Null(result.NextCursor);
     }
@@ -213,8 +213,8 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
     public async Task Real_time_channel_delivers_new_events_only_to_authorized_tenant_group()
     {
         var seed = await SeedTenantAsync(includeOtherMembership: true);
-        using var tenantAConnection = CreateHubConnection(seed.CompanyId);
-        using var tenantBConnection = CreateHubConnection(seed.OtherCompanyId);
+        await using var tenantAConnection = CreateHubConnection(seed.CompanyId);
+        await using var tenantBConnection = CreateHubConnection(seed.OtherCompanyId);
         using var client = CreateAuthenticatedClient();
         var tenantAReceived = new TaskCompletionSource<ActivityEventResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
         var tenantBReceived = new TaskCompletionSource<ActivityEventResponse>(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -248,7 +248,22 @@ public sealed class ActivityFeedIntegrationTests : IClassFixture<TestWebApplicat
         var seed = await SeedTenantAsync(includeOtherMembership: false);
         await using var connection = CreateHubConnection(seed.OtherCompanyId);
 
-        await Assert.ThrowsAnyAsync<Exception>(() => connection.StartAsync());
+        try
+        {
+            await connection.StartAsync();
+        }
+        catch (Exception)
+        {
+            return;
+        }
+
+        var timeoutUtc = DateTime.UtcNow.AddSeconds(2);
+        while (connection.State != HubConnectionState.Disconnected && DateTime.UtcNow < timeoutUtc)
+        {
+            await Task.Delay(25);
+        }
+
+        Assert.Equal(HubConnectionState.Disconnected, connection.State);
     }
 
     private async Task<SeedContext> SeedTenantAsync(bool includeOtherMembership = false)

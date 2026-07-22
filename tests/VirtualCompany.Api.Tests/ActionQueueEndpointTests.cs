@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ActionQueueEndpointTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ActionQueueEndpointTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Queue_contains_all_action_types_with_required_fields()
@@ -183,7 +180,7 @@ public sealed class ActionQueueEndpointTests : IClassFixture<TestWebApplicationF
             dbContext.CompanyMemberships.AddRange(
                 new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
                 new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
-                new CompanyMembership(Guid.NewGuid(), companyId, otherUserId, CompanyMembershipRole.Member, CompanyMembershipStatus.Active));
+                new CompanyMembership(Guid.NewGuid(), companyId, otherUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
             dbContext.Agents.Add(new Agent(agentId, companyId, "ops", "Operations Lead", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
 
             var task = new WorkTask(

@@ -69,10 +69,11 @@ public sealed class LeadGenerationDomainTests
     private ProspectAccount Prospect() => new(Guid.NewGuid(), _companyId, Guid.NewGuid(), Guid.NewGuid(), "Example", "example.com", "se", "saas", 50, null, "manual", Guid.NewGuid().ToString("N"), DateTime.UtcNow);
 }
 
-public sealed class LeadGenerationPersistenceTests : IClassFixture<TestWebApplicationFactory>
+public sealed class LeadGenerationPersistenceTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
-    public LeadGenerationPersistenceTests(TestWebApplicationFactory factory) => _factory = factory;
+    private readonly TestWebApplicationFactory _factory = new();
+
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public void Model_has_tenant_scoped_operational_indexes()

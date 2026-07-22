@@ -28,7 +28,7 @@ public sealed class LowCashAlertPageTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, "owner")),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new ExecutiveCockpitApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {
@@ -39,7 +39,7 @@ public sealed class LowCashAlertPageTests
                     CreateJsonResponse(CreateAlertDetail(companyId, alertId, invoiceId)),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {
@@ -54,7 +54,7 @@ public sealed class LowCashAlertPageTests
                     CreateJsonResponse(new { workflowInstanceId = Guid.NewGuid() }),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         var navigation = context.Services.GetRequiredService<FakeNavigationManager>();
         navigation.NavigateTo($"http://localhost/finance/alerts/{alertId:D}?companyId={companyId:D}");

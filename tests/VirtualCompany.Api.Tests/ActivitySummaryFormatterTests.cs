@@ -171,10 +171,10 @@ public sealed class ActivitySummaryFormatterTests
     private static Dictionary<string, JsonNode?> Payload(params (string Key, string? Value)[] values) =>
         values.ToDictionary(
             x => x.Key,
-            x => x.Value is null ? null : JsonValue.Create(x.Value),
+            x => x.Value is null ? null : (JsonNode?)JsonValue.Create(x.Value),
             StringComparer.OrdinalIgnoreCase);
 
-    private sealed record ActivitySummaryFixture(
+    public sealed record ActivitySummaryFixture(
         string EventType,
         string Status,
         string? PersistedSummary,
@@ -184,7 +184,7 @@ public sealed class ActivitySummaryFormatterTests
         public override string ToString() => EventType;
     }
 
-    private sealed record ExpectedActivitySummary(
+    public sealed record ExpectedActivitySummary(
         string FormatterKey,
         string? Actor,
         string Action,

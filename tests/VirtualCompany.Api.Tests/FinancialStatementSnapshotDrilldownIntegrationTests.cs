@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancialStatementSnapshotDrilldownIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Regenerating_unlocked_period_creates_new_statement_snapshot_versions_without_overwriting_prior_versions()
@@ -205,11 +202,11 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
             "Finance Snapshot Owner",
             "Snapshot Drilldown Co");
 
-        await _factory.SeedAsync(dbContext =>
+        await _factory.SeedAsync(async dbContext =>
         {
             SeedBaseCompanyData(dbContext, seed);
+            await dbContext.SaveChangesAsync();
             SeedLedger(dbContext, seed);
-            return Task.CompletedTask;
         });
 
         return seed;
@@ -320,10 +317,11 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
 
     private static void SeedLedger(VirtualCompanyDbContext dbContext, ScenarioSeed seed)
     {
-        var cashAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "1000").Id;
-        var equityAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "3000").Id;
-        var revenueAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "4000").Id;
-        var expenseAccountId = dbContext.FinanceAccounts.Single(x => x.CompanyId == seed.CompanyId && x.Code == "6100").Id;
+        var accounts = dbContext.FinanceAccounts.IgnoreQueryFilters().Where(x => x.CompanyId == seed.CompanyId).ToList();
+        var cashAccountId = accounts.Single(x => x.Code == "1000").Id;
+        var equityAccountId = accounts.Single(x => x.Code == "3000").Id;
+        var revenueAccountId = accounts.Single(x => x.Code == "4000").Id;
+        var expenseAccountId = accounts.Single(x => x.Code == "6100").Id;
 
         var capitalEntry = new LedgerEntry(
             Guid.NewGuid(),
@@ -463,6 +461,7 @@ public sealed class FinancialStatementSnapshotDrilldownIntegrationTests : IClass
     private sealed class DrilldownLineResponse
     {
         public Guid? AccountId { get; set; }
+        public string AccountCode { get; set; } = string.Empty;
         public string LineCode { get; set; } = string.Empty;
         public string LineName { get; set; } = string.Empty;
         public string ReportSection { get; set; } = string.Empty;

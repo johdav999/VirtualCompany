@@ -11,7 +11,7 @@ public sealed class FortnoxOAuthStateProtectorTests
     public void Protected_state_roundtrips_company_user_nonce_and_expiry()
     {
         var protector = CreateProtector();
-        var state = new FortnoxOAuthState(
+        var state = new VirtualCompany.Application.Finance.FortnoxOAuthState(
             Guid.NewGuid(),
             Guid.NewGuid(),
             "nonce",

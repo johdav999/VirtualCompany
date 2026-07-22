@@ -381,6 +381,20 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
         decimal debitAmount,
         decimal creditAmount,
         string currency,
+        string? description,
+        DateTime? createdUtc = null)
+        : this(id, companyId, ledgerEntryId, financeAccountId, debitAmount, creditAmount, currency, null, description, createdUtc)
+    {
+    }
+
+    public LedgerEntryLine(
+        Guid id,
+        Guid companyId,
+        Guid ledgerEntryId,
+        Guid financeAccountId,
+        decimal debitAmount,
+        decimal creditAmount,
+        string currency,
         Guid? costCenterId = null,
         string? description = null,
         DateTime? createdUtc = null)

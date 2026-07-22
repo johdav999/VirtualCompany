@@ -119,6 +119,7 @@ public sealed class PaidSupplierBillExpensePostingServiceTests
             var fixture = new PaidExpenseFixture(connection, db, provider);
             var now = DateTime.UtcNow;
 
+            db.Users.Add(new User(fixture.ActorUserId, "expense-actor@example.test", "Expense Actor", "test", fixture.ActorUserId.ToString("N")));
             db.Companies.Add(new Company(fixture.CompanyId, "Paid expense test company"));
             db.FinanceAccounts.Add(new FinanceAccount(
                 fixture.AccountId,
@@ -176,7 +177,7 @@ public sealed class PaidSupplierBillExpensePostingServiceTests
                 dueStatus: FinanceDocumentDueStatuses.NotDue,
                 documentKind: FinanceDocumentKinds.SupplierInvoice,
                 providerStatus: "booked=false;balance=0",
-                processingStatus: FinanceDocumentProcessingStatuses.Synced,
+                processingStatus: FinanceDocumentProcessingStatuses.None,
                 paidAmount: paidAmount);
             Db.FinanceBills.Add(bill);
             Db.FinanceExternalReferences.Add(new FinanceExternalReference(

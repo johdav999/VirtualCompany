@@ -56,7 +56,7 @@ public sealed class GroundedContextRetrievalCacheKeyBuilderTests
         GroundedContextRetrievalRequest request,
         IReadOnlyList<string>? scopes = null)
     {
-        var actorMembershipId = request.ActorUserId.HasValue ? Guid.NewGuid() : null;
+        Guid? actorMembershipId = request.ActorUserId.HasValue ? Guid.NewGuid() : null;
 
         return new RetrievalAccessDecision(
             request.CompanyId,

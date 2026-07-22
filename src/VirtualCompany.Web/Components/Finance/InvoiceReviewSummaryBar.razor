@@ -3,39 +3,39 @@
 <section class="invoice-review-summary-bar">
     <div class="invoice-review-summary-metrics">
         <article class="invoice-review-summary-card">
-            <span class="invoice-review-summary-card__label">Pending review</span>
+            <span class="invoice-review-summary-card__label">@FinanceText["PendingReview"]</span>
             <strong class="invoice-review-summary-card__value">@PendingCount</strong>
-            <span class="invoice-review-summary-card__meta">Invoices in the active workbench</span>
+            <span class="invoice-review-summary-card__meta">@FinanceText["WorkbenchInvoices"]</span>
         </article>
 
         <article class="invoice-review-summary-card invoice-review-summary-card--risk">
-            <span class="invoice-review-summary-card__label">High risk</span>
+            <span class="invoice-review-summary-card__label">@FinanceText["HighRisk"]</span>
             <strong class="invoice-review-summary-card__value">@HighRiskCount</strong>
-            <span class="invoice-review-summary-card__meta">High and critical recommendations</span>
+            <span class="invoice-review-summary-card__meta">@FinanceText["HighCriticalRecommendations"]</span>
         </article>
 
         <article class="invoice-review-summary-card">
-            <span class="invoice-review-summary-card__label">Total amount pending</span>
+            <span class="invoice-review-summary-card__label">@FinanceText["TotalAmountPending"]</span>
             <strong class="invoice-review-summary-card__value">@FormatAmount(TotalAmountPending, CurrencyLabel)</strong>
-            <span class="invoice-review-summary-card__meta">Visible review workload value</span>
+            <span class="invoice-review-summary-card__meta">@FinanceText["VisibleWorkloadValue"]</span>
         </article>
 
         <article class="invoice-review-summary-card invoice-review-summary-card--attention">
-            <span class="invoice-review-summary-card__label">Need attention</span>
+            <span class="invoice-review-summary-card__label">@FinanceText["NeedAttention"]</span>
             <strong class="invoice-review-summary-card__value">@NeedsAttentionCount</strong>
-            <span class="invoice-review-summary-card__meta">Approval or confidence follow-up needed</span>
+            <span class="invoice-review-summary-card__meta">@FinanceText["AttentionMeta"]</span>
         </article>
     </div>
 
     <div class="invoice-review-summary-actions">
         <button class="btn btn-primary" type="button" disabled="@(!CanReviewNextHighRisk || IsBusy)" @onclick="OnReviewNextHighRisk">
-            Review next high-risk
+            @FinanceText["ReviewNextHighRisk"]
         </button>
         <button class="btn btn-outline-primary" type="button" disabled="@(!CanRunReview || IsBusy)" @onclick="OnRunReview">
-            Run review
+            @FinanceText["RunReview"]
         </button>
         <button class="btn btn-outline-secondary" type="button" disabled="@IsBusy" @onclick="OnRefreshAnalysis">
-            Refresh analysis
+            @FinanceText["RefreshAnalysis"]
         </button>
     </div>
 </section>
@@ -53,8 +53,6 @@
     [Parameter] public EventCallback OnRunReview { get; set; }
     [Parameter] public EventCallback OnRefreshAnalysis { get; set; }
 
-    private static string FormatAmount(decimal amount, string currency) =>
-        string.IsNullOrWhiteSpace(currency)
-            ? amount.ToString("N2", CultureInfo.InvariantCulture)
-            : $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatAmount(decimal amount, string currency) =>
+        string.IsNullOrWhiteSpace(currency) ? LocalNumber.Decimal(amount) : LocalMoney.Format(amount, currency);
 }

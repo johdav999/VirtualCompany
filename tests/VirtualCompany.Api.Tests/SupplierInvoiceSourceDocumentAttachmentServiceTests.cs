@@ -22,7 +22,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
         var bill = await fixture.AddSupplierBillAsync(withDocument: true);
 
         var result = await fixture.Service.RequestAttachmentAsync(
-            new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal(SupplierInvoiceSourceDocumentAttachmentStatuses.Attached, result.Status);
@@ -42,7 +42,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
         var bill = await fixture.AddSupplierBillAsync(withDocument: false);
 
         var result = await fixture.Service.RequestAttachmentAsync(
-            new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal(SupplierInvoiceSourceDocumentAttachmentStatuses.NotAvailable, result.Status);
@@ -57,7 +57,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
         var provider = new QueueingSourceDocumentAttachmentProvider(SupplierInvoiceSourceDocumentAttachmentStatuses.Attached);
         await using var fixture = await SourceDocumentAttachmentFixture.CreateAsync(provider);
         var bill = await fixture.AddSupplierBillAsync(withDocument: true);
-        var command = new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId);
+        var command = new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User");
 
         var first = await fixture.Service.RequestAttachmentAsync(command, CancellationToken.None);
         var second = await fixture.Service.RequestAttachmentAsync(command, CancellationToken.None);
@@ -76,7 +76,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
             SupplierInvoiceSourceDocumentAttachmentStatuses.Attached);
         await using var fixture = await SourceDocumentAttachmentFixture.CreateAsync(provider);
         var bill = await fixture.AddSupplierBillAsync(withDocument: true);
-        var command = new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId);
+        var command = new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User");
 
         var failed = await fixture.Service.RequestAttachmentAsync(command, CancellationToken.None);
         var retried = await fixture.Service.RequestAttachmentAsync(command, CancellationToken.None);
@@ -95,7 +95,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
         var bill = await fixture.AddSupplierBillAsync(withDocument: true, billNumber: "3");
 
         var result = await fixture.Service.RequestAttachmentAsync(
-            new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new RequestSupplierInvoiceSourceDocumentAttachmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal(SupplierInvoiceSourceDocumentAttachmentStatuses.Attached, result.Status);
@@ -148,6 +148,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
             var storage = new InMemoryCompanyDocumentStorage();
             var fixture = new SourceDocumentAttachmentFixture(connection, db, storage, provider);
 
+            db.Users.Add(new User(fixture.ActorUserId, "attachment-actor@example.test", "Attachment Actor", "test", fixture.ActorUserId.ToString("N")));
             db.Companies.Add(new Company(fixture.CompanyId, "Fortnox-only company"));
             db.FinanceCounterparties.Add(new FinanceCounterparty(
                 fixture.SupplierId,
@@ -186,7 +187,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
                     "application/pdf",
                     ".pdf",
                     9,
-                    accessScope: CompanyKnowledgeDocumentAccessScope.CompanyWide(CompanyId)));
+                    accessScope: new CompanyKnowledgeDocumentAccessScope(CompanyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility)));
             }
 
             var bill = new FinanceBill(
@@ -204,7 +205,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
                 postingStatus: FinanceDocumentPostingStatuses.Booked,
                 dueStatus: FinanceDocumentDueStatuses.NotDue,
                 documentKind: FinanceDocumentKinds.SupplierInvoice,
-                processingStatus: FinanceDocumentProcessingStatuses.Synced);
+                processingStatus: FinanceDocumentProcessingStatuses.None);
             Db.FinanceBills.Add(bill);
             await Db.SaveChangesAsync();
             return bill;

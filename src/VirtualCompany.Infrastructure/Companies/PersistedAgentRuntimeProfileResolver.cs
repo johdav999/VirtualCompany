@@ -64,6 +64,7 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             CloneNodes(agent.TriggerLogic),
             CloneNodes(agent.WorkingHours),
             communicationProfile,
+            ResolveBriefing(agent.CommunicationProfile),
             agent.CanReceiveAssignments,
             agent.UpdatedUtc,
             agent.AutonomyLevel.ToStorageValue());
@@ -80,5 +81,28 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             pair => pair.Key,
             pair => pair.Value?.DeepClone(),
             StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, string> ResolveBriefing(
+        IReadOnlyDictionary<string, JsonNode?> communicationProfile)
+    {
+        if (!communicationProfile.TryGetValue("briefing", out var briefingNode) ||
+            briefingNode is not JsonObject briefing)
+        {
+            return new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        }
+
+        var result = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var category in AgentBriefingCategories.All)
+        {
+            if (briefing[category] is JsonValue value &&
+                value.TryGetValue<string>(out var content) &&
+                !string.IsNullOrWhiteSpace(content))
+            {
+                result[category] = content.Trim();
+            }
+        }
+
+        return result;
     }
 }

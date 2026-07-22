@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceInsightsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceInsightsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceInsightsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Finance_insights_endpoint_returns_normalized_company_scoped_payload()

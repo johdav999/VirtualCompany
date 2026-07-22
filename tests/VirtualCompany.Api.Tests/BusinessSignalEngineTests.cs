@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class BusinessSignalEngineTests : IClassFixture<TestWebApplicationFactory>
+public sealed class BusinessSignalEngineTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public BusinessSignalEngineTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task GenerateSignals_emits_operational_load_and_approval_bottleneck_signals()
@@ -46,7 +43,7 @@ public sealed class BusinessSignalEngineTests : IClassFixture<TestWebApplication
                     "user",
                     userId,
                     "threshold",
-                    [],
+                    new Dictionary<string, JsonNode?>(),
                     null,
                     userId,
                     []));
@@ -142,7 +139,7 @@ public sealed class BusinessSignalEngineTests : IClassFixture<TestWebApplication
                     "user",
                     userId,
                     "threshold",
-                    [],
+                    new Dictionary<string, JsonNode?>(),
                     null,
                     userId,
                     []),
@@ -154,7 +151,7 @@ public sealed class BusinessSignalEngineTests : IClassFixture<TestWebApplication
                     "user",
                     otherUserId,
                     "threshold",
-                    [],
+                    new Dictionary<string, JsonNode?>(),
                     null,
                     otherUserId,
                     []));

@@ -126,16 +126,15 @@ public partial class PaymentsPage : FinancePageBase
     private bool IsTypeSelected(string option) =>
         string.Equals(TypeFilterValue, option, StringComparison.OrdinalIgnoreCase);
 
-    private static string? NormalizeOptionalText(string? value) =>
+    private string? NormalizeOptionalText(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim().Replace(' ', '_').Replace('-', '_').ToLowerInvariant();
 
-    private static string FormatCurrency(decimal amount, string currency) =>
-        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
 
-    private static string FormatFriendlyDate(DateTime value) =>
-        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
+    private string FormatFriendlyDate(DateTime value) =>
+        value == default ? "Not available" : LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatLabel(string? value) =>
+    private string FormatLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
             ? "Not available"
             : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -143,7 +142,7 @@ public partial class PaymentsPage : FinancePageBase
                 ? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(normalized)
                 : "Not available";
 
-    private static string FormatPaymentMethod(string? value)
+    private string FormatPaymentMethod(string? value)
     {
         var normalized = NormalizeOptionalText(value);
         return normalized switch
@@ -157,7 +156,7 @@ public partial class PaymentsPage : FinancePageBase
         };
     }
 
-    private static PaymentStatusPresentation ResolveStatusPresentation(string? status)
+    private PaymentStatusPresentation ResolveStatusPresentation(string? status)
     {
         var normalized = NormalizeOptionalText(status) ?? string.Empty;
         return normalized switch
@@ -169,7 +168,7 @@ public partial class PaymentsPage : FinancePageBase
         };
     }
 
-    private static PaymentTypePresentation ResolveTypePresentation(string? paymentType)
+    private PaymentTypePresentation ResolveTypePresentation(string? paymentType)
     {
         var normalized = NormalizeOptionalText(paymentType) ?? string.Empty;
         return normalized switch
@@ -180,7 +179,7 @@ public partial class PaymentsPage : FinancePageBase
         };
     }
 
-    private static PaymentListItemViewModel ToListItem(FinancePaymentResponse payment, bool isSelected)
+    private PaymentListItemViewModel ToListItem(FinancePaymentResponse payment, bool isSelected)
     {
         var status = ResolveStatusPresentation(payment.Status);
         var type = ResolveTypePresentation(payment.PaymentType);
@@ -200,7 +199,7 @@ public partial class PaymentsPage : FinancePageBase
             isSelected);
     }
 
-    private static PaymentDetailViewModel ToDetailViewModel(FinancePaymentResponse payment)
+    private PaymentDetailViewModel ToDetailViewModel(FinancePaymentResponse payment)
     {
         var status = ResolveStatusPresentation(payment.Status);
         var type = ResolveTypePresentation(payment.PaymentType);

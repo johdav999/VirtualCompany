@@ -8,1006 +8,45 @@ using System.Text.Json.Nodes;
 
 namespace VirtualCompany.Web.Services;
 
-public sealed class FinanceApiClient
+public sealed partial class FinanceApiClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private const string CompanyContextHeaderName = "X-Company-Id";
     private const string FinanceDataSourceAll = "all";
     private const string FinanceDataSourceFortnox = "fortnox";
     private const string FinanceDataSourceSimulation = "simulation";
-    private readonly HttpClient _httpClient;
+    private readonly ICompanyApiTransport _transport;
     private readonly bool _useOfflineMode;
     private readonly string? _financeDataSourceFilter;
     private readonly ILogger<FinanceApiClient>? _logger;
+    private readonly IApiProblemMessageResolver? _problemResolver;
 
     public FinanceApiClient(
         HttpClient httpClient,
         ILogger<FinanceApiClient>? logger = null,
         bool useOfflineMode = false,
-        string? financeDataSourceFilter = null)
+        string? financeDataSourceFilter = null,
+        IApiProblemMessageResolver? problemResolver = null)
     {
-        _httpClient = httpClient;
+        _transport = new CompanyApiTransport(httpClient);
         _logger = logger;
         _useOfflineMode = useOfflineMode;
         _financeDataSourceFilter = NormalizeFinanceDataSourceFilter(financeDataSourceFilter);
+        _problemResolver = problemResolver;
     }
 
-    public Task<List<FinanceIntegrationProviderResponse>> GetFinanceIntegrationProvidersAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        GetAsync<List<FinanceIntegrationProviderResponse>>(companyId, $"api/companies/{companyId}/finance/integrations", allowNotFound: false, cancellationToken)!;
-
-    public Task<FinanceIntegrationConnectionStatusResponse> GetFinanceIntegrationStatusAsync(Guid companyId, string providerKey, CancellationToken cancellationToken = default) =>
-        GetAsync<FinanceIntegrationConnectionStatusResponse>(companyId, $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/status", allowNotFound: false, cancellationToken)!;
-
-    public Task<StartFinanceIntegrationConnectionResponse> StartFinanceIntegrationConnectionAsync(
-        Guid companyId,
-        string providerKey,
-        string returnUri,
-        bool reconnect,
-        CancellationToken cancellationToken = default)
+    public FinanceApiClient(
+        ICompanyApiTransport transport,
+        ILogger<FinanceApiClient>? logger = null,
+        bool useOfflineMode = false,
+        string? financeDataSourceFilter = null,
+        IApiProblemMessageResolver? problemResolver = null)
     {
-        EnsureOnlineMutation();
-        var action = reconnect ? "reconnect" : "connect";
-        return SendCompanyScopedAsync<StartFinanceIntegrationConnectionRequest, StartFinanceIntegrationConnectionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/{action}",
-            new StartFinanceIntegrationConnectionRequest(returnUri, reconnect),
-            cancellationToken);
+        _transport = transport;
+        _logger = logger;
+        _useOfflineMode = useOfflineMode;
+        _financeDataSourceFilter = NormalizeFinanceDataSourceFilter(financeDataSourceFilter);
+        _problemResolver = problemResolver;
     }
-
-    public Task<FinanceIntegrationSyncResultResponse> SyncFinanceIntegrationNowAsync(
-        Guid companyId,
-        string providerKey,
-        Guid? connectionId,
-        CancellationToken cancellationToken = default) =>
-        SyncFinanceIntegrationNowCoreAsync(companyId, providerKey, connectionId, cancellationToken);
-
-    private Task<FinanceIntegrationSyncResultResponse> SyncFinanceIntegrationNowCoreAsync(
-        Guid companyId,
-        string providerKey,
-        Guid? connectionId,
-        CancellationToken cancellationToken)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<SyncFinanceIntegrationNowRequest, FinanceIntegrationSyncResultResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/sync",
-            new SyncFinanceIntegrationNowRequest(connectionId, FullSync: true),
-            cancellationToken);
-    }
-
-    public Task<FinanceIntegrationSyncHistoryResponse> GetFinanceIntegrationSyncHistoryAsync(
-        Guid companyId,
-        string providerKey,
-        CancellationToken cancellationToken = default) =>
-        GetAsync<FinanceIntegrationSyncHistoryResponse>(companyId, $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/sync-history?limit=25", allowNotFound: false, cancellationToken)!;
-
-    public Task<FinanceIntegrationConnectionDisconnectResponse> DisconnectFinanceIntegrationAsync(
-        Guid companyId,
-        string providerKey,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, FinanceIntegrationConnectionDisconnectResponse>(companyId, HttpMethod.Post, $"api/companies/{companyId}/finance/integrations/{Uri.EscapeDataString(providerKey)}/disconnect", new { }, cancellationToken);
-    }
-
-    public Task<FinanceTransactionResponse> UpdateTransactionCategoryAsync(
-        Guid companyId,
-        Guid transactionId,
-        string category,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<UpdateFinanceTransactionCategoryRequest, FinanceTransactionResponse>(
-            companyId,
-            HttpMethod.Patch,
-            $"internal/companies/{companyId}/finance/transactions/{transactionId}/category",
-            new UpdateFinanceTransactionCategoryRequest { Category = category },
-            cancellationToken);
-    }
-
-    public Task<JsonElement> StartInvoiceReviewWorkflowAsync(
-        Guid companyId,
-        Guid invoiceId,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, JsonElement>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/review-workflow",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<JsonElement> EvaluateTransactionAnomalyAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, JsonElement>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/transactions/{transactionId}/anomaly-evaluation",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<FinanceCashPositionResponse> EvaluateCashPositionAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<object, FinanceCashPositionResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/cash-position/evaluation", new { }, cancellationToken);
-
-    public Task<FinanceInvoiceResponse> UpdateInvoiceApprovalStatusAsync(Guid companyId, Guid invoiceId, string status, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<UpdateFinanceInvoiceApprovalStatusRequest, FinanceInvoiceResponse>(
-            companyId,
-            HttpMethod.Patch,
-            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/approval-status",
-            new UpdateFinanceInvoiceApprovalStatusRequest { Status = status },
-            cancellationToken);
-    }
-
-    public Task<FinanceCompanySimulationStateResponse> GetCompanySimulationStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult(FinanceCompanySimulationStateResponse.NotStarted(companyId))
-            : GetAsync<FinanceCompanySimulationStateResponse>(companyId, $"internal/companies/{companyId}/simulation", allowNotFound: false, cancellationToken)!;
-
-    public Task<FinanceCompanySimulationStateResponse> StartCompanySimulationAsync(
-        Guid companyId,
-        FinanceCompanySimulationStartRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        _logger?.LogInformation(
-            "Finance API client posting simulation start. CompanyId: {CompanyId}. StartSimulatedDateTime: {StartSimulatedDateTime}. GenerationEnabled: {GenerationEnabled}. Seed: {Seed}.",
-            companyId,
-            request.StartSimulatedDateTime,
-            request.GenerationEnabled,
-            request.Seed);
-        return SendCompanyScopedAsync<FinanceCompanySimulationStartRequest, FinanceCompanySimulationStateResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/simulation/start",
-            request,
-            cancellationToken);
-    }
-
-    public Task<FinanceCompanySimulationStateResponse> UpdateCompanySimulationSettingsAsync(
-        Guid companyId,
-        FinanceCompanySimulationUpdateRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<FinanceCompanySimulationUpdateRequest, FinanceCompanySimulationStateResponse>(
-            companyId,
-            HttpMethod.Patch,
-            $"internal/companies/{companyId}/simulation",
-            request,
-            cancellationToken);
-    }
-
-    public Task<FinanceCompanySimulationStateResponse> PauseCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        SendCompanySimulationMutationAsync(companyId, "pause", cancellationToken);
-
-    public Task<FinanceCompanySimulationStateResponse> ResumeCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        SendCompanySimulationMutationAsync(companyId, "resume", cancellationToken);
-
-    public Task<FinanceCompanySimulationStateResponse> StepForwardCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        SendCompanySimulationMutationAsync(companyId, "step-forward", cancellationToken);
-
-    public Task<FinanceCompanySimulationStateResponse> StopCompanySimulationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        SendCompanySimulationMutationAsync(companyId, "stop", cancellationToken);
-
-    public async Task<DateTime> GetFinanceReferenceUtcAsync(Guid companyId, CancellationToken cancellationToken = default)
-    {
-        var simulationState = await GetCompanySimulationStateAsync(companyId, cancellationToken);
-        if (simulationState.CurrentSimulatedDateTime.HasValue)
-        {
-            return simulationState.CurrentSimulatedDateTime.Value;
-        }
-
-        var clock = await GetSimulationClockAsync(companyId, cancellationToken);
-        return clock?.SimulatedUtc ?? DateTime.UtcNow;
-    }
-
-    public Task<FinanceSimulationClockResponse?> GetSimulationClockAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSimulationClockResponse?>(new FinanceSimulationClockResponse
-              {
-                  CompanyId = companyId,
-                  SimulatedUtc = DateTime.UtcNow,
-                  Enabled = false
-              })
-            : GetAsync<FinanceSimulationClockResponse>(companyId, $"internal/companies/{companyId}/finance/simulation/clock", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceSandboxDatasetGenerationResponse?> GetSandboxDatasetGenerationAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSandboxDatasetGenerationResponse?>(null)
-            : GetAsync<FinanceSandboxDatasetGenerationResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/dataset-generation", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceSeedingStateResponse?> GetSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSeedingStateResponse?>(new FinanceSeedingStateResponse
-            {
-                CompanyId = companyId,
-                SeedingState = FinanceSeedingStateContractValues.NotSeeded
-            })
-            : GetAsync<FinanceSeedingStateResponse>(companyId, $"internal/companies/{companyId}/finance/seeding-state", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceEntryInitializationResponse> GetEntryInitializationStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult(new FinanceEntryInitializationResponse
-            {
-                CompanyId = companyId,
-                InitializationStatus = FinanceEntryInitializationContractValues.Ready,
-                SeedingState = FinanceSeedingStateContractValues.Seeded,
-                Message = "Finance workspace is ready in offline mode."
-            })
-            : GetAsync<FinanceEntryInitializationResponse>(companyId, $"internal/companies/{companyId}/finance/entry-state", allowNotFound: false, cancellationToken)!;
-
-    public Task<FinanceEntryInitializationResponse> RequestEntryInitializationAsync(Guid companyId, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, FinanceEntryInitializationResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/entry-state/request",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<FinanceEntryInitializationResponse> RetryEntryInitializationAsync(Guid companyId, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, FinanceEntryInitializationResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/entry-state/retry",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<FinanceEntryInitializationResponse> RequestManualSeedAsync(
-        Guid companyId,
-        FinanceManualSeedRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<FinanceManualSeedRequest, FinanceEntryInitializationResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/manual-seed",
-            request,
-            cancellationToken);
-    }
-
-    public Task<FinanceSandboxSeedGenerationResponse> GenerateSandboxSeedDatasetAsync(
-        Guid companyId,
-        FinanceSandboxSeedGenerationRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<FinanceSandboxSeedGenerationRequest, FinanceSandboxSeedGenerationResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/seed-generation", request, cancellationToken);
-    }
-
-    public Task<FinanceSandboxAnomalyInjectionResponse?> GetSandboxAnomalyInjectionAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSandboxAnomalyInjectionResponse?>(null)
-            : GetAsync<FinanceSandboxAnomalyInjectionResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceSandboxAnomalyDetailResponse?> GetSandboxAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSandboxAnomalyDetailResponse?>(null)
-            : GetAsync<FinanceSandboxAnomalyDetailResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection/{anomalyId}", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceSandboxAnomalyDetailResponse> InjectSandboxAnomalyAsync(Guid companyId, FinanceSandboxAnomalyInjectionRequest request, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<FinanceSandboxAnomalyInjectionRequest, FinanceSandboxAnomalyDetailResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/anomaly-injection", request, cancellationToken);
-    }
-
-    public Task<FinanceSandboxSimulationControlsResponse?> GetSandboxSimulationControlsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSandboxSimulationControlsResponse?>(null)
-            : GetAsync<FinanceSandboxSimulationControlsResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceSandboxProgressionRunSummaryResponse> AdvanceSandboxSimulationAsync(Guid companyId, FinanceSandboxSimulationAdvanceRequest request, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<FinanceSandboxSimulationAdvanceRequest, FinanceSandboxProgressionRunSummaryResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls/advance", request, cancellationToken);
-    }
-
-    public Task<FinanceSandboxProgressionRunSummaryResponse> StartSandboxProgressionRunAsync(Guid companyId, FinanceSandboxSimulationAdvanceRequest request, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<FinanceSandboxSimulationAdvanceRequest, FinanceSandboxProgressionRunSummaryResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/sandbox-admin/simulation-controls/progression-run", request, cancellationToken);
-    }
-
-    public Task<FinanceDataResetResponse> ResetFinancialDataAsync(Guid companyId, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, FinanceDataResetResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"api/companies/{companyId}/finance/reset",
-            new { },
-            cancellationToken);
-    }
-
-
-    public Task<FinanceSandboxToolExecutionVisibilityResponse?> GetSandboxToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSandboxToolExecutionVisibilityResponse?>(null)
-            : GetAsync<FinanceSandboxToolExecutionVisibilityResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/tool-execution-visibility", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceSandboxDomainEventsResponse?> GetSandboxDomainEventsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceSandboxDomainEventsResponse?>(null)
-            : GetAsync<FinanceSandboxDomainEventsResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/domain-events", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceTransparencyToolManifestListResponse?> GetTransparencyToolManifestsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceTransparencyToolManifestListResponse?>(null)
-            : GetAsync<FinanceTransparencyToolManifestListResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/tool-manifests", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceTransparencyToolExecutionHistoryResponse?> GetTransparencyToolExecutionsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceTransparencyToolExecutionHistoryResponse?>(null)
-            : GetAsync<FinanceTransparencyToolExecutionHistoryResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/tool-executions", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceTransparencyToolExecutionDetailResponse?> GetTransparencyToolExecutionDetailAsync(Guid companyId, Guid executionId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceTransparencyToolExecutionDetailResponse?>(null)
-            : GetAsync<FinanceTransparencyToolExecutionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/tool-executions/{executionId}", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceTransparencyEventStreamResponse?> GetTransparencyEventsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceTransparencyEventStreamResponse?>(null)
-            : GetAsync<FinanceTransparencyEventStreamResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/events", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceTransparencyEventDetailResponse?> GetTransparencyEventDetailAsync(Guid companyId, Guid eventId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceTransparencyEventDetailResponse?>(null)
-            : GetAsync<FinanceTransparencyEventDetailResponse>(companyId, $"internal/companies/{companyId}/finance/sandbox-admin/transparency/events/{eventId}", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceCashPositionResponse?> GetCashPositionAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<FinanceCashPositionResponse?>(null);
-        }
-
-        var normalizedAsOfUtc = asOfUtc.HasValue && asOfUtc.Value > DateTime.MinValue
-            ? asOfUtc.Value
-            : (DateTime?)null;
-        var uri = $"internal/companies/{companyId}/finance/cash-position{BuildQuery(("asOfUtc", normalizedAsOfUtc?.ToString("O")))}";
-        return GetAsync<FinanceCashPositionResponse>(companyId, uri, allowNotFound: true, cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceAccountBalanceResponse>> GetBalancesAsync(Guid companyId, DateTime? asOfUtc = null, CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceAccountBalanceResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/balances{BuildQuery(("asOfUtc", asOfUtc?.ToString("O")))}";
-        return GetListAsync<FinanceAccountBalanceResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceSeedAnomalyResponse>> GetAnomaliesAsync(Guid companyId, int limit = 25, CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceSeedAnomalyResponse>>([]);
-        }
-
-        return GetListAsync<FinanceSeedAnomalyResponse>(companyId, $"internal/companies/{companyId}/finance/anomalies?limit={limit}", cancellationToken);
-    }
-
-    public Task<FinanceAnomalyWorkbenchResponse> GetAnomalyWorkbenchAsync(
-        Guid companyId,
-        string? anomalyType = null,
-        string? status = null,
-        decimal? confidenceMin = null,
-        decimal? confidenceMax = null,
-        string? supplier = null,
-        DateTime? dateFromUtc = null,
-        DateTime? dateToUtc = null,
-        int page = 1,
-        int pageSize = 50,
-        CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult(new FinanceAnomalyWorkbenchResponse());
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/anomalies/workbench{BuildQuery(("type", anomalyType), ("status", status), ("confidenceMin", confidenceMin?.ToString("0.##", CultureInfo.InvariantCulture)), ("confidenceMax", confidenceMax?.ToString("0.##", CultureInfo.InvariantCulture)), ("supplier", supplier), ("dateFromUtc", dateFromUtc?.ToString("O")), ("dateToUtc", dateToUtc?.ToString("O")), ("page", page.ToString(CultureInfo.InvariantCulture)), ("pageSize", pageSize.ToString(CultureInfo.InvariantCulture)))}";
-        return GetAsync<FinanceAnomalyWorkbenchResponse>(companyId, uri, allowNotFound: false, cancellationToken)!;
-    }
-
-    public Task<FinanceAnomalyDetailResponse?> GetAnomalyDetailAsync(Guid companyId, Guid anomalyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceAnomalyDetailResponse?>(null)
-            : GetAsync<FinanceAnomalyDetailResponse>(companyId, $"internal/companies/{companyId}/finance/anomalies/workbench/{anomalyId}", allowNotFound: true, cancellationToken);
-
-    public Task<IReadOnlyList<FinanceTransactionResponse>> GetTransactionsAsync(
-        Guid companyId,
-        DateTime? startUtc = null,
-        DateTime? endUtc = null,
-        string? category = null,
-        string? flagged = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceTransactionResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/transactions{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("category", category), ("flagged", flagged), ("limit", limit.ToString()), ("source", _financeDataSourceFilter))}";
-        return GetListAsync<FinanceTransactionResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<FinanceTransactionDetailResponse?> GetTransactionDetailAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceTransactionDetailResponse?>(null)
-            : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}", allowNotFound: true, cancellationToken);
-
-    public Task<IReadOnlyList<FinancePaymentResponse>> GetPaymentsAsync(
-        Guid companyId,
-        string? paymentType = null,
-        int limit = 100,
-        CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinancePaymentResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/payments{BuildQuery(("type", paymentType), ("limit", limit.ToString(CultureInfo.InvariantCulture)), ("source", _financeDataSourceFilter))}";
-        return GetListAsync<FinancePaymentResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<FinancePaymentResponse?> GetPaymentDetailAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinancePaymentResponse?>(null)
-            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}", allowNotFound: true, cancellationToken);
-
-    public Task<IReadOnlyList<FinanceBillResponse>> GetBillsAsync(
-        Guid companyId,
-        int limit = 100,
-        CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceBillResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/bills{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)), ("source", _financeDataSourceFilter))}";
-        return GetListAsync<FinanceBillResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<FinanceBillDetailResponse?> GetBillDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceBillDetailResponse?>(null)
-            : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}", allowNotFound: true, cancellationToken);
-
-    public Task<SupplierInvoicePaymentProposalResponse> RequestSupplierBillPaymentProposalAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill payment proposal request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoicePaymentProposalResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/payment-proposal",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoicePaymentProposalResponse> ExportSupplierBillPaymentInstructionAsync(
-        Guid companyId,
-        Guid billId,
-        string exportMode = "register_payment",
-        CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill payment export request. CompanyId: {CompanyId}. BillId: {BillId}. ExportMode: {ExportMode}.",
-            companyId,
-            billId,
-            exportMode);
-
-        return SendCompanyScopedAsync<ExportSupplierBillPaymentInstructionRequest, SupplierInvoicePaymentProposalResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/payment-proposal/export",
-            new ExportSupplierBillPaymentInstructionRequest { ExportMode = exportMode },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceSourceDocumentAttachmentResponse> AttachSupplierBillSourceDocumentAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill source document attachment request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceSourceDocumentAttachmentResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/source-document-attachment",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceDraftActionResponse> UpdateSupplierBillFortnoxDraftAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill Fortnox draft update request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceDraftActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/fortnox-draft/update",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceDraftActionResponse> BookkeepSupplierBillFortnoxDraftAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill Fortnox bookkeeping request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceDraftActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/fortnox-draft/bookkeep",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<PaidSupplierBillExpensePostingResponse> PostPaidSupplierBillExpenseAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending paid supplier bill expense posting request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, PaidSupplierBillExpensePostingResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/paid-expense-posting",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceCorrectionActionResponse> CancelSupplierInvoiceAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill cancellation request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceCorrectionActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/corrections/cancel",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceCorrectionActionResponse> CreateSupplierCreditNoteAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill credit note request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceCorrectionActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/corrections/credit-note",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceEnrichmentActionResponse> SuggestSupplierInvoiceEnrichmentAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill enrichment suggestion request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceEnrichmentActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/enrichment/suggest",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceEnrichmentActionResponse> SyncSupplierInvoiceEnrichmentAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill enrichment sync request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceEnrichmentActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/enrichment/sync",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<SupplierInvoiceEnrichmentActionResponse> ReconcileSupplierInvoiceAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending supplier bill reconciliation request. CompanyId: {CompanyId}. BillId: {BillId}.",
-            companyId,
-            billId);
-
-        return SendCompanyScopedAsync<object, SupplierInvoiceEnrichmentActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/bills/{billId}/enrichment/reconcile",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceBillInboxRowResponse>> GetBillInboxAsync(
-        Guid companyId,
-        int limit = 100,
-        CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceBillInboxRowResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/bill-inbox{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}";
-        return GetListAsync<FinanceBillInboxRowResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<FinanceBillInboxDetailResponse?> GetBillInboxDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceBillInboxDetailResponse?>(null)
-            : GetAsync<FinanceBillInboxDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bill-inbox/{billId}", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceBillReviewActionResultResponse> ApproveBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
-            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/approve", new FinanceBillReviewActionRequest(rationale), cancellationToken);
-
-    public Task<FinanceBillReviewActionResultResponse> RejectBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
-            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/reject", new FinanceBillReviewActionRequest(rationale), cancellationToken);
-
-    public Task<FinanceBillReviewActionResultResponse> RequestBillInboxClarificationAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
-            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/request-clarification", new FinanceBillReviewActionRequest(rationale), cancellationToken);
-
-    public Task<FinanceBillFortnoxRegistrationResponse> RequestBillInboxFortnoxRegistrationAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillFortnoxRegistrationResponse>(
-            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/fortnox-registration/request", new FinanceBillReviewActionRequest(rationale), cancellationToken);
-
-    public Task<FinanceBillFortnoxRegistrationResponse> SendBillInboxFortnoxRegistrationAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<object, FinanceBillFortnoxRegistrationResponse>(
-            companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/fortnox-registration/send", new { }, cancellationToken);
-
-    public Task<MailboxConnectionStatusResponse?> GetMailboxConnectionStatusAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<MailboxConnectionStatusResponse?>(new MailboxConnectionStatusResponse())
-            : GetAsync<MailboxConnectionStatusResponse>(companyId, $"api/companies/{companyId}/mailbox-connections/current", allowNotFound: false, cancellationToken);
-
-    public Task<MailboxProviderAvailabilityResponse> GetMailboxProviderAvailabilityAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult(new MailboxProviderAvailabilityResponse())
-            : GetAsync<MailboxProviderAvailabilityResponse>(companyId, $"api/companies/{companyId}/mailbox-connections/providers", allowNotFound: false, cancellationToken)!;
-
-    public Task<IReadOnlyList<MailboxScannedMessageResponse>> GetMailboxScannedMessagesAsync(
-        Guid companyId,
-        int limit = 50,
-        CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<IReadOnlyList<MailboxScannedMessageResponse>>([])
-            : GetListAsync<MailboxScannedMessageResponse>(
-                companyId,
-                $"api/companies/{companyId}/mailbox-connections/messages{BuildQuery(("limit", limit.ToString(CultureInfo.InvariantCulture)))}",
-                cancellationToken);
-
-    public async Task<string> StartMailboxConnectionAsync(
-        Guid companyId,
-        string provider,
-        string? returnUri = null,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        var response = await SendCompanyScopedAsync<StartMailboxConnectionRequest, StartMailboxConnectionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"api/companies/{companyId}/mailbox-connections/{provider}/start",
-            new StartMailboxConnectionRequest { ReturnUri = returnUri },
-            cancellationToken);
-
-        return response.AuthorizationUrl;
-    }
-
-    public Task<ManualMailboxScanResponse> TriggerManualMailboxScanAsync(Guid companyId, CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<object, ManualMailboxScanResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"api/companies/{companyId}/mailbox-connections/scan",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<FinanceEmailSettingsResponse> GetEmailSettingsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult(new FinanceEmailSettingsResponse())
-            : GetAsync<FinanceEmailSettingsResponse>(companyId, $"internal/companies/{companyId}/finance/settings/email", allowNotFound: false, cancellationToken)!;
-
-    public Task<FinanceEmailSettingsResponse> UpdateEmailSettingsAsync(
-        Guid companyId,
-        UpdateFinanceEmailSettingsRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<UpdateFinanceEmailSettingsRequest, FinanceEmailSettingsResponse>(
-            companyId,
-            HttpMethod.Put,
-            $"internal/companies/{companyId}/finance/settings/email",
-            request,
-            cancellationToken);
-    }
-
-    public Task<FinancePaymentResponse> CreatePaymentAsync(
-        Guid companyId,
-        CreateFinancePaymentRequest request,
-        CancellationToken cancellationToken = default)
-    {
-        EnsureOnlineMutation();
-        return SendCompanyScopedAsync<CreateFinancePaymentRequest, FinancePaymentResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/payments",
-            request,
-            cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceInvoiceResponse>> GetInvoicesAsync(Guid companyId, DateTime? startUtc = null, DateTime? endUtc = null, int limit = 100, CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceInvoiceResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/invoices{BuildQuery(("startUtc", startUtc?.ToString("O")), ("endUtc", endUtc?.ToString("O")), ("limit", limit.ToString()), ("source", _financeDataSourceFilter))}";
-        return GetListAsync<FinanceInvoiceResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceCounterpartyResponse>> GetCustomersAsync(Guid companyId, int limit = 200, CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceCounterpartyResponse>>([]);
-        }
-
-        return GetListAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/customers?limit={limit}", cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceCounterpartyResponse>> GetSuppliersAsync(Guid companyId, int limit = 200, CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceCounterpartyResponse>>([]);
-        }
-
-        return GetListAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/suppliers?limit={limit}", cancellationToken);
-    }
-
-    public Task<FinanceCounterpartyResponse?> GetCustomerAsync(Guid companyId, Guid counterpartyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode ? Task.FromResult<FinanceCounterpartyResponse?>(null) : GetAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/customers/{counterpartyId}", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceCounterpartyResponse?> GetSupplierAsync(Guid companyId, Guid counterpartyId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode ? Task.FromResult<FinanceCounterpartyResponse?>(null) : GetAsync<FinanceCounterpartyResponse>(companyId, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", allowNotFound: true, cancellationToken);
-
-    public Task<FinanceCounterpartyResponse> CreateCustomerAsync(Guid companyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/customers", request, cancellationToken);
-
-    public Task<FinanceCounterpartyResponse> UpdateCustomerAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/customers/{counterpartyId}", request, cancellationToken);
-
-    public Task<FinanceCounterpartyResponse> CreateSupplierAsync(Guid companyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/suppliers", request, cancellationToken);
-
-    public Task<FinanceCounterpartyResponse> UpdateSupplierAsync(Guid companyId, Guid counterpartyId, UpsertFinanceCounterpartyRequest request, CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>(companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/suppliers/{counterpartyId}", request, cancellationToken);
-
-    public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
-            : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}", allowNotFound: true, cancellationToken);
-
-    public Task<CustomerInvoiceFortnoxActionResponse> RequestCustomerInvoiceFortnoxExportAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending customer invoice Fortnox export request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
-            companyId,
-            invoiceId);
-
-        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-export",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<CustomerInvoiceFortnoxActionResponse> ExecuteCustomerInvoiceFortnoxExportAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending customer invoice Fortnox export execution request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
-            companyId,
-            invoiceId);
-
-        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-export/execute",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<CustomerInvoiceFortnoxActionResponse> RequestCustomerInvoiceFortnoxBookkeepAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending customer invoice Fortnox bookkeeping request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
-            companyId,
-            invoiceId);
-
-        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-bookkeep",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<CustomerInvoiceFortnoxActionResponse> ExecuteCustomerInvoiceFortnoxBookkeepAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
-    {
-        _logger?.LogInformation(
-            "Sending customer invoice Fortnox bookkeeping execution request. CompanyId: {CompanyId}. InvoiceId: {InvoiceId}.",
-            companyId,
-            invoiceId);
-
-        return SendCompanyScopedAsync<object, CustomerInvoiceFortnoxActionResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/fortnox-bookkeep/execute",
-            new { },
-            cancellationToken);
-    }
-
-    public Task<IReadOnlyList<FinanceInvoiceReviewListItemResponse>> GetInvoiceReviewsAsync(
-        Guid companyId,
-        string? status = null,
-        string? supplier = null,
-        string? riskLevel = null,
-        string? recommendationOutcome = null,
-        int limit = 200,
-        CancellationToken cancellationToken = default)
-    {
-        if (_useOfflineMode)
-        {
-            return Task.FromResult<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>([]);
-        }
-
-        var uri = $"internal/companies/{companyId}/finance/reviews{BuildQuery(("status", status), ("supplier", supplier), ("riskLevel", riskLevel), ("outcome", recommendationOutcome), ("limit", limit.ToString()))}";
-        return GetListAsync<FinanceInvoiceReviewListItemResponse>(companyId, uri, cancellationToken);
-    }
-
-    public Task<FinanceInvoiceReviewDetailResponse?> GetInvoiceReviewDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
-        _useOfflineMode
-            ? Task.FromResult<FinanceInvoiceReviewDetailResponse?>(null)
-            : GetAsync<FinanceInvoiceReviewDetailResponse>(companyId, $"internal/companies/{companyId}/finance/reviews/{invoiceId}", allowNotFound: true, cancellationToken);
-
-    public async Task<FinanceMonthlySummaryResponse?> GetMonthlySummaryAsync(Guid companyId, DateTime? referenceUtc = null, CancellationToken cancellationToken = default)
-    {
-        FinanceSimulationClockResponse? clock = null;
-        var resolvedReferenceUtc = referenceUtc;
-        if (!resolvedReferenceUtc.HasValue)
-        {
-            var simulationState = await GetCompanySimulationStateAsync(companyId, cancellationToken);
-            if (simulationState.CurrentSimulatedDateTime.HasValue)
-            {
-                resolvedReferenceUtc = simulationState.CurrentSimulatedDateTime.Value;
-            }
-
-            clock = await GetSimulationClockAsync(companyId, cancellationToken);
-            resolvedReferenceUtc = clock?.SimulatedUtc ?? DateTime.UtcNow;
-        }
-
-        var monthStartUtc = new DateTime(resolvedReferenceUtc.Value.Year, resolvedReferenceUtc.Value.Month, 1, 0, 0, 0, DateTimeKind.Utc);
-        var monthEndUtc = monthStartUtc.AddMonths(1);
-
-        if (_useOfflineMode)
-        {
-            return new FinanceMonthlySummaryResponse
-            {
-                CompanyId = companyId,
-                ReferenceUtc = resolvedReferenceUtc.Value,
-                StartUtc = monthStartUtc,
-                EndUtc = monthEndUtc,
-                Clock = clock,
-                ProfitAndLoss = new FinanceMonthlyProfitAndLossResponse
-                {
-                    CompanyId = companyId,
-                    Year = monthStartUtc.Year,
-                    Month = monthStartUtc.Month,
-                    StartUtc = monthStartUtc,
-                    EndUtc = monthEndUtc,
-                    Currency = "USD"
-                },
-                ExpenseBreakdown = new FinanceExpenseBreakdownResponse
-                {
-                    CompanyId = companyId,
-                    StartUtc = monthStartUtc,
-                    EndUtc = monthEndUtc,
-                    Currency = "USD"
-                }
-            };
-        }
-
-        var profitAndLoss = await GetAsync<FinanceMonthlyProfitAndLossResponse>(
-            companyId,
-            $"internal/companies/{companyId}/finance/profit-and-loss/monthly?year={monthStartUtc.Year}&month={monthStartUtc.Month}",
-            allowNotFound: true,
-            cancellationToken);
-
-        if (profitAndLoss is null)
-        {
-            return null;
-        }
-
-        var expenseBreakdown = await GetAsync<FinanceExpenseBreakdownResponse>(
-            companyId,
-            $"internal/companies/{companyId}/finance/expense-breakdown?startUtc={Uri.EscapeDataString(monthStartUtc.ToString("O"))}&endUtc={Uri.EscapeDataString(monthEndUtc.ToString("O"))}",
-            allowNotFound: true,
-            cancellationToken);
-
-        return new FinanceMonthlySummaryResponse
-        {
-            CompanyId = companyId,
-            ReferenceUtc = resolvedReferenceUtc.Value,
-            StartUtc = monthStartUtc,
-            EndUtc = monthEndUtc,
-            Clock = clock,
-            ProfitAndLoss = profitAndLoss,
-            ExpenseBreakdown = expenseBreakdown
-        };
-    }
-
-    public Task<FinanceInvoiceReviewDetailResponse> SubmitInvoiceReviewActionAsync(
-        Guid companyId,
-        Guid invoiceId,
-        string action,
-        CancellationToken cancellationToken = default) =>
-        SendCompanyScopedAsync<object, FinanceInvoiceReviewDetailResponse>(
-            companyId,
-            HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/reviews/{invoiceId}/{action}",
-            new { },
-            cancellationToken);
 
     private async Task<IReadOnlyList<T>> GetListAsync<T>(Guid companyId, string uri, CancellationToken cancellationToken)
     {
@@ -1017,8 +56,7 @@ public sealed class FinanceApiClient
 
     private async Task<T?> SendCompanyScopedGetAsync<T>(Guid companyId, string uri, bool allowNotFound, CancellationToken cancellationToken)
     {
-        using var request = CreateCompanyScopedRequest(companyId, uri);
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
+        using var response = await _transport.SendAsync(companyId, HttpMethod.Get, uri, null, cancellationToken);
 
         if (allowNotFound && response.StatusCode == HttpStatusCode.NotFound)
         {
@@ -1047,8 +85,12 @@ public sealed class FinanceApiClient
     {
         try
         {
-            using var request = CreateCompanyScopedRequest(companyId, method, uri, JsonContent.Create(payload));
-            using var response = await _httpClient.SendAsync(request, cancellationToken);
+            using var response = await _transport.SendAsync(
+                companyId,
+                method,
+                uri,
+                JsonContent.Create(payload),
+                cancellationToken);
             if (response.IsSuccessStatusCode)
             {
                 var result = await response.Content.ReadFromJsonAsync<TResponse>(SerializerOptions, cancellationToken);
@@ -1061,17 +103,6 @@ public sealed class FinanceApiClient
         {
             throw CreateNetworkException(ex);
         }
-    }
-
-    private HttpRequestMessage CreateCompanyScopedRequest(Guid companyId, string uri) =>
-        CreateCompanyScopedRequest(companyId, HttpMethod.Get, uri, null);
-
-    private HttpRequestMessage CreateCompanyScopedRequest(Guid companyId, HttpMethod method, string uri, HttpContent? content)
-    {
-        var request = new HttpRequestMessage(method, uri);
-        request.Content = content;
-        request.Headers.TryAddWithoutValidation(CompanyContextHeaderName, companyId.ToString());
-        return request;
     }
 
     private Task<FinanceCompanySimulationStateResponse> SendCompanySimulationMutationAsync(
@@ -1114,7 +145,7 @@ public sealed class FinanceApiClient
             return new FinanceApiException($"The finance request failed with status code {(int)response.StatusCode}.");
         }
 
-        var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
+        var problem = await response.Content.ReadFromJsonAsync<FinanceApiProblemResponse>(SerializerOptions, cancellationToken);
         if (problem is not null &&
             string.Equals(problem.Code, FinanceInitializationProblemCodeValues.NotInitialized, StringComparison.OrdinalIgnoreCase))
         {
@@ -1126,15 +157,15 @@ public sealed class FinanceApiClient
         }
         if (problem?.Errors is { Count: > 0 })
         {
-            return new FinanceApiValidationException(FormatProblemMessage(problem), problem.Errors);
+            return new FinanceApiValidationException(ResolveProblemMessage(problem, FormatProblemMessage(problem)), problem.Errors);
         }
 
-        return new FinanceApiException(problem is null ? "The finance request failed." : FormatProblemMessage(problem));
+        return new FinanceApiException(problem is null ? "The finance request failed." : ResolveProblemMessage(problem, FormatProblemMessage(problem)));
     }
 
     private FinanceApiException CreateNetworkException(HttpRequestException ex)
     {
-        var baseAddress = _httpClient.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
+        var baseAddress = _transport.BaseAddress?.ToString().TrimEnd('/') ?? "the configured API";
         return new FinanceApiException($"The web app could not reach the finance backend at {baseAddress}. Start the API project or update the web app API base URL.");
     }
 
@@ -1173,7 +204,20 @@ public sealed class FinanceApiClient
         };
     }
 
-    private static string FormatProblemMessage(ApiProblemResponse problem)
+    private string ResolveProblemMessage(FinanceApiProblemResponse problem, string fallback) =>
+        _problemResolver?.Resolve(new global::VirtualCompany.Web.Services.ApiProblemResponse
+        {
+            Title = problem.Title,
+            Detail = problem.Detail,
+            Message = problem.Message,
+            Code = problem.Code,
+            TraceId = problem.TraceId,
+            CorrelationId = problem.CorrelationId,
+            Arguments = problem.Arguments,
+            Errors = problem.Errors
+        }, fallback) ?? fallback;
+
+    private static string FormatProblemMessage(FinanceApiProblemResponse problem)
     {
         var baseMessage = problem.Detail ?? problem.Message ?? problem.Title ?? "The finance request failed.";
         var identifiers = new[]
@@ -1189,12 +233,12 @@ public sealed class FinanceApiClient
             : $"{baseMessage} ({string.Join(", ", identifiers)})";
     }
 
-    private static bool IsMailboxProviderConfigurationProblem(ApiProblemResponse? problem) =>
+    private static bool IsMailboxProviderConfigurationProblem(FinanceApiProblemResponse? problem) =>
         problem is not null &&
         (string.Equals(problem.Title, "Mailbox provider is not configured.", StringComparison.OrdinalIgnoreCase) ||
             (problem.Detail?.Contains("mailbox OAuth client settings are not configured", StringComparison.OrdinalIgnoreCase) ?? false));
 
-    private sealed class ApiProblemResponse
+    private sealed class FinanceApiProblemResponse
     {
         public string? Title { get; set; }
         public string? Code { get; set; }
@@ -1218,6 +262,7 @@ public sealed class FinanceApiClient
         public string? JobStatus { get; set; }
         public string? CorrelationId { get; set; }
         public string? TraceId { get; set; }
+        public Dictionary<string, JsonElement> Arguments { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public string? StatusEndpoint { get; set; }
         public string? SeedEndpoint { get; set; }
         public string? ConfirmationMessage { get; set; }
@@ -1643,6 +688,8 @@ public sealed class PaidSupplierBillExpenseAvailabilityResponse
     public string Message { get; set; } = string.Empty;
     public string? AccountCode { get; set; }
     public List<string> BlockingReasons { get; set; } = [];
+    public List<string> ReasonCodes { get; set; } = [];
+    public bool RequiresApproval { get; set; }
 }
 
 public sealed class SupplierInvoicePaymentProposalResponse
@@ -1914,6 +961,7 @@ public sealed class StartMailboxConnectionResponse
 public sealed class MailboxConnectionStatusResponse
 {
     public bool IsConnected { get; set; }
+    public string Purpose { get; set; } = string.Empty;
     public Guid? MailboxConnectionId { get; set; }
     public string? Provider { get; set; }
     public string? ConnectionStatus { get; set; }
@@ -1939,6 +987,69 @@ public sealed class MailboxProviderAvailabilityResponse
         Provider = "microsoft365",
         DisplayName = "Microsoft 365"
     };
+
+    public MailboxProviderAvailability HostedEmail { get; set; } = new()
+    {
+        Provider = "standard_email",
+        DisplayName = "Hosted email",
+        IsConfigured = true
+    };
+}
+
+public sealed class StandardMailboxProfileResponse
+{
+    public string ProfileKey { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string Region { get; set; } = string.Empty;
+    public MailboxEndpointResponse Imap { get; set; } = new();
+    public MailboxEndpointResponse Smtp { get; set; } = new();
+    public List<string> AuthenticationTypes { get; set; } = [];
+    public bool AllowsEndpointOverride { get; set; }
+}
+
+public sealed class MailboxEndpointResponse
+{
+    public string Host { get; set; } = string.Empty;
+    public int Port { get; set; }
+    public string TlsMode { get; set; } = string.Empty;
+}
+
+public sealed class StandardMailboxConnectionRequest
+{
+    public string ProfileKey { get; set; } = "zoho-eu";
+    public string EmailAddress { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string AuthenticationType { get; set; } = "application_password";
+    public string? Credential { get; set; }
+    public MailboxEndpointResponse? Imap { get; set; }
+    public MailboxEndpointResponse? Smtp { get; set; }
+    public List<string>? SelectedFolderIds { get; set; }
+    public string? TestTarget { get; set; }
+    public string? ReturnUri { get; set; }
+}
+
+public sealed class StandardMailboxConnectionResultResponse
+{
+    public Guid? ConnectionId { get; set; }
+    public bool IncomingSucceeded { get; set; }
+    public bool SendingSucceeded { get; set; }
+    public string EmailAddress { get; set; } = string.Empty;
+    public int Capabilities { get; set; }
+    public List<MailboxTransportFolderResponse> Folders { get; set; } = [];
+    public string? FailureCode { get; set; }
+    public string? FailureMessage { get; set; }
+    public DateTime CheckedUtc { get; set; }
+}
+
+public sealed class MailboxTransportFolderResponse
+{
+    public string FolderId { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public bool CanRead { get; set; }
+    public bool CanAppend { get; set; }
+    public bool IsInbox { get; set; }
+    public bool IsDrafts { get; set; }
+    public bool IsSent { get; set; }
 }
 
 public sealed class MailboxProviderAvailability

@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePlanningEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePlanningEndpointsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePlanningEndpointsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Budget_and_forecast_endpoints_apply_version_and_range_filters()

@@ -182,14 +182,16 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
             throw new InvalidOperationException("Resolve the paid amount mismatch before Laura posts this expense.");
         }
 
-        var exportedProposalAmount = await _dbContext.SupplierInvoicePaymentProposals
+        var exportedProposalAmounts = await _dbContext.SupplierInvoicePaymentProposals
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == bill.CompanyId &&
                 x.BillId == bill.Id &&
                 x.ExportStatus == SupplierInvoicePaymentExportStatuses.Exported)
-            .SumAsync(x => Math.Abs(x.Amount), cancellationToken);
+            .Select(x => x.Amount)
+            .ToListAsync(cancellationToken);
+        var exportedProposalAmount = exportedProposalAmounts.Sum(Math.Abs);
 
         if (exportedProposalAmount > 0m &&
             decimal.Round(exportedProposalAmount, 2, MidpointRounding.AwayFromZero) != paidAmount)

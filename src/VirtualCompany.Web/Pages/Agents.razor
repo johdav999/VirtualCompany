@@ -1,32 +1,40 @@
 @page "/agents/manage"
 @rendermode InteractiveServer
+@implements IAsyncDisposable
 @using System.ComponentModel.DataAnnotations
 @using System.Text.Json
 @using System.Text.Json.Nodes
 @using Microsoft.AspNetCore.Components
+@using Microsoft.AspNetCore.Components.Forms
+@using Microsoft.AspNetCore.Components.Routing
 @inject OnboardingApiClient OnboardingApiClient
 @inject AgentApiClient AgentApiClient
+@inject FinanceApiClient FinanceApiClient
+@inject SalesApiClient SalesApiClient
+@inject SupportApiClient SupportApiClient
 @inject NavigationManager Navigation
+@inject IStringLocalizer<AgentsResources> AgentText
+@inject IStringLocalizer<CommonResources> CommonText
 
-<PageTitle>Agents</PageTitle>
+<PageTitle>@AgentText["VirtualCompanyAgents"]</PageTitle>
 
 @if (isLoading)
 {
     <section class="py-4">
-        <h1>Agent management</h1>
-        <p class="text-body-secondary mb-0">Loading template catalog and company roster...</p>
+        <h1>@AgentText["AgentManagement"]</h1>
+        <p class="text-body-secondary mb-0">@AgentText["LoadingManagement"]</p>
     </section>
 }
 else if (CompanyId is null)
 {
     <section class="py-4 dashboard-hero">
         <div class="wizard-card">
-            <h1>Select a company</h1>
-            <p class="text-body-secondary">Choose the company where you want to browse templates and hire agents.</p>
+            <h1>@AgentText["SelectCompany"]</h1>
+            <p class="text-body-secondary">@AgentText["ChooseCompanyForManagement"]</p>
 
             @if (activeMemberships.Count == 0)
             {
-                <p class="mb-0">No active company memberships are available yet.</p>
+                <p class="mb-0">@AgentText["NoActiveMemberships"]</p>
             }
             else
             {
@@ -35,7 +43,7 @@ else if (CompanyId is null)
                     {
                         <a class="template-card text-decoration-none text-reset" href="@($"/agents/manage?companyId={membership.CompanyId}")">
                             <strong>@membership.CompanyName</strong>
-                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                            <div class="text-body-secondary mt-2">@AgentText["MembershipRole", membership.MembershipRole]</div>
                         </a>
                     }
                 </div>
@@ -46,22 +54,727 @@ else if (CompanyId is null)
 else
 {
     var canViewDirectory = CanViewDirectory;
-    <section class="py-4 dashboard-hero">
+    <section class="py-4 agents-workspace">
+        <header class="agents-page-header">
+            <div>
+                <span class="dashboard-kicker">@AgentText["AiWorkforce"]</span>
+                <h1>@AgentText["VirtualCompanyAgents"]</h1>
+                <p>@AgentText["AgentManagementDescription"]</p>
+            </div>
+            @if (CanManageProfiles)
+            {
+                <a class="btn btn-primary" href="#hire-agent">@AgentText["AddAgent"]</a>
+            }
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert alert-danger">@errorMessage</div>
+        }
+
+        @if (!string.IsNullOrWhiteSpace(successMessage))
+        {
+            <div class="alert alert-success">@successMessage</div>
+        }
+
+        <section class="agents-roster-section" aria-labelledby="agents-roster-title">
+            <div class="agents-section-heading">
+                <div>
+                    <h2 id="agents-roster-title">@AgentText["YourAgentTeam"]</h2>
+                    <p>@AgentText["AgentTeamSummary", rosterResponse.Items.Count, companyAccess?.CompanyName ?? AgentText["ThisCompany"]]</p>
+                </div>
+                <span class="agents-count">@AgentText["AgentCount", rosterResponse.Items.Count]</span>
+            </div>
+
+            @if (!canViewDirectory)
+            {
+                <div class="agents-empty-state">@AgentText["RestrictedAgentTeam"]</div>
+            }
+            else if (rosterResponse.Items.Count == 0)
+            {
+                <div class="agents-empty-state">@AgentText["NoAgentsMatch"]</div>
+            }
+            else
+            {
+                <div class="agents-roster-cards">
+                    @foreach (var agent in rosterResponse.Items)
+                    {
+                        <article class="agents-roster-card @(selectedAgentId == agent.Id ? "is-selected" : null)">
+                            <div class="agents-roster-card__identity">
+                                <span class="agents-avatar agents-avatar--@GetDepartmentTone(agent.Department)" aria-hidden="true">@GetInitials(agent.DisplayName)</span>
+                                <div>
+                                    <h3>@agent.DisplayName</h3>
+                                    <p>@agent.RoleName</p>
+                                </div>
+                                <span class="agents-status @GetStatusBadgeCss(agent.Status)">@GetStatusLabel(agent.Status)</span>
+                            </div>
+
+                            <dl class="agents-facts">
+                                <div><dt>@AgentText["Department"]</dt><dd>@agent.Department</dd></div>
+                                <div><dt>@AgentText["Autonomy"]</dt><dd>@ToDisplayText(agent.AutonomyLevel)</dd></div>
+                                <div><dt>@AgentText["Workload"]</dt><dd class="@GetHealthCss(agent.WorkloadSummary.HealthStatus)">@agent.WorkloadSummary.Summary</dd></div>
+                            </dl>
+
+                            <div class="agents-priority">
+                                <span>@AgentText["CurrentActivity"]</span>
+                                <strong>@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</strong>
+                            </div>
+
+                            <div class="agents-card-actions">
+                                @if (IsDirectChatEligible(agent.Status))
+                                {
+                                    <a class="btn btn-outline-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">@AgentText["MessageAgent"]</a>
+                                }
+                                <a class="btn btn-outline-secondary" href="@GetProfileRoute(agent)">@AgentText["ViewProfile"]</a>
+                                @if (CanManageProfiles)
+                                {
+                                    <button class="btn btn-link" type="button" @onclick="@(() => OpenEditor(agent.Id))">@AgentText["Configure"]</button>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+            }
+        </section>
+
+        @if (CanManageProfiles && selectedAgentProfile is not null)
+        {
+            <section class="agent-brief-workspace" aria-labelledby="agent-brief-title">
+                <header class="agent-brief-header">
+                    <div class="agent-brief-agent">
+                        <span class="agents-avatar agents-avatar--@GetDepartmentTone(selectedAgentProfile.Department)" aria-hidden="true">@GetInitials(selectedAgentProfile.DisplayName)</span>
+                        <div>
+                            <span class="dashboard-kicker">@AgentText["AgentProfile"]</span>
+                            <h2 id="agent-brief-title">@selectedAgentProfile.DisplayName</h2>
+                            <p>@selectedAgentProfile.RoleName</p>
+                        </div>
+                    </div>
+                    <div class="agent-brief-save-state @(isBriefDirty ? "is-dirty" : null)">
+                        @AgentText[isBriefDirty ? "UnsavedChanges" : "Saved"]
+                    </div>
+                </header>
+
+                <div class="agent-brief-body">
+                    <nav class="agent-brief-categories" aria-label="@AgentText["BriefingCategories"]">
+                        @foreach (var category in BriefingCategories)
+                        {
+                            <button type="button"
+                                    class="agent-brief-category @(selectedBriefCategory == category.Key ? "is-selected" : null)"
+                                    @onclick="@(() => SelectBriefCategory(category.Key))">
+                                <span>@category.ShortLabel</span>
+                                <strong>@AgentText[category.LabelResourceKey]</strong>
+                            </button>
+                        }
+                    </nav>
+
+                    <div class="agent-brief-editor">
+                        <div class="agent-brief-editor__heading">
+                            <div>
+                                <h3>@AgentText[SelectedBriefCategory.LabelResourceKey]</h3>
+                                <p>@AgentText[SelectedBriefCategory.DescriptionResourceKey]</p>
+                            </div>
+                            <label class="agent-brief-share">
+                                <input type="checkbox" @bind="shareBriefDocumentsWithTeam" />
+                                @AgentText["ShareBriefDocuments"]
+                            </label>
+                        </div>
+
+                        <label class="form-label" for="agent-brief-text">@AgentText["InformationForAgent", selectedAgentProfile.DisplayName]</label>
+                        <textarea id="agent-brief-text"
+                                  class="form-control agent-brief-textarea"
+                                  rows="14"
+                                  value="@CurrentBriefText"
+                                  @oninput="HandleBriefTextInput"
+                                  placeholder="@AgentText[SelectedBriefCategory.PlaceholderResourceKey]"></textarea>
+
+                        <div class="agent-brief-documents">
+                            <div class="agent-brief-documents__heading">
+                                <strong>@AgentText["AttachedDocuments"]</strong>
+                                <span>@AgentText["IndexedDocumentsDescription"]</span>
+                            </div>
+                            @if (BriefDocumentsForSelectedCategory.Count == 0)
+                            {
+                                <p class="agent-brief-no-documents">@AgentText["NoBriefDocuments"]</p>
+                            }
+                            else
+                            {
+                                @foreach (var document in BriefDocumentsForSelectedCategory)
+                                {
+                                    <div class="agent-brief-document">
+                                        <div>
+                                            <strong>@document.OriginalFileName</strong>
+                                            <span>@FormatFileSize(document.FileSizeBytes)</span>
+                                        </div>
+                                        <span class="agent-brief-document__status"
+                                              title="@AgentBriefDocumentStatusPresenter.GetDetail(document, AgentText)">
+                                            @AgentBriefDocumentStatusPresenter.GetLabel(document, AgentText)
+                                        </span>
+                                    </div>
+                                }
+                            }
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(briefErrorMessage))
+                        {
+                            <div class="alert alert-danger mt-3 mb-0">@briefErrorMessage</div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(briefSuccessMessage))
+                        {
+                            <div class="alert alert-success mt-3 mb-0">@briefSuccessMessage</div>
+                        }
+
+                        <div class="agent-brief-actions">
+                            <InputFile id="agent-brief-file"
+                                       class="visually-hidden"
+                                       accept=".pdf,.doc,.docx,.txt,.md,.csv,.xlsx"
+                                       OnChange="HandleBriefDocumentUploadAsync" />
+                            <label class="btn btn-outline-primary" for="agent-brief-file">
+                                @AgentText[isUploadingBriefDocument ? "Uploading" : "AttachDocument"]
+                            </label>
+                            <button class="btn btn-outline-primary"
+                                    type="button"
+                                    disabled="@isGeneratingBriefDraft"
+                                    @onclick="GenerateBriefDraftAsync">
+                                @AgentText[isGeneratingBriefDraft ? "Generating" : "GenerateDraft"]
+                            </button>
+                            <button class="btn btn-primary"
+                                    type="button"
+                                    disabled="@(!isBriefDirty || isSavingBrief)"
+                                    @onclick="SaveAgentBriefAsync">
+                                @AgentText[isSavingBrief ? "Saving" : "SaveBrief"]
+                            </button>
+                        </div>
+
+                        @if (isGeneratedBriefDraft)
+                        {
+                            <div class="agent-brief-review-note">@AgentText["DraftGeneratedReview"]</div>
+                        }
+                    </div>
+                </div>
+            </section>
+
+            <section class="agent-capability-panel" aria-labelledby="agent-capability-title">
+                <div class="agent-capability-panel__heading">
+                    <div>
+                        <span class="dashboard-kicker">@AgentText["GovernedAi"]</span>
+                        <h2 id="agent-capability-title">@AgentText["AgentCapabilities"]</h2>
+                    </div>
+                    <p>@AgentText["AgentCapabilitiesDescription"]</p>
+                </div>
+                @if (isLoadingCapabilities)
+                {
+                    <p class="text-body-secondary mb-0">@AgentText["LoadingCapabilities"]</p>
+                }
+                else if (!string.IsNullOrWhiteSpace(capabilityErrorMessage))
+                {
+                    <div class="alert alert-warning mb-0">@capabilityErrorMessage</div>
+                }
+                else if (selectedAgentCapabilities is not null)
+                {
+                    <div class="agent-capability-list">
+                        @foreach (var capability in selectedAgentCapabilities.Capabilities)
+                        {
+                            <div class="agent-capability-row">
+                                <div class="agent-capability-main">
+                                    <div class="agent-capability-title-line">
+                                        <strong>@capability.Name</strong>
+                                        <span class="agent-capability-action">
+                                            <span class="@GetCapabilityActionIconClass(capability.ActionType)" aria-hidden="true"></span>
+                                            @FormatCapabilityAction(capability.ActionType)
+                                        </span>
+                                    </div>
+                                    <p>@capability.Description</p>
+                                </div>
+                                <div class="agent-capability-state">
+                                    <div class="agent-capability-state__content">
+                                        <span class="@GetCapabilityBadgeClass(capability.State)">
+                                            <span class="@GetCapabilityStatusIconClass(capability.State)" aria-hidden="true"></span>
+                                            @FormatCapabilityState(capability.State)
+                                        </span>
+                                        @if (AgentCapabilityPresenter.RequiresRemediation(capability))
+                                        {
+                                            <small class="agent-capability-remediation-message">
+                                                <strong>@AgentText["CapabilityToEnable"]</strong>
+                                                @AgentCapabilityPresenter.GetExplanation(capability, AgentText)
+                                            </small>
+                                        }
+                                        else
+                                        {
+                                            <small>@AgentCapabilityPresenter.GetStateExplanation(capability, AgentText)</small>
+                                        }
+                                    </div>
+                                    @if (AgentCapabilityPresenter.RequiresRemediation(capability)
+                                        && CompanyId is Guid capabilityCompanyId
+                                        && selectedAgentId is Guid capabilityAgentId)
+                                    {
+                                        <a class="btn btn-sm btn-outline-primary agent-capability-remediation"
+                                           href="@AgentCapabilityPresenter.GetActionHref(capability, capabilityCompanyId, capabilityAgentId)">
+                                            <span class="bi bi-sliders" aria-hidden="true"></span>
+                                            <span>@AgentCapabilityPresenter.GetActionLabel(capability, AgentText)</span>
+                                        </a>
+                                    }
+                                </div>
+                            </div>
+                        }
+                    </div>
+                    <div class="agent-ai-workbench">
+                        <div class="agent-ai-workbench__column">
+                            <h3>@AgentText["AskCompanyEvidence"]</h3>
+                            <textarea class="form-control" rows="4" @bind="agentQuestion" placeholder="@AgentText["AskCompanyPlaceholder"]"></textarea>
+                            <button class="btn btn-primary" type="button" disabled="@(isAskingQuestion || string.IsNullOrWhiteSpace(agentQuestion))" @onclick="AskSelectedAgentAsync">
+                                @AgentText[isAskingQuestion ? "CheckingSources" : "AskAgent"]
+                            </button>
+                            @if (questionAnswer is not null)
+                            {
+                                <div class="agent-ai-result">
+                                    <span class="@GetAnswerBadgeClass(questionAnswer.State)">@FormatAnswerState(questionAnswer.State)</span>
+                                    <p>@questionAnswer.Answer</p>
+                                    @foreach (var claim in questionAnswer.Claims)
+                                    {
+                                        <div class="agent-ai-claim"><strong>@FormatClaimType(claim.Type)</strong><span>@claim.Text</span></div>
+                                    }
+                                    @if (questionAnswer.Sources.Count > 0)
+                                    {
+                                        <small>@AgentText["Sources", string.Join(", ", questionAnswer.Sources.Select(x => x.Title).Distinct())]</small>
+                                    }
+                                </div>
+                            }
+                        </div>
+                        <div class="agent-ai-workbench__column">
+                            <h3>@AgentText["CurrentWorkPriority"]</h3>
+                            @if (selectedPriorities.Count == 0)
+                            {
+                                <p class="text-body-secondary">@AgentText["NoOpenAssignedWork"]</p>
+                            }
+                            else
+                            {
+                                @foreach (var item in selectedPriorities.Take(5))
+                                {
+                                    <div class="agent-priority-item">
+                                        <span>@item.DeterministicScore</span>
+                                        <div><strong>@item.Title</strong><small>@string.Join(" · ", item.ReasonCodes)</small></div>
+                                    </div>
+                                }
+                            }
+                            @if (selectedQuality is not null)
+                            {
+                                <div class="agent-quality-summary">
+                                    <strong>@AgentText["AiQualityEvidence"]</strong>
+                                    <span>@AgentText["ReviewedRecommendations", selectedQuality.SampleSize]</span>
+                                    <small>@(selectedQuality.HasSufficientEvidence ? AgentText["AcceptedRate", selectedQuality.AcceptanceRate?.ToString("P0", System.Globalization.CultureInfo.CurrentCulture) ?? AgentText["Unknown"]] : AgentText["InsufficientAutonomyEvidence"])</small>
+                                </div>
+                            }
+                        </div>
+                    </div>
+                    @if (RoleAnalysisOptions.Count > 0)
+                    {
+                        <section class="agent-governance-panel mt-3" aria-labelledby="role-analysis-heading">
+                            <div class="agent-governance-panel__header">
+                                <div>
+                                    <h3 id="role-analysis-heading">@AgentText["DepartmentAdvice", selectedAgentProfile?.Department ?? AgentText["Agent"]]</h3>
+                                    <p>@AgentText["RoleAnalysisDescription"]</p>
+                                </div>
+                                @if (roleAnalysisResult is not null)
+                                {
+                                    <span class="@(roleAnalysisResult.RequiresReview ? "badge text-bg-warning" : "badge text-bg-success")">
+                                        @AgentText[roleAnalysisResult.RequiresReview ? "ReviewNeeded" : "Ready"]
+                                    </span>
+                                }
+                            </div>
+                            <div class="row g-2 align-items-end">
+                                <div class="col-md-5">
+                                    <label class="form-label" for="role-analysis-type">@AgentText["Analysis"]</label>
+                                    <select id="role-analysis-type" class="form-select" @bind="roleAnalysisType">
+                                        @foreach (var option in RoleAnalysisOptions)
+                                        {
+                                            <option value="@option.Value">@option.Label</option>
+                                        }
+                                    </select>
+                                </div>
+                                <div class="col-md-5">
+                                    <label class="form-label" for="role-analysis-objective">@AgentText["Focus"]</label>
+                                    <input id="role-analysis-objective" class="form-control" @bind="roleAnalysisObjective" placeholder="@AgentText["OptionalDecisionQuestion"]" />
+                                </div>
+                                <div class="col-md-2 d-grid">
+                                    <button class="btn btn-primary" type="button" disabled="@isRunningRoleAnalysis" @onclick="RunRoleAnalysisAsync">
+                                        @AgentText[isRunningRoleAnalysis ? "Analyzing" : "Analyze"]
+                                    </button>
+                                </div>
+                            </div>
+                            @if (selectedAgentProfile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && roleAnalysisType == "cash_liquidity")
+                            {
+                                <div class="row g-2 mt-1">
+                                    <div class="col-md-3"><label class="form-label" for="cash-horizon">@AgentText["Horizon"]</label><input id="cash-horizon" class="form-control" type="number" min="1" max="365" @bind="financeCashRequest.HorizonDays" /></div>
+                                    <div class="col-md-3"><label class="form-label" for="cash-upside">@AgentText["AdditionalInflows"]</label><input id="cash-upside" class="form-control" type="number" min="0" step="100" @bind="financeCashRequest.UpsideAdditionalInflows" /></div>
+                                    <div class="col-md-3"><label class="form-label" for="cash-delayed">@AgentText["DelayedInflows"]</label><input id="cash-delayed" class="form-control" type="number" min="0" step="100" @bind="financeCashRequest.DownsideDelayedInflows" /></div>
+                                    <div class="col-md-3"><label class="form-label" for="cash-extra-outflow">@AgentText["AdditionalOutflows"]</label><input id="cash-extra-outflow" class="form-control" type="number" min="0" step="100" @bind="financeCashRequest.DownsideAdditionalOutflows" /></div>
+                                </div>
+                            }
+                            else if (selectedAgentProfile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && roleAnalysisType == "payables")
+                            {
+                                <div class="row g-2 mt-1">
+                                    <div class="col-md-4"><label class="form-label" for="payment-cutoff">@AgentText["PayBillsDueBy"]</label><input id="payment-cutoff" class="form-control" type="date" @bind="financePaymentRunRequest.CutoffUtc" /></div>
+                                    <div class="col-md-4"><label class="form-label" for="payment-reserve">@AgentText["MinimumCashReserve"]</label><input id="payment-reserve" class="form-control" type="number" min="0" step="100" @bind="financePaymentRunRequest.MinimumCashReserve" /></div>
+                                    <div class="col-md-4"><label class="form-label" for="payment-maximum">@AgentText["MaximumOutflow"]</label><input id="payment-maximum" class="form-control" type="number" min="0" step="100" @bind="financePaymentRunRequest.MaximumOutflow" /></div>
+                                </div>
+                            }
+                            else if (selectedAgentProfile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && roleAnalysisType == "accounting_treatment")
+                            {
+                                <div class="row g-2 mt-1">
+                                    <div class="col-md-8">
+                                        <label class="form-label" for="accounting-bill">@AgentText["SupplierBill"]</label>
+                                        <select id="accounting-bill" class="form-select" @bind="selectedAccountingBillId">
+                                            <option value="@Guid.Empty">@AgentText["ChooseSupplierBill"]</option>
+                                            @foreach (var bill in financeBills.OrderByDescending(x => x.ReceivedUtc).Take(100))
+                                            {
+                                                <option value="@bill.Id">@bill.CounterpartyName · @bill.BillNumber · @bill.Amount.ToString("N0") @bill.Currency</option>
+                                            }
+                                        </select>
+                                    </div>
+                                    <div class="col-md-4 d-flex align-items-end"><p class="small text-body-secondary mb-2">@AgentText["AccountingRecommendationReview"]</p></div>
+                                </div>
+                            }
+                            else if (selectedAgentProfile?.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) == true && roleAnalysisType == "close_analysis")
+                            {
+                                <div class="row g-2 mt-1">
+                                    <div class="col-md-6">
+                                        <label class="form-label" for="close-period">@AgentText["FiscalPeriod"]</label>
+                                        <select id="close-period" class="form-select" @bind="selectedClosePeriodId">
+                                            <option value="@Guid.Empty">@AgentText["ChooseFiscalPeriod"]</option>
+                                            @foreach (var period in financeClosePeriods)
+                                            {
+                                                <option value="@period.Id">@period.Label · @FormatReasonCode(period.Status)</option>
+                                            }
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3"><label class="form-label" for="close-materiality">@AgentText["MaterialAmount"]</label><input id="close-materiality" class="form-control" type="number" min="0" step="100" @bind="financeCloseRequest.MaterialityAmount" /></div>
+                                    <div class="col-md-3"><label class="form-label" for="close-percentage">@AgentText["MaterialPercentage"]</label><input id="close-percentage" class="form-control" type="number" min="0" step="1" @bind="financeCloseRequest.MaterialityPercentage" /></div>
+                                </div>
+                            }
+                            @if (financeCashAnalysis is not null)
+                            {
+                                <div class="finance-agent-scenarios mt-3" aria-label="Cash scenario comparison">
+                                    @foreach (var scenario in new[] { financeCashAnalysis.Baseline, financeCashAnalysis.Upside, financeCashAnalysis.Downside })
+                                    {
+                                        <article>
+                                            <span>@FormatFinanceScenario(scenario.Scenario)</span>
+                                            <strong>@scenario.EndingCash.ToString("N0") @scenario.Currency</strong>
+                                            <small>@AgentText["FromBaseline", FormatSignedMoney(scenario.ChangeFromBaseline, scenario.Currency)]</small>
+                                            <small>@string.Join(" ", scenario.Assumptions)</small>
+                                        </article>
+                                    }
+                                </div>
+                                @if (financeCashAnalysis.FreshnessWarnings.Count > 0)
+                                {
+                                    <div class="alert alert-warning mt-2 mb-0">@string.Join(" ", financeCashAnalysis.FreshnessWarnings)</div>
+                                }
+                            }
+                            @if (financePaymentRun is not null)
+                            {
+                                <div class="finance-payment-summary mt-3">
+                                    @foreach (var currency in financePaymentRun.CashBeforeByCurrency.Keys.OrderBy(x => x))
+                                    {
+                                        <span><strong>@currency</strong> @AgentText["PaymentCashSummary", LocalNumber.Integer((long)financePaymentRun.CashBeforeByCurrency[currency]), LocalNumber.Integer((long)financePaymentRun.RecommendedOutflowByCurrency.GetValueOrDefault(currency)), LocalNumber.Integer((long)financePaymentRun.CashAfterByCurrency.GetValueOrDefault(currency))]</span>
+                                    }
+                                </div>
+                                <div class="table-responsive finance-payment-table mt-2">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["Select"]</th><th scope="col">@AgentText["State"]</th><th scope="col">@AgentText["Supplier"]</th><th scope="col">@AgentText["Due"]</th><th scope="col">@AgentText["Amount"]</th><th scope="col">@AgentText["Reason"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var item in financePaymentRun.Items.OrderBy(x => PaymentGroupOrder(x.Group)).ThenByDescending(x => x.PriorityScore))
+                                            {
+                                                <tr>
+                                                    <td><input type="checkbox" checked="@selectedPaymentBillIds.Contains(item.BillId)" disabled="@(item.Group != "pay")" @onchange="@(e => TogglePaymentBill(item.BillId, e.Value as bool? == true))" aria-label="@AgentText["SelectBill", item.BillNumber]" /></td>
+                                                    <td><span class="@PaymentGroupBadge(item.Group)">@FormatPaymentGroup(item.Group)</span></td>
+                                                    <td><strong>@item.SupplierName</strong><small class="d-block text-body-secondary">@item.BillNumber</small></td>
+                                                    <td>@LocalDateTime.Date(DateOnly.FromDateTime(item.DueUtc))</td>
+                                                    <td>@LocalMoney.Format(item.OutstandingAmount, item.Currency)</td>
+                                                    <td>@string.Join(" · ", item.ReasonCodes.Select(FormatReasonCode))</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                                <div class="finance-payment-review mt-2">
+                                    <label><input type="checkbox" @bind="paymentRunReviewed" /> @AgentText["PaymentRunReviewed"]</label>
+                                    <button class="btn btn-primary" type="button" disabled="@(isCommittingPaymentRun || !paymentRunReviewed || selectedPaymentBillIds.Count == 0)" @onclick="CommitFinancePaymentRunAsync">
+                                        @AgentText[isCommittingPaymentRun ? "CreatingProposals" : "ConvertToPaymentProposals"]
+                                    </button>
+                                </div>
+                                @if (paymentRunCommitResult is not null)
+                                {
+                                    <div class="alert alert-success mt-2 mb-0">@AgentText["PaymentProposalsCreated", LocalNumber.Integer(paymentRunCommitResult.PaymentProposals.Count), FormatReasonCode(paymentRunCommitResult.Status)]</div>
+                                }
+                            }
+                            @if (financeCollectionsPlan is not null && financeCollectionsPlan.Items.Count > 0)
+                            {
+                                <div class="table-responsive mt-3">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["Customer"]</th><th scope="col">@AgentText["Invoice"]</th><th scope="col">@AgentText["Outstanding"]</th><th scope="col">@AgentText["Risk"]</th><th scope="col">@AgentText["NextStep"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var item in financeCollectionsPlan.Items.Take(30))
+                                            {
+                                                <tr><td>@item.CustomerName</td><td>@item.InvoiceNumber<br /><small>@AgentText["DaysOverdue", LocalNumber.Integer(item.DaysOverdue)]</small></td><td>@LocalMoney.Format(item.OutstandingAmount, item.Currency)</td><td><span class="badge text-bg-light">@FormatReasonCode(item.RiskBand)</span></td><td>@FormatReasonCode(item.RecommendedStrategy)<br /><small>@AgentText["ReviewOn", LocalDateTime.Date(DateOnly.FromDateTime(item.NextReviewUtc))]</small></td></tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                            @if (financeAccountingTreatment is not null)
+                            {
+                                <div class="table-responsive mt-3">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["Rank"]</th><th scope="col">@AgentText["Account"]</th><th scope="col">@AgentText["Confidence"]</th><th scope="col">@AgentText["Treatment"]</th><th scope="col">@AgentText["Warnings"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var candidate in financeAccountingTreatment.Candidates)
+                                            {
+                                                <tr><td>@candidate.Rank</td><td><strong>@candidate.AccountCode</strong><br /><small>@candidate.AccountName</small></td><td>@LocalNumber.Percentage(candidate.Confidence)</td><td>@(candidate.PeriodTreatment ?? AgentText["CurrentPeriod"])<br /><small>@(candidate.VatTreatment ?? AgentText["VatEvidenceRequired"])</small></td><td>@string.Join(" · ", candidate.Warnings.Select(FormatReasonCode))</td></tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                                @if (financeAccountingTreatment.MissingEvidence.Count > 0)
+                                {
+                                    <div class="alert alert-warning mt-2 mb-0">@AgentText["MissingEvidence", string.Join(" ", financeAccountingTreatment.MissingEvidence)]</div>
+                                }
+                            }
+                            @if (financeCloseAnalysis is not null)
+                            {
+                                <div class="finance-payment-summary mt-3">
+                                    <span><strong>@(financeCloseAnalysis.IsReadyToClose ? AgentText["Ready"] : AgentText["Blocked"])</strong> @AgentText["AuthoritativeCloseReadiness"]</span>
+                                    <span><strong>@LocalNumber.Integer(financeCloseAnalysis.MaterialVariances.Count)</strong> @AgentText["MaterialVariances"]</span>
+                                </div>
+                                <div class="table-responsive mt-2">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["CloseCheck"]</th><th scope="col">@AgentText["State"]</th><th scope="col">@AgentText["Owner"]</th><th scope="col">@AgentText["Due"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var item in financeCloseAnalysis.Checklist)
+                                            {
+                                                <tr><td>@item.Title</td><td><span class="badge text-bg-light">@FormatReasonCode(item.Status)</span></td><td>@item.Owner</td><td>@LocalDateTime.Date(DateOnly.FromDateTime(item.DueUtc))</td></tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                            @if (salesNextActions is not null)
+                            {
+                                <div class="table-responsive mt-3">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["Priority"]</th><th scope="col">@AgentText["CustomerWork"]</th><th scope="col">@AgentText["RecommendedAction"]</th><th scope="col">@AgentText["Communication"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var item in salesNextActions.Actions.Take(30))
+                                            {
+                                                <tr>
+                                                    <td><span class="sales-priority-score">@item.PriorityScore</span></td>
+                                                    <td><strong>@item.Title</strong><small class="d-block text-body-secondary">@FormatReasonCode(item.SubjectType) · @FormatReasonCode(item.Timing)</small></td>
+                                                    <td>@item.Action<small class="d-block text-body-secondary">@string.Join(" · ", item.ReasonCodes.Select(FormatReasonCode))</small></td>
+                                                    <td><span class="@(item.CommunicationAllowed ? "badge text-bg-success" : "badge text-bg-warning")">@(item.CommunicationAllowed ? AgentText["Allowed"] : AgentText["InternalOnly"])</span>@if (item.RequiresApproval) { <small class="d-block text-body-secondary">@AgentText["ApprovalRequired"]</small> }</td>
+                                                </tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                            @if (salesForecast is not null)
+                            {
+                                @foreach (var currencyGroup in salesForecast.Scenarios.GroupBy(x => x.Currency))
+                                {
+                                    <div class="sales-scenario-heading mt-3"><strong>@currencyGroup.Key forecast</strong><small>@currencyGroup.First().DealCount deals in horizon</small></div>
+                                    <div class="finance-agent-scenarios" aria-label="@currencyGroup.Key sales forecast scenarios">
+                                        @foreach (var scenario in currencyGroup)
+                                        {
+                                            <article><span>@FormatSalesScenario(scenario.Scenario)</span><strong>@scenario.ExpectedRevenue.ToString("N0") @scenario.Currency</strong><small>@FormatSignedMoney(scenario.ChangeFromBaseline, scenario.Currency) from commit</small><small>@scenario.HighRiskDeals high risk · @scenario.UnknownRiskDeals unknown risk</small></article>
+                                        }
+                                    </div>
+                                }
+                                @if (salesForecast.ConcentrationWarnings.Count > 0)
+                                {
+                                    <div class="alert alert-warning mt-2 mb-0">@string.Join(" ", salesForecast.ConcentrationWarnings)</div>
+                                }
+                            }
+                            @if (salesCampaigns is not null)
+                            {
+                                <div class="table-responsive mt-3">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["Campaign"]</th><th scope="col">@AgentText["Evidence"]</th><th scope="col">@AgentText["Recommendation"]</th><th scope="col">@AgentText["PolicyState"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var campaign in salesCampaigns.Campaigns)
+                                            {
+                                                <tr><td><strong>@campaign.CampaignName</strong></td><td>@AgentText["DeliveredCount", LocalNumber.Integer(campaign.Delivered)]<br /><small>@AgentText["CampaignRates", LocalNumber.Percentage(campaign.ReplyRate, 1), LocalNumber.Percentage(campaign.ConversionRate, 1)]</small></td><td>@campaign.Recommendation</td><td><span class="@(campaign.LaunchAllowed ? "badge text-bg-success" : "badge text-bg-light")">@(campaign.LaunchAllowed ? AgentText["DraftEligible"] : AgentText["ReviewOnly"])</span>@if (campaign.RequiresApproval) { <small class="d-block text-body-secondary">@AgentText["ApprovalRequired"]</small> }</td></tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                            @if (supportQueue is not null)
+                            {
+                                <div class="table-responsive mt-3">
+                                    <table class="table table-sm align-middle mb-0">
+                                        <thead><tr><th scope="col">@AgentText["Priority"]</th><th scope="col">@AgentText["Case"]</th><th scope="col">@AgentText["Target"]</th><th scope="col">@AgentText["WhyNow"]</th></tr></thead>
+                                        <tbody>
+                                            @foreach (var item in supportQueue.Items)
+                                            {
+                                                <tr><td><span class="sales-priority-score">@LocalNumber.Decimal(item.PriorityScore)</span><small class="d-block text-body-secondary">@FormatReasonCode(item.PriorityBand)</small></td><td><strong>@item.CaseNumber · @item.Subject</strong><small class="d-block text-body-secondary">@FormatReasonCode(item.Category) · @FormatReasonCode(item.Status)</small></td><td>@FormatSupportDeadline(item.ResolutionDueUtc, item.MinutesToResolutionDue)</td><td>@string.Join(" · ", item.ReasonCodes.Select(FormatReasonCode))@if (item.MandatoryEscalation) { <span class="badge text-bg-danger d-block mt-1">@AgentText["MandatoryEscalation"]</span> }</td></tr>
+                                            }
+                                        </tbody>
+                                    </table>
+                                </div>
+                            }
+                            @if (supportRisk is not null)
+                            {
+                                <div class="agent-governance-grid mt-3">
+                                    @foreach (var risk in supportRisk.Risks)
+                                    {
+                                        <article class="agent-governance-item"><div><strong>@risk.CaseNumber · @risk.Subject</strong><small>@string.Join(" · ", risk.ConfirmedRiskTypes.Select(FormatReasonCode))</small><span>@(risk.Hypotheses.Count > 0 ? AgentText["HypothesesValue", string.Join(", ", risk.Hypotheses.Select(FormatReasonCode))] : AgentText["NoAdditionalHypotheses"])</span><small>@AgentText["RouteTo", FormatReasonCode(risk.RequiredRole), FormatSupportDeadline(risk.ResolutionDueUtc, risk.MinutesToResolutionDue)]</small></div><span class="@(risk.MandatoryEscalation ? "badge text-bg-danger" : "badge text-bg-warning")">@FormatReasonCode(risk.Severity)</span></article>
+                                    }
+                                </div>
+                            }
+                            @if (supportRecurringIssues is not null)
+                            {
+                                <div class="agent-governance-grid mt-3">
+                                    @foreach (var cluster in supportRecurringIssues.Clusters)
+                                    {
+                                        <article class="agent-governance-item"><div><strong>@FormatReasonCode(cluster.Category)</strong><small>@AgentText["RelatedCasesVersion", LocalNumber.Integer(cluster.CaseCount), cluster.Version]</small><span>@cluster.RecommendedInvestigation</span><small>@AgentText["HypothesisValue", string.Join(" ", cluster.RootCauseHypotheses)]</small></div><span class="badge text-bg-warning">@AgentText["Review"]</span></article>
+                                    }
+                                </div>
+                            }
+                            @if (supportKnowledgeCoverage is not null)
+                            {
+                                <div class="finance-payment-summary mt-3"><span>@AgentText["OpenKnowledgeGaps", LocalNumber.Integer(supportKnowledgeCoverage.OpenGapCount)]</span><span>@AgentText["RepeatedTopics", LocalNumber.Integer(supportKnowledgeCoverage.RepeatedGapCount)]</span></div>
+                                <div class="table-responsive mt-2">
+                                    <table class="table table-sm align-middle mb-0"><thead><tr><th scope="col">@AgentText["Topic"]</th><th scope="col">@AgentText["Frequency"]</th><th scope="col">@AgentText["MissingInformation"]</th><th scope="col">@AgentText["KnowledgeState"]</th></tr></thead><tbody>
+                                        @foreach (var gap in supportKnowledgeCoverage.Recommendations)
+                                        {
+                                                <tr><td><strong>@gap.Topic</strong><small class="d-block text-body-secondary">@FormatReasonCode(gap.Category)</small></td><td>@LocalNumber.Integer(gap.Frequency)</td><td>@gap.MissingInformation</td><td><span class="@(gap.ResolutionVerified ? "badge text-bg-success" : "badge text-bg-warning")">@(gap.ResolutionVerified ? AgentText["IndexedAndVerified"] : FormatReasonCode(gap.Status))</span></td></tr>
+                                        }
+                                    </tbody></table>
+                                </div>
+                            }
+                            @if (roleAnalysisResult is not null)
+                            {
+                                <div class="agent-ai-result mt-3">
+                                    <p>@roleAnalysisResult.Summary</p>
+                                    @if (roleAnalysisResult.Metrics.Count > 0)
+                                    {
+                                        <div class="agent-governance-grid">
+                                            @foreach (var metric in roleAnalysisResult.Metrics.Take(6))
+                                            {
+                                                <div class="agent-priority-item">
+                                                    <span>@LocalNumber.Integer((long)metric.Value)</span>
+                                                    <div><strong>@metric.Label</strong><small>@AgentText["AsOf", LocalDateTime.DateTime(metric.AsOfUtc)]</small></div>
+                                                </div>
+                                            }
+                                        </div>
+                                    }
+                                    @foreach (var priority in roleAnalysisResult.Priorities.Take(6))
+                                    {
+                                        <div class="agent-priority-item">
+                                            <span>@priority.Score</span>
+                                            <div><strong>@priority.Title</strong><small>@priority.Band.Replace('_', ' ') · @string.Join(" · ", priority.ReasonCodes.Select(x => x.Replace('_', ' ')))</small></div>
+                                        </div>
+                                    }
+                                    @foreach (var claim in roleAnalysisResult.Claims.Take(6))
+                                    {
+                                        <div class="agent-ai-claim"><strong>@FormatClaimType(claim.Type)</strong><span>@claim.Text</span></div>
+                                    }
+                                    @if (roleAnalysisResult.MissingEvidence.Count > 0)
+                                    {
+                                        <div class="alert alert-warning mb-0 mt-2">
+                                            @AgentText["MissingEvidence", string.Join(", ", roleAnalysisResult.MissingEvidence)]
+                                        </div>
+                                    }
+                                </div>
+                            }
+                        </section>
+                    }
+                    <details class="agent-plan-review">
+                        <summary>@AgentText["PlanWork"]</summary>
+                        <div>
+                            <label class="form-label" for="agent-plan-objective">@AgentText["Objective"]</label>
+                            <textarea id="agent-plan-objective" class="form-control" rows="3" @bind="planObjective" placeholder="@AgentText["PlanObjectivePlaceholder"]"></textarea>
+                            <button class="btn btn-outline-primary" type="button" disabled="@(isGeneratingPlan || string.IsNullOrWhiteSpace(planObjective))" @onclick="GenerateSelectedAgentPlanAsync">
+                                @AgentText[isGeneratingPlan ? "GeneratingPlan" : "GenerateReviewablePlan"]
+                            </button>
+                            @if (selectedPlan is not null)
+                            {
+                                <ol class="agent-plan-steps">
+                                    @foreach (var step in selectedPlan.Steps)
+                                    {
+                                        <li><strong>@step.Title</strong><span>@step.CompletionEvidence</span></li>
+                                    }
+                                </ol>
+                                <button class="btn btn-primary" type="button" disabled="@(isCommittingPlan || selectedPlan.Status != "draft")" @onclick="CommitSelectedAgentPlanAsync">
+                                    @AgentText[isCommittingPlan ? "CreatingTasks" : "CommitPlanTasks"]
+                                </button>
+                            }
+                        </div>
+                    </details>
+                    <div class="agent-governance-grid">
+                        <section class="agent-governance-panel" aria-labelledby="agent-handoffs-heading">
+                            <div class="agent-governance-panel__header">
+                                <div><h3 id="agent-handoffs-heading">@AgentText["AgentHandoffs"]</h3><p>@AgentText["AgentHandoffsDescription"]</p></div>
+                                <span class="badge text-bg-light">@selectedHandoffs.Count</span>
+                            </div>
+                            @if (selectedHandoffs.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">@AgentText["NoActiveHandoffs"]</p>
+                            }
+                            else
+                            {
+                                @foreach (var handoff in selectedHandoffs.Take(5))
+                                {
+                                    <article class="agent-governance-item">
+                                        <div><strong>@handoff.Objective</strong><small>@FormatHandoffStatus(handoff.Status) · Due @FormatDueDate(handoff.DueUtc)</small></div>
+                                        @if (handoff.ReceivingAgentId == selectedAgentId && handoff.Status == "proposed")
+                                        {
+                                            <button class="btn btn-sm btn-outline-primary" type="button" disabled="@isUpdatingGovernance" @onclick="@(() => TransitionHandoffAsync(handoff.Id, "accepted"))">@AgentText["Accept"]</button>
+                                        }
+                                        else if (handoff.ReceivingAgentId == selectedAgentId && handoff.Status == "accepted")
+                                        {
+                                            <button class="btn btn-sm btn-outline-primary" type="button" disabled="@isUpdatingGovernance" @onclick="@(() => TransitionHandoffAsync(handoff.Id, "in_progress"))">@AgentText["Start"]</button>
+                                        }
+                                    </article>
+                                }
+                            }
+                        </section>
+                        <section class="agent-governance-panel" aria-labelledby="agent-memory-heading">
+                            <div class="agent-governance-panel__header">
+                                <div><h3 id="agent-memory-heading">@AgentText["MemoryReview"]</h3><p>@AgentText["MemoryReviewDescription"]</p></div>
+                                <span class="badge text-bg-light">@selectedMemoryCandidates.Count</span>
+                            </div>
+                            @if (selectedMemoryCandidates.Count == 0)
+                            {
+                                <p class="text-body-secondary mb-0">@AgentText["NoMemorySuggestions"]</p>
+                            }
+                            else
+                            {
+                                @foreach (var candidate in selectedMemoryCandidates.Take(5))
+                                {
+                                    <article class="agent-governance-item agent-governance-item--stacked">
+                                        <div><strong>@FormatMemoryType(candidate.MemoryType)</strong><p>@candidate.Content</p><small>@candidate.Scope · Confidence @candidate.Confidence.ToString("P0")</small></div>
+                                        <div class="agent-governance-actions">
+                                            <button class="btn btn-sm btn-outline-secondary" type="button" disabled="@isUpdatingGovernance" @onclick="@(() => ReviewMemoryAsync(candidate.Id, false))">@AgentText["Reject"]</button>
+                                            <button class="btn btn-sm btn-primary" type="button" disabled="@isUpdatingGovernance" @onclick="@(() => ReviewMemoryAsync(candidate.Id, true))">@AgentText["Approve"]</button>
+                                        </div>
+                                    </article>
+                                }
+                            }
+                        </section>
+                    </div>
+                }
+            </section>
+        }
+
+        <details id="hire-agent" class="agents-advanced-panel">
+            <summary>
+                <span>@AgentText["HireAnotherAgent"]</span>
+                <small>@AgentText["HireAnotherAgentDescription"]</small>
+            </summary>
         <div class="agent-layout">
             <div class="wizard-card">
-                <span class="dashboard-kicker">Template catalog</span>
-                <h1>Hire agents for @(companyAccess?.CompanyName ?? "your company")</h1>
-                <p class="text-body-secondary">Start from seeded templates, customize identity fields and avatar references, and create an active company-owned roster entry.</p>
-
-                @if (!string.IsNullOrWhiteSpace(errorMessage))
-                {
-                    <div class="alert alert-danger">@errorMessage</div>
-                }
-
-                @if (!string.IsNullOrWhiteSpace(successMessage))
-                {
-                    <div class="alert alert-success">@successMessage</div>
-                }
+                <span class="dashboard-kicker">@AgentText["TemplateCatalog"]</span>
+                <h2>@AgentText["AgentRoles"]</h2>
+                <p class="text-body-secondary">@AgentText["TemplateCatalogDescription"]</p>
 
                 <div class="agent-template-grid mt-4">
                     @foreach (var template in templates)
@@ -82,11 +795,11 @@ else
             </div>
 
             <div class="wizard-card">
-                <h2 class="h4 mb-3">Customize and hire</h2>
+                <h2 class="h4 mb-3">@AgentText["CustomizeAndHire"]</h2>
 
                 @if (selectedTemplate is null)
                 {
-                    <p class="text-body-secondary mb-0">Select a template to prepare the hire form.</p>
+                    <p class="text-body-secondary mb-0">@AgentText["SelectTemplate"]</p>
                 }
                 else
                 {
@@ -95,32 +808,32 @@ else
                         <ValidationSummary />
 
                         <div class="mb-3">
-                            <label class="form-label" for="display-name">Name</label>
+                            <label class="form-label" for="display-name">@AgentText["Name"]</label>
                             <InputText id="display-name" class="form-control" @bind-Value="hireModel.DisplayName" />
                             <ValidationMessage For="@(() => hireModel.DisplayName)" />
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="avatar-url">Avatar URL or file reference</label>
+                            <label class="form-label" for="avatar-url">@AgentText["AvatarReference"]</label>
                             <InputText id="avatar-url" class="form-control" @bind-Value="hireModel.AvatarUrl" />
-                            <div class="form-text">Use an external <code>https://</code> URL or a file/object-storage reference. Uploads and inline image data are not supported.</div>
+                            <div class="form-text">@AgentText["AvatarReferenceHelp"]</div>
                             <ValidationMessage For="@(() => hireModel.AvatarUrl)" />
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="department">Department</label>
+                            <label class="form-label" for="department">@AgentText["Department"]</label>
                             <InputText id="department" class="form-control" @bind-Value="hireModel.Department" />
                             <ValidationMessage For="@(() => hireModel.Department)" />
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="role-name">Role</label>
+                            <label class="form-label" for="role-name">@AgentText["Role"]</label>
                             <InputText id="role-name" class="form-control" @bind-Value="hireModel.RoleName" />
                             <ValidationMessage For="@(() => hireModel.RoleName)" />
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="seniority">Seniority</label>
+                            <label class="form-label" for="seniority">@AgentText["Seniority"]</label>
                             <InputSelect id="seniority" class="form-select" @bind-Value="hireModel.Seniority">
                                 @foreach (var option in seniorityOptions)
                                 {
@@ -131,54 +844,147 @@ else
                         </div>
 
                         <div class="mb-3">
-                            <label class="form-label" for="personality">Personality</label>
+                            <label class="form-label" for="personality">@AgentText["Personality"]</label>
                             <InputTextArea id="personality" class="form-control" rows="4" @bind-Value="hireModel.Personality" />
                             <ValidationMessage For="@(() => hireModel.Personality)" />
                         </div>
 
                         <div class="dashboard-actions">
-                            <button class="btn btn-primary" type="submit" disabled="@isSubmitting">Hire agent</button>
-                            <button class="btn btn-outline-secondary" type="button" @onclick="@ResetSelectedTemplate">Reset defaults</button>
+                            <button class="btn btn-primary" type="submit" disabled="@isSubmitting">@AgentText["HireAgent"]</button>
+                            <button class="btn btn-outline-secondary" type="button" @onclick="@ResetSelectedTemplate">@AgentText["ResetDefaults"]</button>
                         </div>
                     </EditForm>
                 }
             </div>
         </div>
+        </details>
 
-        <div class="wizard-card mt-4">
+        <div id="agent-access-configuration" class="agents-access-panel">
             <div class="agent-roster-header">
                 <div>
-                    <span class="dashboard-kicker">Joint agent brief</span>
-                    <h2 class="h4 mb-0 mt-2">Agent source access</h2>
+                    <span class="dashboard-kicker">@AgentText["JointAccessBrief"]</span>
+                    <h2>@AgentText["SharedCompanySources"]</h2>
                 </div>
                 <div class="dashboard-actions">
-                    <a class="btn btn-outline-secondary" href="@BuildFinanceEmailSettingsHref()">Finance email auth</a>
-                    <a class="btn btn-outline-secondary" href="@BuildFinanceIntegrationSettingsHref()">Finance integrations</a>
+                    <a class="btn btn-outline-secondary" href="@BuildFinanceIntegrationSettingsHref()">
+                        <span class="bi bi-plug" aria-hidden="true"></span>
+                        @AgentText["FinanceIntegrations"]
+                    </a>
                 </div>
             </div>
-            <p class="text-body-secondary mt-3 mb-0">
-                Configure what finance, sales, and customer support agents can use from authenticated email, web enquiries, documents, and business systems.
-                Finance-specific email and accounting settings remain authoritative in Finance settings; this brief controls the selected agent's access scopes.
-            </p>
+            <p class="text-body-secondary mt-3 mb-0">@AgentText["SharedSourcesDescription"]</p>
 
-            <div class="row g-3 mt-3">
+            <section class="agent-source-connection-step" aria-labelledby="agent-source-connection-title">
+                <div>
+                    <span class="agent-access-step">1</span>
+                    <div>
+                        <h3 id="agent-source-connection-title">@AgentText["MailboxProviderSetupTitle"]</h3>
+                        <p>@AgentText["MailboxProviderSetupDescription"]</p>
+                    </div>
+                </div>
+            </section>
+
+            @if (isLoadingMailboxConfiguration)
+            {
+                <p class="text-body-secondary mt-3">@AgentText["LoadingMailboxConfiguration"]</p>
+            }
+            else
+            {
+                @if (CanManageProviderSettings && mailboxProviderSettings is not null)
+                {
+                    <EditForm Model="@mailboxProviderSettingsModel" OnValidSubmit="@SaveMailboxProviderSettingsAsync" class="agent-mailbox-provider-form mt-3">
+                        <div class="agent-mailbox-provider-grid">
+                            @RenderMailboxProviderFields("gmail", "Gmail", mailboxProviderSettingsModel.Gmail, mailboxProviderSettings.Gmail)
+                            @RenderMailboxProviderFields("microsoft365", "Microsoft 365", mailboxProviderSettingsModel.Microsoft365, mailboxProviderSettings.Microsoft365)
+                        </div>
+                        <div class="dashboard-actions mt-3">
+                            <button class="btn btn-outline-primary" type="submit" disabled="@(isSavingMailboxProviderSettings || !mailboxProviderSettings.IsWritable)">
+                                <span class="bi bi-key" aria-hidden="true"></span>
+                                @AgentText["SaveProviderSettings"]
+                            </button>
+                        </div>
+                        <p class="form-text mb-0">@AgentText["ProviderSecretHelp"]</p>
+                    </EditForm>
+                }
+                else if (!CanManageProviderSettings)
+                {
+                    <p class="agent-source-availability-note mt-3">
+                        <span class="bi bi-shield-lock" aria-hidden="true"></span>
+                        @AgentText["ProviderSettingsOwnerAdminOnly"]
+                    </p>
+                }
+
+                <div class="agent-mailbox-section-heading">
+                    <span class="agent-access-step">2</span>
+                    <div>
+                        <h3>@AgentText["ConnectTeamMailboxesTitle"]</h3>
+                        <p>@AgentText["ConnectTeamMailboxesDescription"]</p>
+                    </div>
+                </div>
+
+                <div class="agent-mailbox-grid">
+                    @foreach (var mailbox in MailboxPurposeDefinitions)
+                    {
+                        var mailboxStatus = GetMailboxStatus(mailbox.Purpose);
+                        <article class="agent-mailbox-card">
+                            <div class="agent-mailbox-card-header">
+                                <div>
+                                    <span class="bi @mailbox.Icon" aria-hidden="true"></span>
+                                    <h4>@AgentText[mailbox.TitleKey]</h4>
+                                </div>
+                                <span class="badge @(mailboxStatus?.IsConnected == true ? "text-bg-success" : "text-bg-light")">
+                                    @(mailboxStatus?.IsConnected == true ? AgentText["MailboxConnected"] : AgentText["MailboxNotConnected"])
+                                </span>
+                            </div>
+                            <p>@AgentText[mailbox.DescriptionKey]</p>
+                            @if (mailboxStatus?.IsConnected == true)
+                            {
+                                <dl class="agent-mailbox-details">
+                                    <div><dt>@AgentText["EmailAddress"]</dt><dd>@mailboxStatus.EmailAddress</dd></div>
+                                    <div><dt>@AgentText["Provider"]</dt><dd>@GetProviderDisplayName(mailboxStatus.Provider)</dd></div>
+                                </dl>
+                            }
+                            else
+                            {
+                                <p class="agent-mailbox-empty">@AgentText["MailboxConnectHelp"]</p>
+                            }
+
+                            <div class="agent-mailbox-actions">
+                                @RenderMailboxProviderAction(mailbox.Purpose, "gmail", "Gmail", mailboxStatus?.IsConnected == true)
+                                @RenderMailboxProviderAction(mailbox.Purpose, "microsoft365", "Microsoft 365", mailboxStatus?.IsConnected == true)
+                                @if (mailboxStatus?.IsConnected == true)
+                                {
+                                    <button class="btn btn-link text-danger" type="button" disabled="@IsMailboxActionRunning(mailbox.Purpose)"
+                                            @onclick="@(() => DisconnectMailboxAsync(mailbox.Purpose))">
+                                        @AgentText["DisconnectMailbox"]
+                                    </button>
+                                }
+                            </div>
+                        </article>
+                    }
+                </div>
+
+                @if (!IsAnyMailboxProviderAvailable)
+                {
+                    <p class="agent-source-availability-note mt-3">
+                        <span class="bi bi-info-circle" aria-hidden="true"></span>
+                        @AgentText["ConfigureProviderBeforeMailbox"]
+                    </p>
+                }
+            }
+
+            <div class="agents-access-list mt-3">
                 @foreach (var source in BuildAgentSourceCards())
                 {
-                    <div class="col-12 col-xl-4">
-                        <article class="border rounded-3 p-3 h-100">
-                            <div class="d-flex justify-content-between align-items-start gap-2 mb-2">
-                                <h3 class="h6 mb-0">@source.Title</h3>
-                                <span class="@source.BadgeCss">@source.Badge</span>
-                            </div>
-                            <p class="small text-body-secondary mb-3">@source.Description</p>
-                            <dl class="small mb-0">
-                                <dt>Authentication</dt>
-                                <dd>@source.Authentication</dd>
-                                <dt>Configured in</dt>
-                                <dd class="mb-0">@source.Owner</dd>
-                            </dl>
-                        </article>
-                    </div>
+                    <article class="agents-access-row">
+                        <div>
+                            <h3>@source.Title</h3>
+                            <p>@source.Description</p>
+                        </div>
+                        <div><span>@AgentText["Authentication"]</span><strong>@source.Authentication</strong></div>
+                        <div><span>@AgentText["Access"]</span><strong>@source.Owner</strong></div>
+                        <span class="@source.BadgeCss">@source.Badge</span>
+                    </article>
                 }
             </div>
 
@@ -186,41 +992,44 @@ else
             {
                 <div class="border-top pt-3 mt-4">
                     <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-3">
-                        <div>
-                            <h3 class="h5 mb-1">Selected agent access brief</h3>
-                            <p class="text-body-secondary mb-0">
-                                Apply these source choices to @selectedAgentProfile.DisplayName. Review the generated JSON, then save the operating profile.
-                            </p>
+                        <div class="agent-access-step-heading">
+                            <span class="agent-access-step">3</span>
+                            <div>
+                                <h3 class="h5 mb-1">@AgentText["SelectedAgentAccessBrief"]</h3>
+                                <p class="text-body-secondary mb-0">
+                                    @AgentText["SelectedAgentAccessDescription", selectedAgentProfile.DisplayName]
+                                </p>
+                            </div>
                         </div>
                         <span class="badge text-bg-light">@selectedAgentProfile.Department</span>
                     </div>
 
                     <div class="row g-3">
                         <div class="col-12 col-lg-4">
-                            <label class="form-label" for="brief-authentication">Email authentication</label>
+                            <label class="form-label" for="brief-authentication">@AgentText["EmailAuthentication"]</label>
                             <InputSelect id="brief-authentication" class="form-select" @bind-Value="jointBriefModel.EmailAuthentication">
-                                <option value="oauth_user_mailbox">OAuth user mailbox connection</option>
-                                <option value="app_oauth_client">App-owned OAuth client</option>
-                                <option value="provider_api_key">Provider API key or secret-store credential</option>
-                                <option value="manual_upload_only">Manual upload only</option>
+                                <option value="oauth_user_mailbox">@AgentText["AuthOAuthMailbox"]</option>
+                                <option value="app_oauth_client">@AgentText["AuthAppOAuthClient"]</option>
+                                <option value="provider_api_key">@AgentText["AuthProviderCredential"]</option>
+                                <option value="manual_upload_only">@AgentText["AuthManualUpload"]</option>
                             </InputSelect>
-                            <div class="form-text">Secrets stay in provider settings or the secret store, not in the agent profile.</div>
+                            <div class="form-text">@AgentText["SecretsLocationHelp"]</div>
                         </div>
                         <div class="col-12 col-lg-4">
-                            <label class="form-label" for="brief-source-owner">Primary owner</label>
+                            <label class="form-label" for="brief-source-owner">@AgentText["PrimaryOwner"]</label>
                             <InputSelect id="brief-source-owner" class="form-select" @bind-Value="jointBriefModel.PrimaryOwner">
-                                <option value="finance">Finance</option>
-                                <option value="sales">Sales</option>
-                                <option value="customer_support">Customer support</option>
-                                <option value="shared_operations">Shared operations</option>
+                                <option value="finance">@AgentText["OwnerFinance"]</option>
+                                <option value="sales">@AgentText["OwnerSales"]</option>
+                                <option value="customer_support">@AgentText["OwnerSupport"]</option>
+                                <option value="shared_operations">@AgentText["OwnerSharedOperations"]</option>
                             </InputSelect>
                         </div>
                         <div class="col-12 col-lg-4">
-                            <label class="form-label" for="brief-review">Review mode</label>
+                            <label class="form-label" for="brief-review">@AgentText["ReviewMode"]</label>
                             <InputSelect id="brief-review" class="form-select" @bind-Value="jointBriefModel.ReviewMode">
-                                <option value="human_review_required">Human review required</option>
-                                <option value="low_risk_autonomous">Low-risk autonomous allowed</option>
-                                <option value="read_only">Read-only context</option>
+                                <option value="human_review_required">@AgentText["ReviewHumanRequired"]</option>
+                                <option value="low_risk_autonomous">@AgentText["ReviewLowRiskAutonomous"]</option>
+                                <option value="read_only">@AgentText["ReviewReadOnly"]</option>
                             </InputSelect>
                         </div>
                     </div>
@@ -228,67 +1037,72 @@ else
                     <div class="row g-3 mt-1">
                         <div class="col-12 col-lg-3">
                             <fieldset class="border rounded-3 p-3 h-100">
-                                <legend class="h6 mb-3">Email sources</legend>
-                                @RenderBriefCheckbox("Finance mailbox", () => jointBriefModel.FinanceMailbox, value => jointBriefModel.FinanceMailbox = value)
-                                @RenderBriefCheckbox("Sales mailbox", () => jointBriefModel.SalesMailbox, value => jointBriefModel.SalesMailbox = value)
-                                @RenderBriefCheckbox("Support mailbox", () => jointBriefModel.SupportMailbox, value => jointBriefModel.SupportMailbox = value)
+                                <legend class="h6 mb-3">@AgentText["EmailSources"]</legend>
+                                @RenderBriefCheckbox(AgentText["FinanceMailbox"], () => jointBriefModel.FinanceMailbox, value => jointBriefModel.FinanceMailbox = value)
+                                @RenderBriefCheckbox(AgentText["SalesMailbox"], () => jointBriefModel.SalesMailbox, value => jointBriefModel.SalesMailbox = value)
+                                @RenderBriefCheckbox(AgentText["SupportMailbox"], () => jointBriefModel.SupportMailbox, value => jointBriefModel.SupportMailbox = value)
                             </fieldset>
                         </div>
                         <div class="col-12 col-lg-3">
                             <fieldset class="border rounded-3 p-3 h-100">
-                                <legend class="h6 mb-3">Web enquiries</legend>
-                                @RenderBriefCheckbox("Website contact forms", () => jointBriefModel.WebContactForms, value => jointBriefModel.WebContactForms = value)
-                                @RenderBriefCheckbox("Sales lead forms", () => jointBriefModel.SalesLeadForms, value => jointBriefModel.SalesLeadForms = value)
-                                @RenderBriefCheckbox("Support web requests", () => jointBriefModel.SupportWebRequests, value => jointBriefModel.SupportWebRequests = value)
+                                <legend class="h6 mb-3">@AgentText["WebEnquiries"]</legend>
+                                @RenderBriefCheckbox(AgentText["WebsiteContactForms"], () => jointBriefModel.WebContactForms, value => jointBriefModel.WebContactForms = value)
+                                @RenderBriefCheckbox(AgentText["SalesLeadForms"], () => jointBriefModel.SalesLeadForms, value => jointBriefModel.SalesLeadForms = value)
+                                @RenderBriefCheckbox(AgentText["SupportWebRequests"], () => jointBriefModel.SupportWebRequests, value => jointBriefModel.SupportWebRequests = value)
                             </fieldset>
                         </div>
                         <div class="col-12 col-lg-3">
                             <fieldset class="border rounded-3 p-3 h-100">
-                                <legend class="h6 mb-3">Documents</legend>
-                                @RenderBriefCheckbox("Company policies", () => jointBriefModel.CompanyPolicies, value => jointBriefModel.CompanyPolicies = value)
-                                @RenderBriefCheckbox("Product catalog", () => jointBriefModel.ProductCatalog, value => jointBriefModel.ProductCatalog = value)
-                                @RenderBriefCheckbox("Uploaded knowledge docs", () => jointBriefModel.KnowledgeDocuments, value => jointBriefModel.KnowledgeDocuments = value)
+                                <legend class="h6 mb-3">@AgentText["Documents"]</legend>
+                                @RenderBriefCheckbox(AgentText["CompanyPolicies"], () => jointBriefModel.CompanyPolicies, value => jointBriefModel.CompanyPolicies = value)
+                                @RenderBriefCheckbox(AgentText["ProductCatalog"], () => jointBriefModel.ProductCatalog, value => jointBriefModel.ProductCatalog = value)
+                                @RenderBriefCheckbox(AgentText["UploadedKnowledgeDocuments"], () => jointBriefModel.KnowledgeDocuments, value => jointBriefModel.KnowledgeDocuments = value)
                             </fieldset>
                         </div>
                         <div class="col-12 col-lg-3">
                             <fieldset class="border rounded-3 p-3 h-100">
-                                <legend class="h6 mb-3">Business systems</legend>
-                                @RenderBriefCheckbox("Fortnox finance data", () => jointBriefModel.FortnoxFinance, value => jointBriefModel.FortnoxFinance = value)
-                                @RenderBriefCheckbox("Customer records", () => jointBriefModel.CustomerRecords, value => jointBriefModel.CustomerRecords = value)
-                                @RenderBriefCheckbox("Order and invoice records", () => jointBriefModel.OrderAndInvoiceRecords, value => jointBriefModel.OrderAndInvoiceRecords = value)
+                                <legend class="h6 mb-3">@AgentText["BusinessSystems"]</legend>
+                                @RenderBriefCheckbox(AgentText["FortnoxFinanceData"], () => jointBriefModel.FortnoxFinance, value => jointBriefModel.FortnoxFinance = value)
+                                @RenderBriefCheckbox(AgentText["CustomerRecords"], () => jointBriefModel.CustomerRecords, value => jointBriefModel.CustomerRecords = value)
+                                @RenderBriefCheckbox(AgentText["OrderInvoiceRecords"], () => jointBriefModel.OrderAndInvoiceRecords, value => jointBriefModel.OrderAndInvoiceRecords = value)
                             </fieldset>
                         </div>
                     </div>
 
                     <div class="dashboard-actions mt-3">
-                        <button class="btn btn-primary" type="button" @onclick="ApplyJointBriefToSelectedAgent">Apply to selected agent</button>
-                        <button class="btn btn-outline-secondary" type="button" @onclick="LoadRecommendedJointBriefForSelectedAgent">Use recommended access</button>
+                        <button class="btn btn-primary" type="button" @onclick="ApplyJointBriefToSelectedAgent">@AgentText["ApplyToSelectedAgent"]</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="LoadRecommendedJointBriefForSelectedAgent">@AgentText["UseRecommendedAccess"]</button>
                     </div>
                     <p class="small text-body-secondary mb-0 mt-2">
-                        Applying updates the selected agent's data scopes and tool permissions. Use Save operating profile below to persist the change.
+                        @AgentText["ApplyAccessHelp"]
                     </p>
                 </div>
             }
             else
             {
-                <p class="text-body-secondary mb-0 mt-4">Select an agent from the roster to configure its access brief.</p>
+                <p class="text-body-secondary mb-0 mt-4">@AgentText["SelectAgentForAccess"]</p>
             }
         </div>
 
         @if (CanManageProfiles)
         {
-            <div class="wizard-card mt-4">
+            <details class="agents-advanced-panel mt-4">
+                <summary>
+                    <span>@AgentText["AdvancedOperatingProfile"]</span>
+                    <small>@AgentText["AdvancedOperatingProfileDescription"]</small>
+                </summary>
+            <div class="wizard-card">
                 <div class="agent-roster-header">
                     <div>
-                        <span class="dashboard-kicker">Operating profile</span>
-                        <h2 class="h4 mb-0 mt-2">Agent configuration</h2>
+                        <span class="dashboard-kicker">@AgentText["OperatingProfile"]</span>
+                        <h2 class="h4 mb-0 mt-2">@AgentText["AgentConfiguration"]</h2>
                     </div>
-                    <p class="text-body-secondary mb-0">Use the canonical profile page for identity, activity, and future analytics. This editor remains focused on operating configuration.</p>
+                    <p class="text-body-secondary mb-0">@AgentText["AgentConfigurationDescription"]</p>
                 </div>
 
                 @if (selectedAgentProfile is null)
                 {
-                    <p class="text-body-secondary mb-0 mt-3">Select an agent from the roster to load the operating profile editor.</p>
+                    <p class="text-body-secondary mb-0 mt-3">@AgentText["SelectAgentForOperatingProfile"]</p>
                 }
                 else
                 {
@@ -308,7 +1122,7 @@ else
 
                         <div class="row g-3">
                             <div class="col-md-6">
-                                <label class="form-label" for="profile-status">Status</label>
+                                <label class="form-label" for="profile-status">@AgentText["Status"]</label>
                                 <InputSelect id="profile-status" class="form-select" @bind-Value="profileModel.Status" disabled="@(!CanEditSelectedAgentStatus)">
                                     @foreach (var status in GetStatusOptionsForSelectedAgent())
                                     {
@@ -317,14 +1131,14 @@ else
                                 </InputSelect>
                                 <ValidationMessage For="@(() => profileModel.Status)" />
                                 <div class="form-text">
-                                    Paused and archived agents are excluded from new task assignment.
+                                    @AgentText["PausedArchivedAssignmentHelp"]
                                     @if (selectedAgentProfile.Visibility.CanPauseOrRestrictAgent)
                                     {
-                                        <span> Owner and admin memberships can manage all status states.</span>
+                                        <span> @AgentText["StatusOwnerAdminHelp"]</span>
                                     }
                                     else
                                     {
-                                        <span> Your membership can only move agents between active and paused while they remain outside restricted or archived states.</span>
+                                        <span> @AgentText["StatusManagerHelp"]</span>
                                     }
                                 </div>
                                 @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.Status)))
@@ -333,7 +1147,7 @@ else
                                 }
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label" for="profile-autonomy">Autonomy</label>
+                                <label class="form-label" for="profile-autonomy">@AgentText["Autonomy"]</label>
                                 <InputSelect id="profile-autonomy" class="form-select" @bind-Value="profileModel.AutonomyLevel" disabled="@(!selectedAgentProfile.Visibility.CanEditSensitiveGovernance)">
                                     @foreach (var level in GetAutonomyOptionsForSelectedAgent())
                                     {
@@ -343,22 +1157,22 @@ else
                                 <div class="form-text">
                                     @if (selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
                                     {
-                                        <span>Autonomy, tools, scopes, thresholds, escalation, and trigger logic are governance settings.</span>
+                                        <span>@AgentText["GovernanceSettingsHelp"]</span>
                                     }
                                     else
                                     {
-                                        <span>Autonomy changes require owner or admin access.</span>
+                                        <span>@AgentText["AutonomyRestrictedHelp"]</span>
                                     }
                                 </div>
                             </div>
                             <div class="col-md-6">
-                                <label class="form-label" for="profile-updated">Last updated</label>
-                                <input id="profile-updated" class="form-control" value="@selectedAgentProfile.UpdatedUtc.ToLocalTime().ToString("g")" disabled />
+                                <label class="form-label" for="profile-updated">@AgentText["LastUpdated"]</label>
+                                <input id="profile-updated" class="form-control" value="@LocalDateTime.DateTime(selectedAgentProfile.UpdatedUtc)" disabled />
                             </div>
                         </div>
 
                         <div class="mt-3">
-                            <label class="form-label" for="role-brief">Role brief</label>
+                            <label class="form-label" for="role-brief">@AgentText["RoleBrief"]</label>
                             <InputTextArea id="role-brief" class="form-control" rows="3" @bind-Value="profileModel.RoleBrief" disabled="@(!selectedAgentProfile.Visibility.CanEditRoleBrief)" />
                             <ValidationMessage For="@(() => profileModel.RoleBrief)" />
                             @foreach (var error in GetProfileErrors(nameof(AgentOperatingProfileFormModel.RoleBrief)))
@@ -367,69 +1181,75 @@ else
                             }
                         </div>
 
-                        @RenderJsonEditor("Objectives", "Objectives", () => profileModel.ObjectivesJson, !selectedAgentProfile.Visibility.CanEditObjectives)
-                        @RenderJsonEditor("KPIs", "Kpis", () => profileModel.KpisJson, !selectedAgentProfile.Visibility.CanEditKpis)
+                        @RenderJsonEditor(AgentText["ObjectivesJson"], "Objectives", () => profileModel.ObjectivesJson, !selectedAgentProfile.Visibility.CanEditObjectives)
+                        @RenderJsonEditor(AgentText["Kpis"], "Kpis", () => profileModel.KpisJson, !selectedAgentProfile.Visibility.CanEditKpis)
 
                         @if (selectedAgentProfile.Visibility.CanViewPermissions)
                         {
-                            @RenderJsonEditor("Tool permissions", "ToolPermissions", () => profileModel.ToolPermissionsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
-                            @RenderJsonEditor("Data scopes", "DataScopes", () => profileModel.DataScopesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["DetailToolPermissions"], "ToolPermissions", () => profileModel.ToolPermissionsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["DataScopes"], "DataScopes", () => profileModel.DataScopesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
                         }
                         else
                         {
-                            <p class="text-body-secondary mt-3 mb-0">Tool permissions and data scopes are hidden for your membership role.</p>
+                            <p class="text-body-secondary mt-3 mb-0">@AgentText["PermissionsHidden"]</p>
                         }
 
                         @if (selectedAgentProfile.Visibility.CanViewThresholds)
                         {
-                            @RenderJsonEditor("Approval thresholds", "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
-                            @RenderJsonEditor("Escalation rules", "EscalationRules", () => profileModel.EscalationRulesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
-                            @RenderJsonEditor("Trigger logic", "TriggerLogic", () => profileModel.TriggerLogicJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["DetailApprovalThresholds"], "ApprovalThresholds", () => profileModel.ApprovalThresholdsJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["DetailEscalationRules"], "EscalationRules", () => profileModel.EscalationRulesJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
+                            @RenderJsonEditor(AgentText["TriggerLogic"], "TriggerLogic", () => profileModel.TriggerLogicJson, !selectedAgentProfile.Visibility.CanEditSensitiveGovernance)
                         }
                         else
                         {
-                            <p class="text-body-secondary mt-3 mb-0">Approval thresholds, escalation rules, and trigger logic are hidden for your membership role.</p>
+                            <p class="text-body-secondary mt-3 mb-0">@AgentText["ThresholdsHidden"]</p>
                         }
 
                         @if (selectedAgentProfile.Visibility.CanViewWorkingHours)
                         {
-                            @RenderJsonEditor("Working hours", "WorkingHours", () => profileModel.WorkingHoursJson, !selectedAgentProfile.Visibility.CanEditWorkingHours)
+                            @RenderJsonEditor(AgentText["DetailWorkingHours"], "WorkingHours", () => profileModel.WorkingHoursJson, !selectedAgentProfile.Visibility.CanEditWorkingHours)
                         }
                         else
                         {
-                            <p class="text-body-secondary mt-3 mb-0">Working hours are hidden for your membership role.</p>
+                            <p class="text-body-secondary mt-3 mb-0">@AgentText["WorkingHoursHidden"]</p>
                         }
 
                         <div class="dashboard-actions mt-3">
-                            <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">Save operating profile</button>
-                            <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">Open canonical profile</a>
+                            <button class="btn btn-primary" type="submit" disabled="@isSavingProfile">@AgentText["SaveOperatingProfile"]</button>
+                            <a class="btn btn-outline-secondary" href="@BuildProfileUri(selectedAgentId ?? Guid.Empty)">@AgentText["OpenCanonicalProfile"]</a>
                         </div>
                     </EditForm>
                 }
             }
             </div>
+            </details>
         }
 
-        <div class="wizard-card mt-4">
+        <details class="agents-advanced-panel mt-4">
+            <summary>
+                <span>@AgentText["DirectoryFilters"]</span>
+                <small>@AgentText["DirectoryFiltersDescription"]</small>
+            </summary>
+        <div class="wizard-card">
             <div class="agent-roster-header">
                 <div>
-                    <span class="dashboard-kicker">Company roster</span>
-                    <h2 class="h4 mb-0 mt-2">Company agents</h2>
+                    <span class="dashboard-kicker">@AgentText["CompanyRoster"]</span>
+                    <h2 class="h4 mb-0 mt-2">@AgentText["CompanyAgents"]</h2>
                 </div>
-                <span class="badge text-bg-light">@rosterResponse.Items.Count total</span>
+                <span class="badge text-bg-light">@AgentText["TotalCount", rosterResponse.Items.Count]</span>
             </div>
 
             @if (!canViewDirectory)
             {
-                <p class="text-body-secondary mb-0 mt-3">Manager, admin, or owner membership is required to view the agent roster.</p>
+                <p class="text-body-secondary mb-0 mt-3">@AgentText["RestrictedRosterShort"]</p>
             }
             else
             {
                 <div class="agent-filter-bar mt-4">
                     <div>
-                        <label class="form-label" for="department-filter">Department</label>
+                        <label class="form-label" for="department-filter">@AgentText["Department"]</label>
                         <InputSelect id="department-filter" class="form-select" @bind-Value="Department">
-                            <option value="">All departments</option>
+                            <option value="">@AgentText["AllDepartments"]</option>
                             @foreach (var department in rosterResponse.Departments)
                             {
                                 <option value="@department">@department</option>
@@ -437,9 +1257,9 @@ else
                         </InputSelect>
                     </div>
                     <div>
-                        <label class="form-label" for="status-filter">Status</label>
+                        <label class="form-label" for="status-filter">@AgentText["Status"]</label>
                         <InputSelect id="status-filter" class="form-select" @bind-Value="Status">
-                            <option value="">All statuses</option>
+                            <option value="">@AgentText["AllStatuses"]</option>
                             @foreach (var status in rosterResponse.Statuses)
                             {
                                 <option value="@status">@GetStatusLabel(status)</option>
@@ -447,14 +1267,14 @@ else
                         </InputSelect>
                     </div>
                     <div class="dashboard-actions">
-                        <button class="btn btn-primary" type="button" @onclick="ApplyFilters">Apply filters</button>
-                        <button class="btn btn-outline-secondary" type="button" @onclick="ClearFilters">Clear</button>
+                        <button class="btn btn-primary" type="button" @onclick="ApplyFilters">@AgentText["ApplyFilters"]</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="ClearFilters">@AgentText["ClearFilters"]</button>
                     </div>
                 </div>
 
                 @if (rosterResponse.Items.Count == 0)
                 {
-                    <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
+                    <p class="text-body-secondary mb-0 mt-4">@AgentText["NoAgentsMatch"]</p>
                 }
                 else
                 {
@@ -462,12 +1282,12 @@ else
                         <table class="table table-hover align-middle mb-0">
                             <thead>
                                 <tr>
-                                    <th scope="col">Name</th>
-                                    <th scope="col">Role</th>
-                                    <th scope="col">Department</th>
-                                    <th scope="col">Status</th>
-                                    <th scope="col">Autonomy</th>
-                                    <th scope="col">Workload and health</th>
+                                    <th scope="col">@AgentText["Name"]</th>
+                                    <th scope="col">@AgentText["Role"]</th>
+                                    <th scope="col">@AgentText["Department"]</th>
+                                    <th scope="col">@AgentText["Status"]</th>
+                                    <th scope="col">@AgentText["Autonomy"]</th>
+                                    <th scope="col">@AgentText["WorkloadAndHealth"]</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -479,12 +1299,12 @@ else
                                             @if (CanManageProfiles)
                                             {
                                                 <div class="mt-2">
-                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">Configure</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="@(() => OpenEditor(agent.Id))">@AgentText["Configure"]</button>
                                                 </div>
                                             }
                                             @if (IsDirectChatEligible(agent.Status))
                                             {
-                                                <div class="mt-2"><a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">Chat</a></div>
+                                                <div class="mt-2"><a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">@AgentText["Chat"]</a></div>
                                             }
                                         </th>
                                         <td>@agent.RoleName</td>
@@ -505,6 +1325,7 @@ else
                 }
             }
         </div>
+        </details>
     </section>
 }
 
@@ -540,13 +1361,124 @@ else
     private AgentOperatingProfileViewModel? selectedAgentProfile;
     private AgentOperatingProfileFormModel profileModel = new();
     private JointAgentBriefFormModel jointBriefModel = new();
+    private AgentBriefFormModel agentBriefModel = new();
+    private List<AgentBriefDocumentViewModel> briefDocuments = [];
+    private AgentCapabilityCatalogViewModel? selectedAgentCapabilities;
     private Dictionary<string, string[]> profileErrors = new(StringComparer.OrdinalIgnoreCase);
     private Guid? selectedAgentId;
     private string? selectedTemplateId;
+    private string selectedBriefCategory = "company_information";
+    private bool shareBriefDocumentsWithTeam;
+    private bool isBriefDirty;
+    private bool isSavingBrief;
+    private bool isGeneratingBriefDraft;
+    private bool isGeneratedBriefDraft;
+    private bool isUploadingBriefDocument;
+    private bool isLoadingCapabilities;
+    private bool isLoadingMailboxConfiguration;
+    private bool isSavingMailboxProviderSettings;
+    private string? mailboxActionPurpose;
+    private MailboxProviderAvailabilityResponse mailboxProviderAvailability = new();
+    private FinanceEmailSettingsResponse? mailboxProviderSettings;
+    private UpdateFinanceEmailSettingsRequest mailboxProviderSettingsModel = new();
+    private readonly Dictionary<string, MailboxConnectionStatusResponse> mailboxStatuses = new(StringComparer.OrdinalIgnoreCase);
+    private string? capabilityErrorMessage;
+    private string agentQuestion = string.Empty;
+    private AgentQuestionAnswerViewModel? questionAnswer;
+    private List<AgentWorkPriorityViewModel> selectedPriorities = [];
+    private AgentAiQualityMetricsViewModel? selectedQuality;
+    private string planObjective = string.Empty;
+    private AgentPlanViewModel? selectedPlan;
+    private List<AgentHandoffViewModel> selectedHandoffs = [];
+    private List<AgentMemoryCandidateViewModel> selectedMemoryCandidates = [];
+    private bool isAskingQuestion;
+    private bool isGeneratingPlan;
+    private bool isCommittingPlan;
+    private bool isUpdatingGovernance;
+    private bool isRunningRoleAnalysis;
+    private string roleAnalysisType = string.Empty;
+    private string roleAnalysisObjective = string.Empty;
+    private RoleAgentAnalysisViewModel? roleAnalysisResult;
+    private FinanceCashScenarioAnalysisRequestViewModel financeCashRequest = new();
+    private FinanceCashScenarioAnalysisViewModel? financeCashAnalysis;
+    private FinancePaymentRunAnalysisRequestViewModel financePaymentRunRequest = new();
+    private FinancePaymentRunAnalysisViewModel? financePaymentRun;
+    private FinanceCollectionsPlanViewModel? financeCollectionsPlan;
+    private IReadOnlyList<FinanceBillResponse> financeBills = [];
+    private IReadOnlyList<FinanceClosePeriodOptionViewModel> financeClosePeriods = [];
+    private Guid selectedAccountingBillId;
+    private Guid selectedClosePeriodId;
+    private FinanceAccountingTreatmentViewModel? financeAccountingTreatment;
+    private FinanceCloseAnalysisRequestViewModel financeCloseRequest = new();
+    private FinanceCloseAnalysisViewModel? financeCloseAnalysis;
+    private readonly HashSet<Guid> selectedPaymentBillIds = [];
+    private bool paymentRunReviewed;
+    private bool isCommittingPaymentRun;
+    private CommitFinancePaymentRunResultViewModel? paymentRunCommitResult;
+    private SalesNextBestActionViewModel? salesNextActions;
+    private SalesForecastScenarioResultViewModel? salesForecast;
+    private SalesCampaignOptimizationResultViewModel? salesCampaigns;
+    private SupportQueueAnalysisResultViewModel? supportQueue;
+    private SupportRiskAssessmentResultViewModel? supportRisk;
+    private SupportRecurringIssueResultViewModel? supportRecurringIssues;
+    private SupportKnowledgeCoverageResultViewModel? supportKnowledgeCoverage;
+    private string? briefErrorMessage;
+    private string? briefSuccessMessage;
+    private CancellationTokenSource? briefDocumentTrackingCts;
+    private bool isNavigatingAway;
+    private bool isDisposed;
+
+    private static readonly IReadOnlyList<BriefingCategoryDefinition> BriefingCategories =
+    [
+        new("company_information", "CO", "BriefCategoryCompanyLabel", "BriefCategoryCompanyDescription", "BriefCategoryCompanyPlaceholder"),
+        new("products_and_services", "PR", "BriefCategoryProductsLabel", "BriefCategoryProductsDescription", "BriefCategoryProductsPlaceholder"),
+        new("policies", "PO", "BriefCategoryPoliciesLabel", "BriefCategoryPoliciesDescription", "BriefCategoryPoliciesPlaceholder"),
+        new("customer_support", "CS", "BriefCategorySupportLabel", "BriefCategorySupportDescription", "BriefCategorySupportPlaceholder"),
+        new("other_instructions", "IN", "BriefCategoryOtherLabel", "BriefCategoryOtherDescription", "BriefCategoryOtherPlaceholder")
+    ];
+
+    private BriefingCategoryDefinition SelectedBriefCategory =>
+        BriefingCategories.First(category => category.Key == selectedBriefCategory);
+
+    private string CurrentBriefText
+    {
+        get => agentBriefModel.Get(selectedBriefCategory);
+        set => agentBriefModel.Set(selectedBriefCategory, value);
+    }
+
+    private IReadOnlyList<AgentBriefDocumentViewModel> BriefDocumentsForSelectedCategory =>
+        AgentBriefDocumentStatusPresenter.Deduplicate(
+            briefDocuments.Where(document => IsBriefDocumentForAgentAndCategory(document, selectedAgentId, selectedBriefCategory)))
+            .OrderByDescending(document => document.UpdatedUtc)
+            .ToList();
 
     private IReadOnlyList<CompanyMembershipViewModel> activeMemberships =>
         currentUser?.Memberships.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).ToList()
         ?? [];
+
+    private IReadOnlyList<RoleAnalysisOption> RoleAnalysisOptions => (selectedAgentProfile?.Department ?? string.Empty).ToLowerInvariant() switch
+    {
+        "finance" =>
+        [
+            new("cash_liquidity", "Cash and liquidity"), new("payables", "Payables"),
+            new("receivables", "Receivables"), new("accounting_treatment", "Accounting treatment"),
+            new("close_analysis", "Close readiness"), new("operating_cadence", "Finance priorities")
+        ],
+        "sales" =>
+        [
+            new("lead_intelligence", "Lead intelligence"), new("next_best_action", "Next best actions"),
+            new("deal_risk", "Deal risk"), new("forecast_analysis", "Forecast"),
+            new("campaign_optimization", "Campaigns"), new("proposal_advice", "Proposal advice"),
+            new("operating_cadence", "Sales priorities")
+        ],
+        "support" or "customer support" =>
+        [
+            new("triage_analysis", "Queue triage"), new("grounded_reply", "Grounded reply"),
+            new("risk_escalation", "Risk and escalation"), new("root_cause_analysis", "Recurring issues"),
+            new("knowledge_coverage", "Knowledge coverage"), new("operating_cadence", "Support priorities")
+        ],
+        _ => []
+    };
 
     private AgentTemplateCatalogItemViewModel? selectedTemplate =>
         templates.FirstOrDefault(x => string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase));
@@ -571,63 +1503,90 @@ else
         CanManageProfiles ||
         string.Equals(companyAccess?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
 
-    private string BuildProfileUri(Guid agentId) => $"/agents/{agentId}?companyId={CompanyId}";
+    private bool CanManageProviderSettings =>
+        string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
 
-    private string BuildFinanceEmailSettingsHref() =>
-        DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.EmailSettings);
+    private bool IsAnyMailboxProviderAvailable =>
+        mailboxProviderAvailability.Gmail.IsConfigured || mailboxProviderAvailability.Microsoft365.IsConfigured;
+
+    private static readonly IReadOnlyList<MailboxPurposeDefinition> MailboxPurposeDefinitions =
+    [
+        new("finance", "FinanceMailbox", "FinanceMailboxConnectionDescription", "bi-receipt"),
+        new("sales", "SalesMailbox", "SalesMailboxConnectionDescription", "bi-briefcase"),
+        new("support", "SupportMailbox", "SupportMailboxConnectionDescription", "bi-headset")
+    ];
+
+    private string BuildProfileUri(Guid agentId) => $"/agents/{agentId}?companyId={CompanyId}";
 
     private string BuildFinanceIntegrationSettingsHref() =>
         FinanceRoutes.BuildFinanceIntegrationSettingsPath("fortnox", CompanyId);
 
+    private string BuildMailboxConnectionHref(string purpose, string provider)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return "/agents/manage";
+        }
+
+        var agentQuery = selectedAgentId is Guid agentId ? $"&agentId={agentId:D}" : string.Empty;
+        return $"/agents/mailboxes/connect?companyId={companyId:D}&purpose={Uri.EscapeDataString(purpose)}&provider={Uri.EscapeDataString(provider)}{agentQuery}";
+    }
+
     private IReadOnlyList<AgentSourceCard> BuildAgentSourceCards() =>
         [
             new(
-                "Authenticated email",
-                "Gmail and Microsoft 365 mailbox access for finance intake, sales conversations, and support cases.",
+                AgentText["SourceAuthenticatedEmail"],
+                AgentText["SourceAuthenticatedEmailDescription"],
                 "OAuth",
-                "Finance settings for OAuth clients; mailbox connection screens for user mailbox consent.",
-                "Configured",
+                AgentText["SourceEmailOwner"],
+                AgentText["BadgeConfigured"],
                 "badge text-bg-success"),
             new(
-                "Web enquiries",
-                "Website contact forms, sales lead forms, and support web requests that agents can triage or answer.",
-                "Signed webhook, API key, or trusted app submission",
-                "Sales and support source policies.",
-                "Policy",
+                AgentText["SourceWeb"],
+                AgentText["SourceWebDescription"],
+                AgentText["SourceWebAuthentication"],
+                AgentText["SourceWebOwner"],
+                AgentText["BadgePolicy"],
                 "badge text-bg-light"),
             new(
-                "Documents and knowledge",
-                "Company policies, product catalog, FAQ, uploaded knowledge documents, and approved support answers.",
-                "App access control",
-                "Knowledge management and agent data scopes.",
-                "Scoped",
+                AgentText["SourceDocuments"],
+                AgentText["SourceDocumentsDescription"],
+                AgentText["SourceAppAccess"],
+                AgentText["SourceDocumentsOwner"],
+                AgentText["BadgeScoped"],
                 "badge text-bg-light"),
             new(
-                "Finance systems",
-                "Fortnox suppliers, customers, invoices, bills, accounts, payments, and activity used by the finance agent.",
-                "Provider OAuth or integration credential",
-                "Finance integration settings.",
-                "Finance-owned",
+                AgentText["SourceFinance"],
+                AgentText["SourceFinanceDescription"],
+                AgentText["SourceProviderAuthentication"],
+                AgentText["SourceFinanceOwner"],
+                AgentText["BadgeFinanceOwned"],
                 "badge text-bg-warning"),
             new(
-                "Sales records",
-                "Customer activity, deals, sales emails, website submissions, and outbound follow-up context.",
-                "Mailbox consent and app access control",
-                "Sales workspace and sales automation policy.",
-                "Scoped",
+                AgentText["SourceSales"],
+                AgentText["SourceSalesDescription"],
+                AgentText["SourceMailboxAuthentication"],
+                AgentText["SourceSalesOwner"],
+                AgentText["BadgeScoped"],
                 "badge text-bg-light"),
             new(
-                "Support records",
-                "Support cases, mailbox-routed emails, memory observations, SLA policies, and approved replies.",
-                "Mailbox routing policy and app access control",
-                "Support workspace and mailbox routing settings.",
-                "Scoped",
+                AgentText["SourceSupport"],
+                AgentText["SourceSupportDescription"],
+                AgentText["SourceSupportAuthentication"],
+                AgentText["SourceSupportOwner"],
+                AgentText["BadgeScoped"],
                 "badge text-bg-light")
         ];
 
+    protected override void OnInitialized()
+    {
+        Navigation.LocationChanged += HandleLocationChanged;
+    }
 
     protected override async Task OnParametersSetAsync()
     {
+        isNavigatingAway = false;
         isLoading = true;
         errorMessage = null;
         successMessage = null;
@@ -653,6 +1612,7 @@ else
                 }
                 else
                 {
+                    await LoadMailboxConfigurationAsync(companyId);
                     templates = (await AgentApiClient.GetTemplatesAsync(companyId)).ToList();
 
                     if (selectedTemplateId is null || templates.All(x => !string.Equals(x.TemplateId, selectedTemplateId, StringComparison.OrdinalIgnoreCase)))
@@ -725,6 +1685,7 @@ else
             return;
         }
 
+        CancelBriefDocumentTracking();
         selectedAgentId = agentId;
         profileErrorMessage = null;
         profileSuccessMessage = null;
@@ -737,18 +1698,498 @@ else
 
         try
         {
+            isLoadingCapabilities = true;
+            capabilityErrorMessage = null;
+            questionAnswer = null;
+            selectedPlan = null;
+            roleAnalysisResult = null;
+            ResetFinanceAnalysis();
+            roleAnalysisObjective = string.Empty;
+            planObjective = string.Empty;
             selectedAgentProfile = await AgentApiClient.GetOperatingProfileAsync(companyId, agentId);
+            roleAnalysisType = RoleAnalysisOptions.FirstOrDefault()?.Value ?? string.Empty;
+            if (selectedAgentProfile.Department.Equals("finance", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    financeBills = await FinanceApiClient.GetBillsAsync(companyId, 100);
+                    financeClosePeriods = await FinanceApiClient.ListClosePeriodsAsync(companyId, agentId);
+                    selectedAccountingBillId = financeBills.FirstOrDefault()?.Id ?? Guid.Empty;
+                    selectedClosePeriodId = financeClosePeriods.FirstOrDefault()?.Id ?? Guid.Empty;
+                }
+                catch (FinanceApiException ex)
+                {
+                    capabilityErrorMessage = $"Finance analysis choices could not be loaded. {ex.Message}";
+                }
+            }
             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+            agentBriefModel = AgentBriefFormModel.FromProfile(selectedAgentProfile);
+            briefDocuments = (await AgentApiClient.GetBriefDocumentsAsync(companyId, agentId)).ToList();
+            try
+            {
+                selectedAgentCapabilities = await AgentApiClient.GetCapabilitiesAsync(companyId, agentId);
+                selectedPriorities = (await AgentApiClient.GetPrioritiesAsync(companyId, agentId, 10)).ToList();
+                selectedQuality = await AgentApiClient.GetAiQualityAsync(companyId, DateTime.UtcNow.AddDays(-30), DateTime.UtcNow, agentId);
+                selectedHandoffs = (await AgentApiClient.GetHandoffsAsync(companyId, agentId)).Where(x => x.Status is not ("completed" or "rejected" or "cancelled" or "failed")).ToList();
+                selectedMemoryCandidates = (await AgentApiClient.GetMemoryCandidatesAsync(companyId, "needs_review")).Where(x => x.ProposingAgentId == agentId).ToList();
+            }
+            catch (OnboardingApiException ex)
+            {
+                selectedAgentCapabilities = null;
+                capabilityErrorMessage = $"Capability access could not be loaded. {ex.Message}";
+            }
+            isBriefDirty = false;
+            isGeneratedBriefDraft = false;
+            briefErrorMessage = null;
+            briefSuccessMessage = null;
             LoadRecommendedJointBriefForSelectedAgent();
             NavigateIfChanged(BuildAgentsUri(companyId, Department, Status, agentId));
         }
         catch (OnboardingApiException ex)
         {
             selectedAgentProfile = null;
+            selectedAgentCapabilities = null;
             profileModel = new AgentOperatingProfileFormModel();
             profileErrorMessage = ex.Message;
         }
+        finally
+        {
+            isLoadingCapabilities = false;
+        }
     }
+
+    private async Task LoadMailboxConfigurationAsync(Guid companyId)
+    {
+        isLoadingMailboxConfiguration = true;
+        mailboxStatuses.Clear();
+
+        try
+        {
+            var availabilityTask = FinanceApiClient.GetMailboxProviderAvailabilityAsync(companyId);
+            var statusTasks = MailboxPurposeDefinitions.ToDictionary(
+                definition => definition.Purpose,
+                definition => FinanceApiClient.GetMailboxConnectionStatusAsync(companyId, definition.Purpose),
+                StringComparer.OrdinalIgnoreCase);
+
+            await Task.WhenAll(statusTasks.Values);
+            mailboxProviderAvailability = await availabilityTask;
+
+            foreach (var (purpose, task) in statusTasks)
+            {
+                mailboxStatuses[purpose] = await task ?? new MailboxConnectionStatusResponse { Purpose = purpose };
+            }
+
+            if (CanManageProviderSettings)
+            {
+                mailboxProviderSettings = await FinanceApiClient.GetEmailSettingsAsync(companyId);
+                mailboxProviderSettingsModel = new UpdateFinanceEmailSettingsRequest
+                {
+                    Gmail = new UpdateFinanceEmailProviderSettingsRequest { ClientId = mailboxProviderSettings.Gmail.ClientId },
+                    Microsoft365 = new UpdateFinanceEmailProviderSettingsRequest { ClientId = mailboxProviderSettings.Microsoft365.ClientId }
+                };
+            }
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoadingMailboxConfiguration = false;
+        }
+    }
+
+    private async Task SaveMailboxProviderSettingsAsync()
+    {
+        if (CompanyId is not Guid companyId || !CanManageProviderSettings)
+        {
+            return;
+        }
+
+        isSavingMailboxProviderSettings = true;
+        errorMessage = null;
+        successMessage = null;
+        try
+        {
+            mailboxProviderSettings = await FinanceApiClient.UpdateEmailSettingsAsync(companyId, mailboxProviderSettingsModel);
+            mailboxProviderAvailability = await FinanceApiClient.GetMailboxProviderAvailabilityAsync(companyId);
+            mailboxProviderSettingsModel.Gmail.ClientSecret = null;
+            mailboxProviderSettingsModel.Microsoft365.ClientSecret = null;
+            successMessage = AgentText["ProviderSettingsSaved"];
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSavingMailboxProviderSettings = false;
+        }
+    }
+
+    private async Task ConnectMailboxAsync(string purpose, string provider)
+    {
+        if (CompanyId is not Guid companyId || !IsMailboxProviderAvailable(provider))
+        {
+            return;
+        }
+
+        mailboxActionPurpose = purpose;
+        errorMessage = null;
+        try
+        {
+            var agentQuery = selectedAgentId is Guid agentId ? $"&agentId={agentId}" : string.Empty;
+            var returnUri = Navigation.ToAbsoluteUri($"/agents/manage?companyId={companyId}{agentQuery}").ToString();
+            var authorizationUrl = await FinanceApiClient.StartPurposeMailboxConnectionAsync(companyId, purpose, provider, returnUri);
+            Navigation.NavigateTo(authorizationUrl, forceLoad: true);
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+            mailboxActionPurpose = null;
+        }
+    }
+
+    private async Task DisconnectMailboxAsync(string purpose)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        mailboxActionPurpose = purpose;
+        errorMessage = null;
+        successMessage = null;
+        try
+        {
+            mailboxStatuses[purpose] = await FinanceApiClient.DisconnectMailboxConnectionAsync(companyId, purpose);
+            successMessage = AgentText["MailboxDisconnected"];
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            mailboxActionPurpose = null;
+        }
+    }
+
+    private MailboxConnectionStatusResponse? GetMailboxStatus(string purpose) =>
+        mailboxStatuses.GetValueOrDefault(purpose);
+
+    private bool IsMailboxActionRunning(string purpose) =>
+        string.Equals(mailboxActionPurpose, purpose, StringComparison.OrdinalIgnoreCase);
+
+    private bool IsMailboxProviderAvailable(string provider) => provider.ToLowerInvariant() switch
+    {
+        "gmail" => mailboxProviderAvailability.Gmail.IsConfigured,
+        "microsoft365" => mailboxProviderAvailability.Microsoft365.IsConfigured,
+        _ => false
+    };
+
+    private static string GetProviderDisplayName(string? provider) => provider?.ToLowerInvariant() switch
+    {
+        "gmail" => "Gmail",
+        "microsoft365" => "Microsoft 365",
+        _ => provider ?? string.Empty
+    };
+
+    private string FormatCapabilityAction(string actionType) => actionType.ToLowerInvariant() switch
+    {
+        "read" => AgentText["CapabilityModeRead"],
+        "recommend" => AgentText["CapabilityModeRecommend"],
+        "execute" => AgentText["CapabilityModeExecute"],
+        _ => actionType
+    };
+
+    private string FormatCapabilityState(string state) => state.ToLowerInvariant() switch
+    {
+        "available" => AgentText["CapabilityStatusAvailable"],
+        "approval_required" => AgentText["CapabilityStatusApprovalRequired"],
+        "configuration_required" => AgentText["CapabilityStatusConfigurationRequired"],
+        "permission_denied" => AgentText["CapabilityStatusRestricted"],
+        "integration_unavailable" => AgentText["CapabilityStatusIntegrationUnavailable"],
+        "not_implemented" => AgentText["CapabilityStatusNotAvailableYet"],
+        _ => AgentText["CapabilityStatusUnavailable"]
+    };
+
+    private static string GetCapabilityBadgeClass(string state) => state.ToLowerInvariant() switch
+    {
+        "available" => "badge text-bg-success",
+        "approval_required" => "badge text-bg-warning",
+        "configuration_required" => "badge text-bg-warning",
+        _ => "badge text-bg-light"
+    };
+
+    private static string GetCapabilityActionIconClass(string actionType) => actionType.ToLowerInvariant() switch
+    {
+        "read" => "bi bi-eye",
+        "recommend" => "bi bi-list-check",
+        "execute" => "bi bi-play-circle",
+        _ => "bi bi-circle"
+    };
+
+    private static string GetCapabilityStatusIconClass(string state) => state.ToLowerInvariant() switch
+    {
+        "available" => "bi bi-check-circle",
+        "approval_required" => "bi bi-person-check",
+        "configuration_required" => "bi bi-wrench-adjustable",
+        "permission_denied" => "bi bi-lock",
+        "integration_unavailable" => "bi bi-plug",
+        "not_implemented" => "bi bi-clock",
+        _ => "bi bi-exclamation-circle"
+    };
+
+    private async Task AskSelectedAgentAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId) return;
+        isAskingQuestion = true; capabilityErrorMessage = null;
+        try { questionAnswer = await AgentApiClient.AskQuestionAsync(companyId, agentId, new AskAgentQuestionRequest { Question = agentQuestion }); }
+        catch (OnboardingApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isAskingQuestion = false; }
+    }
+
+    private async Task GenerateSelectedAgentPlanAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId) return;
+        isGeneratingPlan = true; capabilityErrorMessage = null;
+        try { selectedPlan = await AgentApiClient.GeneratePlanAsync(companyId, agentId, new GenerateAgentPlanRequest { Objective = planObjective }); }
+        catch (OnboardingApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isGeneratingPlan = false; }
+    }
+
+    private async Task RunRoleAnalysisAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId ||
+            selectedAgentProfile is null || string.IsNullOrWhiteSpace(roleAnalysisType)) return;
+        isRunningRoleAnalysis = true;
+        capabilityErrorMessage = null;
+        var request = new RoleAgentAnalysisRequestViewModel
+        {
+            AnalysisType = roleAnalysisType,
+            Objective = string.IsNullOrWhiteSpace(roleAnalysisObjective) ? null : roleAnalysisObjective.Trim(),
+            HorizonDays = 30
+        };
+        try
+        {
+            financeCashAnalysis = null;
+            financePaymentRun = null;
+            financeCollectionsPlan = null;
+            financeAccountingTreatment = null;
+            financeCloseAnalysis = null;
+            salesNextActions = null;
+            salesForecast = null;
+            salesCampaigns = null;
+            supportQueue = null;
+            supportRisk = null;
+            supportRecurringIssues = null;
+            supportKnowledgeCoverage = null;
+            paymentRunCommitResult = null;
+            selectedPaymentBillIds.Clear();
+            paymentRunReviewed = false;
+            if (selectedAgentProfile.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "cash_liquidity")
+            {
+                financeCashRequest.Objective = request.Objective;
+                financeCashAnalysis = await FinanceApiClient.AnalyzeCashScenariosAsync(companyId, agentId, financeCashRequest);
+                roleAnalysisResult = financeCashAnalysis.Advice;
+            }
+            else if (selectedAgentProfile.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "payables")
+            {
+                financePaymentRunRequest.Objective = request.Objective;
+                financePaymentRunRequest.CutoffUtc = DateTime.SpecifyKind(financePaymentRunRequest.CutoffUtc.Date.AddDays(1).AddTicks(-1), DateTimeKind.Local).ToUniversalTime();
+                financePaymentRun = await FinanceApiClient.AnalyzePaymentRunAsync(companyId, agentId, financePaymentRunRequest);
+                roleAnalysisResult = financePaymentRun.Advice;
+                foreach (var item in financePaymentRun.Items.Where(x => x.Group == "pay")) selectedPaymentBillIds.Add(item.BillId);
+            }
+            else if (selectedAgentProfile.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "receivables")
+            {
+                financeCollectionsPlan = await FinanceApiClient.AnalyzeCollectionsAsync(companyId, agentId,
+                    new FinanceCollectionsPlanRequestViewModel { HorizonDays = 90, Objective = request.Objective });
+                roleAnalysisResult = financeCollectionsPlan.Advice;
+            }
+            else if (selectedAgentProfile.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "accounting_treatment")
+            {
+                if (selectedAccountingBillId == Guid.Empty)
+                {
+                    capabilityErrorMessage = "Choose a supplier bill before running accounting treatment analysis.";
+                    return;
+                }
+                financeAccountingTreatment = await FinanceApiClient.AnalyzeAccountingTreatmentAsync(companyId, agentId,
+                    new FinanceAccountingTreatmentRequestViewModel { BillId = selectedAccountingBillId, Objective = request.Objective });
+                roleAnalysisResult = financeAccountingTreatment.Advice;
+            }
+            else if (selectedAgentProfile.Department.Equals("finance", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "close_analysis")
+            {
+                if (selectedClosePeriodId == Guid.Empty)
+                {
+                    capabilityErrorMessage = "Choose a fiscal period before running close readiness analysis.";
+                    return;
+                }
+                financeCloseRequest.FiscalPeriodId = selectedClosePeriodId;
+                financeCloseRequest.Objective = request.Objective;
+                financeCloseAnalysis = await FinanceApiClient.AnalyzeCloseAsync(companyId, agentId, financeCloseRequest);
+                roleAnalysisResult = financeCloseAnalysis.Advice;
+            }
+            else if (selectedAgentProfile.Department.Equals("sales", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "next_best_action")
+            {
+                salesNextActions = await SalesApiClient.AnalyzeNextActionsAsync(companyId, agentId,
+                    new SalesNextBestActionRequestViewModel { Objective = request.Objective });
+                roleAnalysisResult = salesNextActions.Advice;
+            }
+            else if (selectedAgentProfile.Department.Equals("sales", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "forecast_analysis")
+            {
+                salesForecast = await SalesApiClient.AnalyzeForecastScenariosAsync(companyId, agentId,
+                    new SalesForecastScenarioRequestViewModel { HorizonDays = 90, Objective = request.Objective });
+                roleAnalysisResult = salesForecast.Advice;
+            }
+            else if (selectedAgentProfile.Department.Equals("sales", StringComparison.OrdinalIgnoreCase) && roleAnalysisType == "campaign_optimization")
+            {
+                salesCampaigns = await SalesApiClient.AnalyzeCampaignsAsync(companyId, agentId,
+                    new SalesCampaignOptimizationRequestViewModel { Objective = request.Objective });
+                roleAnalysisResult = salesCampaigns.Advice;
+            }
+            else if (IsSupportDepartment(selectedAgentProfile.Department) && roleAnalysisType == "triage_analysis")
+            {
+                supportQueue = await SupportApiClient.AnalyzeQueueAsync(companyId, agentId,
+                    new SupportQueueAnalysisRequestViewModel { Objective = request.Objective });
+                roleAnalysisResult = supportQueue.Advice;
+            }
+            else if (IsSupportDepartment(selectedAgentProfile.Department) && roleAnalysisType == "risk_escalation")
+            {
+                supportRisk = await SupportApiClient.AnalyzeRiskAsync(companyId, agentId,
+                    new SupportRiskAssessmentRequestViewModel { Objective = request.Objective });
+                roleAnalysisResult = supportRisk.Advice;
+            }
+            else if (IsSupportDepartment(selectedAgentProfile.Department) && roleAnalysisType == "root_cause_analysis")
+            {
+                supportRecurringIssues = await SupportApiClient.AnalyzeRecurringIssuesAsync(companyId, agentId,
+                    new SupportRecurringIssueRequestViewModel { Objective = request.Objective });
+                roleAnalysisResult = supportRecurringIssues.Advice;
+            }
+            else if (IsSupportDepartment(selectedAgentProfile.Department) && roleAnalysisType == "knowledge_coverage")
+            {
+                supportKnowledgeCoverage = await SupportApiClient.AnalyzeKnowledgeCoverageAsync(companyId, agentId,
+                    new SupportKnowledgeCoverageRequestViewModel { Objective = request.Objective });
+                roleAnalysisResult = supportKnowledgeCoverage.Advice;
+            }
+            else
+            {
+                roleAnalysisResult = selectedAgentProfile.Department.ToLowerInvariant() switch
+                {
+                    "finance" => await FinanceApiClient.AnalyzeForAgentAsync(companyId, agentId, request),
+                    "sales" => await SalesApiClient.AnalyzeForAgentAsync(companyId, agentId, request),
+                    "support" or "customer support" => await SupportApiClient.AnalyzeForAgentAsync(companyId, agentId, request),
+                    _ => null
+                };
+            }
+        }
+        catch (FinanceApiException ex) { capabilityErrorMessage = ex.Message; }
+        catch (SalesApiException ex) { capabilityErrorMessage = ex.Message; }
+        catch (SupportApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isRunningRoleAnalysis = false; }
+    }
+
+    private async Task CommitFinancePaymentRunAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId || financePaymentRun is null) return;
+        isCommittingPaymentRun = true;
+        capabilityErrorMessage = null;
+        try
+        {
+            paymentRunCommitResult = await FinanceApiClient.CommitPaymentRunAsync(companyId, agentId,
+                new CommitFinancePaymentRunRequestViewModel
+                {
+                    RecommendationRunId = financePaymentRun.Advice.RunId,
+                    SnapshotToken = financePaymentRun.SnapshotToken,
+                    AnalysisRequest = financePaymentRunRequest,
+                    SelectedBillIds = selectedPaymentBillIds.ToList(),
+                    Reviewed = paymentRunReviewed
+                });
+        }
+        catch (FinanceApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isCommittingPaymentRun = false; }
+    }
+
+    private void TogglePaymentBill(Guid billId, bool selected)
+    {
+        if (selected) selectedPaymentBillIds.Add(billId); else selectedPaymentBillIds.Remove(billId);
+        paymentRunReviewed = false;
+    }
+
+    private void ResetFinanceAnalysis()
+    {
+        financeCashAnalysis = null;
+        financePaymentRun = null;
+        financeCollectionsPlan = null;
+        financeAccountingTreatment = null;
+        financeCloseAnalysis = null;
+        selectedPaymentBillIds.Clear();
+        paymentRunReviewed = false;
+        paymentRunCommitResult = null;
+    }
+
+    private static int PaymentGroupOrder(string group) => group switch { "pay" => 0, "defer" => 1, "dispute_or_review" => 2, _ => 3 };
+    private static string FormatPaymentGroup(string group) => group switch { "pay" => "Pay", "defer" => "Defer", "dispute_or_review" => "Review", _ => "Not eligible" };
+    private static string PaymentGroupBadge(string group) => group switch { "pay" => "badge text-bg-success", "defer" => "badge text-bg-warning", "dispute_or_review" => "badge text-bg-primary", _ => "badge text-bg-light" };
+    private static string FormatReasonCode(string value) => value.Replace('_', ' ');
+    private static string FormatFinanceScenario(string value) => value switch { "baseline" => "Baseline", "upside" => "Upside", "downside" => "Downside", _ => value };
+    private static string FormatSalesScenario(string value) => value switch { "commit" => "Commit", "best_case" => "Best case", "downside" => "Downside", _ => FormatReasonCode(value) };
+    private static bool IsSupportDepartment(string value) => value.Equals("support", StringComparison.OrdinalIgnoreCase) || value.Equals("customer support", StringComparison.OrdinalIgnoreCase);
+    private string FormatSupportDeadline(DateTime? dueUtc, decimal? minutes) =>
+        !dueUtc.HasValue
+            ? AgentText["NoTarget"]
+            : minutes < 0
+                ? AgentText["DeadlineBreached", LocalNumber.Decimal(Math.Abs(minutes!.Value / 60m), 1)]
+                : AgentText["DeadlineRemaining", LocalNumber.Decimal(minutes!.Value / 60m, 1)];
+    private static string FormatSignedMoney(decimal value, string currency) => $"{(value >= 0 ? "+" : string.Empty)}{value:N0} {currency}";
+
+    private async Task CommitSelectedAgentPlanAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentId is not Guid agentId || selectedPlan is null) return;
+        isCommittingPlan = true; capabilityErrorMessage = null;
+        try { selectedPlan = await AgentApiClient.CommitPlanAsync(companyId, agentId, selectedPlan.RunId); }
+        catch (OnboardingApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isCommittingPlan = false; }
+    }
+
+    private async Task TransitionHandoffAsync(Guid handoffId, string status)
+    {
+        if (CompanyId is not Guid companyId) return;
+        isUpdatingGovernance = true; capabilityErrorMessage = null;
+        try
+        {
+            var updated = await AgentApiClient.TransitionHandoffAsync(companyId, handoffId, new TransitionAgentHandoffRequest { Status = status });
+            selectedHandoffs.RemoveAll(x => x.Id == handoffId);
+            selectedHandoffs.Add(updated);
+            selectedHandoffs = selectedHandoffs.OrderByDescending(x => x.UpdatedUtc).ToList();
+        }
+        catch (OnboardingApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isUpdatingGovernance = false; }
+    }
+
+    private async Task ReviewMemoryAsync(Guid candidateId, bool approve)
+    {
+        if (CompanyId is not Guid companyId) return;
+        isUpdatingGovernance = true; capabilityErrorMessage = null;
+        try
+        {
+            await AgentApiClient.ReviewMemoryAsync(companyId, candidateId, new ReviewAgentMemoryRequest { Approve = approve, Reason = approve ? null : "Rejected from the agent memory review queue." });
+            selectedMemoryCandidates.RemoveAll(x => x.Id == candidateId);
+        }
+        catch (OnboardingApiException ex) { capabilityErrorMessage = ex.Message; }
+        finally { isUpdatingGovernance = false; }
+    }
+
+    private static string FormatHandoffStatus(string status) => status.Replace('_', ' ');
+    private string FormatDueDate(DateTime? dueUtc) => dueUtc.HasValue ? LocalDateTime.Date(DateOnly.FromDateTime(dueUtc.Value)) : "not set";
+    private static string FormatMemoryType(string type) => type.Replace('_', ' ');
+
+    private static string FormatClaimType(string type) => type switch { "confirmed_fact" => "Confirmed", "inference" => "Inference", _ => "Unknown" };
+
+    private sealed record RoleAnalysisOption(string Value, string Label);
+    private static string FormatAnswerState(string state) => state switch { "answered" => "Grounded answer", "needs_review" => "Review needed", "insufficient_grounding" => "More evidence needed", _ => "Unavailable" };
+    private static string GetAnswerBadgeClass(string state) => state == "answered" ? "badge text-bg-success" : state == "needs_review" ? "badge text-bg-warning" : "badge text-bg-light";
 
     private async Task HandleProfileSaveAsync()
     {
@@ -759,7 +2200,7 @@ else
 
         if (selectedAgentProfile is null)
         {
-            profileErrorMessage = "Select an agent profile before saving.";
+            profileErrorMessage = AgentText["SelectProfileBeforeSave"];
             profileSuccessMessage = null;
             return;
         }
@@ -767,7 +2208,7 @@ else
         if (!profileModel.TryCreateRequest(selectedAgentProfile.Visibility, out var request, out var localErrors))
         {
             profileErrors = localErrors;
-            profileErrorMessage = "Fix the highlighted operating profile fields and try again.";
+            profileErrorMessage = AgentText["FixProfileFields"];
             profileSuccessMessage = null;
             return;
         }
@@ -782,7 +2223,7 @@ else
             selectedAgentProfile = await AgentApiClient.UpdateOperatingProfileAsync(companyId, agentId, request);
             profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
             rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
-            profileSuccessMessage = $"{selectedAgentProfile.DisplayName} operating profile was saved.";
+            profileSuccessMessage = AgentText["ProfileSaved", selectedAgentProfile.DisplayName];
         }
         catch (OnboardingApiException ex)
         {
@@ -821,15 +2262,7 @@ else
             _ => "text-bg-light"
         };
 
-    private static string GetStatusLabel(string? status) =>
-        status?.Trim().ToLowerInvariant() switch
-        {
-            "active" => "Active",
-            "paused" => "Paused",
-            "restricted" => "Restricted",
-            "archived" => "Archived",
-            _ => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim()
-        };
+    private string GetStatusLabel(string? status) => SharedStatusPresenter.Format(status, CommonText);
 
     private static string GetHealthCss(string? healthStatus) =>
         healthStatus?.Trim().ToLowerInvariant() switch
@@ -841,10 +2274,239 @@ else
         };
 
     private string GetProfileRoute(AgentRosterItemViewModel agent) => string.IsNullOrWhiteSpace(agent.ProfileRoute) ? BuildProfileUri(agent.Id) : agent.ProfileRoute!;
-    private static string ToDisplayText(string? value) =>
-        string.IsNullOrWhiteSpace(value)
-            ? "Unknown"
-            : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+
+    private static string GetInitials(string displayName)
+    {
+        var words = displayName
+            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Take(2)
+            .ToArray();
+
+        return words.Length == 0
+            ? "AI"
+            : string.Concat(words.Select(word => char.ToUpperInvariant(word[0])));
+    }
+
+    private void SelectBriefCategory(string category)
+    {
+        selectedBriefCategory = category;
+        briefErrorMessage = null;
+        briefSuccessMessage = null;
+        isGeneratedBriefDraft = false;
+    }
+
+    private void MarkBriefDirty()
+    {
+        isBriefDirty = true;
+        briefSuccessMessage = null;
+    }
+
+    private void HandleBriefTextInput(ChangeEventArgs args)
+    {
+        CurrentBriefText = args.Value?.ToString() ?? string.Empty;
+        MarkBriefDirty();
+    }
+
+    private async Task GenerateBriefDraftAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentProfile is null)
+        {
+            return;
+        }
+
+        isGeneratingBriefDraft = true;
+        briefErrorMessage = null;
+        briefSuccessMessage = null;
+        try
+        {
+            var draft = await AgentApiClient.GenerateBriefDraftAsync(
+                companyId,
+                selectedAgentProfile.Id,
+                new GenerateAgentBriefDraftRequest
+                {
+                    Category = selectedBriefCategory,
+                    ExistingText = CurrentBriefText
+                });
+            CurrentBriefText = draft.Content;
+            isBriefDirty = true;
+            isGeneratedBriefDraft = true;
+        }
+        catch (OnboardingApiException ex)
+        {
+            briefErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isGeneratingBriefDraft = false;
+        }
+    }
+
+    private async Task HandleBriefDocumentUploadAsync(InputFileChangeEventArgs args)
+    {
+        if (CompanyId is not Guid companyId || selectedAgentProfile is null)
+        {
+            return;
+        }
+
+        var file = args.File;
+        var agentId = selectedAgentProfile.Id;
+        isUploadingBriefDocument = true;
+        briefErrorMessage = null;
+        briefSuccessMessage = null;
+        AgentBriefDocumentViewModel? uploadedDocument = null;
+        try
+        {
+            await using var stream = file.OpenReadStream(20 * 1024 * 1024);
+            var document = await AgentApiClient.UploadBriefDocumentAsync(
+                companyId,
+                agentId,
+                selectedBriefCategory,
+                shareBriefDocumentsWithTeam,
+                file.Name,
+                file.ContentType,
+                stream);
+            uploadedDocument = document;
+            UpsertBriefDocument(document);
+            MarkBriefDirty();
+            briefSuccessMessage = AgentText["BriefDocumentQueued", file.Name];
+        }
+        catch (Exception ex) when (ex is OnboardingApiException or IOException or InvalidOperationException)
+        {
+            briefErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isUploadingBriefDocument = false;
+        }
+
+        if (uploadedDocument is not null)
+        {
+            await TrackBriefDocumentAsync(companyId, agentId, uploadedDocument.Id, file.Name);
+        }
+    }
+
+    private async Task TrackBriefDocumentAsync(Guid companyId, Guid agentId, Guid documentId, string fileName)
+    {
+        CancelBriefDocumentTracking();
+        briefDocumentTrackingCts = new CancellationTokenSource();
+        var cancellationToken = briefDocumentTrackingCts.Token;
+        var deadlineUtc = DateTime.UtcNow.AddSeconds(60);
+
+        try
+        {
+            while (DateTime.UtcNow < deadlineUtc)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+                var documents = await AgentApiClient.GetBriefDocumentsAsync(companyId, agentId, cancellationToken);
+                var refreshedDocument = documents.SingleOrDefault(document => document.Id == documentId);
+                if (refreshedDocument is null)
+                {
+                    continue;
+                }
+
+                UpsertBriefDocument(refreshedDocument);
+                await InvokeAsync(StateHasChanged);
+
+                if (!AgentBriefDocumentStatusPresenter.IsTerminal(refreshedDocument))
+                {
+                    continue;
+                }
+
+                if (string.Equals(refreshedDocument.IndexingStatus, "indexed", StringComparison.OrdinalIgnoreCase))
+                {
+                    briefSuccessMessage = AgentText["BriefDocumentReady", fileName];
+                    briefErrorMessage = null;
+                }
+                else
+                {
+                    briefSuccessMessage = null;
+                    briefErrorMessage = AgentBriefDocumentStatusPresenter.GetDetail(refreshedDocument, AgentText);
+                }
+
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+
+            briefSuccessMessage = null;
+            briefErrorMessage = AgentText["BriefDocumentSlow", fileName];
+            await InvokeAsync(StateHasChanged);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+        }
+        catch (OnboardingApiException ex)
+        {
+            briefSuccessMessage = null;
+            briefErrorMessage = AgentText["BriefDocumentRefreshFailed", ex.Message];
+            await InvokeAsync(StateHasChanged);
+        }
+    }
+
+    private void UpsertBriefDocument(AgentBriefDocumentViewModel document)
+    {
+        briefDocuments.RemoveAll(existing => existing.Id == document.Id);
+        briefDocuments.Add(document);
+    }
+
+    private void CancelBriefDocumentTracking()
+    {
+        briefDocumentTrackingCts?.Cancel();
+        briefDocumentTrackingCts?.Dispose();
+        briefDocumentTrackingCts = null;
+    }
+
+    private async Task SaveAgentBriefAsync()
+    {
+        if (CompanyId is not Guid companyId || selectedAgentProfile is null)
+        {
+            return;
+        }
+
+        isSavingBrief = true;
+        briefErrorMessage = null;
+        briefSuccessMessage = null;
+        try
+        {
+            selectedAgentProfile = await AgentApiClient.UpdateBriefAsync(
+                companyId,
+                selectedAgentProfile.Id,
+                new UpdateAgentBriefRequest
+                {
+                    Sections = agentBriefModel.ToDictionary()
+                });
+            profileModel = AgentOperatingProfileFormModel.FromViewModel(selectedAgentProfile);
+            agentBriefModel = AgentBriefFormModel.FromProfile(selectedAgentProfile);
+            isBriefDirty = false;
+            isGeneratedBriefDraft = false;
+            briefSuccessMessage = AgentText["BriefSaved", selectedAgentProfile.DisplayName];
+        }
+        catch (OnboardingApiException ex)
+        {
+            briefErrorMessage = ex.Message;
+        }
+        finally
+        {
+            isSavingBrief = false;
+        }
+    }
+
+    private static string GetDepartmentTone(string? department) =>
+        department?.Trim().ToLowerInvariant() switch
+        {
+            "finance" => "finance",
+            "sales" => "sales",
+            "support" => "support",
+            _ => "default"
+        };
+
+    private string ToDisplayText(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "level_0" => AgentText["AutonomyLevel0"],
+        "level_1" => AgentText["AutonomyLevel1"],
+        "level_2" => AgentText["AutonomyLevel2"],
+        "level_3" => AgentText["AutonomyLevel3"],
+        _ => AgentText["Unknown"]
+    };
 
     private void ApplyFilters()
     {
@@ -872,8 +2534,75 @@ else
             "restricted" or
             "archived";
 
-    private static string FormatRosterActivity(DateTime? lastActivityUtc) =>
-        lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+    private string FormatRosterActivity(DateTime? lastActivityUtc) =>
+        lastActivityUtc is null
+            ? AgentText["NoRecentActivity"]
+            : AgentText["LastActivityAt", LocalDateTime.DateTime(lastActivityUtc.Value)];
+
+    private static Dictionary<string, JsonNode?> CloneJsonDictionary(
+        IReadOnlyDictionary<string, JsonNode?> source) =>
+        source.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value?.DeepClone(),
+            StringComparer.OrdinalIgnoreCase);
+
+    private static bool IsBriefDocumentForAgentAndCategory(
+        AgentBriefDocumentViewModel document,
+        Guid? agentId,
+        string category)
+    {
+        if (!agentId.HasValue ||
+            !TryGetMetadataString(document.Metadata, "purpose", out var purpose) ||
+            !string.Equals(purpose, "agent_brief", StringComparison.OrdinalIgnoreCase) ||
+            !TryGetMetadataString(document.Metadata, "briefingCategory", out var metadataCategory))
+        {
+            return false;
+        }
+
+        var belongsToAgent =
+            TryGetMetadataString(document.Metadata, "agentId", out var metadataAgentId) &&
+            Guid.TryParse(metadataAgentId, out var parsedAgentId) &&
+            parsedAgentId == agentId.Value;
+        var sharedWithTeam = TryGetMetadataBoolean(document.Metadata, "shareWithAgentTeam", out var shared) && shared;
+
+        return (belongsToAgent || sharedWithTeam) &&
+               string.Equals(metadataCategory, category, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetMetadataString(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        string key,
+        out string value)
+    {
+        value = string.Empty;
+        if (!metadata.TryGetValue(key, out var node) ||
+            node is not JsonValue jsonValue ||
+            !jsonValue.TryGetValue<string>(out var candidate) ||
+            string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        value = candidate;
+        return true;
+    }
+
+    private static bool TryGetMetadataBoolean(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        string key,
+        out bool value)
+    {
+        value = false;
+        return metadata.TryGetValue(key, out var node) &&
+               node is JsonValue jsonValue &&
+               jsonValue.TryGetValue<bool>(out value);
+    }
+
+    private static string FormatFileSize(long sizeBytes) =>
+        sizeBytes >= 1024 * 1024
+            ? $"{sizeBytes / (1024d * 1024d):0.0} MB"
+            : $"{Math.Max(1, sizeBytes / 1024d):0} KB";
+
     private static bool IsDirectChatEligible(string? status) =>
         !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);
@@ -909,6 +2638,13 @@ else
     private void NavigateIfChanged(string targetUri)
     {
         var currentRelativeUri = Navigation.ToBaseRelativePath(Navigation.Uri);
+        if (isDisposed ||
+            isNavigatingAway ||
+            !AgentManagementNavigationPolicy.IsManagementRoute(currentRelativeUri))
+        {
+            return;
+        }
+
         var targetRelativeUri = Navigation.ToBaseRelativePath(Navigation.ToAbsoluteUri(targetUri).ToString());
 
         if (string.Equals(currentRelativeUri, targetRelativeUri, StringComparison.OrdinalIgnoreCase))
@@ -919,7 +2655,27 @@ else
         Navigation.NavigateTo(targetUri, replace: true);
     }
 
+    private void HandleLocationChanged(object? sender, LocationChangedEventArgs args)
+    {
+        var nextRelativeUri = Navigation.ToBaseRelativePath(args.Location);
+        if (AgentManagementNavigationPolicy.IsManagementRoute(nextRelativeUri))
+        {
+            return;
+        }
+
+        isNavigatingAway = true;
+        CancelBriefDocumentTracking();
+    }
+
     private void OpenEditor(Guid agentId) => Navigation.NavigateTo(BuildAgentsUri(CompanyId!.Value, Department, Status, agentId));
+
+    public ValueTask DisposeAsync()
+    {
+        isDisposed = true;
+        Navigation.LocationChanged -= HandleLocationChanged;
+        CancelBriefDocumentTracking();
+        return ValueTask.CompletedTask;
+    }
 
     private static IEnumerable<string> EnsureCurrentOption(IEnumerable<string> options, string? currentValue, Func<string, bool> predicate, bool allowAll)
     {
@@ -937,6 +2693,76 @@ else
     }
 
     private static bool IsManagerEditableStatus(string? status) => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase);
+
+    private RenderFragment RenderMailboxProviderFields(
+        string providerKey,
+        string displayName,
+        UpdateFinanceEmailProviderSettingsRequest model,
+        FinanceEmailProviderSettingsResponse current) => builder =>
+    {
+        var sequence = 0;
+        var clientIdId = $"{providerKey}-client-id";
+        var secretId = $"{providerKey}-client-secret";
+
+        builder.OpenElement(sequence++, "fieldset");
+        builder.AddAttribute(sequence++, "id", $"mailbox-provider-{providerKey}");
+        builder.AddAttribute(sequence++, "class", "agent-mailbox-provider-card");
+        builder.OpenElement(sequence++, "legend");
+        builder.AddContent(sequence++, displayName);
+        builder.CloseElement();
+
+        builder.OpenElement(sequence++, "label");
+        builder.AddAttribute(sequence++, "class", "form-label");
+        builder.AddAttribute(sequence++, "for", clientIdId);
+        builder.AddContent(sequence++, AgentText["OAuthClientId"]);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "input");
+        builder.AddAttribute(sequence++, "id", clientIdId);
+        builder.AddAttribute(sequence++, "class", "form-control");
+        builder.AddAttribute(sequence++, "value", model.ClientId);
+        builder.AddAttribute(sequence++, "autocomplete", "off");
+        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string?>(this, value => model.ClientId = value, model.ClientId));
+        builder.CloseElement();
+
+        builder.OpenElement(sequence++, "label");
+        builder.AddAttribute(sequence++, "class", "form-label mt-3");
+        builder.AddAttribute(sequence++, "for", secretId);
+        builder.AddContent(sequence++, AgentText["OAuthClientSecret"]);
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "input");
+        builder.AddAttribute(sequence++, "id", secretId);
+        builder.AddAttribute(sequence++, "class", "form-control");
+        builder.AddAttribute(sequence++, "type", "password");
+        builder.AddAttribute(sequence++, "value", model.ClientSecret);
+        builder.AddAttribute(sequence++, "autocomplete", "new-password");
+        builder.AddAttribute(sequence++, "placeholder", current.IsClientSecretConfigured ? AgentText["SecretAlreadyConfigured"] : AgentText["SecretNotConfigured"]);
+        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string?>(this, value => model.ClientSecret = value, model.ClientSecret));
+        builder.CloseElement();
+
+        builder.CloseElement();
+    };
+
+    private RenderFragment RenderMailboxProviderAction(
+        string purpose,
+        string providerKey,
+        string displayName,
+        bool isConnected) => builder =>
+    {
+        var sequence = 0;
+        builder.OpenElement(sequence++, "a");
+        builder.AddAttribute(sequence++, "class", IsMailboxProviderAvailable(providerKey) ? "btn btn-outline-secondary" : "btn btn-outline-primary");
+        builder.AddAttribute(sequence++, "href", BuildMailboxConnectionHref(purpose, providerKey));
+        if (!IsMailboxProviderAvailable(providerKey))
+        {
+            builder.AddAttribute(sequence++, "title", AgentText["MailboxProviderNotConfigured", displayName].Value);
+        }
+        builder.AddContent(sequence++, IsMailboxProviderAvailable(providerKey)
+            ? AgentText[providerKey == "gmail"
+                ? isConnected ? "ReconnectWithGmail" : "ConnectWithGmail"
+                : isConnected ? "ReconnectWithMicrosoft365" : "ConnectWithMicrosoft365"]
+            : AgentText["SetUpMailboxProvider", displayName]);
+        builder.CloseElement();
+    };
 
     private RenderFragment RenderJsonEditor(string label, string fieldName, Func<string> valueAccessor, bool isReadOnly = false) => builder =>
     {
@@ -1024,7 +2850,7 @@ else
     {
         if (selectedAgentProfile is null)
         {
-            profileErrorMessage = "Select an agent before applying the joint agent brief.";
+            profileErrorMessage = AgentText["SelectAgentBeforeAccess"];
             profileSuccessMessage = null;
             return;
         }
@@ -1040,7 +2866,7 @@ else
             jointBriefModel.ToToolPermissionsPayload(selectedAgentProfile));
 
         profileErrorMessage = null;
-        profileSuccessMessage = $"{selectedAgentProfile.DisplayName} access brief was applied. Save the operating profile to persist it.";
+        profileSuccessMessage = AgentText["AccessBriefApplied", selectedAgentProfile.DisplayName];
     }
 
     private static string UpsertJsonSection(string json, string sectionName, object payload)
@@ -1093,7 +2919,7 @@ else
         {
             var result = await AgentApiClient.CreateAgentFromTemplateAsync(companyId, hireModel.ToRequest());
             rosterResponse = await AgentApiClient.GetRosterViewAsync(companyId, Department, Status);
-            successMessage = $"{result.Agent.DisplayName} was hired and added to the company roster.";
+            successMessage = AgentText["AgentHired", result.Agent.DisplayName];
 
             if (CanManageProfiles)
             {
@@ -1123,6 +2949,59 @@ else
         string Owner,
         string Badge,
         string BadgeCss);
+
+    private sealed record MailboxPurposeDefinition(
+        string Purpose,
+        string TitleKey,
+        string DescriptionKey,
+        string Icon);
+
+    private sealed record BriefingCategoryDefinition(
+        string Key,
+        string ShortLabel,
+        string LabelResourceKey,
+        string DescriptionResourceKey,
+        string PlaceholderResourceKey);
+
+    private sealed class AgentBriefFormModel
+    {
+        private readonly Dictionary<string, string> _values = new(StringComparer.OrdinalIgnoreCase);
+
+        public string Get(string category) =>
+            _values.TryGetValue(category, out var value) ? value : string.Empty;
+
+        public void Set(string category, string? value)
+        {
+            _values[category] = value ?? string.Empty;
+        }
+
+        public Dictionary<string, string> ToDictionary() =>
+            BriefingCategories.ToDictionary(
+                category => category.Key,
+                category => Get(category.Key).Trim(),
+                StringComparer.OrdinalIgnoreCase);
+
+        public static AgentBriefFormModel FromProfile(AgentOperatingProfileViewModel profile)
+        {
+            var model = new AgentBriefFormModel();
+            if (!profile.CommunicationProfile.TryGetValue("briefing", out var node) ||
+                node is not JsonObject briefing)
+            {
+                return model;
+            }
+
+            foreach (var category in BriefingCategories)
+            {
+                if (briefing[category.Key] is JsonValue value &&
+                    value.TryGetValue<string>(out var content))
+                {
+                    model.Set(category.Key, content);
+                }
+            }
+
+            return model;
+        }
+    }
 
     private sealed class JointAgentBriefFormModel
     {

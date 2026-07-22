@@ -545,6 +545,7 @@ public sealed class ReconciliationPersistenceTests
     private static async Task<CompanyFinanceSeed> SeedCompanyFinanceScenarioAsync(VirtualCompanyDbContext dbContext, Guid companyId)
     {
         var cashAccountId = Guid.NewGuid();
+        var expenseAccountId = Guid.NewGuid();
         var bankAccountId = Guid.NewGuid();
         var counterpartyId = Guid.NewGuid();
         var bankTransactionId = Guid.NewGuid();
@@ -560,6 +561,15 @@ public sealed class ReconciliationPersistenceTests
             "1000",
             "Operating Cash",
             "asset",
+            "USD",
+            0m,
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        dbContext.FinanceAccounts.Add(new FinanceAccount(
+            expenseAccountId,
+            companyId,
+            "6000",
+            "Operating Expenses",
+            "expense",
             "USD",
             0m,
             new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));

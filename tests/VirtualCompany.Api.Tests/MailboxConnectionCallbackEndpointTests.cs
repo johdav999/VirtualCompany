@@ -16,16 +16,13 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestWebApplicationFactory>
+public sealed class MailboxConnectionCallbackEndpointTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
     private static readonly Uri LocalDevelopmentBaseAddress = new("http://localhost:5301");
 
-    public MailboxConnectionCallbackEndpointTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Theory]
     [InlineData("gmail", "http://localhost:5301/api/mailbox-connections/gmail/callback", MailboxProvider.Gmail)]
@@ -38,7 +35,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
         using var factory = CreateFactoryWithMailboxOAuthOptions();
         var seed = await SeedMailboxCompanyAsync(factory);
         using var client = CreateAuthenticatedClient(factory, LocalDevelopmentBaseAddress);
-        var returnUri = $"https://localhost/finance/mailbox?companyId={seed.CompanyId:D}";
+        var returnUri = $"http://localhost:5301/finance/mailbox?companyId={seed.CompanyId:D}";
 
         var response = await client.PostAsJsonAsync(
             $"/api/companies/{seed.CompanyId:D}/mailbox-connections/{provider}/start",
@@ -65,11 +62,56 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     }
 
     [Fact]
+    public async Task Purpose_scoped_start_and_callback_preserve_support_function_and_connection_page_return_uri()
+    {
+        var registry = new FakeMailboxProviderRegistry(MailboxProvider.Gmail);
+        using var factory = new MailboxProviderTestFactory(registry);
+        var seed = await SeedMailboxCompanyAsync(factory);
+        using var authenticatedClient = CreateAuthenticatedClient(factory, LocalDevelopmentBaseAddress);
+        var returnUri = $"http://localhost:5301/agents/mailboxes/connect?companyId={seed.CompanyId:D}&purpose=support&provider=gmail";
+
+        var startResponse = await authenticatedClient.PostAsJsonAsync(
+            $"/api/companies/{seed.CompanyId:D}/mailbox-connections/purposes/support/gmail/start",
+            new { returnUri });
+
+        startResponse.EnsureSuccessStatusCode();
+        var payload = await startResponse.Content.ReadFromJsonAsync<StartMailboxConnectionResponse>();
+        var authorizationUrl = new Uri(Assert.IsType<string>(payload?.AuthorizationUrl));
+        var protectedState = Assert.Single(QueryHelpers.ParseQuery(authorizationUrl.Query)["state"]);
+        var state = factory.Services.GetRequiredService<IMailboxOAuthStateProtector>().Unprotect(protectedState);
+        Assert.Equal(MailboxPurpose.Support, state.Purpose);
+        Assert.Equal(new Uri(returnUri), state.ReturnUri);
+
+        using var callbackClient = factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = LocalDevelopmentBaseAddress,
+            AllowAutoRedirect = false
+        });
+        var callbackResponse = await callbackClient.GetAsync(
+            $"/api/mailbox-connections/gmail/callback?code=oauth-code&state={Uri.EscapeDataString(protectedState)}");
+
+        Assert.Equal(HttpStatusCode.Redirect, callbackResponse.StatusCode);
+        var location = Assert.IsType<Uri>(callbackResponse.Headers.Location);
+        Assert.Equal("/agents/mailboxes/connect", location.AbsolutePath);
+        Assert.Contains("purpose=support", location.Query, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("mailboxConnection=connected", location.Query, StringComparison.OrdinalIgnoreCase);
+
+        await factory.ExecuteDbContextAsync(async dbContext =>
+        {
+            var connection = await dbContext.MailboxConnections.IgnoreQueryFilters().SingleAsync();
+            Assert.Equal(MailboxPurpose.Support, connection.Purpose);
+            Assert.Equal("ap@example.com", connection.EmailAddress);
+            Assert.NotNull(connection.EncryptedAccessToken);
+            Assert.NotNull(connection.EncryptedRefreshToken);
+        });
+    }
+
+    [Fact]
     public async Task Start_flow_requires_authenticated_tenant_context_before_state_is_issued()
     {
         using var factory = CreateFactoryWithMailboxOAuthOptions();
         var seed = await SeedMailboxCompanyAsync(factory);
-        using var client = factory.CreateClient();
+        using var client = CreateClient(factory);
 
         var response = await client.PostAsJsonAsync(
             $"/api/companies/{seed.CompanyId:D}/mailbox-connections/gmail/start",
@@ -99,7 +141,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [InlineData("/api/mailbox-connections/microsoft365/callback")]
     public async Task Provider_scoped_callback_routes_are_reachable_and_require_protected_state(string path)
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
 
         var response = await client.GetAsync($"{path}?code=oauth-code");
 
@@ -112,7 +154,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [InlineData("/api/companies/{0}/mailbox-connections/microsoft365/callback")]
     public async Task Legacy_company_scoped_callback_routes_are_reachable_and_require_protected_state(string pathTemplate)
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
 
         var response = await client.GetAsync(string.Format(
             pathTemplate,
@@ -127,7 +169,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [InlineData("microsoft365")]
     public async Task Legacy_callback_route_ignores_route_company_and_uses_protected_state_return_uri(string provider)
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
         var stateCompanyId = Guid.NewGuid();
         var routeCompanyId = Guid.NewGuid();
         var state = ProtectState(new MailboxOAuthState(
@@ -151,7 +193,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [Fact]
     public async Task Legacy_callback_fallback_redirect_uses_state_company_when_return_uri_is_missing()
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
         var stateCompanyId = Guid.NewGuid();
         var routeCompanyId = Guid.NewGuid();
         var state = ProtectState(new MailboxOAuthState(
@@ -183,7 +225,8 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
         var seed = await SeedMailboxCompanyAsync(factory);
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
-            BaseAddress = LocalDevelopmentBaseAddress
+            BaseAddress = LocalDevelopmentBaseAddress,
+            AllowAutoRedirect = false
         });
         var returnUri = new Uri($"http://localhost:5301/finance/mailbox?companyId={seed.CompanyId:D}&tab=connections");
         var state = ProtectState(factory, new MailboxOAuthState(
@@ -212,7 +255,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     {
         using var factory = new MailboxProviderTestFactory(new FakeMailboxProviderRegistry(MailboxProvider.Gmail));
         var seed = await SeedMailboxCompanyAsync(factory);
-        using var client = factory.CreateClient();
+        using var client = CreateClient(factory);
         var routeCompanyId = Guid.NewGuid();
         var returnUri = new Uri($"http://localhost/finance/mailbox?companyId={seed.CompanyId:D}&tab=connections");
         var state = ProtectState(factory, new MailboxOAuthState(
@@ -248,7 +291,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     {
         using var factory = new MailboxProviderTestFactory(new FakeMailboxProviderRegistry(MailboxProvider.Microsoft365));
         var seed = await SeedMailboxCompanyAsync(factory);
-        using var client = factory.CreateClient();
+        using var client = CreateClient(factory);
         var spoofedCompanyId = Guid.NewGuid();
         var spoofedUserId = Guid.NewGuid();
         var state = ProtectState(factory, new MailboxOAuthState(
@@ -264,7 +307,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
 
         Assert.Equal(HttpStatusCode.Redirect, response.StatusCode);
         var location = Assert.IsType<Uri>(response.Headers.Location);
-        Assert.Equal("/finance/mailbox", location.AbsolutePath);
+        Assert.Equal("/agents/manage", location.AbsolutePath);
         Assert.Equal("localhost", location.Host);
         Assert.Contains($"companyId={seed.CompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain($"companyId={spoofedCompanyId:D}", location.Query, StringComparison.OrdinalIgnoreCase);
@@ -285,7 +328,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [InlineData("microsoft365")]
     public async Task Invalid_state_on_provider_scoped_callback_does_not_persist_mailbox_connection(string provider)
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
 
         var response = await client.GetAsync($"/api/mailbox-connections/{provider}/callback?code=oauth-code&state=tampered-state");
 
@@ -298,7 +341,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [InlineData("microsoft365")]
     public async Task Company_and_user_query_spoofing_is_ignored_without_valid_protected_state(string provider)
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
         var spoofedCompanyId = Guid.NewGuid();
         var spoofedUserId = Guid.NewGuid();
 
@@ -315,7 +358,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
         string provider,
         MailboxProvider expectedProvider)
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
         var state = ProtectState(new MailboxOAuthState(
             Guid.NewGuid(),
             Guid.NewGuid(),
@@ -333,7 +376,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [Fact]
     public async Task Provider_mismatch_between_route_and_state_returns_authentication_failure_without_persistence()
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
         var state = ProtectState(new MailboxOAuthState(
             Guid.NewGuid(),
             Guid.NewGuid(),
@@ -351,7 +394,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     [Fact]
     public async Task Company_and_user_query_spoofing_are_ignored_when_valid_state_fails_provider_match()
     {
-        using var client = _factory.CreateClient();
+        using var client = CreateClient(_factory);
         var stateCompanyId = Guid.NewGuid();
         var stateUserId = Guid.NewGuid();
         var state = ProtectState(new MailboxOAuthState(
@@ -376,7 +419,8 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
         var seed = await SeedMailboxCompanyAsync(factory);
         using var client = factory.CreateClient(new WebApplicationFactoryClientOptions
         {
-            BaseAddress = LocalDevelopmentBaseAddress
+            BaseAddress = LocalDevelopmentBaseAddress,
+            AllowAutoRedirect = false
         });
         var state = ProtectState(factory, new MailboxOAuthState(
             seed.CompanyId,
@@ -396,7 +440,7 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
     public async Task Callback_rejects_cross_tenant_completion_when_request_company_context_differs_from_protected_state()
     {
         using var factory = new MailboxProviderTestFactory(new FakeMailboxProviderRegistry(MailboxProvider.Gmail));
-        using var client = factory.CreateClient();
+        using var client = CreateClient(factory);
         var stateCompanyId = Guid.NewGuid();
         var requestCompanyId = Guid.NewGuid();
         var state = ProtectState(factory, new MailboxOAuthState(
@@ -417,15 +461,30 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
         Assert.DoesNotContain(requestCompanyId.ToString("D"), body, StringComparison.OrdinalIgnoreCase);
 
         await factory.ExecuteDbContextAsync(dbContext =>
-            Task.FromResult(Assert.Empty(dbContext.MailboxConnections.IgnoreQueryFilters())));
+        {
+            Assert.Empty(dbContext.MailboxConnections.IgnoreQueryFilters());
+            return Task.CompletedTask;
+        });
     }
 
     private Task<int> CountMailboxConnectionsAsync() =>
         CountMailboxConnectionsAsync(_factory);
 
-    private static Task<int> CountMailboxConnectionsAsync(TestWebApplicationFactory factory) =>
-        factory.ExecuteDbContextAsync(dbContext =>
-            Task.FromResult(dbContext.MailboxConnections.IgnoreQueryFilters().Count()));
+    private static async Task<int> CountMailboxConnectionsAsync(TestWebApplicationFactory factory)
+    {
+        for (var attempt = 1; ; attempt++)
+        {
+            try
+            {
+                return await factory.ExecuteDbContextAsync(dbContext =>
+                    Task.FromResult(dbContext.MailboxConnections.IgnoreQueryFilters().Count()));
+            }
+            catch (Microsoft.Data.Sqlite.SqliteException ex) when (ex.SqliteErrorCode == 5 && attempt < 4)
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50 * attempt));
+            }
+        }
+    }
 
     private string ProtectState(MailboxOAuthState state) =>
         ProtectState(_factory, state);
@@ -446,17 +505,19 @@ public sealed class MailboxConnectionCallbackEndpointTests : IClassFixture<TestW
 
     private static HttpClient CreateAuthenticatedClient(TestWebApplicationFactory factory, Uri? baseAddress = null)
     {
-        var client = baseAddress is null
-            ? factory.CreateClient()
-            : factory.CreateClient(new WebApplicationFactoryClientOptions
-            {
-                BaseAddress = baseAddress
-            });
+        var client = CreateClient(factory, baseAddress);
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "mailbox-owner");
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "mailbox-owner@example.com");
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Mailbox Owner");
         return client;
     }
+
+    private static HttpClient CreateClient(TestWebApplicationFactory factory, Uri? baseAddress = null) =>
+        factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            BaseAddress = baseAddress ?? new Uri("http://localhost"),
+            AllowAutoRedirect = false
+        });
 
     private static async Task<MailboxStartSeed> SeedMailboxCompanyAsync(TestWebApplicationFactory factory)
     {

@@ -52,7 +52,7 @@ docker logs virtualcompany-sqlserver
 - The repo currently expects this local development connection string shape:
 
 ```text
-Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True
+Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=False
 ```
 
 - Confirm it matches:

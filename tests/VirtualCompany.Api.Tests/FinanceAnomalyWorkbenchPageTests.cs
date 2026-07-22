@@ -185,7 +185,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {
@@ -197,7 +197,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
             }
 
             return Task.FromResult(CreateNotFoundResponse());
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new AnomaliesHarness(context, context.Services.GetRequiredService<FakeNavigationManager>(), financeRequests);
     }
@@ -218,7 +218,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {
@@ -229,7 +229,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
             }
 
             return Task.FromResult(CreateNotFoundResponse());
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new AnomalyDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
     }

@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePaymentsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePaymentsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePaymentsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Payment_endpoints_create_list_both_directions_and_isolate_records_by_company()

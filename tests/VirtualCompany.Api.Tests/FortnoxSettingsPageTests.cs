@@ -430,10 +430,8 @@ public sealed class FinanceIntegrationSettingsPageTests
                 {
                     ProviderKey = "fortnox",
                     CompanyId = companyId,
-                    Items =
-                    [
-                        new FinanceIntegrationSyncHistoryItemResponse
-                        ]
+                    Items = historyEmpty
+                    ? []
                     : [
                         new FinanceIntegrationSyncHistoryItemResponse
                         {
@@ -450,7 +448,6 @@ public sealed class FinanceIntegrationSettingsPageTests
                             ErrorSummary = historyErrorSummary
                         }
                     ]
-                    )
                 }));
             }
 

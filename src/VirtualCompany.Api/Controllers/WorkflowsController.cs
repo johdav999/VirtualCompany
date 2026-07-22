@@ -12,6 +12,8 @@ namespace VirtualCompany.Api.Controllers;
 [RequireCompanyContext]
 public sealed class WorkflowsController : ControllerBase
 {
+    private const string GetWorkflowDefinitionRouteName = "GetWorkflowDefinitionById";
+    private const string GetWorkflowInstanceRouteName = "GetWorkflowInstanceById";
     private readonly ICompanyWorkflowService _workflows;
 
     public WorkflowsController(ICompanyWorkflowService workflows)
@@ -44,7 +46,7 @@ public sealed class WorkflowsController : ControllerBase
         try
         {
             var result = await _workflows.CreateDefinitionAsync(companyId, command, cancellationToken);
-            return CreatedAtAction(nameof(GetDefinitionAsync), new { companyId, definitionId = result.Id }, result);
+            return CreatedAtRoute(GetWorkflowDefinitionRouteName, new { companyId, definitionId = result.Id }, result);
         }
         catch (WorkflowValidationException ex)
         {
@@ -66,7 +68,7 @@ public sealed class WorkflowsController : ControllerBase
         try
         {
             var result = await _workflows.CreateDefinitionVersionAsync(companyId, definitionId, command, cancellationToken);
-            return CreatedAtAction(nameof(GetDefinitionAsync), new { companyId, definitionId = result.Id }, result);
+            return CreatedAtRoute(GetWorkflowDefinitionRouteName, new { companyId, definitionId = result.Id }, result);
         }
         catch (WorkflowValidationException ex)
         {
@@ -100,7 +102,7 @@ public sealed class WorkflowsController : ControllerBase
         }
     }
 
-    [HttpGet("definitions/{definitionId:guid}")]
+    [HttpGet("definitions/{definitionId:guid}", Name = GetWorkflowDefinitionRouteName)]
     public async Task<ActionResult<WorkflowDefinitionDto>> GetDefinitionAsync(
         Guid companyId,
         Guid definitionId,
@@ -130,7 +132,7 @@ public sealed class WorkflowsController : ControllerBase
         try
         {
             var result = await _workflows.CreateTriggerAsync(companyId, definitionId, command, cancellationToken);
-            return CreatedAtAction(nameof(GetDefinitionAsync), new { companyId, definitionId }, result);
+            return CreatedAtRoute(GetWorkflowDefinitionRouteName, new { companyId, definitionId }, result);
         }
         catch (WorkflowValidationException ex)
         {
@@ -159,7 +161,7 @@ public sealed class WorkflowsController : ControllerBase
                 companyId,
                 command with { DefinitionId = definitionId },
                 cancellationToken);
-            return CreatedAtAction(nameof(GetInstanceAsync), new { companyId, instanceId = result.Id }, result);
+            return CreatedAtRoute(GetWorkflowInstanceRouteName, new { companyId, instanceId = result.Id }, result);
         }
         catch (WorkflowValidationException ex)
         {
@@ -188,7 +190,7 @@ public sealed class WorkflowsController : ControllerBase
                 companyId,
                 command with { Code = code },
                 cancellationToken);
-            return CreatedAtAction(nameof(GetInstanceAsync), new { companyId, instanceId = result.Id }, result);
+            return CreatedAtRoute(GetWorkflowInstanceRouteName, new { companyId, instanceId = result.Id }, result);
         }
         catch (WorkflowValidationException ex)
         {
@@ -213,7 +215,7 @@ public sealed class WorkflowsController : ControllerBase
         try
         {
             var result = await _workflows.StartInstanceAsync(companyId, command, cancellationToken);
-            return CreatedAtAction(nameof(GetInstanceAsync), new { companyId, instanceId = result.Id }, result);
+            return CreatedAtRoute(GetWorkflowInstanceRouteName, new { companyId, instanceId = result.Id }, result);
         }
         catch (WorkflowValidationException ex)
         {
@@ -245,7 +247,7 @@ public sealed class WorkflowsController : ControllerBase
         }
     }
 
-    [HttpGet("instances/{instanceId:guid}")]
+    [HttpGet("instances/{instanceId:guid}", Name = GetWorkflowInstanceRouteName)]
     public async Task<ActionResult<WorkflowInstanceDto>> GetInstanceAsync(
         Guid companyId,
         Guid instanceId,

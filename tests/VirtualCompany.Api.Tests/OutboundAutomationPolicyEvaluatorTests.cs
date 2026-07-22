@@ -71,7 +71,9 @@ public sealed class OutboundAutomationPolicyEvaluatorTests
 
     private static SalesSequenceExecutionStep SeedStep(VirtualCompanyDbContext db, Guid companyId)
     {
-        db.Companies.Add(new Company(companyId, "Acme", "Technology", "SaaS"));
+        var company = new Company(companyId, "Acme");
+        company.UpdateWorkspaceProfile("Acme", "Technology", "SaaS", "UTC", "USD", "en", null);
+        db.Companies.Add(company);
         var contact = new Contact(Guid.NewGuid(), companyId, "Pat Prospect", "pat@example.com");
         var sequence = new SalesSequence(Guid.NewGuid(), companyId, "Website follow-up");
         var sequenceStep = new SalesSequenceStep(Guid.NewGuid(), companyId, sequence.Id, 1, 0, "Hello {{first_name}}", "Intro", "Following up");

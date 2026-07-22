@@ -243,6 +243,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
             .SingleOrDefaultAsync(
                 x => x.CompanyId == companyId &&
                     x.UserId == userId &&
+                    x.Purpose == MailboxPurpose.Sales &&
                     x.Id == mailboxConnectionId,
                 cancellationToken);
 
@@ -260,10 +261,12 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
     }
 
     private string DecryptAccessToken(MailboxConnection connection) =>
-        _fieldEncryption.Decrypt(
-            connection.CompanyId,
-            CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
-            connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
+        connection.Provider == MailboxProvider.StandardEmail
+            ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
+            : _fieldEncryption.Decrypt(
+                connection.CompanyId,
+                CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
+                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
 
     private async Task<DetectionOutcome> DetectSalesSignalAsync(
         Guid companyId,

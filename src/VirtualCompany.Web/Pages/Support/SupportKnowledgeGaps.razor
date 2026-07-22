@@ -3,41 +3,39 @@
 @inherits SupportPageBase
 @using System.Globalization
 
-<PageTitle>Support knowledge gaps</PageTitle>
+<PageTitle>@SupportText["KnowledgeGaps"]</PageTitle>
 
 <section class="py-4 dashboard-hero">
     <div class="dashboard-shell">
         <div class="wizard-card dashboard-summary">
             <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
                 <div>
-                    <span class="dashboard-kicker">Support</span>
-                    <h1>Knowledge gaps</h1>
-                    <p class="text-body-secondary mb-0">See which customer questions need a better approved answer.</p>
+                    <span class="dashboard-kicker">@SupportText["Support"]</span>
+                    <h1>@SupportText["KnowledgeGaps"]</h1>
+                    <p class="text-body-secondary mb-0">@SupportText["KnowledgeGapsDescription"]</p>
                 </div>
-                <a class="btn btn-outline-secondary" href="/support">Back to cases</a>
+                <a class="btn btn-outline-secondary" href="/support">@SupportText["BackToCases"]</a>
             </div>
 
             <div class="border rounded bg-white p-3 mt-4">
-                <label class="form-label" for="support-gap-status">Status</label>
+                <label class="form-label" for="support-gap-status">@SupportText["Status"]</label>
                 <div class="d-flex flex-wrap gap-2">
                     <select id="support-gap-status" class="form-select support-gap-filter" @bind="statusFilter">
-                        <option value="">All</option>
-                        <option value="open">Open</option>
-                        <option value="linked_to_task">Documentation planned</option>
-                        <option value="resolved">Resolved</option>
+                        <option value="">@SupportText["All"]</option>
+                        @foreach (var value in GapStatuses) { <option value="@value">@SupportStatusPresenter.Present(value, SupportText)</option> }
                     </select>
-                    <button class="btn btn-primary" @onclick="LoadAsync" disabled="@isBusy">Apply</button>
+                    <button class="btn btn-primary" @onclick="LoadAsync" disabled="@isBusy">@SupportText["Apply"]</button>
                 </div>
             </div>
 
             <div class="border rounded bg-white p-3 mt-3">
                 <div class="d-flex flex-wrap align-items-start justify-content-between gap-3">
                     <div>
-                        <h2 class="h5 mb-1">Approved support knowledge</h2>
-                        <p class="text-body-secondary mb-0">Ben uses indexed company documents when preparing customer replies.</p>
+                        <h2 class="h5 mb-1">@SupportText["ApprovedSupportKnowledge"]</h2>
+                        <p class="text-body-secondary mb-0">@SupportText["ApprovedKnowledgeDescription"]</p>
                     </div>
                     <button class="btn btn-outline-primary" @onclick="ImportDefaultKnowledgeAsync" disabled="@isBusy">
-                        Import default knowledge
+                        @SupportText["ImportDefaultKnowledge"]
                     </button>
                 </div>
                 @if (!string.IsNullOrWhiteSpace(importMessage))
@@ -62,7 +60,7 @@
 
             @if (isLoading)
             {
-                <p class="text-body-secondary mt-4">Loading knowledge gaps...</p>
+                <p class="text-body-secondary mt-4">@SupportText["LoadingKnowledgeGaps"]</p>
             }
             else if (!string.IsNullOrWhiteSpace(errorMessage))
             {
@@ -71,8 +69,8 @@
             else if (gaps.Count == 0)
             {
                 <div class="border rounded bg-white p-4 mt-4 text-center">
-                    <h2 class="h5">No knowledge gaps found</h2>
-                    <p class="text-body-secondary mb-0">Ben has enough approved context for the questions in this view.</p>
+                    <h2 class="h5">@SupportText["NoKnowledgeGaps"]</h2>
+                    <p class="text-body-secondary mb-0">@SupportText["NoKnowledgeGapsDescription"]</p>
                 </div>
             }
             else
@@ -86,7 +84,7 @@
                                     <span class="badge text-bg-light">@gap.CategoryLabel</span>
                                     <h2 class="h5 mt-2">@gap.QuestionSummary</h2>
                                 </div>
-                                <span class="badge text-bg-warning">@gap.FrequencyCount cases</span>
+                                <span class="badge text-bg-warning">@SupportText["CaseCount", gap.FrequencyCount]</span>
                             </div>
                             <p>@gap.MissingInformationSummary</p>
                             @if (!string.IsNullOrWhiteSpace(gap.RetrievalSourceSummary))
@@ -94,31 +92,31 @@
                                 <p class="small text-body-secondary">@gap.RetrievalSourceSummary</p>
                             }
                             <div class="d-flex flex-wrap justify-content-between align-items-center gap-2">
-                                <span class="small text-body-secondary">Updated @gap.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                                <span class="small text-body-secondary">@SupportText["UpdatedAt", LocalDateTime.DateTime(gap.UpdatedUtc)]</span>
                                 @if (gap.LinkedTaskId.HasValue)
                                 {
-                                    <a class="btn btn-sm btn-outline-secondary" href="@($"/tasks?taskId={gap.LinkedTaskId:D}")">Open documentation task</a>
+                                    <a class="btn btn-sm btn-outline-secondary" href="@($"/tasks?taskId={gap.LinkedTaskId:D}")">@SupportText["OpenDocumentationTask"]</a>
                                 }
                                 else if (gap.Status == "open")
                                 {
-                                    <button class="btn btn-sm btn-primary" @onclick="() => CreateTaskAsync(gap.Id)" disabled="@isBusy">Create documentation task</button>
+                                    <button class="btn btn-sm btn-primary" @onclick="() => CreateTaskAsync(gap.Id)" disabled="@isBusy">@SupportText["CreateDocumentationTask"]</button>
                                 }
                             </div>
                             @if (gap.Status is "open" or "linked_to_task")
                             {
                                 <div class="border-top mt-3 pt-3">
-                                    <label class="form-label" for="@($"knowledge-document-{gap.Id:D}")">Approved knowledge document ID</label>
+                                    <label class="form-label" for="@($"knowledge-document-{gap.Id:D}")">@SupportText["ApprovedKnowledgeDocumentId"]</label>
                                     <div class="input-group">
                                         <input id="@($"knowledge-document-{gap.Id:D}")" class="form-control" value="@DocumentValue(gap.Id)" @oninput="e => SetDocumentValue(gap.Id, e.Value?.ToString())" />
-                                        <button class="btn btn-outline-primary" @onclick="() => ResolveAsync(gap.Id)" disabled="@isBusy">Resolve gap</button>
+                                        <button class="btn btn-outline-primary" @onclick="() => ResolveAsync(gap.Id)" disabled="@isBusy">@SupportText["ResolveGap"]</button>
                                     </div>
                                 </div>
                             }
                             else if (gap.Status == "resolved")
                             {
                                 <div class="d-flex flex-wrap align-items-center gap-2 border-top mt-3 pt-3">
-                                    <span class="small text-body-secondary">Knowledge document @gap.LinkedKnowledgeDocumentId</span>
-                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ReopenAsync(gap.Id)" disabled="@isBusy">Reopen gap</button>
+                                    <span class="small text-body-secondary">@SupportText["KnowledgeDocument", gap.LinkedKnowledgeDocumentId]</span>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => ReopenAsync(gap.Id)" disabled="@isBusy">@SupportText["ReopenGap"]</button>
                                 </div>
                             }
                         </article>
@@ -130,6 +128,7 @@
 </section>
 
 @code {
+    private static readonly string[] GapStatuses = ["open", "linked_to_task", "resolved"];
     private IReadOnlyList<SupportKnowledgeGapDto> gaps = [];
     private IReadOnlyList<SupportKnowledgeDocumentDto> knowledgeDocuments = [];
     private string statusFilter = "open";
@@ -170,8 +169,8 @@
         {
             var result = await SupportApiClient.ImportDefaultSupportKnowledgeAsync(companyId);
             importMessage = result.Imported.Count > 0
-                ? $"Imported {result.Imported.Count} support knowledge document(s). Indexing runs automatically."
-                : "The default support knowledge is already imported.";
+                ? SupportText["ImportedKnowledge", result.Imported.Count]
+                : SupportText["DefaultKnowledgeImported"];
             await LoadAsync();
         }
         catch (SupportApiException ex)
@@ -184,14 +183,14 @@
         }
     }
 
-    private static string KnowledgeStatus(SupportKnowledgeDocumentDto document) => document.IndexingStatus switch
+    private string KnowledgeStatus(SupportKnowledgeDocumentDto document) => document.IndexingStatus switch
     {
-        "indexed" => $"Indexed · {document.ActiveChunkCount} sections",
-        "failed" => "Indexing failed",
-        "indexing" => "Indexing",
-        "queued" => "Queued for indexing",
-        _ when document.IngestionStatus == "failed" => "Import failed",
-        _ => "Processing"
+        "indexed" => SupportText["IndexedSections", document.ActiveChunkCount],
+        "failed" => SupportText["IndexingFailed"],
+        "indexing" => SupportText["StatusIndexing"],
+        "queued" => SupportText["StatusQueued"],
+        _ when document.IngestionStatus == "failed" => SupportText["ImportFailed"],
+        _ => SupportText["StatusProcessing"]
     };
 
     private async Task CreateTaskAsync(Guid gapId)
@@ -219,7 +218,7 @@
     private async Task ResolveAsync(Guid gapId)
     {
         if (ResolvedCompanyId is not Guid companyId) return;
-        if (!Guid.TryParse(DocumentValue(gapId), out var documentId)) { errorMessage = "Enter a valid knowledge document ID."; return; }
+        if (!Guid.TryParse(DocumentValue(gapId), out var documentId)) { errorMessage = SupportText["ValidKnowledgeDocumentId"]; return; }
         isBusy = true;
         try { await SupportApiClient.ResolveKnowledgeGapAsync(companyId, gapId, documentId); await LoadAsync(); }
         catch (SupportApiException ex) { errorMessage = ex.Message; }

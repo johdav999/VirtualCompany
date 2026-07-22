@@ -7,14 +7,11 @@ using VirtualCompany.Infrastructure.Auth;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ExecutiveCockpitKpiDashboardIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ExecutiveCockpitKpiDashboardIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ExecutiveCockpitKpiDashboardIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Kpis_filter_by_department_and_time_range_with_anomaly_context()

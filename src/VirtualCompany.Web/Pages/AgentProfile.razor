@@ -1,444 +1,291 @@
 @page "/agents/{AgentId:guid}"
+@rendermode InteractiveServer
+@using System.Text
 @using System.Text.Json.Nodes
 @using Microsoft.AspNetCore.Components
 @using VirtualCompany.Web.Services
 @inject OnboardingApiClient OnboardingApiClient
 @inject AgentApiClient AgentApiClient
 @inject NavigationManager Navigation
+@inject IStringLocalizer<AgentsResources> AgentText
+@inject IStringLocalizer<CommonResources> CommonText
 
-<PageTitle>Agent Profile</PageTitle>
+<PageTitle>@(profile is null ? AgentText["AgentProfile"] : $"{profile.DisplayName} | {AgentText["AgentProfile"]}")</PageTitle>
 
 @if (isLoading)
 {
-    <section class="py-4">
-        <h1>Agent profile</h1>
-        <p class="text-body-secondary mb-0">Loading profile context...</p>
+    <section class="agent-profile-state" aria-live="polite">
+        <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+        <div>
+            <h1>@AgentText["LoadingAgentProfile"]</h1>
+            <p>@AgentText["LoadingAgentProfileDetail"]</p>
+        </div>
     </section>
 }
 else if (CompanyId is null)
 {
-    <section class="py-4 dashboard-hero">
-        <div class="wizard-card">
-            <h1>Select a company</h1>
-            <p class="text-body-secondary mb-0">This view requires an explicit company context.</p>
+    <section class="agent-profile-state">
+        <span class="bi bi-building" aria-hidden="true"></span>
+        <div>
+            <h1>@AgentText["SelectCompany"]</h1>
+            <p>@AgentText["ProfileRequiresCompany"]</p>
         </div>
     </section>
 }
-else if (!string.IsNullOrWhiteSpace(errorMessage))
+else if (!string.IsNullOrWhiteSpace(errorMessage) || profile is null)
 {
-    <section class="py-4 dashboard-hero">
-        <div class="wizard-card">
-            <h1>Agent profile</h1>
-            <p class="text-body-secondary mb-0">The selected agent could not be loaded.</p>
+    <section class="agent-profile-state agent-profile-state--error" role="alert">
+        <span class="bi bi-exclamation-triangle" aria-hidden="true"></span>
+        <div>
+            <h1>@AgentText["ProfileUnavailable"]</h1>
+            <p>@(string.IsNullOrWhiteSpace(errorMessage) ? AgentText["ProfileCouldNotLoad"] : errorMessage)</p>
         </div>
     </section>
 }
 else
 {
-    var currentProfile = profile!;
-    var canViewDirectory = CanViewDirectory;
+    var currentProfile = profile;
     var initials = GetInitials(currentProfile.DisplayName);
+    var completedCount = currentProfile.WorkloadSummary.ExecutedCount;
+    var activeAlertCount = statusDetail?.ActiveAlertsCount ?? 0;
+    var openWorkCount = statusDetail is null
+        ? currentProfile.WorkloadSummary.OpenItemsCount
+        : statusDetail.Workload.ActiveTaskCount + statusDetail.Workload.ActiveWorkflowCount;
 
-    <section class="py-4 dashboard-hero">
-        <div class="wizard-card">
-            <div class="agent-roster-header">
-                <div>
-                    <span class="dashboard-kicker">Agent profile</span>
-                    <h1 class="mb-2 mt-2">@currentProfile.DisplayName</h1>
-                    <p class="text-body-secondary mb-0">Canonical tenant-scoped profile for @(ActiveMembership?.CompanyName ?? "the selected company"), ready to host future analytics modules without changing the primary route.</p>
-                </div>
-                <div class="dashboard-actions">
-                    @if (canViewDirectory)
-                    {
-                        <a class="btn btn-outline-secondary" href="@($"/agents?companyId={CompanyId}")">Back to roster</a>
-                    }
-                    else
-                    {
-                        <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={CompanyId}")">Back to dashboard</a>
-                    }
-                    @if (currentProfile.Visibility.CanEditAgent)
-                    {
-                        <a class="btn btn-primary" href="@($"/agents/manage?companyId={CompanyId}&agentId={currentProfile.Id}")">Edit operating profile</a>
-                        <a class="btn btn-outline-primary" href="@($"/agents/{currentProfile.Id}/chat?companyId={CompanyId}")">Open chat</a>
-                    }
-                </div>
-            </div>
-        </div>
-
-        @if (currentProfile.Sections.Count > 0)
-        {
-            <nav class="agent-profile-nav mt-4" aria-label="Agent profile sections">
-                @foreach (var section in currentProfile.Sections)
-                {
-                    <a class="@GetSectionLinkCss(section)" href="@BuildSectionHref(section.Id)">@(section.Title)</a>
-                }
-            </nav>
-        }
-
-        <div class="agent-profile-grid mt-4">
-            <section id="overview" class="wizard-card agent-profile-section agent-profile-section--wide">
-                <div class="agent-profile-section-heading">
-                    <div>
-                        <span class="dashboard-kicker">Stable anchor</span>
-                        <h2 class="h5 mb-1 mt-2">Overview</h2>
-                        <p class="text-body-secondary mb-0">Identity and operational summary stay at the top of the canonical profile so later KPI and health modules can extend this surface.</p>
-                    </div>
-                </div>
-
-                <div class="agent-identity">
+    <main class="agent-profile-page">
+        <header class="agent-profile-commandbar">
+            <div class="agent-profile-commandbar__identity">
+                <span class="agent-profile-avatar agent-profile-avatar--placeholder" aria-hidden="true">
+                    @initials
                     @if (!string.IsNullOrWhiteSpace(currentProfile.AvatarUrl))
                     {
-                        <img class="agent-avatar" src="@currentProfile.AvatarUrl" alt="@($"{currentProfile.DisplayName} avatar")" />
+                        <img src="@currentProfile.AvatarUrl" alt="" onerror="this.style.display='none'" />
                     }
-                    else if (!string.IsNullOrWhiteSpace(currentProfile.Personality))
+                </span>
+
+                <div class="agent-profile-commandbar__title">
+                    <div class="agent-profile-commandbar__name-row">
+                        <h1>@currentProfile.DisplayName</h1>
+                        <span class="agent-profile-status agent-profile-status--active">
+                            <span aria-hidden="true"></span>@SharedStatusPresenter.Format(currentProfile.Status, CommonText)
+                        </span>
+                        <span class="agent-profile-status @GetHealthBadgeCss(currentProfile.WorkloadSummary.HealthSummary.Status)">
+                            <span class="bi bi-shield-check" aria-hidden="true"></span>@GetHealthLabel(currentProfile.WorkloadSummary.HealthSummary.Status)
+                        </span>
+                    </div>
+                    <p>@currentProfile.RoleName <span aria-hidden="true">·</span> @currentProfile.Department</p>
+                </div>
+
+                <div class="agent-profile-commandbar__meta">
+                    <span>@AgentText["LastActive"]</span>
+                    <strong>@FormatRelativeDate(currentProfile.WorkloadSummary.LastActivityUtc)</strong>
+                </div>
+            </div>
+
+            <div class="agent-profile-commandbar__actions">
+                <a class="btn btn-outline-secondary" href="@(CanViewDirectory ? $"/agents?companyId={CompanyId}" : $"/dashboard?companyId={CompanyId}")">
+                    <span class="bi bi-arrow-left" aria-hidden="true"></span>
+                    <span>@AgentText["Back"]</span>
+                </a>
+                @if (currentProfile.Visibility.CanEditAgent)
+                {
+                    <a class="btn btn-outline-primary" href="@($"/agents/{currentProfile.Id}/chat?companyId={CompanyId}")">
+                        <span class="bi bi-chat-left-text" aria-hidden="true"></span>
+                        <span>@AgentText["Chat"]</span>
+                    </a>
+                    <a class="btn btn-primary" href="@($"/agents/manage?companyId={CompanyId}&agentId={currentProfile.Id}")">
+                        <span class="bi bi-pencil" aria-hidden="true"></span>
+                        <span>@AgentText["EditProfile"]</span>
+                    </a>
+                }
+            </div>
+        </header>
+
+        <section class="agent-profile-kpis" aria-label="@AgentText["ProfileDetails"]">
+            <article class="agent-profile-kpi">
+                <span class="agent-profile-kpi__icon agent-profile-kpi__icon--blue" aria-hidden="true">→</span>
+                <div><span>@AgentText["OpenWork"]</span><strong>@openWorkCount</strong><small>@AgentText["TasksAndWorkflows"]</small></div>
+            </article>
+            <article class="agent-profile-kpi">
+                <span class="agent-profile-kpi__icon agent-profile-kpi__icon--amber" aria-hidden="true">…</span>
+                <div><span>@CommonText["StatusPendingReview"]</span><strong>@currentProfile.WorkloadSummary.AwaitingApprovalCount</strong><small>@AgentText["ItemsNeedReview"]</small></div>
+            </article>
+            <article class="agent-profile-kpi">
+                <span class="agent-profile-kpi__icon agent-profile-kpi__icon--green" aria-hidden="true">✓</span>
+                <div><span>@AgentText["Completed"]</span><strong>@completedCount</strong><small>@AgentText["SuccessfulOutcomes"]</small></div>
+            </article>
+            <article class="agent-profile-kpi">
+                <span class="agent-profile-kpi__icon agent-profile-kpi__icon--red" aria-hidden="true">!</span>
+                <div><span>@AgentText["ActiveAlerts"]</span><strong>@activeAlertCount</strong><small>@AgentText[activeAlertCount == 1 ? "AlertNeedsAttentionOne" : "AlertsNeedAttentionMany"]</small></div>
+            </article>
+        </section>
+
+        <section class="agent-profile-operations" aria-label="Current agent operations">
+            <article class="agent-profile-panel agent-profile-work-panel">
+                <header class="agent-profile-panel__header">
+                    <div><span class="bi bi-list-task" aria-hidden="true"></span><h2>@AgentText["CurrentWork"]</h2></div>
+                    @if (statusDetail is not null)
                     {
-                        <img class="agent-avatar" src="@currentProfile.AvatarUrl" alt="@($"{currentProfile.DisplayName} avatar")" />
+                        <small>@AgentText["UpdatedAt", FormatRelativeDate(statusDetail.GeneratedUtc)]</small>
+                    }
+                </header>
+
+                @if (statusDetail is null || (statusDetail.ActiveTasks.Count == 0 && statusDetail.ActiveWorkflows.Count == 0))
+                {
+                    <div class="agent-profile-empty">
+                        <span class="bi bi-check2" aria-hidden="true"></span>
+                        <strong>@AgentText["AllCaughtUp"]</strong>
+                        <p>@AgentText["NoActiveTasks"]</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="agent-profile-work-list">
+                        @foreach (var task in statusDetail.ActiveTasks.Take(3))
+                        {
+                            <div class="agent-profile-work-item">
+                                <span class="agent-profile-work-item__icon bi bi-check2-square" aria-hidden="true"></span>
+                                <div><strong>@task.Title</strong><small>@Humanize(task.Type) · @Humanize(task.Priority) priority · @FormatRelativeDate(task.UpdatedUtc)</small></div>
+                                <span class="agent-profile-tag">@Humanize(task.Status)</span>
+                            </div>
+                        }
+                        @foreach (var workflow in statusDetail.ActiveWorkflows.Take(3))
+                        {
+                            <div class="agent-profile-work-item">
+                                <span class="agent-profile-work-item__icon bi bi-diagram-3" aria-hidden="true"></span>
+                                <div><strong>@workflow.DefinitionName</strong><small>@GetOptionalText(workflow.CurrentStep) · @FormatRelativeDate(workflow.UpdatedUtc)</small></div>
+                                <span class="agent-profile-tag">@Humanize(workflow.State)</span>
+                            </div>
+                        }
+                    </div>
+                }
+
+                <div class="agent-profile-recent">
+                    <div class="agent-profile-subheading"><span class="bi bi-clock-history" aria-hidden="true"></span><h3>@AgentText["RecentActivity"]</h3></div>
+                    @if (GetRecentActivity(currentProfile).Count == 0)
+                    {
+                        <p class="agent-profile-empty-copy">@AgentText["NoRecentActivityRecorded"]</p>
                     }
                     else
                     {
-                        <div class="agent-avatar agent-avatar--placeholder" aria-hidden="true">@initials</div>
+                        <div class="agent-profile-timeline">
+                            @foreach (var activity in GetRecentActivity(currentProfile).Take(3))
+                            {
+                                <div class="agent-profile-timeline__item">
+                                    <span aria-hidden="true"></span>
+                                    <div><strong>@activity.Title</strong><small>@Humanize(activity.ActivityType) · @FormatRelativeDate(activity.OccurredUtc)</small></div>
+                                </div>
+                            }
+                        </div>
                     }
-
-                    <div class="agent-identity-body">
-                        <div class="summary-pill-grid mb-4">
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Status</span>
-                                <strong>@ToDisplayText(currentProfile.Status)</strong>
-                            </div>
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Autonomy</span>
-                                <strong>@ToDisplayText(currentProfile.AutonomyLevel)</strong>
-                            </div>
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Health</span>
-                                <strong class="@GetHealthCss(currentProfile.WorkloadSummary.HealthSummary.Status)">@currentProfile.WorkloadSummary.HealthSummary.Label</strong>
-                            </div>
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Open work</span>
-                                <strong>@currentProfile.WorkloadSummary.OpenItemsCount item(s)</strong>
-                            </div>
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Awaiting approval</span>
-                                <strong>@currentProfile.WorkloadSummary.AwaitingApprovalCount item(s)</strong>
-                            </div>
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Recent signals</span>
-                                <strong>@currentProfile.RecentActivity.Count event(s)</strong>
-                            </div>
-                        </div>
-
-                        <dl class="kv-list mb-0">
-                            <dt>Display name</dt>
-                            <dd>@currentProfile.DisplayName</dd>
-                            <dt>Role</dt>
-                            <dd>
-                                @currentProfile.RoleName
-                                @if (IsLauraFinanceManagerProfile(currentProfile))
-                                {
-                                    <span class="badge text-bg-warning ms-2">Preconfigured Finance Manager</span>
-                                }
-                            </dd>
-                            <dt>Department</dt>
-                            <dd>@currentProfile.Department</dd>
-                            <dt>Seniority</dt>
-                            <dd>@ToDisplayText(currentProfile.Seniority)</dd>
-                            <dt>Role brief</dt>
-                            <dd>@GetOptionalText(currentProfile.RoleBrief)</dd>
-                            <dt>Summary</dt>
-                            <dd>@GetOptionalText(currentProfile.Personality)</dd>
-                            <dt>Health summary</dt>
-                            <dd>@currentProfile.WorkloadSummary.HealthSummary.Reason</dd>
-                            <dt>Last activity</dt>
-                            <dd>@FormatDate(currentProfile.WorkloadSummary.LastActivityUtc)</dd>
-                            <dt>Profile updated</dt>
-                            <dd>@FormatDate(currentProfile.UpdatedUtc)</dd>
-                        </dl>
-                    </div>
                 </div>
+            </article>
 
-                @if (!currentProfile.Visibility.CanEditAgent)
-                {
-                    <p class="text-body-secondary mb-0 mt-4">
-                        Restricted configuration actions stay hidden for your membership role
-                        @if (ActiveMembership is not null)
-                        {
-                            <span>(@ToDisplayText(ActiveMembership.MembershipRole)).</span>
-                        }
-                    </p>
-                }
-
-                <div class="agent-profile-note mt-4">
-                    <strong>Future analytics note:</strong> extend this profile page first for workload, KPI, health, and trend modules so navigation remains stable from the roster and management surfaces.
-                </div>
-            </section>
-
-            @if (IsFinanceProfile(currentProfile))
-            {
-                <section id="finance-context" class="wizard-card agent-profile-section agent-profile-section--wide">
-                    <div class="agent-profile-section-heading">
-                        <div>
-                            <span class="dashboard-kicker">Finance context</span>
-                            <h2 class="h5 mb-1 mt-2">@(IsLauraFinanceManagerProfile(currentProfile) ? "Finance Manager context" : "Finance workflow context")</h2>
-                            <p class="text-body-secondary mb-0">@(IsLauraFinanceManagerProfile(currentProfile) ? "Laura is the preconfigured Finance Manager for finance workflows, transaction categorization, invoice review, and cash posture monitoring." : "This finance profile can review finance capabilities, transaction categorization, invoice workflows, and linked operating routes.")</p>
+            <div class="agent-profile-operations__side">
+                <article class="agent-profile-panel agent-profile-alert-panel @(activeAlertCount > 0 ? "has-alert" : null)">
+                    <header class="agent-profile-panel__header">
+                        <div><span class="bi @(activeAlertCount > 0 ? "bi-exclamation-triangle" : "bi-shield-check")" aria-hidden="true"></span><h2>@AgentText[activeAlertCount > 0 ? "AttentionRequired" : "NoActiveAlerts"]</h2></div>
+                    </header>
+                    @if (statusDetail?.ActiveAlerts.FirstOrDefault() is { } primaryAlert)
+                    {
+                        <div class="agent-profile-alert">
+                            <div class="agent-profile-alert__title"><strong>@primaryAlert.Title</strong><span class="agent-profile-severity @GetSeverityCss(primaryAlert.Severity)">@Humanize(primaryAlert.Severity)</span></div>
+                            <p>@primaryAlert.Summary</p>
+                            <small>@Humanize(primaryAlert.Type) · @Humanize(primaryAlert.Status) · @FormatDate(primaryAlert.UpdatedUtc)</small>
                         </div>
-                    </div>
+                    }
+                    else
+                    {
+                        <div class="agent-profile-clear-state"><span class="bi bi-check-circle" aria-hidden="true"></span><p>@AgentText["NoAlertsLinked"]</p></div>
+                    }
+                </article>
 
-                    <div class="summary-pill-grid mb-4">
-                        @foreach (var capability in GetFinanceCapabilitySummaries(currentProfile))
-                        {
-                            <div class="summary-pill">
-                                <span class="dashboard-kicker">Capability</span>
-                                <strong>@capability</strong>
-                            </div>
-                        }
-                    </div>
+                <article class="agent-profile-panel agent-profile-health-panel">
+                    <header class="agent-profile-panel__header">
+                        <div><span class="bi bi-activity" aria-hidden="true"></span><h2>@AgentText["OperatingStatus"]</h2></div>
+                    </header>
+                    <dl class="agent-profile-health-grid">
+                        <div><dt>@AgentText["Health"]</dt><dd class="@GetHealthCss(statusDetail?.Health.Status ?? currentProfile.WorkloadSummary.HealthSummary.Status)">@GetHealthLabel(statusDetail?.Health.Status ?? currentProfile.WorkloadSummary.HealthSummary.Status)</dd></div>
+                        <div><dt>@AgentText["Workload"]</dt><dd>@GetHealthLabel(statusDetail?.Workload.WorkloadLevel ?? "inactive")</dd></div>
+                        <div><dt>@AgentText["FailedRuns"]</dt><dd>@(statusDetail?.Health.Metrics.FailedRunCount ?? currentProfile.WorkloadSummary.FailedCount)</dd></div>
+                        <div><dt>@AgentText["StalledWork"]</dt><dd>@(statusDetail?.Health.Metrics.StalledWorkCount ?? 0)</dd></div>
+                        <div><dt>@AgentText["PolicyViolations"]</dt><dd>@(statusDetail?.Health.Metrics.PolicyViolationCount ?? 0)</dd></div>
+                        <div><dt>@AgentText["Autonomy"]</dt><dd>@GetAutonomyLabel(currentProfile.AutonomyLevel)</dd></div>
+                    </dl>
+                </article>
+            </div>
+        </section>
 
-                    <div class="template-grid">
-                        @foreach (var card in BuildFinanceWorkflowCards())
-                        {
-                            <a class="template-card text-decoration-none text-reset" href="@card.Href">
-                                <strong>@card.Title</strong>
-                                <div class="text-body-secondary mt-2">@card.Description</div>
-                            </a>
-                        }
-                    </div>
-                </section>
-            }
-
-            <section id="objectives" class="wizard-card agent-profile-section">
-                <h2 class="h5 mb-3">Objectives</h2>
-                @RenderEntries(currentProfile.Objectives)
-            </section>
-
-            <section id="analytics" class="wizard-card agent-profile-section">
-                <span class="dashboard-kicker">Reserved surface</span>
-                <h2 class="h5 mb-3 mt-2">@currentProfile.AnalyticsPreview.Heading</h2>
-                <p class="text-body-secondary mb-0">@currentProfile.AnalyticsPreview.Description</p>
-
-                @if (currentProfile.AnalyticsPreview.PlannedModules.Count > 0)
+        <section class="agent-profile-details">
+            <nav class="agent-profile-tabs" aria-label="@AgentText["ProfileDetails"]">
+                @foreach (var tab in DetailTabs)
                 {
-                    <div class="agent-analytics-placeholder-grid mt-4">
-                        @foreach (var module in currentProfile.AnalyticsPreview.PlannedModules)
-                        {
-                            <article class="agent-analytics-placeholder-card">
-                                <strong>@module</strong>
-                                <p class="text-body-secondary mb-0 mt-2">Placeholder only. Future work should populate this section from dedicated profile analytics queries without changing the route.</p>
-                            </article>
-                        }
-                    </div>
+                    <button type="button" class="agent-profile-tab @(selectedTab == tab.Key ? "is-active" : null)" aria-selected="@(selectedTab == tab.Key)" @onclick="@(() => selectedTab = tab.Key)">
+                        <span class="bi @tab.Icon" aria-hidden="true"></span>@AgentText[tab.ResourceKey]
+                    </button>
                 }
-            </section>
+            </nav>
 
-            <section id="permissions" class="wizard-card agent-profile-section">
-                <h2 class="h5 mb-3">Permissions</h2>
-                @if (!currentProfile.Visibility.CanViewPermissions)
+            <div class="agent-profile-tab-content">
+                @switch (selectedTab)
                 {
-                    <p class="text-body-secondary mb-0">Tool permissions and data scopes are hidden for your membership role.</p>
-                }
-                else
-                {
-                    <h3 class="h6">Tool permissions</h3>
-                    @RenderEntries(currentProfile.ToolPermissions)
-                    <h3 class="h6 mt-4">Data scopes</h3>
-                    @RenderEntries(currentProfile.DataScopes)
-                }
-            </section>
-
-            <section id="thresholds" class="wizard-card agent-profile-section">
-                <h2 class="h5 mb-3">Thresholds</h2>
-                @if (!currentProfile.Visibility.CanViewThresholds)
-                {
-                    <p class="text-body-secondary mb-0">Approval thresholds and escalation rules are hidden for your membership role.</p>
-                }
-                else
-                {
-                    <h3 class="h6">Approval thresholds</h3>
-                    @RenderEntries(currentProfile.ApprovalThresholds)
-                    <h3 class="h6 mt-4">Escalation rules</h3>
-                    @RenderEntries(currentProfile.EscalationRules)
-                }
-            </section>
-
-            <section id="working-hours" class="wizard-card agent-profile-section">
-                <h2 class="h5 mb-3">Working hours</h2>
-                @if (!currentProfile.Visibility.CanViewWorkingHours)
-                {
-                    <p class="text-body-secondary mb-0">Working hours are hidden for your membership role.</p>
-                }
-                else
-                {
-                    @RenderEntries(currentProfile.WorkingHours)
-                }
-            </section>
-
-            <section id="recent-activity" class="wizard-card agent-profile-section agent-profile-section--wide">
-                <h2 class="h5 mb-3">Recent activity</h2>
-
-                <dl class="kv-list mb-4">
-                    <dt>Awaiting approval</dt>
-                    <dd>@currentProfile.WorkloadSummary.AwaitingApprovalCount</dd>
-                    <dt>Executed</dt>
-                    <dd>@currentProfile.WorkloadSummary.ExecutedCount</dd>
-                    <dt>Failed</dt>
-                    <dd>@currentProfile.WorkloadSummary.FailedCount</dd>
-                </dl>
-
-                @if (currentProfile.RecentActivity.Count == 0)
-                {
-                    <p class="text-body-secondary mb-0">No recent activity is available yet.</p>
-                }
-                else
-                {
-                    <div class="activity-list">
-                        @foreach (var item in currentProfile.RecentActivity)
-                        {
-                            <article class="activity-item">
-                                <div class="agent-template-header">
-                                    <strong>@item.Title</strong>
-                                    <span class="badge text-bg-light">@ToDisplayText(item.Status)</span>
-                                </div> 
-                                <div class="text-body-secondary small mt-1">@ToDisplayText(item.ActivityType) | @FormatDate(item.OccurredUtc)</div>
-                                @if (!string.IsNullOrWhiteSpace(item.Detail))
+                    case "access":
+                        <div class="agent-profile-detail-columns">
+                            @RenderDetailGroup(AgentText["DetailToolPermissions"], "bi-tools", currentProfile.ToolPermissions, currentProfile.Visibility.CanViewPermissions)
+                            @RenderDetailGroup(AgentText["DetailDataAccess"], "bi-database-check", currentProfile.DataScopes, currentProfile.Visibility.CanViewPermissions)
+                        </div>
+                        break;
+                    case "guardrails":
+                        <div class="agent-profile-detail-columns">
+                            @RenderDetailGroup(AgentText["DetailApprovalThresholds"], "bi-check2-square", currentProfile.ApprovalThresholds, currentProfile.Visibility.CanViewThresholds)
+                            @RenderDetailGroup(AgentText["DetailEscalationRules"], "bi-signpost-split", currentProfile.EscalationRules, currentProfile.Visibility.CanViewThresholds)
+                        </div>
+                        break;
+                    case "schedule":
+                        @RenderDetailGroup(AgentText["DetailWorkingHours"], "bi-calendar3", currentProfile.WorkingHours, currentProfile.Visibility.CanViewWorkingHours)
+                        break;
+                    case "activity":
+                        <div class="agent-profile-full-activity">
+                            @if (currentProfile.RecentActivity.Count == 0)
+                            {
+                                <p class="agent-profile-empty-copy">@AgentText["NoRecentActivityRecorded"]</p>
+                            }
+                            else
+                            {
+                                @foreach (var activity in currentProfile.RecentActivity)
                                 {
-                                    <p class="mb-0 mt-2">@item.Detail</p>
+                                    <article><span class="bi bi-check-circle" aria-hidden="true"></span><div><strong>@activity.Title</strong><p>@GetOptionalText(activity.Detail)</p><small>@Humanize(activity.ActivityType) · @Humanize(activity.Status) · @FormatDate(activity.OccurredUtc)</small></div></article>
                                 }
-                            </article>
-                        }
-
-                        @if (currentProfile.RecentActivity.Count > 0 && !currentProfile.Visibility.CanViewThresholds)
-                        {
-                            <p class="text-body-secondary small mb-0">
-                                Activity is limited to the tenant-scoped events available to your current membership role.
-                            </p>
-                        }
-                    </div>
+                            }
+                        </div>
+                        break;
+                    default:
+                        <div class="agent-profile-responsibilities">
+                            <div>
+                                <div class="agent-profile-detail-heading"><span class="bi bi-bullseye" aria-hidden="true"></span><h2>@AgentText["Objectives"]</h2></div>
+                                <p class="agent-profile-role-brief">@GetOptionalText(currentProfile.RoleBrief)</p>
+                                <div class="agent-profile-objectives">
+                                    @foreach (var objective in GetDetailItems(currentProfile.Objectives))
+                                    {
+                                    <article><span aria-hidden="true">✓</span><div><strong>@objective.Label</strong><p>@objective.Value</p></div></article>
+                                    }
+                                </div>
+                            </div>
+                            <div>
+                                <div class="agent-profile-detail-heading"><span class="bi bi-stars" aria-hidden="true"></span><h2>@AgentText[IsFinanceProfile(currentProfile) ? "FinanceCapabilities" : "RoleCapabilities"]</h2></div>
+                                <div class="agent-profile-capabilities">
+                                    @foreach (var capability in GetCapabilitySummaries(currentProfile))
+                                    {
+                                        <span><span class="agent-profile-capability-check" aria-hidden="true">✓</span>@capability</span>
+                                    }
+                                </div>
+                            </div>
+                        </div>
+                        break;
                 }
-            </section>
-
-            @if (statusDetail is not null)
-            {
-                <section id="work" class="wizard-card agent-profile-section agent-profile-section--wide">
-                    <div class="agent-profile-section-heading">
-                        <div>
-                            <span class="dashboard-kicker">Live operations</span>
-                            <h2 class="h5 mb-1 mt-2">Active work, workflows, and alerts</h2>
-                            <p class="text-body-secondary mb-0">Tenant-scoped status refreshed from current task, workflow, approval, alert, audit, and tool execution records.</p>
-                        </div>
-                        <span class="text-body-secondary small">Generated @statusDetail.GeneratedUtc.ToLocalTime().ToString("g")</span>
-                    </div>
-
-                    <div class="summary-pill-grid mb-4">
-                        <div class="summary-pill">
-                            <span class="dashboard-kicker">Workload</span>
-                            <strong>@statusDetail.Workload.WorkloadLevel</strong>
-                        </div>
-                        <div class="summary-pill">
-                            <span class="dashboard-kicker">Active tasks</span>
-                            <strong>@statusDetail.Workload.ActiveTaskCount</strong>
-                        </div>
-                        <div class="summary-pill">
-                            <span class="dashboard-kicker">Active workflows</span>
-                            <strong>@statusDetail.Workload.ActiveWorkflowCount</strong>
-                        </div>
-                        <div class="summary-pill">
-                            <span class="dashboard-kicker">Active alerts</span>
-                            <strong>@statusDetail.ActiveAlertsCount</strong>
-                        </div>
-                    </div>
-
-                    <div class="agent-status-detail-grid">
-                        <section>
-                            <h3 class="h6">Health</h3>
-                            <dl class="kv-list mb-3">
-                                <dt>Status</dt>
-                                <dd><span class="@GetHealthCss(statusDetail.Health.Status)">@ToDisplayText(statusDetail.Health.Status)</span></dd>
-                                <dt>Failed runs</dt>
-                                <dd>@statusDetail.Health.Metrics.FailedRunCount</dd>
-                                <dt>Stalled work</dt>
-                                <dd>@statusDetail.Health.Metrics.StalledWorkCount</dd>
-                                <dt>Policy violations</dt>
-                                <dd>@statusDetail.Health.Metrics.PolicyViolationCount</dd>
-                            </dl>
-                            @foreach (var reason in statusDetail.Health.Reasons)
-                            {
-                                <p class="text-body-secondary mb-2">@reason</p>
-                            }
-                        </section>
-
-                        <section>
-                            <h3 class="h6">Active tasks</h3>
-                            @if (statusDetail.ActiveTasks.Count == 0)
-                            {
-                                <p class="text-body-secondary mb-0">No active tasks are assigned.</p>
-                            }
-                            else
-                            {
-                                <div class="activity-list">
-                                    @foreach (var task in statusDetail.ActiveTasks)
-                                    {
-                                        <article class="activity-item">
-                                            <div class="agent-template-header">
-                                                <strong>@task.Title</strong>
-                                                <span class="badge text-bg-light">@ToDisplayText(task.Status)</span>
-                                            </div>
-                                            <div class="text-body-secondary small mt-1">@ToDisplayText(task.Type) | @ToDisplayText(task.Priority) | @FormatDate(task.UpdatedUtc)</div>
-                                        </article>
-                                    }
-                                </div>
-                            }
-                        </section>
-
-                        <section>
-                            <h3 class="h6">Active workflows</h3>
-                            @if (statusDetail.ActiveWorkflows.Count == 0)
-                            {
-                                <p class="text-body-secondary mb-0">No active workflows are linked to this agent.</p>
-                            }
-                            else
-                            {
-                                <div class="activity-list">
-                                    @foreach (var workflow in statusDetail.ActiveWorkflows)
-                                    {
-                                        <article class="activity-item">
-                                            <div class="agent-template-header">
-                                                <strong>@workflow.DefinitionName</strong>
-                                                <span class="badge text-bg-light">@ToDisplayText(workflow.State)</span>
-                                            </div>
-                                            <div class="text-body-secondary small mt-1">@GetOptionalText(workflow.CurrentStep) | @FormatDate(workflow.UpdatedUtc)</div>
-                                        </article>
-                                    }
-                                </div>
-                            }
-                        </section>
-
-                        <section>
-                            <h3 class="h6">Active alerts</h3>
-                            @if (statusDetail.ActiveAlerts.Count == 0)
-                            {
-                                <p class="text-body-secondary mb-0">No active alerts are linked to this agent.</p>
-                            }
-                            else
-                            {
-                                <div class="activity-list">
-                                    @foreach (var alert in statusDetail.ActiveAlerts)
-                                    {
-                                        <article class="activity-item">
-                                            <div class="agent-template-header">
-                                                <strong>@alert.Title</strong>
-                                                <span class="badge text-bg-warning">@ToDisplayText(alert.Severity)</span>
-                                            </div>
-                                            <p class="mb-0 mt-2">@alert.Summary</p>
-                                            <div class="text-body-secondary small mt-1">@ToDisplayText(alert.Type) | @ToDisplayText(alert.Status) | @FormatDate(alert.UpdatedUtc)</div>
-                                        </article>
-                                    }
-                                </div>
-                            }
-                        </section>
-                    </div>
-                </section>
-            }
-        </div>
-    </section>
+            </div>
+        </section>
+    </main>
 }
 
 @code {
@@ -448,9 +295,19 @@ else
     [SupplyParameterFromQuery(Name = "companyId")]
     public Guid? CompanyId { get; set; }
 
+    private static readonly IReadOnlyList<AgentProfileTab> DetailTabs =
+    [
+        new("responsibilities", "TabResponsibilities", "bi-bullseye"),
+        new("access", "TabAccess", "bi-key"),
+        new("guardrails", "TabGuardrails", "bi-shield-check"),
+        new("schedule", "TabSchedule", "bi-calendar3"),
+        new("activity", "TabActivity", "bi-clock-history")
+    ];
+
     private CurrentUserContextViewModel? currentUser;
     private bool isLoading = true;
     private string? errorMessage;
+    private string selectedTab = "responsibilities";
     private AgentProfileViewModel? profile;
     private AgentStatusDetailViewModel? statusDetail;
 
@@ -484,9 +341,9 @@ else
                 return;
             }
 
-            if (CompanyId is Guid selectedCompanyId && ActiveMembership is null)
+            if (CompanyId is Guid && ActiveMembership is null)
             {
-                errorMessage = "Your current account does not have access to the selected company.";
+                errorMessage = AgentText["NoCompanyAccess"];
                 return;
             }
 
@@ -498,15 +355,15 @@ else
                 return;
             }
 
-            if (CompanyId is Guid companyIdForProfile)
+            if (CompanyId is Guid companyId)
             {
-                profile = await AgentApiClient.GetProfileViewAsync(companyIdForProfile, AgentId);
-                statusDetail = await AgentApiClient.GetStatusDetailAsync(companyIdForProfile, AgentId);
+                profile = await AgentApiClient.GetProfileViewAsync(companyId, AgentId);
+                statusDetail = await AgentApiClient.GetStatusDetailAsync(companyId, AgentId);
             }
         }
         catch (InvalidOperationException)
         {
-            errorMessage = "The selected company membership could not be resolved.";
+            errorMessage = AgentText["NoCompanyAccess"];
             profile = null;
         }
         catch (OnboardingApiException ex)
@@ -519,64 +376,82 @@ else
         }
     }
 
-    private string GetCanonicalProfileRoute() =>
-        string.IsNullOrWhiteSpace(profile?.ProfileRoute)
-            ? $"/agents/{AgentId}?companyId={CompanyId}"
-            : profile.ProfileRoute!;
+    private static IReadOnlyList<AgentRecentActivityViewModel> GetRecentActivity(AgentProfileViewModel currentProfile) =>
+        currentProfile.RecentActivity.OrderByDescending(item => item.OccurredUtc).ToArray();
 
-    private string BuildSectionHref(string sectionId) => $"{GetCanonicalProfileRoute()}#{sectionId}";
-
-    private static string GetSectionLinkCss(AgentProfileSectionViewModel section) => section.IsAvailable ? "agent-profile-nav__link" : "agent-profile-nav__link is-muted";
-
-    private static string FormatDate(DateTime? value) =>
-        value is null ? "No recent activity" : value.Value.ToLocalTime().ToString("g");
-
-    private static string FormatDate(DateTime value) => value.ToLocalTime().ToString("g");
-
-    private static string ToDisplayText(string value) =>
-        value.Replace("_", " ", StringComparison.Ordinal).Trim();
-
-    private static string GetOptionalText(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? "Not provided" : value.Trim();
-
-    private static string GetHealthCss(string healthStatus) =>
-        healthStatus.Trim().ToLowerInvariant() switch
-        {
-            "healthy" => "agent-health-healthy",
-            "busy" => "agent-health-busy",
-            "inactive" => "agent-health-inactive",
-            "blocked" => "agent-health-attention",
-            "needs_attention" => "agent-health-attention",
-            "archived" => "agent-health-archived",
-            _ => "text-body-secondary"
-        };
-
-    private static string GetInitials(string value)
+    private IReadOnlyList<string> GetCapabilitySummaries(AgentProfileViewModel currentProfile)
     {
-        var parts = value
-            .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .Take(2)
-            .Select(static part => char.ToUpperInvariant(part[0]))
+        if (IsFinanceProfile(currentProfile))
+        {
+            return AgentFinancePresentation.GetCapabilitySummaries(currentProfile);
+        }
+
+        var capabilities = TryReadStringArray(currentProfile.ToolPermissions, "allowed")
+            .Concat(TryReadStringArray(currentProfile.ToolPermissions, "actions"))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(Humanize)
+            .Take(10)
             .ToArray();
 
-        return parts.Length == 0
-            ? "AG"
-            : new string(parts);
+        return capabilities.Length == 0
+            ? [AgentText["ReviewAssignedWork"], AgentText["RecommendedNextActions"]]
+            : capabilities;
     }
 
-    private static bool IsFinanceProfile(AgentProfileViewModel profile) =>
-        AgentFinancePresentation.IsFinanceProfile(profile);
+    private RenderFragment RenderDetailGroup(
+        string title,
+        string icon,
+        IReadOnlyDictionary<string, JsonNode?> values,
+        bool canView) => builder =>
+    {
+        var sequence = 0;
+        builder.OpenElement(sequence++, "section");
+        builder.AddAttribute(sequence++, "class", "agent-profile-detail-group");
+        builder.OpenElement(sequence++, "div");
+        builder.AddAttribute(sequence++, "class", "agent-profile-detail-heading");
+        builder.OpenElement(sequence++, "span");
+        builder.AddAttribute(sequence++, "class", $"bi {icon}");
+        builder.AddAttribute(sequence++, "aria-hidden", "true");
+        builder.CloseElement();
+        builder.OpenElement(sequence++, "h2");
+        builder.AddContent(sequence++, title);
+        builder.CloseElement();
+        builder.CloseElement();
 
-    private static bool IsLauraFinanceManagerProfile(AgentProfileViewModel profile) =>
-        AgentFinancePresentation.IsLauraFinanceManagerProfile(profile);
+        if (!canView)
+        {
+            builder.OpenElement(sequence++, "p");
+            builder.AddAttribute(sequence++, "class", "agent-profile-empty-copy");
+            builder.AddContent(sequence++, AgentText["HiddenForMembershipRole"]);
+            builder.CloseElement();
+        }
+        else
+        {
+            builder.OpenElement(sequence++, "dl");
+            builder.AddAttribute(sequence++, "class", "agent-profile-detail-list");
+            foreach (var item in GetDetailItems(values))
+            {
+                builder.OpenElement(sequence++, "div");
+                builder.OpenElement(sequence++, "dt");
+                builder.AddContent(sequence++, item.Label);
+                builder.CloseElement();
+                builder.OpenElement(sequence++, "dd");
+                builder.AddContent(sequence++, item.Value);
+                builder.CloseElement();
+                builder.CloseElement();
+            }
+            builder.CloseElement();
+        }
+        builder.CloseElement();
+    };
 
-    private IReadOnlyList<string> GetFinanceCapabilitySummaries(AgentProfileViewModel profile) =>
-        AgentFinancePresentation.GetCapabilitySummaries(profile);
-
-    private IReadOnlyList<(string Title, string Description, string Href)> BuildFinanceWorkflowCards() =>
-        AgentFinancePresentation.BuildWorkflowCards(CompanyId)
-            .Select(card => (card.Title, card.Description, card.Href))
-            .ToArray();
+    private IReadOnlyList<AgentProfileDetailItem> GetDetailItems(IReadOnlyDictionary<string, JsonNode?> values) =>
+        values.Count == 0
+            ? [new(AgentText["NoConfiguration"], AgentText["NoConfigurationDetails"])]
+            : values
+                .OrderBy(item => item.Key, StringComparer.OrdinalIgnoreCase)
+                .Select(item => new AgentProfileDetailItem(Humanize(item.Key), FormatEntryValue(item.Value)))
+                .ToArray();
 
     private static IReadOnlyList<string> TryReadStringArray(IReadOnlyDictionary<string, JsonNode?> payload, string key) =>
         payload.TryGetValue(key, out var node) && node is JsonArray array
@@ -587,71 +462,160 @@ else
                 .ToArray()
             : [];
 
-    private RenderFragment RenderEntries(IReadOnlyDictionary<string, JsonNode?> values) => builder =>
-    {
-        var sequence = 0;
-
-        if (values.Count == 0)
-        {
-            builder.OpenElement(sequence++, "p");
-            builder.AddAttribute(sequence++, "class", "text-body-secondary mb-0");
-            builder.AddContent(sequence++, "No details available.");
-            builder.CloseElement();
-            return;
-        }
-
-        builder.OpenElement(sequence++, "dl");
-        builder.AddAttribute(sequence++, "class", "kv-list mb-0");
-
-        foreach (var entry in values.OrderBy(x => x.Key, StringComparer.OrdinalIgnoreCase))
-        {
-            builder.OpenElement(sequence++, "dt");
-            builder.AddContent(sequence++, ToDisplayText(entry.Key));
-            builder.CloseElement();
-            builder.OpenElement(sequence++, "dd");
-            builder.AddContent(sequence++, FormatEntryValue(entry.Value));
-            builder.CloseElement();
-        }
-
-        builder.CloseElement();
-    };
-
-    private static string FormatEntryValue(JsonNode? value)
+    private string FormatEntryValue(JsonNode? value)
     {
         if (value is null)
         {
-            return "Not set";
+            return AgentText["NotConfigured"];
+        }
+
+        if (value is JsonObject jsonObject)
+        {
+            if (jsonObject.TryGetPropertyValue("description", out var description) &&
+                description is JsonValue descriptionValue &&
+                descriptionValue.TryGetValue<string>(out var text) &&
+                !string.IsNullOrWhiteSpace(text))
+            {
+                return text.Trim();
+            }
+
+            var properties = jsonObject
+                .Select(property => $"{Humanize(property.Key)}: {FormatEntryValue(property.Value)}")
+                .ToArray();
+            return properties.Length == 0 ? AgentText["NotConfigured"] : string.Join(" · ", properties);
         }
 
         if (value is JsonArray array)
         {
-            var items = array.Select(FormatEntryValue).Where(static item => !string.IsNullOrWhiteSpace(item)).ToArray();
-            return items.Length == 0 ? "Not set" : string.Join(", ", items);
+            var items = array.Select(FormatEntryValue).Where(item => !string.IsNullOrWhiteSpace(item)).ToArray();
+            return items.Length == 0 ? AgentText["NotConfigured"] : string.Join(", ", items);
         }
 
         if (value is JsonValue jsonValue)
         {
             if (jsonValue.TryGetValue<string>(out var stringValue))
             {
-                return stringValue;
+                return Humanize(stringValue);
             }
-
             if (jsonValue.TryGetValue<bool>(out var boolValue))
             {
-                return boolValue ? "Yes" : "No";
+                return boolValue ? AgentText["Yes"] : AgentText["No"];
             }
-
             if (jsonValue.TryGetValue<decimal>(out var decimalValue))
             {
-                return decimalValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return decimalValue.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture);
             }
-
             if (jsonValue.TryGetValue<double>(out var doubleValue))
             {
-                return doubleValue.ToString(System.Globalization.CultureInfo.InvariantCulture);
+                return doubleValue.ToString("0.##", System.Globalization.CultureInfo.CurrentCulture);
             }
         }
 
-        return value.ToJsonString();
+        return AgentText["Configured"];
     }
+
+    private string Humanize(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return AgentText["NotConfigured"];
+        }
+
+        var normalized = value.Trim().Replace('_', ' ').Replace('-', ' ');
+        var builder = new StringBuilder(normalized.Length + 8);
+        for (var index = 0; index < normalized.Length; index++)
+        {
+            var character = normalized[index];
+            if (index > 0 && char.IsUpper(character) && char.IsLower(normalized[index - 1]))
+            {
+                builder.Append(' ');
+            }
+            builder.Append(character);
+        }
+
+        var result = builder.ToString().Trim();
+        return result.Length == 0 ? AgentText["NotConfigured"] : char.ToUpperInvariant(result[0]) + result[1..];
+    }
+
+    private string FormatRelativeDate(DateTime? value)
+    {
+        if (value is null)
+        {
+            return AgentText["NoActivityYet"];
+        }
+
+        var elapsed = DateTime.UtcNow - value.Value.ToUniversalTime();
+        if (elapsed.TotalMinutes < 1) return AgentText["JustNow"];
+        if (elapsed.TotalHours < 1) return AgentText["MinutesAgo", Math.Max(1, (int)elapsed.TotalMinutes)];
+        if (elapsed.TotalDays < 1) return AgentText["HoursAgo", Math.Max(1, (int)elapsed.TotalHours)];
+        if (elapsed.TotalDays < 7) return AgentText["DaysAgo", Math.Max(1, (int)elapsed.TotalDays)];
+        return value.Value.ToLocalTime().ToString("d MMM yyyy");
+    }
+
+    private static string FormatDate(DateTime value) => value.ToLocalTime().ToString("g");
+
+    private string GetOptionalText(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? AgentText["NotConfigured"] : value.Trim();
+
+    private string GetHealthLabel(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "healthy" => AgentText["HealthHealthy"],
+        "busy" => AgentText["HealthBusy"],
+        "inactive" => AgentText["HealthInactive"],
+        "blocked" => AgentText["HealthBlocked"],
+        "needs_attention" => AgentText["HealthNeedsAttention"],
+        _ => AgentText["Unknown"]
+    };
+
+    private string GetAutonomyLabel(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "level_0" => AgentText["AutonomyLevel0"],
+        "level_1" => AgentText["AutonomyLevel1"],
+        "level_2" => AgentText["AutonomyLevel2"],
+        "level_3" => AgentText["AutonomyLevel3"],
+        _ => AgentText["Unknown"]
+    };
+
+    private static string GetHealthCss(string healthStatus) =>
+        healthStatus.Trim().ToLowerInvariant() switch
+        {
+            "healthy" => "agent-health-healthy",
+            "busy" => "agent-health-busy",
+            "inactive" => "agent-health-inactive",
+            "blocked" or "needs_attention" => "agent-health-attention",
+            "archived" => "agent-health-archived",
+            _ => "text-body-secondary"
+        };
+
+    private static string GetHealthBadgeCss(string healthStatus) =>
+        healthStatus.Trim().ToLowerInvariant() switch
+        {
+            "healthy" => "agent-profile-status--healthy",
+            "blocked" or "needs_attention" => "agent-profile-status--attention",
+            _ => "agent-profile-status--neutral"
+        };
+
+    private static string GetSeverityCss(string severity) =>
+        severity.Trim().ToLowerInvariant() switch
+        {
+            "critical" => "is-critical",
+            "high" => "is-high",
+            "warning" or "medium" => "is-warning",
+            _ => "is-neutral"
+        };
+
+    private static string GetInitials(string value)
+    {
+        var parts = value.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Take(2)
+            .Select(part => char.ToUpperInvariant(part[0]))
+            .ToArray();
+        return parts.Length == 0 ? "AG" : new string(parts);
+    }
+
+    private static bool IsFinanceProfile(AgentProfileViewModel currentProfile) =>
+        AgentFinancePresentation.IsFinanceProfile(currentProfile);
+
+    private sealed record AgentProfileTab(string Key, string ResourceKey, string Icon);
+    private sealed record AgentProfileDetailItem(string Label, string Value);
 }

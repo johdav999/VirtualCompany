@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Domain.Enums;
 
@@ -15,17 +16,20 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
     private readonly IMailboxOAuthStateProtector _stateProtector;
     private readonly TimeProvider _timeProvider;
     private readonly IWebHostEnvironment _hostEnvironment;
+    private readonly ICompanyContextAccessor _companyContextAccessor;
 
     public MailboxConnectionCallbacksController(
         IMailboxConnectionService mailboxConnectionService,
         IMailboxOAuthStateProtector stateProtector,
         TimeProvider timeProvider,
-        IWebHostEnvironment hostEnvironment)
+        IWebHostEnvironment hostEnvironment,
+        ICompanyContextAccessor companyContextAccessor)
     {
         _mailboxConnectionService = mailboxConnectionService;
         _stateProtector = stateProtector;
         _timeProvider = timeProvider;
         _hostEnvironment = hostEnvironment;
+        _companyContextAccessor = companyContextAccessor;
     }
 
     [HttpGet("gmail/callback")]
@@ -44,6 +48,14 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
         CancellationToken cancellationToken) =>
         CompleteProviderCallbackAsync(MailboxProvider.Microsoft365, code, state, error, cancellationToken);
 
+    [HttpGet("standard-email/callback")]
+    public Task<IActionResult> StandardEmailCallbackAsync(
+        [FromQuery] string? code,
+        [FromQuery] string? state,
+        [FromQuery] string? error,
+        CancellationToken cancellationToken) =>
+        CompleteProviderCallbackAsync(MailboxProvider.StandardEmail, code, state, error, cancellationToken);
+
     [HttpGet("/api/companies/{companyId:guid}/mailbox-connections/{provider}/callback")]
     public Task<IActionResult> LegacyProviderCallbackAsync(
         Guid companyId,
@@ -59,6 +71,7 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
         }
 
         // Legacy route tenant identity is intentionally ignored; protected OAuth state is authoritative.
+        _companyContextAccessor.SetCompanyId(null);
         return CompleteProviderCallbackAsync(parsedProvider, code, state, error, cancellationToken);
     }
 
@@ -77,6 +90,12 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
         if (state.Provider != expectedProvider)
         {
             return OAuthFailure("Mailbox OAuth state provider did not match the callback endpoint.");
+        }
+
+        if (!Request.Headers.ContainsKey("X-Company-Id"))
+        {
+            // Query and legacy route tenant hints are untrusted; the protected state owns callback identity.
+            _companyContextAccessor.SetCompanyId(null);
         }
 
         if (!string.IsNullOrWhiteSpace(error))
@@ -138,6 +157,12 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
             return false;
         }
 
+        if (!Enum.IsDefined(state.Purpose))
+        {
+            failure = "Mailbox OAuth state purpose was invalid.";
+            return false;
+        }
+
         if (state.ExpiresUtc <= _timeProvider.GetUtcNow().UtcDateTime)
         {
             failure = "Mailbox OAuth state has expired.";
@@ -178,7 +203,7 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
 
         var uri = new UriBuilder(Request.Scheme, Request.Host.Host)
         {
-            Path = "/finance/mailbox",
+            Path = "/agents/manage",
             Query = $"companyId={Uri.EscapeDataString(companyId.ToString("D"))}"
         };
 
@@ -193,7 +218,9 @@ public sealed class MailboxConnectionCallbacksController : ControllerBase
     private bool IsAllowedReturnUri(Uri returnUri)
     {
         if (returnUri.Scheme is not ("http" or "https") ||
-            !returnUri.AbsolutePath.StartsWith("/finance/mailbox", StringComparison.OrdinalIgnoreCase))
+            !(returnUri.AbsolutePath.StartsWith("/agents/manage", StringComparison.OrdinalIgnoreCase) ||
+              returnUri.AbsolutePath.StartsWith("/agents/mailboxes/connect", StringComparison.OrdinalIgnoreCase) ||
+              returnUri.AbsolutePath.StartsWith("/finance/mailbox", StringComparison.OrdinalIgnoreCase)))
         {
             return false;
         }

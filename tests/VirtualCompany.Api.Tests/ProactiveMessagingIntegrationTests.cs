@@ -14,14 +14,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ProactiveMessagingIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ProactiveMessagingIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Level_3_agent_delivers_notification_channel_and_persists_proactive_message()
@@ -290,6 +287,7 @@ public sealed class ProactiveMessagingIntegrationTests : IClassFixture<TestWebAp
                 Payload(("signal", JsonValue.Create("cash"))),
                 $"corr-{alertId:N}",
                 $"fp-{alertId:N}",
+                AlertStatus.Open,
                 agentId));
             dbContext.Escalations.Add(new Escalation(
                 escalationId,

@@ -5,14 +5,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class InternalCompanyToolRegistryTests : IClassFixture<TestWebApplicationFactory>
+public sealed class InternalCompanyToolRegistryTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public InternalCompanyToolRegistryTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public void Registry_exposes_initial_internal_tool_set_with_typed_actions()

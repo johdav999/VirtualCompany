@@ -3,7 +3,46 @@ namespace VirtualCompany.Domain.Enums;
 public enum MailboxProvider
 {
     Gmail = 1,
-    Microsoft365 = 2
+    Microsoft365 = 2,
+    StandardEmail = 3
+}
+
+public enum MailboxAuthenticationType
+{
+    OAuth2 = 1,
+    ApplicationPassword = 2
+}
+
+public enum MailboxTlsMode
+{
+    ImplicitTls = 1,
+    StartTls = 2
+}
+
+[Flags]
+public enum MailboxCapability
+{
+    None = 0,
+    ReadMessages = 1 << 0,
+    ReadAttachments = 1 << 1,
+    ListFolders = 1 << 2,
+    ThreadCorrelation = 1 << 3,
+    CreateDrafts = 1 << 4,
+    SendMessages = 1 << 5,
+    IncrementalSync = 1 << 6
+}
+
+public enum MailboxCursorStatus
+{
+    Active = 1,
+    ReconciliationRequired = 2
+}
+
+public enum MailboxPurpose
+{
+    Finance = 1,
+    Sales = 2,
+    Support = 3
 }
 
 public enum MailboxConnectionStatus
@@ -48,11 +87,14 @@ public static class MailboxProviderValues
 {
     public const string Gmail = "gmail";
     public const string Microsoft365 = "microsoft365";
+    public const string StandardEmail = "standard_email";
+    private const string NormalizedStandardEmail = "standardemail";
 
     private static readonly string[] AllowedStorageValues =
     [
         Gmail,
-        Microsoft365
+        Microsoft365,
+        StandardEmail
     ];
 
     public static IReadOnlyList<string> AllowedValues => AllowedStorageValues;
@@ -62,6 +104,7 @@ public static class MailboxProviderValues
         {
             MailboxProvider.Gmail => Gmail,
             MailboxProvider.Microsoft365 => Microsoft365,
+            MailboxProvider.StandardEmail => StandardEmail,
             _ => throw new ArgumentOutOfRangeException(nameof(provider), "Unsupported mailbox provider.")
         };
 
@@ -70,6 +113,7 @@ public static class MailboxProviderValues
         {
             Gmail => MailboxProvider.Gmail,
             Microsoft365 => MailboxProvider.Microsoft365,
+            NormalizedStandardEmail => MailboxProvider.StandardEmail,
             _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox provider.")
         };
 
@@ -97,6 +141,122 @@ public static class MailboxProviderValues
 
         return $"{columnName} IN ({string.Join(", ", allowedValues.Select(value => $"'{value}'"))})";
     }
+}
+
+public static class MailboxAuthenticationTypeValues
+{
+    public const string OAuth2 = "oauth2";
+    public const string ApplicationPassword = "application_password";
+
+    public static string ToStorageValue(this MailboxAuthenticationType value) => value switch
+    {
+        MailboxAuthenticationType.OAuth2 => OAuth2,
+        MailboxAuthenticationType.ApplicationPassword => ApplicationPassword,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox authentication type.")
+    };
+
+    public static MailboxAuthenticationType Parse(string value) => Normalize(value) switch
+    {
+        OAuth2 => MailboxAuthenticationType.OAuth2,
+        ApplicationPassword => MailboxAuthenticationType.ApplicationPassword,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox authentication type.")
+    };
+
+    private static string Normalize(string value) =>
+        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().Replace('-', '_').Replace(' ', '_').ToLowerInvariant();
+}
+
+public static class MailboxTlsModeValues
+{
+    public const string ImplicitTls = "implicit_tls";
+    public const string StartTls = "starttls";
+
+    public static string ToStorageValue(this MailboxTlsMode value) => value switch
+    {
+        MailboxTlsMode.ImplicitTls => ImplicitTls,
+        MailboxTlsMode.StartTls => StartTls,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox TLS mode.")
+    };
+
+    public static MailboxTlsMode Parse(string value) => Normalize(value) switch
+    {
+        ImplicitTls => MailboxTlsMode.ImplicitTls,
+        StartTls => MailboxTlsMode.StartTls,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox TLS mode.")
+    };
+
+    private static string Normalize(string value) =>
+        string.IsNullOrWhiteSpace(value) ? string.Empty : value.Trim().Replace("-", string.Empty).Replace("_", string.Empty).Replace(" ", string.Empty).ToLowerInvariant() switch
+        {
+            "implicittls" => ImplicitTls,
+            "starttls" => StartTls,
+            var normalized => normalized
+        };
+}
+
+public static class MailboxCursorStatusValues
+{
+    public const string Active = "active";
+    public const string ReconciliationRequired = "reconciliation_required";
+
+    public static string ToStorageValue(this MailboxCursorStatus value) => value switch
+    {
+        MailboxCursorStatus.Active => Active,
+        MailboxCursorStatus.ReconciliationRequired => ReconciliationRequired,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox cursor status.")
+    };
+
+    public static MailboxCursorStatus Parse(string value) => value?.Trim().ToLowerInvariant() switch
+    {
+        Active => MailboxCursorStatus.Active,
+        ReconciliationRequired => MailboxCursorStatus.ReconciliationRequired,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox cursor status.")
+    };
+}
+
+public static class MailboxPurposeValues
+{
+    public const string Finance = "finance";
+    public const string Sales = "sales";
+    public const string Support = "support";
+
+    private static readonly string[] AllowedStorageValues = [Finance, Sales, Support];
+
+    public static IReadOnlyList<string> AllowedValues => AllowedStorageValues;
+
+    public static string ToStorageValue(this MailboxPurpose purpose) =>
+        purpose switch
+        {
+            MailboxPurpose.Finance => Finance,
+            MailboxPurpose.Sales => Sales,
+            MailboxPurpose.Support => Support,
+            _ => throw new ArgumentOutOfRangeException(nameof(purpose), "Unsupported mailbox purpose.")
+        };
+
+    public static MailboxPurpose Parse(string value) =>
+        Normalize(value) switch
+        {
+            Finance => MailboxPurpose.Finance,
+            Sales => MailboxPurpose.Sales,
+            Support => MailboxPurpose.Support,
+            _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported mailbox purpose.")
+        };
+
+    public static void EnsureSupported(MailboxPurpose purpose, string parameterName)
+    {
+        if (!Enum.IsDefined(purpose))
+        {
+            throw new ArgumentOutOfRangeException(parameterName, "Unsupported mailbox purpose.");
+        }
+    }
+
+    public static string BuildCheckConstraintSql(string columnName) =>
+        $"{columnName} IN ({string.Join(", ", AllowedValues.Select(value => $"'{value}'"))})";
+
+    private static string Normalize(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().Replace("-", string.Empty).Replace("_", string.Empty).Replace(" ", string.Empty).ToLowerInvariant();
 }
 
 public static class MailboxConnectionStatusValues

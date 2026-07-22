@@ -438,7 +438,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>
         {
@@ -454,7 +454,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
             }
 
             return Task.FromResult(CreateNotFoundResponse());
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new InvoiceReviewsHarness(context, context.Services.GetRequiredService<FakeNavigationManager>(), financeRequests);
     }
@@ -476,7 +476,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, cancellationToken) =>
         {
@@ -492,7 +492,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
             }
 
             return Task.FromResult(CreateNotFoundResponse());
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new InvoiceReviewDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
     }
@@ -513,7 +513,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
                 _ => CreateNotFoundResponse()
             });
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {
@@ -530,7 +530,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
             }
 
             return Task.FromResult(CreateNotFoundResponse());
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new InvoiceReviewDetailHarness(context, context.Services.GetRequiredService<FakeNavigationManager>());
     }

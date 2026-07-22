@@ -333,6 +333,7 @@ public sealed record AgentRuntimeProfileDto(
     Dictionary<string, JsonNode?> TriggerLogic,
     Dictionary<string, JsonNode?> WorkingHours,
     AgentCommunicationProfileDto CommunicationProfile,
+    Dictionary<string, string> Briefing,
     bool CanReceiveAssignments,
     DateTime UpdatedUtc,
     string AutonomyLevel);
@@ -346,6 +347,7 @@ public interface ICompanyAgentService
     Task<CreateAgentFromTemplateResultDto> CreateFromTemplateAsync(Guid companyId, CreateAgentFromTemplateCommand command, CancellationToken cancellationToken);
     Task<AgentOperatingProfileDto> GetOperatingProfileAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
     Task<AgentOperatingProfileDto> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileCommand command, CancellationToken cancellationToken);
+    Task<AgentOperatingProfileDto> UpdateBriefAsync(Guid companyId, Guid agentId, UpdateAgentBriefCommand command, CancellationToken cancellationToken);
 }
 
 public interface IAgentRuntimeProfileResolver

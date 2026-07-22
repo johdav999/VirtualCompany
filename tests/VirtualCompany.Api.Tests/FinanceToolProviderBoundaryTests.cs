@@ -82,6 +82,7 @@ public sealed class FinanceToolProviderBoundaryTests
     {
         var providerMethods = typeof(VirtualCompany.Application.Finance.IFinanceToolProvider)
             .GetMethods()
+            .Select(method => method.Name)
             .ToHashSet(StringComparer.Ordinal);
 
         Assert.All(RegisteredFinanceToolProviderOperations.Values.Distinct(StringComparer.Ordinal), methodName => Assert.Contains(methodName, providerMethods));

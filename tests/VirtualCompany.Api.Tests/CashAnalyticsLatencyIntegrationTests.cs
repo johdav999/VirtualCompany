@@ -14,19 +14,16 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class CashAnalyticsLatencyIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class CashAnalyticsLatencyIntegrationTests : IDisposable
 {
     private const int SampleCount = 5;
     private const double DashboardMedianTargetMilliseconds = 2000;
     private const double AgentQueryMedianTargetMilliseconds = 2000;
     private static readonly DateTime ScenarioAsOfUtc = new(2026, 4, 17, 12, 0, 0, DateTimeKind.Utc);
 
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public CashAnalyticsLatencyIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Dashboard_cash_snapshot_endpoint_meets_seeded_multi_company_latency_threshold()

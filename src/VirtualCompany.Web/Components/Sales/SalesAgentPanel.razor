@@ -1,11 +1,11 @@
 @using System.Globalization
 
-<aside class="sales-agent-panel" aria-label="Sales agent panel">
+<aside class="sales-agent-panel" aria-label="@SalesText["SalesAgentPanel"]">
     <div class="sales-agent-panel__identity">
         <div class="sales-agent-panel__avatar">A</div>
         <div>
             <div class="sales-agent-panel__name">Alex</div>
-            <div class="sales-agent-panel__role">Sales Manager</div>
+            <div class="sales-agent-panel__role">@SalesText["SalesManager"]</div>
         </div>
     </div>
 
@@ -15,33 +15,33 @@
     }
     else if (Dashboard is null)
     {
-        <div class="sales-empty sales-empty--compact">Loading Alex's sales priorities...</div>
+        <div class="sales-empty sales-empty--compact">@SalesText["LoadingAlexPriorities"]</div>
     }
     else
     {
         <section>
-            <h2>Needs attention</h2>
+            <h2>@SalesText["NeedsAttention"]</h2>
             <div class="sales-agent-panel__metrics">
                 <a href="@BuildPath("/app/sales/leads")">
                     <span>@Dashboard.HotLeads</span>
-                    <small>hot leads</small>
+                    <small>@SalesText["HotLeads"]</small>
                 </a>
                 <a href="@BuildPath("/app/sales/pipeline")">
                     <span>@Dashboard.DealsNeedingAttention</span>
-                    <small>follow-ups</small>
+                    <small>@SalesText["FollowUps"]</small>
                 </a>
                 <a href="@BuildPath("/app/sales/campaigns")">
                     <span>@Dashboard.NewLeads</span>
-                    <small>campaign audience</small>
+                    <small>@SalesText["CampaignAudience"]</small>
                 </a>
             </div>
         </section>
 
         <section>
-            <h2>Alex recommends</h2>
+            <h2>@SalesText["AlexRecommends"]</h2>
             @if (Dashboard.AgentRecommendations.Count == 0)
             {
-                <div class="sales-empty sales-empty--compact">No recommendations need review.</div>
+                <div class="sales-empty sales-empty--compact">@SalesText["NoRecommendations"]</div>
             }
             else
             {
@@ -58,10 +58,10 @@
         </section>
 
         <section>
-            <h2>Recent sales activity</h2>
+            <h2>@SalesText["RecentSalesActivity"]</h2>
             @if (Dashboard.RecentActivity.Count == 0)
             {
-                <div class="sales-empty sales-empty--compact">No recent activity yet.</div>
+                <div class="sales-empty sales-empty--compact">@SalesText["NoRecentActivity"]</div>
             }
             else
             {

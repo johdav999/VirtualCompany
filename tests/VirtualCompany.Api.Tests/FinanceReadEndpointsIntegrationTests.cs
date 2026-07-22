@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceReadEndpointsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Internal_finance_read_endpoints_return_typed_company_scoped_payloads()
@@ -535,9 +532,11 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
             employeeSubject, employeeEmail, employeeDisplayName,
             approverSubject, approverEmail, approverDisplayName,
             financeSeed!.DocumentIds, anomalyId, affectedRecordId,
-            financeSeed!.DocumentIds, anomalyId, affectedRecordId,
             accessibleTransactionId, restrictedInvoiceId, reviewInvoiceId, missingTransactionId, missingInvoiceId);
     }
+
+    private static void ApplySeedingMetadata(Company company, FinanceSeedingState state) =>
+        company.SetFinanceSeedStatus(state, DateTime.UtcNow, state == FinanceSeedingState.Seeded ? DateTime.UtcNow : null);
 
     private async Task<FinanceSeedingStateEndpointSeed> SeedFinanceSeedingStateCompanyAsync(
         Action<VirtualCompanyDbContext, Company, Guid> configureCompany)
@@ -553,7 +552,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IClassFixture<TestWeb
         var userId = Guid.NewGuid();
         var companyId = Guid.NewGuid();
         var subject = $"finance-seeding-state-{Guid.NewGuid():N}";
-        var email = $"{subject}@example.com}";
+        var email = $"{subject}@example.com";
         const string displayName = "Finance Seeding State Reader";
 
         await factory.SeedAsync(dbContext =>

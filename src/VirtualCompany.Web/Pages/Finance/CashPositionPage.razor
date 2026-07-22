@@ -1,39 +1,39 @@
 @page "/finance/cash-position"
 @inherits FinanceSummaryPageBase<CashPositionSummaryViewModel>
 
-<PageTitle>Cash position</PageTitle>
+<PageTitle>@FinanceText["CashPosition"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Cash position"
-    Description="See how much cash you have and how long it will last."
-    LoadingMessage="Loading cash position..."
+    Title="@FinanceText["CashPosition"]"
+    Description="@FinanceText["CashPositionDescription"]"
+    LoadingMessage="@FinanceText["LoadingCashPosition"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <FinanceDataState
         IsLoading="@IsSummaryLoading"
         IsEmpty="@IsSummaryEmpty"
         ErrorMessage="@SummaryErrorMessage"
-        LoadingTitle="Loading cash position"
-        LoadingMessage="Getting your latest cash details."
-        EmptyTitle="No cash position yet"
-        EmptyMessage="No cash position summary is available yet."
-        RetryText="Reload cash position"
+        LoadingTitle="@FinanceText["LoadingCashPosition"]"
+        LoadingMessage="@FinanceText["GettingCashDetails"]"
+        EmptyTitle="@FinanceText["NoCashPosition"]"
+        EmptyMessage="@FinanceText["NoCashPositionDescription"]"
+        RetryText="@FinanceText["ReloadCashPosition"]"
         OnRetry="@RetryAsync">
         @if (ViewModel is not null)
         {
             <section class="cash-position-dashboard" aria-labelledby="cash-position-heading">
                 <div class="finance-overview-header">
                     <div>
-                        <span class="finance-overview-kicker">Finance module</span>
-                        <h1 id="cash-position-heading" class="finance-overview-title">Cash position</h1>
-                        <p class="finance-overview-subtitle">See how much cash you have and how long it will last.</p>
+                        <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                        <h1 id="cash-position-heading" class="finance-overview-title">@FinanceText["CashPosition"]</h1>
+                        <p class="finance-overview-subtitle">@FinanceText["CashPositionDescription"]</p>
                     </div>
                     <div class="finance-overview-header__actions">
-                        <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
-                        <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+                        <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                        <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
                     </div>
                 </div>
 
@@ -43,9 +43,9 @@
                     <article class="cash-position-card cash-position-card--wide">
                         <div class="cash-position-card__icon cash-position-card__icon--positive" aria-hidden="true">$</div>
                         <div class="cash-position-card__body">
-                            <p class="cash-position-card__label">Available cash</p>
+                            <p class="cash-position-card__label">@FinanceText["AvailableCash"]</p>
                             <div class="cash-position-card__value">@ViewModel.AvailableBalance</div>
-                            <p class="cash-position-card__muted">As of @FormattedAsOf</p>
+                            <p class="cash-position-card__muted">@FinanceText["AsOfValue", FormattedAsOf]</p>
                         </div>
                         <div class="cash-position-card__icon cash-position-card__icon--positive cash-position-card__icon--end" aria-hidden="true">$</div>
                     </article>
@@ -101,7 +101,7 @@
                             {
                                 <p>@paragraph</p>
                             }
-                            <p class="cash-position-card__muted mb-0">Status: @ViewModel.MeaningStatus</p>
+                            <p class="cash-position-card__muted mb-0">@FinanceText["StatusValue", ViewModel.MeaningStatus]</p>
                         </div>
                     </article>
                 </div>

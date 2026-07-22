@@ -142,12 +142,12 @@ public partial class BillsPage : FinancePageBase
         ActiveBillFilter = string.IsNullOrWhiteSpace(filter) ? BillLifecycleFilters.All : filter;
     }
 
-    private static string FormatCurrency(decimal amount, string currency) => $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
 
-    private static string FormatFriendlyDate(DateTime value) =>
-        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
+    private string FormatFriendlyDate(DateTime value) =>
+        value == default ? "Not available" : LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatStatusLabel(string? value) =>
+    private string FormatStatusLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
             ? "Unknown"
             : CultureInfo.InvariantCulture.TextInfo.ToTitleCase(
@@ -178,7 +178,7 @@ public partial class BillsPage : FinancePageBase
             _ => true
         };
 
-    private static BillListItemViewModel ToListItem(FinanceBillResponse bill, bool isSelected)
+    private BillListItemViewModel ToListItem(FinanceBillResponse bill, bool isSelected)
     {
         var paymentSummary = BuildPaymentSummary(bill.PaymentContext, bill.ProviderStatus, bill.Amount, bill.Currency);
         var effectiveSettlementStatus = ResolveEffectiveSettlementStatus(bill.SettlementStatus, bill.ProviderStatus, paymentSummary);
@@ -211,7 +211,7 @@ public partial class BillsPage : FinancePageBase
             isSelected);
     }
 
-    private static BillDetailViewModel ToDetailViewModel(
+    private BillDetailViewModel ToDetailViewModel(
         FinanceBillDetailResponse bill,
         FinanceTransactionPaymentContextResponse? listPaymentContext)
     {
@@ -251,15 +251,7 @@ public partial class BillsPage : FinancePageBase
                 bill.DocumentKind,
                 effectiveFallbackStatus,
                 paymentSummary?.RemainingAmount ?? bill.Amount);
-        var canPostPaidExpense = CanPostPaidSupplierBillExpense(
-            bill.PostingStatus,
-            effectiveSettlementStatus,
-            bill.DocumentKind,
-            effectiveFallbackStatus,
-            paymentSummary?.IsFullyPaid == true);
-        var paidExpensePosting = BuildPaidExpensePostingViewModel(
-            bill.PaidExpensePostingAvailability,
-            canPostPaidExpense);
+        var paidExpensePosting = BuildPaidExpensePostingViewModel(bill.PaidExpensePostingAvailability);
         return new BillDetailViewModel(
             string.IsNullOrWhiteSpace(bill.BillNumber) ? "Bill" : bill.BillNumber,
             string.IsNullOrWhiteSpace(bill.CounterpartyName) ? "Supplier not available" : bill.CounterpartyName,
@@ -910,7 +902,7 @@ public partial class BillsPage : FinancePageBase
         SelectedBill.CorrectionActions.Add(action);
     }
 
-    private static FinanceTransactionPaymentContextResponse? SelectPaymentContext(
+    private FinanceTransactionPaymentContextResponse? SelectPaymentContext(
         FinanceTransactionPaymentContextResponse? detailContext,
         FinanceTransactionPaymentContextResponse? listContext)
     {
@@ -922,13 +914,13 @@ public partial class BillsPage : FinancePageBase
         return HasPaymentEvidence(listContext) ? listContext : detailContext ?? listContext;
     }
 
-    private static bool HasPaymentEvidence(FinanceTransactionPaymentContextResponse? paymentContext) =>
+    private bool HasPaymentEvidence(FinanceTransactionPaymentContextResponse? paymentContext) =>
         paymentContext is not null &&
         (paymentContext.IsPartiallyPaid ||
          paymentContext.PaidAmount > 0m ||
          paymentContext.RemainingAmount > 0m && paymentContext.RemainingAmount < paymentContext.TotalAmount);
 
-    private static BillRelatedTransactionViewModel ToRelatedTransactionViewModel(FinanceInvoiceRelatedTransactionResponse transaction)
+    private BillRelatedTransactionViewModel ToRelatedTransactionViewModel(FinanceInvoiceRelatedTransactionResponse transaction)
     {
         var isPayment = IsPaymentTransaction(transaction.TransactionType);
         return new BillRelatedTransactionViewModel(
@@ -942,7 +934,7 @@ public partial class BillsPage : FinancePageBase
             isPayment ? "success" : "info");
     }
 
-    private static BillPaymentSummaryViewModel? BuildPaymentSummary(
+    private BillPaymentSummaryViewModel? BuildPaymentSummary(
         FinanceTransactionPaymentContextResponse? paymentContext,
         string? providerStatus,
         decimal billAmount,
@@ -971,7 +963,7 @@ public partial class BillsPage : FinancePageBase
         return providerSummary ?? contextSummary;
     }
 
-    private static BillPaymentSummaryViewModel? BuildPaymentSummaryFromProviderStatus(
+    private BillPaymentSummaryViewModel? BuildPaymentSummaryFromProviderStatus(
         string? providerStatus,
         decimal billAmount,
         string currency)
@@ -1001,7 +993,7 @@ public partial class BillsPage : FinancePageBase
         return null;
     }
 
-    private static PaymentProposalViewModel? BuildPaymentProposalViewModel(SupplierInvoicePaymentProposalResponse? proposal)
+    private PaymentProposalViewModel? BuildPaymentProposalViewModel(SupplierInvoicePaymentProposalResponse? proposal)
     {
         if (proposal is null)
         {
@@ -1072,7 +1064,7 @@ public partial class BillsPage : FinancePageBase
             proposal.ExportRequestedUtc);
     }
 
-    private static SourceDocumentAttachmentViewModel BuildSourceDocumentAttachmentViewModel(
+    private SourceDocumentAttachmentViewModel BuildSourceDocumentAttachmentViewModel(
         SupplierInvoiceSourceDocumentAttachmentResponse? attachment,
         FinanceLinkedDocumentAccessResponse linkedDocument)
     {
@@ -1109,7 +1101,7 @@ public partial class BillsPage : FinancePageBase
             attachment?.AttachedUtc);
     }
 
-    private static SupplierInvoiceDraftActionViewModel BuildDraftActionViewModel(
+    private SupplierInvoiceDraftActionViewModel BuildDraftActionViewModel(
         SupplierInvoiceDraftActionResponse? action,
         string? postingStatus,
         string? settlementStatus,
@@ -1145,7 +1137,7 @@ public partial class BillsPage : FinancePageBase
             action?.BookedUtc);
     }
 
-    private static SupplierInvoiceCorrectionActionsViewModel BuildCorrectionActionsViewModel(
+    private SupplierInvoiceCorrectionActionsViewModel BuildCorrectionActionsViewModel(
         IReadOnlyList<SupplierInvoiceCorrectionActionResponse>? actions,
         string? postingStatus,
         string? settlementStatus,
@@ -1209,7 +1201,7 @@ public partial class BillsPage : FinancePageBase
             creditNote?.ProviderCreditNoteNumber);
     }
 
-    private static SupplierInvoiceEnrichmentViewModel BuildEnrichmentViewModel(SupplierInvoiceEnrichmentActionResponse? action)
+    private SupplierInvoiceEnrichmentViewModel BuildEnrichmentViewModel(SupplierInvoiceEnrichmentActionResponse? action)
     {
         if (action is null)
         {
@@ -1257,7 +1249,7 @@ public partial class BillsPage : FinancePageBase
             action.SyncedUtc);
     }
 
-    private static string BuildEnrichmentSuggestionSummary(JsonObject? suggestion)
+    private string BuildEnrichmentSuggestionSummary(JsonObject? suggestion)
     {
         var account = ReadJsonString(suggestion?["coding"] as JsonObject, "ledgerAccount");
         var comment = ReadJsonString(suggestion, "comment");
@@ -1271,7 +1263,7 @@ public partial class BillsPage : FinancePageBase
             : comment;
     }
 
-    private static IReadOnlyList<string> BuildEnrichmentSuggestionItems(JsonObject? suggestion)
+    private IReadOnlyList<string> BuildEnrichmentSuggestionItems(JsonObject? suggestion)
     {
         var items = new List<string>();
         var coding = suggestion?["coding"] as JsonObject;
@@ -1285,7 +1277,7 @@ public partial class BillsPage : FinancePageBase
         return items;
     }
 
-    private static IReadOnlyList<string> BuildEnrichmentWarningItems(JsonArray? warnings) =>
+    private IReadOnlyList<string> BuildEnrichmentWarningItems(JsonArray? warnings) =>
         warnings is null
             ? []
             : warnings
@@ -1295,7 +1287,7 @@ public partial class BillsPage : FinancePageBase
                 .Select(message => message!)
                 .ToArray();
 
-    private static void AddIfPresent(List<string> items, string label, string? value)
+    private void AddIfPresent(List<string> items, string label, string? value)
     {
         if (!string.IsNullOrWhiteSpace(value))
         {
@@ -1303,12 +1295,12 @@ public partial class BillsPage : FinancePageBase
         }
     }
 
-    private static string? ReadJsonString(JsonObject? obj, string propertyName) =>
+    private string? ReadJsonString(JsonObject? obj, string propertyName) =>
         obj is not null && obj.TryGetPropertyValue(propertyName, out var node) && node is not null && !string.IsNullOrWhiteSpace(node.ToString())
             ? node.ToString()
             : null;
 
-    private static bool CanRequestCancellation(
+    private bool CanRequestCancellation(
         string? postingStatus,
         string? settlementStatus,
         string? documentKind,
@@ -1325,7 +1317,7 @@ public partial class BillsPage : FinancePageBase
             fallback is not ("paid" or "cancelled" or "canceled" or "void");
     }
 
-    private static bool CanRequestCreditNote(
+    private bool CanRequestCreditNote(
         string? postingStatus,
         string? settlementStatus,
         string? documentKind,
@@ -1342,7 +1334,7 @@ public partial class BillsPage : FinancePageBase
             fallback is not ("cancelled" or "canceled" or "void");
     }
 
-    private static BillStatusPresentation? ResolvePaymentProposalPresentation(SupplierInvoicePaymentProposalResponse? proposal)
+    private BillStatusPresentation? ResolvePaymentProposalPresentation(SupplierInvoicePaymentProposalResponse? proposal)
     {
         if (proposal is null)
         {
@@ -1368,7 +1360,7 @@ public partial class BillsPage : FinancePageBase
         };
     }
 
-    private static BillStatusPresentation? ResolveCorrectionListPresentation(IReadOnlyList<SupplierInvoiceCorrectionActionResponse>? actions)
+    private BillStatusPresentation? ResolveCorrectionListPresentation(IReadOnlyList<SupplierInvoiceCorrectionActionResponse>? actions)
     {
         if (actions is null || actions.Count == 0)
         {
@@ -1390,7 +1382,7 @@ public partial class BillsPage : FinancePageBase
         };
     }
 
-    private static BillStatusPresentation? ResolveEnrichmentListPresentation(SupplierInvoiceEnrichmentActionResponse? action)
+    private BillStatusPresentation? ResolveEnrichmentListPresentation(SupplierInvoiceEnrichmentActionResponse? action)
     {
         if (action is null)
         {
@@ -1409,11 +1401,11 @@ public partial class BillsPage : FinancePageBase
         };
     }
 
-    private static bool CanRequestPaymentProposalAfter(PaymentProposalViewModel? proposal) =>
+    private bool CanRequestPaymentProposalAfter(PaymentProposalViewModel? proposal) =>
         proposal is null ||
         NormalizeStatusToken(proposal.StatusLabel) is "exported" or "rejected" or "cancelled";
 
-    private static bool NeedsFortnoxBookkeep(SupplierInvoicePaymentProposalResponse proposal)
+    private bool NeedsFortnoxBookkeep(SupplierInvoicePaymentProposalResponse proposal)
     {
         var summary = proposal.ExportResponseSummary;
         return NormalizeStatusToken(proposal.ExportStatus) == "exported" &&
@@ -1422,7 +1414,7 @@ public partial class BillsPage : FinancePageBase
                !summary.Contains("booked", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static BillPaymentSummaryViewModel BuildPaymentSummary(
+    private BillPaymentSummaryViewModel BuildPaymentSummary(
         decimal paidAmount,
         decimal totalAmount,
         decimal remainingAmount,
@@ -1449,7 +1441,7 @@ public partial class BillsPage : FinancePageBase
             reason);
     }
 
-    private static IReadOnlyList<BillSourceDetailViewModel> BuildSourceDetails(string? providerStatus, string currency)
+    private IReadOnlyList<BillSourceDetailViewModel> BuildSourceDetails(string? providerStatus, string currency)
     {
         if (string.IsNullOrWhiteSpace(providerStatus))
         {
@@ -1497,7 +1489,7 @@ public partial class BillsPage : FinancePageBase
         return details;
     }
 
-    private static Dictionary<string, string> ParseProviderStatus(string providerStatus)
+    private Dictionary<string, string> ParseProviderStatus(string providerStatus)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var segment in providerStatus.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -1514,18 +1506,18 @@ public partial class BillsPage : FinancePageBase
         return values;
     }
 
-    private static bool TryGetBool(IReadOnlyDictionary<string, string> values, string key, out bool result)
+    private bool TryGetBool(IReadOnlyDictionary<string, string> values, string key, out bool result)
     {
         result = false;
         return values.TryGetValue(key, out var value) &&
             bool.TryParse(value, out result);
     }
 
-    private static bool HasProviderBalanceStatus(string? providerStatus) =>
+    private bool HasProviderBalanceStatus(string? providerStatus) =>
         !string.IsNullOrWhiteSpace(providerStatus) &&
         ParseProviderStatus(providerStatus).ContainsKey("balance");
 
-    private static string? ResolveEffectiveSettlementStatus(
+    private string? ResolveEffectiveSettlementStatus(
         string? settlementStatus,
         string? providerStatus,
         BillPaymentSummaryViewModel? paymentSummary)
@@ -1543,7 +1535,7 @@ public partial class BillsPage : FinancePageBase
         return paymentSummary.IsPartiallyPaid ? "partially_paid" : "unpaid";
     }
 
-    private static string? ResolveEffectiveFallbackStatus(
+    private string? ResolveEffectiveFallbackStatus(
         string? fallbackStatus,
         string? providerStatus,
         BillPaymentSummaryViewModel? paymentSummary)
@@ -1556,27 +1548,27 @@ public partial class BillsPage : FinancePageBase
         return paymentSummary.IsFullyPaid ? "paid" : "open";
     }
 
-    private static bool IsPaymentTransaction(string? transactionType)
+    private bool IsPaymentTransaction(string? transactionType)
     {
         var normalized = NormalizeStatusToken(transactionType);
         return normalized is "customer_payment" or "supplier_payment" or "payment";
     }
 
-    private static bool IsDueSoonBill(FinanceBillResponse bill) =>
+    private bool IsDueSoonBill(FinanceBillResponse bill) =>
         NormalizeStatusToken(bill.DueStatus) == "due_soon" && IsOpenUnpaidBill(bill);
 
-    private static bool IsOverdueBill(FinanceBillResponse bill) =>
+    private bool IsOverdueBill(FinanceBillResponse bill) =>
         NormalizeStatusToken(bill.DueStatus) == "overdue" && IsOpenUnpaidBill(bill);
 
-    private static bool IsPaidBill(FinanceBillResponse bill) =>
+    private bool IsPaidBill(FinanceBillResponse bill) =>
         NormalizeStatusToken(bill.SettlementStatus) == "paid" ||
         NormalizeStatusToken(bill.Status) == "paid";
 
-    private static bool IsCancelledBill(FinanceBillResponse bill) =>
+    private bool IsCancelledBill(FinanceBillResponse bill) =>
         NormalizeStatusToken(bill.PostingStatus) == "cancelled" ||
         NormalizeStatusToken(bill.Status) is "cancelled" or "canceled" or "void";
 
-    private static bool IsOpenUnpaidBill(FinanceBillResponse bill)
+    private bool IsOpenUnpaidBill(FinanceBillResponse bill)
     {
         var settlement = NormalizeStatusToken(bill.SettlementStatus);
         var kind = NormalizeStatusToken(bill.DocumentKind);
@@ -1586,7 +1578,7 @@ public partial class BillsPage : FinancePageBase
                kind != "supplier_credit_note";
     }
 
-    private static bool IsPayableSupplierBill(
+    private bool IsPayableSupplierBill(
         string? postingStatus,
         string? settlementStatus,
         string? documentKind,
@@ -1605,7 +1597,7 @@ public partial class BillsPage : FinancePageBase
             fallback is not ("paid" or "cancelled" or "canceled" or "void");
     }
 
-    private static bool CanManageFortnoxDraft(
+    private bool CanManageFortnoxDraft(
         string? postingStatus,
         string? settlementStatus,
         string? documentKind,
@@ -1624,28 +1616,8 @@ public partial class BillsPage : FinancePageBase
             fallback is not ("paid" or "cancelled" or "canceled" or "void" or "booked");
     }
 
-    private static bool CanPostPaidSupplierBillExpense(
-        string? postingStatus,
-        string? settlementStatus,
-        string? documentKind,
-        string? fallbackStatus,
-        bool isFullyPaid)
-    {
-        var posting = NormalizeStatusToken(postingStatus);
-        var settlement = NormalizeStatusToken(settlementStatus);
-        var kind = NormalizeStatusToken(documentKind);
-        var fallback = NormalizeStatusToken(fallbackStatus);
-
-        return isFullyPaid &&
-            kind == "supplier_invoice" &&
-            posting == "draft" &&
-            settlement == "paid" &&
-            fallback is not ("cancelled" or "canceled" or "void" or "booked");
-    }
-
-    private static PaidExpensePostingViewModel BuildPaidExpensePostingViewModel(
-        PaidSupplierBillExpenseAvailabilityResponse? availability,
-        bool fallbackCanPost)
+    private PaidExpensePostingViewModel BuildPaidExpensePostingViewModel(
+        PaidSupplierBillExpenseAvailabilityResponse? availability)
     {
         if (availability is not null)
         {
@@ -1667,17 +1639,15 @@ public partial class BillsPage : FinancePageBase
         }
 
         return new PaidExpensePostingViewModel(
-            fallbackCanPost,
-            fallbackCanPost ? "Ready to post" : "Not ready",
-            fallbackCanPost ? "success" : "warning",
-            fallbackCanPost
-                ? "Laura can post this paid supplier bill as an expense."
-                : "This bill is not currently eligible for paid expense posting.",
+            false,
+            "Not ready",
+            "warning",
+            "Expense posting eligibility is unavailable. Refresh the bill before posting.",
             null,
             []);
     }
 
-    private static BillStatusPresentation ResolveStatusPresentation(
+    private BillStatusPresentation ResolveStatusPresentation(
         string? postingStatus,
         string? settlementStatus,
         string? dueStatus,
@@ -1750,10 +1720,10 @@ public partial class BillsPage : FinancePageBase
         };
     }
 
-    private static string NormalizeStatusToken(string? value) =>
+    private string NormalizeStatusToken(string? value) =>
         value?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
 
-    private static string FormatDocumentKind(string? value) =>
+    private string FormatDocumentKind(string? value) =>
         NormalizeStatusToken(value) switch
         {
             "supplier_credit_note" => "Credit note",
@@ -1761,7 +1731,7 @@ public partial class BillsPage : FinancePageBase
             _ => FormatStatusLabel(value)
         };
 
-    private static string ResolveApprovalStatus(string? status)
+    private string ResolveApprovalStatus(string? status)
     {
         var normalized = status?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
         return normalized switch
@@ -1775,7 +1745,7 @@ public partial class BillsPage : FinancePageBase
 
     private sealed record BillStatusPresentation(string Label, string Tone);
 
-    private static class BillLifecycleFilters
+    private class BillLifecycleFilters
     {
         public const string All = "all";
         public const string DueSoon = "due_soon";

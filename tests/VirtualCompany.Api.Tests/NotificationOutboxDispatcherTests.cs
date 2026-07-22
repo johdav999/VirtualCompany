@@ -13,15 +13,12 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class NotificationOutboxDispatcherTests : IClassFixture<TestWebApplicationFactory>
+public sealed class NotificationOutboxDispatcherTests : IDisposable
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public NotificationOutboxDispatcherTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task OutboxProcessor_dispatches_pending_notification_and_marks_message_processed()

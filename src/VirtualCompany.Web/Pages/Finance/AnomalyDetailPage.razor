@@ -3,38 +3,38 @@
 @inherits FinancePageBase
 @using VirtualCompany.Web.Services
 
-<PageTitle>Finance issue detail</PageTitle>
+<PageTitle>@FinanceText["FinanceIssueDetail"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance issue detail"
-    Description="Review issue details, related records, and follow-up tasks."
-    LoadingMessage="Loading finance issue detail...">
+    Title="@FinanceText["FinanceIssueDetail"]"
+    Description="@FinanceText["IssueDetailDescription"]"
+    LoadingMessage="@FinanceText["LoadingIssue"]">
     @if (IsDetailLoading)
     {
         <section class="wizard-card">
-            <h2 class="h5 mb-2">Loading issue</h2>
-            <p class="text-body-secondary mb-0">Fetching the latest issue details and follow-up references.</p>
+            <h2 class="h5 mb-2">@FinanceText["LoadingIssue"]</h2>
+            <p class="text-body-secondary mb-0">@FinanceText["FetchingIssueDetail"]</p>
         </section>
     }
     else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
     {
         <section class="wizard-card">
             <div class="alert alert-danger mb-3">@DetailErrorMessage</div>
-            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">Retry</button>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">@CommonText["Retry"]</button>
         </section>
     }
     else if (Detail is not null)
     {
         <div class="dashboard-actions mb-4">
-            <a class="btn btn-outline-secondary" href="@BackToListHref">Back to issues</a>
+            <a class="btn btn-outline-secondary" href="@BackToListHref">@FinanceText["BackToIssues"]</a>
         </div>
 
         <section class="finance-detail-grid">
             <article class="wizard-card finance-metric-card finance-metric-card--hero">
-                <span class="dashboard-kicker">Issue</span>
+                <span class="dashboard-kicker">@FinanceText["Issue"]</span>
                 <h2 class="mb-3">@FinanceAnomalyPresentation.FormatLabel(Detail.AnomalyType)</h2>
                 <div class="d-flex flex-wrap gap-2 mb-3">
                     <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(Detail.Status)">@FinanceAnomalyPresentation.FormatLabel(Detail.Status)</span>
@@ -44,65 +44,65 @@
             </article>
 
             <article class="wizard-card finance-state-card">
-                <span class="dashboard-kicker">Affected record</span>
+                <span class="dashboard-kicker">@FinanceText["AffectedRecord"]</span>
                 @if (Detail.AffectedRecord is not null)
                 {
                     <h3 class="h5">@Detail.AffectedRecord.Reference</h3>
                     <dl class="cockpit-kpi-list mb-0">
                         <div>
-                            <dt>Supplier</dt>
-                            <dd>@(Detail.SupplierName ?? Detail.AffectedRecord.SupplierName ?? "n/a")</dd>
+                            <dt>@FinanceText["Supplier"]</dt>
+                            <dd>@(Detail.SupplierName ?? Detail.AffectedRecord.SupplierName ?? FinanceText["NotAvailable"])</dd>
                         </div>
                         <div>
-                            <dt>Occurred</dt>
+                            <dt>@FinanceText["Occurred"]</dt>
                             <dd>@FinanceAnomalyPresentation.FormatDateTime(Detail.AffectedRecord.OccurredAtUtc)</dd>
                         </div>
                         <div>
-                            <dt>Amount</dt>
+                            <dt>@FinanceText["Amount"]</dt>
                             <dd>@FinanceAnomalyPresentation.FormatCurrency(Detail.AffectedRecord.Amount, Detail.AffectedRecord.Currency)</dd>
                         </div>
                     </dl>
                     <div class="dashboard-actions mt-3">
-                        <a class="btn btn-outline-secondary" href="@TransactionHref">Open transaction</a>
+                        <a class="btn btn-outline-secondary" href="@TransactionHref">@FinanceText["OpenTransaction"]</a>
                         @if (InvoiceHref is not null)
                         {
-                            <a class="btn btn-outline-secondary" href="@InvoiceHref">Open invoice</a>
+                            <a class="btn btn-outline-secondary" href="@InvoiceHref">@FinanceText["OpenInvoice"]</a>
                         }
                         @if (BillHref is not null)
                         {
-                            <a class="btn btn-outline-secondary" href="@BillHref">Open bill</a>
+                            <a class="btn btn-outline-secondary" href="@BillHref">@FinanceText["OpenBill"]</a>
                         }
                     </div>
                 }
                 else
                 {
-                    <p class="text-body-secondary mb-0">The underlying finance record could not be resolved for this anomaly.</p>
+                    <p class="text-body-secondary mb-0">@FinanceText["RecordUnavailable"]</p>
                 }
             </article>
 
             <article class="wizard-card finance-state-card">
-                <span class="dashboard-kicker">Recommended action</span>
+                <span class="dashboard-kicker">@FinanceText["RecommendedAction"]</span>
                 <h3 class="h5">@Detail.RecommendedAction</h3>
-                <p class="text-body-secondary mb-0">Detected @FinanceAnomalyPresentation.FormatDateTime(Detail.DetectedAtUtc).</p>
+                <p class="text-body-secondary mb-0">@FinanceText["DetectedValue", FinanceAnomalyPresentation.FormatDateTime(Detail.DetectedAtUtc)]</p>
             </article>
         </section>
 
         @if (Detail.Deduplication is { } deduplication && FinanceAnomalyPresentation.HasDeduplicationMetadata(deduplication))
         {
             <section class="wizard-card finance-anomaly-section mt-4">
-                <h2 class="h5">Deduplication metadata</h2>
+                <h2 class="h5">@FinanceText["DeduplicationMetadata"]</h2>
                 <dl class="cockpit-kpi-list mb-0">
                     @if (!string.IsNullOrWhiteSpace(deduplication.Key))
                     {
                         <div>
-                            <dt>Key</dt>
+                            <dt>@FinanceText["Key"]</dt>
                             <dd>@deduplication.Key</dd>
                         </div>
                     }
                     @if (deduplication.WindowStartUtc.HasValue || deduplication.WindowEndUtc.HasValue)
                     {
                         <div>
-                            <dt>Window</dt>
+                            <dt>@FinanceText["Window"]</dt>
                             <dd>@FinanceAnomalyPresentation.FormatWindow(deduplication.WindowStartUtc, deduplication.WindowEndUtc)</dd>
                         </div>
                     }
@@ -115,8 +115,8 @@
             <section class="wizard-card finance-anomaly-section mt-4">
                 <div class="finance-anomaly-section__header">
                     <div>
-                        <h2 class="h5 mb-1">Underlying records</h2>
-                        <p class="text-body-secondary mb-0">Navigate to the related finance records without losing the current workbench filters.</p>
+                        <h2 class="h5 mb-1">@FinanceText["UnderlyingRecords"]</h2>
+                        <p class="text-body-secondary mb-0">@FinanceText["UnderlyingRecordsDescription"]</p>
                     </div>
                 </div>
                 <div class="finance-anomaly-task-list">
@@ -129,7 +129,7 @@
                                 <strong>@FinanceAnomalyPresentation.FormatLabel(record.RecordType)</strong>
                                 @if (recordHref is not null)
                                 {
-                                    <a class="btn btn-outline-secondary btn-sm" href="@recordHref">Open @FinanceAnomalyPresentation.FormatLabel(record.RecordType)</a>
+                                    <a class="btn btn-outline-secondary btn-sm" href="@recordHref">@FinanceText["OpenRecordType", FinanceAnomalyPresentation.FormatLabel(record.RecordType)]</a>
                                 }
                             </div>
                             <div class="small text-body-secondary mt-2">@record.Reference</div>
@@ -155,13 +155,13 @@
         <section class="wizard-card finance-anomaly-section mt-4">
             <div class="finance-anomaly-section__header">
                 <div>
-                    <h2 class="h5 mb-1">Follow-up tasks</h2>
-                    <p class="text-body-secondary mb-0">Related work items stay linked through the anomaly correlation id.</p>
+                    <h2 class="h5 mb-1">@FinanceText["FollowUpTasks"]</h2>
+                    <p class="text-body-secondary mb-0">@FinanceText["FollowUpTasksDescription"]</p>
                 </div>
             </div>
             @if (Detail.FollowUpTasks.Count == 0)
             {
-                <p class="text-body-secondary mb-0">No follow-up tasks are currently linked to this anomaly.</p>
+                <p class="text-body-secondary mb-0">@FinanceText["NoFollowUpTasks"]</p>
             }
             else
             {
@@ -174,7 +174,7 @@
                                 <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(task.Status)">@FinanceAnomalyPresentation.FormatLabel(task.Status)</span>
                             </div>
                             <div class="small text-body-secondary mt-2">
-                                Updated @FinanceAnomalyPresentation.FormatDateTime(task.UpdatedUtc)
+                                @FinanceText["UpdatedAt", FinanceAnomalyPresentation.FormatDateTime(task.UpdatedUtc)]
                             </div>
                         </a>
                     }

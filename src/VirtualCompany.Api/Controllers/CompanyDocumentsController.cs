@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Api.ProblemHandling;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -14,6 +15,7 @@ namespace VirtualCompany.Api.Controllers;
 [RequireCompanyContext]
 public sealed class CompanyDocumentsController : ControllerBase
 {
+    private const string GetCompanyDocumentRouteName = "GetCompanyDocumentById";
     private readonly ICompanyDocumentService _documentService;
     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
     private readonly IWebHostEnvironment _environment;
@@ -50,10 +52,12 @@ public sealed class CompanyDocumentsController : ControllerBase
             var path = Path.Combine(_environment.ContentRootPath, "DefaultKnowledge", definition.FileName);
             if (!System.IO.File.Exists(path))
             {
-                return Problem(
-                    title: "Default support knowledge is unavailable",
-                    detail: $"The bundled document '{definition.FileName}' is missing from this deployment.",
-                    statusCode: StatusCodes.Status503ServiceUnavailable);
+                return StatusCode(StatusCodes.Status503ServiceUnavailable, StableProblemDetails.Create(
+                    HttpContext,
+                    StatusCodes.Status503ServiceUnavailable,
+                    ApiProblemCodes.DocumentProcessingFailed,
+                    "Default support knowledge is unavailable",
+                    "A bundled support knowledge document is missing from this deployment."));
             }
 
             await using var stream = System.IO.File.OpenRead(path);
@@ -88,7 +92,7 @@ public sealed class CompanyDocumentsController : ControllerBase
         CancellationToken cancellationToken) =>
         _documentService.ListAsync(companyId, cancellationToken);
 
-    [HttpGet("{documentId:guid}")]
+    [HttpGet("{documentId:guid}", Name = GetCompanyDocumentRouteName)]
     public async Task<ActionResult<CompanyKnowledgeDocumentDto>> GetAsync(
         Guid companyId,
         Guid documentId,
@@ -138,8 +142,8 @@ public sealed class CompanyDocumentsController : ControllerBase
             stream);
 
         var document = await _documentService.UploadAsync(companyId, command, cancellationToken);
-        return CreatedAtAction(
-            nameof(GetAsync),
+        return CreatedAtRoute(
+            GetCompanyDocumentRouteName,
             new { companyId, documentId = document.Id },
             document);
     }

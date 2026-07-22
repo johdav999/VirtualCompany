@@ -1,56 +1,56 @@
 @page "/system/admin/tool-registry"
 @inherits FinanceTransparencyPageBase
 
-<PageTitle>Tool registry</PageTitle>
+<PageTitle>@FinanceText["ToolRegistry"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Tool registry"
-    Description="Inspect finance tool manifests, schema summaries, and provider adapter metadata."
-    LoadingMessage="Loading tool registry..."
+    Title="@FinanceText["ToolRegistry"]"
+    Description="@FinanceText["ToolRegistryDescription"]"
+    LoadingMessage="@FinanceText["LoadingToolRegistry"]"
     Area="SystemAdmin">
     @if (!HasTransparencyAccess)
     {
         <ForbiddenState
-            Title="System access required"
-            Message="System administration pages are limited to company admins and testers."
+            Title="@FinanceText["SystemAccessRequired"]"
+            Message="@FinanceText["SystemAccessRequiredMessage"]"
             ReturnHref="@BuildFinanceHomeHref()"
-            ReturnText="Back to finance" />
+            ReturnText="@FinanceText["BackToFinance"]" />
     }
     else
     {
         <div class="wizard-card wizard-card--compact">
             <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
                 <div>
-                            <h2 class="h5 mb-1">Tool manifest registry</h2>
-                    <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Registered finance manifests are projected from the current runtime registry for the active company context." : Summary)</p>
+                            <h2 class="h5 mb-1">@FinanceText["ToolManifestRegistry"]</h2>
+                    <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? FinanceText["ToolManifestRegistrySummary"] : Summary)</p>
                 </div>
-                <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
+                <span class="badge text-bg-light">@FinanceText["ItemCount", Items.Count]</span>
             </div>
 
             <FinanceDataState
                 IsLoading="@IsListLoading"
                 IsEmpty="@IsListEmpty"
                 ErrorMessage="@ListErrorMessage"
-                LoadingTitle="Loading finance tool manifests"
-                LoadingMessage="Resolving finance tool manifest metadata."
-                EmptyTitle="No finance tool manifests available"
-                EmptyMessage="No finance tool manifests are currently registered."
-                ErrorTitle="Finance tool manifests are unavailable"
+                LoadingTitle="@FinanceText["LoadingFinanceToolManifests"]"
+                LoadingMessage="@FinanceText["ResolvingFinanceToolManifests"]"
+                EmptyTitle="@FinanceText["NoFinanceToolManifests"]"
+                EmptyMessage="@FinanceText["NoFinanceToolManifestsMessage"]"
+                ErrorTitle="@FinanceText["FinanceToolManifestsUnavailable"]"
                 OnRetry="@ReloadAsync">
                 <div class="table-responsive">
                     <table class="table finance-table mb-0">
                         <thead>
                             <tr>
-                                <th scope="col">Tool</th>
-                                <th scope="col">Version</th>
-                                <th scope="col">Version metadata</th>
-                                <th scope="col">Contract summary</th>
-                                <th scope="col">Schema summary</th>
-                                <th scope="col">Manifest source</th>
-                                <th scope="col">Provider adapter</th>
+                                <th scope="col">@FinanceText["Tool"]</th>
+                                <th scope="col">@FinanceText["Version"]</th>
+                                <th scope="col">@FinanceText["VersionMetadata"]</th>
+                                <th scope="col">@FinanceText["ContractSummary"]</th>
+                                <th scope="col">@FinanceText["SchemaSummary"]</th>
+                                <th scope="col">@FinanceText["ManifestSource"]</th>
+                                <th scope="col">@FinanceText["ProviderAdapter"]</th>
                             </tr>
                         </thead>
                         <tbody>

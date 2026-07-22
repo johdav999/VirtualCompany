@@ -8,19 +8,16 @@ using VirtualCompany.Application.Activity;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
-using VirtualCompany.Infrastructure.Authentication;
+using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ActivityCorrelationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ActivityCorrelationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Correlation_timeline_returns_ordered_events_with_resolved_linked_entities()
@@ -46,7 +43,8 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA
         Assert.DoesNotContain("null", timeline.Items[1].Activity.NormalizedSummary.SummaryText, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("undefined", timeline.Items[1].Activity.NormalizedSummary.SummaryText, StringComparison.OrdinalIgnoreCase);
 
-        var selectedLinks = Assert.NotNull(timeline.SelectedActivityLinks);
+        Assert.NotNull(timeline.SelectedActivityLinks);
+        var selectedLinks = timeline.SelectedActivityLinks!;
         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Task && x.CurrentStatus == WorkTaskStatus.InProgress.ToStorageValue());
         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.WorkflowInstance && x.CurrentStatus == WorkflowInstanceStatus.Running.ToStorageValue());
         Assert.Contains(selectedLinks.LinkedEntities, x => x.EntityType == ActivityEntityTypes.Approval && x.CurrentStatus == ApprovalRequestStatus.Pending.ToStorageValue());
@@ -186,7 +184,7 @@ public sealed class ActivityCorrelationIntegrationTests : IClassFixture<TestWebA
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
         }
 
-        dbContext.Agents.Add(new Agent(agentId, companyId, "Ops Agent", "Operations", "Operations", AgentSeniority.Mid));
+        dbContext.Agents.Add(new Agent(agentId, companyId, "ops-agent", "Ops Agent", "Operations", "Operations", null, AgentSeniority.Mid));
         dbContext.WorkflowDefinitions.Add(new WorkflowDefinition(
             definitionId,
             companyId,

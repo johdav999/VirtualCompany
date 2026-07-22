@@ -117,7 +117,6 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
         var connection = await _dbContext.MailboxConnections
             .SingleAsync(
                 x => x.CompanyId == job.CompanyId &&
-                    x.UserId == job.UserId &&
                     x.Id == job.MailboxConnectionId,
                 cancellationToken);
 
@@ -136,10 +135,12 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                 throw new InvalidOperationException("Mailbox connection is not active.");
             }
 
-            var accessToken = _fieldEncryption.Decrypt(
-                job.CompanyId,
-                CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
-                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
+            var accessToken = connection.Provider == MailboxProvider.StandardEmail
+                ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
+                : _fieldEncryption.Decrypt(
+                    job.CompanyId,
+                    CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
+                    connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
 
             var provider = _providerRegistry.Resolve(connection.Provider);
             var messages = await provider.ListMessagesAsync(
@@ -163,11 +164,16 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                 string.Join(", ", CompanyMailboxConnectionService.NormalizeFolders(connection.ConfiguredFolders, connection.Provider)
                     .Select(folder => $"{folder.DisplayName ?? folder.ProviderFolderId} ({folder.ProviderFolderId})")));
 
-            var knownAttachmentSnapshotIdsByHash = await _dbContext.EmailAttachmentSnapshots
+            var knownAttachmentSnapshots = await _dbContext.EmailAttachmentSnapshots
                 .Where(x => x.CompanyId == job.CompanyId)
-                .GroupBy(x => x.ContentHash)
-                .Select(x => new { ContentHash = x.Key, SnapshotId = x.Min(y => y.Id) })
-                .ToDictionaryAsync(x => x.ContentHash, x => x.SnapshotId, StringComparer.OrdinalIgnoreCase, cancellationToken);
+                .Select(x => new { x.ContentHash, SnapshotId = x.Id, x.CreatedUtc })
+                .ToListAsync(cancellationToken);
+            var knownAttachmentSnapshotIdsByHash = knownAttachmentSnapshots
+                .GroupBy(x => x.ContentHash, StringComparer.OrdinalIgnoreCase)
+                .ToDictionary(
+                    group => group.Key,
+                    group => group.OrderBy(x => x.CreatedUtc).ThenBy(x => x.SnapshotId).First().SnapshotId,
+                    StringComparer.OrdinalIgnoreCase);
 
             foreach (var message in messages)
             {
@@ -242,6 +248,10 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
             }
 
             var completedUtc = _timeProvider.GetUtcNow().UtcDateTime;
+            if (connection.Provider == MailboxProvider.StandardEmail)
+            {
+                await AdvanceStandardMailboxCursorsAsync(connection, messages, completedUtc, cancellationToken);
+            }
             run.Complete(
                 completedUtc,
                 scanned,
@@ -272,6 +282,44 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                 connection.Provider,
                 connection.Id,
                 run.Id);
+        }
+    }
+
+    private async Task AdvanceStandardMailboxCursorsAsync(
+        MailboxConnection connection,
+        IReadOnlyList<MailboxMessageSummary> messages,
+        DateTime completedUtc,
+        CancellationToken cancellationToken)
+    {
+        var checkpoints = messages
+            .Where(message => !string.IsNullOrWhiteSpace(message.FolderId) &&
+                StandardMailboxMessageReference.TryRead(message.ProviderMessageId, out _, out _))
+            .Select(message =>
+            {
+                StandardMailboxMessageReference.TryRead(message.ProviderMessageId, out var uidValidity, out var uid);
+                return new { FolderId = message.FolderId!, UidValidity = uidValidity, Uid = uid };
+            })
+            .GroupBy(item => new { item.FolderId, item.UidValidity })
+            .Select(group => new { group.Key.FolderId, group.Key.UidValidity, LastUid = group.Max(item => item.Uid) })
+            .ToArray();
+
+        foreach (var checkpoint in checkpoints)
+        {
+            var cursor = await _dbContext.MailboxFolderSyncCursors
+                .SingleOrDefaultAsync(item => item.CompanyId == connection.CompanyId &&
+                    item.MailboxConnectionId == connection.Id &&
+                    item.FolderId == checkpoint.FolderId, cancellationToken);
+            if (cursor is null)
+            {
+                cursor = new MailboxFolderSyncCursor(Guid.NewGuid(), connection.CompanyId, connection.Id, checkpoint.FolderId, completedUtc);
+                _dbContext.MailboxFolderSyncCursors.Add(cursor);
+            }
+            else if (cursor.Status == MailboxCursorStatus.ReconciliationRequired)
+            {
+                cursor.ResetAfterReconciliation(checkpoint.UidValidity, completedUtc);
+            }
+
+            cursor.Advance(checkpoint.UidValidity, checkpoint.LastUid, null, completedUtc);
         }
     }
 

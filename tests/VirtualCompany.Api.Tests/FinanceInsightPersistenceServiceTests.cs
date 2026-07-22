@@ -24,7 +24,7 @@ public sealed class FinanceInsightPersistenceServiceTests
         await dbContext.SaveChangesAsync();
 
         var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 22, 8, 0, 0, TimeSpan.Zero));
-        var service = new FinanceInsightPersistenceService(dbContext, timeProvider);
+        var service = new FinanceInsightPersistenceService(new FinanceAgentInsightRepository(dbContext), timeProvider);
         var context = new FinancialCheckContext(companyId, timeProvider.GetUtcNow().UtcDateTime, 90, 30, 14);
         var primaryEntity = new FinanceInsightEntityReferenceDto("counterparty", "customer-1", "Contoso", true);
 
@@ -104,7 +104,7 @@ public sealed class FinanceInsightPersistenceServiceTests
         await dbContext.SaveChangesAsync();
 
         var timeProvider = new MutableTimeProvider(new DateTimeOffset(2026, 4, 22, 8, 0, 0, TimeSpan.Zero));
-        var service = new FinanceInsightPersistenceService(dbContext, timeProvider);
+        var service = new FinanceInsightPersistenceService(new FinanceAgentInsightRepository(dbContext), timeProvider);
         var context = new FinancialCheckContext(companyId, timeProvider.GetUtcNow().UtcDateTime, 90, 30, 14);
         var contoso = new FinanceInsightEntityReferenceDto("counterparty", "customer-1", "Contoso", true);
         var fabrikam = new FinanceInsightEntityReferenceDto("counterparty", "supplier-7", "Fabrikam", true);

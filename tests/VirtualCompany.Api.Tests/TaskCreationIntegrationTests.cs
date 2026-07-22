@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class TaskCreationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class TaskCreationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public TaskCreationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Create_task_with_valid_agent_persists_task_defaults_and_human_creator()

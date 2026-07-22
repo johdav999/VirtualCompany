@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceAgentInsightDetailEndpointsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Invoice_bill_and_payment_detail_endpoints_return_only_matching_agent_insights()

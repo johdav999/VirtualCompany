@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class DashboardFocusEndpointIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public DashboardFocusEndpointIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Get_focus_returns_normalized_cross_domain_items()
@@ -143,6 +140,9 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
         const string hiddenPeerTaskTitle = "Peer-only blocked task";
         const string hiddenOtherTenantAlertTitle = "Other tenant cash alert";
         var taskId = Guid.NewGuid();
+        var approvalId = Guid.NewGuid();
+        var anomalyAlertId = Guid.NewGuid();
+        var financeAlertId = Guid.NewGuid();
 
         await _factory.SeedAsync(async dbContext =>
         {
@@ -151,7 +151,7 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
             dbContext.Companies.Add(new Company(companyId, "Focus Company"));
             dbContext.Companies.Add(new Company(otherCompanyId, "Other Focus Company"));
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
-            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, peerUserId, CompanyMembershipRole.Member, CompanyMembershipStatus.Active));
+            dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, peerUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), otherCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
             dbContext.Agents.Add(new Agent(agentId, companyId, "operations", "Ops Lead", "Operations", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
 
@@ -192,7 +192,10 @@ public sealed class DashboardFocusEndpointIntegrationTests : IClassFixture<TestW
                 "user",
                 userId,
                 "threshold",
-                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>(),
+                new Dictionary<string, System.Text.Json.Nodes.JsonNode?>
+                {
+                    ["taskId"] = System.Text.Json.Nodes.JsonValue.Create(taskId)
+                },
                 null,
                 userId,
                 []);

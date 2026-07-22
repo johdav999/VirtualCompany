@@ -7,16 +7,13 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceVarianceIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceVarianceIntegrationTests : IDisposable
 {
     private static readonly DateTime April2026 = new(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc);
     private static readonly DateTime June2026 = new(2026, 6, 1, 0, 0, 0, DateTimeKind.Utc);
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceVarianceIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Variance_endpoint_returns_actual_vs_budget_rows_grouped_by_period_account_and_cost_center()

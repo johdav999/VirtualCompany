@@ -11,19 +11,16 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class DashboardFinanceSnapshotIntegrationTests : IDisposable
 {
     private static readonly DateTime ScenarioAsOfUtc = new(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc);
     private static readonly ExpectedFinanceMetrics PrimaryWindow30Metrics = new(1150m, 1500m, 725m, 300m, 350m);
     private static readonly ExpectedFinanceMetrics PrimaryWindow15Metrics = new(1150m, 1000m, 575m, 300m, 200m);
     private static readonly ExpectedFinanceMetrics SecondaryWindow30Metrics = new(9000m, 999m, 450m, 0m, 450m);
 
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public DashboardFinanceSnapshotIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task GetCashMetrics_ReturnsExpectedValues_ForSeededFinanceScenario()
@@ -357,6 +354,24 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
                     "Future cash movement",
                     postedAtUtc: ScenarioAsOfUtc.AddDays(2)),
                 new LedgerEntry(
+                    accrualEntryId,
+                    companyId,
+                    fiscalPeriodId,
+                    "LE-ACCRUAL-001",
+                    ScenarioAsOfUtc.AddDays(-2),
+                    LedgerEntryStatuses.Posted,
+                    "Non-cash accrual",
+                    postedAtUtc: ScenarioAsOfUtc.AddDays(-2)),
+                new LedgerEntry(
+                    otherOpeningEntryId,
+                    otherCompanyId,
+                    otherFiscalPeriodId,
+                    "LE-OTHER-CASH-001",
+                    ScenarioAsOfUtc.AddDays(-10),
+                    LedgerEntryStatuses.Posted,
+                    "Other company cash opening",
+                    postedAtUtc: ScenarioAsOfUtc.AddDays(-10)));
+
             dbContext.FinanceAgentInsights.AddRange(
                 new FinanceAgentInsight(
                     Guid.NewGuid(),
@@ -456,24 +471,6 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
                     ScenarioAsOfUtc,
                     ScenarioAsOfUtc,
                     ScenarioAsOfUtc));
-
-                    accrualEntryId,
-                    companyId,
-                    fiscalPeriodId,
-                    "LE-ACCRUAL-001",
-                    ScenarioAsOfUtc.AddDays(-2),
-                    LedgerEntryStatuses.Posted,
-                    "Non-cash accrual",
-                    postedAtUtc: ScenarioAsOfUtc.AddDays(-2)),
-                new LedgerEntry(
-                    otherOpeningEntryId,
-                    otherCompanyId,
-                    otherFiscalPeriodId,
-                    "LE-OTHER-CASH-001",
-                    ScenarioAsOfUtc.AddDays(-10),
-                    LedgerEntryStatuses.Posted,
-                    "Other company cash opening",
-                    postedAtUtc: ScenarioAsOfUtc.AddDays(-10)));
 
             dbContext.LedgerEntryLines.AddRange(
                 new LedgerEntryLine(Guid.NewGuid(), companyId, openingEntryId, cashAccountId, 1000m, 0m, "USD", "Cash in"),
@@ -622,6 +619,9 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IClassFixture<Tes
         public int OccurrenceCount { get; set; }
         public DateTime LatestOccurredUtc { get; set; }
         public InsightEntityResponse? PrimaryEntity { get; set; }
+        public string Title { get; set; } = string.Empty;
+        public string Summary { get; set; } = string.Empty;
+        public string Recommendation { get; set; } = string.Empty;
     }
 
     private sealed class InsightEntityResponse

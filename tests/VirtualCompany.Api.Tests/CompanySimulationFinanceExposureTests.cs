@@ -72,15 +72,15 @@ public sealed class CompanySimulationFinanceExposureTests
         var fullInvoiceAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.InvoiceId == fullInvoice.Id)
-            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+            .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
         var partialInvoiceAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.InvoiceId == partialInvoice.Id)
-            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+            .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
         var unpaidInvoiceAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.InvoiceId == unpaidInvoice.Id)
-            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+            .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
 
         Assert.Equal(FinanceSettlementStatuses.Paid, fullInvoice.SettlementStatus);
         Assert.Equal(fullInvoice.Amount, fullInvoiceAllocated);
@@ -99,11 +99,11 @@ public sealed class CompanySimulationFinanceExposureTests
         var settledBillAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.BillId == settledBill.Id)
-            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+            .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
         var openBillAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.BillId == openBill.Id)
-            .SumAsync(x => (decimal?)x.Amount) ?? 0m;
+            .SumAsync(x => (decimal?)x.AllocatedAmount) ?? 0m;
 
         Assert.Equal(settledBill.Amount, settledBillAllocated);
         Assert.Equal(0m, openBillAllocated);

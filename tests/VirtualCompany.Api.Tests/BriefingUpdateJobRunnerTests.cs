@@ -171,7 +171,8 @@ public sealed class BriefingUpdateJobRunnerTests
                 [],
                 [],
                 null,
-                DateTime.UtcNow);
+                DateTime.UtcNow,
+                []);
             return Task.FromResult(new CompanyBriefingGenerationResult(briefing, false, 0));
         }
     }
@@ -212,7 +213,8 @@ public sealed class BriefingUpdateJobRunnerTests
 
         public async Task<Guid> SeedCompanyAsync()
         {
-            var company = new Company(Guid.NewGuid(), "Test Company", "Software", "SaaS", "UTC", "USD", "en", "EU");
+            var company = new Company(Guid.NewGuid(), "Test Company");
+            company.UpdateWorkspaceProfile("Test Company", "Software", "SaaS", "UTC", "USD", "en", "EU");
             DbContext.Companies.Add(company);
             await DbContext.SaveChangesAsync();
             return company.Id;
@@ -248,10 +250,10 @@ public sealed class BriefingUpdateJobRunnerTests
 
     private sealed class NoopCompanyExecutionScopeFactory : ICompanyExecutionScopeFactory
     {
-        public ICompanyExecutionScope BeginScope(Guid companyId) => new NoopCompanyExecutionScope();
+        public IDisposable BeginScope(Guid companyId) => new NoopCompanyExecutionScope();
     }
 
-    private sealed class NoopCompanyExecutionScope : ICompanyExecutionScope
+    private sealed class NoopCompanyExecutionScope : IDisposable
     {
         public void Dispose()
         {

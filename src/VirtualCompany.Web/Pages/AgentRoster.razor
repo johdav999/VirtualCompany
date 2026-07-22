@@ -3,26 +3,28 @@
 @inject OnboardingApiClient OnboardingApiClient
 @inject AgentApiClient AgentApiClient
 @inject NavigationManager Navigation
+@inject IStringLocalizer<AgentsResources> AgentText
+@inject IStringLocalizer<CommonResources> CommonText
 
-<PageTitle>Agent Roster</PageTitle>
+<PageTitle>@AgentText["AgentRoster"]</PageTitle>
 
 @if (isLoading)
 {
     <section class="py-4">
-        <h1>Agent roster</h1>
-        <p class="text-body-secondary mb-0">Loading tenant-scoped directory data...</p>
+        <h1>@AgentText["AgentRoster"]</h1>
+        <p class="text-body-secondary mb-0">@AgentText["LoadingAgentRoster"]</p>
     </section>
 }
 else if (CompanyId is null)
 {
     <section class="py-4 dashboard-hero">
         <div class="wizard-card">
-            <h1>Select a company</h1>
-            <p class="text-body-secondary">Choose the company where you want to browse the agent roster.</p>
+            <h1>@AgentText["SelectCompany"]</h1>
+            <p class="text-body-secondary">@AgentText["ChooseCompanyForRoster"]</p>
 
             @if (activeMemberships.Count == 0)
             {
-                <p class="mb-0">No active company memberships are available yet.</p>
+                <p class="mb-0">@AgentText["NoActiveMemberships"]</p>
             }
             else
             {
@@ -31,7 +33,7 @@ else if (CompanyId is null)
                     {
                         <a class="template-card text-decoration-none text-reset" href="@BuildRosterUri(membership.CompanyId, null, null)">
                             <strong>@membership.CompanyName</strong>
-                            <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
+                            <div class="text-body-secondary mt-2">@AgentText["MembershipRole", membership.MembershipRole]</div>
                         </a>
                     }
                 </div>
@@ -45,15 +47,16 @@ else
         <div class="wizard-card">
             <div class="agent-roster-header">
                 <div>
-                    <span class="dashboard-kicker">Agent directory</span>
-                    <h1 class="mb-0 mt-2">@(companyAccess?.CompanyName ?? "Agent roster")</h1>
-                    <p class="text-body-secondary mt-3 mb-0">Server-rendered roster with query-string filters for tenant-safe refresh, deep linking, and a canonical drill-in to the agent profile page.</p>
+                    <span class="dashboard-kicker">@AgentText["AgentDirectory"]</span>
+                    <h1 class="mb-0 mt-2">@(companyAccess?.CompanyName ?? AgentText["AgentRoster"])</h1>
+                    <p class="text-body-secondary mt-3 mb-0">@AgentText["AgentRosterDescription"]</p>
                 </div>
                 <div class="dashboard-actions">
-                    <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={CompanyId}")">Back to dashboard</a>
+                    <a class="btn btn-outline-secondary" href="@($"/dashboard?companyId={CompanyId}")">@AgentText["BackToDashboard"]</a>
+                    <a class="btn btn-outline-secondary" href="@($"/agents/staff?companyId={CompanyId}")">@AgentText["AgentStaff"]</a>
                     @if (CanManageProfiles)
                     {
-                        <a class="btn btn-primary" href="@BuildManageUri(CompanyId!.Value, Department, Status, null)">Open agent management</a>
+                        <a class="btn btn-primary" href="@BuildManageUri(CompanyId!.Value, Department, Status, null)">@AgentText["OpenAgentManagement"]</a>
                     }
                 </div>
             </div>
@@ -67,8 +70,8 @@ else
         @if (!CanViewDirectory)
         {
             <div class="wizard-card mt-4">
-                <h2 class="h5 mb-2">Restricted roster access</h2>
-                <p class="text-body-secondary mb-0">Manager, admin, or owner membership is required to view the tenant agent directory.</p>
+                <h2 class="h5 mb-2">@AgentText["RestrictedRosterAccess"]</h2>
+                <p class="text-body-secondary mb-0">@AgentText["RestrictedRosterExplanation"]</p>
             </div>
         }
         else
@@ -76,19 +79,19 @@ else
             <div class="wizard-card mt-4">
                 <div class="agent-roster-header">
                     <div>
-                        <span class="dashboard-kicker">SSR-first filters</span>
-                        <h2 class="h4 mb-0 mt-2">Company agents</h2>
+                        <span class="dashboard-kicker">@AgentText["DirectoryFilters"]</span>
+                        <h2 class="h4 mb-0 mt-2">@AgentText["CompanyAgents"]</h2>
                     </div>
-                    <span class="badge text-bg-light">@rosterResponse.Items.Count total</span>
+                    <span class="badge text-bg-light">@AgentText["TotalCount", rosterResponse.Items.Count]</span>
                 </div>
 
                 <form class="agent-filter-bar mt-4" method="get">
                     <input type="hidden" name="companyId" value="@CompanyId" />
 
                     <div>
-                        <label class="form-label" for="department-filter">Department</label>
+                        <label class="form-label" for="department-filter">@AgentText["Department"]</label>
                         <select id="department-filter" class="form-select" name="department">
-                            <option value="" selected="@string.IsNullOrWhiteSpace(Department)">All departments</option>
+                            <option value="" selected="@string.IsNullOrWhiteSpace(Department)">@AgentText["AllDepartments"]</option>
                             @foreach (var department in rosterResponse.Departments)
                             {
                                 <option value="@department" selected="@IsSelected(Department, department)">@department</option>
@@ -97,9 +100,9 @@ else
                     </div>
 
                     <div>
-                        <label class="form-label" for="status-filter">Status</label>
+                        <label class="form-label" for="status-filter">@AgentText["Status"]</label>
                         <select id="status-filter" class="form-select" name="status">
-                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">All statuses</option>
+                            <option value="" selected="@string.IsNullOrWhiteSpace(Status)">@AgentText["AllStatuses"]</option>
                             @foreach (var status in rosterResponse.Statuses)
                             {
                                 <option value="@status" selected="@IsSelected(Status, status)">@GetStatusLabel(status)</option>
@@ -108,19 +111,19 @@ else
                     </div>
 
                     <div class="dashboard-actions">
-                        <button class="btn btn-primary" type="submit">Apply filters</button>
-                        <a class="btn btn-outline-secondary" href="@BuildRosterUri(CompanyId!.Value, null, null)">Clear</a>
+                        <button class="btn btn-primary" type="submit">@AgentText["ApplyFilters"]</button>
+                        <a class="btn btn-outline-secondary" href="@BuildRosterUri(CompanyId!.Value, null, null)">@AgentText["ClearFilters"]</a>
                     </div>
                 </form>
 
                 <div class="agent-template-header mt-4">
                     <div>
-                        <span class="dashboard-kicker">Live status</span>
-                        <h3 class="h5 mb-0 mt-2">Status cards</h3>
+                        <span class="dashboard-kicker">@AgentText["LiveStatus"]</span>
+                        <h3 class="h5 mb-0 mt-2">@AgentText["StatusCards"]</h3>
                     </div>
                     @if (statusCards is not null)
                     {
-                        <span class="text-body-secondary small">Refreshed @statusCards.GeneratedUtc.ToLocalTime().ToString("g")</span>
+                        <span class="text-body-secondary small">@AgentText["UpdatedAt", statusCards.GeneratedUtc.ToLocalTime().ToString("g")]</span>
                     }
                 </div>
 
@@ -130,11 +133,11 @@ else
                 }
                 else if (statusCards is null)
                 {
-                    <p class="text-body-secondary mb-0 mt-3">Loading live status cards...</p>
+                    <p class="text-body-secondary mb-0 mt-3">@AgentText["LoadingStatusCards"]</p>
                 }
                 else if (statusCards.Items.Count == 0)
                 {
-                    <p class="text-body-secondary mb-0 mt-3">No live agent status is available yet.</p>
+                    <p class="text-body-secondary mb-0 mt-3">@AgentText["NoLiveStatus"]</p>
                 }
                 else
                 {
@@ -148,7 +151,7 @@ else
 
                 @if (rosterResponse.Items.Count == 0)
                 {
-                    <p class="text-body-secondary mb-0 mt-4">No agents match the selected filters.</p>
+                    <p class="text-body-secondary mb-0 mt-4">@AgentText["NoAgentsMatch"]</p>
                 }
                 else
                 {
@@ -156,13 +159,13 @@ else
                         <table class="table table-hover align-middle mb-0">
                             <thead>
                                 <tr>
-                                    <th scope="col">Name</th>
-                                    <th scope="col">Role</th>
-                                    <th scope="col">Department</th>
-                                    <th scope="col">Status</th>
-                                    <th scope="col">Autonomy</th>
-                                    <th scope="col">Workload and health</th>
-                                    <th scope="col">Actions</th>
+                                    <th scope="col">@AgentText["Name"]</th>
+                                    <th scope="col">@AgentText["Role"]</th>
+                                    <th scope="col">@AgentText["Department"]</th>
+                                    <th scope="col">@AgentText["Status"]</th>
+                                    <th scope="col">@AgentText["Autonomy"]</th>
+                                    <th scope="col">@AgentText["WorkloadAndHealth"]</th>
+                                    <th scope="col">@AgentText["Actions"]</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -180,20 +183,20 @@ else
                                         </td>
                                         <td>@ToDisplayText(agent.AutonomyLevel)</td>
                                         <td>
-                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthSummary.Status)">@agent.WorkloadSummary.HealthSummary.Label</div>
+                                            <div class="fw-semibold @GetHealthCss(agent.WorkloadSummary.HealthSummary.Status)">@GetHealthLabel(agent.WorkloadSummary.HealthSummary.Status)</div>
                                             <div class="small text-body-secondary mt-1">@agent.WorkloadSummary.HealthSummary.Reason</div>
                                             <div class="small text-body-secondary mt-1">@FormatRosterActivity(agent.WorkloadSummary.LastActivityUtc)</div>
                                         </td>
                                         <td>
                                             <div class="dashboard-actions">
-                                                <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">Open profile</a>
+                                                <a class="btn btn-sm btn-outline-secondary" href="@GetProfileRoute(agent)">@AgentText["OpenProfile"]</a>
                                                 @if (IsDirectChatEligible(agent.Status))
                                                 {
-                                                    <a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">Chat</a>
+                                                    <a class="btn btn-sm btn-primary" href="@BuildChatUri(agent.CompanyId, agent.Id)">@AgentText["Chat"]</a>
                                                 }
                                                 @if (CanManageProfiles)
                                                 {
-                                                    <a class="btn btn-sm btn-primary" href="@BuildManageUri(agent.CompanyId, Department, Status, agent.Id)">Manage</a>
+                                                    <a class="btn btn-sm btn-primary" href="@BuildManageUri(agent.CompanyId, Department, Status, agent.Id)">@AgentText["Manage"]</a>
                                                 }
                                             </div>
                                         </td>
@@ -272,7 +275,7 @@ else
                 companyAccess = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
                 if (companyAccess is null)
                 {
-                    errorMessage = "The selected company could not be loaded.";
+                    errorMessage = AgentText["NoCompanyAccess"];
                     return;
                 }
 
@@ -350,8 +353,24 @@ else
             _ => "text-bg-light"
         };
 
-    private static string GetStatusLabel(string? status) => string.IsNullOrWhiteSpace(status) ? "Unknown" : status.Trim().Replace("_", " ", StringComparison.Ordinal);
-    private static string ToDisplayText(string? value) => string.IsNullOrWhiteSpace(value) ? "Unknown" : value.Replace("_", " ", StringComparison.Ordinal).Trim();
+    private string GetStatusLabel(string? status) => SharedStatusPresenter.Format(status, CommonText);
+    private string ToDisplayText(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "level_0" => AgentText["AutonomyLevel0"],
+        "level_1" => AgentText["AutonomyLevel1"],
+        "level_2" => AgentText["AutonomyLevel2"],
+        "level_3" => AgentText["AutonomyLevel3"],
+        _ => AgentText["Unknown"]
+    };
+    private string GetHealthLabel(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "healthy" => AgentText["HealthHealthy"],
+        "busy" => AgentText["HealthBusy"],
+        "inactive" => AgentText["HealthInactive"],
+        "blocked" => AgentText["HealthBlocked"],
+        "needs_attention" => AgentText["HealthNeedsAttention"],
+        _ => AgentText["Unknown"]
+    };
     private static string GetHealthCss(string? healthStatus) =>
         healthStatus?.Trim().ToLowerInvariant() switch
         {
@@ -362,7 +381,9 @@ else
             "needs_attention" => "agent-health-attention",
             _ => "text-body-secondary"
         };
-    private static string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null ? "No recent activity" : $"Last activity {lastActivityUtc.Value.ToLocalTime():g}";
+    private string FormatRosterActivity(DateTime? lastActivityUtc) => lastActivityUtc is null
+        ? AgentText["NoRecentActivity"]
+        : AgentText["LastActivityAt", lastActivityUtc.Value.ToLocalTime().ToString("g")];
     private static bool IsDirectChatEligible(string? status) =>
         !string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase) &&
         !string.Equals(status, "archived", StringComparison.OrdinalIgnoreCase);

@@ -9,7 +9,7 @@ using VirtualCompany.Shared;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceSandboxAdminEndpointIntegrationTests : IDisposable
 {
     private static readonly string[] SandboxAdminPaths =
     [
@@ -23,12 +23,9 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IClassFixture<
         "sandbox-admin/domain-events"
     ];
 
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceSandboxAdminEndpointIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Theory]
     [InlineData("owner")]

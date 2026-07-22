@@ -7,10 +7,10 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceToolDefinitionManifestTests : IDisposable
 {
     private static readonly IReadOnlyDictionary<string, ToolActionType> FinanceTools = new Dictionary<string, ToolActionType>(StringComparer.OrdinalIgnoreCase)
-    [
+    {
         ["get_cash_balance"] = ToolActionType.Read,
         ["resolve_finance_agent_query"] = ToolActionType.Read,
         ["list_transactions"] = ToolActionType.Read,
@@ -22,14 +22,11 @@ public sealed class FinanceToolDefinitionManifestTests : IClassFixture<TestWebAp
         ["categorize_transaction"] = ToolActionType.Execute,
         ["approve_invoice"] = ToolActionType.Execute,
         ["post_paid_supplier_bill_expense"] = ToolActionType.Execute
-    ];
+    };
 
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceToolDefinitionManifestTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public void Registry_exposes_finance_tool_definitions_with_versioned_schemas()

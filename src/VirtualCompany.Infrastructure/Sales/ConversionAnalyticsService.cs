@@ -313,16 +313,15 @@ public sealed class ConversionAnalyticsService : IConversionAnalyticsService
                 x.Key.CampaignId,
                 x.Key.CampaignName,
                 x.Key.SequenceId,
-                Counts = new PerformanceFunnelCounts(
-                    x.Count(row => row.performance.SentAt.HasValue),
-                    x.Count(row => row.performance.DeliveredAt.HasValue),
-                    x.Count(row => row.performance.BouncedAt.HasValue),
-                    x.Count(row => row.performance.OpenedAt.HasValue),
-                    x.Count(row => row.performance.RepliedAt.HasValue),
-                    x.Count(row => row.performance.DealCreatedAt.HasValue),
-                    x.Count(row => row.performance.ConvertedAt.HasValue))
+                Sent = x.Count(row => row.performance.SentAt.HasValue),
+                Delivered = x.Count(row => row.performance.DeliveredAt.HasValue),
+                Bounced = x.Count(row => row.performance.BouncedAt.HasValue),
+                Opened = x.Count(row => row.performance.OpenedAt.HasValue),
+                Replied = x.Count(row => row.performance.RepliedAt.HasValue),
+                DealCreated = x.Count(row => row.performance.DealCreatedAt.HasValue),
+                Converted = x.Count(row => row.performance.ConvertedAt.HasValue)
             })
-            .OrderByDescending(x => x.Counts.Sent)
+            .OrderByDescending(x => x.Sent)
             .Take(10)
             .ToListAsync(cancellationToken);
 
@@ -331,7 +330,23 @@ public sealed class ConversionAnalyticsService : IConversionAnalyticsService
             companyId,
             counts,
             BuildRates(counts),
-            campaigns.Select(x => new CampaignPerformanceListItemDto(x.CampaignId, x.CampaignName, x.SequenceId, x.Counts, BuildRates(x.Counts))).ToList(),
+            campaigns.Select(x =>
+            {
+                var campaignCounts = new PerformanceFunnelCounts(
+                    x.Sent,
+                    x.Delivered,
+                    x.Bounced,
+                    x.Opened,
+                    x.Replied,
+                    x.DealCreated,
+                    x.Converted);
+                return new CampaignPerformanceListItemDto(
+                    x.CampaignId,
+                    x.CampaignName,
+                    x.SequenceId,
+                    campaignCounts,
+                    BuildRates(campaignCounts));
+            }).ToList(),
             variants.Take(12).ToList());
     }
 

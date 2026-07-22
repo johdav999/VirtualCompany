@@ -84,7 +84,8 @@ public sealed record CreateOutboundCampaignRequest(
     string AudienceType,
     IReadOnlyList<Guid> ContactIds,
     OutboundPolicyRequest Policy,
-    IReadOnlyList<CreateSequenceStepRequest> Steps);
+    IReadOnlyList<CreateSequenceStepRequest> Steps,
+    string? CommunicationLanguage = null);
 
 public sealed record OutboundPolicyRequest(
     bool OutboundEnabled,
@@ -119,7 +120,11 @@ public sealed record OutboundCampaignDetailResponse(
     IReadOnlyList<SequenceStepResponse> Steps,
     IReadOnlyList<SequenceExecutionResponse> Executions,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    string? CommunicationLanguage = null,
+    string? CommunicationLanguageSource = null,
+    decimal? CommunicationLanguageConfidence = null,
+    bool CommunicationLanguageRequiresReview = false);
 
 public sealed record OutboundAudienceOptionsResponse(
     IReadOnlyList<OutboundAudienceContactResponse> Contacts,
@@ -130,7 +135,8 @@ public sealed record OutboundAudienceContactResponse(
     string ContactName,
     string Email,
     string? CustomerCompanyName,
-    IReadOnlyList<string> SourceTypes);
+    IReadOnlyList<string> SourceTypes,
+    string? PreferredLanguage = null);
 
 public sealed record OutboundAudienceSourceResponse(
     string SourceType,

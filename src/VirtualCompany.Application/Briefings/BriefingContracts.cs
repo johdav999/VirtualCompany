@@ -308,22 +308,27 @@ public interface ICompanyBriefingService
         UpdateCompanyBriefingDeliveryPreferenceCommand command,
         CancellationToken cancellationToken);
 
-    Task<BriefingPreferenceDto> GetUserBriefingPreferenceAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<BriefingPreferenceDto> GetUserBriefingPreferenceAsync(Guid companyId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("User briefing preferences are not supported by this implementation.");
 
     Task<BriefingPreferenceDto> UpsertUserBriefingPreferenceAsync(
         Guid companyId,
         UpsertBriefingPreferenceCommand command,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("User briefing preferences are not supported by this implementation.");
 
-    Task<TenantBriefingDefaultDto?> GetTenantBriefingDefaultAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<TenantBriefingDefaultDto?> GetTenantBriefingDefaultAsync(Guid companyId, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Tenant briefing defaults are not supported by this implementation.");
 
     Task<TenantBriefingDefaultDto> UpsertTenantBriefingDefaultAsync(
         Guid companyId,
         UpsertBriefingPreferenceCommand command,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Tenant briefing defaults are not supported by this implementation.");
 
     Task<EffectiveBriefingPreferenceDto> ResolveEffectiveBriefingPreferenceAsync(
         Guid companyId,
         Guid userId,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Effective briefing preferences are not supported by this implementation.");
 }

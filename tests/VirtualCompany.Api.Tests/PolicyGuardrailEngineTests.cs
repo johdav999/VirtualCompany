@@ -8,7 +8,7 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class PolicyGuardrailEngineTests
 {
-    private readonly PolicyGuardrailEngine _engine = new();
+    private readonly PolicyGuardrailEngine _engine = new(new StaticCompanyToolRegistry());
 
     [Fact]
     public void Evaluate_allows_in_scope_level_2_execution_within_threshold()

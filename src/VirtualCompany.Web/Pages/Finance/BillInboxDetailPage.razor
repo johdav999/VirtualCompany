@@ -3,30 +3,30 @@
 @rendermode InteractiveServer
 @inherits FinancePageBase
 
-<PageTitle>Supplier Bill Review</PageTitle>
+<PageTitle>@FinanceText["SupplierBillReview"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Bill review"
-    Description="Review Laura's extraction, approve the supplier invoice, and decide whether it should be sent to Fortnox."
-    LoadingMessage="Loading bill review...">
+    Title="@FinanceText["BillReviewTitle"]"
+    Description="@FinanceText["BillReviewDescription"]"
+    LoadingMessage="@FinanceText["LoadingBillReview"]">
     <FinanceDataState
         IsLoading="@IsDetailLoading"
         IsEmpty="@(Detail is null)"
         ErrorMessage="@DetailErrorMessage"
-        LoadingTitle="Loading bill"
-        LoadingMessage="Fetching the bill review detail."
-        EmptyTitle="Bill not found"
-        EmptyMessage="The selected bill was not found in the active company."
+        LoadingTitle="@FinanceText["LoadingBill"]"
+        LoadingMessage="@FinanceText["FetchingBillReview"]"
+        EmptyTitle="@FinanceText["BillNotFound"]"
+        EmptyMessage="@FinanceText["BillNotFoundDescription"]"
         OnRetry="@ReloadAsync">
         @if (Detail is not null)
         {
             <section class="bill-review-workspace" aria-labelledby="bill-review-heading">
                 <div class="bill-review-summary-card">
                     <div class="bill-review-summary-card__main">
-                        <span class="finance-overview-kicker">Supplier bill</span>
+                        <span class="finance-overview-kicker">@FinanceText["SupplierBill"]</span>
                         <div class="bill-review-summary-card__title-row">
                             <div>
                                 <h2 id="bill-review-heading">@Detail.BillReference</h2>
@@ -36,25 +36,25 @@
                         </div>
                     </div>
 
-                    <div class="bill-review-summary-grid" aria-label="Bill summary">
+                    <div class="bill-review-summary-grid" aria-label="@FinanceText["BillSummary"]">
                         <div>
-                            <span>Amount</span>
+                            <span>@FinanceText["Amount"]</span>
                             <strong>@FormatAmount(Detail.Amount, Detail.Currency)</strong>
                         </div>
                         <div>
-                            <span>VAT</span>
+                            <span>@FinanceText["Vat"]</span>
                             <strong>@FormatAmount(Detail.VatAmount, Detail.Currency)</strong>
                         </div>
                         <div>
-                            <span>Bill date</span>
+                            <span>@FinanceText["BillDate"]</span>
                             <strong>@FormatDate(Detail.BillDateUtc)</strong>
                         </div>
                         <div>
-                            <span>Due date</span>
+                            <span>@FinanceText["DueDate"]</span>
                             <strong>@FormatDate(Detail.DueDateUtc)</strong>
                         </div>
                         <div>
-                            <span>Confidence</span>
+                            <span>@FinanceText["Confidence"]</span>
                             <strong>@Detail.ConfidenceLevel @FormatConfidence(Detail.Confidence)</strong>
                         </div>
                     </div>
@@ -66,39 +66,39 @@
                             <div class="bill-review-card__header">
                                 <div>
                                     <h2>@BuildSourcePreviewHeading()</h2>
-                                    <p>Review the source Laura used before you approve or send this supplier invoice.</p>
+                                    <p>@FinanceText["SourceReviewDescription"]</p>
                                 </div>
                             </div>
 
                             @if (!string.IsNullOrWhiteSpace(Detail.SourcePreview?.BodyText))
                             {
-                                <div class="bill-review-email-meta" aria-label="Email details">
+                                <div class="bill-review-email-meta" aria-label="@FinanceText["EmailDetails"]">
                                     <div>
-                                        <span>Source</span>
+                                        <span>@FinanceText["Source"]</span>
                                         <strong>@Detail.SourcePreview.SourceLabel</strong>
                                     </div>
                                     @if (!string.IsNullOrWhiteSpace(Detail.SourcePreview.FileName))
                                     {
                                         <div>
-                                            <span>File</span>
+                                            <span>@FinanceText["File"]</span>
                                             <strong>@Detail.SourcePreview.FileName</strong>
                                         </div>
                                     }
                                     <div>
-                                        <span>Subject</span>
+                                        <span>@FinanceText["Subject"]</span>
                                         <strong>@Detail.SourcePreview.Title</strong>
                                     </div>
                                     @if (!string.IsNullOrWhiteSpace(Detail.SourcePreview.From))
                                     {
                                         <div>
-                                            <span>From</span>
+                                            <span>@FinanceText["From"]</span>
                                             <strong>@Detail.SourcePreview.From</strong>
                                         </div>
                                     }
                                     @if (Detail.SourcePreview.ReceivedUtc.HasValue)
                                     {
                                         <div>
-                                            <span>Received</span>
+                                            <span>@FinanceText["Received"]</span>
                                             <strong>@FormatDateTime(Detail.SourcePreview.ReceivedUtc.Value)</strong>
                                         </div>
                                     }
@@ -109,8 +109,8 @@
                             else
                             {
                                 <div class="bill-review-empty-source">
-                                    <strong>Source content unavailable</strong>
-                                    <p>Laura used the stored extraction evidence for this bill, but the original source content is not available for preview.</p>
+                                    <strong>@FinanceText["SourceContentUnavailable"]</strong>
+                                    <p>@FinanceText["SourceContentUnavailableDescription"]</p>
                                 </div>
                             }
                         </article>
@@ -118,13 +118,13 @@
                         <article class="bill-review-card">
                             <div class="bill-review-card__header">
                                 <div>
-                                    <h2>Action history</h2>
-                                    <p>Decisions recorded for this supplier bill.</p>
+                                    <h2>@FinanceText["ActionHistory"]</h2>
+                                    <p>@FinanceText["ActionHistoryDescription"]</p>
                                 </div>
                             </div>
                             @if (Detail.ActionHistory.Count == 0)
                             {
-                                <p class="bill-review-muted mb-0">No review actions have been recorded.</p>
+                                <p class="bill-review-muted mb-0">@FinanceText["NoReviewActions"]</p>
                             }
                             else
                             {
@@ -132,11 +132,11 @@
                                     <table class="table bill-review-table mb-0">
                                         <thead>
                                             <tr>
-                                                <th>Time</th>
-                                                <th>Actor</th>
-                                                <th>Action</th>
-                                                <th>Status</th>
-                                                <th>Rationale</th>
+                                                <th>@FinanceText["Time"]</th>
+                                                <th>@FinanceText["Actor"]</th>
+                                                <th>@FinanceText["Action"]</th>
+                                                <th>@FinanceText["Status"]</th>
+                                                <th>@FinanceText["Rationale"]</th>
                                             </tr>
                                         </thead>
                                         <tbody>
@@ -157,21 +157,21 @@
                         </article>
                     </div>
 
-                    <aside class="bill-review-sidebar" aria-label="Bill actions">
+                    <aside class="bill-review-sidebar" aria-label="@FinanceText["BillActions"]">
                         <article class="bill-review-card bill-review-agent-card">
                             <div class="bill-review-agent-card__profile">
                                 <div class="finance-overview-icon finance-overview-icon--neutral" aria-hidden="true">LF</div>
                                 <div>
                                     <span>Laura</span>
-                                    <strong>Finance Manager</strong>
+                                    <strong>@FinanceText["FinanceManager"]</strong>
                                 </div>
                             </div>
-                            <h2>Laura's recommendation</h2>
+                            <h2>@FinanceText["LauraRecommendation"]</h2>
                             <strong class="bill-review-recommendation-lead">@BuildLauraRecommendationHeadline()</strong>
                             <p>@BuildLauraRecommendationSummary()</p>
                             <p class="bill-review-next-step">@BuildLauraNextStep()</p>
                             <div class="bill-review-risk-list">
-                                <strong>Risk flags</strong>
+                                <strong>@FinanceText["RiskFlags"]</strong>
                                 <ul>
                                     @foreach (var riskFlag in Detail.ProposalSummary.RiskFlags)
                                     {
@@ -194,7 +194,7 @@
 
                                 @if (Detail.FortnoxRegistration.ApprovalId is Guid approvalId)
                                 {
-                                    <a class="bill-review-inline-link" href="@BuildApprovalHref(approvalId)">@(IsSupplierCreationStep ? "Open supplier approval" : "Open sending approval")</a>
+                                    <a class="bill-review-inline-link" href="@BuildApprovalHref(approvalId)">@(IsSupplierCreationStep ? FinanceText["OpenSupplierApproval"] : FinanceText["OpenSendingApproval"])</a>
                                 }
 
                                 @if (!string.IsNullOrWhiteSpace(FortnoxRegistrationStatusMessage))
@@ -205,22 +205,22 @@
                         }
 
                         <article class="bill-review-card">
-                            <h2>Warnings</h2>
-                            @RenderWarnings("Validation", Detail.ValidationWarnings)
-                            @RenderWarnings("Duplicate", Detail.DuplicateWarnings)
+                            <h2>@FinanceText["Warnings"]</h2>
+                            @RenderWarnings(FinanceText["Validation"], Detail.ValidationWarnings)
+                            @RenderWarnings(FinanceText["Duplicate"], Detail.DuplicateWarnings)
                         </article>
 
                         <article class="bill-review-card bill-review-action-card">
-                            <h2>Review decision</h2>
-                            <p class="bill-review-muted">@(IsBillProposalApproved ? "This supplier invoice is approved. Send it to Fortnox when you are ready." : "Choose whether to only approve the supplier invoice or approve it and register it in Fortnox now.")</p>
+                            <h2>@FinanceText["ReviewDecision"]</h2>
+                            <p class="bill-review-muted">@(IsBillProposalApproved ? FinanceText["ApprovedSendHelp"] : FinanceText["ChooseReviewDecisionHelp"])</p>
 
                             @if (!string.IsNullOrWhiteSpace(ActionStatusMessage))
                             {
                                 <div class="alert alert-info">@ActionStatusMessage</div>
                             }
 
-                            <label class="form-label" for="bill-action-rationale">Rationale</label>
-                            <textarea id="bill-action-rationale" class="form-control" rows="4" @bind="Rationale" placeholder="Optional note for the audit trail"></textarea>
+                            <label class="form-label" for="bill-action-rationale">@FinanceText["Rationale"]</label>
+                            <textarea id="bill-action-rationale" class="form-control" rows="4" @bind="Rationale" placeholder="@FinanceText["RationalePlaceholder"]"></textarea>
 
                             @if (!Detail.CanApprove && !IsBillProposalApproved && !string.IsNullOrWhiteSpace(Detail.ApprovalBlockedReason))
                             {
@@ -230,27 +230,27 @@
                             <div class="bill-review-action-stack">
                                 @if (!IsBillProposalApproved && Detail.FortnoxRegistration?.CanSendDirect == true && !IsSupplierCreationStep)
                                 {
-                                    <button class="btn btn-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAndSendToFortnoxAsync">Approve invoice and register in Fortnox</button>
+                                    <button class="btn btn-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAndSendToFortnoxAsync">@FinanceText["ApproveRegisterFortnox"]</button>
                                 }
                                 else if (IsBillProposalApproved && Detail.FortnoxRegistration?.CanSendDirect == true)
                                 {
-                                    <button class="btn btn-primary" disabled="@IsSubmittingAction" @onclick="SendToFortnoxAsync">@(IsSupplierCreationStep ? "Create supplier in Fortnox" : "Send to Fortnox")</button>
+                                    <button class="btn btn-primary" disabled="@IsSubmittingAction" @onclick="SendToFortnoxAsync">@(IsSupplierCreationStep ? FinanceText["CreateSupplierFortnox"] : FinanceText["SendToFortnox"])</button>
                                 }
 
                                 @if (!IsBillProposalApproved)
                                 {
-                                    <button class="btn btn-outline-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAsync">Approve invoice</button>
+                                    <button class="btn btn-outline-primary" disabled="@(!Detail.CanApprove || IsSubmittingAction)" @onclick="ApproveAsync">@FinanceText["ApproveInvoice"]</button>
                                 }
 
                                 @if (Detail.FortnoxRegistration?.CanRequest == true && Detail.FortnoxRegistration?.CanSendDirect != true)
                                 {
-                                    <button class="btn btn-outline-primary" disabled="@IsSubmittingAction" @onclick="RequestFortnoxRegistrationAsync">@(IsSupplierCreationStep ? "Create supplier proposal" : "Request approval to send to Fortnox")</button>
+                                    <button class="btn btn-outline-primary" disabled="@IsSubmittingAction" @onclick="RequestFortnoxRegistrationAsync">@(IsSupplierCreationStep ? FinanceText["CreateSupplierProposal"] : FinanceText["RequestSendApproval"])</button>
                                 }
 
                                 @if (!IsBillProposalApproved)
                                 {
-                                    <button class="btn btn-outline-danger" disabled="@IsSubmittingAction" @onclick="RejectAsync">Reject</button>
-                                    <button class="btn btn-outline-secondary" disabled="@IsSubmittingAction" @onclick="RequestClarificationAsync">Request clarification</button>
+                                    <button class="btn btn-outline-danger" disabled="@IsSubmittingAction" @onclick="RejectAsync">@FinanceText["Reject"]</button>
+                                    <button class="btn btn-outline-secondary" disabled="@IsSubmittingAction" @onclick="RequestClarificationAsync">@FinanceText["RequestClarification"]</button>
                                 }
                             </div>
                         </article>

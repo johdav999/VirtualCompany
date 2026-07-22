@@ -75,8 +75,8 @@ public sealed class FinanceInsightMigrationCompatibilityTests
 
         await using var dbContext = CreateContext(connection);
         var service = CreateBootstrapRerunService(dbContext, companyId);
-        var first = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-001"), CancellationToken.None);
-        var second = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-001"), CancellationToken.None);
+        var first = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, BatchSize: 250, CorrelationId: "finance-bootstrap-rerun-001"), CancellationToken.None);
+        var second = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, BatchSize: 250, CorrelationId: "finance-bootstrap-rerun-001"), CancellationToken.None);
 
         Assert.Empty(await dbContext.Database.GetPendingMigrationsAsync());
         Assert.True(first.PlanningRowsInserted > 0);
@@ -203,8 +203,8 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         var initialForecastCount = await dbContext.Forecasts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId);
 
         var service = CreateBootstrapRerunService(dbContext, companyId);
-        var first = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-partial"), CancellationToken.None);
-        var second = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, 250, "finance-bootstrap-rerun-partial"), CancellationToken.None);
+        var first = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, BatchSize: 250, CorrelationId: "finance-bootstrap-rerun-partial"), CancellationToken.None);
+        var second = await service.RerunAsync(new RerunFinanceBootstrapCommand(companyId, BatchSize: 250, CorrelationId: "finance-bootstrap-rerun-partial"), CancellationToken.None);
 
         Assert.Empty(await dbContext.Database.GetPendingMigrationsAsync());
         Assert.True(first.PlanningRowsInserted > 0);

@@ -100,13 +100,27 @@ public sealed class CompanyReconciliationSuggestionService :
 
         var totalCount = await rows.CountAsync(cancellationToken);
         var totalPages = totalCount == 0 ? 0 : (int)Math.Ceiling(totalCount / (double)pageSize);
-        var items = await rows
-            .OrderByDescending(x => x.ConfidenceScore)
-            .ThenByDescending(x => x.CreatedUtc)
-            .ThenBy(x => x.Id)
-            .Skip((page - 1) * pageSize)
-            .Take(pageSize)
-            .ToListAsync(cancellationToken);
+        List<ReconciliationSuggestionRecord> items;
+        if (_dbContext.Database.IsSqlite())
+        {
+            items = (await rows.ToListAsync(cancellationToken))
+                .OrderByDescending(x => x.ConfidenceScore)
+                .ThenByDescending(x => x.CreatedUtc)
+                .ThenBy(x => x.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToList();
+        }
+        else
+        {
+            items = await rows
+                .OrderByDescending(x => x.ConfidenceScore)
+                .ThenByDescending(x => x.CreatedUtc)
+                .ThenBy(x => x.Id)
+                .Skip((page - 1) * pageSize)
+                .Take(pageSize)
+                .ToListAsync(cancellationToken);
+        }
 
         return new ReconciliationSuggestionPageDto(
             totalCount,
@@ -151,12 +165,25 @@ public sealed class CompanyReconciliationSuggestionService :
             rows = rows.Where(x => x.TargetRecordId == query.TargetRecordId.Value);
         }
 
-        var suggestions = await rows
-            .OrderByDescending(x => x.ConfidenceScore)
-            .ThenByDescending(x => x.CreatedUtc)
-            .ThenBy(x => x.Id)
-            .Take(limit)
-            .ToListAsync(cancellationToken);
+        List<ReconciliationSuggestionRecord> suggestions;
+        if (_dbContext.Database.IsSqlite())
+        {
+            suggestions = (await rows.ToListAsync(cancellationToken))
+                .OrderByDescending(x => x.ConfidenceScore)
+                .ThenByDescending(x => x.CreatedUtc)
+                .ThenBy(x => x.Id)
+                .Take(limit)
+                .ToList();
+        }
+        else
+        {
+            suggestions = await rows
+                .OrderByDescending(x => x.ConfidenceScore)
+                .ThenByDescending(x => x.CreatedUtc)
+                .ThenBy(x => x.Id)
+                .Take(limit)
+                .ToListAsync(cancellationToken);
+        }
 
         return suggestions.Select(MapSuggestion).ToList();
     }

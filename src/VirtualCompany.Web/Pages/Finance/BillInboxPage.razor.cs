@@ -58,10 +58,10 @@ public partial class BillInboxPage : FinancePageBase
 
     private string BuildDetailHref(Guid billId) => FinanceRoutes.BuildBillInboxDetailPath(billId, AccessState.CompanyId);
 
-    private static string FormatDate(DateTime value) => value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private string FormatDate(DateTime value) => LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatAmount(decimal? amount, string? currency) =>
-        amount.HasValue ? $"{currency ?? string.Empty} {amount.Value.ToString("N2", CultureInfo.InvariantCulture)}".Trim() : "n/a";
+    private string FormatAmount(decimal? amount, string? currency) =>
+        amount.HasValue ? string.IsNullOrWhiteSpace(currency) ? LocalNumber.Decimal(amount.Value) : LocalMoney.Format(amount.Value, currency) : "n/a";
 
     private static string FormatWarnings(FinanceBillInboxRowResponse item) =>
         item.ValidationWarningCount == 0 && item.DuplicateWarningCount == 0

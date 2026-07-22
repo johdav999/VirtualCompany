@@ -14,14 +14,11 @@ using VirtualCompany.Infrastructure.Companies;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AgentManagementIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AgentManagementIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Template_catalog_returns_seeded_roles_with_prefill_defaults_for_active_company()
@@ -628,6 +625,40 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
     }
 
     [Fact]
+    public async Task Owner_can_save_agent_brief_without_revalidating_unrelated_legacy_profile_sections()
+    {
+        var seed = await SeedMembershipWithExistingAgentAsync();
+        using var client = CreateAuthenticatedClient("founder", "founder@example.com", "Founder");
+
+        var response = await client.PutAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/brief", new
+        {
+            sections = new Dictionary<string, string>
+            {
+                ["company_information"] = "Virtual Company develops an AI-supported operations platform for SMEs.",
+                ["products_and_services"] = "Finance, sales, and customer support agent workflows."
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<AgentOperatingProfileResponse>();
+        Assert.NotNull(payload);
+        Assert.Equal(
+            "Virtual Company develops an AI-supported operations platform for SMEs.",
+            payload!.CommunicationProfile["briefing"].GetProperty("company_information").GetString());
+        Assert.Contains("knowledge.search", payload.ToolPermissions["allowed"].EnumerateArray().Select(item => item.GetString()));
+        Assert.Contains("knowledge", payload.DataScopes["read"].EnumerateArray().Select(item => item.GetString()));
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>();
+        companyContextAccessor.SetCompanyId(seed.CompanyId);
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var agent = await dbContext.Agents.AsNoTracking().SingleAsync(x => x.Id == seed.AgentId);
+        Assert.Equal(
+            "Finance, sales, and customer support agent workflows.",
+            agent.CommunicationProfile["briefing"]!["products_and_services"]!.GetValue<string>());
+    }
+
+    [Fact]
     public async Task Runtime_profile_resolution_reads_latest_persisted_profile_after_operating_profile_update()
     {
         var seed = await SeedMembershipWithExistingAgentAsync();
@@ -1022,7 +1053,7 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
 
         await _factory.SeedAsync(async dbContext =>
         {
-            var agent = await dbContext.Agents.SingleAsync(x => x.Id == agentId);
+            var agent = await dbContext.Agents.IgnoreQueryFilters().SingleAsync(x => x.Id == agentId);
             typeof(Agent).GetProperty(nameof(Agent.UpdatedUtc))!.SetValue(agent, originalUpdatedUtc);
         });
 
@@ -1158,10 +1189,12 @@ public sealed class AgentManagementIntegrationTests : IClassFixture<TestWebAppli
         public Dictionary<string, JsonElement> Objectives { get; set; } = [];
         public Dictionary<string, JsonElement> Kpis { get; set; } = [];
         public Dictionary<string, JsonElement> ToolPermissions { get; set; } = [];
+        public Dictionary<string, JsonElement> DataScopes { get; set; } = [];
         public Dictionary<string, JsonElement> ApprovalThresholds { get; set; } = [];
         public Dictionary<string, JsonElement> EscalationRules { get; set; } = [];
         public Dictionary<string, JsonElement> TriggerLogic { get; set; } = [];
         public Dictionary<string, JsonElement> WorkingHours { get; set; } = [];
+        public Dictionary<string, JsonElement> CommunicationProfile { get; set; } = [];
         public AgentProfileVisibilityResponse Visibility { get; set; } = new();
     }
 

@@ -10,31 +10,31 @@
     @if (SelectedItem is null)
     {
         <div class="invoice-review-detail-panel__empty">
-            <span class="dashboard-kicker">Context panel</span>
-            <h2 class="h4 mb-2">Select an invoice to review</h2>
-            <p class="text-body-secondary mb-3">Choose a row in the workbench to inspect recommendation context, supporting history, and approval actions.</p>
+            <span class="dashboard-kicker">@FinanceText["ContextPanel"]</span>
+            <h2 class="h4 mb-2">@FinanceText["SelectInvoiceReview"]</h2>
+            <p class="text-body-secondary mb-3">@FinanceText["SelectInvoiceReviewDescription"]</p>
 
             <dl class="kv-list mb-0">
-                <dt>Visible invoices</dt>
+                <dt>@FinanceText["VisibleInvoices"]</dt>
                 <dd>@VisibleInvoiceCount</dd>
-                <dt>High-risk items</dt>
+                <dt>@FinanceText["HighRiskItems"]</dt>
                 <dd>@HighRiskCount</dd>
-                <dt>Needs attention</dt>
+                <dt>@FinanceText["NeedsAttention"]</dt>
                 <dd>@NeedsAttentionCount</dd>
             </dl>
         </div>
     }
     else if (IsLoading)
     {
-        <FinanceLoadingState Title="Loading invoice review" Message="Fetching the latest finance review result for the selected invoice." />
+        <FinanceLoadingState Title="@FinanceText["LoadingInvoiceReview"]" Message="@FinanceText["LoadingInvoiceReviewDescription"]" />
     }
     else if (!string.IsNullOrWhiteSpace(ErrorMessage))
     {
-        <FinanceErrorState Title="Invoice review unavailable" Message="@(ErrorMessage!)" RetryText="Retry" OnRetry="@OnRetry" />
+        <FinanceErrorState Title="@FinanceText["InvoiceReviewUnavailable"]" Message="@(ErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@OnRetry" />
     }
     else if (Detail is null)
     {
-        <FinanceEmptyState Title="No review result available" Message="The selected invoice does not currently have a finance review result to display." />
+        <FinanceEmptyState Title="@FinanceText["NoReviewResult"]" Message="@FinanceText["NoReviewResultDescription"]" />
     }
     else
     {
@@ -43,65 +43,65 @@
 
         <header class="invoice-review-detail-panel__header">
             <div>
-                <span class="dashboard-kicker">Selected invoice</span>
+                <span class="dashboard-kicker">@FinanceText["SelectedInvoice"]</span>
                 <h2 class="h4 mb-1">@Detail.InvoiceNumber</h2>
                 <p class="text-body-secondary mb-0">@Detail.SupplierName</p>
             </div>
             <div class="text-end">
                 <div class="invoice-review-detail-panel__amount">@FormatCurrency(Detail.Amount, Detail.Currency)</div>
-                <div class="small text-body-secondary">Updated @FormatDateTime(Detail.LastUpdatedUtc)</div>
+                <div class="small text-body-secondary">@FinanceText["UpdatedAt", FormatDateTime(Detail.LastUpdatedUtc)]</div>
             </div>
         </header>
 
-        <section class="invoice-review-detail-panel__section" aria-label="Recommendation">
-            <h3 class="h5">Recommendation</h3>
+        <section class="invoice-review-detail-panel__section" aria-label="@FinanceText["Recommendation"]">
+            <h3 class="h5">@FinanceText["Recommendation"]</h3>
             <dl class="kv-list mb-0">
-                <dt>Recommended action</dt>
+                <dt>@FinanceText["RecommendedAction"]</dt>
                 <dd>@FormatLabel(recommendation?.RecommendedAction ?? Detail.RecommendedAction)</dd>
-                <dt>Risk level</dt>
+                <dt>@FinanceText["RiskLevel"]</dt>
                 <dd><span class="@BuildRiskBadgeClass(recommendation?.Risk ?? Detail.RiskLevel)">@FormatLabel(recommendation?.Risk ?? Detail.RiskLevel)</span></dd>
-                <dt>Confidence</dt>
+                <dt>@FinanceText["Confidence"]</dt>
                 <dd>@FormatConfidence(recommendation?.Confidence ?? Detail.Confidence)</dd>
-                <dt>Review status</dt>
+                <dt>@FinanceText["ReviewStatus"]</dt>
                 <dd>@FormatLabel(recommendation?.CurrentWorkflowStatus ?? Detail.RecommendationStatus)</dd>
             </dl>
         </section>
 
-        <section class="invoice-review-detail-panel__section" aria-label="Why flagged">
-            <h3 class="h5">Why it was flagged</h3>
+        <section class="invoice-review-detail-panel__section" aria-label="@FinanceText["WhyFlagged"]">
+            <h3 class="h5">@FinanceText["WhyFlagged"]</h3>
             <p class="mb-0">@(recommendation?.RationaleSummary ?? Detail.RecommendationSummary)</p>
         </section>
 
-        <section class="invoice-review-detail-panel__section" aria-label="Supporting context">
-            <h3 class="h5">Supporting context</h3>
+        <section class="invoice-review-detail-panel__section" aria-label="@FinanceText["SupportingContext"]">
+            <h3 class="h5">@FinanceText["SupportingContext"]</h3>
             <div class="invoice-review-support-list">
                 <div class="invoice-review-support-item">
-                    <strong>Supplier summary</strong>
-                    <span>@Detail.SupplierName has @workflowHistory.Count workflow event@(workflowHistory.Count == 1 ? string.Empty : "s") in this review trail.</span>
+                    <strong>@FinanceText["SupplierSummary"]</strong>
+                    <span>@FinanceText[workflowHistory.Count == 1 ? "SupplierWorkflowEventsOne" : "SupplierWorkflowEventsMany", Detail.SupplierName, workflowHistory.Count]</span>
                 </div>
                 <div class="invoice-review-support-item">
-                    <strong>Related items</strong>
+                    <strong>@FinanceText["RelatedItems"]</strong>
                     <span>
                         @if (Detail.RelatedApprovalId.HasValue)
                         {
-                            <text>Approval workflow is linked for this invoice.</text>
+                            <text>@FinanceText["ApprovalLinked"]</text>
                         }
                         else
                         {
-                            <text>No related approval has been linked yet.</text>
+                            <text>@FinanceText["NoApprovalLinked"]</text>
                         }
                     </span>
                 </div>
                 <div class="invoice-review-support-item">
-                    <strong>Linked documents</strong>
+                    <strong>@FinanceText["LinkedDocuments"]</strong>
                     <span>
                         @if (!string.IsNullOrWhiteSpace(SourceInvoiceHref))
                         {
-                            <text>Source invoice details are available.</text>
+                            <text>@FinanceText["SourceInvoiceAvailable"]</text>
                         }
                         else
                         {
-                            <text>No linked finance document route is currently exposed here.</text>
+                            <text>@FinanceText["NoLinkedRoute"]</text>
                         }
                     </span>
                 </div>
@@ -122,13 +122,13 @@
             }
         </section>
 
-        <section class="invoice-review-detail-panel__section" aria-label="Actions">
-            <h3 class="h5">Actions</h3>
+        <section class="invoice-review-detail-panel__section" aria-label="@FinanceText["Actions"]">
+            <h3 class="h5">@FinanceText["Actions"]</h3>
             <div class="invoice-review-detail-panel__actions">
-                <button class="btn btn-primary" type="button" disabled="@(!Detail.Actions.CanApprove || IsSubmitting)" @onclick="OnApprove">Approve</button>
-                <button class="btn btn-outline-secondary" type="button" disabled="@(!Detail.Actions.CanReject || IsSubmitting)" @onclick="OnReject">Reject</button>
-                <button class="btn btn-outline-secondary" type="button" disabled="@(!Detail.Actions.CanSendForFollowUp || IsSubmitting)" @onclick="OnSendForFollowUp">Request more info</button>
-                <a class="btn btn-outline-primary" href="@FullDetailHref">View full details</a>
+                <button class="btn btn-primary" type="button" disabled="@(!Detail.Actions.CanApprove || IsSubmitting)" @onclick="OnApprove">@FinanceText["Approve"]</button>
+                <button class="btn btn-outline-secondary" type="button" disabled="@(!Detail.Actions.CanReject || IsSubmitting)" @onclick="OnReject">@FinanceText["Reject"]</button>
+                <button class="btn btn-outline-secondary" type="button" disabled="@(!Detail.Actions.CanSendForFollowUp || IsSubmitting)" @onclick="OnSendForFollowUp">@FinanceText["RequestMoreInfo"]</button>
+                <a class="btn btn-outline-primary" href="@FullDetailHref">@FinanceText["ViewFullDetails"]</a>
             </div>
         </section>
     }
@@ -151,24 +151,22 @@
     [Parameter] public EventCallback OnReject { get; set; }
     [Parameter] public EventCallback OnSendForFollowUp { get; set; }
 
-    private static string FormatLabel(string? value) =>
+    private string FormatLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
-            ? "n/a"
-            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            ? FinanceText["NotAvailable"]
+            : FinanceStatusPresenter.Present(value, FinanceText, CommonText);
 
-    private static string FormatCurrency(decimal amount, string currency) =>
-        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
 
-    private static string FormatDateTime(DateTime value) =>
+    private string FormatDateTime(DateTime value) =>
         value == default
-            ? "Unknown time"
-            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            ? FinanceText["UnknownTime"]
+            : LocalDateTime.DateTime(value);
 
-    private static string FormatConfidence(decimal confidence) =>
-        $"{Math.Clamp(confidence, 0m, 1m):P0}";
+    private string FormatConfidence(decimal confidence) => LocalNumber.Percentage(Math.Clamp(confidence, 0m, 1m));
 
-    private static string FormatActorOrSource(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
+    private string FormatActorOrSource(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? FinanceText["SystemActor"] : value.Trim();
 
     private static string BuildRiskBadgeClass(string? riskLevel) =>
         $"finance-risk-pill {ResolveRiskClass(riskLevel)}";

@@ -44,7 +44,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
     private bool IsFinanceIntegrationBusy => IsFinanceIntegrationLoading || IsFinanceIntegrationConnecting || IsFinanceIntegrationSyncing || IsFinanceIntegrationDisconnecting;
     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
     private bool CanManageFinanceIntegrations => FinanceAccess.CanManageFinanceIntegrations(AccessState.MembershipRole);
-    private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId);
+    private string EmailSettingsHref => BuildAgentMailboxSettingsHref();
     private string IntegrationSettingsHref => FinanceRoutes.BuildFinanceIntegrationSettingsPath(SelectedProviderKey, AccessState.CompanyId);
     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
     private bool IsIntegrationSettingsRoute => Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("finance/settings/integrations/", StringComparison.OrdinalIgnoreCase);
@@ -110,9 +110,14 @@ public partial class SettingsPage : FinancePageBase, IDisposable
         }
         else
         {
-            await LoadSettingsAsync(companyId);
+            Navigation.NavigateTo(BuildAgentMailboxSettingsHref(), replace: true);
         }
     }
+
+    private string BuildAgentMailboxSettingsHref() =>
+        AccessState.CompanyId is Guid companyId
+            ? $"/agents/manage?companyId={companyId}#agent-access-configuration"
+            : "/agents/manage#agent-access-configuration";
 
     private string GetCurrentSettingsRoute()
     {
@@ -511,9 +516,9 @@ public partial class SettingsPage : FinancePageBase, IDisposable
             ? "Accounting system"
             : CultureInfo.CurrentCulture.TextInfo.ToTitleCase(providerKey.Replace("-", " ").Replace("_", " "));
 
-    private static string FormatDateTime(DateTime? value) =>
+    private string FormatDateTime(DateTime? value) =>
         value.HasValue
-            ? value.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
+            ? LocalDateTime.DateTime(value.Value)
             : "Not synced yet";
 
     private static string FormatDuration(DateTime startedUtc, DateTime? completedUtc)

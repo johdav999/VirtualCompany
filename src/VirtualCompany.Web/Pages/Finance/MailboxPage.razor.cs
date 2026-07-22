@@ -20,7 +20,6 @@ public partial class MailboxPage : FinancePageBase
     private MailboxScannedMessageResponse? SelectedMessage { get; set; }
     private bool IsStatusLoading { get; set; }
     private bool IsMessagesLoading { get; set; }
-    private bool IsStartingConnection { get; set; }
     private bool IsScanInFlight { get; set; }
     private string? StatusErrorMessage { get; set; }
     private string? MessagesErrorMessage { get; set; }
@@ -28,11 +27,9 @@ public partial class MailboxPage : FinancePageBase
     private string? ActionErrorMessage { get; set; }
     private string? ProviderSetupMessage { get; set; }
 
-    private bool IsActionBusy => IsStartingConnection || IsScanInFlight;
+    private bool IsActionBusy => IsScanInFlight;
     private bool CanScan => Status?.IsConnected == true;
     private bool IsScanDisabled => !CanScan || IsActionBusy || IsStatusLoading;
-    private bool IsGmailConnectDisabled => IsActionBusy || IsStatusLoading;
-    private bool IsMicrosoft365ConnectDisabled => IsActionBusy || IsStatusLoading;
 
     private string ConnectionStatusLabel =>
         Status is null || string.IsNullOrWhiteSpace(Status.ConnectionStatus)
@@ -149,36 +146,10 @@ public partial class MailboxPage : FinancePageBase
     private string BuildBillReviewHref(Guid billId) =>
         FinanceRoutes.BuildBillInboxDetailPath(billId, AccessState.CompanyId);
 
-    private async Task StartConnectionAsync(string provider)
-    {
-        if (AccessState.CompanyId is not Guid companyId)
-        {
-            return;
-        }
-
-        IsStartingConnection = true;
-        ActionMessage = null;
-        ActionErrorMessage = null;
-        ProviderSetupMessage = null;
-
-        try
-        {
-            var authorizationUrl = await FinanceApiClient.StartMailboxConnectionAsync(companyId, provider, BuildMailboxReturnUri(companyId));
-            Navigation.NavigateTo(authorizationUrl, forceLoad: true);
-        }
-        catch (MailboxProviderNotConfiguredApiException ex)
-        {
-            ProviderSetupMessage = $"{FormatProvider(provider)} sign-in is not enabled for this workspace yet. Ask an administrator to configure the email provider in Finance settings. {ex.Message}";
-        }
-        catch (FinanceApiException ex)
-        {
-            ActionErrorMessage = ex.Message;
-        }
-        finally
-        {
-            IsStartingConnection = false;
-        }
-    }
+    private string BuildAgentMailboxSettingsHref() =>
+        AccessState.CompanyId is Guid companyId
+            ? $"/agents/manage?companyId={companyId}#agent-access-configuration"
+            : "/agents/manage#agent-access-configuration";
 
     private async Task TriggerScanAsync()
     {
@@ -236,12 +207,6 @@ public partial class MailboxPage : FinancePageBase
         }
     }
 
-    private string BuildMailboxReturnUri(Guid companyId)
-    {
-        var relativeUri = FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, companyId);
-        return Navigation.ToAbsoluteUri(relativeUri).ToString();
-    }
-
     private static string GetProviderAvailabilityLabel(MailboxProviderAvailability? availability) =>
         availability?.IsConfigured == true ? "Ready for users" : "Admin setup required";
 
@@ -258,8 +223,8 @@ public partial class MailboxPage : FinancePageBase
     private static string FormatConnectionStatus(string status) =>
         string.Join(" ", status.Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
-    private static string FormatDateTime(DateTime? value) =>
-        value.HasValue ? value.Value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture) + " UTC" : "Not available";
+    private string FormatDateTime(DateTime? value) =>
+        LocalDateTime.Optional(value, empty: FinanceText["NotAvailable"]);
 
     private static string FormatSender(MailboxScannedMessageResponse message)
     {

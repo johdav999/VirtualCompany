@@ -1,808 +1,259 @@
-\# Virtual Company Architecture Rules for Codex
+# Virtual Company Architecture Rules
 
+These rules describe the current refactored solution and are mandatory for backend, data, workflow, agent, integration, approval, AI orchestration, and cross-module changes. Existing production behavior wins over older planning documents.
 
+## Solution Shape
 
-\## Core architecture
+- Build Virtual Company as a multi-tenant, web-first SaaS modular monolith.
+- Use ASP.NET Core for the backend and Blazor Web App for the main user experience.
+- Use .NET MAUI only for mobile companion flows such as alerts, approvals, chat, briefings, and task follow-up.
+- Do not introduce microservices or a second application stack unless explicitly requested.
+- Keep long-running workflows, scheduled work, inbox processing, retries, integration synchronization, and notifications in background workers.
 
+The production project boundaries are:
 
+- `VirtualCompany.Domain`: entities, value semantics, storage values, and deterministic domain rules.
+- `VirtualCompany.Application`: use-case contracts, commands, queries, policies, and orchestration interfaces.
+- `VirtualCompany.Infrastructure`: EF Core persistence, application-service implementations, provider adapters, workers, module registration, and external side effects.
+- `VirtualCompany.Api`: HTTP transport, authorization, request mapping, problem responses, and host startup.
+- `VirtualCompany.Web`: Blazor UI, presenters/view models, and typed API clients.
+- `VirtualCompany.Mobile`: mobile companion application.
+- `VirtualCompany.Shared`: deliberately shared wire contracts and primitives only.
 
-\- Build the product as a multi-tenant SaaS.
+Dependencies must point inward. Domain must not depend on Infrastructure, API, or Web. Application must not depend on API or Web. UI and transport layers must not own business decisions.
 
-\- Use a web-first architecture.
+## Current Modules
 
-\- Use Blazor Web App for the main application.
+Place functionality in the narrowest owning capability. Current business and platform modules include:
 
-\- Use .NET MAUI only for mobile companion flows such as alerts, approvals, chat, briefings, and task follow-up.
+- Finance
+- Sales
+- Support
+- Identity and Tenant Access
+- Company Setup and Operations
+- Agent Management and AI Orchestration
+- Task and Workflow
+- Approval
+- Communication and Mailbox
+- Knowledge and Memory
+- Analytics and Cockpit
+- Integration
+- Audit and Explainability
+- Background Execution
 
-\- Use ASP.NET Core as the backend.
+Finance, Sales, and Support Infrastructure registrations are owned by `AddFinanceModule`, `AddSalesModule`, and `AddSupportModule`. Add new services to the owning module registration. Do not re-register them in the root composition file.
 
-\- Use a modular monolith for v1/v2.
+Root `DependencyInjection` composition may coordinate modules and register genuinely cross-cutting platform services. It must not become the ownership location for capability-specific registrations.
 
-\- Do not introduce microservices unless explicitly requested.
+Provider collections intentionally resolved through `IEnumerable<T>` may have multiple registrations. A non-collection service must have one intentional effective registration. DbContext-dependent services are scoped. Stateless deterministic policies may be singleton. Hosted services are registered once and create scopes for scoped work.
 
-\- Keep clear internal module boundaries.
+## Capability Organization
 
-\- Use background workers for long-running workflows, scheduled jobs, inbox processing, integration sync, retries, and notifications.
+The refactor removed broad catch-all source files. Preserve that organization:
 
+- Finance application contracts belong under `Application/Finance/Contracts` and are grouped by bills, invoices, payments, reporting, integrations, simulation, insights/policy, counterparties, or core concerns.
+- Domain entities belong in one file per entity or closely related aggregate. Do not recreate `FinanceEntities.cs`, `SalesEntities.cs`, or `SupportEntities.cs`.
+- EF configurations belong under `Infrastructure/Persistence/Configurations`, normally one configuration per entity. Register configurations through the DbContext assembly convention. Do not recreate `EntityConfigurations.cs`.
+- Support services belong in capability-specific files such as cases, mailbox, triage, knowledge, drafting, safety, refunds, SLA, memory, analytics, and delivery. Do not recreate `SupportServices.cs`.
+- Large Finance facades use capability-owned partial files where compatibility requires the existing interface or route facade. New behavior must go into the relevant capability file, not the base file.
+- Internal Finance endpoints belong in the matching `InternalFinanceController.<Capability>.cs` file. Keep controller actions transport-only.
+- Finance Web API endpoints belong in the matching `FinanceApiClient.<Capability>.cs` file. Shared HTTP behavior belongs in `CompanyApiTransport`.
 
+Do not create a new catch-all file, generic manager, or utility class merely to avoid choosing an owner. Add an abstraction only when it removes meaningful duplication or defines a real boundary.
 
-\## Current implementation note
+## Controllers and Application Services
 
+- Controllers resolve authorized company/user context, validate transport input, invoke application services, and map results to HTTP responses.
+- Do not place EF queries, accounting rules, workflow decisions, provider logic, or cross-capability orchestration in controllers.
+- Preserve established routes, verbs, authorization policies, request/response contracts, and problem mappings unless a breaking change is explicitly approved.
+- A route or header company ID is context input, not proof of access. Server-side company authorization is mandatory.
+- Cross-capability coordination belongs in an application service, workflow handler, or background orchestration service.
+- Read services must not perform state-changing operations. Commands must make side effects and transactional boundaries explicit.
 
+## Multi-Tenancy and Authorization
 
-The original architecture mentioned PostgreSQL and pgvector. If the repository currently uses SQL Server, follow the existing repository implementation instead.
+- Every tenant-owned entity implements or follows the established company ownership convention and includes `CompanyId` or equivalent scope.
+- Every tenant-owned query and command is company-scoped.
+- Use global query filters where established, but do not treat them as the only authorization boundary.
+- `IgnoreQueryFilters` is allowed only for deliberate system/admin/background operations that explicitly reapply company scope or intentionally process companies in bounded batches.
+- Never return, mutate, enqueue, audit, or reconcile one company's data under another company's context.
+- Never rely only on frontend visibility or disabled controls for authorization.
+- Tests for new tenant-owned behavior must cover cross-company reads and writes.
 
+## Database and EF Core
 
+SQL Server is the production provider. Local SQL Server and Docker SQL Server must remain equivalent deployment paths.
 
-\- Do not switch database provider unless explicitly requested.
+- EF Core migrations are the only schema authority.
+- Do not add startup `CREATE TABLE`, `ALTER TABLE`, `CREATE INDEX`, ad hoc repair DDL, or `EnsureCreated` as a production migration substitute.
+- `DatabaseInitializationService` owns startup migration validation/application and post-schema seed orchestration.
+- `DatabaseInitialization:ApplyMigrationsOnStartup` controls whether pending migrations are applied. When disabled, startup must fail clearly on incompatible pending migrations rather than silently changing schema.
+- Schema changes require a migration and an updated model snapshot.
+- Structural file movement must produce no pending model change.
+- Preserve existing migration IDs and upgrade paths. Never drop/recreate a production database as a migration workaround.
+- Keep `restore-local-sql-db.ps1` and `restore-virtualcompany-db.ps1` compatible with the same backup and migration history.
+- Any local SQL Server-specific setup change must include or document the equivalent Docker SQL Server path.
+- Do not add PostgreSQL-specific types, SQL, or migration behavior to the active SQL Server implementation.
+- Provider-specific SQL must be isolated and have an explicit SQL Server implementation. SQLite is a test provider only where the model and behavior are verified as compatible.
+- Store core queryable business state in relational columns. Use JSON for flexible metadata, settings, thresholds, snapshots, or provider payloads, not as the sole store for important queryable state.
+- Preserve table names, column names, indexes, relationships, conversions, and query filters during structural refactoring.
 
-\- Do not add PostgreSQL-specific features to a SQL Server implementation.
+## Commands, Queries, and Policies
 
-\- Prefer EF Core-compatible relational design.
+Use CQRS-lite boundaries:
 
-\- Keep vector/retrieval functionality abstracted behind interfaces so the storage implementation can change later.
+- Commands perform state changes.
+- Queries produce read models for pages, dashboards, agents, and reports.
+- Optimized read projections remain separate from transactional write logic.
+- Do not introduce event sourcing unless explicitly requested.
 
+High-impact eligibility and allowed-action decisions must be authoritative in backend policy/application code. UI components consume policy decisions and must not reimplement them.
 
+A policy decision should expose, as appropriate:
 
-\## Module boundary rules
+- whether the action is allowed
+- a stable reason code
+- a plain-English explanation
+- whether approval or review is required
+- the evidence used for the decision
 
+Use domain-specific policies rather than one generic policy engine for unrelated rules. Preserve persisted status values and API wire values. Avoid raw status strings when an owning enum, typed value, or constants class exists.
 
+Paid supplier bill expense posting uses `PaidSupplierBillExpensePostingEligibility` as its authoritative eligibility/account resolution policy. Do not duplicate that decision in Finance projections, controllers, or Blazor pages.
 
-When implementing a feature, place it in the most relevant module:
+## Workflow and Approval
 
+- Workflow is a first-class subsystem, not ad hoc UI state.
+- Model manual, scheduled, domain-event, integration/webhook, retry, escalation, blocked, and exception transitions explicitly.
+- Workflow state must explain its trigger, current step/state, related task or approval, and failure/retry state.
+- Human approval requirements are enforced in backend policy/application logic, never only in prompts or UI.
+- Approval-backed execution must recheck approval immediately before the external action.
+- Support threshold checks, required roles/users, chains, rejection, cancellation, and expiration where the business action requires them.
 
+## External Side Effects and Outbox
 
-\- Identity \& Tenant Access
+- Reliable external execute actions use durable outbox/background execution.
+- Do not perform money movement, customer email, provider writes, or similarly important external effects directly in request handlers when retry or ambiguity matters.
+- Stable idempotency keys derive from company, business action, target, and version. Do not use a random retry ID as the business idempotency key.
+- Workers must be safe under duplicate delivery and concurrent claims.
+- Retry only retryable failures with bounded backoff. Validation, authorization, and permanent provider failures must stop with an actionable operator-visible reason.
+- Ambiguous provider outcomes enter reconciliation; do not mark them successful or blindly retry.
+- Persist attempt state, safe failure summaries, provider references, retry state, and reconciliation state where applicable.
+- Never log credentials, access tokens, refresh tokens, or sensitive provider payloads.
 
-\- Company Setup
+Approved Support reply sending is queued as `support.reply.delivery_requested` and dispatched by `SupportReplyDeliveryDispatcher`. Request handlers may create the durable request, but must not bypass the dispatcher with a direct mailbox send path.
 
-\- Agent Management
+## Agent and AI Orchestration
 
-\- Task \& Workflow
+- Use one shared AI orchestration subsystem. Named agents are configuration, memory, tools, permissions, role/persona, objectives, KPIs, autonomy, and escalation rules.
+- Do not create a separate orchestration stack per Finance, Sales, or Support agent.
+- Feature modules call approved orchestration interfaces; they do not call LLM providers directly.
+- Agent tools are explicit, structured, company-scoped, permissioned, and classified as read, recommend, or execute.
+- Guardrails run before tool execution.
+- Sensitive actions require policy checks and approval regardless of what an LLM requested.
+- New agents default to conservative autonomy. Higher autonomy requires explicit configuration.
 
-\- Approval
+The standard orchestration sequence is:
 
-\- Communication
+1. Resolve tenant and user context.
+2. Resolve the addressed agent or coordinator.
+3. Load agent configuration, scopes, and permissions.
+4. Retrieve company-scoped context and memory.
+5. Build structured runtime instructions.
+6. Select permitted tools.
+7. Evaluate policy and approval requirements.
+8. Execute only allowed tools.
+9. Return a structured result.
+10. Persist rationale summary, tool execution, and audit evidence where applicable.
 
-\- Knowledge \& Memory
+Prompt construction includes only relevant company context, role brief, task/workflow state, policies, memory, records, and tool schemas. Do not expose hidden system instructions or retrieve outside the agent's scope.
 
-\- Analytics \& Cockpit
+## Support Grounding and Safety
 
-\- Integration
+- Support knowledge retrieval stays behind `ICompanyKnowledgeSearchService` and the Support knowledge/context abstractions.
+- Only accessible, processed, and indexed company sources may ground a reply.
+- Preserve source document/chunk references and citations.
+- Missing or insufficient grounding creates a review requirement and knowledge gap; it must not silently become an authoritative answer.
+- Deterministic reply safety remains backend policy logic.
+- Automatic mailbox routing and agent execution must be idempotent per inbound message.
+- Repeated polling must not duplicate cases, messages, executions, drafts, or outbound deliveries.
+- Refund and outbound communication actions remain behind approval/workflow/provider boundaries.
 
-\- Audit \& Explainability
+## Integration Boundaries
 
-\- AI Orchestration
+- Integrations are adapters, not systems of record.
+- Keep provider authentication, endpoints, payloads, and error translation inside provider adapters.
+- Normalize provider data into internal contracts before it reaches domain/application behavior.
+- Do not leak provider schemas into core entities.
+- Use background synchronization or webhook ingestion where appropriate.
+- Provider errors exposed to users must be safe and actionable.
 
-\- Background Workers
+## Web API Clients
 
+- Register Web clients through `AddVirtualCompanyApiClients`.
+- Tenant-owned requests use `ICompanyApiTransport`/`CompanyApiTransport` for company context and correlation headers.
+- `Guid.Empty` is not a valid company context and must be rejected before sending.
+- Endpoint knowledge stays in typed capability clients; do not create a universal stringly typed API client.
+- Preserve authentication forwarding, cancellation, route templates, query names, JSON contracts, not-found behavior, and safe error mapping.
+- Offline mode must be explicit and deterministic. It must not silently substitute mock production data.
+- Shared transport behavior has one implementation. Do not duplicate company-header or correlation-header construction in endpoint methods.
 
+## Knowledge, Memory, Communication, and Analytics
+
+- Documents and chunks are separate persisted concepts with ingestion/indexing state and access scope.
+- Knowledge retrieval and memory are always company-scoped and, when required, agent-scoped.
+- Store bounded summaries and useful observations rather than unlimited raw conversation history.
+- Chat messages are not the system of record for tasks, workflows, approvals, or finance state.
+- Dashboard and cockpit UI use query/read models instead of assembling complex transactional data in components.
+- User-facing explanations are plain English and do not expose enum names, storage tokens, provider internals, or raw policy implementation details.
+
+## Audit and Observability
+
+Business audit history and technical logging are separate concerns.
+
+Persist business audit evidence for agent actions, tool executions, approvals, important workflow transitions, provider changes, and sensitive recommendations/actions. Capture the actor, action, target, outcome, rationale summary, data sources, correlation ID, timestamp, and useful before/after evidence.
+
+Technical logs must support diagnosis without exposing secrets. Background failures must be recoverable and visible to operators; do not swallow exceptions or leave intermediate states unexplained.
+
+## Test Architecture
+
+Tests are partitioned by ownership and dependency:
+
+- `VirtualCompany.Api.Tests`: backend unit and API/integration tests that require API/Infrastructure composition.
+- `VirtualCompany.Finance.Tests`: focused Finance policy and module tests.
+- `VirtualCompany.SupportGrounding.Tests`: Support grounding/safety tests without unrelated Finance/Web dependencies.
+- `VirtualCompany.SalesSource.Tests`: focused Sales source/provider tests.
+- `VirtualCompany.Web.Tests`: Blazor components, presentation, routes, and Web client transport tests.
+- `VirtualCompany.Web.Contract.Tests`: Web/API contract integration tests.
 
 Rules:
 
-
-
-\- Do not place business logic directly in UI components.
-
-\- Do not place orchestration logic directly in controllers.
-
-\- Do not create direct cross-module dependencies when an application service, interface, event, or command can be used.
-
-\- Prefer existing module patterns before creating new abstractions.
-
-\- If a feature crosses modules, keep coordination in an application service or workflow handler.
-
-
-
-\## Multi-tenancy rules
-
-
-
-\- Every tenant-owned entity must include `CompanyId` or equivalent tenant scope.
-
-\- Every query for tenant-owned data must be tenant-scoped.
-
-\- Never return data across company boundaries.
-
-\- Never trust client-provided company IDs without authorization checks.
-
-\- Tenant resolution and access checks belong in application/backend services, not only in the UI.
-
-
-
-\## Data and persistence rules
-
-
-
-\- Use the existing database provider and existing EF Core conventions in the repository.
-
-\- Use relational tables for core business concepts.
-
-\- Use JSON columns only for flexible configuration, metadata, thresholds, settings, payload snapshots, or provider-specific data.
-
-\- Do not store important queryable business state only inside JSON.
-
-\- Use migrations for schema changes.
-
-\- Keep schema changes backward-compatible when possible.
-
-\- Update seed data and tests when adding required fields.
-
-
-
-Core business entities should map to these concepts where relevant:
-
-
-
-\- Company
-
-\- User
-
-\- CompanyMembership
-
-\- AgentTemplate
-
-\- Agent
-
-\- Task
-
-\- WorkflowDefinition
-
-\- WorkflowInstance
-
-\- Approval
-
-\- ApprovalStep
-
-\- Conversation
-
-\- Message
-
-\- KnowledgeDocument
-
-\- KnowledgeChunk
-
-\- MemoryItem
-
-\- ToolExecution
-
-\- AuditEvent
-
-\- Integration
-
-
-
-\## CQRS-lite rules
-
-
-
-\- Use commands for state-changing operations.
-
-\- Use queries/read models for dashboards, views, and summaries.
-
-\- Do not implement full event sourcing unless explicitly requested.
-
-\- Keep dashboard queries optimized and separate from transactional write logic.
-
-
-
-\## Workflow rules
-
-
-
-\- Treat workflow as a first-class subsystem.
-
-\- Model recurring processes, triggers, escalations, retries, blocked states, and exceptions explicitly.
-
-\- Do not implement workflow behavior as ad hoc UI logic.
-
-\- Workflows may be triggered by:
-
-&#x20; - manual user action
-
-&#x20; - schedule
-
-&#x20; - domain event
-
-&#x20; - integration/webhook event
-
-
-
-Workflow instances must store enough context to explain:
-
-
-
-\- what triggered the workflow
-
-\- current step
-
-\- current state
-
-\- related task or approval
-
-\- failure/retry status where applicable
-
-
-
-\## Outbox and side-effect rules
-
-
-
-\- Use the outbox pattern for reliable side effects.
-
-\- Do not directly perform external side effects inside request handlers when reliability matters.
-
-\- Use background dispatchers/workers for:
-
-&#x20; - notifications
-
-&#x20; - integration sync
-
-&#x20; - workflow progression
-
-&#x20; - audit fan-out
-
-&#x20; - long-running AI work
-
-\- Failed side effects must be retryable or explicitly marked failed.
-
-
-
-\## Agent architecture rules
-
-
-
-\- Use one shared AI orchestration subsystem.
-
-\- Do not create separate orchestration stacks per agent.
-
-\- Named agents are configuration + memory + tools + permissions + role/persona.
-
-\- Agent behavior should be driven by agent templates and company-specific configuration.
-
-\- Avoid duplicated prompt-building, tool-calling, or policy logic.
-
-
-
-An agent should have:
-
-
-
-\- display name
-
-\- role name
-
-\- department
-
-\- role brief
-
-\- objectives
-
-\- KPIs
-
-\- autonomy level
-
-\- tool permissions
-
-\- data scopes
-
-\- approval thresholds
-
-\- escalation rules
-
-\- working hours or availability if relevant
-
-
-
-\## AI orchestration rules
-
-
-
-All AI interactions must go through the AI Orchestration subsystem.
-
-
-
-The orchestration flow should be:
-
-
-
-1\. Resolve tenant and user context.
-
-2\. Resolve addressed agent or coordinator.
-
-3\. Load agent configuration and permissions.
-
-4\. Retrieve scoped context and memory.
-
-5\. Build prompt/runtime instructions.
-
-6\. Select available tools.
-
-7\. Apply policy checks before tool execution.
-
-8\. Execute approved tools only.
-
-9\. Return structured result.
-
-10\. Store rationale summary, tool execution record, and audit event where applicable.
-
-
-
-Do not call LLM APIs directly from feature modules unless the codebase already has an approved abstraction for that path.
-
-
-
-\## Prompt builder rules
-
-
-
-Prompt construction should include only relevant scoped context:
-
-
-
-\- agent role brief
-
-\- company context
-
-\- current task or workflow context
-
-\- applicable policies
-
-\- memory snippets
-
-\- relevant data records
-
-\- available tool schemas
-
-
-
-Rules:
-
-
-
-\- Prefer structured output formats.
-
-\- Avoid fragile string parsing.
-
-\- Keep prompts deterministic where possible.
-
-\- Do not include data outside the agent’s permitted scope.
-
-\- Do not expose hidden policy or system implementation details to end users.
-
-
-
-\## Context and memory rules
-
-
-
-\- Context retrieval must be tenant-scoped.
-
-\- Agent memory must be scoped by company and optionally by agent.
-
-\- Company memory and role memory should be separate concepts.
-
-\- Store summaries, not unlimited raw conversation history.
-
-\- Use salience/importance and validity periods where appropriate.
-
-\- Retrieval should prefer relevant business records, task history, documents, KPIs, and prior decisions.
-
-
-
-\## Tool execution rules
-
-
-
-\- Tools must be explicit and permissioned.
-
-\- Every tool execution must include:
-
-&#x20; - company/tenant scope
-
-&#x20; - agent identity
-
-&#x20; - action type: read, recommend, or execute
-
-&#x20; - request payload
-
-&#x20; - response payload or failure
-
-&#x20; - policy decision
-
-&#x20; - timestamps
-
-
-
-Before executing a tool, check:
-
-
-
-\- tenant scope
-
-\- agent permission scope
-
-\- autonomy level
-
-\- threshold limits
-
-\- approval requirements
-
-\- compliance or region rules
-
-\- redaction requirements
-
-
-
-Tools should return structured results only.
-
-
-
-\## Policy and guardrail rules
-
-
-
-\- Guardrails must run before tool execution, not only after LLM generation.
-
-\- Sensitive or high-impact actions must require approval.
-
-\- Default autonomy must be conservative.
-
-\- New agents should start at autonomy level 0 or 1.
-
-\- Autonomy level 2 or 3 requires explicit configuration.
-
-\- Policy failures should produce clear user-facing explanations and internal audit events.
-
-
-
-\## Approval rules
-
-
-
-Use the Approval module for actions requiring human review.
-
-
-
-Approval logic must support:
-
-
-
-\- threshold checks
-
-\- required role or required user
-
-\- approval chains
-
-\- approval status
-
-\- decision summary
-
-\- rejection handling
-
-\- cancellation/expiration where relevant
-
-
-
-Do not bury approval requirements inside prompts only. Approval must be enforced in backend policy/application logic.
-
-
-
-\## Audit and explainability rules
-
-
-
-Auditability is a product feature, not only technical logging.
-
-
-
-Persist business audit events for:
-
-
-
-\- agent actions
-
-\- tool executions
-
-\- approvals
-
-\- important workflow transitions
-
-\- integration-triggered changes
-
-\- sensitive recommendations or actions
-
-
-
-Audit records should capture:
-
-
-
-\- actor type: human, agent, or system
-
-\- actor id where available
-
-\- action
-
-\- target type and id
-
-\- outcome
-
-\- rationale summary
-
-\- data sources used
-
-\- before/after snapshots where useful
-
-\- correlation id
-
-\- timestamp
-
-
-
-Technical logs are separate from user-facing audit history.
-
-
-
-\## Integration rules
-
-
-
-\- Integrations are adapters, not systems of record.
-
-\- Normalize imported/synced data into internal company data contracts.
-
-\- Keep provider-specific auth and payload details inside the Integration module.
-
-\- Use background sync jobs for recurring imports.
-
-\- Use webhook ingestion where available.
-
-\- Never let external provider schemas leak directly into core domain models unless intentionally mapped.
-
-
-
-Supported integration categories may include:
-
-
-
-\- email
-
-\- calendar
-
-\- CRM
-
-\- accounting
-
-\- ads
-
-\- support
-
-\- storage
-
-
-
-\## Knowledge and document rules
-
-
-
-The Knowledge \& Memory module owns:
-
-
-
-\- document ingestion
-
-\- uploaded files
-
-\- SOPs
-
-\- FAQs
-
-\- playbooks
-
-\- generated documents
-
-\- chunks
-
-\- embeddings
-
-\- semantic search
-
-\- company and agent memory
-
-
-
-Rules:
-
-
-
-\- Store documents separately from chunks.
-
-\- Keep chunk metadata.
-
-\- Track ingestion status.
-
-\- Respect access scope during retrieval.
-
-\- Do not retrieve knowledge across company boundaries.
-
-
-
-\## Communication rules
-
-
-
-Use Communication module for:
-
-
-
-\- agent chat
-
-\- shared company inbox
-
-\- notifications
-
-\- daily briefings
-
-\- weekly summaries
-
-\- task/workflow conversation threads
-
-\- approval request messages
-
-
-
-Do not use chat messages as the only source of truth for workflow/task state.
-
-
-
-\## Analytics and cockpit rules
-
-
-
-Use Analytics \& Cockpit module for:
-
-
-
-\- executive dashboard
-
-\- department scorecards
-
-\- KPI aggregation
-
-\- alerts
-
-\- anomalies
-
-\- forecasts
-
-\- agent health
-
-\- workload
-
-
-
-Dashboard UI should use query/read models instead of assembling complex transactional data directly in components.
-
-
-
-\## Background worker rules
-
-
-
-Use background workers for:
-
-
-
-\- scheduled briefings
-
-\- workflow progression
-
-\- retries
-
-\- inbox and webhook processing
-
-\- embedding generation
-
-\- integration sync
-
-\- notification dispatch
-
-\- long-running AI tasks
-
-
-
-Rules:
-
-
-
-\- Workers must be idempotent where practical.
-
-\- Workers must be tenant-aware.
-
-\- Failed jobs must be logged and recoverable.
-
-\- Long-running work must not block user-facing requests.
-
-
-
-\## Manager-worker multi-agent rules
-
-
-
-\- Cross-functional work should be coordinated by a manager/coordinator agent or orchestration plan.
-
-\- Avoid free-form agent-to-agent chatter loops.
-
-\- Multi-agent work should create explicit tasks, subtasks, outputs, and final consolidation.
-
-\- Store delegated tasks and rationale summaries.
-
-
-
-\## UI-facing language rules
-
-
-
-\- Do not expose internal enum values or workflow codes directly to users.
-
-\- Translate internal names into plain English.
-
-\- Examples:
-
-&#x20; - `finance\_approver` → “Finance approver”
-
-&#x20; - `invoice\_review` → “Invoice review”
-
-&#x20; - `multiple\_payments` → “Multiple payments”
-
-\- User-facing explanations should be concise, specific, and action-oriented.
-
-
-
-\## Security and trust rules
-
-
-
-\- Never rely only on frontend checks for authorization.
-
-\- Sensitive actions must be checked server-side.
-
-\- Do not expose credentials, tokens, provider secrets, or raw encrypted auth config.
-
-\- External integration credentials must be stored securely.
-
-\- User-facing rationale should be explainable without leaking private prompt or policy internals.
-
-
-
-\## Implementation checklist
-
-
-
-Before completing a task, verify:
-
-
-
-\- Correct module placement
-
-\- Tenant isolation
-
-\- Authorization checks
-
-\- Policy checks before tool execution
-
-\- Approval flow where required
-
-\- Audit event where required
-
-\- Outbox/background processing for reliable side effects
-
-\- No direct LLM calls outside approved orchestration abstractions
-
-\- No internal enum names exposed in UI
-
-\- Database migration included when schema changes
-
-\- Tests or seed data updated when relevant
-
+- Add a test to the narrowest project that can execute it.
+- Pure domain or policy tests must not gain Web/API references.
+- Non-Web test projects must not require Web output binaries or a running Web process.
+- Tests do not depend on an already running API, Docker, SQL Server, or external provider unless explicitly categorized as external integration tests.
+- Use SQLite only for provider-compatible behavior. SQL Server-specific migrations, metadata, SQL, and concurrency need SQL Server validation.
+- Shared databases, ports, environment variables, clocks, or static state require explicit collection/fixture isolation.
+- Do not delete, skip, or weaken a valid test to make a refactor pass. Replace obsolete assertions with coverage of the current authoritative behavior.
+- New sensitive behavior requires proportionate tenant-isolation, authorization, policy, idempotency, and failure-path tests.
+
+## Completion Checklist
+
+Before completing an architecture-sensitive change, verify:
+
+- Correct capability and project ownership.
+- No new catch-all file or duplicate implementation.
+- Tenant isolation and server-side authorization.
+- Commands and queries remain separated.
+- Backend policy is the source of truth for allowed actions.
+- Approval is enforced before sensitive execution.
+- Durable outbox/background execution is used for reliable side effects.
+- Idempotency, retry classification, reconciliation, and safe failures are covered.
+- Audit evidence and technical observability are appropriate.
+- No direct LLM call bypasses shared orchestration.
+- No provider schema leaks into domain models.
+- Schema changes include an EF migration and preserve local/Docker SQL Server compatibility.
+- `Program.cs` contains no schema DDL.
+- `dotnet ef migrations has-pending-model-changes` is clean after structural changes.
+- Tests are placed in and run from the narrowest relevant project.
+- API and Web build after cross-layer changes.

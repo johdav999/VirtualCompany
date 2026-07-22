@@ -42,7 +42,9 @@ public sealed record ResolvedCompanyMembershipContext(
     Guid UserId,
     string CompanyName,
     CompanyMembershipRole MembershipRole,
-    CompanyMembershipStatus Status);
+    CompanyMembershipStatus Status,
+    string? Timezone = null,
+    string? Currency = null);
 
 public interface ICurrentUserAccessor
 {

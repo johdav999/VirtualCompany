@@ -149,6 +149,9 @@ public sealed record SingleAgentRuntimeContext(
     public Guid? InitiatingActorId { get; init; }
 
     public string? InitiatingActorType { get; init; }
+
+    public CommunicationLanguageResolution CommunicationLanguage { get; init; } =
+        CommunicationLanguageResolver.Resolve(null, null, null, null);
 }
 
 public sealed record CompanyRuntimeContext(

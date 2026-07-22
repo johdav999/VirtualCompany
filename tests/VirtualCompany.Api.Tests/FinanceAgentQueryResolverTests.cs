@@ -38,7 +38,7 @@ public sealed class FinanceAgentQueryResolverTests
             CancellationToken.None);
 
         Assert.Equal(FinanceAgentQueryIntents.WhatShouldIPayThisWeek, result.Intent);
-        Assert.Equal(new[] { scenario.OverdueBillId, scenario.DueThisWeekBillId }, result.Items.Select(x => x.RecordId));
+        Assert.Equal(new[] { scenario.OverdueBillId, scenario.DueThisWeekBillId }, result.Items.Select(x => x.RecordId!.Value));
         Assert.All(result.Items, item => Assert.Contains(item.MetricComponents, component => component.ComponentKey == "remaining_balance"));
         Assert.Equal(
             new[] { scenario.CompletedOutgoingAllocationId, scenario.OverdueBillId },
@@ -87,7 +87,7 @@ public sealed class FinanceAgentQueryResolverTests
             CancellationToken.None);
 
         Assert.Equal(FinanceAgentQueryIntents.WhichCustomersAreOverdue, result.Intent);
-        Assert.Equal(new[] { scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId }, result.Items.Select(x => x.RecordId));
+        Assert.Equal(new[] { scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId }, result.Items.Select(x => x.RecordId!.Value));
         Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.AgingBucket)));
         Assert.Equal(
@@ -259,6 +259,8 @@ public sealed class FinanceAgentQueryResolverTests
 
         var completedOutgoingAllocationId = Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
         var pendingOutgoingAllocationId = Guid.Parse("bbbbbbbb-cccc-dddd-eeee-ffffffffffff");
+        var completedOutgoingPaymentId = Guid.Parse("70707070-7070-7070-7070-707070707070");
+        var pendingOutgoingPaymentId = Guid.Parse("80808080-8080-8080-8080-808080808080");
         var completedIncomingPaymentId = Guid.Parse("90909090-9090-9090-9090-909090909090");
         dbContext.Payments.AddRange(
             new Payment(completedOutgoingPaymentId, companyId, "outgoing", 100m, "USD", asOfUtc.AddDays(-1), "ach", "completed", "BILL-OVERDUE-001"),

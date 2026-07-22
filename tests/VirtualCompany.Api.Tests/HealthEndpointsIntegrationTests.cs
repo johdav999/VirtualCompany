@@ -3,14 +3,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class HealthEndpointsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class HealthEndpointsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public HealthEndpointsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Liveness_endpoint_reports_only_application_process_health()

@@ -1,8 +1,9 @@
 @namespace VirtualCompany.Web.Components
 @using VirtualCompany.Web.Services
+@inject IStringLocalizer<AgentsResources> AgentText
 
 <article class="agent-status-card">
-    <a class="agent-status-card__link" href="@DetailHref" aria-label="@($"Open {Card.DisplayName} status detail")">
+    <a class="agent-status-card__link" href="@DetailHref" aria-label="@AgentText["OpenStatusDetails", Card.DisplayName]">
         <div class="agent-template-header">
             <div>
                 <span class="dashboard-kicker">@Card.Department</span>
@@ -14,19 +15,19 @@
 
         <div class="agent-status-metrics mt-4">
             <div>
-                <span class="dashboard-kicker">Workload</span>
+                <span class="dashboard-kicker">@AgentText["Workload"]</span>
                 <strong>@Card.Workload.WorkloadLevel</strong>
-                <small>@Card.Workload.ActiveTaskCount task(s), @Card.Workload.ActiveWorkflowCount workflow(s)</small>
+                <small>@AgentText["TaskWorkflowCount", Card.Workload.ActiveTaskCount, Card.Workload.ActiveWorkflowCount]</small>
             </div>
             <div>
-                <span class="dashboard-kicker">Blocked</span>
+                <span class="dashboard-kicker">@AgentText["Blocked"]</span>
                 <strong>@Card.Workload.BlockedTaskCount</strong>
-                <small>@Card.Workload.AwaitingApprovalCount awaiting approval</small>
+                <small>@AgentText["AwaitingApprovalCount", Card.Workload.AwaitingApprovalCount]</small>
             </div>
             <div>
-                <span class="dashboard-kicker">Alerts</span>
+                <span class="dashboard-kicker">@AgentText["Alerts"]</span>
                 <strong>@Card.ActiveAlertsCount</strong>
-                <small>Active signals</small>
+                <small>@AgentText["ActiveSignals"]</small>
             </div>
         </div>
 
@@ -37,13 +38,13 @@
 
         <div class="activity-list mt-4">
             <div class="agent-template-header">
-                <strong>Recent actions</strong>
-                <span class="text-body-secondary small">Updated @Card.LastUpdatedUtc.ToLocalTime().ToString("g")</span>
+                <strong>@AgentText["RecentActions"]</strong>
+                <span class="text-body-secondary small">@AgentText["UpdatedAt", Card.LastUpdatedUtc.ToLocalTime().ToString("g")]</span>
             </div>
 
             @if (Card.RecentActions.Count == 0)
             {
-                <p class="text-body-secondary mb-0">No recent actions are available.</p>
+                <p class="text-body-secondary mb-0">@AgentText["NoRecentActions"]</p>
             }
             else
             {

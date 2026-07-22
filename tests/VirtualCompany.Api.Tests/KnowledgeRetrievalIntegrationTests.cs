@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class KnowledgeRetrievalIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public KnowledgeRetrievalIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public void Chunker_produces_stable_ordered_chunks_with_overlap()
@@ -116,7 +113,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
 
         var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyAId, "payroll policy for remote employees", 5),
+            new CompanyKnowledgeSemanticSearchQuery(companyAId, "payroll policy for remote employees", 5, TestAccess(companyAId, userId)),
             CancellationToken.None);
 
         var result = Assert.Single(results);
@@ -198,7 +195,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
 
         var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyAId, "payroll policy for remote employees", 1),
+            new CompanyKnowledgeSemanticSearchQuery(companyAId, "payroll policy for remote employees", 1, TestAccess(companyAId, userId)),
             CancellationToken.None);
 
         var result = Assert.Single(results);
@@ -271,7 +268,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
 
         var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 5),
+            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 5, TestAccess(companyId, userId)),
             CancellationToken.None);
 
         var result = Assert.Single(results);
@@ -344,7 +341,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
 
         var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 1),
+            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 1, TestAccess(companyId, userId)),
             CancellationToken.None);
 
         var result = Assert.Single(results);
@@ -404,7 +401,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
                 companyId,
                 "finance controls for payroll approvals",
                 TopN: 5,
-                AccessContext: new CompanyKnowledgeAccessContext(companyId, DataScopes: ["finance"])),
+                AccessContext: TestAccess(companyId, userId, ["finance"])),
             CancellationToken.None);
 
         var result = Assert.Single(results);
@@ -553,7 +550,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
         }
 
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyId, "secure portal upload", 5),
+            new CompanyKnowledgeSemanticSearchQuery(companyId, "secure portal upload", 5, TestAccess(companyId, userId)),
             CancellationToken.None);
 
         Assert.NotEmpty(results);
@@ -612,7 +609,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
             await dbContext.SaveChangesAsync();
         }
 
-        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
+        await processor.ProcessPendingAsync(CancellationToken.None);
 
         using (var verificationScope = _factory.Services.CreateScope())
         {
@@ -631,7 +628,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
         }
 
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyId, "badge checks at every entry point", 5),
+            new CompanyKnowledgeSemanticSearchQuery(companyId, "badge checks at every entry point", 5, TestAccess(companyId, userId)),
             CancellationToken.None);
 
         Assert.NotEmpty(results);
@@ -734,7 +731,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
 
         using var scope = _factory.Services.CreateScope();
         var processor = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeIndexingProcessor>();
-        await processor.IndexDocumentAsync(companyId, documentId, CancellationToken.None);
+        await processor.ProcessPendingAsync(CancellationToken.None);
 
         using var verificationScope = _factory.Services.CreateScope();
         var dbContext = verificationScope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
@@ -775,6 +772,17 @@ public sealed class KnowledgeRetrievalIntegrationTests : IClassFixture<TestWebAp
         document.MarkIndexed("payroll policy for remote employees", 1, 1, "test-provider", "test", "v1", 256, "seed-fingerprint-v1");
         return document;
     }
+
+    private static CompanyKnowledgeAccessContext TestAccess(
+        Guid companyId,
+        Guid userId,
+        IReadOnlyList<string>? dataScopes = null) =>
+        new(
+            companyId,
+            MembershipId: Guid.NewGuid(),
+            UserId: userId,
+            MembershipRole: CompanyMembershipRole.Manager.ToStorageValue(),
+            DataScopes: dataScopes);
 
     private async Task<Guid> GetCompanyIdForDocumentAsync(Guid documentId)
     {

@@ -5,14 +5,17 @@ using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Infrastructure.Companies;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Persistence;
@@ -22,28 +25,43 @@ namespace VirtualCompany.Api.Tests;
 public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly TimeProvider _timeProvider;
-    private SqliteConnection? _connection;
+    private readonly SqliteConnection _connection = new("Data Source=:memory:");
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
+    private readonly bool _seedCompanySetupTemplates;
 
     public TestWebApplicationFactory()
-        : this(TimeProvider.System, null)
+        : this(TimeProvider.System, null, false)
     {
     }
 
     internal TestWebApplicationFactory(TimeProvider timeProvider)
-        : this(timeProvider, null)
+        : this(timeProvider, null, false)
     {
     }
 
     internal TestWebApplicationFactory(IReadOnlyDictionary<string, string?> configurationOverrides)
-        : this(TimeProvider.System, configurationOverrides)
+        : this(TimeProvider.System, configurationOverrides, false)
     {
     }
 
-    internal TestWebApplicationFactory(TimeProvider timeProvider, IReadOnlyDictionary<string, string?>? configurationOverrides) { _timeProvider = timeProvider; _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>(); }
+    internal TestWebApplicationFactory(bool seedCompanySetupTemplates)
+        : this(TimeProvider.System, null, seedCompanySetupTemplates)
+    {
+    }
+
+    internal TestWebApplicationFactory(
+        TimeProvider timeProvider,
+        IReadOnlyDictionary<string, string?>? configurationOverrides,
+        bool seedCompanySetupTemplates = false)
+    {
+        _timeProvider = timeProvider;
+        _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>();
+        _seedCompanySetupTemplates = seedCompanySetupTemplates;
+    }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
+        builder.UseEnvironment("Testing");
         builder.ConfigureAppConfiguration((_, configurationBuilder) =>
         {
             var settings = new Dictionary<string, string?>
@@ -57,16 +75,20 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{CompanySimulationProgressionWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
+                [$"{BackgroundExecutionOptions.SectionName}:BaseRetryDelaySeconds"] = "0",
+                [$"{BackgroundExecutionOptions.SectionName}:MaxRetryDelaySeconds"] = "0",
                 [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "false",
                 [$"{KnowledgeIndexingOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Provider"] = "deterministic",
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
                 [$"{FinanceSeedWorkerOptions.SectionName}:Enabled"] = "false",
+                [$"{FinanceSeedBackfillWorkerOptions.SectionName}:Enabled"] = "false",
+                [$"{FinanceApprovalTaskBackfillWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
                 [$"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:Enabled"] = "true",
                 [$"{FinanceInsightsSnapshotWorkerOptions.SectionName}:Enabled"] = "false",
-                ["DatabaseInitialization:ApplyMigrationsOnStartup"] = "true",
+                ["DatabaseInitialization:Enabled"] = "false",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KeyVersion"] = "tests-v1",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:KnowledgeTtlSeconds"] = "300",
                 [$"{GroundedContextRetrievalCacheOptions.SectionName}:MemoryTtlSeconds"] = "300",
@@ -83,12 +105,14 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
         builder.ConfigureServices(services =>
         {
+            services.RemoveAll<IHostedService>();
             services.RemoveAll<DbContextOptions<VirtualCompanyDbContext>>();
+            services.RemoveAll<IDbContextOptionsConfiguration<VirtualCompanyDbContext>>();
             services.RemoveAll<TimeProvider>();
             services.AddSingleton(_timeProvider);
             services.RemoveAll<VirtualCompanyDbContext>();
 
-            _connection ??= CreateOpenConnection();
+            _connection.Open();
             services.AddDbContext<VirtualCompanyDbContext>(options =>
                 options.UseSqlite(_connection));
 
@@ -113,6 +137,22 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         });
     }
 
+    protected override IHost CreateHost(IHostBuilder builder)
+    {
+        var host = base.CreateHost(builder);
+        using var scope = host.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        dbContext.Database.EnsureCreated();
+        if (_seedCompanySetupTemplates)
+        {
+            scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>()
+                .SeedAsync()
+                .GetAwaiter()
+                .GetResult();
+        }
+        return host;
+    }
+
     public TestCompanyInvitationSender InvitationSender =>
         Services.GetRequiredService<TestCompanyInvitationSender>();
 
@@ -125,7 +165,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
     public TestCompanyDocumentVirusScanner DocumentVirusScanner =>
         Services.GetRequiredService<TestCompanyDocumentVirusScanner>();
 
-    public TestFinanceSeedTelemetry FinanceSeedTelemetry =>
+    internal TestFinanceSeedTelemetry FinanceSeedTelemetry =>
         Services.GetRequiredService<TestFinanceSeedTelemetry>();
 
     public async Task SeedAsync(Func<VirtualCompanyDbContext, Task> seed)
@@ -145,22 +185,27 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         return await callback(dbContext);
     }
 
+    public async Task ExecuteDbContextAsync(Func<VirtualCompanyDbContext, Task> callback)
+    {
+        using var scope = Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        await dbContext.Database.EnsureCreatedAsync();
+        await callback(dbContext);
+    }
+
+    public async Task ExecuteScopeAsync(Func<IServiceScope, Task> callback)
+    {
+        using var scope = Services.CreateScope();
+        await callback(scope);
+    }
+
     protected override void Dispose(bool disposing)
     {
         base.Dispose(disposing);
-
         if (disposing)
         {
-            _connection?.Dispose();
-            _connection = null;
+            _connection.Dispose();
         }
-    }
-
-    private static SqliteConnection CreateOpenConnection()
-    {
-        var connection = new SqliteConnection("Data Source=:memory:");
-        connection.Open();
-        return connection;
     }
 
     public sealed class TestCompanyInvitationSender : ICompanyInvitationSender
@@ -191,7 +236,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
             if (TryConsumeFailure())
             {
-                throw new InvalidOperationException("Configured invitation delivery failure.");
+                throw new IOException("Configured invitation delivery failure.");
             }
 
             _sent.Enqueue(invitation);

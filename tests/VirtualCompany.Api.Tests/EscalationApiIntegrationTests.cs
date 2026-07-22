@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class EscalationApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class EscalationApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public EscalationApiIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Escalation_list_filters_by_source_policy_correlation_and_tenant()

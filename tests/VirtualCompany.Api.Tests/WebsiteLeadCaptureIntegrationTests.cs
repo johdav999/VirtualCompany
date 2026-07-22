@@ -7,14 +7,11 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class WebsiteLeadCaptureIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class WebsiteLeadCaptureIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public WebsiteLeadCaptureIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Public_submission_creates_lead_and_sequence_enrollment()

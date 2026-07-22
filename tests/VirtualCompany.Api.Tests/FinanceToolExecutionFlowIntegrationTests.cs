@@ -21,14 +21,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceToolExecutionFlowIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceToolExecutionFlowIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Theory]
     [MemberData(nameof(SuccessfulFinanceToolRequests))]
@@ -61,16 +58,16 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IClassFixture<Tes
         Assert.Equal("executed", payload!.Status);
         Assert.Equal("allow", payload.PolicyDecision.Outcome);
         Assert.NotNull(payload.ExecutionResult);
-        Assert.Equal("executed", payload.ExecutionResult!["status"].GetString());
-        Assert.Equal(toolName, payload.ExecutionResult["toolName"].GetString());
-        Assert.Equal("read", payload.ExecutionResult["actionType"].GetString());
-        Assert.True(payload.ExecutionResult["success"].GetBoolean());
-        Assert.True(payload.ExecutionResult["data"].TryGetProperty(expectedDataProperty, out _));
+        Assert.Equal("executed", payload.ExecutionResult!["status"]!.GetValue<string>());
+        Assert.Equal(toolName, payload.ExecutionResult["toolName"]!.GetValue<string>());
+        Assert.Equal("read", payload.ExecutionResult["actionType"]!.GetValue<string>());
+        Assert.True(payload.ExecutionResult["success"]!.GetValue<bool>());
+        Assert.True(payload.ExecutionResult["data"]!.AsObject().ContainsKey(expectedDataProperty));
 
         var metadata = payload.ExecutionResult["metadata"];
-        Assert.Equal("finance_tool_provider", metadata.GetProperty("contractName").GetString());
-        Assert.Equal("1.0.0", metadata.GetProperty("toolVersion").GetString());
-        Assert.Equal(InternalToolExecutionResponse.SchemaVersion, metadata.GetProperty("contractSchemaVersion").GetString());
+        Assert.Equal("finance_tool_provider", metadata!["contractName"]!.GetValue<string>());
+        Assert.Equal("1.0.0", metadata["toolVersion"]!.GetValue<string>());
+        Assert.Equal(InternalToolExecutionResponse.SchemaVersion, metadata["contractSchemaVersion"]!.GetValue<string>());
 
         var trackingFinance = financeFactory.Services.GetRequiredService<TrackingFinanceToolProvider>();
         Assert.Equal(1, trackingFinance.TotalCallCount);

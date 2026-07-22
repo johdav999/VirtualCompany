@@ -158,7 +158,7 @@ public sealed class SupplierInvoicePaymentProposalServiceTests
         var bill = await fixture.AddSupplierBillAsync(
             amount: 999m,
             settlementStatus: FinanceSettlementStatuses.Unpaid,
-            processingStatus: FinanceDocumentProcessingStatuses.Synced);
+            processingStatus: FinanceDocumentProcessingStatuses.None);
 
         var result = await fixture.Service.RequestPaymentProposalAsync(
             new RequestSupplierInvoicePaymentProposalCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
@@ -232,7 +232,12 @@ public sealed class SupplierInvoicePaymentProposalServiceTests
         await using var fixture = await SupplierPaymentProposalFixture.CreateAsync();
         var bill = await fixture.AddSupplierBillAsync(amount: 1000m, settlementStatus: FinanceSettlementStatuses.Unpaid);
         await fixture.CreateReadyProposalAsync(bill.Id);
-        var command = new ExportSupplierInvoicePaymentInstructionCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Alice Admin");
+        var command = new ExportSupplierInvoicePaymentInstructionCommand(
+            fixture.CompanyId,
+            bill.Id,
+            fixture.ActorUserId,
+            "Alice Admin",
+            SupplierInvoicePaymentExportModes.ManualExport);
 
         var first = await fixture.Service.ExportPaymentInstructionAsync(command, CancellationToken.None);
         var second = await fixture.Service.ExportPaymentInstructionAsync(command, CancellationToken.None);
@@ -436,6 +441,12 @@ public sealed class SupplierInvoicePaymentProposalServiceTests
             await db.Database.EnsureCreatedAsync();
             var fixture = new SupplierPaymentProposalFixture(connection, db, exportProvider ?? new FortnoxSupplierInvoicePaymentExportProvider());
 
+            db.Users.Add(new User(
+                fixture.ActorUserId,
+                "finance-actor@example.test",
+                "Finance Actor",
+                "test",
+                fixture.ActorUserId.ToString("N")));
             db.Companies.Add(new Company(fixture.CompanyId, "Fortnox-only company"));
             db.FinanceCounterparties.Add(new FinanceCounterparty(
                 fixture.SupplierId,
@@ -729,7 +740,7 @@ public sealed class SupplierInvoicePaymentProposalServiceTests
                 steps,
                 steps.FirstOrDefault(),
                 approval.DecisionSummary,
-                approval.RejectionComment,
+                approval.DecisionSummary,
                 string.Empty,
                 string.Empty,
                 [],

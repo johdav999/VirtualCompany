@@ -7,6 +7,7 @@ public abstract class SupportPageBase : ComponentBase
 {
     [Inject] protected OnboardingApiClient OnboardingApiClient { get; set; } = default!;
     [Inject] protected SupportApiClient SupportApiClient { get; set; } = default!;
+    [Inject] protected AgentApiClient AgentApiClient { get; set; } = default!;
     [Inject] protected NavigationManager Navigation { get; set; } = default!;
 
     [SupplyParameterFromQuery(Name = "companyId")]
@@ -45,4 +46,12 @@ public abstract class SupportPageBase : ComponentBase
 
     protected string BuildPath(string path) =>
         ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+
+    protected async Task<Guid?> ResolveSupportAgentIdAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        var roster = await AgentApiClient.GetRosterAsync(companyId, cancellationToken);
+        return roster.FirstOrDefault(x =>
+            string.Equals(x.Department, "Support", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))?.Id;
+    }
 }

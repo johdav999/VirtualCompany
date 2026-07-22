@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceAnomalyWorkbenchIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceAnomalyWorkbenchIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceAnomalyWorkbenchIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Finance_anomaly_workbench_endpoints_filter_paginate_and_expand_detail()

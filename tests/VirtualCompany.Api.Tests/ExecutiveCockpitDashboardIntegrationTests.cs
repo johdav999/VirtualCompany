@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ExecutiveCockpitDashboardIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ExecutiveCockpitDashboardIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Dashboard_returns_empty_state_flags_for_sparse_workspace()
@@ -264,7 +261,7 @@ public sealed class ExecutiveCockpitDashboardIntegrationTests : IClassFixture<Te
                 ApprovalRequest.CreateForTarget(approvalId, companyId, ApprovalTargetEntityType.Task, taskId, "agent", agentId, "threshold", Payload(("amount", JsonValue.Create(25000))), "owner", null, []),
                 ApprovalRequest.CreateForTarget(otherCompanyApprovalId, otherCompanyId, ApprovalTargetEntityType.Task, Guid.NewGuid(), "agent", Guid.NewGuid(), "threshold", Payload(("amount", JsonValue.Create(50000))), "owner", null, []));
 
-            dbContext.CompanyBriefings.Add(new CompanyBriefing(Guid.NewGuid(), companyId, CompanyBriefingType.Daily, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, "Daily briefing", "Founder briefing summary.", [], []));
+            dbContext.CompanyBriefings.Add(new CompanyBriefing(Guid.NewGuid(), companyId, CompanyBriefingType.Daily, DateTime.UtcNow.AddDays(-1), DateTime.UtcNow, "Daily briefing", "Founder briefing summary.", new Dictionary<string, JsonNode?>(), new Dictionary<string, JsonNode?>()));
             return Task.CompletedTask;
         });
 

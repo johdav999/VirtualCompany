@@ -23,6 +23,13 @@ internal static class PaidSupplierBillExpensePostingEligibility
         IReadOnlyList<JsonObject>? reconciliationWarnings)
     {
         var blockingReasons = new List<string>();
+        var reasonCodes = new List<string>();
+        void Block(string code, string explanation)
+        {
+            reasonCodes.Add(code);
+            blockingReasons.Add(explanation);
+        }
+
         var kind = NormalizeStatusToken(documentKind);
         var posting = NormalizeStatusToken(postingStatus);
         var settlement = NormalizeStatusToken(settlementStatus);
@@ -31,32 +38,32 @@ internal static class PaidSupplierBillExpensePostingEligibility
 
         if (kind != FinanceDocumentKinds.SupplierInvoice)
         {
-            blockingReasons.Add("Only supplier invoices can be posted as expenses.");
+            Block("document_not_supplier_invoice", "Only supplier invoices can be posted as expenses.");
         }
 
         if (posting == FinanceDocumentPostingStatuses.Booked || fallback == "booked")
         {
-            blockingReasons.Add("This supplier bill already appears booked in Fortnox.");
+            Block("already_booked", "This supplier bill already appears booked in Fortnox.");
         }
 
         if (posting == FinanceDocumentPostingStatuses.Cancelled || fallback is "cancelled" or "canceled" or "void")
         {
-            blockingReasons.Add("Cancelled supplier bills cannot be posted as expenses.");
+            Block("bill_cancelled", "Cancelled supplier bills cannot be posted as expenses.");
         }
 
         if (settlement == FinanceSettlementStatuses.Credited)
         {
-            blockingReasons.Add("Credited supplier bills cannot be posted as expenses.");
+            Block("bill_credited", "Credited supplier bills cannot be posted as expenses.");
         }
 
         if (settlement != FinanceSettlementStatuses.Paid || !isFullyPaid)
         {
-            blockingReasons.Add("The supplier bill must be fully paid before Laura can post the expense.");
+            Block("bill_not_fully_paid", "The supplier bill must be fully paid before Laura can post the expense.");
         }
 
         if (!FinanceAccountCodePolicy.IsSupplierExpenseAccount(normalizedAccountCode))
         {
-            blockingReasons.Add("Choose a supplier expense account before Laura posts this bill.");
+            Block("expense_account_required", "Choose a supplier expense account before Laura posts this bill.");
         }
 
         foreach (var warning in reconciliationWarnings ?? [])
@@ -64,7 +71,9 @@ internal static class PaidSupplierBillExpensePostingEligibility
             var code = ReadString(warning, "code");
             if (!string.IsNullOrWhiteSpace(code) && BlockingWarningCodes.Contains(code))
             {
-                blockingReasons.Add(ReadString(warning, "message") ?? "Resolve the payment review warning before posting this expense.");
+                Block(
+                    $"reconciliation_{code.Trim().ToLowerInvariant()}",
+                    ReadString(warning, "message") ?? "Resolve the payment review warning before posting this expense.");
             }
         }
 
@@ -76,7 +85,9 @@ internal static class PaidSupplierBillExpensePostingEligibility
                 "success",
                 "Laura can post this paid supplier bill as an expense.",
                 normalizedAccountCode,
-                []);
+                [],
+                [],
+                RequiresApproval: true);
         }
 
         return new PaidSupplierBillExpenseAvailabilityDto(
@@ -85,7 +96,9 @@ internal static class PaidSupplierBillExpensePostingEligibility
             ResolveBlockedTone(blockingReasons),
             blockingReasons[0],
             normalizedAccountCode,
-            blockingReasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            blockingReasons.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            reasonCodes.Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            RequiresApproval: true);
     }
 
     public static IReadOnlyList<JsonObject> ExtractWarnings(SupplierInvoiceEnrichmentActionDto? action)

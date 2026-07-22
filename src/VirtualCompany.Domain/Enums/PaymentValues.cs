@@ -38,10 +38,12 @@ public static class PaymentTypes
 
 public static class PaymentMethods
 {
+    public const string BankTransfer = "bank_transfer";
+
     private static readonly string[] AllowedMethodValues =
     [
         "ach",
-        "bank_transfer",
+        BankTransfer,
         "card",
         "cash",
         "check",

@@ -299,16 +299,11 @@ public sealed class FinancialStatementMappingPersistenceTests
             .Where(x => x.CompanyId == companyId)
             .OrderBy(x => x.FinanceAccount.Code)
             .ThenBy(x => x.StatementType)
-            .Select(x => string.Concat(
-                x.FinanceAccount.Code,
-                "|",
-                x.StatementType.ToStorageValue(),
-                "|",
-                x.ReportSection.ToStorageValue(),
-                "|",
-                x.LineClassification.ToStorageValue(),
-                "|",
-                x.IsActive))
+            .Select(x => x.FinanceAccount.Code + "|" +
+                x.StatementType.ToStorageValue() + "|" +
+                x.ReportSection.ToStorageValue() + "|" +
+                x.LineClassification.ToStorageValue() + "|" +
+                x.IsActive)
             .ToArrayAsync();
 
     private static async Task<Guid[]> ReadSeededPaymentIdsAsync(VirtualCompanyDbContext dbContext, Guid companyId) =>

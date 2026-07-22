@@ -5,22 +5,22 @@
 @inherits FinancePageBase
 @using System.Globalization
 
-<PageTitle>Finance settings</PageTitle>
+<PageTitle>@FinanceText["FinanceSettings"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance settings"
-    Description="Configure app-level finance integrations for the active company."
-    LoadingMessage="Loading finance settings...">
+    Title="@FinanceText["FinanceSettings"]"
+    Description="@FinanceText["FinanceSettingsDescription"]"
+    LoadingMessage="@FinanceText["LoadingFinanceSettings"]">
     <div class="wizard-card wizard-card--compact">
-        <ul class="finance-settings-tabs" aria-label="Finance settings sections">
+        <ul class="finance-settings-tabs" aria-label="@FinanceText["FinanceSettingsSections"]">
             <li>
-                <NavLink class="finance-settings-tab" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">Email settings</NavLink>
+                <NavLink class="finance-settings-tab" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">@FinanceText["EmailSettings"]</NavLink>
             </li>
             <li>
-                <NavLink class="finance-settings-tab" href="@IntegrationSettingsHref" Match="NavLinkMatch.Prefix">Integrations</NavLink>
+                <NavLink class="finance-settings-tab" href="@IntegrationSettingsHref" Match="NavLinkMatch.Prefix">@FinanceText["Integrations"]</NavLink>
             </li>
         </ul>
         @if (!IsIntegrationSettingsRoute)
@@ -29,60 +29,60 @@
             IsLoading="@IsSettingsLoading"
             IsEmpty="false"
             ErrorMessage="@SettingsErrorMessage"
-            LoadingTitle="Loading email settings"
-            LoadingMessage="Reading mailbox provider configuration state."
-            ErrorTitle="Email settings are unavailable"
+            LoadingTitle="@FinanceText["LoadingEmailSettings"]"
+            LoadingMessage="@FinanceText["ReadingProviderConfiguration"]"
+            ErrorTitle="@FinanceText["EmailSettingsUnavailable"]"
             OnRetry="@ReloadAsync">
             <section class="finance-settings-integration-callout mb-4">
                 <div class="finance-integration-card__identity">
                     <div class="finance-integration-card__mark" aria-hidden="true">Fi</div>
                     <div>
                         <div class="d-flex flex-wrap align-items-center gap-2 mb-1">
-                            <h2 class="h5 mb-0">Financial integrations</h2>
-                            <span class="finance-integration-source-badge">Accounting integration</span>
+                            <h2 class="h5 mb-0">@FinanceText["FinancialIntegrations"]</h2>
+                            <span class="finance-integration-source-badge">@FinanceText["AccountingIntegration"]</span>
                         </div>
                         <p class="text-body-secondary mb-0">
-                            Connect an accounting system to sync customers, suppliers, invoices, bills, accounts, payments, and activity into Finance.
+                            @FinanceText["FinancialIntegrationsCallout"]
                         </p>
                     </div>
                 </div>
-                <NavLink class="btn btn-primary" href="@IntegrationSettingsHref">Open financial integrations</NavLink>
+                <NavLink class="btn btn-primary" href="@IntegrationSettingsHref">@FinanceText["OpenFinancialIntegrations"]</NavLink>
             </section>
 
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                 <div>
-                    <h2 class="h5 mb-1">Email integration settings</h2>
+                    <h2 class="h5 mb-1">@FinanceText["EmailIntegrationSettings"]</h2>
                     <p class="text-body-secondary mb-0">
-                        Configure the app-owned OAuth clients that allow users to connect their own Gmail or Microsoft 365 mailbox.
+                        @FinanceText["EmailIntegrationSettingsDescription"]
                     </p>
                 </div>
-                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsBusy">Refresh</button>
+                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsBusy">@FinanceText["Refresh"]</button>
             </div>
 
             @if (Settings?.IsWritable != true)
             {
                 <div class="alert alert-warning" role="status">
-                    Runtime editing is only available in the API Development environment.
+                    @FinanceText["DevelopmentEditingOnly"]
                 </div>
             }
 
             <section class="border rounded-3 p-3 mb-4">
-                <h3 class="h6 mb-2">Provider redirect URIs</h3>
+                <h3 class="h6 mb-2">@FinanceText["ProviderRedirectUris"]</h3>
                 <p class="small text-body-secondary mb-3">
-                    Register one redirect URI per provider per environment. The callback path is stable and provider-scoped; company context is carried in protected OAuth state.
+                    @FinanceText["ProviderRedirectUrisDescription"]
                 </p>
                 <dl class="row small mb-0">
-                    <dt class="col-12 col-md-3">Gmail local development</dt>
+                    <dt class="col-12 col-md-3">@FinanceText["GmailLocalDevelopment"]</dt>
                     <dd class="col-12 col-md-9">
                         <code>http://localhost:5301/api/mailbox-connections/gmail/callback</code>
                     </dd>
-                    <dt class="col-12 col-md-3">Microsoft 365 local development</dt>
+                    <dt class="col-12 col-md-3">@FinanceText["MicrosoftLocalDevelopment"]</dt>
                     <dd class="col-12 col-md-9">
                         <code>http://localhost:5301/api/mailbox-connections/microsoft365/callback</code>
                     </dd>
-                    <dt class="col-12 col-md-3">Production</dt>
+                    <dt class="col-12 col-md-3">@FinanceText["Production"]</dt>
                     <dd class="col-12 col-md-9 mb-0">
-                        Use the same provider callback paths on the public API host for that environment.
+                        @FinanceText["ProductionCallbackHelp"]
                     </dd>
                 </dl>
             </section>
@@ -93,16 +93,16 @@
                         <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
                             <div>
                                 <h3 class="h6 mb-1">Gmail</h3>
-                                <p class="small text-body-secondary mb-0">Enables the end-user Connect Gmail flow.</p>
+                                <p class="small text-body-secondary mb-0">@FinanceText["EnableConnectGmail"]</p>
                             </div>
                             <span class="@GetProviderBadgeClass(Settings?.Gmail)">@GetProviderStatus(Settings?.Gmail)</span>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label" for="gmail-client-id">Client ID</label>
+                            <label class="form-label" for="gmail-client-id">@FinanceText["ClientId"]</label>
                             <input id="gmail-client-id" class="form-control" autocomplete="off" @bind="GmailClientId" disabled="@IsFormDisabled" />
                         </div>
                         <div>
-                            <label class="form-label" for="gmail-client-secret">Client secret</label>
+                            <label class="form-label" for="gmail-client-secret">@FinanceText["ClientSecret"]</label>
                             <input id="gmail-client-secret" class="form-control" type="password" autocomplete="new-password" placeholder="@GetSecretPlaceholder(Settings?.Gmail)" @bind="GmailClientSecret" disabled="@IsFormDisabled" />
                         </div>
                     </section>
@@ -113,16 +113,16 @@
                         <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
                             <div>
                                 <h3 class="h6 mb-1">Microsoft 365</h3>
-                                <p class="small text-body-secondary mb-0">Enables the end-user Connect Microsoft 365 flow.</p>
+                                <p class="small text-body-secondary mb-0">@FinanceText["EnableConnectMicrosoft"]</p>
                             </div>
                             <span class="@GetProviderBadgeClass(Settings?.Microsoft365)">@GetProviderStatus(Settings?.Microsoft365)</span>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label" for="microsoft-client-id">Client ID</label>
+                            <label class="form-label" for="microsoft-client-id">@FinanceText["ClientId"]</label>
                             <input id="microsoft-client-id" class="form-control" autocomplete="off" @bind="Microsoft365ClientId" disabled="@IsFormDisabled" />
                         </div>
                         <div>
-                            <label class="form-label" for="microsoft-client-secret">Client secret</label>
+                            <label class="form-label" for="microsoft-client-secret">@FinanceText["ClientSecret"]</label>
                             <input id="microsoft-client-secret" class="form-control" type="password" autocomplete="new-password" placeholder="@GetSecretPlaceholder(Settings?.Microsoft365)" @bind="Microsoft365ClientSecret" disabled="@IsFormDisabled" />
                         </div>
                     </section>
@@ -131,9 +131,9 @@
 
             <div class="d-flex flex-wrap gap-2 mt-4">
                 <button class="btn btn-primary" type="button" @onclick="SaveAsync" disabled="@IsFormDisabled">
-                    @(IsSaving ? "Saving..." : "Save email settings")
+                    @(IsSaving ? FinanceText["Saving"] : FinanceText["SaveEmailSettings"])
                 </button>
-                <NavLink class="btn btn-outline-secondary" href="@MailboxHref">Back to mailbox</NavLink>
+                <NavLink class="btn btn-outline-secondary" href="@MailboxHref">@FinanceText["BackToMailbox"]</NavLink>
             </div>
 
             @if (!string.IsNullOrWhiteSpace(SuccessMessage))
@@ -152,16 +152,16 @@
             IsLoading="@IsFinanceIntegrationLoading"
             IsEmpty="false"
             ErrorMessage="@FinanceIntegrationErrorMessage"
-            LoadingTitle="Loading financial integrations"
-            LoadingMessage="Reading the current accounting connection state."
-            ErrorTitle="Financial integrations are unavailable"
+            LoadingTitle="@FinanceText["LoadingFinancialIntegrations"]"
+            LoadingMessage="@FinanceText["ReadingAccountingConnection"]"
+            ErrorTitle="@FinanceText["FinancialIntegrationsUnavailable"]"
             OnRetry="@ReloadFinanceIntegrationsAsync">
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                 <div>
-                    <h2 class="h5 mb-1">Financial integrations</h2>
-                    <p class="text-body-secondary mb-0">Connect accounting systems, run finance syncs, and review recent sync history.</p>
+                    <h2 class="h5 mb-1">@FinanceText["FinancialIntegrations"]</h2>
+                    <p class="text-body-secondary mb-0">@FinanceText["FinancialIntegrationsDescription"]</p>
                 </div>
-                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadFinanceIntegrationsAsync" disabled="@IsFinanceIntegrationBusy">Refresh</button>
+                <button class="btn btn-outline-secondary" type="button" @onclick="ReloadFinanceIntegrationsAsync" disabled="@IsFinanceIntegrationBusy">@FinanceText["Refresh"]</button>
             </div>
 
             <section class="@($"finance-integration-card finance-integration-card--{FinanceIntegrationState}")">
@@ -182,62 +182,62 @@
                             @if (ShowConnectAction)
                             {
                                 <button class="btn btn-primary" type="button" @onclick="ConnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
-                                    @(IsFinanceIntegrationConnecting ? "Connecting..." : "Connect accounting system")
+                                    @(IsFinanceIntegrationConnecting ? FinanceText["Connecting"] : FinanceText["ConnectAccountingSystem"])
                                 </button>
                             }
                             @if (ShowReconnectAction)
                             {
                                 <button class="btn btn-primary" type="button" @onclick="ReconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">
-                                    @(IsFinanceIntegrationConnecting ? "Reconnecting..." : "Reconnect")
+                                    @(IsFinanceIntegrationConnecting ? FinanceText["Reconnecting"] : FinanceText["Reconnect"])
                                 </button>
                             }
                             @if (ShowSyncAction)
                             {
                                 <button class="btn btn-outline-primary" type="button" @onclick="SyncFinanceIntegrationAsync" disabled="@IsFinanceIntegrationSyncDisabled" title="@FinanceIntegrationSyncDisabledReason">
-                                    @(IsFinanceIntegrationSyncing ? "Syncing..." : "Sync data")
+                                    @(IsFinanceIntegrationSyncing ? FinanceText["Syncing"] : FinanceText["SyncData"])
                                 </button>
                             }
                             @if (ShowDisconnectAction)
                             {
-                                <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">Disconnect</button>
+                                <button class="btn btn-outline-danger" type="button" @onclick="DisconnectFinanceIntegrationAsync" disabled="@IsFinanceIntegrationBusy">@FinanceText["Disconnect"]</button>
                             }
                             <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
-                                @(ShowFinanceIntegrationHistory ? "Hide sync history" : "View sync history")
+                                @(ShowFinanceIntegrationHistory ? FinanceText["HideSyncHistory"] : FinanceText["ViewSyncHistory"])
                             </button>
                         </div>
                     }
                     else
                     {
                         <div class="finance-integration-card__readonly" role="status">
-                            Company owner or admin access is required to connect, sync, reconnect, or disconnect Fortnox.
+                            @FinanceText["IntegrationAdminRequired"]
                         </div>
                     }
                     @if (!CanManageFinanceIntegrations)
                     {
                         <button class="btn btn-outline-secondary" type="button" @onclick="ToggleFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationBusy">
-                            @(ShowFinanceIntegrationHistory ? "Hide sync history" : "View sync history")
+                            @(ShowFinanceIntegrationHistory ? FinanceText["HideSyncHistory"] : FinanceText["ViewSyncHistory"])
                         </button>
                     }
                 </div>
 
                 <div class="finance-integration-card__metrics">
                     <div>
-                        <span>Connection</span>
+                        <span>@FinanceText["Connection"]</span>
                         <strong>@FinanceIntegrationConnectionSummary</strong>
                     </div>
                     <div>
-                        <span>Last successful sync</span>
+                        <span>@FinanceText["LastSuccessfulSync"]</span>
                         <strong>@FormatDateTime(FinanceIntegrationStatus?.LastSuccessfulSyncUtc)</strong>
                     </div>
                     <div>
-                        <span>Last issue</span>
+                        <span>@FinanceText["LastIssue"]</span>
                         <strong>@LastFailureSummary</strong>
                     </div>
                 </div>
 
                 <div class="finance-integration-card__notice">
-                    <strong>Approval-gated writes</strong>
-                    <span>Laura asks for approval before any change is sent to Fortnox, with a plain summary of what will change.</span>
+                    <strong>@FinanceText["ApprovalGatedWrites"]</strong>
+                    <span>@FinanceText["ApprovalGatedWritesDescription"]</span>
                 </div>
 
                 @if (!string.IsNullOrWhiteSpace(FinanceIntegrationSuccessMessage))
@@ -255,14 +255,14 @@
                 <section class="finance-integration-history-card mt-4">
                     <div class="d-flex justify-content-between align-items-start gap-3 mb-3">
                         <div>
-                            <h3 class="h6 mb-1">Sync history</h3>
-                            <p class="small text-body-secondary mb-0">Recent accounting sync runs for this company.</p>
+                            <h3 class="h6 mb-1">@FinanceText["SyncHistory"]</h3>
+                            <p class="small text-body-secondary mb-0">@FinanceText["SyncHistoryDescription"]</p>
                         </div>
-                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationHistoryLoading">Refresh</button>
+                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadFinanceIntegrationHistoryAsync" disabled="@IsFinanceIntegrationHistoryLoading">@FinanceText["Refresh"]</button>
                     </div>
                     @if (IsFinanceIntegrationHistoryLoading)
                     {
-                        <p class="text-body-secondary mb-0">Loading sync history...</p>
+                        <p class="text-body-secondary mb-0">@FinanceText["LoadingSyncHistory"]</p>
                     }
                     else if (!string.IsNullOrWhiteSpace(FinanceIntegrationHistoryErrorMessage))
                     {
@@ -274,11 +274,11 @@
                             <table class="table table-sm align-middle mb-0">
                                 <thead>
                                     <tr>
-                                        <th>Started</th>
-                                        <th>Status</th>
-                                        <th>Imported records</th>
-                                        <th>Duration</th>
-                                        <th>Safe error summary</th>
+                                        <th>@FinanceText["Started"]</th>
+                                        <th>@FinanceText["Status"]</th>
+                                        <th>@FinanceText["ImportedRecords"]</th>
+                                        <th>@FinanceText["Duration"]</th>
+                                        <th>@FinanceText["SafeErrorSummary"]</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -286,7 +286,7 @@
                                     {
                                         var importedCount = item.Created + item.Updated;
                                         <tr>
-                                            <td>@item.StartedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
+                                            <td>@LocalDateTime.DateTime(item.StartedUtc)</td>
                                             <td><span class="@FortnoxIntegrationDisplayMapper.GetHistoryBadgeClass(item.Status)">@FortnoxIntegrationDisplayMapper.FormatSyncStatus(item.Status)</span></td>
                                             <td>
                                                 <strong>@importedCount</strong>
@@ -298,16 +298,16 @@
                                                 @if (item.Entities.Count > 0)
                                                 {
                                                     <details class="finance-sync-details mt-2">
-                                                        <summary>View synced records</summary>
+                                                        <summary>@FinanceText["ViewSyncedRecords"]</summary>
                                                         <div class="table-responsive mt-2">
                                                             <table class="table table-sm mb-0">
                                                                 <thead>
                                                                     <tr>
-                                                                        <th>Records</th>
-                                                                        <th>Created</th>
-                                                                        <th>Updated</th>
-                                                                        <th>Skipped</th>
-                                                                        <th>Issues</th>
+                                                                        <th>@FinanceText["Records"]</th>
+                                                                        <th>@FinanceText["Created"]</th>
+                                                                        <th>@FinanceText["Updated"]</th>
+                                                                        <th>@FinanceText["Skipped"]</th>
+                                                                        <th>@FinanceText["Issues"]</th>
                                                                     </tr>
                                                                 </thead>
                                                                 <tbody>
@@ -341,7 +341,7 @@
                     }
                     else
                     {
-                        <p class="text-body-secondary mb-0">No accounting syncs have run yet.</p>
+                        <p class="text-body-secondary mb-0">@FinanceText["NoAccountingSyncs"]</p>
                     }
                 </section>
             }

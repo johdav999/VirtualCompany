@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AlertIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AlertIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AlertIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Detection_create_deduplicates_open_alert_by_fingerprint()

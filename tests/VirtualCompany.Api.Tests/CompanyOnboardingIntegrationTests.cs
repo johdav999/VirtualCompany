@@ -4,6 +4,7 @@ using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
@@ -12,14 +13,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class CompanyOnboardingIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new(seedCompanySetupTemplates: true);
 
-    public CompanyOnboardingIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task GetTemplates_returns_seeded_catalog()
@@ -133,7 +131,7 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
     }
 
     [Fact]
-    public async Task CreateCompany_seeds_laura_finance_agent_and_exposes_versioned_configuration()
+    public async Task CreateCompany_seeds_core_agent_team_and_exposes_versioned_finance_configuration()
     {
         using var client = CreateAuthenticatedClient("laura-owner", "laura-owner@example.com", "Laura Owner");
         var response = await client.PostAsJsonAsync("/api/onboarding/company", new
@@ -152,6 +150,13 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
         var created = await response.Content.ReadFromJsonAsync<ProgressResponse>();
         Assert.NotNull(created);
         var companyId = created!.CompanyId!.Value;
+
+        var fullRoster = await client.GetFromJsonAsync<AgentRosterResponse>($"/api/companies/{companyId}/agents/roster");
+        Assert.NotNull(fullRoster);
+        Assert.Equal(3, fullRoster!.Items.Count);
+        Assert.Contains(fullRoster.Items, item => item.TemplateId == "laura-finance-agent" && item.DisplayName == "Laura");
+        Assert.Contains(fullRoster.Items, item => item.TemplateId == "sales" && item.DisplayName == "Alex" && item.RoleName == "Sales Manager");
+        Assert.Contains(fullRoster.Items, item => item.TemplateId == "support" && item.DisplayName == "Ben" && item.RoleName == "Support Manager");
 
         var roster = await client.GetFromJsonAsync<AgentRosterResponse>($"/api/companies/{companyId}/agents/roster?department=Finance");
         Assert.NotNull(roster);
@@ -214,6 +219,17 @@ public sealed class CompanyOnboardingIntegrationTests : IClassFixture<TestWebApp
             profile.Configuration.WorkflowCapabilities["defaults"].EnumerateArray(),
             capability => capability.GetString() == "finance_risk_detection");
         Assert.Equal("finance", profile.Configuration.WorkflowCapabilities["financeBoundary"].GetString());
+
+        using var scope = _factory.Services.CreateScope();
+        var seeder = scope.ServiceProvider.GetRequiredService<ICoreCompanyAgentSeeder>();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        await seeder.SeedAsync(companyId, CancellationToken.None);
+        await seeder.SeedAsync(companyId, CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+
+        Assert.Equal(
+            3,
+            await dbContext.Agents.IgnoreQueryFilters().CountAsync(agent => agent.CompanyId == companyId));
     }
 
     [Fact]

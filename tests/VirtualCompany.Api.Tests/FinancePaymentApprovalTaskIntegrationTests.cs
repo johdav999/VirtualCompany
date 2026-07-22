@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePaymentApprovalTaskIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePaymentApprovalTaskIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePaymentApprovalTaskIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Payment_create_above_threshold_creates_pending_approval_task()

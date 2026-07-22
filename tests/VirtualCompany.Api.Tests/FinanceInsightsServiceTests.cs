@@ -320,7 +320,7 @@ public sealed class FinanceInsightsServiceTests
         public Task<FinanceSeedingStateResultDto> GetCompanyFinanceSeedingStateAsync(Guid companyId, CancellationToken cancellationToken = default) =>
             Task.FromResult(new FinanceSeedingStateResultDto(
                 companyId,
-                FinanceSeedingState.NotStarted,
+                FinanceSeedingState.NotSeeded,
                 FinanceSeedingStateDerivedFromValues.RecordChecks,
                 DateTime.UtcNow,
                 new FinanceSeedingStateDiagnosticsDto(

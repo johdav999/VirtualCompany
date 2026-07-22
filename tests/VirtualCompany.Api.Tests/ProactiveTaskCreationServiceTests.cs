@@ -316,7 +316,16 @@ public sealed class ProactiveTaskCreationServiceTests
 
     private sealed class NoOpDashboardCache : IExecutiveCockpitDashboardCache
     {
+        public Task<CachedExecutiveCockpitDashboardDto?> TryGetAsync(Guid companyId, CancellationToken cancellationToken) => Task.FromResult<CachedExecutiveCockpitDashboardDto?>(null);
+        public Task<CachedExecutiveCockpitDashboardDto?> TryGetDashboardAsync(ExecutiveCockpitCacheScope scope, CancellationToken cancellationToken) => Task.FromResult<CachedExecutiveCockpitDashboardDto?>(null);
+        public Task SetAsync(CachedExecutiveCockpitDashboardDto snapshot, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task SetDashboardAsync(ExecutiveCockpitCacheScope scope, CachedExecutiveCockpitDashboardDto snapshot, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<CachedExecutiveCockpitKpiDashboardDto?> TryGetKpiDashboardAsync(ExecutiveCockpitCacheScope scope, CancellationToken cancellationToken) => Task.FromResult<CachedExecutiveCockpitKpiDashboardDto?>(null);
+        public Task SetKpiDashboardAsync(ExecutiveCockpitCacheScope scope, CachedExecutiveCockpitKpiDashboardDto snapshot, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task<CachedExecutiveCockpitWidgetDto<TPayload>?> TryGetWidgetAsync<TPayload>(ExecutiveCockpitCacheScope scope, CancellationToken cancellationToken) => Task.FromResult<CachedExecutiveCockpitWidgetDto<TPayload>?>(null);
+        public Task SetWidgetAsync<TPayload>(ExecutiveCockpitCacheScope scope, CachedExecutiveCockpitWidgetDto<TPayload> snapshot, CancellationToken cancellationToken) => Task.CompletedTask;
         public Task InvalidateAsync(Guid companyId, CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task InvalidateAsync(ExecutiveCockpitCacheInvalidationEvent invalidationEvent, CancellationToken cancellationToken) => Task.CompletedTask;
     }
 
     private sealed class NoOpOutboxEnqueuer : ICompanyOutboxEnqueuer
@@ -324,10 +333,13 @@ public sealed class ProactiveTaskCreationServiceTests
         public void Enqueue(
             Guid companyId,
             string topic,
-            PlatformEventEnvelope payload,
-            string? correlationId,
+            object payload,
+            string? correlationId = null,
+            DateTime? availableAtUtc = null,
             string? idempotencyKey = null,
-            string? causationId = null)
+            string? messageType = null,
+            string? causationId = null,
+            IReadOnlyDictionary<string, string?>? headers = null)
         {
         }
     }

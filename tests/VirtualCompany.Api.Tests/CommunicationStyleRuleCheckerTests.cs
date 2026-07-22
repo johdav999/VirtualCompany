@@ -47,7 +47,7 @@ public sealed class CommunicationStyleRuleCheckerTests
 
         Assert.False(result.Passed);
         Assert.Contains(result.Violations, violation => violation.RuleType == "forbidden_tone_rule");
-        Assert.Contains(outputPath, [PromptGenerationPathValues.Chat, PromptGenerationPathValues.TaskOutput, PromptGenerationPathValues.DocumentGeneration]);
+        Assert.Contains(outputPath, new[] { PromptGenerationPathValues.Chat, PromptGenerationPathValues.TaskOutput, PromptGenerationPathValues.DocumentGeneration });
     }
 
     private static AgentCommunicationProfileDto CreateProfile() =>

@@ -6,6 +6,8 @@ using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.CustomerMemory;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Mailbox;
+using VirtualCompany.Application.Communication;
+using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
@@ -55,7 +57,7 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
         }
 
         sequence.Activate();
-        var campaign = new SalesCampaign(Guid.NewGuid(), companyId, sequence.Id, request.Name, request.AudienceType, createdUtc: now, updatedUtc: now);
+        var campaign = new SalesCampaign(Guid.NewGuid(), companyId, sequence.Id, request.Name, request.AudienceType, createdUtc: now, updatedUtc: now, communicationLanguage: request.CommunicationLanguage);
         campaign.SetPolicy(request.Policy.OutboundEnabled, request.Policy.MaxEmailsPerDay, request.Policy.ApprovalRequired);
         foreach (var contact in contacts)
         {
@@ -121,7 +123,8 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
                 contact.FullName,
                 contact.Email,
                 contact.CustomerCompany?.Name,
-                sources);
+                sources,
+                contact.PreferredLanguage);
         }).ToList();
 
         var sourceCounts = new[]
@@ -262,6 +265,11 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
 
     private OutboundCampaignDetailResponse MapDetail(SalesCampaign campaign)
     {
+        var companyLanguage = _dbContext.Companies.IgnoreQueryFilters()
+            .Where(x => x.Id == campaign.CompanyId)
+            .Select(x => x.Language)
+            .SingleOrDefault();
+        var communicationLanguage = CommunicationLanguageResolver.Resolve(null, null, campaign.CommunicationLanguage, companyLanguage);
         var executions = _dbContext.SalesSequenceExecutions.IgnoreQueryFilters()
             .AsNoTracking()
             .Include(x => x.Contact)
@@ -287,7 +295,11 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
                 x.StopReason is null ? null : StatusLabel(x.StopReason),
                 x.Steps.OrderBy(s => s.StepOrder).Select(MapStep).ToList())).ToList(),
             campaign.CreatedUtc,
-            campaign.UpdatedUtc);
+            campaign.UpdatedUtc,
+            communicationLanguage.LanguageTag,
+            communicationLanguage.Source,
+            communicationLanguage.Confidence,
+            communicationLanguage.RequiresHumanReview);
     }
 
     private static void ValidateCreate(CreateOutboundCampaignRequest request)
@@ -298,6 +310,8 @@ public sealed class OutboundCampaignService : IOutboundCampaignService
         if (request.ContactIds.Count == 0) errors[nameof(request.ContactIds)] = ["Select at least one eligible contact."];
         if (request.Policy.MaxEmailsPerDay <= 0) errors[nameof(request.Policy.MaxEmailsPerDay)] = ["Daily email limit must be greater than zero."];
         if (!request.Policy.OutboundEnabled) errors[nameof(request.Policy.OutboundEnabled)] = ["Outbound email is disabled for this company."];
+        if (!string.IsNullOrWhiteSpace(request.CommunicationLanguage) && CommunicationLanguageResolver.Normalize(request.CommunicationLanguage) is null)
+            errors[nameof(request.CommunicationLanguage)] = ["Use a valid BCP 47 language tag, such as en-GB or sv-SE."];
         if (request.Steps.Count < 4) errors[nameof(request.Steps)] = ["A campaign sequence needs at least 4 steps."];
         if (request.Steps.Select(x => x.StepOrder).Distinct().Count() != request.Steps.Count) errors[nameof(request.Steps)] = ["Sequence step order must be unique."];
         foreach (var step in request.Steps)
@@ -439,7 +453,9 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
                     scheduled,
                     $"sales-sequence:{companyId:N}:{campaign.Id:N}:{audience.ContactId:N}:{sequenceStep.Id:N}"));
                 var generatedStep = execution.Steps.Last();
-                var draft = BuildPersonalizedDraft(sequenceStep.TemplateSubject ?? "Following up", sequenceStep.TemplateContent, audience.Contact, memory, sequenceStep.AiPersonalizationEnabled);
+                var language = CommunicationLanguageResolver.Resolve(audience.Contact.PreferredLanguage, null, campaign.CommunicationLanguage, null);
+                var fallbackSubject = CommunicationTemplateCatalog.Resolve(CommunicationTemplateKeys.SalesFollowUpSubject, language).Template;
+                var draft = BuildPersonalizedDraft(sequenceStep.TemplateSubject ?? fallbackSubject, sequenceStep.TemplateContent, audience.Contact, memory, sequenceStep.AiPersonalizationEnabled);
                 generatedStep.RecordGeneratedDraft(draft.Subject, draft.Body, now);
             }
 
@@ -506,7 +522,9 @@ public sealed class SequenceExecutionService : ISequenceExecutionService
                 if (string.IsNullOrWhiteSpace(step.CurrentDraftSubject) || string.IsNullOrWhiteSpace(step.CurrentDraftBody))
                 {
                     var memory = await _customerMemory.RefreshProfileAsync(step.CompanyId, step.ContactId, cancellationToken);
-                    var generated = BuildPersonalizedDraft(step.SalesSequenceStep.TemplateSubject ?? "Following up", step.SalesSequenceStep.TemplateContent, contact, memory, step.SalesSequenceStep.AiPersonalizationEnabled);
+                    var language = CommunicationLanguageResolver.Resolve(contact.PreferredLanguage, null, step.SequenceExecution.SalesCampaign.CommunicationLanguage, null);
+                    var fallbackSubject = CommunicationTemplateCatalog.Resolve(CommunicationTemplateKeys.SalesFollowUpSubject, language).Template;
+                    var generated = BuildPersonalizedDraft(step.SalesSequenceStep.TemplateSubject ?? fallbackSubject, step.SalesSequenceStep.TemplateContent, contact, memory, step.SalesSequenceStep.AiPersonalizationEnabled);
                     step.RecordGeneratedDraft(generated.Subject, generated.Body, DateTime.UtcNow);
                 }
 
@@ -903,15 +921,20 @@ public sealed class MailboxOutboundEmailSender : IOutboundEmailSender
     public async Task<OutboundEmailSendResult> SendSequenceEmailAsync(OutboundEmailSendRequest request, CancellationToken cancellationToken)
     {
         var connection = await _dbContext.MailboxConnections.IgnoreQueryFilters()
-            .Where(x => x.CompanyId == request.CompanyId && x.Status == Domain.Enums.MailboxConnectionStatus.Active && x.EncryptedAccessToken != null)
+            .Where(x => x.CompanyId == request.CompanyId &&
+                x.Purpose == Domain.Enums.MailboxPurpose.Sales &&
+                x.Status == Domain.Enums.MailboxConnectionStatus.Active &&
+                (x.EncryptedAccessToken != null || x.EncryptedCredentialEnvelope != null))
             .OrderByDescending(x => x.UpdatedUtc)
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException("A connected mailbox is required before campaign emails can be sent.");
 
-        var accessToken = _fieldEncryption.Decrypt(
-            request.CompanyId,
-            CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
-            connection.EncryptedAccessToken!);
+        var accessToken = connection.Provider == Domain.Enums.MailboxProvider.StandardEmail
+            ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
+            : _fieldEncryption.Decrypt(
+                request.CompanyId,
+                CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
+                connection.EncryptedAccessToken!);
         var provider = _providerRegistry.Resolve(connection.Provider);
         var result = await provider.SendReplyAsync(accessToken, new MailboxReplyExecutionRequest(
             request.CompanyId,

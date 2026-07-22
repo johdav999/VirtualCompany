@@ -22,6 +22,7 @@ internal sealed class SupportCaseConfiguration : IEntityTypeConfiguration<Suppor
         builder.Property(x => x.Priority).HasColumnName("priority").HasMaxLength(80).IsRequired();
         builder.Property(x => x.Category).HasColumnName("category").HasMaxLength(80).IsRequired();
         builder.Property(x => x.Source).HasColumnName("source").HasMaxLength(80).IsRequired();
+        builder.Property(x => x.ConversationLanguage).HasColumnName("conversation_language").HasMaxLength(20);
         builder.Property(x => x.Sentiment).HasColumnName("sentiment").HasMaxLength(80);
         builder.Property(x => x.ConfidenceScore).HasColumnName("confidence_score").HasColumnType("decimal(5,3)");
         builder.Property(x => x.SuggestedNextAction).HasColumnName("suggested_next_action").HasMaxLength(1000);
@@ -264,7 +265,7 @@ internal sealed class SupportAgentExecutionConfiguration : IEntityTypeConfigurat
         builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId, x.UpdatedUtc });
         builder.HasOne<SupportCase>().WithMany().HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne<Agent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.SetNull);
+        builder.HasOne<Agent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.NoAction);
     }
 }
 
@@ -272,7 +273,9 @@ internal sealed class SupportReplyDraftConfiguration : IEntityTypeConfiguration<
 {
     public void Configure(EntityTypeBuilder<SupportReplyDraft> builder)
     {
-        builder.ToTable("support_reply_drafts");
+        builder.ToTable("support_reply_drafts", table => table.HasCheckConstraint(
+            "CK_support_reply_drafts_delivery_status",
+            "[delivery_status] IN ('pending', 'sent', 'failed', 'reconciliation_required')"));
         builder.HasKey(x => x.Id);
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
@@ -293,11 +296,18 @@ internal sealed class SupportReplyDraftConfiguration : IEntityTypeConfiguration<
         builder.Property(x => x.ApprovedByUserId).HasColumnName("approved_by_user_id");
         builder.Property(x => x.ApprovedUtc).HasColumnName("approved_at");
         builder.Property(x => x.SentUtc).HasColumnName("sent_at");
+        builder.Property(x => x.DeliveryStatus)
+            .HasColumnName("delivery_status")
+            .HasMaxLength(32)
+            .HasDefaultValue(SupportReplyDeliveryStatuses.Pending)
+            .IsRequired();
+        builder.Property(x => x.LastDeliveryAttemptUtc).HasColumnName("last_delivery_attempt_at");
         builder.Property(x => x.SendFailureSummary).HasColumnName("send_failure_summary").HasMaxLength(1000);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.SupportCaseId, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.Status });
+        builder.HasIndex(x => new { x.CompanyId, x.DeliveryStatus });
         builder.HasOne(x => x.SupportCase).WithMany(x => x.ReplyDrafts).HasForeignKey(x => new { x.CompanyId, x.SupportCaseId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
     }
 }

@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+    [Migration("20260710103000_AddSupportAgentExecutions")]
     public partial class AddSupportAgentExecutions : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
@@ -34,8 +36,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         name: "FK_support_agent_executions_agents_agent_id",
                         column: x => x.agent_id,
                         principalTable: "agents",
-                        principalColumn: "id",
-                        onDelete: ReferentialAction.SetNull);
+                        principalColumn: "id");
                     table.ForeignKey(
                         name: "FK_support_agent_executions_support_cases_company_id_support_case_id",
                         columns: x => new { x.company_id, x.support_case_id },

@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceEntryInitializationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceEntryInitializationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task First_finance_entry_status_for_not_seeded_company_returns_not_seeded_without_enqueuing_a_job()

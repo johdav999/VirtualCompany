@@ -1,9 +1,9 @@
 <form class="invoice-review-filters" @onsubmit="HandleSubmitAsync" @onsubmit:preventDefault="true">
     <div class="invoice-review-filters__fields">
         <label class="invoice-review-filters__field">
-            <span class="form-label">Status</span>
+            <span class="form-label">@FinanceText["Status"]</span>
             <select class="form-select" @bind="Filters.Status">
-                <option value="">All statuses</option>
+                <option value="">@FinanceText["AllStatuses"]</option>
                 @foreach (var option in StatusOptions)
                 {
                     <option value="@option">@FormatLabel(option)</option>
@@ -12,14 +12,14 @@
         </label>
 
         <label class="invoice-review-filters__field">
-            <span class="form-label">Supplier</span>
-            <input class="form-control" type="text" placeholder="Filter supplier" @bind="Filters.Supplier" />
+            <span class="form-label">@FinanceText["Supplier"]</span>
+            <input class="form-control" type="text" placeholder="@FinanceText["FilterSupplier"]" @bind="Filters.Supplier" />
         </label>
 
         <label class="invoice-review-filters__field">
-            <span class="form-label">Risk level</span>
+            <span class="form-label">@FinanceText["RiskLevel"]</span>
             <select class="form-select" @bind="Filters.RiskLevel">
-                <option value="">All risk levels</option>
+                <option value="">@FinanceText["AllRiskLevels"]</option>
                 @foreach (var option in RiskLevelOptions)
                 {
                     <option value="@option">@FormatLabel(option)</option>
@@ -28,9 +28,9 @@
         </label>
 
         <label class="invoice-review-filters__field">
-            <span class="form-label">Recommendation outcome</span>
+            <span class="form-label">@FinanceText["RecommendationOutcome"]</span>
             <select class="form-select" @bind="Filters.RecommendationOutcome">
-                <option value="">All outcomes</option>
+                <option value="">@FinanceText["AllOutcomes"]</option>
                 @foreach (var option in OutcomeOptions)
                 {
                     <option value="@option">@FormatLabel(option)</option>
@@ -40,15 +40,15 @@
     </div>
 
     <div class="invoice-review-filters__toolbar">
-        <div class="invoice-review-filters__chips" role="group" aria-label="Quick filters">
-            <button class="@BuildChipClass(HighRiskOnly)" type="button" @onclick="OnToggleHighRisk">High risk</button>
-            <button class="@BuildChipClass(NeedsApprovalOnly)" type="button" @onclick="OnToggleNeedsApproval">Needs approval</button>
-            <button class="@BuildChipClass(LowConfidenceOnly)" type="button" @onclick="OnToggleLowConfidence">Low confidence</button>
+    <div class="invoice-review-filters__chips" role="group" aria-label="@FinanceText["QuickFilters"]">
+            <button class="@BuildChipClass(HighRiskOnly)" type="button" @onclick="OnToggleHighRisk">@FinanceText["HighRisk"]</button>
+            <button class="@BuildChipClass(NeedsApprovalOnly)" type="button" @onclick="OnToggleNeedsApproval">@FinanceText["NeedsApproval"]</button>
+            <button class="@BuildChipClass(LowConfidenceOnly)" type="button" @onclick="OnToggleLowConfidence">@FinanceText["LowConfidence"]</button>
         </div>
 
         <div class="invoice-review-filters__actions">
-            <button class="btn btn-primary" type="submit">Apply filters</button>
-            <button class="btn btn-outline-secondary" type="button" @onclick="OnClear">Clear</button>
+            <button class="btn btn-primary" type="submit">@FinanceText["ApplyFilters"]</button>
+            <button class="btn btn-outline-secondary" type="button" @onclick="OnClear">@FinanceText["Clear"]</button>
         </div>
     </div>
 </form>

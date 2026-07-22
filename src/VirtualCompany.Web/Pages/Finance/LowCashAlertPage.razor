@@ -1,27 +1,27 @@
 @page "/finance/alerts/{AlertId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Low Cash Alert</PageTitle>
+<PageTitle>@FinanceText["LowCashAlert"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Low-cash alert"
-    Description="Review the current low-cash summary, contributing factors, and finance drill-down links."
-    LoadingMessage="Loading low-cash alert detail...">
+    Title="@FinanceText["LowCashAlert"]"
+    Description="@FinanceText["LowCashAlertDescription"]"
+    LoadingMessage="@FinanceText["LoadingAlertDetail"]">
     @if (isDetailLoading)
     {
         <section class="wizard-card">
-            <h2 class="h5 mb-2">Loading alert detail</h2>
-            <p class="text-body-secondary mb-0">Fetching the latest finance alert evidence and workspace links.</p>
+            <h2 class="h5 mb-2">@FinanceText["LoadingAlertDetail"]</h2>
+            <p class="text-body-secondary mb-0">@FinanceText["FetchingAlertDetail"]</p>
         </section>
     }
     else if (!string.IsNullOrWhiteSpace(detailErrorMessage))
     {
         <section class="wizard-card">
             <div class="alert alert-danger mb-3">@detailErrorMessage</div>
-            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">Retry</button>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">@CommonText["Retry"]</button>
         </section>
     }
     else if (detail is not null)
@@ -29,13 +29,13 @@
         <section class="finance-detail-grid" data-testid="low-cash-alert-detail">
             <article class="wizard-card finance-metric-card finance-metric-card--hero">
                 <span class="dashboard-kicker">@detail.Severity</span>
-                <h2 class="h4 mt-2 mb-2">Low-cash summary</h2>
+                <h2 class="h4 mt-2 mb-2">@FinanceText["LowCashSummary"]</h2>
                 <p class="mb-2">@detail.Summary</p>
-                <small class="text-body-secondary">Status: @detail.Status</small>
+                <small class="text-body-secondary">@FinanceText["StatusValue", detail.Status]</small>
             </article>
 
             <article class="wizard-card finance-state-card" data-testid="low-cash-alert-actions">
-                <span class="dashboard-kicker">Actions</span>
+                <span class="dashboard-kicker">@FinanceText["Actions"]</span>
                 @if (!string.IsNullOrWhiteSpace(financeActionStatusMessage))
                 {
                     <div class="alert alert-success mt-3 mb-0">@financeActionStatusMessage</div>
@@ -60,9 +60,9 @@
             </article>
 
             <article class="wizard-card finance-state-card" data-testid="low-cash-alert-links">
-                <span class="dashboard-kicker">Links</span>
-                <h2 class="h5 mt-2">Finance drill-downs</h2>
-                <p class="text-body-secondary mb-0">Keep the active company context while moving into the finance workspace, summary, issues, or cash detail.</p>
+                <span class="dashboard-kicker">@FinanceText["Links"]</span>
+                <h2 class="h5 mt-2">@FinanceText["FinanceDrillDowns"]</h2>
+                <p class="text-body-secondary mb-0">@FinanceText["FinanceDrillDownsDescription"]</p>
                 <div class="dashboard-actions mt-3">
                     @foreach (var link in detail.Links)
                     {
@@ -73,10 +73,10 @@
         </section>
 
         <section class="wizard-card finance-anomaly-section mt-4" data-testid="low-cash-alert-factors">
-            <h2 class="h5 mb-2">Contributing factors</h2>
+            <h2 class="h5 mb-2">@FinanceText["ContributingFactors"]</h2>
             @if (detail.ContributingFactors.Count == 0)
             {
-                <p class="text-body-secondary mb-0">No contributing factors were captured for this alert.</p>
+                <p class="text-body-secondary mb-0">@FinanceText["NoContributingFactors"]</p>
             }
             else
             {

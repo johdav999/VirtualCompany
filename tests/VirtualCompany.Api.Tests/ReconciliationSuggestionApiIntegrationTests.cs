@@ -12,14 +12,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ReconciliationSuggestionApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ReconciliationSuggestionApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ReconciliationSuggestionApiIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task List_endpoint_filters_open_suggestions_by_entity_type_confidence_and_paginates()

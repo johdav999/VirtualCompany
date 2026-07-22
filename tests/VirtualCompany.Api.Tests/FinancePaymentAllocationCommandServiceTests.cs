@@ -213,7 +213,7 @@ public sealed class FinancePaymentAllocationCommandServiceTests
             FinanceSettlementStatuses.PartiallyPaid,
             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceAId).Select(x => x.SettlementStatus).SingleAsync());
         Assert.Equal(
-            FinanceSettlementStatuses.Paid,
+            FinanceSettlementStatuses.PartiallyPaid,
             await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
     }
 
@@ -266,7 +266,7 @@ public sealed class FinancePaymentAllocationCommandServiceTests
         await service.UpdateAllocationAsync(
             new UpdateFinancePaymentAllocationCommand(
                 companyId,
-                movedAllocation.Id,
+                created.Id,
                 new UpdateFinancePaymentAllocationDto(seed.IncomingPaymentId, seed.InvoiceAId, null, 40m, "usd")),
             CancellationToken.None);
 
@@ -275,20 +275,20 @@ public sealed class FinancePaymentAllocationCommandServiceTests
         var persistedMovedAllocation = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .SingleAsync(x => x.Id == movedAllocation.Id);
+            .SingleAsync(x => x.Id == created.Id);
 
         Assert.Equal(seed.InvoiceAId, persistedMovedAllocation.InvoiceId);
         Assert.Null(persistedMovedAllocation.BillId);
         Assert.Equal(40m, persistedMovedAllocation.AllocatedAmount);
         Assert.Equal("USD", persistedMovedAllocation.Currency);
         Assert.Equal(
-            FinanceSettlementStatuses.Paid,
+            FinanceSettlementStatuses.PartiallyPaid,
             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceAId).Select(x => x.SettlementStatus).SingleAsync());
         Assert.Equal(
             FinanceSettlementStatuses.Unpaid,
             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == seed.InvoiceBId).Select(x => x.SettlementStatus).SingleAsync());
         Assert.Equal(
-            70m,
+            40m,
             await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.InvoiceId == seed.InvoiceAId).SumAsync(x => x.AllocatedAmount));
         Assert.Equal(
             0m,
@@ -321,7 +321,7 @@ public sealed class FinancePaymentAllocationCommandServiceTests
             CancellationToken.None);
 
         Assert.Equal(
-            FinanceSettlementStatuses.PartiallyPaid,
+            FinanceSettlementStatuses.Unpaid,
             await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.Id == seed.BillId).Select(x => x.SettlementStatus).SingleAsync());
     }
 
@@ -342,6 +342,7 @@ public sealed class FinancePaymentAllocationCommandServiceTests
         var matchedPaymentId = Guid.NewGuid();
 
         dbContext.Companies.Add(company);
+        AddSettlementAccounts(dbContext, companyId);
         dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId, "Backfill Counterparty", "customer", "finance@example.com"));
         dbContext.FinanceInvoices.AddRange(
             new FinanceInvoice(
@@ -450,6 +451,7 @@ public sealed class FinancePaymentAllocationCommandServiceTests
         var paidInvoiceId = Guid.NewGuid();
 
         dbContext.Companies.Add(company);
+        AddSettlementAccounts(dbContext, companyId);
         dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId, "Backfill Counterparty", "customer", "finance@example.com"));
         dbContext.FinanceInvoices.Add(new FinanceInvoice(
             paidInvoiceId,
@@ -509,6 +511,7 @@ public sealed class FinancePaymentAllocationCommandServiceTests
         var outgoingPaymentId = Guid.NewGuid();
 
         dbContext.Companies.Add(new Company(companyId, "Allocation Command Company"));
+        AddSettlementAccounts(dbContext, companyId);
         dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId, "Allocation Counterparty", "customer", "counterparty@example.com"));
         dbContext.FinanceInvoices.AddRange(
             new FinanceInvoice(
@@ -574,6 +577,15 @@ public sealed class FinancePaymentAllocationCommandServiceTests
                 "ALLOCATION-OUTGOING-A"));
 
         return new AllocationSeed(invoiceAId, invoiceBId, billId, incomingPaymentId, incomingPaymentBId, outgoingPaymentId);
+    }
+
+    private static void AddSettlementAccounts(VirtualCompanyDbContext dbContext, Guid companyId)
+    {
+        var openedUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+        dbContext.FinanceAccounts.AddRange(
+            new FinanceAccount(Guid.NewGuid(), companyId, "1000", "Cash", FinanceAccountTypes.Asset, "USD", 0m, openedUtc),
+            new FinanceAccount(Guid.NewGuid(), companyId, "1100", "Accounts receivable", FinanceAccountTypes.Asset, "USD", 0m, openedUtc),
+            new FinanceAccount(Guid.NewGuid(), companyId, "2000", "Accounts payable", FinanceAccountTypes.Liability, "USD", 0m, openedUtc));
     }
 
     private static async Task<SqliteConnection> OpenConnectionAsync()

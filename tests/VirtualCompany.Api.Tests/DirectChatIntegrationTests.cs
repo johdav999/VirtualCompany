@@ -12,14 +12,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class DirectChatIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public DirectChatIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Opening_direct_agent_conversation_creates_tenant_scoped_record()
@@ -730,7 +727,7 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicatio
                     scopedMemoryId,
                     companyId,
                     agentId,
-                    MemoryType.Fact,
+                    MemoryType.CompanyMemory,
                     "Finance scoped memory for direct chat runtime.",
                     null,
                     null,
@@ -745,7 +742,7 @@ public sealed class DirectChatIntegrationTests : IClassFixture<TestWebApplicatio
                     outOfScopeMemoryId,
                     companyId,
                     agentId,
-                    MemoryType.Fact,
+                    MemoryType.CompanyMemory,
                     "HR scoped memory must not be available to the finance-scoped agent.",
                     null,
                     null,

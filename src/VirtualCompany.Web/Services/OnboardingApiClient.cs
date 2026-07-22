@@ -1,5 +1,6 @@
 using System.Net.Http.Json;
 using System.Text.Json;
+using VirtualCompany.Web.Localization.Formatting;
 
 namespace VirtualCompany.Web.Services;
 
@@ -9,11 +10,15 @@ public sealed class OnboardingApiClient
     private static readonly OfflineOnboardingStore OfflineStore = new();
     private readonly HttpClient _httpClient;
     private readonly bool _useOfflineMode;
+    private readonly ICompanyPresentationContext? _presentationContext;
+    private readonly IApiProblemMessageResolver? _problemResolver;
 
-    public OnboardingApiClient(HttpClient httpClient, bool useOfflineMode = false)
+    public OnboardingApiClient(HttpClient httpClient, bool useOfflineMode = false, ICompanyPresentationContext? presentationContext = null, IApiProblemMessageResolver? problemResolver = null)
     {
         _httpClient = httpClient;
         _useOfflineMode = useOfflineMode;
+        _presentationContext = presentationContext;
+        _problemResolver = problemResolver;
     }
 
     public Task<IReadOnlyList<OnboardingTemplateViewModel>> GetTemplatesAsync(CancellationToken cancellationToken = default) =>
@@ -34,10 +39,25 @@ public sealed class OnboardingApiClient
             ? Task.FromResult(OfflineStore.GetProgress())
             : GetProgressCoreAsync(cancellationToken);
 
-    public Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(CancellationToken cancellationToken = default) =>
+    public async Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(CancellationToken cancellationToken = default)
+    {
+        var context = _useOfflineMode
+            ? OfflineStore.GetCurrentUserContext()
+            : await GetCurrentUserContextCoreAsync(cancellationToken);
+        _presentationContext?.SetActiveCompany(context?.ActiveCompany?.Timezone, context?.ActiveCompany?.Currency);
+        _presentationContext?.SetFormattingCulture(context?.User.FormattingCulture ?? context?.User.UiCulture);
+        return context;
+    }
+
+    public Task<UserPreferenceViewModel> GetUserPreferencesAsync(CancellationToken cancellationToken = default) =>
         _useOfflineMode
-            ? Task.FromResult<CurrentUserContextViewModel?>(OfflineStore.GetCurrentUserContext())
-            : GetCurrentUserContextCoreAsync(cancellationToken);
+            ? Task.FromResult(new UserPreferenceViewModel { UiCulture = "en-GB" })
+            : GetUserPreferencesCoreAsync(cancellationToken);
+
+    public Task<UserPreferenceViewModel> UpdateUserPreferencesAsync(
+        UpdateUserPreferenceRequest request,
+        CancellationToken cancellationToken = default) =>
+        SendAsync<UserPreferenceViewModel>(HttpMethod.Put, "api/auth/preferences", request, cancellationToken);
 
     public Task<CreateCompanyResultViewModel> CreateCompanyAsync(CreateCompanyRequest request, CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -188,6 +208,30 @@ public sealed class OnboardingApiClient
         }
     }
 
+    private async Task<UserPreferenceViewModel> GetUserPreferencesCoreAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var response = await _httpClient.GetAsync("api/auth/preferences", cancellationToken);
+            if (response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
+            {
+                throw new OnboardingApiException("Sign in to manage your language preference.");
+            }
+
+            if (response.IsSuccessStatusCode)
+            {
+                return await ReadJsonOrDefaultAsync<UserPreferenceViewModel>(response.Content, cancellationToken)
+                    ?? new UserPreferenceViewModel();
+            }
+
+            throw await CreateExceptionAsync(response, cancellationToken);
+        }
+        catch (HttpRequestException ex)
+        {
+            throw CreateNetworkException(ex);
+        }
+    }
+
     private async Task<CompanyAccessViewModel?> GetCompanyAccessCoreAsync(Guid companyId, CancellationToken cancellationToken)
     {
         try
@@ -321,10 +365,10 @@ public sealed class OnboardingApiClient
         var problem = await ReadJsonOrDefaultAsync<ApiProblemResponse>(response.Content, cancellationToken);
         if (problem?.Errors is { Count: > 0 })
         {
-            return new OnboardingApiException(problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
+            return new OnboardingApiException(_problemResolver?.Resolve(problem, "The request failed.") ?? problem.Detail ?? problem.Title ?? "The request failed.", problem.Errors);
         }
 
-        return new OnboardingApiException(problem?.Detail ?? problem?.Title ?? "The request failed.");
+        return new OnboardingApiException(_problemResolver?.Resolve(problem, "The request failed.") ?? problem?.Detail ?? problem?.Title ?? "The request failed.");
     }
 
     private OnboardingApiException CreateNetworkException(HttpRequestException ex)
@@ -348,13 +392,6 @@ public sealed class OnboardingApiClient
         {
             return default;
         }
-    }
-
-    private sealed class ApiProblemResponse
-    {
-        public string? Title { get; set; }
-        public string? Detail { get; set; }
-        public Dictionary<string, string[]>? Errors { get; set; }
     }
 
     private sealed class OfflineOnboardingStore
@@ -1001,6 +1038,21 @@ public sealed class CurrentUserViewModel
     public string DisplayName { get; set; } = string.Empty;
     public string AuthProvider { get; set; } = string.Empty;
     public string AuthSubject { get; set; } = string.Empty;
+    public string? UiCulture { get; set; }
+    public string? FormattingCulture { get; set; }
+}
+
+public sealed class UserPreferenceViewModel
+{
+    public string UiCulture { get; set; } = "en-GB";
+    public string? FormattingCulture { get; set; }
+    public DateTime? UpdatedUtc { get; set; }
+}
+
+public sealed class UpdateUserPreferenceRequest
+{
+    public string UiCulture { get; set; } = "en-GB";
+    public string? FormattingCulture { get; set; }
 }
 
 public sealed class CompanyMembershipViewModel
@@ -1019,4 +1071,6 @@ public sealed class ResolvedCompanyContextViewModel
     public string CompanyName { get; set; } = string.Empty;
     public string MembershipRole { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public string? Timezone { get; set; }
+    public string? Currency { get; set; }
 }

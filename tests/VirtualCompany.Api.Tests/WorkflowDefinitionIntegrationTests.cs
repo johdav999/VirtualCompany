@@ -16,14 +16,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class WorkflowDefinitionIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public WorkflowDefinitionIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Creating_initial_definition_stores_version_one()
@@ -33,19 +30,19 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "invoice-approval",
+            code = "invoice-approval-review",
             name = "Invoice approval",
             department = "Finance",
             triggerType = "event",
             active = true,
-            definitionJson = ValidDefinition("capture")
+            definitionJson = ValidDefinition("capture", "INVOICE-APPROVAL-REVIEW")
         });
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
         Assert.NotNull(payload);
         Assert.Equal(seed.CompanyId, payload!.CompanyId);
-        Assert.Equal("INVOICE-APPROVAL", payload.Code);
+        Assert.Equal("INVOICE-APPROVAL-REVIEW", payload.Code);
         Assert.Equal(1, payload.Version);
         Assert.Equal("event", payload.TriggerType);
         Assert.True(payload.Active);
@@ -60,7 +57,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var initialResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "employee-onboarding",
+            code = "lead-follow-up",
             name = "Employee onboarding",
             department = "People",
             triggerType = "manual",
@@ -90,8 +87,8 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.NotNull(priorResponse);
         Assert.Equal(1, priorResponse!.Version);
         Assert.False(priorResponse.Active);
-        Assert.Contains("collect-documents", priorResponse.DefinitionJson["steps"]!.ToJsonString());
-        Assert.Contains("create-accounts", version.DefinitionJson["steps"]!.ToJsonString());
+        Assert.Equal("collect-documents", priorResponse.DefinitionJson["testMarker"]!.GetValue<string>());
+        Assert.Equal("create-accounts", version.DefinitionJson["testMarker"]!.GetValue<string>());
     }
 
     [Fact]
@@ -102,7 +99,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var initialResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "versioned-manual",
+            code = "lead-follow-up",
             name = "Versioned manual",
             department = "Operations",
             triggerType = "manual",
@@ -112,7 +109,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         var initial = await initialResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
         Assert.NotNull(initial);
 
-        var firstStart = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/by-code/versioned-manual/start", new
+        var firstStart = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/by-code/lead-follow-up/start", new
         {
             code = "",
             triggerRef = "manual-version-1",
@@ -123,7 +120,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.NotNull(firstInstance);
         Assert.Equal(initial!.Id, firstInstance!.DefinitionId);
         Assert.Equal(1, firstInstance.DefinitionVersion);
-        Assert.Equal("v1-step", firstInstance.CurrentStep);
+        Assert.Equal("qualify-lead", firstInstance.CurrentStep);
 
         var versionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/{initial.Id}/versions", new
         {
@@ -141,9 +138,9 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.NotNull(persistedFirst);
         Assert.Equal(initial.Id, persistedFirst!.DefinitionId);
         Assert.Equal(1, persistedFirst.DefinitionVersion);
-        Assert.Equal("v1-step", persistedFirst.CurrentStep);
+        Assert.Equal("qualify-lead", persistedFirst.CurrentStep);
 
-        var secondStart = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/by-code/versioned-manual/start", new
+        var secondStart = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions/by-code/lead-follow-up/start", new
         {
             code = "",
             triggerRef = "manual-version-2",
@@ -154,7 +151,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.NotNull(secondInstance);
         Assert.Equal(version!.Id, secondInstance!.DefinitionId);
         Assert.Equal(2, secondInstance.DefinitionVersion);
-        Assert.Equal("v2-step", secondInstance.CurrentStep);
+        Assert.Equal("qualify-lead", secondInstance.CurrentStep);
 
         await using var scope = _factory.Services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
@@ -176,7 +173,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var initialResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "contract-review",
+            code = "lead-follow-up",
             name = "Contract review",
             department = "Legal",
             triggerType = "manual",
@@ -198,7 +195,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         var latest = await client.GetFromJsonAsync<List<WorkflowDefinitionDto>>($"/api/companies/{seed.CompanyId}/workflows/definitions?latestOnly=true");
 
         Assert.NotNull(latest);
-        var contractReview = Assert.Single(latest!, x => x.Code == "CONTRACT-REVIEW");
+        var contractReview = Assert.Single(latest!, x => x.Code == "LEAD-FOLLOW-UP");
         Assert.Equal(2, contractReview.Version);
     }
 
@@ -221,7 +218,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
 
         var missingStepsResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "missing-steps",
+            code = "lead-follow-up",
             name = "Missing steps",
             department = "Operations",
             triggerType = "manual",
@@ -242,7 +239,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var response = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "tenant-private",
+            code = "lead-follow-up",
             name = "Tenant private",
             department = "Operations",
             triggerType = "manual",
@@ -273,7 +270,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var definitionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "manual-start",
+            code = "lead-follow-up",
             name = "Manual start",
             department = "Operations",
             triggerType = "manual",
@@ -302,7 +299,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.Equal("manual-request-1", instance.TriggerRef);
         Assert.Equal("started", instance.State);
         Assert.Equal(instance.State, instance.Status);
-        Assert.Equal("first-manual-step", instance.CurrentStep);
+        Assert.Equal("qualify-lead", instance.CurrentStep);
 
         await using var scope = _factory.Services.CreateAsyncScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
@@ -313,7 +310,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.Equal(WorkflowTriggerType.Manual, persisted.TriggerSource);
         Assert.Equal("manual-request-1", persisted.TriggerRef);
         Assert.Equal(WorkflowInstanceStatus.Started, persisted.State);
-        Assert.Equal("first-manual-step", persisted.CurrentStep);
+        Assert.Equal("qualify-lead", persisted.CurrentStep);
     }
 
     [Fact]
@@ -324,7 +321,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var definitionResponse = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "state-update",
+            code = "lead-follow-up",
             name = "State update",
             department = "Operations",
             triggerType = "manual",
@@ -375,7 +372,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var definitionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "exception-review",
+            code = "lead-follow-up",
             name = "Exception review",
             department = "Operations",
             triggerType = "manual",
@@ -452,7 +449,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var ownerClient = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var definitionResponse = await ownerClient.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "tenant-exception",
+            code = "lead-follow-up",
             name = "Tenant exception",
             department = "Operations",
             triggerType = "manual",
@@ -517,6 +514,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
 
             var blockedResult = BackgroundJobExecutionResult.Blocked(
                 "corr-blocked",
+                "incident-blocked",
                 "Manual approval is required.",
                 "policy.approval_required",
                 BackgroundJobFailureClassification.ApprovalRequired);
@@ -538,6 +536,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
                 failedExecution,
                 BackgroundJobExecutionResult.RetryExhausted(
                     "corr-failed",
+                    "incident-failed",
                     "Provider timed out after retries.",
                     "System.TimeoutException",
                     BackgroundJobFailureClassification.ExternalDependencyTimeout),
@@ -799,16 +798,12 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var initialResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "event-versioned",
+            code = "invoice-approval-review",
             name = "Event versioned",
             department = "Operations",
             triggerType = "event",
             active = true,
-            definitionJson = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["event"] = new JsonObject { ["eventName"] = SupportedPlatformEventTypeRegistry.WorkflowStateChanged },
-                ["steps"] = new JsonArray(new JsonObject { ["id"] = "old-event-step" })
-            }
+            definitionJson = ValidEventDefinition("old-event-step", SupportedPlatformEventTypeRegistry.WorkflowStateChanged)
         });
         var initial = await initialResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
         Assert.NotNull(initial);
@@ -827,11 +822,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
             department = "Operations",
             triggerType = "event",
             active = true,
-            definitionJson = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["event"] = new JsonObject { ["eventName"] = SupportedPlatformEventTypeRegistry.WorkflowStateChanged },
-                ["steps"] = new JsonArray(new JsonObject { ["id"] = "new-event-step" })
-            }
+            definitionJson = ValidEventDefinition("new-event-step", SupportedPlatformEventTypeRegistry.WorkflowStateChanged)
         });
         Assert.Equal(HttpStatusCode.Created, versionResponse.StatusCode);
         var version = await versionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
@@ -850,7 +841,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         var instance = Assert.Single(result.StartedInstances);
         Assert.Equal(version!.Id, instance.DefinitionId);
         Assert.Equal(2, instance.DefinitionVersion);
-        Assert.Equal("new-event-step", instance.CurrentStep);
+        Assert.Equal("capture-invoice", instance.CurrentStep);
 
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var oldStarted = await dbContext.WorkflowInstances
@@ -875,12 +866,12 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
         var definitionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/workflows/definitions", new
         {
-            code = "event-only",
+            code = "invoice-approval-review",
             name = "Event only",
             department = "Operations",
             triggerType = "event",
             active = true,
-            definitionJson = ValidDefinition("event-step")
+            definitionJson = ValidDefinition("event-step", "INVOICE-APPROVAL-REVIEW")
         });
         var definition = await definitionResponse.Content.ReadFromJsonAsync<WorkflowDefinitionDto>();
         Assert.NotNull(definition);
@@ -916,15 +907,21 @@ public sealed class WorkflowDefinitionIntegrationTests : IClassFixture<TestWebAp
         Assert.Equal(HttpStatusCode.BadRequest, inactiveStart.StatusCode);
     }
 
-    private static Dictionary<string, JsonNode?> ValidDefinition(string stepId) =>
-        new(StringComparer.OrdinalIgnoreCase)
-        {
-            ["steps"] = new JsonArray(new JsonObject
-            {
-                ["id"] = stepId,
-                ["type"] = "task"
-            })
-        };
+    private static Dictionary<string, JsonNode?> ValidDefinition(
+        string marker,
+        string code = "LEAD-FOLLOW-UP")
+    {
+        var definition = PredefinedWorkflowCatalog.CloneDefinitionJson(code);
+        definition["testMarker"] = marker;
+        return definition;
+    }
+
+    private static Dictionary<string, JsonNode?> ValidEventDefinition(string marker, string eventName)
+    {
+        var definition = ValidDefinition(marker, "INVOICE-APPROVAL-REVIEW");
+        definition["event"] = new JsonObject { ["eventName"] = eventName };
+        return definition;
+    }
 
     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
     {

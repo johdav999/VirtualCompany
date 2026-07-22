@@ -9,7 +9,7 @@ public sealed class VirtualCompanyDbContextFactory : IDesignTimeDbContextFactory
     {
         var optionsBuilder = new DbContextOptionsBuilder<VirtualCompanyDbContext>();
         optionsBuilder.UseSqlServer(
-            "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True",
+            "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=False",
             sqlServerOptions => sqlServerOptions.EnableRetryOnFailure());
 
         return new VirtualCompanyDbContext(optionsBuilder.Options);

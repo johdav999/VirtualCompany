@@ -183,7 +183,8 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
                 NormalizeIntent(request.IntentHint, request.ConversationId))
             {
                 InitiatingActorId = request.InitiatingActorId,
-                InitiatingActorType = request.InitiatingActorType
+                InitiatingActorType = request.InitiatingActorType,
+                CommunicationLanguage = await ResolveCommunicationLanguageAsync(task, company, cancellationToken)
             };
 
             var prompt = _promptBuilder.Build(new PromptBuildRequest(
@@ -528,6 +529,59 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
 
         return payload;
     }
+
+    private async Task<CommunicationLanguageResolution> ResolveCommunicationLanguageAsync(
+        TaskDetailDto task,
+        CompanyRuntimeContext company,
+        CancellationToken cancellationToken)
+    {
+        var contactId = ReadId(task.InputPayload, "contactId");
+        var supportCaseId = ReadId(task.InputPayload, "supportCaseId") ?? ReadId(task.InputPayload, "caseId");
+        var campaignId = ReadId(task.InputPayload, "campaignId");
+
+        var recipientLanguage = ReadLanguage(task.InputPayload, "recipientLanguage");
+        if (recipientLanguage is null && contactId.HasValue)
+        {
+            recipientLanguage = await _dbContext.Contacts.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == company.CompanyId && x.Id == contactId.Value && !x.IsDeleted)
+                .Select(x => x.PreferredLanguage)
+                .SingleOrDefaultAsync(cancellationToken);
+        }
+
+        var conversationLanguage = ReadLanguage(task.InputPayload, "conversationLanguage");
+        if (conversationLanguage is null && supportCaseId.HasValue)
+        {
+            conversationLanguage = await _dbContext.SupportCases
+                .Where(x => x.CompanyId == company.CompanyId && x.Id == supportCaseId.Value)
+                .Select(x => x.ConversationLanguage)
+                .SingleOrDefaultAsync(cancellationToken);
+        }
+
+        var campaignLanguage = ReadLanguage(task.InputPayload, "campaignLanguage");
+        if (campaignLanguage is null && campaignId.HasValue)
+        {
+            campaignLanguage = await _dbContext.SalesCampaigns.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == company.CompanyId && x.Id == campaignId.Value)
+                .Select(x => x.CommunicationLanguage)
+                .SingleOrDefaultAsync(cancellationToken);
+        }
+
+        return CommunicationLanguageResolver.Resolve(recipientLanguage, conversationLanguage, campaignLanguage, company.Language);
+    }
+
+    private static string? ReadLanguage(IReadOnlyDictionary<string, JsonNode?> payload, string key) =>
+        payload.TryGetValue(key, out var node) && node is JsonValue value && value.TryGetValue<string>(out var text)
+            ? text
+            : null;
+
+    private static Guid? ReadId(IReadOnlyDictionary<string, JsonNode?> payload, string key) =>
+        payload.TryGetValue(key, out var node)
+        && node is JsonValue value
+        && value.TryGetValue<string>(out var text)
+        && Guid.TryParse(text, out var id)
+        && id != Guid.Empty
+            ? id
+            : null;
 
     private static string NormalizeIntent(string? intent, Guid? conversationId = null) =>
         string.IsNullOrWhiteSpace(intent)

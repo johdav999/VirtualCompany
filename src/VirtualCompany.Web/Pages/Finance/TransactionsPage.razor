@@ -4,27 +4,27 @@
 @page "/finance/activity/{TransactionId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Transactions</PageTitle>
+<PageTitle>@FinanceText["Transactions"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Transactions"
-    Description="All account activity across bank and integrations"
-    LoadingMessage="Loading transactions..."
+    Title="@FinanceText["Transactions"]"
+    Description="@FinanceText["TransactionsDescription"]"
+    LoadingMessage="@FinanceText["LoadingTransactions"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <section class="transactions-workspace" aria-labelledby="transactions-heading">
         <div class="finance-overview-header">
             <div>
-                <span class="finance-overview-kicker">Finance module</span>
-                <h1 id="transactions-heading" class="finance-overview-title">Transactions</h1>
-                <p class="finance-overview-subtitle">All account activity across bank and integrations</p>
+                <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                <h1 id="transactions-heading" class="finance-overview-title">@FinanceText["Transactions"]</h1>
+                <p class="finance-overview-subtitle">@FinanceText["TransactionsDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
-                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>
 
@@ -33,16 +33,16 @@
         <form method="get" class="transactions-filter-bar">
             <input type="hidden" name="@FinanceRoutes.CompanyIdQueryKey" value="@AccessState.CompanyId" />
             <div class="transactions-filter-bar__field transactions-filter-bar__field--date-range">
-                <label for="transaction-filter-from">Date range</label>
+                <label for="transaction-filter-from">@FinanceText["DateRange"]</label>
                 <div class="transactions-filter-bar__date-range">
-                    <input id="transaction-filter-from" type="date" name="from" value="@FromInputValue" aria-label="From date" />
-                    <input id="transaction-filter-to" type="date" name="to" value="@ToInputValue" aria-label="To date" />
+                    <input id="transaction-filter-from" type="date" name="from" value="@FromInputValue" aria-label="@FinanceText["FromDate"]" />
+                    <input id="transaction-filter-to" type="date" name="to" value="@ToInputValue" aria-label="@FinanceText["ToDate"]" />
                 </div>
             </div>
             <div class="transactions-filter-bar__field">
-                <label for="transaction-filter-account">Account</label>
+                <label for="transaction-filter-account">@FinanceText["Account"]</label>
                 <select id="transaction-filter-account" name="account">
-                    <option value="" selected="@string.IsNullOrWhiteSpace(AccountFilterValue)">All accounts</option>
+                    <option value="" selected="@string.IsNullOrWhiteSpace(AccountFilterValue)">@FinanceText["AllAccounts"]</option>
                     @foreach (var option in AccountOptions)
                     {
                         <option value="@option" selected="@IsAccountSelected(option)">@option</option>
@@ -50,35 +50,35 @@
                 </select>
             </div>
             <div class="transactions-filter-bar__field transactions-filter-bar__field--wide">
-                <label for="transaction-filter-search">Search</label>
-                <input id="transaction-filter-search" type="search" name="search" value="@SearchFilterValue" placeholder="Description, counterparty, reference, category, or amount" />
+                <label for="transaction-filter-search">@CommonText["Search"]</label>
+                <input id="transaction-filter-search" type="search" name="search" value="@SearchFilterValue" placeholder="@FinanceText["TransactionSearchPlaceholder"]" />
             </div>
             <div class="transactions-filter-bar__actions">
-                <button class="btn transactions-button transactions-button--primary" type="submit">Apply filters</button>
-                <a class="btn transactions-button transactions-button--secondary" href="@ClearFiltersHref">Clear</a>
+                <button class="btn transactions-button transactions-button--primary" type="submit">@FinanceText["ApplyFilters"]</button>
+                <a class="btn transactions-button transactions-button--secondary" href="@ClearFiltersHref">@FinanceText["Clear"]</a>
             </div>
         </form>
 
         <div class="transactions-summary-grid">
             <article class="transactions-summary-card">
-                <span>Total inflow</span>
+                <span>@FinanceText["TotalInflow"]</span>
                 <strong class="transactions-amount transactions-amount--positive">@Summary.DisplayInflow</strong>
-                <small>Selected transactions</small>
+                <small>@FinanceText["SelectedTransactions"]</small>
             </article>
             <article class="transactions-summary-card">
-                <span>Total outflow</span>
+                <span>@FinanceText["TotalOutflow"]</span>
                 <strong class="transactions-amount transactions-amount--negative">@Summary.DisplayOutflow</strong>
-                <small>Selected transactions</small>
+                <small>@FinanceText["SelectedTransactions"]</small>
             </article>
             <article class="transactions-summary-card">
-                <span>Uncategorized</span>
+                <span>@FinanceText["Uncategorized"]</span>
                 <strong>@Summary.UncategorizedCount</strong>
-                <small>Needs category review</small>
+                <small>@FinanceText["NeedsCategoryReview"]</small>
             </article>
             <article class="transactions-summary-card">
-                <span>Needs review</span>
+                <span>@CommonText["StatusNeedsReview"]</span>
                 <strong>@Summary.NeedsReviewCount</strong>
-                <small>Flagged or unusual</small>
+                <small>@FinanceText["FlaggedOrUnusual"]</small>
             </article>
         </div>
 
@@ -86,18 +86,18 @@
             <article class="transactions-ledger-card">
                 <div class="transactions-ledger-card__header">
                     <div>
-                        <h2>Ledger transactions</h2>
-                        <p>Review account activity, categories, references, and reconciliation signals.</p>
+                        <h2>@FinanceText["LedgerTransactions"]</h2>
+                        <p>@FinanceText["LedgerTransactionsDescription"]</p>
                     </div>
-                    <span>@DisplayedTransactions.Count item@(DisplayedTransactions.Count == 1 ? string.Empty : "s")</span>
+                    <span>@CommonText[DisplayedTransactions.Count == 1 ? "ItemCountOne" : "ItemCountMany", DisplayedTransactions.Count]</span>
                 </div>
 
                 <FinanceDataState
                     IsLoading="@IsListLoading"
                     IsEmpty="@IsDisplayedListEmpty"
                     ErrorMessage="@ListErrorMessage"
-                    LoadingTitle="Loading transactions"
-                    LoadingMessage="Fetching account activity."
+                    LoadingTitle="@FinanceText["LoadingTransactions"]"
+                    LoadingMessage="@FinanceText["FetchingTransactions"]"
                     EmptyTitle="@EmptyTitle"
                     EmptyMessage="@EmptyMessage"
                     OnRetry="@ReloadAsync">
@@ -105,13 +105,13 @@
                         <table class="transactions-table">
                             <thead>
                                 <tr>
-                                    <th>Date</th>
-                                    <th>Description</th>
-                                    <th>Counterparty</th>
-                                    <th>Account</th>
-                                    <th class="transactions-table__amount">Amount</th>
-                                    <th>Category</th>
-                                    <th>Status</th>
+                                    <th>@FinanceText["Date"]</th>
+                                    <th>@FinanceText["Description"]</th>
+                                    <th>@FinanceText["Counterparty"]</th>
+                                    <th>@FinanceText["Account"]</th>
+                                    <th class="transactions-table__amount">@FinanceText["Amount"]</th>
+                                    <th>@FinanceText["Category"]</th>
+                                    <th>@FinanceText["Status"]</th>
                                 </tr>
                             </thead>
                             <tbody>
@@ -139,18 +139,18 @@
             <aside class="transactions-detail-card">
                 @if (IsDetailLoading)
                 {
-                    <FinanceLoadingState Title="Loading transaction detail" Message="Opening the selected transaction." />
+                    <FinanceLoadingState Title="@FinanceText["LoadingTransactionDetail"]" Message="@FinanceText["OpeningTransaction"]" />
                 }
                 else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                 {
-                    <FinanceErrorState Title="Transaction detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    <FinanceErrorState Title="@FinanceText["TransactionDetailUnavailable"]" Message="@(DetailErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@ReloadAsync" />
                 }
                 else if (SelectedTransaction is null)
                 {
                     <div class="transactions-detail-empty">
                         <div class="transactions-detail-empty__icon" aria-hidden="true">txn</div>
-                        <h2>Select a transaction to inspect details</h2>
-                        <p>Use this panel for category review, anomaly investigation, and reconciliation.</p>
+                        <h2>@FinanceText["SelectTransactionDetail"]</h2>
+                        <p>@FinanceText["TransactionDetailDescription"]</p>
                     </div>
                 }
                 else if (SelectedTransactionDisplay is { } detail)
@@ -165,10 +165,10 @@
                         </div>
 
                         <form class="transactions-category-editor" @onsubmit="HandleCategorySaveAsync" @onsubmit:preventDefault="true">
-                            <label for="transaction-category-input">Category</label>
+                            <label for="transaction-category-input">@FinanceText["Category"]</label>
                             <div class="transactions-category-editor__control">
                                 <input id="transaction-category-input" list="transaction-category-options" @bind="EditableCategory" disabled="@(!CanEditTransactionCategory || IsSavingCategory)" />
-                                <button class="btn transactions-button transactions-button--primary" type="submit" disabled="@(!CanEditTransactionCategory || IsSavingCategory)">Save</button>
+                                <button class="btn transactions-button transactions-button--primary" type="submit" disabled="@(!CanEditTransactionCategory || IsSavingCategory)">@CommonText["Save"]</button>
                             </div>
                             <datalist id="transaction-category-options">
                                 @foreach (var option in EditableCategoryOptions)
@@ -180,7 +180,7 @@
                             {
                                 <div class="transactions-validation-message">@CategoryValidationMessage</div>
                             }
-                            <p>@(CanEditTransactionCategory ? "Change the category when the ledger classification is wrong." : "Finance edit access is required to update categories.")</p>
+                            <p>@(CanEditTransactionCategory ? FinanceText["CategoryEditHelp"] : FinanceText["CategoryEditAccessHelp"])</p>
                         </form>
 
                         @if (!string.IsNullOrWhiteSpace(CategorySaveMessage))
@@ -189,26 +189,26 @@
                         }
 
                         <dl class="transactions-detail-list">
-                            <div><dt>Counterparty</dt><dd>@detail.CounterpartyName</dd></div>
-                            <div><dt>Date</dt><dd>@detail.DisplayDate</dd></div>
-                            <div><dt>Account</dt><dd>@detail.AccountName</dd></div>
-                            <div><dt>Category</dt><dd>@detail.CategoryLabel</dd></div>
-                            <div><dt>External reference</dt><dd>@detail.ExternalReference</dd></div>
-                            <div><dt>Source</dt><dd>@detail.SourceLabel</dd></div>
+                            <div><dt>@FinanceText["Counterparty"]</dt><dd>@detail.CounterpartyName</dd></div>
+                            <div><dt>@FinanceText["Date"]</dt><dd>@detail.DisplayDate</dd></div>
+                            <div><dt>@FinanceText["Account"]</dt><dd>@detail.AccountName</dd></div>
+                            <div><dt>@FinanceText["Category"]</dt><dd>@detail.CategoryLabel</dd></div>
+                            <div><dt>@FinanceText["ExternalReference"]</dt><dd>@detail.ExternalReference</dd></div>
+                            <div><dt>@FinanceText["Source"]</dt><dd>@detail.SourceLabel</dd></div>
                             @if (!string.IsNullOrWhiteSpace(detail.PaymentSummary))
                             {
-                                <div><dt>Payment status</dt><dd>@detail.PaymentSummary</dd></div>
+                                <div><dt>@FinanceText["PaymentStatus"]</dt><dd>@detail.PaymentSummary</dd></div>
                             }
-                            <div><dt>Anomaly state</dt><dd>@detail.AnomalyLabel</dd></div>
+                            <div><dt>@FinanceText["AnomalyState"]</dt><dd>@detail.AnomalyLabel</dd></div>
                         </dl>
 
                         <section class="transactions-insight-card">
-                            <span>Agent insight</span>
+                            <span>@FinanceText["AgentInsight"]</span>
                             <p>@detail.AgentInsight</p>
                         </section>
 
                         <section class="transactions-detail-section">
-                            <h3>Flags</h3>
+                            <h3>@FinanceText["Flags"]</h3>
                             @if (detail.Flags.Count == 0)
                             {
                                 <div class="transactions-flag-list">
@@ -233,7 +233,7 @@
                         </section>
 
                         <section class="transactions-detail-section">
-                            <h3>Linked document</h3>
+                            <h3>@FinanceText["LinkedDocument"]</h3>
                             <FinanceLinkedResourceState
                                 Availability="@SelectedTransaction.LinkedDocument.Availability"
                                 Message="@SelectedTransaction.LinkedDocument.Message"
@@ -242,7 +242,7 @@
                                 TypeText="@SelectedTransaction.LinkedDocument.Document?.ContentType"
                                 CanNavigate="@SelectedTransaction.LinkedDocument.CanNavigate"
                                 NavigateHref="@(SelectedTransaction.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedTransaction.LinkedDocument.Document.Id))"
-                                ActionText="Open linked document" />
+                                ActionText="@FinanceText["OpenLinkedDocument"]" />
                         </section>
                     </div>
                 }

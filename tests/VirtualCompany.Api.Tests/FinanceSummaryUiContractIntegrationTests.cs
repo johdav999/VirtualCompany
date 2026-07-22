@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceSummaryUiContractIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceSummaryUiContractIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceSummaryUiContractIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Finance_summary_service_and_presenter_match_backend_values_for_the_active_tenant()

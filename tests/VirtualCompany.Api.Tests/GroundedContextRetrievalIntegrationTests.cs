@@ -13,14 +13,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class GroundedContextRetrievalIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public GroundedContextRetrievalIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task RetrieveAsync_composes_structured_sections_and_persists_source_references()
@@ -133,7 +130,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
                     Guid.NewGuid(),
                     actorUserId,
                     "payments",
-                    ToolActionType.Write,
+                    ToolActionType.Execute,
                     "finance",
                     policyDecision: new Dictionary<string, JsonNode?>()));
 
@@ -375,7 +372,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
                     Guid.NewGuid(),
                     actorUserId,
                     "payments",
-                    ToolActionType.Write,
+                    ToolActionType.Execute,
                     "finance",
                     policyDecision: new Dictionary<string, JsonNode?>()));
 
@@ -668,8 +665,8 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
             dbContext.Agents.Add(CreateAgent(companyId, agentId, "Ordering Agent", ["finance"]));
 
             dbContext.MemoryItems.AddRange(
-                new MemoryItem(firstMemoryId, companyId, null, MemoryType.Fact, "Finance guidance alpha.", null, null, 0.800m, createdUtc, null),
-                new MemoryItem(secondMemoryId, companyId, null, MemoryType.Fact, "Finance guidance beta.", null, null, 0.800m, createdUtc, null));
+                new MemoryItem(firstMemoryId, companyId, null, MemoryType.CompanyMemory, "Finance guidance alpha.", null, null, 0.800m, createdUtc, null),
+                new MemoryItem(secondMemoryId, companyId, null, MemoryType.CompanyMemory, "Finance guidance beta.", null, null, 0.800m, createdUtc, null));
 
             await Task.CompletedTask;
         });
@@ -722,9 +719,9 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
                 new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
             dbContext.Agents.Add(CreateAgent(companyId, agentId, "Clock Agent", ["finance"]));
             dbContext.MemoryItems.AddRange(
-                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Active payroll memory.", null, null, 0.80m, fixedUtc.AddHours(-2), null),
-                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Future payroll memory.", null, null, 0.95m, fixedUtc.AddMinutes(10), null),
-                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Expired payroll memory.", null, null, 0.90m, fixedUtc.AddHours(-3), fixedUtc.AddMinutes(-1)));
+                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.CompanyMemory, "Active payroll memory.", null, null, 0.80m, fixedUtc.AddHours(-2), null),
+                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.CompanyMemory, "Future payroll memory.", null, null, 0.95m, fixedUtc.AddMinutes(10), null),
+                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.CompanyMemory, "Expired payroll memory.", null, null, 0.90m, fixedUtc.AddHours(-3), fixedUtc.AddMinutes(-1)));
             await Task.CompletedTask;
         });
 
@@ -891,7 +888,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
                 new CompanyMembership(Guid.NewGuid(), companyId, actorUserId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
             dbContext.Agents.Add(CreateAgent(companyId, agentId, "Memory Bypass Agent", ["finance"]));
             dbContext.MemoryItems.Add(
-                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "General payroll reminder.", null, null, 0.200m, validFromUtc, null));
+                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.CompanyMemory, "General payroll reminder.", null, null, 0.200m, validFromUtc, null));
             await Task.CompletedTask;
         });
 
@@ -908,7 +905,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
         await _factory.SeedAsync(async dbContext =>
         {
             dbContext.MemoryItems.Add(
-                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.Fact, "Finance payroll approvals require controller signoff.", null, null, 1.000m, validFromUtc, null));
+                new MemoryItem(Guid.NewGuid(), companyId, null, MemoryType.CompanyMemory, "Finance payroll approvals require controller signoff.", null, null, 1.000m, validFromUtc, null));
             await Task.CompletedTask;
         });
 
@@ -1003,7 +1000,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
             AgentAutonomyLevel.Guided,
             scopes: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
             {
-                ["read"] = new JsonArray(readScopes.Select(JsonValue.Create).ToArray())
+                ["read"] = new JsonArray(readScopes.Select(scope => (JsonNode?)JsonValue.Create(scope)).ToArray())
             });
     }
 
@@ -1046,7 +1043,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
             Guid.NewGuid(),
             companyId,
             agentId,
-            MemoryType.Fact,
+            MemoryType.CompanyMemory,
             summary,
             null,
             null,
@@ -1062,7 +1059,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IClassFixture<Tes
             Guid.NewGuid(),
             companyId,
             agentId,
-            MemoryType.Fact,
+            MemoryType.CompanyMemory,
             summary,
             null,
             null,

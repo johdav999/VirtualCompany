@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AgentRosterAndProfileIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AgentRosterAndProfileIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AgentRosterAndProfileIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Agent_roster_view_returns_all_company_agents_and_tenant_scoped_filter_options_when_unfiltered()

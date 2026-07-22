@@ -27,6 +27,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
     private const int AvatarUrlMaxLength = 2048;
     private const int PersonalitySummaryMaxLength = 1000;
     private const int AuditMetadataValueMaxLength = 512;
+    private const int BriefSectionMaxLength = 20000;
+    private const int BriefTotalMaxLength = 50000;
 
     private static readonly HashSet<string> SupportedWorkingDays = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -342,13 +344,89 @@ public sealed class CompanyAgentService : ICompanyAgentService
             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.EscalationRules) : CloneNodes(agent.EscalationRules),
             visibility.CanEditSensitiveGovernance ? AgentOperatingProfileJsonMapper.ToJsonDictionary(command.TriggerLogic) : CloneNodes(agent.TriggerLogic),
             visibility.CanEditWorkingHours ? command.WorkingHours : CloneNodes(agent.WorkingHours),
-            visibility.CanEditAgent ? AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile) : CloneNodes(agent.CommunicationProfile));
+            visibility.CanEditAgent && command.CommunicationProfile is not null
+                ? AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile)
+                : CloneNodes(agent.CommunicationProfile));
 
         if (changed)
         {
             await WriteOperatingProfileAuditEventAsync(companyId, membership, agent, beforeSnapshot, cancellationToken);
             EnqueueAgentStatusUpdatedEvent(companyId, agent, beforeSnapshot.Status);
 
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        return ToOperatingProfileDto(agent, visibility);
+    }
+
+    public async Task<AgentOperatingProfileDto> UpdateBriefAsync(
+        Guid companyId,
+        Guid agentId,
+        UpdateAgentBriefCommand command,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+
+        var membership = await EnsureOperatingProfileAccessAsync(companyId, cancellationToken);
+        var visibility = BuildProfileVisibility(membership.MembershipRole);
+        if (!visibility.CanEditAgent)
+        {
+            throw new UnauthorizedAccessException("The current user cannot edit this agent's brief.");
+        }
+
+        var sections = ValidateBriefSections(command.Sections);
+        var agent = await _dbContext.Agents
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
+
+        if (agent is null)
+        {
+            throw new KeyNotFoundException("Agent not found.");
+        }
+
+        var beforeSnapshot = CreateOperatingProfileAuditSnapshot(agent);
+        var communicationProfile = CloneNodes(agent.CommunicationProfile);
+        var briefing = new JsonObject
+        {
+            ["version"] = "agent-brief-v1",
+            ["updatedUtc"] = DateTime.UtcNow
+        };
+        foreach (var category in AgentBriefingCategories.All)
+        {
+            briefing[category] = sections.TryGetValue(category, out var content) ? content : string.Empty;
+        }
+
+        communicationProfile["briefing"] = briefing;
+        var tools = CloneNodes(agent.Tools);
+        AddJsonArrayValue(tools, "allowed", "knowledge.search");
+        RemoveJsonArrayValue(tools, "denied", "knowledge.search");
+        AddJsonArrayValue(tools, "actions", ToolActionType.Read.ToStorageValue());
+        AddJsonArrayValue(tools, "actions", ToolActionType.Recommend.ToStorageValue());
+
+        var scopes = CloneNodes(agent.Scopes);
+        AddJsonArrayValue(scopes, "read", "knowledge");
+        AddJsonArrayValue(scopes, "recommend", "knowledge");
+        foreach (var category in AgentBriefingCategories.All)
+        {
+            AddJsonArrayValue(scopes, "read", category);
+        }
+
+        var changed = agent.UpdateOperatingProfile(
+            agent.RoleBrief,
+            agent.Status,
+            agent.AutonomyLevel,
+            agent.Objectives,
+            agent.Kpis,
+            tools,
+            scopes,
+            agent.Thresholds,
+            agent.EscalationRules,
+            agent.TriggerLogic,
+            agent.WorkingHours,
+            communicationProfile);
+
+        if (changed)
+        {
+            await WriteOperatingProfileAuditEventAsync(companyId, membership, agent, beforeSnapshot, cancellationToken);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
@@ -1089,6 +1167,76 @@ public sealed class CompanyAgentService : ICompanyAgentService
         }
 
         return nodes.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+    }
+
+    private static Dictionary<string, string> ValidateBriefSections(IReadOnlyDictionary<string, string>? sections)
+    {
+        var errors = new Dictionary<string, string[]>(StringComparer.OrdinalIgnoreCase);
+        var normalized = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        var totalLength = 0;
+
+        foreach (var (category, value) in sections ?? new Dictionary<string, string>())
+        {
+            if (!AgentBriefingCategories.IsSupported(category))
+            {
+                errors[$"Sections.{category}"] = ["The briefing category is not supported."];
+                continue;
+            }
+
+            var content = value?.Trim() ?? string.Empty;
+            if (content.Length > BriefSectionMaxLength)
+            {
+                errors[$"Sections.{category}"] = [$"Briefing text must be {BriefSectionMaxLength} characters or fewer."];
+                continue;
+            }
+
+            normalized[category.Trim()] = content;
+            totalLength += content.Length;
+        }
+
+        if (totalLength > BriefTotalMaxLength)
+        {
+            errors[nameof(UpdateAgentBriefCommand.Sections)] = [$"The complete agent brief must be {BriefTotalMaxLength} characters or fewer."];
+        }
+
+        if (errors.Count > 0)
+        {
+            throw new AgentValidationException(errors);
+        }
+
+        return normalized;
+    }
+
+    private static void AddJsonArrayValue(IDictionary<string, JsonNode?> target, string key, string value)
+    {
+        var array = target.TryGetValue(key, out var node) && node is JsonArray existing
+            ? existing
+            : new JsonArray();
+        if (!array.OfType<JsonValue>().Any(item =>
+                item.TryGetValue<string>(out var current) &&
+                string.Equals(current, value, StringComparison.OrdinalIgnoreCase)))
+        {
+            array.Add(value);
+        }
+
+        target[key] = array;
+    }
+
+    private static void RemoveJsonArrayValue(IDictionary<string, JsonNode?> target, string key, string value)
+    {
+        if (!target.TryGetValue(key, out var node) || node is not JsonArray array)
+        {
+            return;
+        }
+
+        foreach (var item in array
+                     .OfType<JsonValue>()
+                     .Where(item => item.TryGetValue<string>(out var current) &&
+                                    string.Equals(current, value, StringComparison.OrdinalIgnoreCase))
+                     .ToArray())
+        {
+            array.Remove(item);
+        }
     }
 
     private static string? FirstNonEmpty(params string?[] values) =>

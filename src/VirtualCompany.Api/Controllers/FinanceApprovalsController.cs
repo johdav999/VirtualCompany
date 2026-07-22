@@ -6,6 +6,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Api.ProblemHandling;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -32,7 +33,7 @@ public sealed class FinanceApprovalsController : ControllerBase
     {
         if (_companyContextAccessor.CompanyId is not Guid companyId || companyId == Guid.Empty)
         {
-            return BadRequest(new ProblemDetails { Title = "Invalid company context", Detail = "Company context is required for this endpoint.", Status = StatusCodes.Status400BadRequest });
+            return BadRequest(StableProblemDetails.Create(HttpContext, StatusCodes.Status400BadRequest, ApiProblemCodes.CompanyContextRequired, "Invalid company context", "Company context is required for this endpoint."));
         }
 
         var result = await _approvalTaskService.GetPendingTasksAsync(new GetPendingFinanceApprovalTasksQuery(companyId), cancellationToken);
@@ -68,12 +69,7 @@ public sealed class FinanceApprovalsController : ControllerBase
     {
         if (_companyContextAccessor.CompanyId is not Guid companyId || companyId == Guid.Empty)
         {
-            return BadRequest(new ProblemDetails
-            {
-                Title = "Invalid company context",
-                Detail = "Company context is required for this endpoint.",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return BadRequest(StableProblemDetails.Create(HttpContext, StatusCodes.Status400BadRequest, ApiProblemCodes.CompanyContextRequired, "Invalid company context", "Company context is required for this endpoint."));
         }
 
         try
@@ -87,7 +83,8 @@ public sealed class FinanceApprovalsController : ControllerBase
             return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors, StringComparer.OrdinalIgnoreCase))
             {
                 Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
+                Status = StatusCodes.Status400BadRequest,
+                Extensions = { ["code"] = ApiProblemCodes.FinanceApprovalValidation, ["arguments"] = new Dictionary<string, object?>(), ["traceId"] = HttpContext.TraceIdentifier }
             });
         }
         catch (KeyNotFoundException)
@@ -100,12 +97,7 @@ public sealed class FinanceApprovalsController : ControllerBase
         }
         catch (InvalidOperationException ex)
         {
-            return Conflict(new ProblemDetails
-            {
-                Title = "Finance approval task conflict",
-                Detail = ex.Message,
-                Status = StatusCodes.Status409Conflict
-            });
+            return Conflict(StableProblemDetails.Create(HttpContext, StatusCodes.Status409Conflict, ApiProblemCodes.FinanceApprovalConflict, "Finance approval task conflict", ex.Message));
         }
     }
 }

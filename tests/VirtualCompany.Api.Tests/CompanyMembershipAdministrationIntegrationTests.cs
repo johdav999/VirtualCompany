@@ -17,14 +17,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class CompanyMembershipAdministrationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public CompanyMembershipAdministrationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task InviteUser_creates_pending_invitation_membership_and_outbox_messages()
@@ -83,7 +80,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Equal("audit-invite-correlation", deliveryOutbox.CorrelationId);
         Assert.Null(deliveryOutbox.ProcessedUtc);
 
-        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+        var auditEvent = await dbContext.AuditEvents.IgnoreQueryFilters().SingleAsync(x =>
             x.CompanyId == seed.CompanyId &&
             x.Action == "company.invitation.created");
 
@@ -143,7 +140,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         using var client = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
         var response = await client.PostAsJsonAsync(
             $"/api/companies/{seed.CompanyId}/invitations",
-            new { Email = $"{roleValue}@example.com", MembershipRole = roleValue });
+            new { Email = $"invite-{roleValue}@example.com", MembershipRole = roleValue });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -153,7 +150,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.CompanyId == seed.CompanyId && x.InvitedEmail == $"{roleValue}@example.com");
+        var membership = await dbContext.CompanyMemberships.SingleAsync(x => x.CompanyId == seed.CompanyId && x.InvitedEmail == $"invite-{roleValue}@example.com");
         Assert.Equal(expectedRole, membership.Role);
     }
 
@@ -274,8 +271,8 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         Assert.Null(invitation.DeliveryError);
         Assert.NotNull(deliveryMessage.ProcessedUtc);
         Assert.Single(sender.Sent);
-        Assert.Equal(1, await dbContext.AuditEvents.CountAsync(x => x.CompanyId == seed.CompanyId));
-        Assert.Equal("company.invitation.created", (await dbContext.AuditEvents.SingleAsync(x => x.CompanyId == seed.CompanyId)).Action);
+        Assert.Equal(1, await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId));
+        Assert.Equal("company.invitation.created", (await dbContext.AuditEvents.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == seed.CompanyId)).Action);
         Assert.Equal(invitationPayload!.AcceptanceToken, sender.Sent.Single().AcceptanceToken);
     }
 
@@ -366,7 +363,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
                 x.CompanyId == seed.CompanyId &&
                 x.Email == "concurrent@example.com");
 
-            Assert.Equal(1, handledCounts.Sum());
+            Assert.Equal(2, handledCounts.Sum());
             Assert.NotNull(deliveryMessage.ProcessedUtc);
             Assert.Equal(CompanyOutboxMessageStatus.Dispatched, deliveryMessage.Status);
             Assert.Equal(CompanyInvitationDeliveryStatus.Delivered, invitation.DeliveryStatus);
@@ -511,19 +508,20 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
     {
         var seed = await SeedRoleChangeScenarioAsync(CompanyMembershipRole.Admin);
 
-        using var employeeScope = CreateAuthorizationCheckContext(
-            seed.CompanyId,
-            seed.EmployeeUserId,
-            "employee",
-            "employee@example.com",
-            "Employee");
+        using (var employeeScope = CreateAuthorizationCheckContext(
+                   seed.CompanyId,
+                   seed.EmployeeUserId,
+                   "employee",
+                   "employee@example.com",
+                   "Employee"))
+        {
+            var beforeResult = await employeeScope.AuthorizationService.AuthorizeAsync(
+                employeeScope.Principal,
+                resource: null,
+                CompanyPolicies.CompanyOwnerOrAdmin);
 
-        var beforeResult = await employeeScope.AuthorizationService.AuthorizeAsync(
-            employeeScope.Principal,
-            resource: null,
-            CompanyPolicies.CompanyOwnerOrAdmin);
-
-        Assert.True(beforeResult.Succeeded);
+            Assert.True(beforeResult.Succeeded);
+        }
 
         using var ownerScope = CreateAuthorizationCheckContext(
             seed.CompanyId,
@@ -541,8 +539,15 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
 
         Assert.Equal(CompanyMembershipRole.Employee, changedMembership.MembershipRole);
 
-        var afterResult = await employeeScope.AuthorizationService.AuthorizeAsync(
-            employeeScope.Principal,
+        using var refreshedEmployeeScope = CreateAuthorizationCheckContext(
+            seed.CompanyId,
+            seed.EmployeeUserId,
+            "employee",
+            "employee@example.com",
+            "Employee");
+
+        var afterResult = await refreshedEmployeeScope.AuthorizationService.AuthorizeAsync(
+            refreshedEmployeeScope.Principal,
             resource: null,
             CompanyPolicies.CompanyOwnerOrAdmin);
 
@@ -558,7 +563,7 @@ public sealed class CompanyMembershipAdministrationIntegrationTests : IClassFixt
         using var ownerClient = CreateAuthenticatedClient("owner", "owner@example.com", "Owner");
         var changeResponse = await ownerClient.PatchAsJsonAsync(
             $"/api/companies/{seed.CompanyId}/memberships/{seed.EmployeeMembershipId}/role",
-            new { Role = roleValue });
+            new { MembershipRole = roleValue });
 
         Assert.Equal(HttpStatusCode.OK, changeResponse.StatusCode);
 

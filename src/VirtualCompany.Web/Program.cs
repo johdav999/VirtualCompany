@@ -1,19 +1,42 @@
 using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Antiforgery;
+using Microsoft.AspNetCore.Localization;
 using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Options;
 using System.Net.Sockets;
 using System.Text.Json;
 using VirtualCompany.Web;
+using VirtualCompany.Web.Localization;
 using VirtualCompany.Web.Services;
+using VirtualCompany.Web.Localization.Formatting;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddRazorComponents()
     .AddInteractiveServerComponents();
+// Marker types already include the Localization namespace used by embedded resources.
+builder.Services.AddLocalization();
+builder.Services.Configure<RequestLocalizationOptions>(options =>
+{
+    options.DefaultRequestCulture = new RequestCulture(SupportedWebCultures.Default);
+    options.SupportedCultures = SupportedWebCultures.CultureInfos;
+    options.SupportedUICultures = SupportedWebCultures.CultureInfos;
+    options.RequestCultureProviders =
+    [
+        new CookieRequestCultureProvider(),
+        new AcceptLanguageHeaderRequestCultureProvider()
+    ];
+});
 builder.Services.AddHttpContextAccessor();
 builder.Services.Configure<FinanceSimulationControlPanelOptions>(builder.Configuration.GetSection(FinanceSimulationControlPanelOptions.SectionName));
 builder.Services.AddScoped<IFinanceSandboxAdminService, FinanceSandboxAdminService>();
 builder.Services.AddScoped<FinanceAccessResolver>();
 builder.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
+builder.Services.AddScoped<ICompanyPresentationContext, CompanyPresentationContext>();
+builder.Services.AddScoped<ILocalDateTimeFormatter, LocalDateTimeFormatter>();
+builder.Services.AddScoped<INumberFormatter, NumberFormatter>();
+builder.Services.AddScoped<IMoneyFormatter, MoneyFormatter>();
+builder.Services.AddScoped<IApiProblemMessageResolver, ApiProblemMessageResolver>();
 
 builder.Services.AddScoped(sp =>
 {
@@ -34,102 +57,13 @@ builder.Services.AddScoped(sp =>
     httpClient.ApplyDevelopmentAuth(developmentAuth);
     return httpClient;
 });
-builder.Services.AddScoped(sp => new OnboardingApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new AgentApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new WorkflowApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new ApprovalApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new InboxApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new AuditApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new TaskApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new DirectChatApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new ExecutiveCockpitApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new ActionInsightApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new TodayFocusApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new ActionInsightApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new ActivityFeedApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new FinanceApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    sp.GetRequiredService<ILogger<FinanceApiClient>>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext),
-    sp.GetRequiredService<IConfiguration>()["FinanceUi:SourceFilter"]));
-builder.Services.AddScoped(sp => new DashboardSummaryApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new SalesApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new SalesAutomationApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
-builder.Services.AddScoped(sp => new SupportApiClient(
-    sp.GetRequiredService<HttpClient>(),
-    ShouldUseOfflineMode(
-        sp.GetRequiredService<IConfiguration>()["ApiBaseUrl"],
-        sp.GetRequiredService<IHttpContextAccessor>().HttpContext)));
+// Capability clients share the configured transport and authentication headers.
+builder.Services.AddVirtualCompanyApiClients(builder.Configuration);
 
 var app = builder.Build();
 
 app.UseHttpsRedirection();
+app.UseRequestLocalization(app.Services.GetRequiredService<IOptions<RequestLocalizationOptions>>().Value);
 app.UseStaticFiles();
 var sharedImagesPath = Path.GetFullPath(Path.Combine(app.Environment.ContentRootPath, "..", "..", "images"));
 if (Directory.Exists(sharedImagesPath))
@@ -141,6 +75,31 @@ if (Directory.Exists(sharedImagesPath))
     });
 }
 app.UseAntiforgery();
+
+app.MapPost("/localization/apply", async (HttpContext context, IAntiforgery antiforgery) =>
+{
+    await antiforgery.ValidateRequestAsync(context);
+    var form = await context.Request.ReadFormAsync(context.RequestAborted);
+    if (!SupportedWebCultures.TryNormalize(form["culture"], out var culture))
+    {
+        return Results.BadRequest("Unsupported culture.");
+    }
+
+    var returnUrl = LocalizationRequestPolicy.NormalizeLocalReturnUrl(form["returnUrl"]);
+    context.Response.Cookies.Append(
+        CookieRequestCultureProvider.DefaultCookieName,
+        LocalizationRequestPolicy.CreateCookieValue(culture),
+        new CookieOptions
+        {
+            Expires = DateTimeOffset.UtcNow.AddYears(1),
+            HttpOnly = false,
+            IsEssential = true,
+            SameSite = SameSiteMode.Lax,
+            Secure = context.Request.IsHttps
+        });
+
+    return Results.LocalRedirect(returnUrl);
+});
 
 app.MapRazorComponents<App>()
     .AddInteractiveServerRenderMode();

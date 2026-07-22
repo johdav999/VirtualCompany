@@ -111,6 +111,27 @@ public sealed class PromptBuilderTests
     }
 
     [Fact]
+    public void Build_includes_saved_agent_briefing_in_role_instructions()
+    {
+        var builder = new StructuredPromptBuilder();
+        var context = CreateRuntimeContext(briefing: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            [AgentBriefingCategories.CompanyInformation] = "Virtual Company serves small and medium-sized businesses.",
+            [AgentBriefingCategories.ProductsAndServices] = "The product provides finance, sales, and support agents.",
+            [AgentBriefingCategories.Policies] = "   "
+        });
+
+        var result = builder.Build(new PromptBuildRequest(context));
+
+        var role = Assert.Single(result.Sections, x => x.Id == PromptSectionIds.RoleInstructions);
+        Assert.Contains("Agent briefing:", role.Content);
+        Assert.Contains("Company information: Virtual Company serves small and medium-sized businesses.", role.Content);
+        Assert.Contains("Products and services: The product provides finance, sales, and support agents.", role.Content);
+        Assert.DoesNotContain("Policies:", role.Content);
+        Assert.Contains("Virtual Company serves small and medium-sized businesses.", result.SystemPrompt);
+    }
+
+    [Fact]
     public void Build_renders_same_identity_directives_for_chat_task_and_document_paths()
     {
         var builder = new StructuredPromptBuilder();
@@ -351,6 +372,7 @@ public sealed class PromptBuilderTests
         Dictionary<string, JsonNode?>? inputPayload = null,
         string intent = OrchestrationIntentValues.ExecuteTask,
         AgentCommunicationProfileDto? communicationProfile = null,
+        Dictionary<string, string>? briefing = null,
         PromptIdentityPolicyDto? identityPolicy = null,
         string roleName = "Finance Manager",
         string department = "Finance",
@@ -366,28 +388,33 @@ public sealed class PromptBuilderTests
             Guid.Parse("dddddddd-dddd-dddd-dddd-dddddddddddd"),
             "prompt-builder-test",
             new TaskDetailDto(
-                taskId,
-                companyId,
-                taskType,
-                "Pay approved invoice",
-                "Run the approved payment action with tenant-scoped context.",
-                "normal",
-                "open",
-                null,
-                agentId,
-                null,
-                null,
-                "user",
-                Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
-                inputPayload ?? Payload(("invoiceId", JsonValue.Create("inv-100"))),
-                [],
-                null,
-                null,
-                timestamp,
-                timestamp,
-                null,
-                new TaskAgentSummaryDto(agentId, "Nora Ledger", "active"),
-                null),
+                Id: taskId,
+                CompanyId: companyId,
+                Type: taskType,
+                Title: "Pay approved invoice",
+                Description: "Run the approved payment action with tenant-scoped context.",
+                Priority: "normal",
+                Status: "open",
+                DueAt: null,
+                AssignedAgentId: agentId,
+                ParentTaskId: null,
+                WorkflowInstanceId: null,
+                CreatedByActorType: "user",
+                SourceType: "manual",
+                OriginatingAgentId: null,
+                TriggerSource: null,
+                CreationReason: null,
+                TriggerEventId: null,
+                CreatedByActorId: Guid.Parse("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee"),
+                InputPayload: inputPayload ?? Payload(("invoiceId", JsonValue.Create("inv-100"))),
+                OutputPayload: [],
+                RationaleSummary: null,
+                ConfidenceScore: null,
+                CreatedAt: timestamp,
+                UpdatedAt: timestamp,
+                CompletedAt: null,
+                AssignedAgent: new TaskAgentSummaryDto(agentId, "Nora Ledger", "active"),
+                ParentTask: null),
             new AgentRuntimeProfileDto(
                 agentId,
                 companyId,
@@ -415,6 +442,7 @@ public sealed class PromptBuilderTests
                     ["Do not use flippant"],
                     AgentCommunicationProfileSources.Explicit,
                     false),
+                briefing ?? [],
                 true,
                 timestamp,
                 "level_2"),

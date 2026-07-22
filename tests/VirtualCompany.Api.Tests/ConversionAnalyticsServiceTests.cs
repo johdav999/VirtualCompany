@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ConversionAnalyticsServiceTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ConversionAnalyticsServiceTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ConversionAnalyticsServiceTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Recording_first_event_creates_message_performance_row()

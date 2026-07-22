@@ -199,12 +199,41 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
             builder.AppendLine(context.Agent.RoleBrief.Trim());
         }
 
+        if (context.Agent.Briefing.Count > 0)
+        {
+            builder.AppendLine("Agent briefing:");
+            foreach (var category in AgentBriefingCategories.All)
+            {
+                if (!context.Agent.Briefing.TryGetValue(category, out var content) ||
+                    string.IsNullOrWhiteSpace(content))
+                {
+                    continue;
+                }
+
+                builder.Append("- ");
+                builder.Append(ToBriefingLabel(category));
+                builder.Append(": ");
+                builder.AppendLine(content.Trim());
+            }
+        }
+
         builder.AppendLine("Use the task, company, memory, policy, and tool schema context exactly as provided. Do not expose hidden reasoning.");
         AppendJsonSection(builder, "Personality", context.Agent.Personality);
         AppendJsonSection(builder, "Objectives", context.Agent.Objectives);
         AppendJsonSection(builder, "KPIs", context.Agent.Kpis);
         return builder.ToString().TrimEnd();
     }
+
+    private static string ToBriefingLabel(string category) =>
+        category switch
+        {
+            AgentBriefingCategories.CompanyInformation => "Company information",
+            AgentBriefingCategories.ProductsAndServices => "Products and services",
+            AgentBriefingCategories.Policies => "Policies",
+            AgentBriefingCategories.CustomerSupport => "Customer support",
+            AgentBriefingCategories.OtherInstructions => "Other instructions",
+            _ => category
+        };
 
     private static string BuildCompanyContext(SingleAgentRuntimeContext context)
     {
@@ -219,6 +248,15 @@ public sealed class StructuredPromptBuilder : IPromptBuilder
         AppendOptionalLine(builder, "Currency", context.Company.Currency);
         AppendOptionalLine(builder, "Language", context.Company.Language);
         AppendOptionalLine(builder, "Compliance region", context.Company.ComplianceRegion);
+        builder.Append("Communication language: ");
+        builder.AppendLine(context.CommunicationLanguage.LanguageTag);
+        builder.Append("Communication language source: ");
+        builder.AppendLine(context.CommunicationLanguage.Source);
+        builder.AppendLine("Use the communication language for recipient-facing content. It is independent of the operator interface language.");
+        if (context.CommunicationLanguage.RequiresHumanReview)
+        {
+            builder.AppendLine("Language evidence requires human review before external delivery.");
+        }
 
         builder.AppendLine();
         builder.Append("TaskId: ");

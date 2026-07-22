@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePaymentAllocationsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePaymentAllocationsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Allocation_endpoints_create_and_list_allocations_by_payment_and_document()

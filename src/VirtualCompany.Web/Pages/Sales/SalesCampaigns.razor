@@ -4,57 +4,57 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
-<PageTitle>Sales campaigns</PageTitle>
+<PageTitle>@SalesText["SalesCampaigns"]</PageTitle>
 
 <div class="sales-workspace">
     <main class="sales-main">
         <header class="sales-page-header">
-            <span>SALES</span>
-            <h1>Outbound campaigns</h1>
-            <p>Create multi-step email sequences, choose the audience, preview the schedule, and let Alex manage safe follow-up.</p>
-            <nav class="sales-tabs" aria-label="Sales sections">
-                <a href="@BuildPath("/app/sales")">Overview</a>
-                <a href="@BuildPath("/app/sales/leads")">Leads</a>
-                <a href="@BuildPath("/app/sales/prospecting")">Prospecting</a>
-                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
-                <a class="active" href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+            <h1>@SalesText["OutboundCampaigns"]</h1>
+            <p>@SalesText["CampaignsDescription"]</p>
+            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
+                <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+                <a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
+                <a href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
+                <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+                <a class="active" href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
         </header>
 
         @if (isLoading)
         {
-            <section class="sales-card sales-empty">Loading campaigns...</section>
+            <section class="sales-card sales-empty">@SalesText["LoadingCampaigns"]</section>
         }
         else if (!string.IsNullOrWhiteSpace(errorMessage))
         {
             <section class="sales-card sales-error">
-                <h2>Campaigns are unavailable</h2>
+                <h2>@SalesText["CampaignsUnavailable"]</h2>
                 <p>@errorMessage</p>
-                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
             </section>
         }
         else
         {
-            <section class="sales-kpi-grid" aria-label="Campaign KPIs">
+            <section class="sales-kpi-grid" aria-label="@SalesText["CampaignKpis"]">
                 <article class="sales-kpi-card">
-                    <span>Active campaigns</span>
+                    <span>@SalesText["ActiveCampaigns"]</span>
                     <strong>@campaigns.Count(x => string.Equals(x.Status, "Active", StringComparison.OrdinalIgnoreCase))</strong>
-                    <small>Sending only while policy allows</small>
+                    <small>@SalesText["SendingWhileAllowed"]</small>
                 </article>
                 <article class="sales-kpi-card">
-                    <span>Audience ready</span>
+                    <span>@SalesText["AudienceReady"]</span>
                     <strong>@FilteredAudience.Count</strong>
-                    <small>Eligible contacts in this view</small>
+                    <small>@SalesText["EligibleContacts"]</small>
                 </article>
                 <article class="sales-kpi-card">
-                    <span>Pending steps</span>
+                    <span>@SalesText["PendingSteps"]</span>
                     <strong>@campaigns.Sum(x => x.PendingSteps)</strong>
-                    <small>Scheduled future emails</small>
+                    <small>@SalesText["ScheduledEmails"]</small>
                 </article>
                 <article class="sales-kpi-card">
-                    <span>Sent emails</span>
+                    <span>@SalesText["SentEmails"]</span>
                     <strong>@campaigns.Sum(x => x.SentSteps)</strong>
-                    <small>Persisted delivery records</small>
+                    <small>@SalesText["DeliveryRecords"]</small>
                 </article>
             </section>
 
@@ -62,18 +62,18 @@
                 <section class="sales-card">
                     <div class="sales-section-heading">
                         <div>
-                            <span>CAMPAIGNS</span>
-                            <h2>Live campaign control</h2>
-                            <p>Start, pause, or stop a campaign without leaving this page.</p>
+                            <span>@SalesText["Campaigns"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                            <h2>@SalesText["LiveCampaignControl"]</h2>
+                            <p>@SalesText["CampaignControlDescription"]</p>
                         </div>
-                        <button class="sales-button sales-button--primary" @onclick="BeginNewCampaign">New campaign</button>
+                        <button class="sales-button sales-button--primary" @onclick="BeginNewCampaign">@SalesText["NewCampaign"]</button>
                     </div>
 
                     @if (campaigns.Count == 0)
                     {
                         <div class="sales-empty">
-                            <h2>No campaigns yet</h2>
-                            <p>Create a sequence with at least four steps and Alex will schedule the eligible contacts.</p>
+                            <h2>@SalesText["NoCampaigns"]</h2>
+                            <p>@SalesText["NoCampaignsMessage"]</p>
                         </div>
                     }
                     else
@@ -84,9 +84,9 @@
                                 <button class="@CampaignRowClass(campaign.Id)" @onclick="() => SelectCampaignAsync(campaign.Id)">
                                     <div>
                                         <strong>@campaign.Name</strong>
-                                        <span>@campaign.AudienceCount contacts - @campaign.PendingSteps pending - @campaign.SentSteps sent - updated @campaign.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                                        <span>@SalesText["CampaignRowSummary", campaign.AudienceCount, campaign.PendingSteps, campaign.SentSteps, LocalDateTime.DateTime(campaign.UpdatedUtc)]</span>
                                     </div>
-                                    <span class="@BadgeClass(campaign.Status)">@campaign.Status</span>
+                                    <span class="@BadgeClass(campaign.Status)">@SalesStatusPresenter.Present(campaign.Status, SalesText)</span>
                                 </button>
                             }
                         </div>
@@ -96,49 +96,49 @@
                 <section class="sales-card">
                     <div class="sales-section-heading">
                         <div>
-                            <span>DETAILS</span>
-                            <h2>@(selectedCampaign is null ? "Campaign preview" : selectedCampaign.Name)</h2>
-                            <p>@(selectedCampaign is null ? "Select a campaign or create a draft to review the audience and schedule." : "Review status, delivery state, and future sequence steps.")</p>
+                            <span>@SalesText["Details"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                            <h2>@(selectedCampaign is null ? SalesText["CampaignPreview"] : selectedCampaign.Name)</h2>
+                            <p>@(selectedCampaign is null ? SalesText["CampaignPreviewDescription"] : SalesText["CampaignDetailDescription"])</p>
                         </div>
                     </div>
 
                     @if (selectedCampaign is null)
                     {
                         <div class="sales-empty">
-                            <h2>No campaign selected</h2>
-                            <p>Select a campaign to see details, or create one from the builder below.</p>
+                            <h2>@SalesText["NoCampaignSelected"]</h2>
+                            <p>@SalesText["NoCampaignSelectedMessage"]</p>
                         </div>
                     }
                     else
                     {
                         <div class="sales-campaign-detail">
                             <div class="sales-campaign-detail__header">
-                                <span class="@BadgeClass(selectedCampaign.Status)">@selectedCampaign.Status</span>
-                                <span>@selectedCampaign.Audience.Count contacts</span>
-                                <span>@selectedCampaign.Steps.Count steps</span>
+                                <span class="@BadgeClass(selectedCampaign.Status)">@SalesStatusPresenter.Present(selectedCampaign.Status, SalesText)</span>
+                                <span>@SalesText["ContactCount", selectedCampaign.Audience.Count]</span>
+                                <span>@SalesText["StepCount", selectedCampaign.Steps.Count]</span>
                             </div>
 
                             <div class="sales-actions">
-                                <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("launch")'>Start</button>
-                                <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("pause")'>Pause</button>
-                                <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("stop")'>Stop</button>
+                                <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("launch")'>@SalesText["Start"]</button>
+                                <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("pause")'>@SalesText["Pause"]</button>
+                                <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("stop")'>@SalesText["Stop"]</button>
                             </div>
 
                             <dl class="sales-definition-list">
                                 <div>
-                                    <dt>Policy</dt>
+                                    <dt>@SalesText["Policy"]</dt>
                                     <dd>@PolicySummary(selectedCampaign.Policy)</dd>
                                 </div>
                                 <div>
-                                    <dt>Delivery</dt>
-                                    <dd>@selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.SentUtc.HasValue) sent, @selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.Status == "Pending") pending, @selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.BounceStatus is not null) bounced</dd>
+                                    <dt>@SalesText["Delivery"]</dt>
+                                    <dd>@SalesText["DeliverySummary", selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.SentUtc.HasValue), selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.Status == "Pending"), selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.BounceStatus is not null)]</dd>
                                 </div>
                             </dl>
 
                             <div class="sales-campaign-executions">
                                 @if (selectedCampaign.Executions.Count == 0)
                                 {
-                                    <div class="sales-empty sales-empty--compact">No sequence executions have been scheduled yet.</div>
+                                    <div class="sales-empty sales-empty--compact">@SalesText["NoExecutions"]</div>
                                 }
                                 else
                                 {
@@ -147,12 +147,12 @@
                                         <article>
                                             <header>
                                                 <strong>@execution.ContactName</strong>
-                                                <span class="@BadgeClass(execution.Status)">@execution.Status</span>
+                                                <span class="@BadgeClass(execution.Status)">@SalesStatusPresenter.Present(execution.Status, SalesText)</span>
                                             </header>
                                             <div>
                                                 @foreach (var step in execution.Steps)
                                                 {
-                                                    <span title="@step.ScheduledSendUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)" class="@BadgeClass(step.Status)">Step @step.StepOrder</span>
+                                                    <span title="@LocalDateTime.DateTime(step.ScheduledSendUtc)" class="@BadgeClass(step.Status)">@SalesText["StepNumber", step.StepOrder]</span>
                                                 }
                                             </div>
                                             @if (execution.Steps.FirstOrDefault(x => x.CurrentDraftSubject is not null) is { } draftStep)
@@ -160,10 +160,10 @@
                                                 <div class="sales-draft-audit">
                                                     <strong>@(draftStep.CurrentDraftSubject ?? draftStep.OriginalGeneratedSubject)</strong>
                                                     <small>
-                                                        Generated @draftStep.GeneratedDraftUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
+                                                        @SalesText["GeneratedAt", draftStep.GeneratedDraftUtc.HasValue ? LocalDateTime.DateTime(draftStep.GeneratedDraftUtc.Value) : string.Empty]
                                                         @if (draftStep.DraftUpdatedUtc is not null && draftStep.DraftUpdatedUtc != draftStep.GeneratedDraftUtc)
                                                         {
-                                                            <span> - edited @draftStep.DraftUpdatedUtc.Value.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                                                            <span> - @SalesText["EditedAt", LocalDateTime.DateTime(draftStep.DraftUpdatedUtc.Value)]</span>
                                                         }
                                                     </small>
                                                     <p>@TrimDraft(draftStep.CurrentDraftBody ?? draftStep.OriginalGeneratedBody)</p>
@@ -183,11 +183,11 @@
                 <section class="sales-card sales-campaign-builder">
                     <div class="sales-section-heading">
                         <div>
-                            <span>CREATE CAMPAIGN</span>
-                            <h2>Build a four-step sequence</h2>
-                            <p>Alex will only schedule eligible tenant contacts and the backend will enforce outbound policy before sending.</p>
+                            <span>@SalesText["CreateCampaign"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                            <h2>@SalesText["BuildFourStepSequence"]</h2>
+                            <p>@SalesText["BuilderPolicyDescription"]</p>
                         </div>
-                        <button class="sales-button" @onclick="CancelBuilder">Close</button>
+                        <button class="sales-button" @onclick="CancelBuilder">@SalesText["Close"]</button>
                     </div>
 
                     @if (validationErrors.Count > 0)
@@ -202,12 +202,12 @@
 
                     <div class="sales-campaign-form">
                         <label>
-                            <span>Campaign name</span>
-                            <input class="sales-input" @bind="draft.Name" @bind:event="oninput" placeholder="Q2 renewal outreach" />
+                            <span>@SalesText["CampaignName"]</span>
+                            <input class="sales-input" @bind="draft.Name" @bind:event="oninput" placeholder="@SalesText["CampaignNamePlaceholder"]" />
                         </label>
                         <label>
-                            <span>Description</span>
-                            <input class="sales-input" @bind="draft.Description" @bind:event="oninput" placeholder="Optional internal note" />
+                            <span>@SalesText["Description"]</span>
+                            <input class="sales-input" @bind="draft.Description" @bind:event="oninput" placeholder="@SalesText["InternalNotePlaceholder"]" />
                         </label>
                     </div>
 
@@ -215,14 +215,14 @@
                         <section class="sales-campaign-panel">
                             <div class="sales-section-heading">
                                 <div>
-                                    <span>AUDIENCE</span>
-                                    <h2>Select contacts</h2>
+                                    <span>@SalesText["Audience"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                    <h2>@SalesText["SelectContacts"]</h2>
                                 </div>
                             </div>
 
                             <div class="sales-filter-card sales-filter-card--campaigns">
                                 <label>
-                                    <span>Audience source</span>
+                                    <span>@SalesText["AudienceSource"]</span>
                                     <select class="sales-input" @bind="draft.AudienceType">
                                         @foreach (var source in audienceOptions.Sources)
                                         {
@@ -231,15 +231,15 @@
                                     </select>
                                 </label>
                                 <label>
-                                    <span>Search contacts</span>
-                                    <input class="sales-input" @bind="audienceSearch" @bind:event="oninput" placeholder="Search by name, email, or company" />
+                                    <span>@SalesText["SearchContacts"]</span>
+                                    <input class="sales-input" @bind="audienceSearch" @bind:event="oninput" placeholder="@SalesText["SearchContactsPlaceholder"]" />
                                 </label>
                             </div>
 
                             <div class="sales-audience-list">
                                 @if (FilteredAudience.Count == 0)
                                 {
-                                    <div class="sales-empty sales-empty--compact">No contacts match this audience source.</div>
+                                    <div class="sales-empty sales-empty--compact">@SalesText["NoAudienceContacts"]</div>
                                 }
                                 else
                                 {
@@ -249,7 +249,7 @@
                                             <input type="checkbox" checked="@draft.ContactIds.Contains(contact.ContactId)" @onchange="args => ToggleContact(contact.ContactId, args.Value as bool? == true)" />
                                             <span>
                                                 <a class="sales-inline-link" href="@BuildPath($"/app/sales/contacts/{contact.ContactId:D}")">@contact.ContactName</a>
-                                                <small>@contact.Email - @(contact.CustomerCompanyName ?? "No company linked")</small>
+                                                <small>@contact.Email - @(contact.CustomerCompanyName ?? SalesText["NoCompanyLinked"])</small>
                                             </span>
                                         </label>
                                     }
@@ -260,10 +260,10 @@
                         <section class="sales-campaign-panel">
                             <div class="sales-section-heading">
                                 <div>
-                                    <span>SEQUENCE</span>
-                                    <h2>Email steps</h2>
+                                    <span>@SalesText["Sequence"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                    <h2>@SalesText["EmailSteps"]</h2>
                                 </div>
-                                <button class="sales-button sales-button--small" @onclick="AddStep">Add step</button>
+                                <button class="sales-button sales-button--small" @onclick="AddStep">@SalesText["AddStep"]</button>
                             </div>
 
                             <div class="sales-sequence-builder">
@@ -271,24 +271,24 @@
                                 {
                                     <article class="sales-sequence-step" @key="step.ClientId">
                                         <header>
-                                            <strong>Step @step.StepOrder</strong>
+                                            <strong>@SalesText["StepNumber", step.StepOrder]</strong>
                                             <label class="sales-switch">
                                                 <input type="checkbox" @bind="step.AiPersonalizationEnabled" />
-                                                <span>AI personalization</span>
+                                                <span>@SalesText["AiPersonalization"]</span>
                                             </label>
                                         </header>
                                         <div class="sales-sequence-grid">
                                             <label>
-                                                <span>Delay days</span>
+                                                <span>@SalesText["DelayDays"]</span>
                                                 <input class="sales-input" type="number" min="0" @bind="step.DelayDays" />
                                             </label>
                                             <label>
-                                                <span>Subject</span>
+                                                <span>@SalesText["Subject"]</span>
                                                 <input class="sales-input" @bind="step.Subject" @bind:event="oninput" />
                                             </label>
                                         </div>
                                         <label>
-                                            <span>Email body</span>
+                                            <span>@SalesText["EmailBody"]</span>
                                             <textarea class="sales-input sales-textarea" @bind="step.Body" @bind:event="oninput"></textarea>
                                         </label>
                                     </article>
@@ -299,27 +299,27 @@
 
                     <section class="sales-campaign-preview">
                         <div>
-                            <span>PREVIEW</span>
+                            <span>@SalesText["Preview"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
                             <h2>@PreviewTitle</h2>
                             <p>@PreviewSummary</p>
                         </div>
                         <div class="sales-campaign-preview__grid">
                             <article>
                                 <strong>@draft.ContactIds.Count</strong>
-                                <span>eligible contacts</span>
+                                <span>@SalesText["EligibleContactsLabel"]</span>
                             </article>
                             <article>
                                 <strong>@draft.Steps.Count</strong>
-                                <span>sequence steps</span>
+                                <span>@SalesText["SequenceStepsLabel"]</span>
                             </article>
                             <article>
                                 <strong>@ProjectedScheduleDays</strong>
-                                <span>days in schedule</span>
+                                <span>@SalesText["DaysInSchedule"]</span>
                             </article>
                         </div>
                         <div class="sales-actions">
-                            <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="CreateCampaignAsync">Save campaign</button>
-                            <button class="sales-button" @onclick="SelectAllFiltered">Select this audience</button>
+                            <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick="CreateCampaignAsync">@SalesText["SaveCampaign"]</button>
+                            <button class="sales-button" @onclick="SelectAllFiltered">@SalesText["SelectAudience"]</button>
                         </div>
                     </section>
                 </section>
@@ -356,10 +356,10 @@
             $"{x.ContactName} {x.Email} {x.CustomerCompanyName}".Contains(audienceSearch, StringComparison.OrdinalIgnoreCase))
         .ToList();
 
-    private string PreviewTitle => string.IsNullOrWhiteSpace(draft.Name) ? "Draft campaign" : draft.Name;
+    private string PreviewTitle => string.IsNullOrWhiteSpace(draft.Name) ? SalesText["DraftCampaign"] : draft.Name;
     private string PreviewSummary => draft.ContactIds.Count == 0
-        ? "Select contacts to preview who Alex will enroll."
-        : $"{draft.ContactIds.Count} contacts will receive {draft.Steps.Count} email steps. Sends are rate limited and pending steps stop after a reply, bounce, or deal creation.";
+        ? SalesText["SelectContactsPreview"]
+        : SalesText["CampaignPreviewSummary", draft.ContactIds.Count, draft.Steps.Count];
     private int ProjectedScheduleDays => draft.Steps.Count == 0 ? 0 : draft.Steps.Max(x => x.DelayDays) + 1;
 
     private async Task LoadAsync()
@@ -447,7 +447,7 @@
                 _ => selectedCampaign
             };
             campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
-            actionMessage = action == "launch" ? "Campaign start requested." : action == "pause" ? "Campaign paused." : "Campaign stopped.";
+            actionMessage = action == "launch" ? SalesText["CampaignStartRequested"] : action == "pause" ? SalesText["CampaignPaused"] : SalesText["CampaignStopped"];
             await RefreshAgentPanelAsync();
         }
         catch (SalesApiException ex)
@@ -486,7 +486,7 @@
                 draft.Steps.OrderBy(x => x.StepOrder).Select(x => new CreateSequenceStepRequest(x.StepOrder, x.DelayDays, x.Subject, x.Body, x.AiPersonalizationEnabled)).ToList()));
             campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
             showBuilder = false;
-            actionMessage = "Campaign saved.";
+            actionMessage = SalesText["CampaignSaved"];
         }
         catch (SalesApiException ex)
         {
@@ -501,17 +501,17 @@
     private List<string> ValidateDraft()
     {
         var errors = new List<string>();
-        if (string.IsNullOrWhiteSpace(draft.Name)) errors.Add("Campaign name is required.");
-        if (string.IsNullOrWhiteSpace(draft.AudienceType)) errors.Add("Audience selection is required.");
-        if (draft.ContactIds.Count == 0) errors.Add("Select at least one eligible contact.");
-        if (draft.Steps.Count < 4) errors.Add("A campaign sequence needs at least 4 steps.");
-        if (draft.MaxEmailsPerDay <= 0) errors.Add("Daily email limit must be greater than zero.");
-        if (!draft.OutboundEnabled) errors.Add("Outbound email must be enabled before Alex can launch a campaign.");
+        if (string.IsNullOrWhiteSpace(draft.Name)) errors.Add(SalesText["CampaignNameRequired"]);
+        if (string.IsNullOrWhiteSpace(draft.AudienceType)) errors.Add(SalesText["AudienceRequired"]);
+        if (draft.ContactIds.Count == 0) errors.Add(SalesText["ContactRequired"]);
+        if (draft.Steps.Count < 4) errors.Add(SalesText["FourStepsRequired"]);
+        if (draft.MaxEmailsPerDay <= 0) errors.Add(SalesText["DailyLimitRequired"]);
+        if (!draft.OutboundEnabled) errors.Add(SalesText["OutboundRequired"]);
         foreach (var step in draft.Steps)
         {
-            if (step.DelayDays < 0) errors.Add($"Step {step.StepOrder} delay cannot be negative.");
-            if (string.IsNullOrWhiteSpace(step.Subject)) errors.Add($"Step {step.StepOrder} needs a subject.");
-            if (string.IsNullOrWhiteSpace(step.Body)) errors.Add($"Step {step.StepOrder} needs an email body.");
+            if (step.DelayDays < 0) errors.Add(SalesText["StepDelayInvalid", step.StepOrder]);
+            if (string.IsNullOrWhiteSpace(step.Subject)) errors.Add(SalesText["StepSubjectRequired", step.StepOrder]);
+            if (string.IsNullOrWhiteSpace(step.Body)) errors.Add(SalesText["StepBodyRequired", step.StepOrder]);
         }
 
         return errors;
@@ -567,7 +567,7 @@
     private string CampaignRowClass(Guid campaignId) => $"sales-list-row sales-list-row--button{(selectedCampaign?.Id == campaignId ? " sales-list-row--selected" : "")}";
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
     private static string PolicySummary(OutboundPolicyResponse policy) => $"{(policy.OutboundEnabled ? "Outbound enabled" : "Outbound disabled")}, {policy.MaxEmailsPerDay} emails per day, {(policy.ApprovalRequired ? "approval required" : "no launch approval required")}";
-    private static string TrimDraft(string? value) => string.IsNullOrWhiteSpace(value) ? "No draft content recorded yet." : value.Length <= 180 ? value : $"{value[..180]}...";
+    private string TrimDraft(string? value) => string.IsNullOrWhiteSpace(value) ? SalesText["NoDraftContent"] : value.Length <= 180 ? value : $"{value[..180]}...";
 
     private sealed class CampaignDraft
     {

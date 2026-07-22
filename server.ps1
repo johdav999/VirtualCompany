@@ -1,7 +1,3 @@
-Get-Process dotnet -ErrorAction SilentlyContinue |
-    Where-Object { $_.Path -like (Join-Path $PSScriptRoot '*') } |
-    Stop-Process -Force -ErrorAction SilentlyContinue
-
 $sqlPassword = if ([string]::IsNullOrWhiteSpace($env:VC_SQL_SA_PASSWORD)) { "YourStrong!Passw0rd" } else { $env:VC_SQL_SA_PASSWORD }
 $env:VC_SQL_SA_PASSWORD = $sqlPassword
 $composeFile = Join-Path $PSScriptRoot "docker-compose.yml"
@@ -61,22 +57,6 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++)
     Start-Sleep -Seconds 1
 }
 
-$projectDir = "src\VirtualCompany.Api"
-$apiDll = "bin\Debug\net9.0\VirtualCompany.Api.dll"
-
-dotnet build "$projectDir\VirtualCompany.Api.csproj" -v minimal
-if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-
-$env:ASPNETCORE_ENVIRONMENT = "Development"
-$env:ASPNETCORE_URLS = "http://localhost:5301"
-$env:ConnectionStrings__VirtualCompanyDb = "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=$sqlPassword;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True"
-
-Push-Location $projectDir
-try
-{
-    dotnet $apiDll
-}
-finally
-{
-    Pop-Location
-}
+$connectionString = "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=$sqlPassword;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True"
+& (Join-Path $PSScriptRoot "run-api.ps1") -ConnectionString $connectionString
+exit $LASTEXITCODE

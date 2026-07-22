@@ -10,12 +10,11 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AgentScheduledTriggerApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AgentScheduledTriggerApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AgentScheduledTriggerApiIntegrationTests(TestWebApplicationFactory factory) =>
-        _factory = factory;
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Create_valid_trigger_persists_and_returns_next_run()

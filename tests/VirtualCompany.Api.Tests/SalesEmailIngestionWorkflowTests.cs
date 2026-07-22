@@ -40,9 +40,9 @@ public sealed class SalesEmailIngestionWorkflowTests
         Assert.Equal(SalesEmailIngestionStatuses.Processed, result.Status);
         Assert.Equal(SalesEmailIngestionStatuses.AlreadyProcessed, replay.Status);
         Assert.True(replay.AlreadyProcessed);
-        Assert.Equal(1, await fixture.DbContext.Leads.CountAsync(x => x.CompanyId == fixture.CompanyId));
-        Assert.Equal(1, await fixture.DbContext.SalesActivities.CountAsync(x => x.CompanyId == fixture.CompanyId));
-        Assert.Equal(2, await fixture.DbContext.SalesEmailLinks.CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(1, await fixture.DbContext.Leads.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(1, await fixture.DbContext.SalesActivities.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(2, await fixture.DbContext.SalesEmailLinks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
         Assert.Equal(2, fixture.Outbox.Messages.Count);
         Assert.Contains(fixture.Outbox.Messages, x => x.Topic == SalesEmailDomainEvents.EmailReceived);
         Assert.Contains(fixture.Outbox.Messages, x => x.Topic == SalesEmailDomainEvents.LeadDetected);
@@ -76,8 +76,8 @@ public sealed class SalesEmailIngestionWorkflowTests
 
         Assert.Equal(SalesEmailIngestionStatuses.Processed, first.Status);
         Assert.Equal(SalesEmailIngestionStatuses.AlreadyProcessed, second.Status);
-        Assert.Equal(1, await fixture.DbContext.Leads.CountAsync(x => x.CompanyId == fixture.CompanyId));
-        Assert.Equal(1, await fixture.DbContext.SalesActivities.CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(1, await fixture.DbContext.Leads.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(1, await fixture.DbContext.SalesActivities.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
         Assert.Equal(2, fixture.Outbox.Messages.Count);
     }
 
@@ -107,10 +107,10 @@ public sealed class SalesEmailIngestionWorkflowTests
 
         Assert.Equal(SalesEmailIngestionStatuses.Ignored, result.Status);
         Assert.Equal(expectedReason, result.IgnoreReason);
-        var link = await fixture.DbContext.SalesEmailLinks.SingleAsync(x => x.CompanyId == fixture.CompanyId && x.ExternalMessageId == messageId);
+        var link = await fixture.DbContext.SalesEmailLinks.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == fixture.CompanyId && x.ExternalMessageId == messageId);
         Assert.Equal(SalesStatuses.Ignored, link.Status);
         Assert.Equal(expectedReason, link.IgnoreReason);
-        Assert.False(await fixture.DbContext.Leads.AnyAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.False(await fixture.DbContext.Leads.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == fixture.CompanyId));
     }
 
     [Fact]
@@ -139,8 +139,8 @@ public sealed class SalesEmailIngestionWorkflowTests
             CancellationToken.None);
 
         Assert.Equal(SalesEmailIngestionStatuses.AlreadyProcessed, threadResult.Status);
-        Assert.Equal(1, await fixture.DbContext.Leads.CountAsync(x => x.CompanyId == fixture.CompanyId));
-        Assert.Equal(1, await fixture.DbContext.SalesActivities.CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(1, await fixture.DbContext.Leads.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
+        Assert.Equal(1, await fixture.DbContext.SalesActivities.IgnoreQueryFilters().CountAsync(x => x.CompanyId == fixture.CompanyId));
         Assert.Equal(2, fixture.Outbox.Messages.Count);
     }
 
@@ -190,16 +190,33 @@ public sealed class SalesEmailIngestionWorkflowTests
             dbContext.Companies.Add(new Company(companyId, "Sales Email Company"));
             dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev", "founder"));
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
-            dbContext.SalesPipelineStages.Add(new SalesPipelineStage(SalesPipelineStage.NewStageId, SalesPipelineStage.SystemCompanyId, "New", 1, isSystem: true));
-            var mailboxConnection = new MailboxConnection(mailboxConnectionId, companyId, userId, provider, "sales@example.com");
+            var mailboxConnection = new MailboxConnection(
+                mailboxConnectionId,
+                companyId,
+                userId,
+                provider,
+                "sales@example.com",
+                purpose: MailboxPurpose.Sales);
             mailboxConnection.StoreEncryptedCredentials("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), ["Mail.Read"]);
-            mailboxConnection.MarkActive();
+            mailboxConnection.SetStatus(MailboxConnectionStatus.Active);
             dbContext.MailboxConnections.Add(mailboxConnection);
             await dbContext.SaveChangesAsync();
 
             var registry = new FakeMailboxProviderRegistry(provider);
             var outbox = new CapturingOutbox();
-            var service = new SalesEmailIngestionService(dbContext, registry, new PlaintextFieldEncryption(), outbox, new NullIntentExtractionService(), TimeProvider.System);
+            var replyPipeline = new ReplySignalDetectionPipeline(
+                dbContext,
+                new DeterministicReplySignalDetectionService(),
+                new DealIntelligenceSignalRepository(dbContext));
+            var service = new SalesEmailIngestionService(
+                dbContext,
+                registry,
+                new PlaintextFieldEncryption(),
+                outbox,
+                new NullIntentExtractionService(),
+                replyPipeline,
+                TimeProvider.System,
+                new SalesSourceService(dbContext));
             return new SalesEmailFixture(connection, dbContext, service, registry, outbox, companyId, userId, mailboxConnectionId);
         }
 
@@ -251,11 +268,12 @@ public sealed class SalesEmailIngestionWorkflowTests
         public FakeMailboxProviderClient(MailboxProvider provider) => Provider = provider;
 
         public MailboxProvider Provider { get; }
+        public IReadOnlyCollection<string> DefaultScopes { get; } = ["mail.read"];
         public Dictionary<string, MailboxInboundMessage> Messages { get; } = new(StringComparer.Ordinal);
         public Dictionary<string, IReadOnlyList<MailboxInboundMessage>> Threads { get; } = new(StringComparer.Ordinal);
 
-        public Task<MailboxAuthorizationRequest> BuildAuthorizationRequestAsync(MailboxAuthorizationStartRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
-        public Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxCodeExchangeRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request) => throw new NotSupportedException();
+        public Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken) => throw new NotSupportedException();

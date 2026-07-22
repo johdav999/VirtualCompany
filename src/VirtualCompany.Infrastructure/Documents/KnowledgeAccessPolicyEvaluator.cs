@@ -38,12 +38,10 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
             return false;
         }
 
-        if (!EvaluateScopeConstraint(properties, accessContext.DataScopes))
-        {
-            return false;
-        }
-
-        if (!EvaluateAgentConstraint(properties, accessContext.AgentId))
+        var hasKnowledgeManagementAccess = HasKnowledgeManagementAccess(accessContext.MembershipRole);
+        if (!hasKnowledgeManagementAccess &&
+            (!EvaluateScopeConstraint(properties, accessContext.DataScopes) ||
+             !EvaluateAgentConstraint(properties, accessContext.AgentId)))
         {
             return false;
         }
@@ -60,6 +58,9 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
 
         return true;
     }
+
+    private static bool HasKnowledgeManagementAccess(string? membershipRole) =>
+        membershipRole?.Trim().ToLowerInvariant() is "manager" or "admin" or "owner";
 
     private static bool EvaluateIdentifierConstraint(
         IDictionary<string, JsonNode?> properties,

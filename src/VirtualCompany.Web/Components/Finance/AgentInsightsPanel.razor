@@ -1,10 +1,9 @@
-@using System.Globalization
 @using VirtualCompany.Web.Services
 
 <section class="wizard-card wizard-card--compact finance-agent-insights-panel" data-testid="@TestId">
     <div class="cockpit-card__header">
         <div>
-            <span class="dashboard-kicker">Agent insights</span>
+            <span class="dashboard-kicker">@FinanceText["AgentInsights"]</span>
             <h3 class="h6 mt-2 mb-1">@Title</h3>
             @if (!string.IsNullOrWhiteSpace(Subtitle))
             {
@@ -64,10 +63,10 @@
         return $"{FormatLabel(entity.EntityType)} {entity.EntityId}";
     }
 
-    private static string FormatDateTime(DateTime value) =>
+    private string FormatDateTime(DateTime value) =>
         value == default
             ? "n/a"
-            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            : LocalDateTime.DateTime(value);
 
     private static string FormatLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)

@@ -521,4 +521,3 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         }
     }
 }
-END_OF_PATCH

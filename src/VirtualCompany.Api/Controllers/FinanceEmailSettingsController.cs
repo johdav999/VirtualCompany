@@ -10,8 +10,9 @@ using VirtualCompany.Infrastructure.Tenancy;
 namespace VirtualCompany.Api.Controllers;
 
 [ApiController]
+[Route("api/companies/{companyId:guid}/mailbox-provider-settings")]
 [Route("internal/companies/{companyId:guid}/finance/settings/email")]
-[Authorize(Policy = CompanyPolicies.FinanceSandboxAdmin)]
+[Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
 [RequireCompanyContext]
 public sealed class FinanceEmailSettingsController : ControllerBase
 {
@@ -52,7 +53,7 @@ public sealed class FinanceEmailSettingsController : ControllerBase
             return StatusCode(StatusCodes.Status403Forbidden, new ProblemDetails
             {
                 Status = StatusCodes.Status403Forbidden,
-                Title = "Email integration settings are read-only.",
+                Title = "Mailbox provider settings are read-only.",
                 Detail = "Runtime editing of mailbox OAuth client settings is only enabled in Development."
             });
         }

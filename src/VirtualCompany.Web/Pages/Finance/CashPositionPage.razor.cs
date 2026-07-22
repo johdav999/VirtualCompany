@@ -7,7 +7,7 @@ public partial class CashPositionPage : FinanceSummaryPageBase<CashPositionSumma
 {
     private string DashboardHref => AccessState.CompanyId is Guid companyId ? $"/dashboard?companyId={companyId:D}" : "/dashboard";
 
-    private string FormattedAsOf => ViewModel is null ? "now" : FormatCashPositionDate(ViewModel.AsOf);
+    private string FormattedAsOf => ViewModel is null ? FinanceText["Now"] : FormatCashPositionDate(ViewModel.AsOf);
 
     protected override async Task<CashPositionSummaryViewModel?> LoadSummaryViewModelAsync(Guid companyId, CancellationToken cancellationToken)
     {
@@ -16,7 +16,7 @@ public partial class CashPositionPage : FinanceSummaryPageBase<CashPositionSumma
         return FinanceSummaryPresenter.ToCashPositionViewModel(response);
     }
 
-    private static string FormatCashPositionDate(string value)
+    private string FormatCashPositionDate(string value)
     {
         return DateTime.TryParseExact(
             value,
@@ -24,7 +24,7 @@ public partial class CashPositionPage : FinanceSummaryPageBase<CashPositionSumma
             CultureInfo.InvariantCulture,
             DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
             out var asOfUtc)
-            ? asOfUtc.ToString("MMMM d, yyyy 'at' HH:mm 'UTC'", CultureInfo.InvariantCulture)
+            ? LocalDateTime.DateTime(asOfUtc)
             : value;
     }
 }

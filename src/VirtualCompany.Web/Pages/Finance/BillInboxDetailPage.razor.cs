@@ -346,12 +346,12 @@ public partial class BillInboxDetailPage : FinancePageBase
         builder.CloseElement();
     };
 
-    private static string FormatAmount(decimal? amount, string? currency) =>
-        amount.HasValue ? $"{currency ?? string.Empty} {amount.Value.ToString("N2", CultureInfo.InvariantCulture)}".Trim() : "n/a";
+    private string FormatAmount(decimal? amount, string? currency) =>
+        amount.HasValue ? string.IsNullOrWhiteSpace(currency) ? LocalNumber.Decimal(amount.Value) : LocalMoney.Format(amount.Value, currency) : "n/a";
 
-    private static string FormatDate(DateTime? value) => value.HasValue ? value.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) : "n/a";
-    private static string FormatDateTime(DateTime value) => value.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
-    private static string FormatConfidence(decimal? value) => value.HasValue ? $"({value.Value:P0})" : string.Empty;
+    private string FormatDate(DateTime? value) => value.HasValue ? LocalDateTime.Date(DateOnly.FromDateTime(value.Value)) : "n/a";
+    private string FormatDateTime(DateTime value) => LocalDateTime.DateTime(value);
+    private string FormatConfidence(decimal? value) => value.HasValue ? $"({LocalNumber.Percentage(value.Value)})" : string.Empty;
     private string BuildSourcePreviewHeading() =>
         string.Equals(Detail?.SourcePreview?.SourceLabel, "Email body", StringComparison.OrdinalIgnoreCase)
             ? "Invoice from email"

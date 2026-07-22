@@ -124,7 +124,7 @@ public sealed class FinanceSeedBackfillOrchestratorTests
                 "USD",
                 1250m,
                 startedUtc.AddDays(-30)));
-            setupContext.BackgroundExecutions.Add(new BackgroundExecution(
+            var activeExecution = new BackgroundExecution(
                 Guid.NewGuid(),
                 activeExecutionCompany.Id,
                 BackgroundExecutionType.FinanceSeed,
@@ -132,7 +132,9 @@ public sealed class FinanceSeedBackfillOrchestratorTests
                 activeExecutionCompany.Id.ToString("D"),
                 "finance-seed-active",
                 $"finance-seed:{activeExecutionCompany.Id:N}",
-                maxAttempts: 5));
+                maxAttempts: 5);
+            activeExecution.StartAttempt("finance-seed-active", attempt: 1, maxAttempts: 5);
+            setupContext.BackgroundExecutions.Add(activeExecution);
             await setupContext.SaveChangesAsync();
         }
 
@@ -559,11 +561,11 @@ public sealed class FinanceSeedBackfillOrchestratorTests
 
         Assert.Equal(5, run.QueuedCount);
         Assert.Equal(0, run.FailedCount);
-        Assert.Equal(2, delayStrategy.Delays.Count);
+        Assert.Equal(6, delayStrategy.Delays.Count);
         Assert.True(scheduler.MaxObservedConcurrency <= 2);
 
         var batchDelays = delayStrategy.Delays.Count(x => x == TimeSpan.FromMilliseconds(25));
-        var pacingDelays = delayStrategy.Delays.Count(x => x == TimeSpan.FromMilliseconds(500));
+        var pacingDelays = delayStrategy.Delays.Count(x => x != TimeSpan.FromMilliseconds(25));
 
         Assert.Equal(2, batchDelays);
         Assert.Equal(4, pacingDelays);
@@ -690,6 +692,9 @@ public sealed class FinanceSeedBackfillOrchestratorTests
         services.AddDbContext<VirtualCompanyDbContext>(options => options.UseSqlite(connection));
         services.AddSingleton<IBackgroundExecutionIdentityFactory, DefaultBackgroundExecutionIdentityFactory>();
         services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
+        services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
+        services.AddOptions<FinanceSeedBackfillWorkerOptions>();
+        services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
         return services.BuildServiceProvider();
     }
 

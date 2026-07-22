@@ -8,6 +8,7 @@ using Microsoft.Extensions.Options;
 using StackExchange.Redis;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Application.BackgroundExecution;
+using VirtualCompany.Application.ExecutionExceptions;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Infrastructure.Observability;
@@ -178,6 +179,13 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
             if (current is UnauthorizedAccessException)
             {
                 return BackgroundJobFailureClassification.PermanentPolicy;
+            }
+
+            if (current is VirtualCompany.Application.Mailbox.MailboxProviderExecutionException mailboxFailure)
+            {
+                return mailboxFailure.IsRetryable
+                    ? BackgroundJobFailureClassification.ExternalDependencyUnavailable
+                    : BackgroundJobFailureClassification.PermanentBusinessRule;
             }
 
             if (current is WorkflowValidationException or ArgumentException or JsonException)
@@ -461,15 +469,18 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IOptions<BackgroundExecutionOptions> _options;
     private readonly ILogger<BackgroundExecutionRecorder> _logger;
+    private readonly IExecutionExceptionRecorder _executionExceptionRecorder;
 
     public BackgroundExecutionRecorder(
         VirtualCompanyDbContext dbContext,
         IOptions<BackgroundExecutionOptions> options,
-        ILogger<BackgroundExecutionRecorder> logger)
+        ILogger<BackgroundExecutionRecorder> logger,
+        IExecutionExceptionRecorder executionExceptionRecorder)
     {
         _dbContext = dbContext;
         _options = options;
         _logger = logger;
+        _executionExceptionRecorder = executionExceptionRecorder;
     }
 
     public async Task<BackgroundExecution> StartAsync(
@@ -559,7 +570,12 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
             execution.FailureCategory,
             result.FailureClassification?.GetDisposition());
 
-        await Task.CompletedTask;
+        if (result.Outcome is BackgroundJobExecutionOutcome.Blocked or
+            BackgroundJobExecutionOutcome.PermanentFailure or
+            BackgroundJobExecutionOutcome.RetryExhausted)
+        {
+            await RecordExecutionExceptionAsync(execution, result, cancellationToken);
+        }
     }
 
     public async Task<int> RecoverStaleExecutionsAsync(DateTime utcNow, CancellationToken cancellationToken)
@@ -601,4 +617,46 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
 
     private static string ResolveFailureMessage(BackgroundJobExecutionResult result) =>
         string.IsNullOrWhiteSpace(result.ErrorMessage) ? "Background execution failed." : result.ErrorMessage;
+
+    private Task RecordExecutionExceptionAsync(
+        BackgroundExecution execution,
+        BackgroundJobExecutionResult result,
+        CancellationToken cancellationToken)
+    {
+        var blocked = result.Outcome == BackgroundJobExecutionOutcome.Blocked;
+        var sourceType = execution.RelatedEntityType switch
+        {
+            BackgroundExecutionRelatedEntityTypes.WorkTask => ExecutionExceptionSourceType.WorkTask.ToStorageValue(),
+            BackgroundExecutionRelatedEntityTypes.OutboxMessage => ExecutionExceptionSourceType.OutboxMessage.ToStorageValue(),
+            BackgroundExecutionRelatedEntityTypes.WorkflowInstance => ExecutionExceptionSourceType.WorkflowInstance.ToStorageValue(),
+            _ when ExecutionExceptionSourceTypeValues.TryParse(execution.RelatedEntityType, out var parsedSourceType) => parsedSourceType.ToStorageValue(),
+            _ => ExecutionExceptionSourceType.BackgroundExecution.ToStorageValue()
+        };
+        var kind = blocked ? ExecutionExceptionKind.Blocked : ExecutionExceptionKind.Failed;
+        var summary = ResolveFailureMessage(result);
+
+        return _executionExceptionRecorder.RecordAsync(
+            new RecordExecutionExceptionRequest(
+                execution.CompanyId,
+                kind.ToStorageValue(),
+                (blocked ? ExecutionExceptionSeverity.Warning : ExecutionExceptionSeverity.Error).ToStorageValue(),
+                blocked ? "Background work is blocked" : "Background work failed",
+                summary,
+                sourceType,
+                execution.RelatedEntityId,
+                execution.Id,
+                execution.RelatedEntityType,
+                execution.RelatedEntityId,
+                $"background-execution:{execution.Id:N}:{kind.ToStorageValue()}",
+                execution.FailureCode,
+                new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["executionType"] = execution.ExecutionType.ToStorageValue(),
+                    ["correlationId"] = execution.CorrelationId,
+                    ["failureCategory"] = execution.FailureCategory?.ToStorageValue(),
+                    ["attemptCount"] = execution.AttemptCount.ToString(),
+                    ["maxAttempts"] = execution.MaxAttempts.ToString()
+                }),
+            cancellationToken);
+    }
 }

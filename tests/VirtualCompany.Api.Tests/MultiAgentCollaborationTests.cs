@@ -15,15 +15,16 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class MultiAgentCollaborationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class MultiAgentCollaborationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public MultiAgentCollaborationTests(TestWebApplicationFactory factory)
+    public MultiAgentCollaborationTests()
     {
-        _factory = factory;
         _factory.ToolExecutor.Reset();
     }
+
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Manager_worker_collaboration_creates_linked_subtasks_and_consolidates_attribution()

@@ -152,6 +152,7 @@ public sealed class SupplierInvoiceDraftActionServiceTests
             await db.Database.EnsureCreatedAsync();
             var fixture = new DraftActionFixture(connection, db, provider);
 
+            db.Users.Add(new User(fixture.ActorUserId, "draft-actor@example.test", "Draft Actor", "test", fixture.ActorUserId.ToString("N")));
             db.Companies.Add(new Company(fixture.CompanyId, "Fortnox-only company"));
             db.FinanceCounterparties.Add(new FinanceCounterparty(
                 fixture.SupplierId,
@@ -200,7 +201,7 @@ public sealed class SupplierInvoiceDraftActionServiceTests
                 dueStatus: FinanceDocumentDueStatuses.Overdue,
                 documentKind: FinanceDocumentKinds.SupplierInvoice,
                 providerStatus: "booked=false;balance=22000",
-                processingStatus: FinanceDocumentProcessingStatuses.Synced);
+                processingStatus: FinanceDocumentProcessingStatuses.None);
             Db.FinanceBills.Add(bill);
             var invoiceReference = new FinanceExternalReference(
                 Guid.NewGuid(),

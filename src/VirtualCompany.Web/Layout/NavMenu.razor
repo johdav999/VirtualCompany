@@ -2,16 +2,20 @@
 @inject FinanceAccessResolver FinanceAccessResolver
 @inject AgentApiClient AgentApiClient
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IStringLocalizer<NavigationResources> NavigationText
 @implements IDisposable
 
+@using System.Globalization
 @using Microsoft.AspNetCore.Components.Routing
 @using Microsoft.AspNetCore.WebUtilities
+@using VirtualCompany.Web.Localization
 @using VirtualCompany.Shared
 
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="">Virtual Company</a>
-        <button title="Navigation menu" class="navbar-toggler" @onclick="ToggleNavMenu">
+        <button title="@NavigationText["NavigationMenu"]" class="navbar-toggler" @onclick="ToggleNavMenu">
             <span class="navbar-toggler-icon"></span>
         </button>
     </div>
@@ -22,31 +26,31 @@
         <nav class="nav flex-column nav-menu-primary">
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> Home
+                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> @NavigationText["Home"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="onboarding">
-                <span class="bi bi-building-add" aria-hidden="true"></span> Onboarding
+                <span class="bi bi-building-add" aria-hidden="true"></span> @NavigationText["Onboarding"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@dashboardHref">
-                <span class="bi bi-grid-1x2" aria-hidden="true"></span> Dashboard
+                <span class="bi bi-grid-1x2" aria-hidden="true"></span> @NavigationText["Dashboard"]
             </NavLink>
         </div>
         @if (!string.IsNullOrWhiteSpace(financeHref))
         {
             <div class="nav-item px-3">
                 <NavLink class="nav-link" href="@financeHref">
-                    <span class="bi bi-cash-stack" aria-hidden="true"></span> Finance
+                    <span class="bi bi-cash-stack" aria-hidden="true"></span> @NavigationText["Finance"]
                 </NavLink>
             </div>
             @if (!string.IsNullOrWhiteSpace(simulationLabHref))
             {
                 <div class="nav-item px-3">
                     <NavLink class="nav-link" href="@simulationLabHref">
-                        <span class="bi bi-sliders" aria-hidden="true"></span> Simulation Lab
+                        <span class="bi bi-sliders" aria-hidden="true"></span> @NavigationText["SimulationLab"]
                     </NavLink>
                 </div>
             }
@@ -54,59 +58,64 @@
             {
                 <div class="nav-item px-3">
                     <NavLink class="nav-link" href="@systemAdminHref">
-                        <span class="bi bi-tools" aria-hidden="true"></span> System / Admin
+                        <span class="bi bi-tools" aria-hidden="true"></span> @NavigationText["SystemAdmin"]
                     </NavLink>
                 </div>
             }
         }
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@salesHref">
-                <span class="bi bi-graph-up-arrow" aria-hidden="true"></span> Sales
+                <span class="bi bi-graph-up-arrow" aria-hidden="true"></span> @NavigationText["Sales"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@supportHref">
-                <span class="bi bi-headset" aria-hidden="true"></span> Support
+                <span class="bi bi-headset" aria-hidden="true"></span> @NavigationText["Support"]
+            </NavLink>
+        </div>
+        <div class="nav-item px-3">
+            <NavLink class="nav-link" href="@agentStaffHref">
+                <span class="bi bi-kanban" aria-hidden="true"></span> @NavigationText["AgentStaff"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@agentsHref">
-                <span class="bi bi-people" aria-hidden="true"></span> Agents
+                <span class="bi bi-people" aria-hidden="true"></span> @NavigationText["Agents"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@workflowsHref">
-                <span class="bi bi-diagram-3" aria-hidden="true"></span> Workflows
+                <span class="bi bi-diagram-3" aria-hidden="true"></span> @NavigationText["Workflows"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@inboxHref">
-                <span class="bi bi-bell" aria-hidden="true"></span> Inbox
+                <span class="bi bi-bell" aria-hidden="true"></span> @NavigationText["Inbox"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@activityHref">
-                <span class="bi bi-activity" aria-hidden="true"></span> Activity
+                <span class="bi bi-activity" aria-hidden="true"></span> @NavigationText["Activity"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@approvalsHref">
-                <span class="bi bi-check2-square" aria-hidden="true"></span> Approvals
+                <span class="bi bi-check2-square" aria-hidden="true"></span> @NavigationText["Approvals"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@outboundReviewsHref">
-                <span class="bi bi-send-check" aria-hidden="true"></span> Message review
+                <span class="bi bi-send-check" aria-hidden="true"></span> @NavigationText["MessageReview"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@auditHref">
-                <span class="bi bi-list-check" aria-hidden="true"></span> Audit
+                <span class="bi bi-list-check" aria-hidden="true"></span> @NavigationText["Audit"]
             </NavLink>
         </div>
         <div class="nav-item px-3">
             <NavLink class="nav-link" href="@briefingHref">
-                <span class="bi bi-bell" aria-hidden="true"></span> Briefing delivery
+                <span class="bi bi-bell" aria-hidden="true"></span> @NavigationText["BriefingDelivery"]
             </NavLink>
         </div>
         </nav>
@@ -121,16 +130,27 @@
                 ButtonRoute="@sidebarAgent.ButtonRoute"
                 ModuleKey="@sidebarAgent.ModuleKey" />
 
-            <nav class="nav flex-column nav-menu-settings" aria-label="Settings">
+            <nav class="nav flex-column nav-menu-settings" aria-label="@NavigationText["SettingsNavigation"]">
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/settings/profile">
+                        <span class="bi bi-translate" aria-hidden="true"></span> @NavigationText["UserPreferences"]
+                    </NavLink>
+                </div>
                 <div class="nav-item px-3">
                     <NavLink class="nav-link" href="@settingsHref">
-                        <span class="bi bi-gear" aria-hidden="true"></span> Settings
+                        <span class="bi bi-gear" aria-hidden="true"></span> @NavigationText["Settings"]
                     </NavLink>
                 </div>
             </nav>
         </div>
     </div>
 </div>
+
+<form id="vc-culture-sync-nav" method="post" action="/localization/apply" class="visually-hidden" aria-hidden="true">
+    <AntiforgeryToken />
+    <input type="hidden" name="culture" value="@pendingCulture" />
+    <input type="hidden" name="returnUrl" value="@pendingReturnUrl" />
+</form>
 
 @code {
     private bool collapseNavMenu = true;
@@ -142,6 +162,7 @@
     private string dashboardHref = "/dashboard";
     private string salesHref = "/app/sales";
     private string supportHref = "/support";
+    private string agentStaffHref = "/agents/staff";
     private string agentsHref = "/agents";
     private string workflowsHref = "/workflows";
     private string inboxHref = "/inbox";
@@ -154,6 +175,9 @@
     private SidebarAgentContext sidebarAgent = SidebarAgentContext.Default("/agents");
     private int sidebarAgentRefreshVersion;
     private int navigationRefreshVersion;
+    private string? pendingCulture;
+    private string pendingReturnUrl = "/";
+    private bool cultureSyncSubmitted;
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
 
@@ -182,6 +206,7 @@
             if (reloadCurrentUser || currentUser is null)
             {
                 currentUser = await ApiClient.GetCurrentUserContextAsync();
+                QueuePersistedCultureSync();
             }
         }
         catch (OnboardingApiException)
@@ -216,6 +241,7 @@
         dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
         salesHref = currentCompanyId is Guid salesCompanyId ? $"/app/sales?companyId={salesCompanyId:D}" : "/app/sales";
         supportHref = currentCompanyId is Guid supportCompanyId ? $"/support?companyId={supportCompanyId:D}" : "/support";
+        agentStaffHref = DashboardRoutes.EnsureCompanyContext("/agents/staff", currentCompanyId, "/agents/staff");
         agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
         workflowsHref = DashboardRoutes.EnsureCompanyContext("/workflows", currentCompanyId, "/workflows");
         inboxHref = currentCompanyId is Guid inboxCompanyId ? $"/inbox?companyId={inboxCompanyId:D}" : "/inbox";
@@ -225,6 +251,32 @@
         outboundReviewsHref = currentCompanyId is Guid reviewCompanyId ? $"/outbound-review-queue?companyId={reviewCompanyId:D}" : "/outbound-review-queue";
         briefingHref = currentCompanyId is Guid briefingCompanyId ? $"/briefing-preferences?companyId={briefingCompanyId:D}" : "/briefing-preferences";
         settingsHref = currentCompanyId is Guid settingsCompanyId ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Settings, settingsCompanyId) : "/onboarding";
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (cultureSyncSubmitted || string.IsNullOrWhiteSpace(pendingCulture))
+        {
+            return;
+        }
+
+        cultureSyncSubmitted = true;
+        await JS.InvokeVoidAsync("virtualCompanyLocalization.submit", "vc-culture-sync-nav");
+    }
+
+    private void QueuePersistedCultureSync()
+    {
+        var savedCulture = currentUser?.User.UiCulture;
+        if (!LocalizationRequestPolicy.ShouldSynchronize(savedCulture, CultureInfo.CurrentUICulture.Name) ||
+            !SupportedWebCultures.TryNormalize(savedCulture, out var normalized))
+        {
+            pendingCulture = null;
+            return;
+        }
+
+        pendingCulture = normalized;
+        var relative = Navigation.ToBaseRelativePath(Navigation.Uri);
+        pendingReturnUrl = string.IsNullOrWhiteSpace(relative) ? "/" : $"/{relative}";
     }
 
     private async Task RefreshContextualAgentAsync()

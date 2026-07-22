@@ -30,6 +30,14 @@ public sealed class MailboxIntegrationOptions
         MessagesEndpoint = "https://graph.microsoft.com/v1.0/me/mailFolders/{folderId}/messages"
     };
 
+    public OAuthProviderOptions ZohoEu { get; init; } = new()
+    {
+        AuthorizationEndpoint = "https://accounts.zoho.eu/oauth/v2/auth",
+        TokenEndpoint = "https://accounts.zoho.eu/oauth/v2/token"
+    };
+
+    public List<StandardProfileOptions> StandardProfiles { get; init; } = [];
+
     public sealed class OAuthProviderOptions
     {
         public string ClientId { get; init; } = string.Empty;
@@ -38,6 +46,19 @@ public sealed class MailboxIntegrationOptions
         public string TokenEndpoint { get; init; } = string.Empty;
         public string ProfileEndpoint { get; init; } = string.Empty;
         public string MessagesEndpoint { get; init; } = string.Empty;
+    }
+
+    public sealed class StandardProfileOptions
+    {
+        public string ProfileKey { get; init; } = string.Empty;
+        public string DisplayName { get; init; } = string.Empty;
+        public string Region { get; init; } = string.Empty;
+        public string ImapHost { get; init; } = string.Empty;
+        public int ImapPort { get; init; } = 993;
+        public MailboxTlsMode ImapTlsMode { get; init; } = MailboxTlsMode.ImplicitTls;
+        public string SmtpHost { get; init; } = string.Empty;
+        public int SmtpPort { get; init; } = 465;
+        public MailboxTlsMode SmtpTlsMode { get; init; } = MailboxTlsMode.ImplicitTls;
     }
 }
 
@@ -136,6 +157,21 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         };
 
         return await SendTokenRequestAsync(form, cancellationToken);
+    }
+
+    public async Task<MailboxCredentialRevocationResult> RevokeCredentialAsync(
+        MailboxCredentialRevocationRequest request,
+        CancellationToken cancellationToken)
+    {
+        using var content = new FormUrlEncodedContent(new Dictionary<string, string>
+        {
+            ["token"] = request.Token
+        });
+        using var response = await _httpClientFactory.CreateClient(ClientName).PostAsync(
+            "https://oauth2.googleapis.com/revoke",
+            content,
+            cancellationToken);
+        return new MailboxCredentialRevocationResult(true, response.IsSuccessStatusCode);
     }
 
     public async Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken)

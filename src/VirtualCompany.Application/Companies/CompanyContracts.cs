@@ -10,7 +10,9 @@ public sealed record CurrentUserDto(
     string Email,
     string DisplayName,
     string AuthProvider,
-    string AuthSubject);
+    string AuthSubject,
+    string? UiCulture = null,
+    string? FormattingCulture = null);
 
 public sealed record CompanyMembershipDto(
     Guid MembershipId,
@@ -24,7 +26,9 @@ public sealed record ResolvedCompanyContextDto(
     Guid CompanyId,
     string CompanyName,
     [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
-    CompanyMembershipStatus Status);
+    CompanyMembershipStatus Status,
+    string? Timezone = null,
+    string? Currency = null);
 
 public sealed record CurrentUserContextDto(
     CurrentUserDto User,

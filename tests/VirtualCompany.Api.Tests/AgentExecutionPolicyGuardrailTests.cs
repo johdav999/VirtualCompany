@@ -17,15 +17,16 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AgentExecutionPolicyGuardrailTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AgentExecutionPolicyGuardrailTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AgentExecutionPolicyGuardrailTests(TestWebApplicationFactory factory)
+    public AgentExecutionPolicyGuardrailTests()
     {
-        _factory = factory;
         _factory.ToolExecutor.Reset();
     }
+
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Denied_execution_is_blocked_before_tool_executor_runs_and_attempt_is_auditable()

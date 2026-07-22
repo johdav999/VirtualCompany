@@ -12,14 +12,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePolicyAndMutationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePolicyAndMutationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePolicyAndMutationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Internal_finance_write_endpoints_mutate_records_for_authorized_tenant()

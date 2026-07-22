@@ -165,7 +165,7 @@ public partial class InvoicesPage : FinancePageBase
     private string BuildInvoiceHref(Guid invoiceId) =>
         FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
 
-    private static string ResolveValidationMessage(FinanceApiValidationException exception, string key)
+    private string ResolveValidationMessage(FinanceApiValidationException exception, string key)
     {
         if (exception.Errors.TryGetValue(key, out var directErrors) && directErrors.Length > 0)
         {
@@ -192,7 +192,7 @@ public partial class InvoicesPage : FinancePageBase
             ? $"/audit/{resolvedAuditEventId:D}?companyId={AccessState.CompanyId}"
             : null;
 
-    private static InvoiceListItemViewModel ToListItem(FinanceInvoiceResponse invoice, bool isSelected)
+    private InvoiceListItemViewModel ToListItem(FinanceInvoiceResponse invoice, bool isSelected)
     {
         var paymentSummary = BuildPaymentSummary(invoice.PaymentContext, invoice.ProviderStatus, invoice.Amount, invoice.Currency);
         var status = ResolveStatusPresentation(
@@ -219,7 +219,7 @@ public partial class InvoicesPage : FinancePageBase
             isSelected);
     }
 
-    private static InvoiceDetailViewModel ToDetailViewModel(
+    private InvoiceDetailViewModel ToDetailViewModel(
         FinanceInvoiceDetailResponse invoice,
         FinanceTransactionPaymentContextResponse? listPaymentContext)
     {
@@ -262,7 +262,7 @@ public partial class InvoicesPage : FinancePageBase
             invoice.RelatedTransactions.Select(ToRelatedTransactionViewModel).ToList());
     }
 
-    private static FinanceTransactionPaymentContextResponse? SelectPaymentContext(
+    private FinanceTransactionPaymentContextResponse? SelectPaymentContext(
         FinanceTransactionPaymentContextResponse? detailContext,
         FinanceTransactionPaymentContextResponse? listContext)
     {
@@ -274,7 +274,7 @@ public partial class InvoicesPage : FinancePageBase
         return HasPaymentEvidence(listContext) ? listContext : detailContext ?? listContext;
     }
 
-    private static bool HasPaymentEvidence(FinanceTransactionPaymentContextResponse? paymentContext) =>
+    private bool HasPaymentEvidence(FinanceTransactionPaymentContextResponse? paymentContext) =>
         paymentContext is not null &&
         (paymentContext.IsPartiallyPaid ||
          paymentContext.PaidAmount > 0m ||
@@ -283,7 +283,7 @@ public partial class InvoicesPage : FinancePageBase
     private string BuildTransactionHref(Guid transactionId) =>
         FinanceRoutes.BuildTransactionDetailPath(transactionId, AccessState.CompanyId);
 
-    private static InvoiceRelatedTransactionViewModel ToRelatedTransactionViewModel(FinanceInvoiceRelatedTransactionResponse transaction)
+    private InvoiceRelatedTransactionViewModel ToRelatedTransactionViewModel(FinanceInvoiceRelatedTransactionResponse transaction)
     {
         var isPayment = IsPaymentTransaction(transaction.TransactionType);
         return new InvoiceRelatedTransactionViewModel(
@@ -297,7 +297,7 @@ public partial class InvoicesPage : FinancePageBase
             isPayment ? "success" : "info");
     }
 
-    private static InvoicePaymentSummaryViewModel? BuildPaymentSummary(
+    private InvoicePaymentSummaryViewModel? BuildPaymentSummary(
         FinanceTransactionPaymentContextResponse? paymentContext,
         string? providerStatus,
         decimal invoiceAmount,
@@ -321,7 +321,7 @@ public partial class InvoicesPage : FinancePageBase
         return providerSummary ?? contextSummary;
     }
 
-    private static InvoicePaymentSummaryViewModel? BuildPaymentSummaryFromProviderStatus(
+    private InvoicePaymentSummaryViewModel? BuildPaymentSummaryFromProviderStatus(
         string? providerStatus,
         decimal invoiceAmount,
         string currency)
@@ -351,7 +351,7 @@ public partial class InvoicesPage : FinancePageBase
         return null;
     }
 
-    private static InvoicePaymentSummaryViewModel BuildPaymentSummary(
+    private InvoicePaymentSummaryViewModel BuildPaymentSummary(
         decimal paidAmount,
         decimal totalAmount,
         decimal remainingAmount,
@@ -378,7 +378,7 @@ public partial class InvoicesPage : FinancePageBase
             reason);
     }
 
-    private static IReadOnlyList<SourceDetailViewModel> BuildSourceDetails(string? providerStatus, string currency)
+    private IReadOnlyList<SourceDetailViewModel> BuildSourceDetails(string? providerStatus, string currency)
     {
         if (string.IsNullOrWhiteSpace(providerStatus))
         {
@@ -426,7 +426,7 @@ public partial class InvoicesPage : FinancePageBase
         return details;
     }
 
-    private static Dictionary<string, string> ParseProviderStatus(string providerStatus)
+    private Dictionary<string, string> ParseProviderStatus(string providerStatus)
     {
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var segment in providerStatus.Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -443,43 +443,41 @@ public partial class InvoicesPage : FinancePageBase
         return values;
     }
 
-    private static bool TryGetBool(IReadOnlyDictionary<string, string> values, string key, out bool result)
+    private bool TryGetBool(IReadOnlyDictionary<string, string> values, string key, out bool result)
     {
         result = false;
         return values.TryGetValue(key, out var value) &&
             bool.TryParse(value, out result);
     }
 
-    private static bool IsPaymentTransaction(string? transactionType)
+    private bool IsPaymentTransaction(string? transactionType)
     {
         var normalized = NormalizeStatusToken(transactionType);
         return normalized is "customer_payment" or "supplier_payment" or "payment";
     }
 
-    private static string FormatCurrency(decimal amount, string currency) =>
-        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
 
-    private static string FormatDate(DateTime value) =>
-        value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private string FormatDate(DateTime value) => LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatFriendlyDate(DateTime value) =>
-        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
+    private string FormatFriendlyDate(DateTime value) =>
+        value == default ? "Not available" : LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatDateTime(DateTime value) =>
+    private string FormatDateTime(DateTime value) =>
         value == default
             ? "Unknown time"
-            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            : LocalDateTime.DateTime(value);
 
-    private static string FormatConfidence(decimal confidence)
+    private string FormatConfidence(decimal confidence)
     {
         var clamped = Math.Clamp(confidence, 0m, 1m);
         return $"{clamped:P0}";
     }
 
-    private static string FormatActorOrSource(string? value) =>
+    private string FormatActorOrSource(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "System" : value.Trim();
 
-    private static string FormatStatusLabel(string? value) =>
+    private string FormatStatusLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
             ? "Unknown"
             : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
@@ -487,13 +485,13 @@ public partial class InvoicesPage : FinancePageBase
                 ? CultureInfo.InvariantCulture.TextInfo.ToTitleCase(normalized)
                 : "Unknown";
 
-    private static string FormatInvoiceStatusLabel(string? value)
+    private string FormatInvoiceStatusLabel(string? value)
     {
         var normalized = value?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
         return normalized == "approved" ? "Booked" : FormatStatusLabel(value);
     }
 
-    private static InvoiceStatusPresentation ResolveStatusPresentation(
+    private InvoiceStatusPresentation ResolveStatusPresentation(
         string? postingStatus,
         string? settlementStatus,
         string? dueStatus,
@@ -566,10 +564,10 @@ public partial class InvoicesPage : FinancePageBase
         };
     }
 
-    private static string NormalizeStatusToken(string? value) =>
+    private string NormalizeStatusToken(string? value) =>
         value?.Trim().ToLowerInvariant().Replace("-", "_", StringComparison.Ordinal) ?? string.Empty;
 
-    private static string FormatDocumentKind(string? value) =>
+    private string FormatDocumentKind(string? value) =>
         NormalizeStatusToken(value) switch
         {
             "credit_note" => "Credit note",

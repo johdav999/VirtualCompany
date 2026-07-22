@@ -17,15 +17,16 @@ using VirtualCompany.Infrastructure.Companies;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SingleAgentOrchestrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class SingleAgentOrchestrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public SingleAgentOrchestrationTests(TestWebApplicationFactory factory)
+    public SingleAgentOrchestrationTests()
     {
-        _factory = factory;
         _factory.ToolExecutor.Reset();
     }
+
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Task_execute_endpoint_uses_shared_orchestration_pipeline_and_persists_metadata()

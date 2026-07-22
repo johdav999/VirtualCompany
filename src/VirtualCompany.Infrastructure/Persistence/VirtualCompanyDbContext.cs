@@ -22,6 +22,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     }
 
     public DbSet<User> Users => Set<User>();
+    public DbSet<UserPreference> UserPreferences => Set<UserPreference>();
+    public DbSet<UserPreferenceChange> UserPreferenceChanges => Set<UserPreferenceChange>();
     public DbSet<Company> Companies => Set<Company>();
     public DbSet<CompanyMembership> CompanyMemberships => Set<CompanyMembership>();
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
@@ -119,6 +121,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
     public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
+    public DbSet<MailboxFolderSyncCursor> MailboxFolderSyncCursors => Set<MailboxFolderSyncCursor>();
+    public DbSet<MailboxOAuthAuthorizationState> MailboxOAuthAuthorizationStates => Set<MailboxOAuthAuthorizationState>();
     public DbSet<FortnoxConnection> FortnoxConnections => Set<FortnoxConnection>();
     public DbSet<FortnoxOAuthState> FortnoxOAuthStates => Set<FortnoxOAuthState>();
     public DbSet<FortnoxSyncHistory> FortnoxSyncHistories => Set<FortnoxSyncHistory>();
@@ -194,6 +198,10 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SupportMemoryUpdateJob> SupportMemoryUpdateJobs => Set<SupportMemoryUpdateJob>();
     public DbSet<SupportMemoryObservation> SupportMemoryObservations => Set<SupportMemoryObservation>();
     public DbSet<SupportAgentExecution> SupportAgentExecutions => Set<SupportAgentExecution>();
+    public DbSet<AgentOrchestrationRun> AgentOrchestrationRuns => Set<AgentOrchestrationRun>();
+    public DbSet<AgentHandoff> AgentHandoffs => Set<AgentHandoff>();
+    public DbSet<AgentMemoryCandidate> AgentMemoryCandidates => Set<AgentMemoryCandidate>();
+    public DbSet<AgentAiQualityEvent> AgentAiQualityEvents => Set<AgentAiQualityEvent>();
 
     internal Guid? CurrentCompanyId => _companyContextAccessor?.CompanyId;
 
@@ -363,6 +371,7 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinancialStatementSnapshot ||
                 entry.Entity is FinancialStatementSnapshotLine ||
                 entry.Entity is MailboxConnection ||
+                entry.Entity is MailboxOAuthAuthorizationState ||
                 entry.Entity is FortnoxConnection ||
                 entry.Entity is FortnoxOAuthState ||
                 entry.Entity is FortnoxSyncHistory ||
@@ -435,446 +444,484 @@ public sealed class VirtualCompanyDbContext : DbContext
         base.OnModelCreating(modelBuilder);
 
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(VirtualCompanyDbContext).Assembly);
+        ApplySqliteCompatibilityMappings(modelBuilder);
         modelBuilder.Entity<CompanyOwnedNote>()
             .HasQueryFilter(note =>
-                CurrentCompanyId.HasValue && note.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && note.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BackgroundExecution>()
             .HasQueryFilter(execution =>
-                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ExecutionExceptionRecord>()
             .HasQueryFilter(executionException =>
-                CurrentCompanyId.HasValue && executionException.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && executionException.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AuditEvent>()
             .HasQueryFilter(auditEvent =>
-                CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && auditEvent.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ActivityEvent>()
             .HasQueryFilter(activityEvent =>
-                CurrentCompanyId.HasValue && activityEvent.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && activityEvent.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
-                CurrentCompanyId.HasValue && agent.CompanyId == CurrentCompanyId.Value);
-        modelBuilder.Entity<SalesAcquisitionCampaign>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
-        modelBuilder.Entity<SalesSourceTouch>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
-        modelBuilder.Entity<SalesSourceAttribution>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
-        modelBuilder.Entity<SalesContactPermission>().HasQueryFilter(x => CurrentCompanyId.HasValue && x.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && agent.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentOrchestrationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentHandoff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentMemoryCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AgentAiQualityEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesAcquisitionCampaign>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesSourceTouch>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesSourceAttribution>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesContactPermission>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ToolExecutionAttempt>()
             .HasQueryFilter(attempt =>
-                CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && attempt.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentScheduledTrigger>()
             .HasQueryFilter(trigger =>
-                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && trigger.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<TriggerExecutionAttempt>()
             .HasQueryFilter(attempt =>
-                CurrentCompanyId.HasValue && attempt.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && attempt.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentScheduledTriggerEnqueueWindow>()
             .HasQueryFilter(window =>
-                CurrentCompanyId.HasValue && window.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && window.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<WorkTask>()
             .HasQueryFilter(task =>
-                CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && task.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentTaskCreationDedupeRecord>()
             .HasQueryFilter(record =>
-                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && record.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
-                CurrentCompanyId.HasValue && request.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && request.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ApprovalTask>()
             .HasQueryFilter(task =>
-                CurrentCompanyId.HasValue && task.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && task.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Conversation>()
             .HasQueryFilter(conversation =>
-                CurrentCompanyId.HasValue && conversation.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && conversation.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Message>()
             .HasQueryFilter(message =>
-                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && message.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ConversationTaskLink>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefing>()
             .HasQueryFilter(briefing =>
-                CurrentCompanyId.HasValue && briefing.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && briefing.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefingSection>()
             .HasQueryFilter(section =>
-                CurrentCompanyId.HasValue && section.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && section.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefingContribution>()
             .HasQueryFilter(contribution =>
-                CurrentCompanyId.HasValue && contribution.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && contribution.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefingUpdateJob>()
             .HasQueryFilter(job =>
-                CurrentCompanyId.HasValue && job.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && job.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefingDeliveryPreference>()
             .HasQueryFilter(preference =>
-                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && preference.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefingSeverityRule>()
             .HasQueryFilter(rule =>
-                CurrentCompanyId.HasValue && rule.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && rule.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<UserBriefingPreference>()
             .HasQueryFilter(preference =>
-                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && preference.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<TenantBriefingDefault>()
             .HasQueryFilter(defaults =>
-                CurrentCompanyId.HasValue && defaults.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && defaults.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyNotification>()
             .HasQueryFilter(notification =>
-                CurrentCompanyId.HasValue && notification.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && notification.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ProactiveMessage>()
             .HasQueryFilter(message =>
-                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && message.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ProactiveMessagePolicyDecision>()
             .HasQueryFilter(decision =>
-                CurrentCompanyId.HasValue && decision.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && decision.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<WorkflowDefinition>()
             .HasQueryFilter(definition =>
-                CurrentCompanyId.HasValue && (definition.CompanyId == CurrentCompanyId.Value || definition.CompanyId == null));
+                CurrentCompanyId != null && (definition.CompanyId == CurrentCompanyId || definition.CompanyId == null));
         modelBuilder.Entity<WorkflowTrigger>()
             .HasQueryFilter(trigger =>
-                CurrentCompanyId.HasValue && trigger.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && trigger.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<WorkflowInstance>()
             .HasQueryFilter(instance =>
-                CurrentCompanyId.HasValue && instance.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && instance.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ProcessedWorkflowTriggerEvent>()
             .HasQueryFilter(processedEvent =>
-                CurrentCompanyId.HasValue && processedEvent.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && processedEvent.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<WorkflowException>()
             .HasQueryFilter(workflowException =>
-                CurrentCompanyId.HasValue && workflowException.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && workflowException.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ConditionTriggerEvaluation>()
             .HasQueryFilter(evaluation =>
-                CurrentCompanyId.HasValue && evaluation.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && evaluation.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyKnowledgeDocument>()
             .HasQueryFilter(document =>
-                CurrentCompanyId.HasValue && document.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && document.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyKnowledgeChunk>()
             .HasQueryFilter(chunk =>
-                CurrentCompanyId.HasValue && chunk.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && chunk.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<MemoryItem>()
             .HasQueryFilter(memoryItem =>
-                CurrentCompanyId.HasValue && memoryItem.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && memoryItem.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfile>()
             .HasQueryFilter(profile =>
-                CurrentCompanyId.HasValue && profile.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && profile.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfileConversation>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfileDeal>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfileEngagementAttribute>()
             .HasQueryFilter(attribute =>
-                CurrentCompanyId.HasValue && attribute.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && attribute.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfilePreference>()
             .HasQueryFilter(preference =>
-                CurrentCompanyId.HasValue && preference.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && preference.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfilePriceSignal>()
             .HasQueryFilter(signal =>
-                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && signal.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerMemoryProfileIndustrySignal>()
             .HasQueryFilter(signal =>
-                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && signal.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<DealIntelligenceSignal>()
             .HasQueryFilter(signal =>
-                CurrentCompanyId.HasValue && signal.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && signal.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ContextRetrieval>()
             .HasQueryFilter(retrieval =>
-                CurrentCompanyId.HasValue && retrieval.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && retrieval.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ContextRetrievalSource>()
             .HasQueryFilter(source =>
-                CurrentCompanyId.HasValue && source.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && source.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Alert>()
             .HasQueryFilter(alert =>
-                CurrentCompanyId.HasValue && alert.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && alert.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Escalation>()
             .HasQueryFilter(escalation =>
-                CurrentCompanyId.HasValue && escalation.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && escalation.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<DashboardDepartmentConfig>()
             .HasQueryFilter(config =>
-                CurrentCompanyId.HasValue && config.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && config.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<DashboardWidgetConfig>()
             .HasQueryFilter(config =>
-                CurrentCompanyId.HasValue && config.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && config.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<InsightAcknowledgment>()
             .HasQueryFilter(acknowledgment =>
-                CurrentCompanyId.HasValue && acknowledgment.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && acknowledgment.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceAccount>()
             .HasQueryFilter(account =>
-                CurrentCompanyId.HasValue && account.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && account.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Budget>()
             .HasQueryFilter(budget =>
-                CurrentCompanyId.HasValue && budget.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && budget.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Forecast>()
             .HasQueryFilter(forecast =>
-                CurrentCompanyId.HasValue && forecast.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && forecast.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Payment>()
             .HasQueryFilter(payment =>
-                CurrentCompanyId.HasValue && payment.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && payment.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBankAccount>()
             .HasQueryFilter(bankAccount =>
-                CurrentCompanyId.HasValue && bankAccount.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && bankAccount.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankTransaction>()
             .HasQueryFilter(bankTransaction =>
-                CurrentCompanyId.HasValue && bankTransaction.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && bankTransaction.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankTransactionPaymentLink>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankTransactionPostingStateRecord>()
             .HasQueryFilter(state =>
-                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<PaymentCashLedgerLink>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankTransactionCashLedgerLink>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<PaymentAllocation>()
             .HasQueryFilter(allocation =>
-                CurrentCompanyId.HasValue && allocation.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && allocation.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ReconciliationSuggestionRecord>()
             .HasQueryFilter(suggestion =>
-                CurrentCompanyId.HasValue && suggestion.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && suggestion.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ReconciliationResultRecord>()
             .HasQueryFilter(result =>
-                CurrentCompanyId.HasValue && result.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && result.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceTransaction>()
             .HasQueryFilter(transaction =>
-                CurrentCompanyId.HasValue && transaction.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && transaction.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceInvoice>()
             .HasQueryFilter(invoice =>
-                CurrentCompanyId.HasValue && invoice.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && invoice.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceBill>()
             .HasQueryFilter(bill =>
-                CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && bill.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceAsset>()
             .HasQueryFilter(asset =>
-                CurrentCompanyId.HasValue && asset.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && asset.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceBalance>()
             .HasQueryFilter(balance =>
-                CurrentCompanyId.HasValue && balance.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && balance.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceCounterparty>()
             .HasQueryFilter(counterparty =>
-                CurrentCompanyId.HasValue && counterparty.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && counterparty.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinancePolicyConfiguration>()
             .HasQueryFilter(policy =>
-                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && policy.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceSeedAnomaly>()
             .HasQueryFilter(anomaly =>
-                CurrentCompanyId.HasValue && anomaly.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && anomaly.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceSimulationStepLog>()
             .HasQueryFilter(log =>
-                CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && log.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceAgentInsight>()
             .HasQueryFilter(insight =>
-                CurrentCompanyId.HasValue && insight.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && insight.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceWorkflowTriggerExecution>()
             .HasQueryFilter(execution =>
-                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceWorkflowTriggerCheckExecution>()
             .HasQueryFilter(execution =>
-                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FiscalPeriod>()
             .HasQueryFilter(period =>
-                CurrentCompanyId.HasValue && period.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && period.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<LedgerEntry>()
             .HasQueryFilter(entry =>
-                CurrentCompanyId.HasValue && entry.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && entry.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<LedgerEntrySourceMapping>()
             .HasQueryFilter(mapping =>
-                CurrentCompanyId.HasValue && mapping.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && mapping.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<LedgerEntryLine>()
             .HasQueryFilter(line =>
-                CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<TrialBalanceSnapshot>()
             .HasQueryFilter(snapshot =>
-                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinancialStatementSnapshot>()
             .HasQueryFilter(snapshot =>
-                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinancialStatementSnapshotLine>()
             .HasQueryFilter(line =>
-                CurrentCompanyId.HasValue && line.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<MailboxConnection>()
             .HasQueryFilter(connection =>
-                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && connection.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MailboxFolderSyncCursor>()
+            .HasQueryFilter(cursor =>
+                CurrentCompanyId != null && cursor.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MailboxOAuthAuthorizationState>()
+            .HasQueryFilter(state =>
+                CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FortnoxConnection>()
             .HasQueryFilter(connection =>
-                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && connection.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FortnoxOAuthState>()
             .HasQueryFilter(state =>
-                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FortnoxSyncHistory>()
             .HasQueryFilter(history =>
-                CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FortnoxExternalReference>()
             .HasQueryFilter(reference =>
-                CurrentCompanyId.HasValue && reference.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && reference.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<EmailIngestionRun>()
             .HasQueryFilter(run =>
-                CurrentCompanyId.HasValue && run.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && run.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<EmailMessageSnapshot>()
             .HasQueryFilter(snapshot =>
-                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<EmailAttachmentSnapshot>()
             .HasQueryFilter(snapshot =>
-                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BillDuplicateCheck>()
             .HasQueryFilter(check =>
-                CurrentCompanyId.HasValue && check.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && check.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<NormalizedBillExtraction>()
             .HasQueryFilter(extraction =>
-                CurrentCompanyId.HasValue && extraction.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && extraction.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<DetectedBill>()
             .HasQueryFilter(bill =>
-                CurrentCompanyId.HasValue && bill.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && bill.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<DetectedBillField>()
             .HasQueryFilter(field =>
-                CurrentCompanyId.HasValue && field.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && field.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceBillReviewState>()
             .HasQueryFilter(state =>
-                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceBillReviewAction>()
             .HasQueryFilter(action =>
-                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && action.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BillApprovalProposal>()
             .HasQueryFilter(proposal =>
-                CurrentCompanyId.HasValue && proposal.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && proposal.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupplierInvoicePaymentProposal>()
             .HasQueryFilter(proposal =>
-                CurrentCompanyId.HasValue && proposal.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && proposal.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupplierInvoiceSourceDocumentAttachment>()
             .HasQueryFilter(attachment =>
-                CurrentCompanyId.HasValue && attachment.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && attachment.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupplierInvoiceDraftAction>()
             .HasQueryFilter(action =>
-                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && action.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupplierInvoiceCorrectionAction>()
             .HasQueryFilter(action =>
-                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && action.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupplierInvoiceEnrichmentAction>()
             .HasQueryFilter(action =>
-                CurrentCompanyId.HasValue && action.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && action.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanySimulationRunHistory>()
             .HasQueryFilter(history =>
-                CurrentCompanyId.HasValue && history.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanySimulationRunTransition>()
             .HasQueryFilter(transition =>
-                CurrentCompanyId.HasValue && transition.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && transition.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanySimulationRunDayLog>()
             .HasQueryFilter(log =>
-                CurrentCompanyId.HasValue && log.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && log.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SimulationCashDeltaRecord>()
             .HasQueryFilter(record =>
-                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && record.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SimulationEventRecord>()
             .HasQueryFilter(record =>
-                CurrentCompanyId.HasValue && record.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && record.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceIntegrationConnection>()
             .HasQueryFilter(connection =>
-                CurrentCompanyId.HasValue && connection.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && connection.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceIntegrationToken>()
             .HasQueryFilter(token =>
-                CurrentCompanyId.HasValue && token.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && token.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceIntegrationSyncState>()
             .HasQueryFilter(state =>
-                CurrentCompanyId.HasValue && state.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceExternalReference>()
             .HasQueryFilter(reference =>
-                CurrentCompanyId.HasValue && reference.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && reference.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceIntegrationAuditEvent>()
             .HasQueryFilter(auditEvent =>
-                CurrentCompanyId.HasValue && auditEvent.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && auditEvent.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceIntegrationWriteCommandRecord>()
             .HasQueryFilter(command =>
-                CurrentCompanyId.HasValue && command.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && command.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesPipelineStage>()
             .HasQueryFilter(stage =>
                 !stage.IsDeleted &&
                 (stage.CompanyId == SalesPipelineStage.SystemCompanyId ||
-                 (CurrentCompanyId.HasValue && stage.CompanyId == CurrentCompanyId.Value)));
+                 (CurrentCompanyId != null && stage.CompanyId == CurrentCompanyId)));
         modelBuilder.Entity<Lead>()
             .HasQueryFilter(lead =>
-                CurrentCompanyId.HasValue && lead.CompanyId == CurrentCompanyId.Value && !lead.IsDeleted);
+                CurrentCompanyId != null && lead.CompanyId == CurrentCompanyId && !lead.IsDeleted);
         modelBuilder.Entity<Deal>()
             .HasQueryFilter(deal =>
-                CurrentCompanyId.HasValue && deal.CompanyId == CurrentCompanyId.Value && !deal.IsDeleted);
+                CurrentCompanyId != null && deal.CompanyId == CurrentCompanyId && !deal.IsDeleted);
         modelBuilder.Entity<Contact>()
             .HasQueryFilter(contact =>
-                CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value && !contact.IsDeleted);
+                CurrentCompanyId != null && contact.CompanyId == CurrentCompanyId && !contact.IsDeleted);
         modelBuilder.Entity<CustomerCompany>()
             .HasQueryFilter(customer =>
-                CurrentCompanyId.HasValue && customer.CompanyId == CurrentCompanyId.Value && !customer.IsDeleted);
+                CurrentCompanyId != null && customer.CompanyId == CurrentCompanyId && !customer.IsDeleted);
         modelBuilder.Entity<SalesActivity>()
             .HasQueryFilter(activity =>
-                CurrentCompanyId.HasValue && activity.CompanyId == CurrentCompanyId.Value && !activity.IsDeleted);
+                CurrentCompanyId != null && activity.CompanyId == CurrentCompanyId && !activity.IsDeleted);
         modelBuilder.Entity<SalesAgentRecommendation>()
             .HasQueryFilter(recommendation =>
-                CurrentCompanyId.HasValue && recommendation.CompanyId == CurrentCompanyId.Value && !recommendation.IsDeleted);
+                CurrentCompanyId != null && recommendation.CompanyId == CurrentCompanyId && !recommendation.IsDeleted);
         modelBuilder.Entity<SalesSequence>()
             .HasQueryFilter(sequence =>
-                CurrentCompanyId.HasValue && sequence.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && sequence.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesSequenceStep>()
             .HasQueryFilter(step =>
-                CurrentCompanyId.HasValue && step.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && step.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesCampaign>()
             .HasQueryFilter(campaign =>
-                CurrentCompanyId.HasValue && campaign.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && campaign.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesCampaignContact>()
             .HasQueryFilter(contact =>
-                CurrentCompanyId.HasValue && contact.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && contact.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesSequenceExecution>()
             .HasQueryFilter(execution =>
-                CurrentCompanyId.HasValue && execution.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesSequenceExecutionStep>()
             .HasQueryFilter(step =>
-                CurrentCompanyId.HasValue && step.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && step.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesAutomationPolicy>()
             .HasQueryFilter(policy =>
-                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && policy.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesActionApproval>()
             .HasQueryFilter(approval =>
-                CurrentCompanyId.HasValue && approval.CompanyId == CurrentCompanyId.Value && !approval.IsDeleted);
+                CurrentCompanyId != null && approval.CompanyId == CurrentCompanyId && !approval.IsDeleted);
         modelBuilder.Entity<SalesEmailLink>()
             .HasQueryFilter(link =>
-                CurrentCompanyId.HasValue && link.CompanyId == CurrentCompanyId.Value && !link.IsDeleted);
+                CurrentCompanyId != null && link.CompanyId == CurrentCompanyId && !link.IsDeleted);
         modelBuilder.Entity<OutboundMessageReview>()
             .HasQueryFilter(review =>
-                CurrentCompanyId.HasValue && review.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && review.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesMessagePerformance>()
             .HasQueryFilter(performance =>
-                CurrentCompanyId.HasValue && performance.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && performance.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<WebsiteLeadSubmission>()
             .HasQueryFilter(submission =>
-                CurrentCompanyId.HasValue && submission.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && submission.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<RevenueForecastSnapshot>()
             .HasQueryFilter(snapshot =>
-                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<DealRiskScoreSnapshot>()
             .HasQueryFilter(snapshot =>
-                CurrentCompanyId.HasValue && snapshot.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportCase>()
             .HasQueryFilter(supportCase =>
-                CurrentCompanyId.HasValue && supportCase.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && supportCase.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportMessage>()
             .HasQueryFilter(message =>
-                CurrentCompanyId.HasValue && message.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && message.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportCaseEvent>()
             .HasQueryFilter(supportEvent =>
-                CurrentCompanyId.HasValue && supportEvent.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && supportEvent.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportCaseAssignment>()
             .HasQueryFilter(assignment =>
-                CurrentCompanyId.HasValue && assignment.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && assignment.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportSlaPolicy>()
             .HasQueryFilter(policy =>
-                CurrentCompanyId.HasValue && policy.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && policy.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportCaseResolution>()
             .HasQueryFilter(resolution =>
-                CurrentCompanyId.HasValue && resolution.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && resolution.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportReplyDraft>()
             .HasQueryFilter(draft =>
-                CurrentCompanyId.HasValue && draft.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && draft.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportRefundRequest>()
             .HasQueryFilter(refund =>
-                CurrentCompanyId.HasValue && refund.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && refund.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportKnowledgeGap>()
             .HasQueryFilter(gap =>
-                CurrentCompanyId.HasValue && gap.CompanyId == CurrentCompanyId.Value);
+                CurrentCompanyId != null && gap.CompanyId == CurrentCompanyId);
+    }
+
+    private void ApplySqliteCompatibilityMappings(ModelBuilder modelBuilder)
+    {
+        if (!string.Equals(Database.ProviderName, "Microsoft.EntityFrameworkCore.Sqlite", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        foreach (var property in modelBuilder.Model.GetEntityTypes().SelectMany(entity => entity.GetProperties()))
+        {
+            if (string.Equals(property.GetColumnType(), "nvarchar(max)", StringComparison.OrdinalIgnoreCase))
+            {
+                property.SetColumnType("TEXT");
+            }
+
+            var defaultValueSql = property.GetDefaultValueSql();
+            if (defaultValueSql?.StartsWith("N'", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                property.SetDefaultValueSql(defaultValueSql[1..]);
+            }
+        }
+
+        modelBuilder.Entity<DealIntelligenceSignal>().ToTable(table =>
+            table.HasCheckConstraint(
+                "CK_deal_intelligence_signals_explanation_required",
+                "LENGTH(TRIM(explanation)) > 0"));
     }
 }

@@ -103,7 +103,7 @@ public sealed class FortnoxWriteApprovalTests
     {
         var writeRequestId = Guid.NewGuid();
 
-        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), "correlation-1", Guid.NewGuid(), Guid.NewGuid(), writeRequestId, retryExternalFailures: false);
+        var context = new FortnoxRequestContext(Guid.NewGuid(), Guid.NewGuid(), "correlation-1", Guid.NewGuid(), Guid.NewGuid(), writeRequestId, RetryExternalFailures: false);
 
         Assert.Equal(writeRequestId, context.WriteRequestId);
         Assert.False(context.RetryExternalFailures);

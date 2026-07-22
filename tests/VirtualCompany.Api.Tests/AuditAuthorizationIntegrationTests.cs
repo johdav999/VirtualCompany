@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AuditAuthorizationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AuditAuthorizationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AuditAuthorizationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Audit_list_and_detail_allow_manager_in_current_company()

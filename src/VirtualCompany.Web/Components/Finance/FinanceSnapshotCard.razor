@@ -1,64 +1,63 @@
-@using System.Globalization
 @using VirtualCompany.Web.Services
 @inject NavigationManager Navigation
 
 <article class="wizard-card finance-snapshot-card" data-testid="finance-snapshot-card">
     <div class="cockpit-card__header">
         <div>
-            <span class="dashboard-kicker">Finance snapshot</span>
-            <h4 class="h6 mt-2 mb-1">Decision-ready cash view</h4>
-            <p class="text-body-secondary mb-0">Live cash, receivables, and payables for the active company.</p>
+            <span class="dashboard-kicker">@FinanceText["FinanceSnapshot"]</span>
+            <h4 class="h6 mt-2 mb-1">@FinanceText["DecisionReadyCashView"]</h4>
+            <p class="text-body-secondary mb-0">@FinanceText["SnapshotDescription"]</p>
         </div>
     </div>
 
     @if (Snapshot is null || !Snapshot.HasFinanceData)
     {
         <div class="finance-snapshot-card__empty mt-3" data-testid="finance-snapshot-empty">
-            <p class="text-body-secondary mb-3">Finance data is missing or incomplete for this workspace.</p>
+            <p class="text-body-secondary mb-3">@FinanceText["FinanceDataMissing"]</p>
             <a class="btn btn-primary"
                data-testid="connect-accounting-cta"
                href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month")"
                @onclick="NavigateToFinanceHomeAsync"
-               @onclick:preventDefault="true">Connect accounting</a>
+               @onclick:preventDefault="true">@FinanceText["ConnectAccounting"]</a>
         </div>
     }
     else
     {
         <div class="finance-snapshot-card__grid mt-3">
             <section class="finance-snapshot-card__metric">
-                <div class="dashboard-kicker">Current cash balance</div>
+                <div class="dashboard-kicker">@FinanceText["CurrentCashBalance"]</div>
                 <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-cash-position">@FormatCurrency(Snapshot.CurrentCashBalance, Snapshot.Currency)</strong>
             </section>
             <section class="finance-snapshot-card__metric">
-                <div class="dashboard-kicker">Expected incoming cash</div>
+                <div class="dashboard-kicker">@FinanceText["ExpectedIncomingCash"]</div>
                 <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-expected-incoming-cash">@FormatCurrency(Snapshot.ExpectedIncomingCash, Snapshot.Currency)</strong>
             </section>
             <section class="finance-snapshot-card__metric">
-                <div class="dashboard-kicker">Expected outgoing cash</div>
+                <div class="dashboard-kicker">@FinanceText["ExpectedOutgoingCash"]</div>
                 <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-expected-outgoing-cash">@FormatCurrency(Snapshot.ExpectedOutgoingCash, Snapshot.Currency)</strong>
             </section>
             <section class="finance-snapshot-card__metric">
-                <div class="dashboard-kicker">Overdue receivables</div>
+                <div class="dashboard-kicker">@FinanceText["OverdueReceivables"]</div>
                 <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-overdue-receivables">@FormatCurrency(Snapshot.OverdueReceivables, Snapshot.Currency)</strong>
             </section>
             <section class="finance-snapshot-card__metric">
-                <div class="dashboard-kicker">Upcoming payables</div>
+                <div class="dashboard-kicker">@FinanceText["UpcomingPayables"]</div>
                 <strong class="finance-snapshot-card__value" data-testid="executive-cockpit-upcoming-payables">@FormatCurrency(Snapshot.UpcomingPayables, Snapshot.Currency)</strong>
             </section>
         </div>
         <p class="text-body-secondary mt-3 mb-0">
-            As of @Snapshot.AsOfUtc.ToLocalTime():g.
+            As of @LocalDateTime.DateTime(Snapshot.AsOfUtc).
             Upcoming window: next @Snapshot.UpcomingWindowDays day(s).
         </p>
         <div class="dashboard-actions mt-3">
             <a class="btn btn-sm btn-outline-primary"
                href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.CashPosition, "view-cash-position", "this-month")"
                @onclick="NavigateToCashPositionAsync"
-               @onclick:preventDefault="true">Open cash position</a>
+               @onclick:preventDefault="true">@FinanceText["OpenCashPosition"]</a>
             <a class="btn btn-sm btn-outline-secondary"
                href="@DashboardRoutes.BuildFinancePath(CompanyId, FinanceRoutes.Home, "open-workspace", "this-month")"
                @onclick="NavigateToFinanceHomeAsync"
-               @onclick:preventDefault="true">Open finance workspace</a>
+               @onclick:preventDefault="true">@FinanceText["OpenFinanceWorkspace"]</a>
         </div>
     }
 </article>
@@ -71,8 +70,7 @@
     public DashboardFinanceSnapshotViewModel? Snapshot { get; set; }
     [Parameter] public EventCallback<DashboardActionTelemetryContext> OnActionClick { get; set; }
 
-    private static string FormatCurrency(decimal amount, string currency) =>
-        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
 
     private async Task NavigateToFinanceHomeAsync()
     {

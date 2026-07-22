@@ -1,5 +1,7 @@
+@using System.Globalization
+@inject IStringLocalizer<CommonResources> CommonText
 <!DOCTYPE html>
-<html lang="en">
+<html lang="@CultureInfo.CurrentUICulture.Name">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
@@ -17,12 +19,13 @@
             <FocusOnNavigate RouteData="@routeData" Selector="h1" />
         </Found>
         <NotFound>
-            <PageTitle>Not found</PageTitle>
+            <PageTitle>@CommonText["NotFoundPageTitle"]</PageTitle>
             <LayoutView Layout="@typeof(MainLayout)">
-                <p role="alert">Sorry, there's nothing at this address.</p>
+                <p role="alert">@CommonText["NotFoundMessage"]</p>
             </LayoutView>
         </NotFound>
     </Router>
     <script src="_framework/blazor.web.js"></script>
+    <script src="js/localization.js"></script>
 </body>
 </html>

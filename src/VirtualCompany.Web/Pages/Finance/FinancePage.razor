@@ -2,27 +2,27 @@
 @rendermode InteractiveServer
 @inherits FinancePageBase
 
-<PageTitle>Finance</PageTitle>
+<PageTitle>@FinanceText["FinanceModule"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Finance"
-    Description="Review cash, receivables, payables, and the next finance actions for the active company."
-    LoadingMessage="Loading finance overview..."
+    Title="@FinanceText["FinanceModule"]"
+    Description="@FinanceText["FinanceOverviewDescription"]"
+    LoadingMessage="@FinanceText["LoadingFinanceOverview"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <FinanceDataState
         IsLoading="@IsOverviewLoading"
         IsEmpty="@IsOverviewEmpty"
         ErrorMessage="@OverviewErrorMessage"
-        LoadingTitle="Loading finance overview"
-        LoadingMessage="Reading cash, invoices, bills, payments, and exceptions."
-        EmptyTitle="No finance activity yet"
-        EmptyMessage="Connect finance data or import bills and invoices to start seeing the operating dashboard."
-        ErrorTitle="Finance overview is unavailable"
-        RetryText="Reload overview"
+        LoadingTitle="@FinanceText["LoadingFinanceOverview"]"
+        LoadingMessage="@FinanceText["ReadingFinanceOverview"]"
+        EmptyTitle="@FinanceText["NoFinanceActivity"]"
+        EmptyMessage="@FinanceText["NoFinanceActivityDescription"]"
+        ErrorTitle="@FinanceText["FinanceOverviewUnavailable"]"
+        RetryText="@FinanceText["ReloadFinanceOverview"]"
         OnRetry="@ReloadOverviewAsync">
         @if (Overview is not null)
         {

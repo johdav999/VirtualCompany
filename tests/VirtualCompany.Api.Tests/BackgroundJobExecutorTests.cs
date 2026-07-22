@@ -3,6 +3,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Application.Workflows;
+using VirtualCompany.Application.Mailbox;
 using Xunit;
 using Xunit.Sdk;
 
@@ -246,6 +247,26 @@ public sealed class BackgroundJobExecutorTests
 
         Assert.Equal(BackgroundJobFailureClassification.RateLimited, classification);
         Assert.True(classification.IsRetryable());
+    }
+
+    [Fact]
+    public void Classifier_never_retries_ambiguous_mail_delivery_but_retries_transient_mail_failures()
+    {
+        var classifier = new DefaultBackgroundJobFailureClassifier();
+
+        var ambiguous = classifier.Classify(new MailboxProviderExecutionException(
+            "smtp_delivery_ambiguous",
+            "Delivery could not be confirmed.",
+            false));
+        var transient = classifier.Classify(new MailboxProviderExecutionException(
+            "mail_server_unavailable",
+            "Mail server unavailable.",
+            true));
+
+        Assert.Equal(BackgroundJobFailureClassification.PermanentBusinessRule, ambiguous);
+        Assert.False(ambiguous.IsRetryable());
+        Assert.Equal(BackgroundJobFailureClassification.ExternalDependencyUnavailable, transient);
+        Assert.True(transient.IsRetryable());
     }
 
     [Fact]

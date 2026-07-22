@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class TaskLifecycleIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class TaskLifecycleIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public TaskLifecycleIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Create_task_with_valid_agent_returns_tenant_scoped_detail()

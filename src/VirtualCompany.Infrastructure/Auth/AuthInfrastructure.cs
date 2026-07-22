@@ -305,16 +305,16 @@ public sealed class RequestCompanyContextAccessor : ICompanyContextAccessor
 public sealed class UserClaimsTransformation : IClaimsTransformation
 {
     private readonly VirtualCompanyDbContext _dbContext;
-    private readonly IExternalUserIdentityAccessor _externalUserIdentityAccessor;
+    private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
     private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
 
     public UserClaimsTransformation(
         VirtualCompanyDbContext dbContext,
-        IExternalUserIdentityAccessor externalUserIdentityAccessor,
+        ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory,
         IExternalUserIdentityResolver externalUserIdentityResolver)
     {
         _dbContext = dbContext;
-        _externalUserIdentityAccessor = externalUserIdentityAccessor;
+        _externalUserIdentityFactory = externalUserIdentityFactory;
         _externalUserIdentityResolver = externalUserIdentityResolver;
     }
 
@@ -330,7 +330,7 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
             return principal;
         }
 
-        var externalIdentity = _externalUserIdentityAccessor.GetCurrentIdentity();
+        var externalIdentity = _externalUserIdentityFactory.Create(principal);
         if (externalIdentity is null)
         {
             return principal;

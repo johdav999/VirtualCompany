@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancialStatementMappingsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancialStatementMappingsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task List_endpoint_returns_only_requested_company_mappings()
@@ -410,13 +407,15 @@ public sealed class FinancialStatementMappingsIntegrationTests : IClassFixture<T
         public string Detail { get; set; } = string.Empty;
         public int Status { get; set; }
         public string Code { get; set; } = string.Empty;
-        public JsonElement Errors { get; set; }
+        [System.Text.Json.Serialization.JsonPropertyName("errors")]
+        public JsonElement RawErrors { get; set; }
 
         public IReadOnlyList<FinancialStatementMappingProblemErrorResponse> ErrorsList =>
-            Errors.ValueKind != JsonValueKind.Array
+            RawErrors.ValueKind != JsonValueKind.Array
                 ? []
-                : Errors.Deserialize<List<FinancialStatementMappingProblemErrorResponse>>() ?? [];
+                : RawErrors.Deserialize<List<FinancialStatementMappingProblemErrorResponse>>(new JsonSerializerOptions(JsonSerializerDefaults.Web)) ?? [];
 
+        [System.Text.Json.Serialization.JsonIgnore]
         public IReadOnlyList<FinancialStatementMappingProblemErrorResponse> Errors =>
             ErrorsList;
     }

@@ -7,10 +7,11 @@ using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesSourceModelTests : IClassFixture<TestWebApplicationFactory>
+public sealed class SalesSourceModelTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
-    public SalesSourceModelTests(TestWebApplicationFactory factory) => _factory = factory;
+    private readonly TestWebApplicationFactory _factory = new();
+
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Records_first_last_conversion_and_cost_without_cross_tenant_reads()

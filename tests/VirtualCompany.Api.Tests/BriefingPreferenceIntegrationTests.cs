@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class BriefingPreferenceIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public BriefingPreferenceIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Authenticated_user_can_save_and_fetch_preferences()
@@ -290,7 +287,7 @@ public sealed class BriefingPreferenceIntegrationTests : IClassFixture<TestWebAp
         await _factory.SeedAsync(dbContext =>
         {
             dbContext.Agents.Add(new Agent(agentId, seed.CompanyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
-            var criticalAlert = new Alert(Guid.NewGuid(), seed.CompanyId, AlertType.Risk, AlertSeverity.Critical, "Critical margin risk", "Margin risk needs attention.", [], "pref-critical-alert", $"pref-critical-alert:{seed.CompanyId:N}", AlertStatus.Open);
+            var criticalAlert = new Alert(Guid.NewGuid(), seed.CompanyId, AlertType.Risk, AlertSeverity.Critical, "Critical margin risk", "Margin risk needs attention.", new Dictionary<string, JsonNode?>(), "pref-critical-alert", $"pref-critical-alert:{seed.CompanyId:N}", AlertStatus.Open);
             dbContext.Alerts.Add(criticalAlert);
             var blockedTask = new WorkTask(Guid.NewGuid(), seed.CompanyId, "briefing", "Blocked vendor renewal", null, WorkTaskPriority.High, agentId, null, "user", seed.UserId);
             blockedTask.UpdateStatus(WorkTaskStatus.Blocked);

@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesPersistenceTenantIsolationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class SalesPersistenceTenantIsolationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public SalesPersistenceTenantIsolationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Sales_pipeline_stage_seed_contains_only_system_stages_once()

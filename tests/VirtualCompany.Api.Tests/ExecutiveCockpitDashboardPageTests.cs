@@ -438,6 +438,52 @@ public sealed class ExecutiveCockpitDashboardPageTests
             }
         };
 
+    private static ExecutiveCockpitFinanceViewModel CreateFinanceSection(
+        Guid companyId,
+        Guid alertId,
+        Guid invoiceId,
+        Guid transactionId,
+        string status,
+        string statusLabel,
+        string runwayDisplay) =>
+        new()
+        {
+            CashPosition = new ExecutiveCockpitFinanceCashWidgetViewModel
+            {
+                Amount = 125400.25m,
+                Currency = "USD",
+                DisplayValue = "USD 125,400.25",
+                TrendDisplay = "Stable",
+                LastRefreshedUtc = CashLastRefreshedUtc,
+                Route = $"/finance/cash-position?companyId={companyId:D}"
+            },
+            Runway = new ExecutiveCockpitFinanceRunwayWidgetViewModel
+            {
+                DisplayValue = runwayDisplay,
+                Status = status,
+                StatusLabel = statusLabel,
+                Route = $"/finance/cash-position?companyId={companyId:D}"
+            },
+            LowCashAlert = new ExecutiveCockpitFinanceAlertDetailViewModel
+            {
+                AlertId = alertId,
+                Summary = "Cash runway needs review.",
+                Severity = status,
+                Route = $"/finance/cash-position?companyId={companyId:D}"
+            },
+            AvailableActions =
+            [
+                new() { Key = "review_invoice", Label = "Review invoice", IsEnabled = true, TargetId = invoiceId, OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow", HttpMethod = "POST" },
+                new() { Key = "inspect_anomaly", Label = "Inspect anomaly", IsEnabled = true, TargetId = transactionId, OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/transactions/{transactionId:D}/anomaly-evaluation", HttpMethod = "POST" },
+                new() { Key = "view_cash_position", Label = "View cash position", IsEnabled = true, OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/cash-position/evaluation", HttpMethod = "POST" }
+            ]
+        };
+
+    private static HttpResponseMessage CreateJsonResponse<T>(T value) =>
+        new(HttpStatusCode.OK) { Content = JsonContent.Create(value) };
+
+    private static HttpResponseMessage CreateNotFoundResponse() => new(HttpStatusCode.NotFound);
+
     private static DashboardFinanceSnapshotViewModel CreateFinanceSnapshot(Guid companyId, string runwayStatus) =>
         runwayStatus == "missing"
             ? new DashboardFinanceSnapshotViewModel
@@ -474,4 +520,21 @@ public sealed class ExecutiveCockpitDashboardPageTests
                 RiskLevel = runwayStatus,
                 HasFinanceData = true
             };
+
+    private sealed record CapturedFinanceRequest(string Path, string? CompanyHeaderValue);
+
+    private sealed class AsyncStubHttpMessageHandler(
+        Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handler) : HttpMessageHandler
+    {
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) =>
+            handler(request, cancellationToken);
+    }
+
+    private sealed record DashboardHarness(
+        TestContext Context,
+        FakeNavigationManager Navigation,
+        List<CapturedFinanceRequest> FinanceRequests) : IDisposable
+    {
+        public void Dispose() => Context.Dispose();
+    }
 }

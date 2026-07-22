@@ -12,6 +12,7 @@ namespace VirtualCompany.Api.Controllers;
 [RequireCompanyContext]
 public sealed class AlertsController : ControllerBase
 {
+    private const string GetAlertByIdRouteName = "GetCompanyAlertById";
     private readonly ICompanyAlertService _alerts;
 
     public AlertsController(ICompanyAlertService alerts)
@@ -26,7 +27,7 @@ public sealed class AlertsController : ControllerBase
         {
             var result = await _alerts.CreateAsync(companyId, command, cancellationToken);
             return result.Created
-                ? CreatedAtAction(nameof(GetByIdAsync), new { companyId, alertId = result.Alert.Id }, result)
+                ? CreatedAtRoute(GetAlertByIdRouteName, new { companyId, alertId = result.Alert.Id }, result)
                 : Ok(result);
         }
         catch (AlertValidationException ex)
@@ -46,7 +47,7 @@ public sealed class AlertsController : ControllerBase
         {
             var result = await _alerts.CreateOrDeduplicateFromDetectionAsync(companyId, command, cancellationToken);
             return result.Created
-                ? CreatedAtAction(nameof(GetByIdAsync), new { companyId, alertId = result.Alert.Id }, result)
+                ? CreatedAtRoute(GetAlertByIdRouteName, new { companyId, alertId = result.Alert.Id }, result)
                 : Ok(result);
         }
         catch (AlertValidationException ex)
@@ -59,7 +60,7 @@ public sealed class AlertsController : ControllerBase
         }
     }
 
-    [HttpGet("{alertId:guid}")]
+    [HttpGet("{alertId:guid}", Name = GetAlertByIdRouteName)]
     public async Task<ActionResult<AlertDto>> GetByIdAsync(Guid companyId, Guid alertId, CancellationToken cancellationToken)
     {
         try

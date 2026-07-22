@@ -1,0 +1,9 @@
+global using Xunit;
+global using VirtualCompany.Application.Auth;
+global using VirtualCompany.Application.Finance;
+global using VirtualCompany.Application.Companies;
+global using VirtualCompany.Application.Context;
+global using VirtualCompany.Infrastructure.Finance;
+global using VirtualCompany.Infrastructure.Context;
+global using VirtualCompany.Infrastructure.Persistence;
+global using VirtualCompany.Web.Services;

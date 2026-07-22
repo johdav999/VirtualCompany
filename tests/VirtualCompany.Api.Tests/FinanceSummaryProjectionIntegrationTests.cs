@@ -9,16 +9,13 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
 {
     private static readonly DateTime ScenarioAsOfUtc = new(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc);
 
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceSummaryProjectionIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task GetFinanceSummary_ReturnsDeterministicPointInTimeProjection_AndUsesSimulationClockByDefault()
@@ -505,6 +502,14 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
         public List<FinanceSummaryConsistencyMetricResponse> Metrics { get; set; } = [];
     }
 
+    private sealed class FinanceSummaryConsistencyMetricResponse
+    {
+        public string MetricKey { get; set; } = string.Empty;
+        public decimal ExpectedValue { get; set; }
+        public decimal ActualValue { get; set; }
+        public bool IsMatch { get; set; }
+    }
+
     private sealed class FinanceIntelligenceResponse
     {
         public DateTime AsOfUtc { get; set; }
@@ -581,4 +586,3 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IClassFixture<Tes
         public string ScoringFactors { get; set; } = string.Empty;
     }
 }
-END_OF_PATCH

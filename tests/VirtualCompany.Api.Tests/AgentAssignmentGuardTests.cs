@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AgentAssignmentGuardTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AgentAssignmentGuardTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AgentAssignmentGuardTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Active_agents_can_still_be_selected_for_new_task_assignment()

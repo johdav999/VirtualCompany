@@ -94,6 +94,50 @@ public sealed class KnowledgeAccessPolicyEvaluatorTests
         Assert.True(allowed);
     }
 
+    [Fact]
+    public void Manager_can_manage_data_scoped_document_without_data_scope_context()
+    {
+        var companyId = Guid.NewGuid();
+        var document = CreateDocument(
+            companyId,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["data_scopes"] = new JsonArray("knowledge", "company_information")
+            });
+        var accessContext = new CompanyKnowledgeAccessContext(
+            companyId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "manager",
+            Array.Empty<string>());
+
+        var allowed = _evaluator.CanAccess(accessContext, document);
+
+        Assert.True(allowed);
+    }
+
+    [Fact]
+    public void Employee_without_matching_data_scope_cannot_access_data_scoped_document()
+    {
+        var companyId = Guid.NewGuid();
+        var document = CreateDocument(
+            companyId,
+            new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            {
+                ["data_scopes"] = new JsonArray("knowledge", "company_information")
+            });
+        var accessContext = new CompanyKnowledgeAccessContext(
+            companyId,
+            Guid.NewGuid(),
+            Guid.NewGuid(),
+            "employee",
+            Array.Empty<string>());
+
+        var allowed = _evaluator.CanAccess(accessContext, document);
+
+        Assert.False(allowed);
+    }
+
     private static CompanyKnowledgeDocument CreateDocument(
         Guid companyId,
         Dictionary<string, JsonNode?>? accessScopeProperties = null)

@@ -12,14 +12,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AgentStatusAggregationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AgentStatusAggregationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AgentStatusAggregationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public void Health_calculator_returns_healthy_warning_and_critical_from_explicit_thresholds()

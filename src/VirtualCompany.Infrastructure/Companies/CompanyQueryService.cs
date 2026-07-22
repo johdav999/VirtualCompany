@@ -51,10 +51,25 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
             return null;
         }
 
-        return await _dbContext.Users.AsNoTracking()
+        var user = await _dbContext.Users.AsNoTracking()
             .Where(x => x.Id == resolvedUserId)
-            .Select(x => new CurrentUserDto(x.Id, x.Email, x.DisplayName, x.AuthProvider, x.AuthSubject))
+            .Select(x => new CurrentUserDto(x.Id, x.Email, x.DisplayName, x.AuthProvider, x.AuthSubject, null, null))
             .SingleOrDefaultAsync(cancellationToken);
+        if (user is null)
+        {
+            return null;
+        }
+
+        var preference = await _dbContext.UserPreferences.AsNoTracking()
+            .Where(x => x.UserId == resolvedUserId)
+            .Select(x => new { x.UiCulture, x.FormattingCulture })
+            .SingleOrDefaultAsync(cancellationToken);
+
+        return user with
+        {
+            UiCulture = preference?.UiCulture,
+            FormattingCulture = preference?.FormattingCulture
+        };
     }
 
     public async Task<CurrentUserContextDto?> GetCurrentUserContextAsync(CancellationToken cancellationToken)
@@ -117,7 +132,9 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.CompanyId,
                 x.Company.Name,
                 x.Role,
-                x.Status))
+                x.Status,
+                x.Company.Timezone,
+                x.Company.Currency))
             .SingleOrDefaultAsync(cancellationToken);
     }
 
@@ -320,5 +337,5 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
 
     private static ResolvedCompanyContextDto ToResolvedCompanyContext(ResolvedCompanyMembershipContext membership) =>
-        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status);
+        new(membership.MembershipId, membership.CompanyId, membership.CompanyName, membership.MembershipRole, membership.Status, membership.Timezone, membership.Currency);
 }

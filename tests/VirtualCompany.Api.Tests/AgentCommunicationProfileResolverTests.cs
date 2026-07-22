@@ -36,7 +36,7 @@ public sealed class AgentCommunicationProfileResolverTests
         var logger = new CapturingLogger<AgentCommunicationProfileResolver>();
         var resolver = new AgentCommunicationProfileResolver(new DefaultAgentCommunicationProfileProvider(), logger);
 
-        var result = resolver.Resolve([], CreateContext());
+        var result = resolver.Resolve(new Dictionary<string, JsonNode?>(), CreateContext());
 
         Assert.True(result.IsFallback);
         Assert.Equal(AgentCommunicationProfileSources.Fallback, result.ProfileSource);

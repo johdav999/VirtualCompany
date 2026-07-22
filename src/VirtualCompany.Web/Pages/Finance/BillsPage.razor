@@ -5,48 +5,48 @@
 @rendermode InteractiveServer
 @inherits FinancePageBase
 
-<PageTitle>Supplier bills</PageTitle>
+<PageTitle>@FinanceText["SupplierBills"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Supplier bills"
-    Description="Review supplier bills, due dates, payment status, and follow-up actions."
-    LoadingMessage="Loading bills..."
+    Title="@FinanceText["SupplierBills"]"
+    Description="@FinanceText["SupplierBillsDescription"]"
+    LoadingMessage="@FinanceText["LoadingBills"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <section class="bills-dashboard" aria-labelledby="bills-heading">
         <div class="finance-overview-header">
             <div>
-                <span class="finance-overview-kicker">Finance module</span>
-                <h1 id="bills-heading" class="finance-overview-title">Supplier bills</h1>
-                <p class="finance-overview-subtitle">Review supplier bills, due dates, payment status, and follow-up actions.</p>
+                <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                <h1 id="bills-heading" class="finance-overview-title">@FinanceText["SupplierBills"]</h1>
+                <p class="finance-overview-subtitle">@FinanceText["SupplierBillsDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
-                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>
 
         <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
 
-        <div class="finance-subtab-nav" aria-label="Supplier bill sections">
-            <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">Bills</a>
-            <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">Review</a>
+        <div class="finance-subtab-nav" aria-label="@FinanceText["SupplierBillSections"]">
+            <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">@FinanceText["Bills"]</a>
+            <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">@FinanceText["Review"]</a>
         </div>
 
         <div class="bills-layout">
             <article class="bill-list-card">
                 <div class="bill-list-card__header">
                     <div>
-                        <h2>Bill list</h2>
-                        <p>Review supplier bills, amounts, due dates, and payment status.</p>
+                        <h2>@FinanceText["BillList"]</h2>
+                        <p>@FinanceText["BillListDescription"]</p>
                     </div>
-                    <span>@FilteredBills.Count item@(FilteredBills.Count == 1 ? string.Empty : "s")</span>
+                    <span>@CommonText[FilteredBills.Count == 1 ? "ItemCountOne" : "ItemCountMany", FilteredBills.Count]</span>
                 </div>
 
-                <div class="bill-filter-bar" aria-label="Supplier bill filters">
+                <div class="bill-filter-bar" aria-label="@FinanceText["BillFilters"]">
                     @foreach (var filter in BillFilters)
                     {
                         <button
@@ -63,10 +63,10 @@
                     IsLoading="@IsListLoading"
                     IsEmpty="@IsListEmpty"
                     ErrorMessage="@ListErrorMessage"
-                    LoadingTitle="Loading bills"
-                    LoadingMessage="Fetching bills."
-                    EmptyTitle="No bills available"
-                    EmptyMessage="No supplier bills match this filter."
+                    LoadingTitle="@FinanceText["LoadingBills"]"
+                    LoadingMessage="@FinanceText["FetchingBills"]"
+                    EmptyTitle="@FinanceText["NoBills"]"
+                    EmptyMessage="@FinanceText["NoBillsDescription"]"
                     OnRetry="@ReloadAsync">
                     <div class="bill-list">
                         @foreach (var bill in BillItems)
@@ -96,18 +96,18 @@
             <aside class="bill-detail-card">
                 @if (IsDetailLoading)
                 {
-                    <FinanceLoadingState Title="Loading bill detail" Message="Opening the selected bill." />
+                    <FinanceLoadingState Title="@FinanceText["LoadingBillDetail"]" Message="@FinanceText["OpeningBill"]" />
                 }
                 else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                 {
-                    <FinanceErrorState Title="Bill detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    <FinanceErrorState Title="@FinanceText["BillDetailUnavailable"]" Message="@(DetailErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@ReloadAsync" />
                 }
                 else if (SelectedBill is null)
                 {
                     <div class="bill-detail-empty">
                         <div class="bill-detail-empty__icon" aria-hidden="true">doc</div>
-                        <h2>No bill selected</h2>
-                        <p>Select a bill to see details.</p>
+                        <h2>@FinanceText["NoBillSelected"]</h2>
+                        <p>@FinanceText["SelectBill"]</p>
                     </div>
                 }
                 else if (SelectedBillDisplay is { } detail)
@@ -130,30 +130,30 @@
                         <div class="bill-detail-panel__amount">@detail.DisplayAmount</div>
 
                         <dl class="bill-detail-list">
-                            <div><dt>Supplier</dt><dd>@detail.DisplaySupplierName</dd></div>
-                            <div><dt>Received date</dt><dd>@detail.DisplayReceivedDate</dd></div>
-                            <div><dt>Due date</dt><dd>@detail.DisplayDueDate</dd></div>
-                            <div><dt>Document type</dt><dd>@detail.DocumentKindLabel</dd></div>
-                            <div><dt>Lifecycle status</dt><dd>@detail.FriendlyStatusLabel</dd></div>
+                            <div><dt>@FinanceText["Supplier"]</dt><dd>@detail.DisplaySupplierName</dd></div>
+                            <div><dt>@FinanceText["ReceivedDate"]</dt><dd>@detail.DisplayReceivedDate</dd></div>
+                            <div><dt>@FinanceText["DueDate"]</dt><dd>@detail.DisplayDueDate</dd></div>
+                            <div><dt>@FinanceText["DocumentType"]</dt><dd>@detail.DocumentKindLabel</dd></div>
+                            <div><dt>@FinanceText["LifecycleStatus"]</dt><dd>@detail.FriendlyStatusLabel</dd></div>
                             @if (detail.PaymentSummary is not null)
                             {
-                                <div><dt>Payment details</dt><dd>@detail.PaymentSummary.Summary</dd></div>
+                                <div><dt>@FinanceText["PaymentDetails"]</dt><dd>@detail.PaymentSummary.Summary</dd></div>
                             }
                             @if (!string.IsNullOrWhiteSpace(detail.ReviewBadgeLabel))
                             {
-                                <div><dt>Flag status</dt><dd>@detail.ReviewBadgeLabel</dd></div>
+                                <div><dt>@FinanceText["FlagStatus"]</dt><dd>@detail.ReviewBadgeLabel</dd></div>
                             }
-                            <div><dt>Approval status</dt><dd>@detail.ApprovalStatus</dd></div>
+                            <div><dt>@FinanceText["ApprovalStatus"]</dt><dd>@detail.ApprovalStatus</dd></div>
                         </dl>
 
                         <section class="bill-detail-section">
-                            <h3>Follow-up</h3>
+                            <h3>@FinanceText["FollowUp"]</h3>
                             <p>@detail.WarningSummary</p>
                         </section>
 
                         <section class="bill-detail-section">
                             <div class="bill-detail-section__header">
-                                <h3>Laura enrichment</h3>
+                                <h3>@FinanceText["LauraEnrichment"]</h3>
                                 <span class="@($"bill-status-badge bill-status-badge--{detail.Enrichment.StatusTone}")">@detail.Enrichment.StatusLabel</span>
                             </div>
                             <p>@detail.Enrichment.Description</p>
@@ -187,7 +187,7 @@
                                         class="btn btn-secondary"
                                         disabled="@IsEnrichmentSubmitting"
                                         @onclick="SuggestEnrichmentAsync">
-                                        @(IsEnrichmentSubmitting ? "Working..." : "Ask Laura to enrich")
+                                        @(IsEnrichmentSubmitting ? FinanceText["Working"] : FinanceText["AskLauraEnrich"])
                                     </button>
                                 }
                                 @if (detail.Enrichment.CanSync)
@@ -197,7 +197,7 @@
                                         class="btn btn-primary"
                                         disabled="@IsEnrichmentSyncSubmitting"
                                         @onclick="SyncEnrichmentAsync">
-                                        @(IsEnrichmentSyncSubmitting ? "Working..." : "Sync approved changes to Fortnox")
+                                        @(IsEnrichmentSyncSubmitting ? FinanceText["Working"] : FinanceText["SyncFortnox"])
                                     </button>
                                 }
                                 @if (detail.Enrichment.CanReconcile)
@@ -207,7 +207,7 @@
                                         class="btn btn-secondary"
                                         disabled="@IsReconciliationSubmitting"
                                         @onclick="ReconcileSupplierInvoiceAsync">
-                                        @(IsReconciliationSubmitting ? "Working..." : "Refresh reconciliation")
+                                        @(IsReconciliationSubmitting ? FinanceText["Working"] : FinanceText["RefreshReconciliation"])
                                     </button>
                                 }
                             </div>
@@ -219,19 +219,19 @@
                                 <dl class="bill-detail-list bill-source-detail-list">
                                     @if (!string.IsNullOrWhiteSpace(detail.Enrichment.ProviderKey))
                                     {
-                                        <div><dt>Provider</dt><dd>@detail.Enrichment.ProviderKey</dd></div>
+                                        <div><dt>@FinanceText["Provider"]</dt><dd>@detail.Enrichment.ProviderKey</dd></div>
                                     }
                                     @if (detail.Enrichment.RequestedUtc is not null)
                                     {
-                                        <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.Enrichment.RequestedUtc.Value)</dd></div>
+                                        <div><dt>@FinanceText["Requested"]</dt><dd>@FormatFriendlyDate(detail.Enrichment.RequestedUtc.Value)</dd></div>
                                     }
                                     @if (detail.Enrichment.ApprovedUtc is not null)
                                     {
-                                        <div><dt>Approved</dt><dd>@FormatFriendlyDate(detail.Enrichment.ApprovedUtc.Value)</dd></div>
+                                        <div><dt>@FinanceText["Approved"]</dt><dd>@FormatFriendlyDate(detail.Enrichment.ApprovedUtc.Value)</dd></div>
                                     }
                                     @if (detail.Enrichment.SyncedUtc is not null)
                                     {
-                                        <div><dt>Synced</dt><dd>@FormatFriendlyDate(detail.Enrichment.SyncedUtc.Value)</dd></div>
+                                        <div><dt>@FinanceText["Synced"]</dt><dd>@FormatFriendlyDate(detail.Enrichment.SyncedUtc.Value)</dd></div>
                                     }
                                 </dl>
                             }
@@ -243,7 +243,7 @@
 
                         <section class="bill-detail-section">
                             <div class="bill-detail-section__header">
-                                <h3>Payment proposal</h3>
+                                <h3>@FinanceText["PaymentProposal"]</h3>
                                 @if (detail.PaymentProposal is not null)
                                 {
                                     <span class="@($"bill-status-badge bill-status-badge--{detail.PaymentProposal.StatusTone}")">@detail.PaymentProposal.StatusLabel</span>
@@ -254,19 +254,19 @@
                             {
                                 <p>@proposal.Description</p>
                                 <dl class="bill-detail-list bill-source-detail-list">
-                                    <div><dt>Amount</dt><dd>@proposal.DisplayAmount</dd></div>
-                                    <div><dt>Due date</dt><dd>@proposal.DisplayDueDate</dd></div>
-                                    <div><dt>Payment reference</dt><dd>@proposal.PaymentReference</dd></div>
+                                    <div><dt>@FinanceText["Amount"]</dt><dd>@proposal.DisplayAmount</dd></div>
+                                    <div><dt>@FinanceText["DueDate"]</dt><dd>@proposal.DisplayDueDate</dd></div>
+                                    <div><dt>@FinanceText["PaymentReference"]</dt><dd>@proposal.PaymentReference</dd></div>
                                 </dl>
 
                                 <div class="bill-payment-export-action">
                                     <div class="bill-detail-section__header">
-                                        <h4>Payment export</h4>
+                                        <h4>@FinanceText["PaymentExport"]</h4>
                                         <span class="@($"bill-status-badge bill-status-badge--{proposal.ExportTone}")">@proposal.ExportLabel</span>
                                     </div>
                                     @if (proposal.CanExport)
                                     {
-                                        <p>Choose how to move this approved payment forward. No bank payment is initiated automatically.</p>
+                                        <p>@FinanceText["PaymentExportChoice"]</p>
                                         @if (proposal.CanPreparePaymentFile)
                                         {
                                             <button
@@ -274,7 +274,7 @@
                                                 class="btn btn-primary"
                                                 disabled="@IsPaymentExportSubmitting"
                                                 @onclick="@(() => ExportPaymentInstructionAsync("prepare_payment_file"))">
-                                                @(IsPaymentExportSubmitting ? "Working..." : "Prepare payment file in Fortnox")
+                                                @(IsPaymentExportSubmitting ? FinanceText["Working"] : FinanceText["PreparePaymentFile"])
                                             </button>
                                         }
                                         @if (proposal.CanRegisterPayment)
@@ -284,7 +284,7 @@
                                                 class="@($"btn {(proposal.CanPreparePaymentFile ? "btn-secondary" : "btn-primary")}")"
                                                 disabled="@IsPaymentExportSubmitting"
                                                 @onclick="@(() => ExportPaymentInstructionAsync("register_payment"))">
-                                                @(IsPaymentExportSubmitting ? "Working..." : proposal.ExportActionLabel)
+                                                @(IsPaymentExportSubmitting ? FinanceText["Working"] : proposal.ExportActionLabel)
                                             </button>
                                         }
                                     }
@@ -294,16 +294,16 @@
                                     }
                                     else
                                     {
-                                        <p>Payment export becomes available after the proposal is approved.</p>
+                                        <p>@FinanceText["PaymentExportAfterApproval"]</p>
                                     }
 
                                     @if (!string.IsNullOrWhiteSpace(proposal.ExportProviderKey))
                                     {
                                         <dl class="bill-detail-list bill-source-detail-list">
-                                            <div><dt>Provider</dt><dd>@proposal.ExportProviderKey</dd></div>
+                                            <div><dt>@FinanceText["Provider"]</dt><dd>@proposal.ExportProviderKey</dd></div>
                                             @if (proposal.ExportRequestedUtc is not null)
                                             {
-                                                <div><dt>Requested</dt><dd>@FormatFriendlyDate(proposal.ExportRequestedUtc.Value)</dd></div>
+                                                <div><dt>@FinanceText["Requested"]</dt><dd>@FormatFriendlyDate(proposal.ExportRequestedUtc.Value)</dd></div>
                                             }
                                         </dl>
                                     }
@@ -312,31 +312,31 @@
                                 @if (detail.CanRequestPaymentProposal)
                                 {
                                     <div class="bill-payment-export-action">
-                                        <p>Create a new approval-only payment proposal for the remaining balance. No payment is initiated automatically.</p>
+                                        <p>@FinanceText["RemainingPaymentProposal"]</p>
                                         <button
                                             type="button"
                                             class="btn btn-primary"
                                             disabled="@IsPaymentProposalSubmitting"
                                             @onclick="RequestPaymentProposalAsync">
-                                            @(IsPaymentProposalSubmitting ? "Sending..." : "Request payment approval")
+                                            @(IsPaymentProposalSubmitting ? FinanceText["Sending"] : FinanceText["RequestPaymentApproval"])
                                         </button>
                                     </div>
                                 }
                             }
                             else if (detail.CanRequestPaymentProposal)
                             {
-                                <p>Create an approval-only payment proposal for this supplier bill. No payment is initiated automatically.</p>
+                                <p>@FinanceText["BillPaymentProposal"]</p>
                                 <button
                                     type="button"
                                     class="btn btn-primary"
                                     disabled="@IsPaymentProposalSubmitting"
                                     @onclick="RequestPaymentProposalAsync">
-                                    @(IsPaymentProposalSubmitting ? "Sending..." : "Request payment approval")
+                                    @(IsPaymentProposalSubmitting ? FinanceText["Sending"] : FinanceText["RequestPaymentApproval"])
                                 </button>
                             }
                             else
                             {
-                                <p>This bill is not currently eligible for a payment proposal.</p>
+                                <p>@FinanceText["PaymentProposalIneligible"]</p>
                             }
 
                             @if (!string.IsNullOrWhiteSpace(PaymentProposalMessage))
@@ -351,7 +351,7 @@
 
                         <section class="bill-detail-section">
                             <div class="bill-detail-section__header">
-                                <h3>Fortnox draft</h3>
+                                <h3>@FinanceText["FortnoxDraft"]</h3>
                                 <span class="@($"bill-status-badge bill-status-badge--{detail.DraftAction.StatusTone}")">@detail.DraftAction.StatusLabel</span>
                             </div>
                             <p>@detail.DraftAction.Description</p>
@@ -365,7 +365,7 @@
                                             class="btn btn-secondary"
                                             disabled="@IsDraftUpdateSubmitting"
                                             @onclick="UpdateFortnoxDraftAsync">
-                                            @(IsDraftUpdateSubmitting ? "Working..." : "Update draft in Fortnox")
+                                            @(IsDraftUpdateSubmitting ? FinanceText["Working"] : FinanceText["UpdateFortnoxDraft"])
                                         </button>
                                     }
                                     @if (detail.DraftAction.CanBookkeep)
@@ -375,21 +375,21 @@
                                             class="btn btn-primary"
                                             disabled="@IsDraftBookkeepingSubmitting"
                                             @onclick="BookkeepFortnoxDraftAsync">
-                                            @(IsDraftBookkeepingSubmitting ? "Working..." : "Bookkeep supplier invoice")
+                                            @(IsDraftBookkeepingSubmitting ? FinanceText["Working"] : FinanceText["BookkeepSupplierInvoice"])
                                         </button>
                                     }
                                 </div>
                             }
                             <div class="bill-paid-expense-status">
                                 <div class="bill-detail-section__header">
-                                    <h4>Expense posting</h4>
+                                    <h4>@FinanceText["ExpensePosting"]</h4>
                                     <span class="@($"bill-status-badge bill-status-badge--{detail.PaidExpensePosting.StatusTone}")">@detail.PaidExpensePosting.StatusLabel</span>
                                 </div>
                                 <p>@detail.PaidExpensePosting.Message</p>
                                 @if (!string.IsNullOrWhiteSpace(detail.PaidExpensePosting.AccountCode))
                                 {
                                     <dl class="bill-detail-list bill-source-detail-list">
-                                        <div><dt>Expense account</dt><dd>@detail.PaidExpensePosting.AccountCode</dd></div>
+                                        <div><dt>@FinanceText["ExpenseAccount"]</dt><dd>@detail.PaidExpensePosting.AccountCode</dd></div>
                                     </dl>
                                 }
                                 @if (detail.PaidExpensePosting.CanPost)
@@ -400,7 +400,7 @@
                                             class="btn btn-primary"
                                             disabled="@IsPaidExpensePostingSubmitting"
                                             @onclick="PostPaidSupplierBillExpenseAsync">
-                                            @(IsPaidExpensePostingSubmitting ? "Working..." : "Ask Laura to post expense")
+                                            @(IsPaidExpensePostingSubmitting ? FinanceText["Working"] : FinanceText["AskLauraPostExpense"])
                                         </button>
                                     </div>
                                 }
@@ -422,19 +422,19 @@
                                 <dl class="bill-detail-list bill-source-detail-list">
                                     @if (!string.IsNullOrWhiteSpace(detail.DraftAction.ProviderKey))
                                     {
-                                        <div><dt>Provider</dt><dd>@detail.DraftAction.ProviderKey</dd></div>
+                                        <div><dt>@FinanceText["Provider"]</dt><dd>@detail.DraftAction.ProviderKey</dd></div>
                                     }
                                     @if (detail.DraftAction.RequestedUtc is not null)
                                     {
-                                        <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.DraftAction.RequestedUtc.Value)</dd></div>
+                                        <div><dt>@FinanceText["Requested"]</dt><dd>@FormatFriendlyDate(detail.DraftAction.RequestedUtc.Value)</dd></div>
                                     }
                                     @if (detail.DraftAction.UpdatedInProviderUtc is not null)
                                     {
-                                        <div><dt>Updated</dt><dd>@FormatFriendlyDate(detail.DraftAction.UpdatedInProviderUtc.Value)</dd></div>
+                                        <div><dt>@FinanceText["Updated"]</dt><dd>@FormatFriendlyDate(detail.DraftAction.UpdatedInProviderUtc.Value)</dd></div>
                                     }
                                     @if (detail.DraftAction.BookedUtc is not null)
                                     {
-                                        <div><dt>Booked</dt><dd>@FormatFriendlyDate(detail.DraftAction.BookedUtc.Value)</dd></div>
+                                        <div><dt>@FinanceText["Booked"]</dt><dd>@FormatFriendlyDate(detail.DraftAction.BookedUtc.Value)</dd></div>
                                     }
                                 </dl>
                             }
@@ -446,12 +446,12 @@
 
                         <section class="bill-detail-section">
                             <div class="bill-detail-section__header">
-                                <h3>Corrections</h3>
+                                <h3>@FinanceText["Corrections"]</h3>
                             </div>
 
                             <div class="bill-payment-export-action">
                                 <div class="bill-detail-section__header">
-                                    <h4>Cancellation</h4>
+                                    <h4>@FinanceText["Cancellation"]</h4>
                                     <span class="@($"bill-status-badge bill-status-badge--{detail.Corrections.CancellationStatusTone}")">@detail.Corrections.CancellationStatusLabel</span>
                                 </div>
                                 <p>@detail.Corrections.CancellationDescription</p>
@@ -462,7 +462,7 @@
                                         class="btn btn-secondary"
                                         disabled="@IsCancellationSubmitting"
                                         @onclick="CancelSupplierInvoiceAsync">
-                                        @(IsCancellationSubmitting ? "Working..." : "Cancel supplier invoice")
+                                        @(IsCancellationSubmitting ? FinanceText["Working"] : FinanceText["CancelSupplierInvoice"])
                                     </button>
                                 }
                                 @if (!string.IsNullOrWhiteSpace(detail.Corrections.CancellationProviderKey) ||
@@ -473,19 +473,19 @@
                                     <dl class="bill-detail-list bill-source-detail-list">
                                         @if (!string.IsNullOrWhiteSpace(detail.Corrections.CancellationProviderKey))
                                         {
-                                            <div><dt>Provider</dt><dd>@detail.Corrections.CancellationProviderKey</dd></div>
+                                            <div><dt>@FinanceText["Provider"]</dt><dd>@detail.Corrections.CancellationProviderKey</dd></div>
                                         }
                                         @if (detail.Corrections.CancellationRequestedUtc is not null)
                                         {
-                                            <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationRequestedUtc.Value)</dd></div>
+                                            <div><dt>@FinanceText["Requested"]</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationRequestedUtc.Value)</dd></div>
                                         }
                                         @if (detail.Corrections.CancellationApprovedUtc is not null)
                                         {
-                                            <div><dt>Approved</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationApprovedUtc.Value)</dd></div>
+                                            <div><dt>@FinanceText["Approved"]</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationApprovedUtc.Value)</dd></div>
                                         }
                                         @if (detail.Corrections.CancellationCompletedUtc is not null)
                                         {
-                                            <div><dt>Completed</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationCompletedUtc.Value)</dd></div>
+                                            <div><dt>@FinanceText["Completed"]</dt><dd>@FormatFriendlyDate(detail.Corrections.CancellationCompletedUtc.Value)</dd></div>
                                         }
                                     </dl>
                                 }
@@ -493,7 +493,7 @@
 
                             <div class="bill-payment-export-action">
                                 <div class="bill-detail-section__header">
-                                    <h4>Credit note</h4>
+                                    <h4>@FinanceText["CreditNote"]</h4>
                                     <span class="@($"bill-status-badge bill-status-badge--{detail.Corrections.CreditNoteStatusTone}")">@detail.Corrections.CreditNoteStatusLabel</span>
                                 </div>
                                 <p>@detail.Corrections.CreditNoteDescription</p>
@@ -504,7 +504,7 @@
                                         class="btn btn-secondary"
                                         disabled="@IsCreditNoteSubmitting"
                                         @onclick="CreateSupplierCreditNoteAsync">
-                                        @(IsCreditNoteSubmitting ? "Working..." : "Create supplier credit note")
+                                        @(IsCreditNoteSubmitting ? FinanceText["Working"] : FinanceText["CreateSupplierCreditNote"])
                                     </button>
                                 }
                                 @if (!string.IsNullOrWhiteSpace(detail.Corrections.CreditNoteProviderKey) ||
@@ -516,23 +516,23 @@
                                     <dl class="bill-detail-list bill-source-detail-list">
                                         @if (!string.IsNullOrWhiteSpace(detail.Corrections.CreditNoteProviderKey))
                                         {
-                                            <div><dt>Provider</dt><dd>@detail.Corrections.CreditNoteProviderKey</dd></div>
+                                            <div><dt>@FinanceText["Provider"]</dt><dd>@detail.Corrections.CreditNoteProviderKey</dd></div>
                                         }
                                         @if (!string.IsNullOrWhiteSpace(detail.Corrections.ProviderCreditNoteNumber))
                                         {
-                                            <div><dt>Credit note</dt><dd>@detail.Corrections.ProviderCreditNoteNumber</dd></div>
+                                            <div><dt>@FinanceText["CreditNote"]</dt><dd>@detail.Corrections.ProviderCreditNoteNumber</dd></div>
                                         }
                                         @if (detail.Corrections.CreditNoteRequestedUtc is not null)
                                         {
-                                            <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteRequestedUtc.Value)</dd></div>
+                                            <div><dt>@FinanceText["Requested"]</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteRequestedUtc.Value)</dd></div>
                                         }
                                         @if (detail.Corrections.CreditNoteApprovedUtc is not null)
                                         {
-                                            <div><dt>Approved</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteApprovedUtc.Value)</dd></div>
+                                            <div><dt>@FinanceText["Approved"]</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteApprovedUtc.Value)</dd></div>
                                         }
                                         @if (detail.Corrections.CreditNoteCompletedUtc is not null)
                                         {
-                                            <div><dt>Completed</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteCompletedUtc.Value)</dd></div>
+                                            <div><dt>@FinanceText["Completed"]</dt><dd>@FormatFriendlyDate(detail.Corrections.CreditNoteCompletedUtc.Value)</dd></div>
                                         }
                                     </dl>
                                 }
@@ -545,10 +545,10 @@
                         </section>
 
                         <section class="bill-detail-section">
-                            <h3>Related transactions</h3>
+                            <h3>@FinanceText["RelatedTransactions"]</h3>
                             @if (detail.RelatedTransactions.Count == 0)
                             {
-                                <p>No ledger transactions are linked to this supplier bill yet.</p>
+                                <p>@FinanceText["NoRelatedTransactions"]</p>
                             }
                             else
                             {
@@ -571,7 +571,7 @@
                         @if (detail.SourceDetails.Count > 0)
                         {
                             <section class="bill-detail-section">
-                                <h3>Source details</h3>
+                                <h3>@FinanceText["SourceDetails"]</h3>
                                 <dl class="bill-detail-list bill-source-detail-list">
                                     @foreach (var sourceDetail in detail.SourceDetails)
                                     {
@@ -583,7 +583,7 @@
                     </div>
 
                     <section class="bill-detail-section">
-                        <h3>Linked document</h3>
+                        <h3>@FinanceText["LinkedDocument"]</h3>
                     <FinanceLinkedResourceState
                         Availability="@SelectedBill.LinkedDocument.Availability"
                         Message="@SelectedBill.LinkedDocument.Message"
@@ -592,12 +592,12 @@
                         TypeText="@SelectedBill.LinkedDocument.Document?.ContentType"
                         CanNavigate="@SelectedBill.LinkedDocument.CanNavigate"
                         NavigateHref="@(SelectedBill.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedBill.LinkedDocument.Document.Id))"
-                        ActionText="Open linked document" />
+                        ActionText="@FinanceText["OpenLinkedDocument"]" />
                     </section>
 
                     <section class="bill-detail-section">
                         <div class="bill-detail-section__header">
-                            <h3>Source document attachment</h3>
+                            <h3>@FinanceText["SourceDocumentAttachment"]</h3>
                             <span class="@($"bill-status-badge bill-status-badge--{detail.SourceDocumentAttachment.StatusTone}")">@detail.SourceDocumentAttachment.StatusLabel</span>
                         </div>
                         <p>@detail.SourceDocumentAttachment.Description</p>
@@ -608,7 +608,7 @@
                                 class="btn btn-primary"
                                 disabled="@IsSourceDocumentAttachmentSubmitting"
                                 @onclick="AttachSourceDocumentAsync">
-                                @(IsSourceDocumentAttachmentSubmitting ? "Working..." : "Attach source document")
+                                @(IsSourceDocumentAttachmentSubmitting ? FinanceText["Working"] : FinanceText["AttachSourceDocument"])
                             </button>
                         }
                         @if (!string.IsNullOrWhiteSpace(detail.SourceDocumentAttachment.ProviderKey) ||
@@ -618,15 +618,15 @@
                             <dl class="bill-detail-list bill-source-detail-list">
                                 @if (!string.IsNullOrWhiteSpace(detail.SourceDocumentAttachment.ProviderKey))
                                 {
-                                    <div><dt>Provider</dt><dd>@detail.SourceDocumentAttachment.ProviderKey</dd></div>
+                                    <div><dt>@FinanceText["Provider"]</dt><dd>@detail.SourceDocumentAttachment.ProviderKey</dd></div>
                                 }
                                 @if (detail.SourceDocumentAttachment.RequestedUtc is not null)
                                 {
-                                    <div><dt>Requested</dt><dd>@FormatFriendlyDate(detail.SourceDocumentAttachment.RequestedUtc.Value)</dd></div>
+                                    <div><dt>@FinanceText["Requested"]</dt><dd>@FormatFriendlyDate(detail.SourceDocumentAttachment.RequestedUtc.Value)</dd></div>
                                 }
                                 @if (detail.SourceDocumentAttachment.AttachedUtc is not null)
                                 {
-                                    <div><dt>Attached</dt><dd>@FormatFriendlyDate(detail.SourceDocumentAttachment.AttachedUtc.Value)</dd></div>
+                                    <div><dt>@FinanceText["Attached"]</dt><dd>@FormatFriendlyDate(detail.SourceDocumentAttachment.AttachedUtc.Value)</dd></div>
                                 }
                             </dl>
                         }
@@ -637,9 +637,9 @@
                     </section>
 
                     <AgentInsightsPanel
-                        Title="Agent insights"
-                        Subtitle="Finance notes linked to this bill."
-                        EmptyMessage="No agent insights are linked to this bill."
+                        Title="@FinanceText["AgentInsights"]"
+                        Subtitle="@FinanceText["BillAgentInsightsSubtitle"]"
+                        EmptyMessage="@FinanceText["NoBillAgentInsights"]"
                         TestId="bill-agent-insights-panel"
                         Items="@SelectedBill.AgentInsights" />
                 }

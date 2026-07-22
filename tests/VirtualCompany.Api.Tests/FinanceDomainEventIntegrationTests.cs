@@ -16,14 +16,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceDomainEventIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceDomainEventIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceDomainEventIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Seed_bootstrap_emits_finance_domain_events_with_trigger_compatible_envelopes()
@@ -39,7 +36,7 @@ public sealed class FinanceDomainEventIntegrationTests : IClassFixture<TestWebAp
         var service = new CompanyFinanceSeedBootstrapService(dbContext, outbox);
 
         var result = await service.GenerateAsync(
-            new FinanceSeedBootstrapCommand(companyId, 42, injectAnomalies: true, anomalyScenarioProfile: "baseline"),
+            new FinanceSeedBootstrapCommand(companyId, 42, InjectAnomalies: true, AnomalyScenarioProfile: "baseline"),
             CancellationToken.None);
 
         Assert.Equal(result.TransactionCount, outbox.Messages.Count(x => x.Topic == SupportedPlatformEventTypeRegistry.FinanceTransactionCreated));
@@ -96,7 +93,7 @@ public sealed class FinanceDomainEventIntegrationTests : IClassFixture<TestWebAp
             outbox);
 
         var result = await service.AdvanceAsync(
-            new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, accelerated: true),
+            new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, Accelerated: true),
             CancellationToken.None);
 
         var transactionEvents = outbox.Messages
@@ -232,7 +229,7 @@ public sealed class FinanceDomainEventIntegrationTests : IClassFixture<TestWebAp
         {
             var bootstrap = scope.ServiceProvider.GetRequiredService<IFinanceSeedBootstrapService>();
             await bootstrap.GenerateAsync(
-                new FinanceSeedBootstrapCommand(companyId, 77, injectAnomalies: true, anomalyScenarioProfile: "baseline"),
+                new FinanceSeedBootstrapCommand(companyId, 77, InjectAnomalies: true, AnomalyScenarioProfile: "baseline"),
                 CancellationToken.None);
 
             var processor = scope.ServiceProvider.GetRequiredService<ICompanyOutboxProcessor>();
@@ -297,7 +294,7 @@ public sealed class FinanceDomainEventIntegrationTests : IClassFixture<TestWebAp
         {
             var simulation = scope.ServiceProvider.GetRequiredService<ICompanySimulationService>();
             var result = await simulation.AdvanceAsync(
-                new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, accelerated: true),
+                new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, Accelerated: true),
                 CancellationToken.None);
             Assert.True(result.TransactionsGenerated > 0);
             Assert.True(result.InvoicesGenerated > 0);

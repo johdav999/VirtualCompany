@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class InternalAuditEventsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class InternalAuditEventsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public InternalAuditEventsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Internal_audit_events_filters_by_agent_time_range_and_company_context()

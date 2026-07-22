@@ -23,6 +23,13 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
 
     public CompanyFinanceSeedBootstrapService(
         VirtualCompanyDbContext dbContext,
+        ICompanyOutboxEnqueuer? outboxEnqueuer)
+        : this(dbContext, outboxEnqueuer, null, Microsoft.Extensions.Options.Options.Create(new FinanceTransactionCreationOptions()))
+    {
+    }
+
+    public CompanyFinanceSeedBootstrapService(
+        VirtualCompanyDbContext dbContext,
         ICompanyOutboxEnqueuer? outboxEnqueuer,
         IPlanningBaselineService? planningBaselineService,
         IOptions<FinanceTransactionCreationOptions> transactionCreationOptions)

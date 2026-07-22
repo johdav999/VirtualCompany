@@ -35,6 +35,7 @@ using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Communication;
 using VirtualCompany.Application.Mobile;
 using VirtualCompany.Application.Notifications;
 using VirtualCompany.Application.ProactiveMessaging;
@@ -47,6 +48,7 @@ using VirtualCompany.Infrastructure.Auth;
 using VirtualCompany.Infrastructure.Authorization;
 using VirtualCompany.Infrastructure.Context;
 using VirtualCompany.Infrastructure.Companies;
+using VirtualCompany.Infrastructure.Communication;
 using VirtualCompany.Infrastructure.Documents;
 using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Mailbox;
@@ -67,9 +69,10 @@ public static class DependencyInjection
     {
         var connectionString =
             configuration.GetConnectionString("VirtualCompanyDb")
-            ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True";
+            ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=False";
 
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
+        services.AddScoped<ICommunicationLanguageService, CommunicationLanguageService>();
 
         services.AddDataProtection();
         services.TryAddSingleton<IFieldEncryptionService, DataProtectionFieldEncryptionService>();
@@ -79,7 +82,10 @@ public static class DependencyInjection
         services.AddOptions<CompanyDocumentOptions>()
             .Bind(configuration.GetSection(CompanyDocumentOptions.SectionName));
 
-        services.AddOptions<MailboxIntegrationOptions>().Bind(configuration.GetSection(MailboxIntegrationOptions.SectionName));
+        services.AddOptions<MailboxIntegrationOptions>()
+            .Bind(configuration.GetSection(MailboxIntegrationOptions.SectionName))
+            .ValidateOnStart();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<MailboxIntegrationOptions>, MailboxIntegrationOptionsValidator>());
 
         services.AddOptions<CompanyOutboxDispatcherOptions>()
             .Bind(configuration.GetSection(CompanyOutboxDispatcherOptions.SectionName));
@@ -257,9 +263,29 @@ public static class DependencyInjection
             });
         services.AddOptions<CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions>()
             .Bind(configuration.GetSection(CompanyDashboardBriefingSummaryService.DashboardBriefingSummaryOptions.SectionName));
+        services.AddOptions<AgentBriefDraftOptions>()
+            .Bind(configuration.GetSection(AgentBriefDraftOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                if (string.IsNullOrWhiteSpace(options.ApiKey))
+                {
+                    options.ApiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+                }
+            });
+        services.AddHttpClient(OpenAiAgentBriefDraftService.ClientName);
+        services.AddOptions<SharedAgentAiOptions>()
+            .Bind(configuration.GetSection(SharedAgentAiOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                if (string.IsNullOrWhiteSpace(options.ApiKey))
+                {
+                    options.ApiKey = configuration["OPENAI_API_KEY"] ?? Environment.GetEnvironmentVariable("OPENAI_API_KEY") ?? string.Empty;
+                }
+            });
+        services.AddHttpClient(SharedAgentReasoningGateway.ClientName);
+        services.AddOptions<AgentMemoryCandidateExpiryOptions>()
+            .Bind(configuration.GetSection(AgentMemoryCandidateExpiryOptions.SectionName));
 
-        services.AddOptions<OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions>()
-            .Bind(configuration.GetSection(OpenAiSalesEmailIntentExtractionService.SalesEmailIntentExtractionOptions.SectionName));
 
         services.AddOptions<PipelineRiskScoringWorkerOptions>()
             .Bind(configuration.GetSection(PipelineRiskScoringWorkerOptions.SectionName))
@@ -309,7 +335,6 @@ public static class DependencyInjection
         services.AddSingleton<ExecutiveCockpitCacheKeyBuilder>();
         services.AddHttpClient(OpenAiCompatibleEmbeddingGenerator.ClientName);
         services.AddHttpClient(CompanyDashboardBriefingSummaryService.ClientName);
-        services.AddHttpClient(OpenAiSalesEmailIntentExtractionService.ClientName);
         services.AddHttpClient(OpenAiPdfOcrTextExtractor.ClientName);
         services.AddHttpClient(GmailMailboxProviderClient.ClientName);
         services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
@@ -331,6 +356,8 @@ public static class DependencyInjection
         services.AddOptions<BriefingUpdateJobWorkerOptions>().Bind(configuration.GetSection(BriefingUpdateJobWorkerOptions.SectionName));
         services.AddScoped<BriefingSchedulerCoordinator>();
         services.AddHostedService<BriefingSchedulerBackgroundService>();
+        services.AddOptions<RoleAgentCadenceOptions>().Bind(configuration.GetSection(RoleAgentCadenceOptions.SectionName));
+        services.AddHostedService<RoleAgentCadenceBackgroundService>();
         services.AddHostedService<BriefingUpdateJobBackgroundService>();
         services.AddHostedService<WorkflowProgressionBackgroundService>();
         services.AddHostedService<TriggerEvaluationBackgroundService>();
@@ -354,6 +381,7 @@ public static class DependencyInjection
         services.AddScoped<ICompanyExecutionScopeFactory, CompanyExecutionScopeFactory>();
         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();
         services.AddScoped<ICurrentUserAccessor, HttpContextCurrentUserAccessor>();
+        services.AddScoped<IUserPreferenceService, UserPreferenceService>();
         services.AddScoped<IExternalUserIdentityAccessor, ClaimsExternalUserIdentityAccessor>();
         services.AddScoped<IExternalUserIdentityResolver, ExternalUserIdentityResolver>();
         services.AddScoped<CompanyQueryService>();
@@ -373,6 +401,7 @@ public static class DependencyInjection
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
+        services.AddScoped<ICoreCompanyAgentSeeder, CoreCompanyAgentSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
         services.AddScoped<ICompanyDocumentService, CompanyDocumentService>();
         services.AddScoped<ICompanyDocumentIngestionStatusService, CompanyDocumentIngestionStatusService>();
@@ -381,17 +410,7 @@ public static class DependencyInjection
         services.AddScoped<ICompanyDocumentStorage, LocalCompanyDocumentStorage>();
         services.AddScoped<ICompanyDocumentTextExtractor, CompanyDocumentTextExtractor>();
         services.AddScoped<IKnowledgeChunker, DefaultKnowledgeChunker>();
-        services.AddSingleton<IMailboxOAuthStateProtector, DataProtectionMailboxOAuthStateProtector>();
-        services.AddScoped<GmailMailboxProviderClient>();
-        services.AddScoped<Microsoft365MailboxProviderClient>();
-        services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<GmailMailboxProviderClient>());
-        services.AddScoped<IMailboxProviderClient>(provider => provider.GetRequiredService<Microsoft365MailboxProviderClient>());
-        services.AddScoped<IMailboxProviderRegistry, MailboxProviderRegistry>();
-        services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
-        services.AddScoped<IBillDetectionService, BillDetectionService>();
-        services.AddScoped<IManualInboxBillScanOrchestrator, CompanyManualInboxBillScanOrchestrator>();
-        services.AddScoped<IConnectedMailboxInboxScanOrchestrator, CompanyConnectedMailboxInboxScanOrchestrator>();
-        services.AddScoped<IConnectedMailboxInboxScanJobScheduler, ScopedConnectedMailboxInboxScanJobScheduler>();
+        services.AddMailboxModule();
         services.AddScoped<IDocumentExtractionService, DocumentExtractionService>();
         services.AddScoped<IBillInformationExtractor, BillInformationExtractor>();
         services.AddScoped<IBillDuplicateCheckRepository, BillDuplicateCheckRepository>();
@@ -400,7 +419,6 @@ public static class DependencyInjection
         services.AddScoped<IDocumentTextExtractor, OpenAiPdfOcrTextExtractor>();
         services.AddScoped<IDocumentTextExtractor, DocxDocumentTextExtractor>();
         services.AddScoped<IDocumentTextExtractor, EmailBodyTextExtractor>();
-        services.AddScoped<IManualInboxBillScanJobScheduler, InlineManualInboxBillScanJobScheduler>();
         services.AddScoped<IEmbeddingGenerator, OpenAiCompatibleEmbeddingGenerator>();
         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
@@ -415,6 +433,18 @@ public static class DependencyInjection
         services.AddScoped<IAgentCommunicationProfileResolver, AgentCommunicationProfileResolver>();
         services.AddScoped<IAgentRuntimeProfileResolver, PersistedAgentRuntimeProfileResolver>();
         services.AddScoped<ICompanyAgentService, CompanyAgentService>();
+        services.AddScoped<IAgentCapabilityCatalog, AgentCapabilityCatalog>();
+        services.AddScoped<IAgentReasoningGateway, SharedAgentReasoningGateway>();
+        services.AddScoped<IAgentQuestionAnsweringService, AgentQuestionAnsweringService>();
+        services.AddScoped<IAgentRoleBriefingService, AgentRoleBriefingService>();
+        services.AddScoped<IAgentWorkPrioritizationService, AgentWorkPrioritizationService>();
+        services.AddScoped<IAgentPlanningService, AgentPlanningService>();
+        services.AddScoped<IAgentExceptionInterpretationService, AgentExceptionInterpretationService>();
+        services.AddScoped<IAgentHandoffService, AgentHandoffService>();
+        services.AddScoped<IAgentMemoryCandidateService, AgentMemoryCandidateService>();
+        services.AddScoped<IAgentAiQualityService, AgentAiQualityService>();
+        services.AddHostedService<AgentMemoryCandidateExpiryWorker>();
+        services.AddScoped<IAgentBriefDraftService, OpenAiAgentBriefDraftService>();
         services.AddScoped<IAgentStatusAggregationService, AgentStatusAggregationService>();
         services.AddScoped<CompanyMemoryService>();
         services.AddScoped<CompanyTaskService>();
@@ -456,8 +486,6 @@ public static class DependencyInjection
         services.AddScoped<IToolExecutor, AgentToolOrchestrationExecutor>();
         services.AddSingleton<IResponsibilityPolicyEvaluator, ResponsibilityPolicyEvaluator>();
         services.AddSingleton<IRequestedDomainClassifier, RequestedDomainClassifier>();
-        services.AddSingleton<IResponsibilityPolicyEvaluator, ResponsibilityPolicyEvaluator>();
-        services.AddSingleton<IRequestedDomainClassifier, RequestedDomainClassifier>();
         services.AddScoped<IOrchestrationAuditWriter, OrchestrationAuditWriter>();
         services.AddScoped<ISingleAgentOrchestrationResolver, SingleAgentOrchestrationResolver>();
         services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
@@ -478,101 +506,13 @@ public static class DependencyInjection
         services.AddScoped<IMobileSummaryService, CompanyMobileSummaryService>();
         services.AddSingleton<IExecutiveCockpitDashboardCache, ExecutiveCockpitDashboardCache>();
         services.AddSingleton<IExecutiveCockpitDashboardCacheInvalidator>(provider => (IExecutiveCockpitDashboardCacheInvalidator)provider.GetRequiredService<IExecutiveCockpitDashboardCache>());
-        services.AddScoped<InternalFinanceToolProvider>();
-        services.AddScoped<MockFinanceToolProvider>();
-        services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
-        services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
-        services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
-        services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
-        services.AddScoped<IFinanceCashSettlementPostingService, CompanyCashSettlementPostingService>();
-        services.AddScoped<IFinanceApprovalTaskService, CompanyFinanceApprovalTaskService>();
-        services.AddScoped<ICashPostingTraceabilityBackfillService, CompanyCashPostingTraceabilityBackfillService>();
-        services.AddScoped<IBankTransactionReadService, CompanyBankTransactionService>();
-        services.AddScoped<IBankTransactionCommandService, CompanyBankTransactionService>();
-        services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
         services.AddScoped<IExecutiveCockpitDashboardService, CompanyExecutiveCockpitDashboardService>();
-        services.AddScoped<ISignalEngine, CompanySignalEngine>();
-        services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
-        services.AddScoped<FortnoxFinanceIntegrationProvider>();
-        services.AddOptions<SequenceExecutionWorkerOptions>()
-            .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
-        services.AddHostedService<SequenceExecutionBackgroundService>();
-        services.AddHostedService<ProspectingRunBackgroundService>();
-        services.AddOptions<CustomerMemoryOptions>()
-            .Bind(configuration.GetSection(CustomerMemoryOptions.SectionName));
-        services.AddScoped<ICustomerMemoryService, CustomerMemoryService>();
-        services.AddScoped<IOutboundCampaignService, OutboundCampaignService>();
-        services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
-        services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
-        services.AddScoped<IConversionAnalyticsService, ConversionAnalyticsService>();
-        services.AddScoped<RevenueForecastService>();
-        services.AddScoped<IRevenueForecastService>(provider => provider.GetRequiredService<RevenueForecastService>());
-        services.AddScoped<IPipelineRiskScoringJobRunner>(provider => provider.GetRequiredService<RevenueForecastService>());
-        services.AddScoped<IOutboundAutomationEnforcementService, OutboundAutomationEnforcementService>();
-        services.AddScoped<IOutboundReviewQueueService, OutboundReviewQueueService>();
-        services.AddScoped<IWebsiteLeadCaptureService, WebsiteLeadCaptureService>();
-        services.AddScoped<IOutboundEmailSender, MailboxOutboundEmailSender>();
-        services.AddScoped<IFinanceIntegrationProvider>(provider => provider.GetRequiredService<FortnoxFinanceIntegrationProvider>());
-        services.AddScoped<ISalesEmailIngestionService, SalesEmailIngestionService>();
-        services.AddScoped<ISalesEmailIntentExtractionService, OpenAiSalesEmailIntentExtractionService>();
-        services.AddScoped<IReplySignalDetectionService, DeterministicReplySignalDetectionService>();
-        services.AddScoped<IReplySignalDetectionPipeline, ReplySignalDetectionPipeline>();
-        services.AddScoped<IDealIntelligenceSignalRepository, DealIntelligenceSignalRepository>();
-        services.AddScoped<ISalesOperationsService, SalesOperationsService>();
-        services.AddScoped<ILeadGenerationService, LeadGenerationService>();
-        services.AddScoped<ISalesSourceService, SalesSourceService>();
-        services.AddScoped<IProspectDataProvider, FirstPartyProspectDataProvider>();
-        services.AddScoped<IProspectDataProviderRegistry, ProspectDataProviderRegistry>();
-        services.AddScoped<ICrmLeadAdapterRegistry, CrmLeadAdapterRegistry>();
-        services.AddSingleton<ISalesAutomationPolicyEvaluator, SalesAutomationPolicyEvaluator>();
+        services.AddFinanceModule();
+        services.AddSalesModule(configuration);
         services.Configure<SupportOperationsWorkerOptions>(configuration.GetSection(SupportOperationsWorkerOptions.SectionName));
-        services.AddHostedService<SupportOperationsBackgroundService>();
-        services.AddScoped<ISupportCaseService, SupportCaseService>();
-        services.AddScoped<ISupportMailboxIngestionService, SupportMailboxIngestionService>();
-        services.AddScoped<ISupportContextResolutionService, SupportContextResolutionService>();
-        services.AddScoped<ISupportTriageService, SupportTriageService>();
-        services.AddScoped<ISupportOutboundEmailSender, SupportMailboxOutboundEmailSender>();
-        services.AddScoped<ISupportKnowledgeContextProvider, SupportKnowledgeContextProvider>();
-        services.AddScoped<ISupportMailboxRoutingService, SupportMailboxRoutingService>();
-        services.AddScoped<ISupportReplySafetyPolicy, DeterministicSupportReplySafetyPolicy>();
-        services.AddScoped<ISupportReplyDraftService, SupportReplyDraftService>();
-        services.AddScoped<ISupportToolActionService, SupportToolActionService>();
-        services.AddScoped<ISupportAgentOrchestrationService, SupportAgentOrchestrationService>();
-        services.AddScoped<ISupportRefundWorkflowService, SupportRefundWorkflowService>();
-        services.AddScoped<ISupportRefundApprovalOutcomeHandler, SupportRefundApprovalOutcomeHandler>();
-        services.AddScoped<ISupportRefundFinanceService, SupportRefundFinanceService>();
-        services.AddScoped<ISupportSlaMonitor, SupportSlaMonitor>();
-        services.AddScoped<ISupportSlaPolicyService, SupportSlaPolicyService>();
-        services.AddScoped<ISupportKnowledgeGapService, SupportKnowledgeGapService>();
-        services.AddScoped<ISupportAnalyticsService, SupportAnalyticsService>();
-        services.AddScoped<ISupportMemoryUpdateService, SupportMemoryUpdateService>();
-        services.AddScoped<ISupportMemoryReviewService, SupportMemoryReviewService>();
+        services.AddSupportModule();
+        services.AddScoped<IAgentStaffOverviewQueryService, CompanyAgentStaffOverviewQueryService>();
 
-        services.AddScoped<IFinanceIntegrationProviderRegistry, FinanceIntegrationProviderRegistry>();
-        services.AddScoped<IFinanceIntegrationProviderResolver>(provider => provider.GetRequiredService<IFinanceIntegrationProviderRegistry>());
-        services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
-        services.AddScoped<IFinanceBootstrapRerunService, CompanyFinanceBootstrapRerunService>();
-        services.AddScoped<IFinanceSeedingStateService, CompanyFinanceSeedingStateResolver>();
-        services.AddScoped<IFinanceSeedBackfillOrchestrator, FinanceSeedBackfillOrchestrator>();
-        services.AddScoped<FinanceSummaryConsistencyChecker>();
-        services.AddScoped<IFinanceSummaryQueryService, CompanyFinanceSummaryQueryService>();
-        services.AddScoped<IFinanceSeedBackfillQueryService, FinanceSeedBackfillQueryService>();
-        services.AddScoped<IPlanningBaselineService, PlanningBaselineService>();
-        services.AddScoped<IFinanceSeedTelemetry, FinanceSeedTelemetry>();
-        services.AddScoped<IFinanceSeedBootstrapService, CompanyFinanceSeedBootstrapService>();
-        services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
-        services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
-        services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
-        services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
-        services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
-        services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
-        services.AddScoped<IFinanceMaintenanceService, CompanyFinanceMaintenanceService>();
-        services.AddSingleton<IFinanceSeedBackfillExecutionScheduler, FinanceSeedBackfillExecutionScheduler>();
-        services.AddSingleton<IFinanceSeedBackfillDelayStrategy, SystemFinanceSeedBackfillDelayStrategy>();
-        services.AddScoped<IFinanceSeedingStateResolver, CompanyFinanceSeedingStateResolver>();
-        services.AddScoped<IInvoiceReviewWorkflowService, CompanyInvoiceReviewWorkflowService>();
-        services.AddScoped<IFinanceTransactionAnomalyDetectionService, CompanyFinanceTransactionAnomalyDetectionService>();
-        services.AddScoped<IFinanceCashPositionWorkflowService, CompanyFinanceCashPositionWorkflowService>();
         services.AddScoped<IFinanceToolProvider>(provider =>
         {
             var options = provider.GetRequiredService<IOptions<FinanceToolProviderOptions>>().Value;
@@ -580,31 +520,10 @@ public static class DependencyInjection
                 ? provider.GetRequiredService<MockFinanceToolProvider>()
                 : provider.GetRequiredService<InternalFinanceToolProvider>();
         });
-        services.AddSingleton<IFinanceWorkflowTriggerRegistry, StaticFinanceWorkflowTriggerRegistry>();
-        services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
         services.AddScoped<ISalesPersistenceRepository, SalesPersistenceRepository>();
-        services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
-        services.AddScoped<ISupplierInvoicePaymentExportProvider, FortnoxSupplierInvoicePaymentExportProvider>();
-        services.AddScoped<IFinanceSupplierPaymentProposalService, SupplierInvoicePaymentProposalService>();
-        services.AddScoped<ISupplierInvoiceSourceDocumentAttachmentProvider, FortnoxSupplierInvoiceSourceDocumentAttachmentProvider>();
-        services.AddScoped<IFinanceSupplierInvoiceSourceDocumentAttachmentService, SupplierInvoiceSourceDocumentAttachmentService>();
-        services.AddScoped<ISupplierInvoiceDraftActionProvider, FortnoxSupplierInvoiceDraftActionProvider>();
-        services.AddScoped<IFinanceSupplierInvoiceDraftActionService, SupplierInvoiceDraftActionService>();
-        services.AddScoped<IPaidSupplierBillExpensePostingService, PaidSupplierBillExpensePostingService>();
-        services.AddScoped<IFinanceCustomerInvoiceFortnoxActionService, CustomerInvoiceFortnoxActionService>();
-        services.AddScoped<ISupplierInvoiceCorrectionProvider, FortnoxSupplierInvoiceCorrectionProvider>();
-        services.AddScoped<IFinanceSupplierInvoiceCorrectionService, SupplierInvoiceCorrectionService>();
-        services.AddScoped<ISupplierInvoiceEnrichmentProvider, FortnoxSupplierInvoiceEnrichmentProvider>();
-        services.AddScoped<IFinanceSupplierInvoiceEnrichmentService, SupplierInvoiceEnrichmentService>();
         services.AddScoped<IDepartmentDashboardConfigurationService, CompanyDepartmentDashboardConfigurationService>();
         services.AddScoped<IExecutiveCockpitKpiQueryService, CompanyExecutiveCockpitKpiQueryService>();
-        services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
-        services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
         services.AddScoped<IWorkflowScheduleTriggerService>(provider => provider.GetRequiredService<CompanyWorkflowService>());
-        services.AddScoped<IReconciliationScoringSettingsProvider, CompanyReconciliationScoringSettingsProvider>();
-        services.AddScoped<IReconciliationScoringService, CompanyReconciliationScoringService>();
-        services.AddScoped<IReconciliationSuggestionReadService, CompanyReconciliationSuggestionService>();
-        services.AddScoped<IReconciliationSuggestionCommandService, CompanyReconciliationSuggestionService>();
         services.AddScoped<ExecutionExceptionService>();
         services.AddScoped<ICompanySimulationService, CompanySimulationService>();
         services.AddScoped<IExecutionExceptionRecorder>(provider => provider.GetRequiredService<ExecutionExceptionService>());
@@ -638,7 +557,6 @@ public static class DependencyInjection
         services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
         services.AddScoped<ICompanyToolExecutor, NoOpCompanyToolExecutor>();
         services.AddScoped<CompanyContextResolutionMiddleware>();
-        services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipAuthorizationHandler>();
         services.AddScoped<IAuthorizationHandler, CompanyMembershipResourceAuthorizationHandler>();
         services.AddScoped<ICompanyMembershipContextResolver, CompanyMembershipContextResolver>();

@@ -2,32 +2,32 @@
 @rendermode InteractiveServer
 @inherits FinancePageBase
 
-<PageTitle>Simulation Lab</PageTitle>
+<PageTitle>@FinanceText["SandboxTitle"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Simulation Lab"
-    Description="Development and demo controls for simulated company and finance data."
-    LoadingMessage="Loading Simulation Lab..."
+    Title="@FinanceText["SandboxTitle"]"
+    Description="@FinanceText["SandboxDescription"]"
+    LoadingMessage="@FinanceText["SandboxLoading"]"
     Area="SimulationLab">
     @if (!HasSandboxAdminAccess)
     {
         <ForbiddenState
-            Title="Simulation Lab access required"
-            Message="Simulation Lab is limited to company admins and testers."
+            Title="@FinanceText["SandboxAccessRequired"]"
+            Message="@FinanceText["SandboxAccessDescription"]"
             ReturnHref="@BuildFinanceHomeHref()"
-            ReturnText="Back to finance" />
+            ReturnText="@FinanceText["SandboxBackToFinance"]" />
     }
     else
     {
-        <section class="finance-summary-stack" aria-label="Simulation Lab sections">
+        <section class="finance-summary-stack" aria-label="@FinanceText["SandboxSections"]">
             <article class="wizard-card">
                 <div class="mb-3">
-                    <span class="dashboard-kicker">Finance data generation</span>
-                    <h2 class="h5 mb-2">Regenerate finance dataset</h2>
-                    <p class="text-body-secondary mb-0">Replace the demo finance data for the active company, then review the result before running more scenarios.</p>
+                    <span class="dashboard-kicker">@FinanceText["SandboxDataGeneration"]</span>
+                    <h2 class="h5 mb-2">@FinanceText["SandboxRegenerateDataset"]</h2>
+                    <p class="text-body-secondary mb-0">@FinanceText["SandboxRegenerateDescription"]</p>
                 </div>
 
                 @if (!string.IsNullOrWhiteSpace(_seedGenerationErrorMessage))
@@ -43,7 +43,7 @@
 
                     <div id="seed-generation-form" class="row g-3">
                         <div class="col-md-6">
-                            <label class="form-label" for="seed-company">Company</label>
+                            <label class="form-label" for="seed-company">@FinanceText["SandboxCompany"]</label>
                             <InputSelect id="seed-company"
                                          class="form-select"
                                          Value="_seedGenerationForm.CompanyId"
@@ -59,12 +59,12 @@
                             <div class="form-text">@CompanySelectionDescription</div>
                         </div>
                         <div class="col-md-3">
-                            <label class="form-label" for="anchor-date">Start date</label>
+                            <label class="form-label" for="anchor-date">@FinanceText["SandboxStartDate"]</label>
                             <InputDate id="anchor-date" class="form-control" @bind-Value="_seedGenerationForm.AnchorDateUtc" disabled="@_isSubmittingSeedGeneration" />
                             <ValidationMessage For="@(() => _seedGenerationForm.AnchorDateUtc)" />
                         </div>
                         <div class="col-md-6">
-                            <label class="form-label" for="generation-mode">Generation mode</label>
+                            <label class="form-label" for="generation-mode">@FinanceText["SandboxGenerationMode"]</label>
                             <InputSelect id="generation-mode" class="form-select" @bind-Value="_seedGenerationForm.GenerationMode" disabled="@_isSubmittingSeedGeneration">
                                 @foreach (var option in _generationModeOptions)
                                 {
@@ -76,22 +76,22 @@
                         </div>
                         <div class="col-12 d-flex align-items-center gap-3">
                             <button id="seed-generate-submit" type="submit" class="btn btn-primary" disabled="@_isSubmittingSeedGeneration">
-                                @(_isSubmittingSeedGeneration ? "Regenerating data..." : "Regenerate finance data")
+                                @(_isSubmittingSeedGeneration ? FinanceText["SandboxRegeneratingData"] : FinanceText["SandboxRegenerateData"])
                             </button>
                             @if (_isSubmittingSeedGeneration)
                             {
-                                <span class="text-body-secondary">This action is running. Wait for it to finish before trying again.</span>
+                                <span class="text-body-secondary">@FinanceText["SandboxActionRunning"]</span>
                             }
                         </div>
                         <div class="col-12">
                             <details class="border rounded p-3">
-                                <summary class="fw-semibold">Advanced</summary>
+                                <summary class="fw-semibold">@FinanceText["Advanced"]</summary>
                                 <div class="row g-3 mt-1">
                                     <div class="col-md-4">
-                                        <label class="form-label" for="seed-value">Reproducibility value</label>
+                                        <label class="form-label" for="seed-value">@FinanceText["SandboxReproducibilityValue"]</label>
                                         <InputNumber id="seed-value" class="form-control" @bind-Value="_seedGenerationForm.SeedValue" disabled="@_isSubmittingSeedGeneration" />
                                         <ValidationMessage For="@(() => _seedGenerationForm.SeedValue)" />
-                                        <div class="form-text">Use the same value to recreate the same demo data.</div>
+                                        <div class="form-text">@FinanceText["SandboxReproducibilityHelp"]</div>
                                     </div>
                                 </div>
                             </details>
@@ -106,46 +106,46 @@
                             @_seedGenerationResult.Message
                         </div>
                         <section class="border rounded p-3 mb-3" aria-labelledby="generation-summary-title">
-                            <h3 id="generation-summary-title" class="h6 mb-3">Generation summary</h3>
+                            <h3 id="generation-summary-title" class="h6 mb-3">@FinanceText["SandboxGenerationSummary"]</h3>
                             <div class="row g-3 mb-3">
                                 <div class="col-sm-6 col-lg-3">
                                     <div class="border rounded p-3 h-100">
-                                        <div class="text-body-secondary small">Created</div>
+                                        <div class="text-body-secondary small">@FinanceText["Created"]</div>
                                         <div class="fs-4 fw-semibold">@_seedGenerationResult.CreatedCount</div>
                                     </div>
                                 </div>
                                 <div class="col-sm-6 col-lg-3">
                                     <div class="border rounded p-3 h-100">
-                                        <div class="text-body-secondary small">Updated</div>
+                                        <div class="text-body-secondary small">@FinanceText["Updated"]</div>
                                         <div class="fs-4 fw-semibold">@_seedGenerationResult.UpdatedCount</div>
                                     </div>
                                 </div>
                             </div>
 
                             <dl class="row mb-0">
-                                <dt class="col-sm-3">Company</dt>
+                                <dt class="col-sm-3">@FinanceText["SandboxCompany"]</dt>
                                 <dd class="col-sm-9">@_seedGenerationForm.CompanyName</dd>
-                                <dt class="col-sm-3">Start date</dt>
-                                <dd class="col-sm-9">@_seedGenerationResult.AnchorDateUtc.ToString("yyyy-MM-dd")</dd>
-                                <dt class="col-sm-3">Generation mode</dt>
+                                <dt class="col-sm-3">@FinanceText["SandboxStartDate"]</dt>
+                                <dd class="col-sm-9">@LocalDateTime.Date(DateOnly.FromDateTime(_seedGenerationResult.AnchorDateUtc))</dd>
+                                <dt class="col-sm-3">@FinanceText["SandboxGenerationMode"]</dt>
                                 <dd class="col-sm-9">@GetGenerationModeLabel(_seedGenerationResult.GenerationMode)</dd>
                             </dl>
                             <details class="mt-3">
-                                <summary class="fw-semibold">Advanced</summary>
+                                <summary class="fw-semibold">@FinanceText["Advanced"]</summary>
                                 <dl class="row mt-2 mb-0">
-                                    <dt class="col-sm-3">Reproducibility value</dt>
+                                    <dt class="col-sm-3">@FinanceText["SandboxReproducibilityValue"]</dt>
                                     <dd class="col-sm-9">@_seedGenerationResult.SeedValue</dd>
                                 </dl>
                             </details>
                         </section>
 
                         <section class="border rounded p-3" aria-labelledby="validation-results-title">
-                            <h3 id="validation-results-title" class="h6 mb-3">Validation results</h3>
+                            <h3 id="validation-results-title" class="h6 mb-3">@FinanceText["SandboxValidationResults"]</h3>
 
                             @if (_seedGenerationResult.ReferentialIntegrityErrors.Count > 0)
                             {
                                 <div class="mb-3">
-                                    <h4 class="h6 text-danger">Referential integrity errors</h4>
+                                    <h4 class="h6 text-danger">@FinanceText["SandboxReferentialIntegrityErrors"]</h4>
                                     <ul class="mb-0">
                                         @foreach (var issue in _seedGenerationResult.ReferentialIntegrityErrors)
                                         {
@@ -165,7 +165,7 @@
                             @if (_seedGenerationResult.Errors.Count > 0)
                             {
                                 <div class="mb-3">
-                                    <h4 class="h6 text-danger">Validation errors</h4>
+                                    <h4 class="h6 text-danger">@FinanceText["SandboxValidationErrors"]</h4>
                                     <ul class="mb-0">
                                         @foreach (var issue in _seedGenerationResult.Errors)
                                         {
@@ -185,7 +185,7 @@
                             @if (_seedGenerationResult.Warnings.Count > 0)
                             {
                                 <div class="mb-0">
-                                    <h4 class="h6 text-warning-emphasis">Warnings</h4>
+                                    <h4 class="h6 text-warning-emphasis">@FinanceText["Warnings"]</h4>
                                     <ul class="mb-0">
                                         @foreach (var issue in _seedGenerationResult.Warnings)
                                         {
@@ -203,36 +203,36 @@
                             }
                             else if (_seedGenerationResult.Succeeded && _seedGenerationResult.Errors.Count == 0 && _seedGenerationResult.ReferentialIntegrityErrors.Count == 0)
                             {
-                                <p class="text-success mb-0">Validation completed without errors or warnings.</p>
+                                <p class="text-success mb-0">@FinanceText["SandboxValidationPassed"]</p>
                             }
                         </section>
                     </div>
                 }
             </article>
 
-            <div @key="_datasetGenerationSectionVersion">
+            <div @key="DatasetGenerationSectionKey">
                 <FinanceSandboxAdminSection TSection="FinanceSandboxDatasetGenerationViewModel"
                                             CompanyId="@AccessState.CompanyId!.Value"
-                                            Kicker="Finance data generation"
-                                            Title="Dataset generation"
-                                            Description="Review the active demo data profile, refresh cadence, and finance data coverage."
-                                            LoadingTitle="Loading dataset generation"
-                                            LoadingMessage="Resolving the current dataset generation profile."
-                                            EmptyTitle="Dataset generation is not configured"
-                                            EmptyMessage="No dataset generation profile is available for the active company."
-                                            ErrorTitle="Dataset generation is unavailable"
+                                            Kicker="@FinanceText["SandboxDataGeneration"]"
+                                            Title="@FinanceText["SandboxDatasetGeneration"]"
+                                            Description="@FinanceText["SandboxDatasetDescription"]"
+                                            LoadingTitle="@FinanceText["SandboxLoadingDataset"]"
+                                            LoadingMessage="@FinanceText["SandboxResolvingDataset"]"
+                                            EmptyTitle="@FinanceText["SandboxDatasetNotConfigured"]"
+                                            EmptyMessage="@FinanceText["SandboxNoDatasetProfile"]"
+                                            ErrorTitle="@FinanceText["SandboxDatasetUnavailable"]"
                                             Loader="@LoadDatasetGenerationAsync">
                     <ChildContent Context="dataset">
                         <dl class="row mb-0">
-                            <dt class="col-sm-4">Profile</dt>
+                            <dt class="col-sm-4">@FinanceText["SandboxProfile"]</dt>
                             <dd class="col-sm-8">@FormatProfileName(dataset.ProfileName)</dd>
-                        <dt class="col-sm-4">Last refresh</dt>
-                        <dd class="col-sm-8">@dataset.LastGeneratedUtc.ToString("u")</dd>
-                        <dt class="col-sm-4">Coverage</dt>
+                        <dt class="col-sm-4">@FinanceText["SandboxLastRefresh"]</dt>
+                        <dd class="col-sm-8">@LocalDateTime.DateTime(dataset.LastGeneratedUtc)</dd>
+                        <dt class="col-sm-4">@FinanceText["SandboxCoverage"]</dt>
                         <dd class="col-sm-8">@dataset.CoverageSummary</dd>
                     </dl>
                     <div class="mt-3">
-                        <strong class="d-block mb-2">Available dataset profiles</strong>
+                        <strong class="d-block mb-2">@FinanceText["SandboxAvailableProfiles"]</strong>
                         <ul class="mb-0">
                             @foreach (var profile in dataset.AvailableProfiles)
                             {
@@ -244,27 +244,27 @@
                 </FinanceSandboxAdminSection>
             </div>
 
-            <div @key="_anomalyInjectionSectionVersion">
+            <div @key="AnomalyInjectionSectionKey">
                 <FinanceSandboxAdminSection TSection="FinanceSandboxAnomalyInjectionViewModel"
                                             CompanyId="@AccessState.CompanyId!.Value"
-                                            Kicker="Scenario and anomaly tools"
-                                            Title="Anomaly scenarios"
-                                            Description="Add finance anomaly scenarios and review the scenarios already registered for this company."
-                                            LoadingTitle="Loading anomaly scenarios"
-                                            LoadingMessage="Fetching configured scenarios and registered anomalies."
-                                            EmptyTitle="No anomaly scenarios configured"
-                                            EmptyMessage="No anomaly scenarios are configured."
-                                            ErrorTitle="Anomaly scenarios are unavailable"
+                                            Kicker="@FinanceText["SandboxScenarioTools"]"
+                                            Title="@FinanceText["SandboxAnomalyScenarios"]"
+                                            Description="@FinanceText["SandboxAnomalyDescription"]"
+                                            LoadingTitle="@FinanceText["SandboxLoadingAnomalies"]"
+                                            LoadingMessage="@FinanceText["SandboxFetchingAnomalies"]"
+                                            EmptyTitle="@FinanceText["SandboxNoAnomaliesConfigured"]"
+                                            EmptyMessage="@FinanceText["SandboxNoAnomalyProfiles"]"
+                                            ErrorTitle="@FinanceText["SandboxAnomaliesUnavailable"]"
                                             Loader="@LoadAnomalyInjectionAsync">
                     <ChildContent Context="injection">
                         <div class="row g-4">
                             <div class="col-lg-5">
                                 <dl class="row mb-3">
-                                    <dt class="col-sm-4">Mode</dt>
+                                    <dt class="col-sm-4">@FinanceText["SandboxMode"]</dt>
                                     <dd class="col-sm-8">@FormatPlainLabel(injection.Mode)</dd>
-                                    <dt class="col-sm-4">Last added</dt>
-                                    <dd class="col-sm-8">@injection.LastInjectedUtc.ToString("u")</dd>
-                                    <dt class="col-sm-4">Observation</dt>
+                                    <dt class="col-sm-4">@FinanceText["SandboxLastAdded"]</dt>
+                                    <dd class="col-sm-8">@LocalDateTime.DateTime(injection.LastInjectedUtc)</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxObservation"]</dt>
                                     <dd class="col-sm-8">@injection.Observation</dd>
                                 </dl>
 
@@ -288,9 +288,9 @@
 
                                     <div class="row g-3">
                                         <div class="col-12">
-                                            <label class="form-label" for="anomaly-profile">Scenario</label>
+                                            <label class="form-label" for="anomaly-profile">@FinanceText["SandboxScenario"]</label>
                                             <InputSelect id="anomaly-profile" class="form-select" @bind-Value="_anomalyInjectionForm.ScenarioProfileCode" disabled="@_isSubmittingAnomalyInjection">
-                                                <option value="">Select scenario</option>
+                                                <option value="">@FinanceText["SandboxSelectScenario"]</option>
                                                 @foreach (var profile in injection.AvailableScenarioProfiles)
                                                 {
                                                     <option value="@profile.Code">@FormatProfileName(profile.Name)</option>
@@ -301,11 +301,11 @@
                                         </div>
                                         <div class="col-12 d-flex align-items-center gap-3">
                                             <button id="anomaly-inject-submit" type="submit" class="btn btn-primary" disabled="@_isSubmittingAnomalyInjection">
-                                                @(_isSubmittingAnomalyInjection ? "Adding anomaly..." : "Add anomaly")
+                                                @(_isSubmittingAnomalyInjection ? FinanceText["SandboxAddingAnomaly"] : FinanceText["SandboxAddAnomaly"])
                                             </button>
                                             @if (_isSubmittingAnomalyInjection)
                                             {
-                                                <span class="text-body-secondary">This action is running. Wait for it to finish before trying again.</span>
+                                                <span class="text-body-secondary">@FinanceText["SandboxActionRunning"]</span>
                                             }
                                         </div>
                                     </div>
@@ -314,7 +314,7 @@
                                 @if (injection.ActiveScenarios.Count > 0)
                                 {
                                     <div class="mt-3">
-                                        <strong class="d-block mb-2">Active scenarios</strong>
+                                        <strong class="d-block mb-2">@FinanceText["SandboxActiveScenarios"]</strong>
                                         <ul class="mb-0">
                                             @foreach (var scenario in injection.ActiveScenarios)
                                             {
@@ -328,14 +328,14 @@
                             <div class="col-lg-7">
                                 <div class="d-flex justify-content-between align-items-center mb-3">
                                     <div>
-                                        <h3 class="h6 mb-1">Registered anomalies</h3>
-                                        <p class="text-body-secondary mb-0">Select an anomaly to inspect the related finance record.</p>
+                                        <h3 class="h6 mb-1">@FinanceText["SandboxRegisteredAnomalies"]</h3>
+                                        <p class="text-body-secondary mb-0">@FinanceText["SandboxSelectAnomalyHelp"]</p>
                                     </div>
                                 </div>
 
                                 @if (injection.RegistryEntries.Count == 0)
                                 {
-                                    <p class="text-body-secondary mb-0">No anomalies have been added for the active company.</p>
+                                    <p class="text-body-secondary mb-0">@FinanceText["SandboxNoRegisteredAnomalies"]</p>
                                 }
                                 else
                                 {
@@ -343,10 +343,10 @@
                                         <table class="table finance-table mb-0">
                                             <thead>
                                                 <tr>
-                                                    <th scope="col">Reference</th>
-                                                    <th scope="col">Type</th>
-                                                    <th scope="col">Status</th>
-                                                    <th scope="col">Affected record</th>
+                                                    <th scope="col">@FinanceText["SandboxReference"]</th>
+                                                    <th scope="col">@FinanceText["Type"]</th>
+                                                    <th scope="col">@FinanceText["Status"]</th>
+                                                    <th scope="col">@FinanceText["SandboxAffectedRecord"]</th>
                                                 </tr>
                                             </thead>
                                             <tbody>
@@ -378,11 +378,11 @@
                         </div>
 
                         <section class="border rounded p-3 mt-4" aria-labelledby="sandbox-anomaly-detail-title">
-                            <h3 id="sandbox-anomaly-detail-title" class="h6 mb-3">Selected anomaly</h3>
+                            <h3 id="sandbox-anomaly-detail-title" class="h6 mb-3">@FinanceText["SandboxSelectedAnomaly"]</h3>
 
                             @if (_isLoadingSelectedAnomaly)
                             {
-                                <p class="text-body-secondary mb-0">Loading anomaly detail...</p>
+                                <p class="text-body-secondary mb-0">@FinanceText["SandboxLoadingAnomalyDetail"]</p>
                             }
                             else if (!string.IsNullOrWhiteSpace(_selectedAnomalyErrorMessage))
                             {
@@ -390,16 +390,16 @@
                             }
                             else if (_selectedAnomalyDetail is null)
                             {
-                                <p class="text-body-secondary mb-0">Select an anomaly to inspect the affected finance record and scenario messages.</p>
+                                <p class="text-body-secondary mb-0">@FinanceText["SandboxSelectAnomalyDetailHelp"]</p>
                             }
                             else
                             {
                                 <dl class="row mb-0">
-                                    <dt class="col-sm-4">Scenario</dt>
+                                    <dt class="col-sm-4">@FinanceText["SandboxScenario"]</dt>
                                     <dd class="col-sm-8">@FormatProfileName(_selectedAnomalyDetail.ScenarioProfileName)</dd>
-                                    <dt class="col-sm-4">Created</dt>
-                                    <dd class="col-sm-8">@_selectedAnomalyDetail.CreatedUtc.ToString("u")</dd>
-                                    <dt class="col-sm-4">Affected record</dt>
+                                    <dt class="col-sm-4">@FinanceText["Created"]</dt>
+                                    <dd class="col-sm-8">@LocalDateTime.DateTime(_selectedAnomalyDetail.CreatedUtc)</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxAffectedRecord"]</dt>
                                     <dd class="col-sm-8">
                                         @if (BuildAffectedRecordHref(_selectedAnomalyDetail) is string affectedRecordHref)
                                         {
@@ -414,7 +414,7 @@
                                 @if (!string.IsNullOrWhiteSpace(_selectedAnomalyDetail.ExpectedDetectionMetadataJson))
                                 {
                                     <details class="mt-3">
-                                        <summary class="fw-semibold">Advanced</summary>
+                                        <summary class="fw-semibold">@FinanceText["Advanced"]</summary>
                                         <code>@_selectedAnomalyDetail.ExpectedDetectionMetadataJson</code>
                                     </details>
                                 }
@@ -442,17 +442,17 @@
             </div>
             @if (SimulationUiVisible)
             {
-            <div @key="_simulationDiagnosticsSectionVersion">
+            <div @key="SimulationDiagnosticsSectionKey">
                     <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationDiagnosticsViewModel"
                                                 CompanyId="@AccessState.CompanyId!.Value"
-                                                Kicker="Current simulation status"
-                                                Title="Simulation status and history"
-                                                Description="Start or stop the company simulation, control finance data generation, and review recent sessions."
-                                                LoadingTitle="Loading simulation status"
-                                                LoadingMessage="Reading the latest company simulation status."
-                                                EmptyTitle="Simulation status is not available"
-                                                EmptyMessage="No simulation status was returned for the active company."
-                                                ErrorTitle="Simulation status is unavailable"
+                                                Kicker="@FinanceText["SandboxCurrentStatus"]"
+                                                Title="@FinanceText["SandboxStatusHistory"]"
+                                                Description="@FinanceText["SandboxStatusDescription"]"
+                                                LoadingTitle="@FinanceText["SandboxLoadingStatus"]"
+                                                LoadingMessage="@FinanceText["SandboxReadingStatus"]"
+                                                EmptyTitle="@FinanceText["SandboxStatusNotAvailable"]"
+                                                EmptyMessage="@FinanceText["SandboxNoStatus"]"
+                                                ErrorTitle="@FinanceText["SandboxStatusUnavailable"]"
                                                 Loader="@LoadSimulationDiagnosticsAsync">
                         <ChildContent Context="diagnostics">
                             @{
@@ -472,7 +472,7 @@
                             <div class="row g-3 mb-3">
                                 <div class="col-sm-6 col-xl-3">
                                     <div class="border rounded p-3 h-100">
-                                        <div class="text-body-secondary small">Status</div>
+                                        <div class="text-body-secondary small">@FinanceText["Status"]</div>
                                         <div class="mt-1">
                                             <span class="@ResolveSimulationLifecycleBadgeClass(diagnostics.Status)">@ResolveSimulationLifecycleLabel(diagnostics.Status)</span>
                                         </div>
@@ -480,70 +480,70 @@
                                 </div>
                                 <div class="col-sm-6 col-xl-3">
                                     <div class="border rounded p-3 h-100">
-                                        <div class="text-body-secondary small">Current simulated time</div>
-                                        <div class="fs-6 fw-semibold">@FormatUtc(diagnostics.CurrentSimulatedDateTime, "Not started")</div>
+                                        <div class="text-body-secondary small">@FinanceText["SandboxCurrentSimulatedTime"]</div>
+                                        <div class="fs-6 fw-semibold">@FormatUtc(diagnostics.CurrentSimulatedDateTime, FinanceText["SandboxNotStarted"])</div>
                                     </div>
                                 </div>
                                 <div class="col-sm-6 col-xl-3">
                                     <div class="border rounded p-3 h-100">
-                                        <div class="text-body-secondary small">Last progression</div>
-                                        <div class="fs-6 fw-semibold">@FormatUtc(diagnostics.LastProgressionTimestamp, "No progression yet")</div>
+                                        <div class="text-body-secondary small">@FinanceText["SandboxLastProgression"]</div>
+                                        <div class="fs-6 fw-semibold">@FormatUtc(diagnostics.LastProgressionTimestamp, FinanceText["SandboxNoProgression"])</div>
                                     </div>
                                 </div>
                                 <div class="col-sm-6 col-xl-3">
                                     <div class="border rounded p-3 h-100">
-                                        <div class="text-body-secondary small">Finance data generation</div>
-                                        <div class="fs-6 fw-semibold">@(diagnostics.GenerationEnabled == true ? "Enabled" : diagnostics.GenerationEnabled == false ? "Disabled" : "Unavailable")</div>
+                                        <div class="text-body-secondary small">@FinanceText["SandboxDataGeneration"]</div>
+                                        <div class="fs-6 fw-semibold">@(diagnostics.GenerationEnabled == true ? FinanceText["SandboxEnabled"] : diagnostics.GenerationEnabled == false ? FinanceText["SandboxDisabled"] : FinanceText["SandboxUnavailable"])</div>
                                     </div>
                                 </div>
                             </div>
 
-                            <div class="d-flex flex-wrap gap-3 mb-3" aria-label="Simulation controls">
+                            <div class="d-flex flex-wrap gap-3 mb-3" aria-label="@FinanceText["SandboxSimulationControls"]">
                                 @if (diagnostics.CanStart)
                                 {
                                     <button type="button" class="btn btn-primary" disabled="@_isChangingSimulationLifecycle" @onclick="() => HandleStartOrResumeSimulationAsync(diagnostics)">
-                                        @(_isChangingSimulationLifecycle ? "Working..." : "Start")
+                                        @(_isChangingSimulationLifecycle ? FinanceText["Working"] : FinanceText["SandboxStart"])
                                     </button>
                                 }
                                 @if (diagnostics.CanPause)
                                 {
                                     <button type="button" class="btn btn-outline-secondary" disabled="@_isChangingSimulationLifecycle" @onclick="HandlePauseSimulationAsync">
-                                        Pause
+                                        @FinanceText["Pause"]
                                     </button>
                                 }
                                 @if (diagnostics.CanStop)
                                 {
                                     <button type="button" class="btn btn-outline-danger" disabled="@_isChangingSimulationLifecycle" @onclick="HandleStopSimulationAsync">
-                                        Stop
+                                        @FinanceText["Stop"]
                                     </button>
                                 }
                                 @if (diagnostics.SupportsStepForwardOneDay)
                                 {
                                     <button type="button" class="btn btn-outline-primary" disabled="@_isChangingSimulationLifecycle" @onclick="HandleStepForwardOneDayAsync">
-                                        Advance one day
+                                        @FinanceText["SandboxAdvanceOneDay"]
                                     </button>
                                 }
                                 @if (diagnostics.CanToggleGeneration && diagnostics.GenerationEnabled.HasValue)
                                 {
                                     <button type="button" class="btn btn-outline-secondary" disabled="@_isChangingSimulationLifecycle" @onclick="() => HandleToggleGenerationAsync(diagnostics)">
-                                        @(diagnostics.GenerationEnabled.Value ? "Disable finance generation" : "Enable finance generation")
+                                        @(diagnostics.GenerationEnabled.Value ? FinanceText["SandboxDisableGeneration"] : FinanceText["SandboxEnableGeneration"])
                                     </button>
                                 }
                             </div>
 
                             <details class="border rounded p-3 mb-3">
-                                <summary class="fw-semibold">Advanced</summary>
+                                <summary class="fw-semibold">@FinanceText["Advanced"]</summary>
                                 <dl class="row mt-2 mb-0">
-                                    <dt class="col-sm-4">UI visibility</dt>
-                                    <dd class="col-sm-8">@(diagnostics.UiVisible ? "Visible" : "Hidden")</dd>
-                                    <dt class="col-sm-4">Backend execution</dt>
-                                    <dd class="col-sm-8">@(diagnostics.BackendExecutionEnabled ? "Enabled" : "Disabled")</dd>
-                                    <dt class="col-sm-4">Background jobs</dt>
-                                    <dd class="col-sm-8">@(diagnostics.BackgroundJobsEnabled ? "Enabled" : "Disabled")</dd>
-                                    <dt class="col-sm-4">Current session</dt>
-                                    <dd class="col-sm-8">@(diagnostics.ActiveSessionId?.ToString("N")[..8] ?? "None")</dd>
-                                    <dt class="col-sm-4">Reproducibility value</dt>
-                                    <dd class="col-sm-8">@(diagnostics.Seed?.ToString() ?? "Unavailable")</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxUiVisibility"]</dt>
+                                    <dd class="col-sm-8">@(diagnostics.UiVisible ? FinanceText["Visible"] : FinanceText["Hidden"])</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxBackendExecution"]</dt>
+                                    <dd class="col-sm-8">@(diagnostics.BackendExecutionEnabled ? FinanceText["SandboxEnabled"] : FinanceText["SandboxDisabled"])</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxBackgroundJobs"]</dt>
+                                    <dd class="col-sm-8">@(diagnostics.BackgroundJobsEnabled ? FinanceText["SandboxEnabled"] : FinanceText["SandboxDisabled"])</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxCurrentSession"]</dt>
+                                    <dd class="col-sm-8">@(diagnostics.ActiveSessionId?.ToString("N")[..8] ?? FinanceText["None"])</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxReproducibilityValue"]</dt>
+                                    <dd class="col-sm-8">@(diagnostics.Seed?.ToString() ?? FinanceText["SandboxUnavailable"])</dd>
                                 </dl>
                             </details>
 
@@ -553,17 +553,17 @@
                             }
 
                             <div class="@ResolveSimulationSnapshotAlertClass(latestRun)" role="alert">
-                                <div class="fw-semibold">Current or last issue state</div>
+                                <div class="fw-semibold">@FinanceText["SandboxIssueState"]</div>
                                 <div class="text-body-secondary">
                                     @(latestRun is null
-                                        ? "No simulation session has been recorded for the active company yet."
+                                        ? FinanceText["SandboxNoSession"]
                                         : FormatSimulationSnapshotMessage(latestRun.InjectedAnomalies, latestRun.Warnings, latestRun.Errors))
                                 </div>
                             </div>
 
                             @if (diagnostics.RecentHistory.Count == 0)
                             {
-                                <p class="text-body-secondary mt-3 mb-0">No simulation sessions have been recorded for the active company yet.</p>
+                                <p class="text-body-secondary mt-3 mb-0">@FinanceText["SandboxNoSessions"]</p>
                             }
                             else
                             {
@@ -572,30 +572,30 @@
                                     {
                                         <details class="border rounded p-3">
                                             <summary class="d-flex flex-wrap align-items-center gap-2">
-                                                <span class="fw-semibold">Session @run.SessionId.ToString("N")[..8]</span>
+                                                <span class="fw-semibold">@FinanceText["SandboxSession", run.SessionId.ToString("N")[..8]]</span>
                                                 <span class="@ResolveSimulationLifecycleBadgeClass(run.Status)">@ResolveSimulationLifecycleLabel(run.Status)</span>
-                                                <span class="text-body-secondary">Started @run.StartedUtc.ToString("u")</span>
+                                                <span class="text-body-secondary">@FinanceText["SandboxStarted", LocalDateTime.DateTime(run.StartedUtc)]</span>
                                             </summary>
 
                                             <div class="row g-3 mt-2">
                                                 <div class="col-lg-4">
                                                     <dl class="row mb-0">
-                                                        <dt class="col-sm-5">Simulated start</dt>
-                                                        <dd class="col-sm-7">@run.StartSimulatedDateTime.ToString("u")</dd>
-                                                        <dt class="col-sm-5">Current time</dt>
+                                                        <dt class="col-sm-5">@FinanceText["SandboxSimulatedStart"]</dt>
+                                                        <dd class="col-sm-7">@LocalDateTime.DateTime(run.StartSimulatedDateTime)</dd>
+                                                        <dt class="col-sm-5">@FinanceText["SandboxCurrentTime"]</dt>
                                                         <dd class="col-sm-7">@FormatUtc(run.CurrentSimulatedDateTime)</dd>
-                                                        <dt class="col-sm-5">Completed</dt>
-                                                        <dd class="col-sm-7">@(run.CompletedUtc?.ToString("u") ?? "In progress")</dd>
-                                                        <dt class="col-sm-5">Generation</dt>
-                                                        <dd class="col-sm-7">@(run.GenerationEnabled ? "Enabled" : "Disabled")</dd>
+                                                        <dt class="col-sm-5">@FinanceText["Completed"]</dt>
+                                                        <dd class="col-sm-7">@(run.CompletedUtc.HasValue ? LocalDateTime.DateTime(run.CompletedUtc.Value) : FinanceText["SandboxInProgress"])</dd>
+                                                        <dt class="col-sm-5">@FinanceText["SandboxGeneration"]</dt>
+                                                        <dd class="col-sm-7">@(run.GenerationEnabled ? FinanceText["SandboxEnabled"] : FinanceText["SandboxDisabled"])</dd>
                                                     </dl>
                                                 </div>
                                                 <div class="col-lg-8">
                                                     <div class="mb-3">
-                                                        <h4 class="h6 mb-2">Status transitions</h4>
+                                                        <h4 class="h6 mb-2">@FinanceText["SandboxStatusTransitions"]</h4>
                                                         @if (run.StatusTransitions.Count == 0)
                                                         {
-                                                            <p class="text-body-secondary mb-0">No lifecycle transitions were captured for this session.</p>
+                                                            <p class="text-body-secondary mb-0">@FinanceText["SandboxNoTransitions"]</p>
                                                         }
                                                         else
                                                         {
@@ -604,7 +604,7 @@
                                                                 {
                                                                     <li>
                                                                         <span class="fw-semibold">@ResolveSimulationLifecycleLabel(transition.Status)</span>
-                                                                        <span> | @transition.TransitionedUtc.ToString("u")</span>
+                                                                        <span> | @LocalDateTime.DateTime(transition.TransitionedUtc)</span>
                                                                         @if (!string.IsNullOrWhiteSpace(transition.Message))
                                                                         {
                                                                             <span> | @transition.Message</span>
@@ -615,24 +615,24 @@
                                                         }
                                                     </div>
                                                     <details class="border rounded p-3">
-                                                        <summary class="fw-semibold">Day-level generated records</summary>
+                                                        <summary class="fw-semibold">@FinanceText["SandboxDayRecords"]</summary>
                                                         <div class="table-responsive mt-3">
                                                             <table class="table finance-table mb-0">
                                                             <thead>
                                                                 <tr>
-                                                                    <th scope="col">Simulated day</th>
-                                                                    <th scope="col">Generated records</th>
-                                                                    <th scope="col">Alerts</th>
-                                                                    <th scope="col">Anomalies</th>
-                                                                    <th scope="col">Warnings</th>
-                                                                    <th scope="col">Errors</th>
+                                                                    <th scope="col">@FinanceText["SandboxSimulatedDay"]</th>
+                                                                    <th scope="col">@FinanceText["SandboxGeneratedRecords"]</th>
+                                                                    <th scope="col">@FinanceText["SandboxAlerts"]</th>
+                                                                    <th scope="col">@FinanceText["SandboxAnomalies"]</th>
+                                                                    <th scope="col">@FinanceText["Warnings"]</th>
+                                                                    <th scope="col">@FinanceText["SandboxErrors"]</th>
                                                                 </tr>
                                                             </thead>
                                                             <tbody>
                                                                 @foreach (var day in run.DayLogs.OrderBy(item => item.SimulatedDateUtc))
                                                                 {
                                                                     <tr>
-                                                                        <td>@day.SimulatedDateUtc.ToString("yyyy-MM-dd")</td>
+                                                                        <td>@LocalDateTime.Date(DateOnly.FromDateTime(day.SimulatedDateUtc))</td>
                                                                         <td>@day.GeneratedRecordCount</td>
                                                                         <td>@day.AlertsGenerated</td>
                                                                         <td>@FormatAnomalyList(day.InjectedAnomalies)</td>
@@ -645,9 +645,9 @@
                                                         </div>
                                                     </details>
                                                     <details class="mt-3">
-                                                        <summary class="fw-semibold">Advanced</summary>
+                                                        <summary class="fw-semibold">@FinanceText["Advanced"]</summary>
                                                         <dl class="row mt-2 mb-0">
-                                                            <dt class="col-sm-4">Reproducibility value</dt>
+                                                            <dt class="col-sm-4">@FinanceText["SandboxReproducibilityValue"]</dt>
                                                             <dd class="col-sm-8">@run.Seed</dd>
                                                         </dl>
                                                     </details>
@@ -667,14 +667,14 @@
                 {
                     <FinanceSandboxAdminSection TSection="FinanceSandboxSimulationControlsViewModel"
                                                 CompanyId="@AccessState.CompanyId!.Value"
-                                                Kicker="Progression controls"
-                                                Title="Progression controls"
-                                                Description="Advance the simulation clock, run a date range, and inspect the latest progression output."
-                                                LoadingTitle="Loading progression controls"
-                                                LoadingMessage="Inspecting the simulation clock."
-                                                EmptyTitle="Progression controls are not configured"
-                                                EmptyMessage="No progression controls are configured for the active company."
-                                                ErrorTitle="Progression controls are unavailable"
+                                                Kicker="@FinanceText["SandboxProgressionControls"]"
+                                                Title="@FinanceText["SandboxProgressionControls"]"
+                                                Description="@FinanceText["SandboxProgressionDescription"]"
+                                                LoadingTitle="@FinanceText["SandboxLoadingProgression"]"
+                                                LoadingMessage="@FinanceText["SandboxInspectingClock"]"
+                                                EmptyTitle="@FinanceText["SandboxProgressionNotConfigured"]"
+                                                EmptyMessage="@FinanceText["SandboxNoProgressionControls"]"
+                                                ErrorTitle="@FinanceText["SandboxProgressionUnavailable"]"
                                                 Loader="@LoadSimulationControlsAsync">
                         <ChildContent Context="simulation">
                         @{
@@ -685,13 +685,13 @@
                         <div class="row g-4">
                             <div class="col-lg-5">
                                 <dl class="row mb-3">
-                                    <dt class="col-sm-4">Clock mode</dt>
+                                    <dt class="col-sm-4">@FinanceText["SandboxClockMode"]</dt>
                                     <dd class="col-sm-8">@FormatPlainLabel(displayedSimulation.ClockMode)</dd>
-                                    <dt class="col-sm-4">Reference time</dt>
-                                    <dd class="col-sm-8">@displayedSimulation.ReferenceUtc.ToString("u")</dd>
-                                    <dt class="col-sm-4">Checkpoint</dt>
+                                    <dt class="col-sm-4">@FinanceText["SandboxReferenceTime"]</dt>
+                                    <dd class="col-sm-8">@LocalDateTime.DateTime(displayedSimulation.ReferenceUtc)</dd>
+                                    <dt class="col-sm-4">@FinanceText["SandboxCheckpoint"]</dt>
                                     <dd class="col-sm-8">@displayedSimulation.CheckpointLabel</dd>
-                                    <dt class="col-sm-4">Observation</dt>
+                                    <dt class="col-sm-4">@FinanceText["SandboxObservation"]</dt>
                                     <dd class="col-sm-8">@displayedSimulation.Observation</dd>
                                 </dl>
 
@@ -716,53 +716,53 @@
 
                                     <div class="row g-3">
                                         <div class="col-md-6">
-                                            <label class="form-label" for="simulation-advance-hours">Advance by hours</label>
+                                            <label class="form-label" for="simulation-advance-hours">@FinanceText["SandboxAdvanceHours"]</label>
                                             <InputNumber id="simulation-advance-hours" class="form-control" @bind-Value="_simulationControlsForm.AdvanceHours" disabled="@IsSimulationBusy" />
                                             <ValidationMessage For="@(() => _simulationControlsForm.AdvanceHours)" />
                                         </div>
                                         <div class="col-md-6">
-                                            <label class="form-label" for="progression-run-hours">Date range in hours</label>
+                                            <label class="form-label" for="progression-run-hours">@FinanceText["SandboxDateRangeHours"]</label>
                                             <InputNumber id="progression-run-hours" class="form-control" @bind-Value="_simulationControlsForm.ProgressionRunHours" disabled="@IsSimulationBusy" />
                                             <ValidationMessage For="@(() => _simulationControlsForm.ProgressionRunHours)" />
                                         </div>
                                         <div class="col-md-6">
-                                            <label class="form-label" for="simulation-step-hours">Execution step hours</label>
+                                            <label class="form-label" for="simulation-step-hours">@FinanceText["SandboxExecutionStepHours"]</label>
                                             <InputNumber id="simulation-step-hours" class="form-control" @bind-Value="_simulationControlsForm.ExecutionStepHours" disabled="@IsSimulationBusy" />
                                             <ValidationMessage For="@(() => _simulationControlsForm.ExecutionStepHours)" />
                                         </div>
                                         <div class="col-md-6 d-flex align-items-end">
                                             <div class="form-check mb-2">
                                                 <InputCheckbox id="simulation-accelerated" class="form-check-input" @bind-Value="_simulationControlsForm.Accelerated" disabled="@IsSimulationBusy" />
-                                                <label class="form-check-label" for="simulation-accelerated">Accelerated progression</label>
+                                                <label class="form-check-label" for="simulation-accelerated">@FinanceText["SandboxAcceleratedProgression"]</label>
                                             </div>
                                         </div>
                                         <div class="col-12 d-flex flex-wrap gap-3">
                                             <button id="simulation-advance-submit" type="button" class="btn btn-primary" disabled="@IsSimulationBusy" @onclick="HandleAdvanceSimulationAsync">
-                                                @(_isAdvancingSimulation ? "Advancing one day..." : _simulationControlsForm.AdvanceHours == 24 ? "Advance one day" : "Advance simulation time")
+                                                @(_isAdvancingSimulation ? FinanceText["SandboxAdvancingOneDay"] : _simulationControlsForm.AdvanceHours == 24 ? FinanceText["SandboxAdvanceOneDay"] : FinanceText["SandboxAdvanceTime"])
                                             </button>
                                             <button id="progression-run-submit" type="button" class="btn btn-outline-primary" disabled="@IsSimulationBusy" @onclick="HandleStartProgressionRunAsync">
                                                 @(_isStartingProgressionRun
-                                                    ? "Starting progression run..."
+                                                    ? FinanceText["SandboxStartingProgression"]
                                                     : HasActiveProgressionRun
-                                                        ? "Progression run in progress"
-                                                        : "Start progression run")
+                                                        ? FinanceText["SandboxProgressionInProgress"]
+                                                        : FinanceText["SandboxStartProgression"])
                                             </button>
                                             <button id="simulation-refresh-submit" type="button" class="btn btn-outline-secondary" disabled="@_isRefreshingSimulationControls" @onclick="HandleRefreshSimulationControlsAsync">
-                                                @(_isRefreshingSimulationControls ? "Refreshing status..." : "Refresh status")
+                                                @(_isRefreshingSimulationControls ? FinanceText["SandboxRefreshingStatus"] : FinanceText["SandboxRefreshStatus"])
                                             </button>
                                         </div>
                                         <div class="col-12 d-flex flex-wrap gap-3 text-body-secondary">
                                             @if (_lastSimulationRefreshUtc.HasValue)
                                             {
-                                                <span>Last updated @_lastSimulationRefreshUtc.Value.ToString("u")</span>
+                                                <span>@FinanceText["UpdatedAt", LocalDateTime.DateTime(_lastSimulationRefreshUtc.Value)]</span>
                                             }
                                             @if (_isPollingSimulationControls)
                                             {
-                                                <span>Status refresh is active while the latest progression run is still in progress.</span>
+                                                <span>@FinanceText["SandboxRefreshActive"]</span>
                                             }
                                             @if (HasActiveProgressionRun && !IsSimulationBusy)
                                             {
-                                                <span>Duplicate progression runs are disabled until the current run reaches a terminal status.</span>
+                                                <span>@FinanceText["SandboxDuplicateRunsDisabled"]</span>
                                             }
                                         </div>
                                     </div>
@@ -770,18 +770,18 @@
                             </div>
 
                             <div class="col-lg-7">
-                                <h3 class="h6 mb-3">Latest progression output</h3>
+                                <h3 class="h6 mb-3">@FinanceText["SandboxLatestProgression"]</h3>
 
                                 @if (displayedRun is null)
                                 {
-                                    <p class="text-body-secondary mb-0">No progression run has been recorded for the active company yet.</p>
+                                    <p class="text-body-secondary mb-0">@FinanceText["SandboxNoProgressionRun"]</p>
                                 }
                                 else
                                 {
                                     <div class="row g-3 mb-3">
                                         <div class="col-sm-6 col-xl-3">
                                             <div class="border rounded p-3 h-100">
-                                                <div class="text-body-secondary small">Status</div>
+                                                <div class="text-body-secondary small">@FinanceText["Status"]</div>
                                                 <div class="mt-1">
                                                     <span class="@FinanceAnomalyPresentation.ResolveStatusPillClass(displayedRun.Status)">
                                                         @FormatPlainLabel(displayedRun.Status)
@@ -791,19 +791,19 @@
                                         </div>
                                         <div class="col-sm-6 col-xl-3">
                                             <div class="border rounded p-3 h-100">
-                                                <div class="text-body-secondary small">Generated records</div>
+                                                <div class="text-body-secondary small">@FinanceText["SandboxGeneratedRecords"]</div>
                                                 <div class="fs-5 fw-semibold">@displayedRun.GeneratedRecordCount</div>
                                             </div>
                                         </div>
                                         <div class="col-sm-6 col-xl-3">
                                             <div class="border rounded p-3 h-100">
-                                                <div class="text-body-secondary small">Events emitted</div>
+                                                <div class="text-body-secondary small">@FinanceText["SandboxEventsEmitted"]</div>
                                                 <div class="fs-5 fw-semibold">@displayedRun.EventsEmitted</div>
                                             </div>
                                         </div>
                                         <div class="col-sm-6 col-xl-3">
                                             <div class="border rounded p-3 h-100">
-                                                <div class="text-body-secondary small">Advanced hours</div>
+                                                <div class="text-body-secondary small">@FinanceText["SandboxAdvancedHours"]</div>
                                                 <div class="fs-5 fw-semibold">@displayedRun.AdvancedHours</div>
                                             </div>
                                         </div>
@@ -823,7 +823,7 @@
 
                                     @if (displayedRun.Steps.Count == 0)
                                     {
-                                        <p class="text-body-secondary mb-0">The backend did not return step history for this run.</p>
+                                        <p class="text-body-secondary mb-0">@FinanceText["SandboxNoStepHistory"]</p>
                                     }
                                     else
                                     {
@@ -831,18 +831,18 @@
                                             <table class="table finance-table mb-0">
                                                 <thead>
                                                     <tr>
-                                                        <th scope="col">Window</th>
-                                                        <th scope="col">Transactions</th>
-                                                        <th scope="col">Invoices</th>
-                                                        <th scope="col">Bills</th>
-                                                        <th scope="col">Generated records</th>
+                                                        <th scope="col">@FinanceText["SandboxWindow"]</th>
+                                                        <th scope="col">@FinanceText["Transactions"]</th>
+                                                        <th scope="col">@FinanceText["Invoices"]</th>
+                                                        <th scope="col">@FinanceText["Bills"]</th>
+                                                        <th scope="col">@FinanceText["SandboxGeneratedRecords"]</th>
                                                     </tr>
                                                 </thead>
                                                 <tbody>
                                                     @foreach (var step in displayedRun.Steps)
                                                     {
                                                         <tr>
-                                                            <td>@step.WindowStartUtc.ToString("u") - @step.WindowEndUtc.ToString("u")</td>
+                                                            <td>@LocalDateTime.DateTime(step.WindowStartUtc) - @LocalDateTime.DateTime(step.WindowEndUtc)</td>
                                                             <td>@step.TransactionsGenerated</td>
                                                             <td>@step.InvoicesGenerated</td>
                                                             <td>@step.BillsGenerated</td>
@@ -855,11 +855,11 @@
                                     }
 
                                     <div class="mt-4">
-                                        <h4 class="h6 mb-3">Run history</h4>
+                                        <h4 class="h6 mb-3">@FinanceText["SandboxRunHistory"]</h4>
 
                                         @if (displayedSimulation.RunHistory.Count == 0)
                                         {
-                                            <p class="text-body-secondary mb-0">No completed runs are available in backend history yet.</p>
+                                            <p class="text-body-secondary mb-0">@FinanceText["SandboxNoCompletedRuns"]</p>
                                         }
                                         else
                                         {
@@ -867,11 +867,11 @@
                                                 <table class="table finance-table mb-0">
                                                     <thead>
                                                         <tr>
-                                                            <th scope="col">Run type</th>
-                                                            <th scope="col">Completed</th>
-                                                            <th scope="col">Status</th>
-                                                            <th scope="col">Generated records</th>
-                                                            <th scope="col">Messages</th>
+                                                            <th scope="col">@FinanceText["SandboxRunType"]</th>
+                                                            <th scope="col">@FinanceText["Completed"]</th>
+                                                            <th scope="col">@FinanceText["Status"]</th>
+                                                            <th scope="col">@FinanceText["SandboxGeneratedRecords"]</th>
+                                                            <th scope="col">@FinanceText["SandboxMessages"]</th>
                                                         </tr>
                                                     </thead>
                                                     <tbody>
@@ -879,10 +879,10 @@
                                                         {
                                                             <tr>
                                                                 <td>@FormatPlainLabel(run.RunType)</td>
-                                                                <td>@run.CompletedUtc.ToString("u")</td>
+                                                                <td>@LocalDateTime.DateTime(run.CompletedUtc)</td>
                                                                 <td>@FormatPlainLabel(run.Status)</td>
                                                                 <td>@run.GeneratedRecordCount</td>
-                                                                <td>@(run.Messages.Count == 0 ? "No backend messages" : string.Join(" | ", run.Messages.Select(message => message.Message)))</td>
+                                                                <td>@(run.Messages.Count == 0 ? FinanceText["SandboxNoBackendMessages"] : string.Join(" | ", run.Messages.Select(message => message.Message)))</td>
                                                             </tr>
                                                         }
                                                     </tbody>

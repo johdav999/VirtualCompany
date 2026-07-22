@@ -12,14 +12,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class AuthAndTenantIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class AuthAndTenantIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public AuthAndTenantIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task GetCurrentUser_provisions_internal_user_and_returns_empty_memberships()

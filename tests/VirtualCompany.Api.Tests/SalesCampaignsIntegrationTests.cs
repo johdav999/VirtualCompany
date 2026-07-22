@@ -12,14 +12,11 @@ using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesCampaignsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class SalesCampaignsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public SalesCampaignsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Audience_options_are_tenant_scoped_and_grouped_for_campaign_builder()
@@ -231,7 +228,7 @@ public sealed class SalesCampaignsIntegrationTests : IClassFixture<TestWebApplic
             AuditExists = await dbContext.AuditEvents.IgnoreQueryFilters()
                 .AnyAsync(x => x.CompanyId == companyId &&
                     x.Action == "sales.sequence.pending_steps_cancelled" &&
-                    x.TargetEntityId == contactId.ToString("D")),
+                    x.TargetId == contactId.ToString("D")),
             CancelledSteps = await dbContext.SalesSequenceExecutionSteps.IgnoreQueryFilters()
                 .Where(x => x.CompanyId == companyId && x.ContactId == contactId && x.Status == SalesStatuses.Cancelled)
                 .ToListAsync()

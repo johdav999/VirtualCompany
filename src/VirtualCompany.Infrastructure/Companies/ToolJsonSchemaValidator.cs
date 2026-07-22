@@ -130,18 +130,31 @@ internal static class ToolJsonSchemaValidator
             errors.Add($"{path} must be less than or equal to {maximum.ToString(CultureInfo.InvariantCulture)}.");
         }
 
-        if (TryReadString(schema, "format", out var format) && value.TryGetValue<string>(out var text))
+        if (TryReadText(value, out var text))
         {
-            if (string.Equals(format, "date-time", StringComparison.OrdinalIgnoreCase) &&
-                !DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
+            if (TryReadDecimal(schema, "minLength", out var minLength) && text.Length < minLength)
             {
-                errors.Add($"{path} must be a valid date-time.");
+                errors.Add($"{path} must contain at least {minLength.ToString(CultureInfo.InvariantCulture)} characters.");
             }
 
-            if (string.Equals(format, "uuid", StringComparison.OrdinalIgnoreCase) &&
-                !Guid.TryParse(text, out _))
+            if (TryReadDecimal(schema, "maxLength", out var maxLength) && text.Length > maxLength)
             {
-                errors.Add($"{path} must be a valid uuid.");
+                errors.Add($"{path} must contain at most {maxLength.ToString(CultureInfo.InvariantCulture)} characters.");
+            }
+
+            if (TryReadString(schema, "format", out var format))
+            {
+                if (string.Equals(format, "date-time", StringComparison.OrdinalIgnoreCase) &&
+                    !DateTime.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out _))
+                {
+                    errors.Add($"{path} must be a valid date-time.");
+                }
+
+                if (string.Equals(format, "uuid", StringComparison.OrdinalIgnoreCase) &&
+                    !Guid.TryParse(text, out _))
+                {
+                    errors.Add($"{path} must be a valid uuid.");
+                }
             }
         }
     }
@@ -171,10 +184,10 @@ internal static class ToolJsonSchemaValidator
         {
             "object" => node is JsonObject,
             "array" => node is JsonArray,
-            "string" => node is JsonValue value && value.TryGetValue<string>(out _),
+            "string" => node is JsonValue value && TryReadText(value, out _),
             "boolean" => node is JsonValue value && value.TryGetValue<bool>(out _),
             "number" => node is JsonValue value && TryReadDecimal(value, out _),
-            "integer" => node is JsonValue value && value.TryGetValue<int>(out _),
+            "integer" => node is JsonValue value && TryReadDecimal(value, out var number) && decimal.Truncate(number) == number,
             "null" => node is null,
             _ => true
         };
@@ -206,11 +219,42 @@ internal static class ToolJsonSchemaValidator
         return schema[key] is JsonValue jsonValue && TryReadDecimal(jsonValue, out value);
     }
 
-    private static bool TryReadDecimal(JsonValue jsonValue, out decimal value) =>
-        jsonValue.TryGetValue(out value) ||
-        jsonValue.TryGetValue<double>(out var doubleValue) && decimal.TryParse(
-            doubleValue.ToString(CultureInfo.InvariantCulture),
-            NumberStyles.Number,
-            CultureInfo.InvariantCulture,
-            out value);
+    private static bool TryReadDecimal(JsonValue jsonValue, out decimal value)
+    {
+        if (jsonValue.TryGetValue(out value) ||
+            jsonValue.TryGetValue<int>(out var intValue) && (value = intValue) == intValue ||
+            jsonValue.TryGetValue<long>(out var longValue) && (value = longValue) == longValue)
+        {
+            return true;
+        }
+
+        if (jsonValue.TryGetValue<double>(out var doubleValue) && decimal.TryParse(
+                doubleValue.ToString(CultureInfo.InvariantCulture),
+                NumberStyles.Float,
+                CultureInfo.InvariantCulture,
+                out value))
+        {
+            return true;
+        }
+
+        value = 0m;
+        return false;
+    }
+
+    private static bool TryReadText(JsonValue jsonValue, out string value)
+    {
+        if (jsonValue.TryGetValue(out value!))
+        {
+            return true;
+        }
+
+        if (jsonValue.TryGetValue<Guid>(out var guid))
+        {
+            value = guid.ToString();
+            return true;
+        }
+
+        value = string.Empty;
+        return false;
+    }
 }

@@ -11,17 +11,20 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFortnoxApiClient _fortnoxApiClient;
+    private readonly IFinanceIntegrationWriteApprovalService _writeApprovalService;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FortnoxOutboundActionExecutor> _logger;
 
     public FortnoxOutboundActionExecutor(
         VirtualCompanyDbContext dbContext,
         IFortnoxApiClient fortnoxApiClient,
+        IFinanceIntegrationWriteApprovalService writeApprovalService,
         TimeProvider timeProvider,
         ILogger<FortnoxOutboundActionExecutor> logger)
     {
         _dbContext = dbContext;
         _fortnoxApiClient = fortnoxApiClient;
+        _writeApprovalService = writeApprovalService;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -94,6 +97,20 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new FortnoxApiException("Fortnox is not connected.", null, "authorization", requiresReconnect: true);
 
+        var approvalCheck = new FinanceIntegrationWriteApprovalCheck(
+            FinanceIntegrationProviderKeys.Fortnox,
+            companyId,
+            activeConnection.Id,
+            command.ActorUserId,
+            approvalId,
+            command.CommandType,
+            command.HttpMethod,
+            command.Path,
+            command.TargetCompany,
+            command.PayloadSummary,
+            command.PayloadHash,
+            new FinanceIntegrationWritePayload(command.SanitizedPayloadJson),
+            command.Id);
         await WriteAuditAsync(command, "write_execution_started", FinanceIntegrationAuditOutcomes.Succeeded, "Approved accounting-system action is being sent to Fortnox.", cancellationToken);
         var payload = ParsePayload(command.SanitizedPayloadJson);
         var context = new FortnoxRequestContext(companyId, activeConnection.Id, command.CorrelationId, approvalId, command.ActorUserId, command.Id, command.RetrySupported);
@@ -117,6 +134,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 _ => throw new FortnoxApiException("This Fortnox action type is not supported for execution.", null, "unsupported_action")
             };
 
+            await _writeApprovalService.RecordExecutionSucceededAsync(approvalCheck, response, cancellationToken);
             await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             _logger.LogInformation(
@@ -141,6 +159,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 command.HttpMethod,
                 command.Path,
                 safeSummary);
+            await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             return ToResult(refreshed, safeSummary, executed: false);

@@ -116,3 +116,4 @@ Write-Host "Restoring database '$DatabaseName'..."
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Write-Host "Restored '$DatabaseName' in container '$containerName'."
+Write-Host "Run .\server.ps1 to apply pending EF Core migrations and start the API."

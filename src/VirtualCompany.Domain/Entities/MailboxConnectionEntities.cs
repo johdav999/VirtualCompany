@@ -17,7 +17,8 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         string emailAddress,
         string? displayName = null,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        MailboxPurpose purpose = MailboxPurpose.Finance)
     {
         if (companyId == Guid.Empty)
         {
@@ -30,11 +31,13 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         }
 
         MailboxProviderValues.EnsureSupported(provider, nameof(provider));
+        MailboxPurposeValues.EnsureSupported(purpose, nameof(purpose));
 
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId;
         UserId = userId;
         Provider = provider;
+        Purpose = purpose;
         Status = MailboxConnectionStatus.Pending;
         EmailAddress = NormalizeEmail(emailAddress);
         DisplayName = NormalizeOptional(displayName, nameof(displayName), 200);
@@ -48,6 +51,7 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
     public Guid CompanyId { get; private set; }
     public Guid UserId { get; private set; }
     public MailboxProvider Provider { get; private set; }
+    public MailboxPurpose Purpose { get; private set; }
     public MailboxConnectionStatus Status { get; private set; }
     public string EmailAddress { get; private set; } = null!;
     public string? DisplayName { get; private set; }
@@ -55,11 +59,23 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
     public string? EncryptedAccessToken { get; private set; }
     public string? EncryptedRefreshToken { get; private set; }
     public string? EncryptedCredentialEnvelope { get; private set; }
+    public string? ProfileKey { get; private set; }
+    public MailboxAuthenticationType? AuthenticationType { get; private set; }
+    public string? AuthenticatedUsername { get; private set; }
+    public string? ImapHost { get; private set; }
+    public int? ImapPort { get; private set; }
+    public MailboxTlsMode? ImapTlsMode { get; private set; }
+    public string? SmtpHost { get; private set; }
+    public int? SmtpPort { get; private set; }
+    public MailboxTlsMode? SmtpTlsMode { get; private set; }
+    public MailboxCapability CapabilityFlags { get; private set; }
     public DateTime? AccessTokenExpiresUtc { get; private set; }
     public List<string> GrantedScopes { get; private set; } = [];
     public List<MailboxFolderSelection> ConfiguredFolders { get; private set; } = [];
     public JsonObject ProviderMetadata { get; private set; } = [];
     public DateTime? LastSuccessfulScanUtc { get; private set; }
+    public DateTime? LastHealthCheckUtc { get; private set; }
+    public string? LastErrorCode { get; private set; }
     public string? LastErrorSummary { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
@@ -67,6 +83,7 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
     public ICollection<EmailMessageSnapshot> MessageSnapshots { get; } = new List<EmailMessageSnapshot>();
     public User User { get; private set; } = null!;
     public ICollection<EmailIngestionRun> IngestionRuns { get; } = new List<EmailIngestionRun>();
+    public ICollection<MailboxFolderSyncCursor> FolderSyncCursors { get; } = new List<MailboxFolderSyncCursor>();
 
     public void UpdateMailboxProfile(string emailAddress, string? displayName, string? mailboxExternalId = null)
     {
@@ -93,6 +110,64 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         UpdatedUtc = DateTime.UtcNow;
     }
 
+    public void EraseCredentialMaterial(DateTime erasedUtc)
+    {
+        EncryptedAccessToken = null;
+        EncryptedRefreshToken = null;
+        EncryptedCredentialEnvelope = null;
+        AccessTokenExpiresUtc = null;
+        GrantedScopes = [];
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(erasedUtc, nameof(erasedUtc));
+    }
+
+    public void ConfigureStandardConnection(
+        string profileKey,
+        MailboxAuthenticationType authenticationType,
+        string authenticatedUsername,
+        string imapHost,
+        int imapPort,
+        MailboxTlsMode imapTlsMode,
+        string smtpHost,
+        int smtpPort,
+        MailboxTlsMode smtpTlsMode,
+        MailboxCapability capabilities)
+    {
+        if (Provider != MailboxProvider.StandardEmail)
+        {
+            throw new InvalidOperationException("Standard endpoint configuration is available only for standard email connections.");
+        }
+
+        if (!Enum.IsDefined(authenticationType)) throw new ArgumentOutOfRangeException(nameof(authenticationType));
+        if (!Enum.IsDefined(imapTlsMode)) throw new ArgumentOutOfRangeException(nameof(imapTlsMode));
+        if (!Enum.IsDefined(smtpTlsMode)) throw new ArgumentOutOfRangeException(nameof(smtpTlsMode));
+        if (imapPort is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(imapPort));
+        if (smtpPort is < 1 or > 65535) throw new ArgumentOutOfRangeException(nameof(smtpPort));
+
+        ProfileKey = NormalizeRequired(profileKey, nameof(profileKey), 64).ToLowerInvariant();
+        AuthenticationType = authenticationType;
+        AuthenticatedUsername = NormalizeRequired(authenticatedUsername, nameof(authenticatedUsername), 256);
+        ImapHost = NormalizeHost(imapHost, nameof(imapHost));
+        ImapPort = imapPort;
+        ImapTlsMode = imapTlsMode;
+        SmtpHost = NormalizeHost(smtpHost, nameof(smtpHost));
+        SmtpPort = smtpPort;
+        SmtpTlsMode = smtpTlsMode;
+        CapabilityFlags = capabilities;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void RecordHealthCheck(
+        DateTime checkedUtc,
+        bool succeeded,
+        string? safeErrorSummary = null,
+        string? safeErrorCode = null)
+    {
+        LastHealthCheckUtc = EntityTimestampNormalizer.NormalizeUtc(checkedUtc, nameof(checkedUtc));
+        LastErrorCode = succeeded ? null : NormalizeOptional(safeErrorCode, nameof(safeErrorCode), 100);
+        LastErrorSummary = succeeded ? null : NormalizeOptional(safeErrorSummary, nameof(safeErrorSummary), 1000);
+        UpdatedUtc = LastHealthCheckUtc.Value;
+    }
+
     public void ConfigureFolders(IReadOnlyCollection<MailboxFolderSelection>? configuredFolders)
     {
         ConfiguredFolders = configuredFolders?
@@ -104,10 +179,11 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         UpdatedUtc = DateTime.UtcNow;
     }
 
-    public void SetStatus(MailboxConnectionStatus status, string? errorSummary = null)
+    public void SetStatus(MailboxConnectionStatus status, string? errorSummary = null, string? errorCode = null)
     {
         MailboxConnectionStatusValues.EnsureSupported(status, nameof(status));
         Status = status;
+        LastErrorCode = NormalizeOptional(errorCode, nameof(errorCode), 100);
         LastErrorSummary = NormalizeOptional(errorSummary, nameof(errorSummary), 1000);
         UpdatedUtc = DateTime.UtcNow;
     }
@@ -116,6 +192,7 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
     {
         Status = MailboxConnectionStatus.Active;
         LastSuccessfulScanUtc = EntityTimestampNormalizer.NormalizeUtc(completedUtc, nameof(completedUtc));
+        LastErrorCode = null;
         LastErrorSummary = null;
         UpdatedUtc = LastSuccessfulScanUtc.Value;
     }
@@ -133,6 +210,17 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         if (!normalized.Contains('@', StringComparison.Ordinal))
         {
             throw new ArgumentException("Mailbox email address must be valid.", nameof(value));
+        }
+
+        return normalized;
+    }
+
+    private static string NormalizeHost(string value, string name)
+    {
+        var normalized = NormalizeRequired(value, name, 253).TrimEnd('.').ToLowerInvariant();
+        if (Uri.CheckHostName(normalized) is UriHostNameType.Unknown)
+        {
+            throw new ArgumentException($"{name} must be a valid DNS host name or IP address.", name);
         }
 
         return normalized;

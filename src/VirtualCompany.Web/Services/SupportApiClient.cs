@@ -4,17 +4,19 @@ using System.Text.Json;
 
 namespace VirtualCompany.Web.Services;
 
-public sealed class SupportApiClient
+public sealed partial class SupportApiClient
 {
     private const string CompanyContextHeaderName = "X-Company-Id";
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private readonly HttpClient _httpClient;
     private readonly bool _useOfflineMode;
+    private readonly IApiProblemMessageResolver? _problemResolver;
 
-    public SupportApiClient(HttpClient httpClient, bool useOfflineMode = false)
+    public SupportApiClient(HttpClient httpClient, bool useOfflineMode = false, IApiProblemMessageResolver? problemResolver = null)
     {
         _httpClient = httpClient;
         _useOfflineMode = useOfflineMode;
+        _problemResolver = problemResolver;
     }
 
     public Task<SupportCaseListResponse> ListCasesAsync(Guid companyId, SupportCaseListQuery query, CancellationToken cancellationToken = default)
@@ -255,7 +257,7 @@ public sealed class SupportApiClient
         }
     }
 
-    private static async Task<SupportApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
+    private async Task<SupportApiException> CreateExceptionAsync(HttpResponseMessage response, CancellationToken cancellationToken)
     {
         if (response.Content.Headers.ContentType?.MediaType is not ("application/json" or "application/problem+json"))
         {
@@ -264,8 +266,8 @@ public sealed class SupportApiClient
 
         var problem = await response.Content.ReadFromJsonAsync<ApiProblemResponse>(SerializerOptions, cancellationToken);
         return problem?.Errors is { Count: > 0 }
-            ? new SupportApiException(FormatProblem(problem), problem.Errors)
-            : new SupportApiException(problem?.Detail ?? problem?.Title ?? "The support request failed.");
+            ? new SupportApiException(_problemResolver?.Resolve(problem, FormatProblem(problem)) ?? FormatProblem(problem), problem.Errors)
+            : new SupportApiException(_problemResolver?.Resolve(problem, "The support request failed.") ?? problem?.Detail ?? problem?.Title ?? "The support request failed.");
     }
 
     private static string FormatProblem(ApiProblemResponse problem)
@@ -274,12 +276,6 @@ public sealed class SupportApiClient
         return firstError ?? problem.Detail ?? problem.Title ?? "The support request failed.";
     }
 
-    private sealed class ApiProblemResponse
-    {
-        public string? Title { get; set; }
-        public string? Detail { get; set; }
-        public Dictionary<string, string[]>? Errors { get; set; }
-    }
 }
 
 public sealed class SupportApiException : Exception

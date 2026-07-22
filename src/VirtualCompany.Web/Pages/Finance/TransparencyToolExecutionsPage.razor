@@ -2,23 +2,23 @@
 @page "/system/admin/tool-executions/{ExecutionId:guid}"
 @inherits FinanceTransparencyPageBase
 
-<PageTitle>Tool executions</PageTitle>
+<PageTitle>@FinanceText["ToolExecutions"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Tool executions"
-    Description="Review recent finance tool execution history, lifecycle state, and related approval or originating action links."
-    LoadingMessage="Loading tool execution history..."
+    Title="@FinanceText["ToolExecutions"]"
+    Description="@FinanceText["ToolExecutionsDescription"]"
+    LoadingMessage="@FinanceText["LoadingToolExecutions"]"
     Area="SystemAdmin">
     @if (!HasTransparencyAccess)
     {
         <ForbiddenState
-            Title="System access required"
-            Message="System administration pages are limited to company admins and testers."
+            Title="@FinanceText["SystemAccessRequired"]"
+            Message="@FinanceText["SystemAccessRequiredMessage"]"
             ReturnHref="@BuildFinanceHomeHref()"
-            ReturnText="Back to finance" />
+            ReturnText="@FinanceText["BackToFinance"]" />
     }
     else
     {
@@ -27,32 +27,32 @@
                 <div class="wizard-card wizard-card--compact">
                     <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
                         <div>
-                            <h2 class="h5 mb-1">Tool execution history</h2>
-                            <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? "Recent finance executions show lifecycle state plus concise request and response summaries." : Summary)</p>
+                            <h2 class="h5 mb-1">@FinanceText["ToolExecutionHistory"]</h2>
+                            <p class="text-body-secondary mb-0">@(string.IsNullOrWhiteSpace(Summary) ? FinanceText["ToolExecutionHistorySummary"] : Summary)</p>
                         </div>
-                        <span class="badge text-bg-light">@Items.Count item@(Items.Count == 1 ? string.Empty : "s")</span>
+                        <span class="badge text-bg-light">@FinanceText["ItemCount", Items.Count]</span>
                     </div>
 
                     <FinanceDataState
                         IsLoading="@IsListLoading"
                         IsEmpty="@IsListEmpty"
                         ErrorMessage="@ListErrorMessage"
-                        LoadingTitle="Loading finance tool executions"
-                        LoadingMessage="Reading recent finance tool execution history."
-                        EmptyTitle="No finance tool executions available"
-                        EmptyMessage="No finance tool executions are recorded for the active company."
-                        ErrorTitle="Finance tool executions are unavailable"
+                        LoadingTitle="@FinanceText["LoadingFinanceToolExecutions"]"
+                        LoadingMessage="@FinanceText["ReadingFinanceToolExecutions"]"
+                        EmptyTitle="@FinanceText["NoFinanceToolExecutions"]"
+                        EmptyMessage="@FinanceText["NoFinanceToolExecutionsMessage"]"
+                        ErrorTitle="@FinanceText["FinanceToolExecutionsUnavailable"]"
                         OnRetry="@ReloadAsync">
                         <div class="table-responsive">
                             <table class="table finance-table mb-0">
                                 <thead>
                                     <tr>
-                                        <th scope="col">Tool</th>
-                                        <th scope="col">State</th>
-                                        <th scope="col">Request</th>
-                                        <th scope="col">Response</th>
-                                        <th scope="col">Executed</th>
-                                        <th scope="col">Correlation</th>
+                                        <th scope="col">@FinanceText["Tool"]</th>
+                                        <th scope="col">@FinanceText["State"]</th>
+                                        <th scope="col">@FinanceText["Request"]</th>
+                                        <th scope="col">@FinanceText["Response"]</th>
+                                        <th scope="col">@FinanceText["Executed"]</th>
+                                        <th scope="col">@FinanceText["Correlation"]</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -81,47 +81,47 @@
                 <div class="wizard-card wizard-card--compact">
                     @if (IsDetailLoading)
                     {
-                        <FinanceLoadingState Title="Loading execution detail" Message="Resolving the selected finance tool execution from the route." />
+                        <FinanceLoadingState Title="@FinanceText["LoadingExecutionDetail"]" Message="@FinanceText["ResolvingExecutionDetail"]" />
                     }
                     else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                     {
-                        <FinanceErrorState Title="Execution detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                        <FinanceErrorState Title="@FinanceText["ExecutionDetailUnavailable"]" Message="@(DetailErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@ReloadAsync" />
                     }
                     else if (SelectedExecution is null)
                     {
-                        <FinanceEmptyState Title="No execution selected" Message="Select a tool execution to inspect approval and originating action links." />
+                        <FinanceEmptyState Title="@FinanceText["NoExecutionSelected"]" Message="@FinanceText["NoExecutionSelectedMessage"]" />
                     }
                     else
                     {
 
-                        <h2 class="h5">Execution detail</h2>
+                        <h2 class="h5">@FinanceText["ExecutionDetail"]</h2>
                         <dl class="mb-4">
-                            <dt>Tool</dt>
+                            <dt>@FinanceText["Tool"]</dt>
                             <dd>@SelectedExecution.ToolName (@SelectedExecution.ToolVersion)</dd>
-                            <dt>Lifecycle state</dt>
+                            <dt>@FinanceText["LifecycleState"]</dt>
                             <dd>@FormatLabel(SelectedExecution.LifecycleState)</dd>
-                            <dt>Executed</dt>
+                            <dt>@FinanceText["Executed"]</dt>
                             <dd>@FormatTimestamp(SelectedExecution.ExecutionTimestampUtc)</dd>
-                            <dt>Approval request</dt>
+                            <dt>@FinanceText["ApprovalRequest"]</dt>
                             <dd>@FormatValue(SelectedExecution.ApprovalRequestDisplay)</dd>
-                            <dt>Correlation</dt>
+                            <dt>@FinanceText["Correlation"]</dt>
                             <dd>@FormatValue(SelectedExecution.CorrelationId)</dd>
-                            <dt>Originating finance action</dt>
+                            <dt>@FinanceText["OriginatingFinanceAction"]</dt>
                             <dd>@FormatValue(SelectedExecution.OriginatingFinanceActionDisplay)</dd>
-                            <dt>Originating entity</dt>
+                            <dt>@FinanceText["OriginatingEntity"]</dt>
                             <dd>@FormatValue(SelectedExecution.OriginatingEntityReference)</dd>
                         </dl>
 
-                        <h3 class="h6">Request summary</h3>
+                        <h3 class="h6">@FinanceText["RequestSummary"]</h3>
                         <p>@SelectedExecution.RequestSummary</p>
 
-                        <h3 class="h6">Response summary</h3>
+                        <h3 class="h6">@FinanceText["ResponseSummary"]</h3>
                         <p class="mb-4">@SelectedExecution.ResponseSummary</p>
 
-                        <h3 class="h6">Related records</h3>
+                        <h3 class="h6">@FinanceText["RelatedRecords"]</h3>
                         @if (SelectedExecution.RelatedRecords.Count == 0)
                         {
-                            <p class="text-body-secondary mb-0">No related approval request, event, or originating finance action link is available for this execution.</p>
+                            <p class="text-body-secondary mb-0">@FinanceText["NoExecutionRelatedRecords"]</p>
                         }
                         else
                         {
@@ -137,11 +137,11 @@
                                             {
                                                 <div class="small text-body-secondary">@record.Reference</div>
                                             }
-                                            <div class="small text-body-secondary">Resolved via @FormatLabel(record.ResolutionSource)</div>
+                                            <div class="small text-body-secondary">@FinanceText["ResolvedVia", FormatLabel(record.ResolutionSource)]</div>
                                         </div>
                                         @if (!string.IsNullOrWhiteSpace(href))
                                         {
-                                            <a class="btn btn-outline-secondary btn-sm" href="@href">Open</a>
+                                            <a class="btn btn-outline-secondary btn-sm" href="@href">@CommonText["Open"]</a>
                                         }
                                     </div>
                                 </div>

@@ -301,7 +301,7 @@ public partial class TransactionsPage : FinancePageBase
     private bool IsFlaggedSelected(string option) =>
         string.Equals(FlaggedFilterValue, option, StringComparison.OrdinalIgnoreCase);
 
-    private static string NormalizeFlaggedState(string? value)
+    private string NormalizeFlaggedState(string? value)
     {
         if (string.IsNullOrWhiteSpace(value))
         {
@@ -316,7 +316,7 @@ public partial class TransactionsPage : FinancePageBase
         };
     }
 
-    private static string ResolveValidationMessage(FinanceApiValidationException exception, string key)
+    private string ResolveValidationMessage(FinanceApiValidationException exception, string key)
     {
         if (exception.Errors.TryGetValue(key, out var directErrors) && directErrors.Length > 0)
         {
@@ -327,25 +327,24 @@ public partial class TransactionsPage : FinancePageBase
         return matched.Value is { Length: > 0 } ? matched.Value[0] : exception.Message;
     }
 
-    private static string? NormalizeOptionalText(string? value) =>
+    private string? NormalizeOptionalText(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    private static DateTime? NormalizeStartUtc(DateTime? value) =>
+    private DateTime? NormalizeStartUtc(DateTime? value) =>
         value.HasValue ? DateTime.SpecifyKind(value.Value.Date, DateTimeKind.Utc) : null;
 
-    private static DateTime? NormalizeEndExclusiveUtc(DateTime? value) =>
+    private DateTime? NormalizeEndExclusiveUtc(DateTime? value) =>
         value.HasValue ? DateTime.SpecifyKind(value.Value.Date.AddDays(1), DateTimeKind.Utc) : null;
 
-    private static string FormatCurrency(decimal amount, string currency) =>
-        $"{currency} {amount.ToString("N2", CultureInfo.InvariantCulture)}";
+    private string FormatCurrency(decimal amount, string currency) => LocalMoney.Format(amount, currency);
 
-    private static string FormatDate(DateTime value) =>
-        value == default ? "Not available" : value.ToString("MMM dd, yyyy", CultureInfo.InvariantCulture);
+    private string FormatDate(DateTime value) =>
+        value == default ? "Not available" : LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatLabel(string? value) =>
+    private string FormatLabel(string? value) =>
         FinanceAnomalyPresentation.FormatLabel(value);
 
-    private static string FormatFlagReason(string? value, FinanceTransactionPaymentContextResponse? paymentContext = null)
+    private string FormatFlagReason(string? value, FinanceTransactionPaymentContextResponse? paymentContext = null)
     {
         var normalized = NormalizeOptionalText(value)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
         return normalized switch
@@ -359,7 +358,7 @@ public partial class TransactionsPage : FinancePageBase
         };
     }
 
-    private static string BuildPartialPaymentReason(FinanceTransactionPaymentContextResponse? paymentContext)
+    private string BuildPartialPaymentReason(FinanceTransactionPaymentContextResponse? paymentContext)
     {
         if (paymentContext is null)
         {
@@ -369,20 +368,20 @@ public partial class TransactionsPage : FinancePageBase
         return $"{FormatCurrency(paymentContext.PaidAmount, paymentContext.Currency)} has been paid against {FormatCurrency(paymentContext.TotalAmount, paymentContext.Currency)}. {FormatCurrency(paymentContext.RemainingAmount, paymentContext.Currency)} remains open.";
     }
 
-    private static string FormatTableDate(DateTime value) =>
-        value == default ? "Not available" : value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture);
+    private string FormatTableDate(DateTime value) =>
+        value == default ? FinanceText["NotAvailable"] : LocalDateTime.Date(DateOnly.FromDateTime(value));
 
-    private static string FormatPlainText(string? value, string fallback = "Not available") =>
+    private string FormatPlainText(string? value, string fallback = "Not available") =>
         string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
 
-    private static bool IsUncategorized(string? category)
+    private bool IsUncategorized(string? category)
     {
         var normalized = NormalizeOptionalText(category)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
         return string.IsNullOrWhiteSpace(normalized) ||
             normalized is "uncategorized" or "unknown" or "unmapped" or "needs_category";
     }
 
-    private static bool IsNeedsReview(FinanceTransactionResponse transaction)
+    private bool IsNeedsReview(FinanceTransactionResponse transaction)
     {
         if (transaction.IsFlagged || IsUncategorized(transaction.TransactionType))
         {
@@ -394,7 +393,7 @@ public partial class TransactionsPage : FinancePageBase
             normalized is not "clear" and not "none" and not "normal" and not "resolved";
     }
 
-    private static TransactionStatusPresentation ResolveStatusPresentation(
+    private TransactionStatusPresentation ResolveStatusPresentation(
         bool isFlagged,
         string? anomalyState,
         string? category)
@@ -418,7 +417,7 @@ public partial class TransactionsPage : FinancePageBase
         };
     }
 
-    private static TransactionRowViewModel ToRowViewModel(FinanceTransactionResponse transaction, bool isSelected)
+    private TransactionRowViewModel ToRowViewModel(FinanceTransactionResponse transaction, bool isSelected)
     {
         var status = ResolveStatusPresentation(transaction.IsFlagged, transaction.AnomalyState, transaction.TransactionType);
         return new TransactionRowViewModel(
@@ -436,7 +435,7 @@ public partial class TransactionsPage : FinancePageBase
             isSelected);
     }
 
-    private static TransactionDetailViewModel ToDetailViewModel(FinanceTransactionDetailResponse transaction)
+    private TransactionDetailViewModel ToDetailViewModel(FinanceTransactionDetailResponse transaction)
     {
         var status = ResolveStatusPresentation(transaction.IsFlagged, transaction.AnomalyState, transaction.Category);
         var flags = transaction.Flags ?? [];
@@ -458,7 +457,7 @@ public partial class TransactionsPage : FinancePageBase
             BuildReviewReason(transaction, status.Label));
     }
 
-    private static string ResolveSourceLabel(FinanceTransactionDetailResponse transaction)
+    private string ResolveSourceLabel(FinanceTransactionDetailResponse transaction)
     {
         var category = NormalizeOptionalText(transaction.Category)?.Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
         if (category is "customer_payment" or "supplier_payment" or "payment")
@@ -484,7 +483,7 @@ public partial class TransactionsPage : FinancePageBase
         return "Bank or integration import";
     }
 
-    private static string BuildAgentInsight(FinanceTransactionDetailResponse transaction, string statusLabel)
+    private string BuildAgentInsight(FinanceTransactionDetailResponse transaction, string statusLabel)
     {
         if (IsUncategorized(transaction.Category))
         {
@@ -518,7 +517,7 @@ public partial class TransactionsPage : FinancePageBase
         return "No obvious issue detected.";
     }
 
-    private static string BuildReviewReason(FinanceTransactionDetailResponse transaction, string statusLabel)
+    private string BuildReviewReason(FinanceTransactionDetailResponse transaction, string statusLabel)
     {
         if (transaction.Flags.Count > 0)
         {
@@ -538,19 +537,19 @@ public partial class TransactionsPage : FinancePageBase
         return "No review reason is recorded for this transaction.";
     }
 
-    private static bool HasFlag(FinanceTransactionDetailResponse transaction, string flag) =>
+    private bool HasFlag(FinanceTransactionDetailResponse transaction, string flag) =>
         transaction.Flags.Any(x =>
             string.Equals(
                 NormalizeOptionalText(x)?.Replace("-", "_", StringComparison.Ordinal),
                 flag,
                 StringComparison.OrdinalIgnoreCase));
 
-    private static string? FormatPaymentSummary(FinanceTransactionPaymentContextResponse? paymentContext) =>
+    private string? FormatPaymentSummary(FinanceTransactionPaymentContextResponse? paymentContext) =>
         paymentContext is null
             ? null
             : $"{FormatCurrency(paymentContext.PaidAmount, paymentContext.Currency)} paid; {FormatCurrency(paymentContext.RemainingAmount, paymentContext.Currency)} remaining";
 
-    private static TransactionsSummaryViewModel BuildSummary(IReadOnlyList<FinanceTransactionResponse> transactions)
+    private TransactionsSummaryViewModel BuildSummary(IReadOnlyList<FinanceTransactionResponse> transactions)
     {
         var currency = transactions.Select(x => x.Currency).FirstOrDefault(x => !string.IsNullOrWhiteSpace(x)) ?? "USD";
         var inflow = transactions.Where(x => x.Amount > 0).Sum(x => x.Amount);

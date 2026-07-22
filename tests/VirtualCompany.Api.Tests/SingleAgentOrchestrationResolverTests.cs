@@ -10,14 +10,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SingleAgentOrchestrationResolverTests : IClassFixture<TestWebApplicationFactory>
+public sealed class SingleAgentOrchestrationResolverTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public SingleAgentOrchestrationResolverTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task ResolveAsync_resolves_agent_from_explicit_agent_id()

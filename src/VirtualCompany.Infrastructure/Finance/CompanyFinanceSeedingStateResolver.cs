@@ -63,11 +63,18 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
             return fastPathResult;
         }
 
-        var execution = await LoadSeedExecutionAsync(companyId, cancellationToken);
         var recordChecks = await LoadRecordChecksAsync(companyId, cancellationToken);
+        var shouldLoadExecution = company.FinanceSeedStatus is FinanceSeedingState.Seeding or FinanceSeedingState.Failed ||
+                                  metadata?.State is FinanceSeedingState.Seeding or FinanceSeedingState.Failed;
+        var execution = shouldLoadExecution
+            ? await LoadSeedExecutionAsync(companyId, cancellationToken)
+            : null;
         var state = ResolveState(company.FinanceSeedStatus, metadata, recordChecks, execution);
         var reason = BuildReason(company.FinanceSeedStatus, metadata, recordChecks, execution, state);
-        var derivedFrom = metadata?.HasExtensionMetadata == true || company.FinanceSeedStatus != FinanceSeedingState.NotSeeded
+        var metadataReconciled = metadata?.HasExtensionMetadata == true &&
+                                 ((metadata.State == FinanceSeedingState.NotSeeded && !recordChecks.HasAnyRecords) ||
+                                  (metadata.State == FinanceSeedingState.Seeding && recordChecks.HasAnyRecords && !recordChecks.IsComplete));
+        var derivedFrom = metadataReconciled
             ? FinanceSeedingStateDerivedFromValues.Metadata
             : FinanceSeedingStateDerivedFromValues.RecordChecks;
 
@@ -79,7 +86,7 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
             metadata,
             company.FinanceSeedStatus,
             recordChecks,
-            usedFastPath: metadata?.HasExtensionMetadata == true,
+            usedFastPath: metadataReconciled,
             reason);
     }
 
@@ -242,14 +249,6 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
 
         if (metadata.State == FinanceSeedingState.Seeded && metadata.HasCompleteFoundationalChecks)
         {
-            var recordChecks = new FinanceSeedRecordChecks(
-                metadata.Accounts == true,
-                metadata.Counterparties == true,
-                metadata.Transactions == true,
-                metadata.Balances == true,
-                metadata.PolicyConfiguration == true,
-                metadata.Invoices == true,
-                metadata.Bills == true);
             result = BuildResult(
                 companyId,
                 FinanceSeedingState.Seeded,
@@ -257,24 +256,9 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
                 checkedAtUtc,
                 metadata,
                 persistedState,
-                recordChecks,
-                usedFastPath: true,
-                "Finance seed metadata confirms the foundational dataset is ready.");
-            return true;
-        }
-
-        if (metadata.State == FinanceSeedingState.NotSeeded && !metadata.HasAnyPositiveChecks)
-        {
-            result = BuildResult(
-                companyId,
-                FinanceSeedingState.NotSeeded,
-                FinanceSeedingStateDerivedFromValues.Metadata,
-                checkedAtUtc,
-                metadata,
-                persistedState,
                 new FinanceSeedRecordChecks(false, false, false, false, false, false, false),
                 usedFastPath: true,
-                "No finance seed metadata or finance indicators were found.");
+                "Finance seed metadata confirms the foundational dataset is ready.");
             return true;
         }
 
@@ -308,6 +292,11 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
         if (state == FinanceSeedingState.Failed)
         {
             return "The latest finance seed attempt failed and can be retried.";
+        }
+
+        if (recordChecks.HasAnyRecords && !recordChecks.IsComplete)
+        {
+            return "Some finance indicators exist, but the foundational seeded dataset is incomplete.";
         }
 
         if (persistedState == FinanceSeedingState.Seeded || metadata?.State == FinanceSeedingState.Seeded)

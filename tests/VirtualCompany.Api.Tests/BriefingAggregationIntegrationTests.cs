@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Domain.Entities;
@@ -13,14 +14,12 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class BriefingAggregationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private static readonly JsonSerializerOptions ApiJsonOptions = CreateApiJsonOptions();
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public BriefingAggregationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Aggregate_returns_empty_sections_for_empty_company_data()
@@ -140,6 +139,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var message = await dbContext.Messages
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .SingleAsync(x => x.Id == result.Briefing.MessageId);
 
@@ -194,7 +194,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
             nowUtc
         });
         Assert.Equal(HttpStatusCode.OK, aggregateResponse.StatusCode);
-        var aggregate = await aggregateResponse.Content.ReadFromJsonAsync<BriefingAggregateResultDto>();
+        var aggregate = await aggregateResponse.Content.ReadFromJsonAsync<BriefingAggregateResultDto>(ApiJsonOptions);
         Assert.NotNull(aggregate);
 
         using (var scope = _factory.Services.CreateScope())
@@ -238,7 +238,7 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
             nowUtc
         });
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResultDto>();
+        var aggregate = await response.Content.ReadFromJsonAsync<BriefingAggregateResultDto>(ApiJsonOptions);
         Assert.NotNull(aggregate);
 
         using var scope = _factory.Services.CreateScope();
@@ -488,13 +488,18 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-        var notifications = await dbContext.CompanyNotifications
+        var notifications = await dbContext.CompanyOutboxMessages
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == seed.CompanyId && x.BriefingId == result.Briefing.Id)
+            .Where(x => x.CompanyId == seed.CompanyId &&
+                        x.Topic == CompanyOutboxTopics.NotificationDeliveryRequested &&
+                        x.CausationId == result.Briefing.Id.ToString("N"))
             .ToListAsync();
 
         Assert.Single(notifications);
-        Assert.Equal(CompanyNotificationChannel.InApp, notifications[0].Channel);
+        Assert.Equal(CompanyOutboxMessageStatus.Pending, notifications[0].Status);
+        using var payload = JsonDocument.Parse(notifications[0].PayloadJson);
+        Assert.Equal(result.Briefing.Id, payload.RootElement.GetProperty("briefingId").GetGuid());
+        Assert.Equal(seed.UserId, payload.RootElement.GetProperty("recipientUserId").GetGuid());
     }
 
     [Fact]
@@ -526,15 +531,17 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-        var channels = await dbContext.CompanyNotifications
+        var queuedNotifications = await dbContext.CompanyOutboxMessages
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == seed.CompanyId && x.BriefingId == result.Briefing.Id)
-            .Select(x => x.Channel)
+            .Where(x => x.CompanyId == seed.CompanyId &&
+                        x.Topic == CompanyOutboxTopics.NotificationDeliveryRequested &&
+                        x.CausationId == result.Briefing.Id.ToString("N"))
             .ToListAsync();
 
-        Assert.Single(channels);
-        Assert.Contains(CompanyNotificationChannel.InApp, channels);
-        Assert.DoesNotContain(CompanyNotificationChannel.Mobile, channels);
+        var queued = Assert.Single(queuedNotifications);
+        Assert.Equal(CompanyOutboxMessageStatus.Pending, queued.Status);
+        using var payload = JsonDocument.Parse(queued.PayloadJson);
+        Assert.Equal(seed.UserId, payload.RootElement.GetProperty("recipientUserId").GetGuid());
     }
 
     private HttpClient CreateAuthenticatedClient()
@@ -544,6 +551,13 @@ public sealed class BriefingAggregationIntegrationTests : IClassFixture<TestWebA
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "founder@example.com");
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Founder");
         return client;
+    }
+
+    private static JsonSerializerOptions CreateApiJsonOptions()
+    {
+        var options = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+        options.Converters.Add(new JsonStringEnumConverter());
+        return options;
     }
 
     private async Task<EmptyBriefingSeed> SeedEmptyCompanyAsync()

@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePendingApprovalsApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePendingApprovalsApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePendingApprovalsApiIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Pending_endpoint_returns_only_current_tenant_pending_and_escalated_tasks()

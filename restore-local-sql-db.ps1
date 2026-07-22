@@ -114,3 +114,4 @@ Invoke-Sqlcmd `
     -QueryTimeout 0
 
 Write-Host "Restored '$DatabaseName' on '$ServerInstance'."
+Write-Host "Run .\server-local-sql.ps1 to apply pending EF Core migrations and start the API."

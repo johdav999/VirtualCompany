@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class TenantQueryFilterTests : IClassFixture<TestWebApplicationFactory>
+public sealed class TenantQueryFilterTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public TenantQueryFilterTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task CompanyNotes_query_returns_no_rows_without_company_context()

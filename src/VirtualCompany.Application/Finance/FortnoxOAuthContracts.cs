@@ -147,6 +147,8 @@ public interface IFortnoxOAuthService
     Task<FortnoxOAuthCompletionResult> HandleCallbackAsync(CompleteFortnoxOAuthConnectionCommand command, CancellationToken cancellationToken);
     Task<FortnoxAccessTokenResult> GetValidAccessTokenAsync(RefreshFortnoxAccessTokenCommand command, CancellationToken cancellationToken);
     Task<FortnoxConnectionStatusResult> GetStatusAsync(GetFortnoxConnectionStatusQuery query, CancellationToken cancellationToken);
-    Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken);
-    Task<FortnoxConnectionDisconnectResult> DisconnectAsync(DisconnectFortnoxConnectionCommand command, CancellationToken cancellationToken);
+    Task MarkNeedsReconnectAsync(Guid companyId, Guid connectionId, string safeReason, CancellationToken cancellationToken) =>
+        Task.CompletedTask;
+    Task<FortnoxConnectionDisconnectResult> DisconnectAsync(DisconnectFortnoxConnectionCommand command, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Disconnect is not supported by this Fortnox OAuth implementation.");
 }

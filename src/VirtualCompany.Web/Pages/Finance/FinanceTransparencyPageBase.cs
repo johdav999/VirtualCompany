@@ -2,12 +2,14 @@ using Microsoft.AspNetCore.Components;
 using System.Globalization;
 using VirtualCompany.Shared;
 using VirtualCompany.Web.Services;
+using VirtualCompany.Web.Localization.Formatting;
 
 namespace VirtualCompany.Web.Pages.Finance;
 
 public abstract class FinanceTransparencyPageBase : FinancePageBase
 {
     [Inject] protected IFinanceSandboxAdminService SandboxAdminService { get; set; } = default!;
+    [Inject] protected ILocalDateTimeFormatter PresentationDateTime { get; set; } = default!;
 
     protected bool HasTransparencyAccess =>
         AccessState.IsAllowed &&
@@ -81,10 +83,10 @@ public abstract class FinanceTransparencyPageBase : FinancePageBase
             ? "n/a"
             : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
 
-    protected static string FormatTimestamp(DateTime value) =>
+    protected string FormatTimestamp(DateTime value) =>
         value == default
             ? "Unknown time"
-            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            : PresentationDateTime.DateTime(value);
 
     protected static string FormatValue(string? value) =>
         string.IsNullOrWhiteSpace(value) ? "n/a" : value.Trim();

@@ -3,42 +3,38 @@
 @inherits SupportPageBase
 @using System.Globalization
 
-<PageTitle>Support Memory</PageTitle>
+<PageTitle>@SupportText["MemoryReview"]</PageTitle>
 
 <section class="py-4 dashboard-hero">
     <div class="dashboard-shell">
         <div class="wizard-card dashboard-summary">
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                 <div>
-                    <span class="dashboard-kicker">Support</span>
-                    <h1>Memory review</h1>
-                    <p class="text-body-secondary mb-0">Review customer-support observations before they affect future replies.</p>
+                    <span class="dashboard-kicker">@SupportText["Support"]</span>
+                    <h1>@SupportText["MemoryReview"]</h1>
+                    <p class="text-body-secondary mb-0">@SupportText["MemoryDescription"]</p>
                 </div>
-                <a class="btn btn-outline-secondary" href="@BuildPath("/support")">Back to support</a>
+                <a class="btn btn-outline-secondary" href="@BuildPath("/support")">@SupportText["BackToSupport"]</a>
             </div>
 
             <div class="border rounded p-3 mt-4 bg-white">
                 <div class="row g-3 align-items-end">
                     <div class="col-12 col-md-4">
-                        <label class="form-label" for="support-memory-status">Status</label>
+                        <label class="form-label" for="support-memory-status">@SupportText["Status"]</label>
                         <select id="support-memory-status" class="form-select" @bind="statusFilter">
-                            <option value="">All</option>
-                            <option value="review">Needs review</option>
-                            <option value="approved">Approved</option>
-                            <option value="rejected">Rejected</option>
-                            <option value="expired">Expired</option>
-                            <option value="deleted">Deleted</option>
+                            <option value="">@SupportText["All"]</option>
+                            @foreach (var value in MemoryStatuses) { <option value="@value">@SupportStatusPresenter.Present(value, SupportText)</option> }
                         </select>
                     </div>
                     <div class="col-12 col-md-8 d-flex justify-content-end gap-2">
-                        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@isBusy">Apply</button>
+                        <button class="btn btn-outline-secondary" @onclick="LoadAsync" disabled="@isBusy">@SupportText["Apply"]</button>
                     </div>
                 </div>
             </div>
 
             @if (isLoading)
             {
-                <p class="text-body-secondary mt-4 mb-0">Loading memory observations...</p>
+                <p class="text-body-secondary mt-4 mb-0">@SupportText["LoadingMemory"]</p>
             }
             else if (!string.IsNullOrWhiteSpace(errorMessage) || !string.IsNullOrWhiteSpace(ShellErrorMessage))
             {
@@ -46,7 +42,7 @@
             }
             else if (observations.Count == 0)
             {
-                <div class="alert alert-light border mt-4 mb-0">No support memory observations match this filter.</div>
+                <div class="alert alert-light border mt-4 mb-0">@SupportText["NoMemory"]</div>
             }
             else
             {
@@ -54,10 +50,10 @@
                     <table class="table align-middle">
                         <thead>
                             <tr>
-                                <th>Observation</th>
-                                <th>Status</th>
-                                <th>Evidence</th>
-                                <th>Observed</th>
+                                <th>@SupportText["Observation"]</th>
+                                <th>@SupportText["Status"]</th>
+                                <th>@SupportText["Evidence"]</th>
+                                <th>@SupportText["Observed"]</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -66,36 +62,36 @@
                             {
                                 <tr>
                                     <td>
-                                        <strong>@(item.Value ?? "Value hidden")</strong>
-                                        <div class="small text-body-secondary">Confidence @item.Confidence.ToString("P0", CultureInfo.CurrentCulture)</div>
-                                        <a class="small" href="@BuildPath($"/support/cases/{item.SupportCaseId:D}")">Open source case</a>
+                                        <strong>@(item.Value ?? SupportText["ValueHidden"])</strong>
+                                        <div class="small text-body-secondary">@SupportText["Confidence", LocalNumber.Percentage(item.Confidence)]</div>
+                                        <a class="small" href="@BuildPath($"/support/cases/{item.SupportCaseId:D}")">@SupportText["OpenSourceCase"]</a>
                                     </td>
-                                    <td><span class="badge text-bg-light">@item.StatusLabel</span></td>
+                                    <td><span class="badge text-bg-light">@SupportStatusPresenter.Present(item.Status, SupportText)</span></td>
                                     <td>@item.EvidenceSummary</td>
                                     <td>
-                                        @item.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)
+                                        @LocalDateTime.DateTime(item.ObservedUtc)
                                         @if (item.ValidUntilUtc is DateTime validUntil)
                                         {
-                                            <div class="small text-body-secondary">Valid until @validUntil.ToLocalTime().ToString("d", CultureInfo.CurrentCulture)</div>
+                                            <div class="small text-body-secondary">@SupportText["ValidUntil", LocalDateTime.DateTime(validUntil)]</div>
                                         }
                                     </td>
                                     <td class="text-end">
                                         <div class="btn-group btn-group-sm">
                                             @if (item.AllowedActions.Contains("approve"))
                                             {
-                                                <button class="btn btn-outline-primary" @onclick="() => ApproveAsync(item.Id)" disabled="@isBusy">Approve</button>
+                                                <button class="btn btn-outline-primary" @onclick="() => ApproveAsync(item.Id)" disabled="@isBusy">@SupportText["Approve"]</button>
                                             }
                                             @if (item.AllowedActions.Contains("reject"))
                                             {
-                                                <button class="btn btn-outline-secondary" @onclick="() => RejectAsync(item.Id)" disabled="@isBusy">Reject</button>
+                                                <button class="btn btn-outline-secondary" @onclick="() => RejectAsync(item.Id)" disabled="@isBusy">@SupportText["Reject"]</button>
                                             }
                                             @if (item.AllowedActions.Contains("expire"))
                                             {
-                                                <button class="btn btn-outline-secondary" @onclick="() => ExpireAsync(item.Id)" disabled="@isBusy">Expire</button>
+                                                <button class="btn btn-outline-secondary" @onclick="() => ExpireAsync(item.Id)" disabled="@isBusy">@SupportText["Expire"]</button>
                                             }
                                             @if (item.AllowedActions.Contains("delete"))
                                             {
-                                                <button class="btn btn-outline-danger" @onclick="() => DeleteAsync(item.Id)" disabled="@isBusy">Delete</button>
+                                                <button class="btn btn-outline-danger" @onclick="() => DeleteAsync(item.Id)" disabled="@isBusy">@SupportText["Delete"]</button>
                                             }
                                         </div>
                                     </td>
@@ -110,6 +106,7 @@
 </section>
 
 @code {
+    private static readonly string[] MemoryStatuses = ["review", "approved", "rejected", "expired", "deleted"];
     private IReadOnlyList<SupportMemoryObservationDto> observations = [];
     private bool isLoading = true;
     private bool isBusy;

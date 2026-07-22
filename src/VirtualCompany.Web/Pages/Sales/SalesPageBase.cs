@@ -7,6 +7,7 @@ public abstract class SalesPageBase : ComponentBase
 {
     [Inject] protected OnboardingApiClient OnboardingApiClient { get; set; } = default!;
     [Inject] protected SalesApiClient SalesApiClient { get; set; } = default!;
+    [Inject] protected AgentApiClient AgentApiClient { get; set; } = default!;
     [Inject] protected NavigationManager Navigation { get; set; } = default!;
 
     [SupplyParameterFromQuery(Name = "companyId")]
@@ -54,5 +55,13 @@ public abstract class SalesPageBase : ComponentBase
 
         AgentPanelErrorMessage = null;
         AgentPanelDashboard = await SalesApiClient.GetDashboardAsync(companyId, cancellationToken);
+    }
+
+    protected async Task<Guid?> ResolveSalesAgentIdAsync(Guid companyId, CancellationToken cancellationToken = default)
+    {
+        var roster = await AgentApiClient.GetRosterAsync(companyId, cancellationToken);
+        return roster.FirstOrDefault(x =>
+            string.Equals(x.Department, "Sales", StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))?.Id;
     }
 }

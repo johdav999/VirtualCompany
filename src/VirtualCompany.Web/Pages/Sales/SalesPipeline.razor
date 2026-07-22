@@ -4,52 +4,52 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
-<PageTitle>Sales pipeline</PageTitle>
+<PageTitle>@SalesText["SalesPipeline"]</PageTitle>
 
 <div class="sales-workspace">
     <main class="sales-main sales-main--wide">
         <header class="sales-page-header">
-            <span>SALES</span>
-            <h1>Pipeline</h1>
-            <p>Move deals between stages and keep follow-up work current.</p>
-            <nav class="sales-tabs" aria-label="Sales sections">
-                <a href="@BuildPath("/app/sales")">Overview</a>
-                <a href="@BuildPath("/app/sales/leads")">Leads</a>
-                <a href="@BuildPath("/app/sales/prospecting")">Prospecting</a>
-                <a class="active" href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
-                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+            <h1>@SalesText["Pipeline"]</h1>
+            <p>@SalesText["PipelineDescription"]</p>
+            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
+                <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+                <a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
+                <a href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
+                <a class="active" href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+                <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
         </header>
 
         @if (isLoading)
         {
-            <section class="sales-card sales-empty">Loading pipeline...</section>
+            <section class="sales-card sales-empty">@SalesText["LoadingPipeline"]</section>
         }
         else if (!string.IsNullOrWhiteSpace(errorMessage))
         {
             <section class="sales-card sales-error">
-                <h2>Pipeline is unavailable</h2>
+                <h2>@SalesText["PipelineUnavailable"]</h2>
                 <p>@errorMessage</p>
-                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
             </section>
         }
         else if (pipeline is not null)
         {
-            <section class="sales-kanban" aria-label="Sales pipeline board">
+            <section class="sales-kanban" aria-label="@SalesText["SalesPipelineBoard"]">
                 @foreach (var stage in pipeline.Stages)
                 {
                     <article class="sales-kanban-column" @key="stage.StageId" @ondrop="() => DropDealAsync(stage.StageId)" @ondragover:preventDefault>
                         <header>
                             <div>
                                 <h2>@stage.Name</h2>
-                                <span>@stage.DealCount deal@(stage.DealCount == 1 ? "" : "s")</span>
+                                <span>@SalesText["DealCount", stage.DealCount]</span>
                             </div>
                             <strong>@Money(stage.TotalValue, StageCurrency(stage))</strong>
                         </header>
 
                         @if (stage.Deals.Count == 0)
                         {
-                            <div class="sales-empty sales-empty--compact">No deals in this stage.</div>
+                            <div class="sales-empty sales-empty--compact">@SalesText["NoDealsInStage"]</div>
                         }
                         else
                         {
@@ -61,15 +61,15 @@
                                        @key="deal.Id"
                                        @ondragstart="() => BeginDrag(deal.Id)"
                                        href="@BuildPath($"/app/sales/deals/{deal.Id:D}")">
-                                        <span class="@BadgeClass(deal.Status)">@deal.Status</span>
+                                        <span class="@BadgeClass(deal.Status)">@SalesStatusPresenter.Present(deal.Status, SalesText)</span>
                                         <strong>@deal.Title</strong>
-                                        <small>@(deal.CustomerCompanyName ?? deal.ContactName ?? "No contact linked")</small>
+                                        <small>@(deal.CustomerCompanyName ?? deal.ContactName ?? SalesText["NoContactLinked"])</small>
                                         <div>
                                             <span>@Money(deal.Amount, deal.Currency)</span>
                                             <span>@CloseDate(deal.ExpectedCloseUtc)</span>
                                         </div>
                                         <label class="sales-stage-select" @onclick:stopPropagation @onmousedown:stopPropagation>
-                                            <span>Move to</span>
+                                            <span>@SalesText["MoveTo"]</span>
                                             <select value="@deal.StageId"
                                                     disabled="@IsMoving(deal.Id)"
                                                     @onchange="args => ChangeStageFromSelectAsync(deal.Id, args.Value?.ToString())">
@@ -149,7 +149,7 @@
             await SalesApiClient.ChangeDealStageAsync(companyId, dealId, stageId, "Moved from the sales pipeline board.");
             pipeline = await SalesApiClient.GetPipelineAsync(companyId);
             await RefreshAgentPanelAsync();
-            actionMessage = "Deal stage updated.";
+            actionMessage = SalesText["DealStageUpdated"];
         }
         catch (SalesApiException ex)
         {
@@ -176,7 +176,7 @@
             await SalesApiClient.ChangeDealStageAsync(companyId, dealId, stageId, "Moved from the stage selector.");
             pipeline = await SalesApiClient.GetPipelineAsync(companyId);
             await RefreshAgentPanelAsync();
-            actionMessage = "Deal stage updated.";
+            actionMessage = SalesText["DealStageUpdated"];
         }
         catch (SalesApiException ex)
         {
@@ -192,6 +192,6 @@
     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
     private static string StageCurrency(SalesPipelineStageResponse stage) => stage.Deals.FirstOrDefault()?.Currency ?? "USD";
     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
-    private static string CloseDate(DateTime? value) => value.HasValue ? value.Value.ToLocalTime().ToString("MMM d", CultureInfo.CurrentCulture) : "No close date";
+    private string CloseDate(DateTime? value) => value.HasValue ? LocalDateTime.DateTime(value.Value) : SalesText["NoCloseDate"];
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
 }

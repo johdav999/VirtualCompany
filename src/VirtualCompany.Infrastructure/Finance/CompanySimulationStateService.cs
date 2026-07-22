@@ -75,6 +75,17 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
         ICompanyContextAccessor? companyContextAccessor,
         IDistributedLockProvider? distributedLockProvider,
         IFinanceGenerationPolicy? financeGenerationPolicy,
+        ILogger<CompanySimulationStateService> logger)
+        : this(repository, timeProvider, companyContextAccessor, distributedLockProvider, financeGenerationPolicy, null, logger)
+    {
+    }
+
+    public CompanySimulationStateService(
+        ICompanySimulationStateRepository repository,
+        TimeProvider timeProvider,
+        ICompanyContextAccessor? companyContextAccessor,
+        IDistributedLockProvider? distributedLockProvider,
+        IFinanceGenerationPolicy? financeGenerationPolicy,
         ISimulationFeatureGate? featureGate,
         ILogger<CompanySimulationStateService> logger)
     {
@@ -93,21 +104,24 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
     {
         EnsureTenant(query.CompanyId);
         var featureState = _featureGate?.GetState() ?? new SimulationFeatureStateDto(true, true, true, string.Empty);
-        var history = await GetRecentHistoryAsync(query.CompanyId, 10, cancellationToken);
         if (!featureState.BackendExecutionEnabled)
         {
+            var history = await GetRecentHistoryAsync(query.CompanyId, 10, cancellationToken);
             return CompanySimulationStateDto.Disabled(query.CompanyId, featureState, history);
         }
 
         var state = await _repository.GetCurrentAsync(query.CompanyId, cancellationToken);
         if (state is null)
         {
+            var history = await GetRecentHistoryAsync(query.CompanyId, 10, cancellationToken);
             var emptyState = CompanySimulationStateDto.NotStarted(query.CompanyId) with
             { UiVisible = featureState.UiVisible, BackendExecutionEnabled = featureState.BackendExecutionEnabled, BackgroundJobsEnabled = featureState.BackgroundJobsEnabled, DisabledReason = featureState.BackendExecutionEnabled ? null : featureState.DisabledMessage, RecentHistory = history };
             return emptyState;
         }
 
-        return Map(state, featureState, history);
+        state = (await ProgressStateIfDueAsync(query.CompanyId, cancellationToken)).State ?? state;
+        var recentHistory = await GetRecentHistoryAsync(query.CompanyId, 10, cancellationToken);
+        return Map(state, featureState, recentHistory);
     }
 
     public async Task<CompanySimulationStateDto> StartAsync(
@@ -611,8 +625,8 @@ public sealed class CompanySimulationStateService : ICompanySimulationStateServi
                     x.SimulatedDateUtc,
                     x.TransactionsGenerated,
                     x.InvoicesGenerated,
-                    x.AssetPurchasesGenerated,
                     x.BillsGenerated,
+                    x.AssetPurchasesGenerated,
                     x.RecurringExpenseInstancesGenerated,
                     x.AlertsGenerated,
                     x.InjectedAnomalies.ToArray(),

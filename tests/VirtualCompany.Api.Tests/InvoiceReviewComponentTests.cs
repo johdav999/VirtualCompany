@@ -559,7 +559,7 @@ public sealed class InvoiceReviewComponentTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId)),
                 _ => CreateNotFoundResponse()
             };
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new StubHttpMessageHandler(request =>
         {
             if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/reviews")
@@ -569,7 +569,7 @@ public sealed class InvoiceReviewComponentTests
             }
 
             return CreateNotFoundResponse();
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new InvoiceReviewsPageHarness(
             context,
@@ -616,7 +616,7 @@ public sealed class InvoiceReviewComponentTests
                 "/api/auth/me" => CreateJsonResponse(CreateCurrentUserContext(companyId, membershipRole)),
                 _ => CreateNotFoundResponse()
             };
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new StubHttpMessageHandler(request =>
         {
             if (request.Method == HttpMethod.Get &&
@@ -626,7 +626,7 @@ public sealed class InvoiceReviewComponentTests
             }
 
             return CreateNotFoundResponse();
-        })) { BaseAddress = new Uri("http://localhost/") });
+        })) { BaseAddress = new Uri("http://localhost/") }));
 
         return new InvoiceReviewDetailPageHarness(
             context,
@@ -738,6 +738,4 @@ public sealed class InvoiceReviewComponentTests
             }
         };
 
-    private static CurrentUserContextViewModel CreateCurrentUserContext(Guid companyId) =>
-        CreateCurrentUserContext(companyId, "owner");
 }

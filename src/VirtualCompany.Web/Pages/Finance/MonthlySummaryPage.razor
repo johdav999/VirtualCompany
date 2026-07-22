@@ -1,58 +1,58 @@
 @page "/finance/monthly-summary"
 @inherits FinanceSummaryPageBase<MonthlySummaryViewModel>
 
-<PageTitle>Monthly summary</PageTitle>
+<PageTitle>@FinanceText["MonthlySummary"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Monthly summary"
-    Description="Summarize the current month's finance posture inside the active tenant workspace."
-    LoadingMessage="Loading monthly summary shell...">
+    Title="@FinanceText["MonthlySummary"]"
+    Description="@FinanceText["MonthlySummaryDescription"]"
+    LoadingMessage="@FinanceText["LoadingMonthlySummary"]">
     <FinanceDataState
         IsLoading="@IsSummaryLoading"
         IsEmpty="@IsSummaryEmpty"
         ErrorMessage="@SummaryErrorMessage"
-        LoadingTitle="Loading monthly summary"
-        LoadingMessage="Building the monthly finance summary for the active tenant."
-        EmptyTitle="No monthly summary yet"
-        EmptyMessage="No monthly finance summary is available for the active tenant."
-        RetryText="Reload monthly summary"
+        LoadingTitle="@FinanceText["LoadingMonthlySummary"]"
+        LoadingMessage="@FinanceText["BuildingMonthlySummary"]"
+        EmptyTitle="@FinanceText["NoMonthlySummary"]"
+        EmptyMessage="@FinanceText["NoMonthlySummaryDescription"]"
+        RetryText="@FinanceText["ReloadMonthlySummary"]"
         OnRetry="@RetryAsync">
         @if (ViewModel is not null)
         {
             <section class="finance-summary-stack" aria-labelledby="monthly-summary-heading">
                 <div class="finance-summary-grid">
                     <article class="wizard-card finance-metric-card finance-metric-card--hero">
-                        <span class="dashboard-kicker">Reporting period</span>
+                        <span class="dashboard-kicker">@FinanceText["ReportingPeriod"]</span>
                         <h2 id="monthly-summary-heading" class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Period</h2>
-                        <p class="text-body-secondary mb-0">Tenant-scoped monthly performance snapshot.</p>
+                        <p class="text-body-secondary mb-0">@FinanceText["MonthlyPerformanceSnapshot"]</p>
                     </article>
                     <article class="wizard-card finance-metric-card">
-                        <span class="dashboard-kicker">Revenue</span>
+                        <span class="dashboard-kicker">@FinanceText["Revenue"]</span>
                         <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Revenue</div>
                     </article>
                     <article class="wizard-card finance-metric-card">
-                        <span class="dashboard-kicker">Expenses</span>
+                        <span class="dashboard-kicker">@FinanceText["Expenses"]</span>
                         <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Expenses</div>
                     </article>
                     <article class="wizard-card finance-metric-card">
-                        <span class="dashboard-kicker">Net result</span>
+                        <span class="dashboard-kicker">@FinanceText["NetResult"]</span>
                         <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.NetResult</div>
                     </article>
                 </div>
                 @if (ViewModel.ExpenseCategories.Count > 0)
                 {
                     <article class="wizard-card">
-                        <h2 class="h5">Expense breakdown by category</h2>
+                        <h2 class="h5">@FinanceText["ExpenseBreakdown"]</h2>
                         <div class="table-responsive">
                             <table class="table finance-table mb-0">
                                 <thead>
                                     <tr>
-                                        <th scope="col">Category</th>
-                                        <th scope="col" class="finance-table__number">Amount</th>
-                                        <th scope="col" class="finance-table__number">Share</th>
+                                        <th scope="col">@FinanceText["Category"]</th>
+                                        <th scope="col" class="finance-table__number">@FinanceText["Amount"]</th>
+                                        <th scope="col" class="finance-table__number">@FinanceText["Share"]</th>
                                     </tr>
                                 </thead>
                                 <tbody>
@@ -72,8 +72,8 @@
                 else
                 {
                     <article class="wizard-card">
-                        <h2 class="h5">Expense breakdown by category</h2>
-                        <p class="text-body-secondary mb-0">The finance backend returned no category aggregates for this reporting period.</p>
+                        <h2 class="h5">@FinanceText["ExpenseBreakdown"]</h2>
+                        <p class="text-body-secondary mb-0">@FinanceText["NoCategoryAggregates"]</p>
                     </article>
                 }
             </section>

@@ -13,14 +13,11 @@ using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class SalesOperationsApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public SalesOperationsApiIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Dashboard_and_leads_are_scoped_to_current_tenant()
@@ -210,6 +207,8 @@ public sealed class SalesOperationsApiIntegrationTests : IClassFixture<TestWebAp
         var leadBId = Guid.NewGuid();
         var dealAId = Guid.NewGuid();
         var dealBId = Guid.NewGuid();
+        var contactAId = Guid.Empty;
+        var contactBId = Guid.Empty;
 
         await _factory.SeedAsync(dbContext =>
         {

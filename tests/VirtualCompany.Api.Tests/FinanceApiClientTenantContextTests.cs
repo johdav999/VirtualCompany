@@ -163,9 +163,9 @@ public sealed class FinanceApiClientTenantContextTests
 
         Assert.Equal(companyId, response.CompanyId);
         Assert.Equal(FinanceEntryProgressStateContractValues.SeedingRequested, response.ProgressState);
-        Assert.Equal(2, handler.Requests.Count);
-        Assert.Equal($"/internal/companies/{companyId}/finance/manual-seed", handler.Requests[1].Path);
-        Assert.Equal(companyId.ToString(), handler.Requests[1].CompanyHeaderValue);
+        Assert.Single(handler.Requests);
+        Assert.Equal($"/internal/companies/{companyId}/finance/manual-seed", handler.Requests[0].Path);
+        Assert.Equal(companyId.ToString(), handler.Requests[0].CompanyHeaderValue);
         Assert.NotNull(handler.LastManualSeedRequest);
         Assert.True(handler.LastManualSeedRequest!.ConfirmReplace);
     }

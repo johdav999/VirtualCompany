@@ -9,14 +9,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ActivityFeedFilteringIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ActivityFeedFilteringIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ActivityFeedFilteringIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Feed_applies_top_filter_combinations_with_and_semantics()

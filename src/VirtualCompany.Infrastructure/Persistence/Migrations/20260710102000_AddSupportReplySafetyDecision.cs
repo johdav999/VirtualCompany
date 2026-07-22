@@ -5,6 +5,8 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+    [Migration("20260710102000_AddSupportReplySafetyDecision")]
     public partial class AddSupportReplySafetyDecision : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)

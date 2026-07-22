@@ -10,7 +10,13 @@ public sealed record StartMailboxOAuthConnectionCommand(
     MailboxProvider Provider,
     Uri CallbackUri,
     Uri? ReturnUri = null,
-    IReadOnlyCollection<MailboxFolderSelection>? ConfiguredFolders = null);
+    IReadOnlyCollection<MailboxFolderSelection>? ConfiguredFolders = null,
+    MailboxPurpose Purpose = MailboxPurpose.Finance,
+    string? ProfileKey = null,
+    string? EmailAddress = null,
+    string? Username = null,
+    MailboxEndpointSettings? Imap = null,
+    MailboxEndpointSettings? Smtp = null);
 
 public sealed record CompleteMailboxOAuthConnectionCommand(
     string State,
@@ -21,16 +27,24 @@ public sealed record CompleteMailboxOAuthConnectionCommand(
 public sealed record TriggerManualMailboxScanCommand(
     Guid CompanyId,
     Guid UserId,
-    Guid? MailboxConnectionId = null);
+    Guid? MailboxConnectionId = null,
+    MailboxPurpose Purpose = MailboxPurpose.Finance);
 
 public sealed record GetMailboxConnectionStatusQuery(
     Guid CompanyId,
-    Guid UserId);
+    Guid UserId,
+    MailboxPurpose Purpose = MailboxPurpose.Finance);
 
 public sealed record GetMailboxScannedMessagesQuery(
     Guid CompanyId,
     Guid UserId,
-    int Limit = 50);
+    int Limit = 50,
+    MailboxPurpose Purpose = MailboxPurpose.Finance);
+
+public sealed record DisconnectMailboxConnectionCommand(
+    Guid CompanyId,
+    Guid UserId,
+    MailboxPurpose Purpose);
 
 public sealed record MailboxOAuthStartResult(
     MailboxProvider Provider,
@@ -43,7 +57,8 @@ public sealed record MailboxOAuthCompletionResult(
     MailboxProvider Provider,
     string EmailAddress,
     string Status,
-    Uri? ReturnUri = null);
+    Uri? ReturnUri = null,
+    MailboxPurpose Purpose = MailboxPurpose.Finance);
 
 public sealed record ManualMailboxScanResult(
     Guid IngestionRunId,
@@ -69,7 +84,8 @@ public sealed record MailboxConnectionStatusResult(
     DateTime? LastSuccessfulScanAtUtc,
     string? LastErrorSummary,
     IReadOnlyCollection<MailboxFolderSelectionSummary> ConfiguredFolders,
-    EmailIngestionRunSummary? LastRun);
+    EmailIngestionRunSummary? LastRun,
+    string Purpose = "finance");
 
 public sealed record MailboxFolderSelectionSummary(
     string ProviderFolderId,
@@ -121,7 +137,14 @@ public sealed record MailboxOAuthState(
     MailboxProvider Provider,
     IReadOnlyCollection<MailboxFolderSelection> ConfiguredFolders,
     DateTime ExpiresUtc,
-    Uri? ReturnUri = null);
+    Uri? ReturnUri = null,
+    MailboxPurpose Purpose = MailboxPurpose.Finance,
+    string? ProfileKey = null,
+    string? EmailAddress = null,
+    string? Username = null,
+    MailboxEndpointSettings? Imap = null,
+    MailboxEndpointSettings? Smtp = null,
+    string? Nonce = null);
 
 public sealed record MailboxOAuthTokenResult(
     string AccessToken,
@@ -254,7 +277,8 @@ public sealed record ConnectedMailboxInboxScanJob(
     Guid CompanyId,
     Guid UserId,
     Guid MailboxConnectionId,
-    MailboxProvider Provider);
+    MailboxProvider Provider,
+    MailboxPurpose Purpose = MailboxPurpose.Finance);
 
 public interface IMailboxConnectionService
 {
@@ -263,6 +287,7 @@ public interface IMailboxConnectionService
     Task<ManualMailboxScanResult> TriggerManualScanAsync(TriggerManualMailboxScanCommand command, CancellationToken cancellationToken);
     Task<MailboxConnectionStatusResult> GetStatusAsync(GetMailboxConnectionStatusQuery query, CancellationToken cancellationToken);
     Task<IReadOnlyList<MailboxScannedMessageSummary>> GetScannedMessagesAsync(GetMailboxScannedMessagesQuery query, CancellationToken cancellationToken);
+    Task<MailboxConnectionStatusResult> DisconnectAsync(DisconnectMailboxConnectionCommand command, CancellationToken cancellationToken);
 }
 
 public interface IManualInboxBillScanJobScheduler
@@ -352,28 +377,64 @@ public interface IMailboxProviderClient
     Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request);
     Task<MailboxOAuthTokenResult> ExchangeCodeAsync(MailboxTokenExchangeRequest request, CancellationToken cancellationToken);
     Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken);
+    Task<MailboxCredentialRevocationResult> RevokeCredentialAsync(
+        MailboxCredentialRevocationRequest request,
+        CancellationToken cancellationToken) =>
+        Task.FromResult(new MailboxCredentialRevocationResult(false, false));
     Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken);
     Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken);
-    Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken);
+    Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This mailbox provider does not support fetching individual messages.");
     Task<MailboxAttachmentContent?> GetAttachmentContentAsync(string accessToken, MailboxAttachmentFetchRequest request, CancellationToken cancellationToken) =>
         Task.FromResult<MailboxAttachmentContent?>(null);
-    Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken);
-    Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
-    Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken);
+    Task<MailboxInboundThread> GetThreadAsync(string accessToken, MailboxThreadFetchRequest request, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This mailbox provider does not support fetching threads.");
+    Task<MailboxReplyExecutionResult> CreateDraftReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This mailbox provider does not support creating reply drafts.");
+    Task<MailboxReplyExecutionResult> SendReplyAsync(string accessToken, MailboxReplyExecutionRequest request, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("This mailbox provider does not support sending replies.");
 }
 
 public sealed record MailboxAuthorizationRequest(
     Guid CompanyId,
     Guid UserId,
     Uri CallbackUri,
-    string State);
+    string State,
+    string? ProfileKey = null);
 
 public sealed record MailboxTokenExchangeRequest(
     string Code,
-    Uri CallbackUri);
+    Uri CallbackUri,
+    string? ProfileKey = null);
+
+public interface IMailboxOAuthReplayGuard
+{
+    Task RegisterAsync(
+        Guid companyId,
+        Guid userId,
+        MailboxPurpose purpose,
+        MailboxProvider provider,
+        string nonce,
+        DateTime expiresUtc,
+        CancellationToken cancellationToken);
+
+    Task<bool> TryConsumeAsync(
+        Guid companyId,
+        Guid userId,
+        MailboxPurpose purpose,
+        MailboxProvider provider,
+        string nonce,
+        DateTime nowUtc,
+        CancellationToken cancellationToken);
+}
+
+public sealed record MailboxCredentialRevocationRequest(string Token, string? ProfileKey = null);
+
+public sealed record MailboxCredentialRevocationResult(bool Supported, bool Succeeded);
 
 public sealed record MailboxRefreshTokenRequest(
-    string RefreshToken);
+    string RefreshToken,
+    string? ProfileKey = null);
 
 public static class MailboxBillKeywordFilter
 {

@@ -3,14 +3,14 @@
 @inherits SupportPageBase
 @using System.Globalization
 
-<PageTitle>Support case</PageTitle>
+<PageTitle>@SupportText["SupportCase"]</PageTitle>
 
 <section class="py-4 dashboard-hero">
     <div class="dashboard-shell">
         <div class="wizard-card dashboard-summary">
             @if (isLoading)
             {
-                <p class="text-body-secondary mb-0">Loading support case...</p>
+                <p class="text-body-secondary mb-0">@SupportText["LoadingSupportCase"]</p>
             }
             else if (!string.IsNullOrWhiteSpace(ShellErrorMessage) || !string.IsNullOrWhiteSpace(errorMessage))
             {
@@ -20,21 +20,21 @@
             {
                 <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                     <div>
-                        <span class="dashboard-kicker">Support case @supportCase.CaseNumber</span>
+                        <span class="dashboard-kicker">@SupportText["SupportCase"] @supportCase.CaseNumber</span>
                         <h1>@supportCase.Subject</h1>
                         <p class="text-body-secondary mb-0">@supportCase.Summary</p>
                     </div>
                     <div class="d-flex flex-wrap gap-2">
-                        <button class="btn btn-outline-primary btn-sm" @onclick="RunSupportAgentAsync" disabled="@isBusy">Ask Ben to prepare reply</button>
+                        <button class="btn btn-outline-primary btn-sm" @onclick="RunSupportAgentAsync" disabled="@isBusy">@SupportText["AskBenPrepareReply"]</button>
                         <span class="@PriorityBadge(supportCase.Priority)">@supportCase.PriorityLabel</span>
                         <span class="badge text-bg-light">@supportCase.StatusLabel</span>
                         @if (supportCase.IsSlaBreached)
                         {
-                            <span class="badge text-bg-danger">SLA breached</span>
+                            <span class="badge text-bg-danger">@SupportText["SlaBreached"]</span>
                         }
                         else if (supportCase.IsSlaRisk)
                         {
-                            <span class="badge text-bg-warning">SLA at risk</span>
+                            <span class="badge text-bg-warning">@SupportText["SlaAtRisk"]</span>
                         }
                     </div>
                 </div>
@@ -42,10 +42,10 @@
                 <div class="row g-4 mt-2">
                     <div class="col-12 col-xl-8">
                         <section class="border rounded bg-white p-3 mb-4">
-                            <h2 class="h5">Customer message timeline</h2>
+                            <h2 class="h5">@SupportText["CustomerMessageTimeline"]</h2>
                             @if (supportCase.Messages.Count == 0)
                             {
-                                <p class="text-body-secondary mb-0">No messages have been recorded for this case.</p>
+                                <p class="text-body-secondary mb-0">@SupportText["NoMessages"]</p>
                             }
                             else
                             {
@@ -55,7 +55,7 @@
                                         <div class="list-group-item px-0">
                                             <div class="d-flex justify-content-between gap-3">
                                                 <strong>@MessageHeading(message)</strong>
-                                                <span class="small text-body-secondary">@message.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                                                <span class="small text-body-secondary">@LocalDateTime.DateTime(message.OccurredUtc)</span>
                                             </div>
                                             <p class="mb-0 mt-2">@message.Body</p>
                                         </div>
@@ -65,46 +65,90 @@
                         </section>
 
                         <section class="border rounded bg-white p-3 mb-4">
-                            <h2 class="h5">Internal note</h2>
-                            <textarea class="form-control" rows="4" @bind="noteBody" placeholder="Add a note for the support team"></textarea>
-                            <button class="btn btn-primary mt-3" @onclick="AddNoteAsync" disabled="@isBusy">Add note</button>
+                            <h2 class="h5">@SupportText["InternalNote"]</h2>
+        <textarea class="form-control" rows="4" @bind="noteBody" placeholder="@SupportText["NotePlaceholder"]"></textarea>
+                            <button class="btn btn-primary mt-3" @onclick="AddNoteAsync" disabled="@isBusy">@SupportText["AddNote"]</button>
                         </section>
 
                         <section class="border rounded bg-white p-3 mb-4">
                             <div class="d-flex flex-wrap justify-content-between gap-3">
                                 <div>
-                                    <h2 class="h5">Reply drafts</h2>
-                                    <p class="text-body-secondary mb-0">Drafts must be approved before human send. Autonomous send is governed by backend policy.</p>
+                                    <h2 class="h5">@SupportText["ReplyDrafts"]</h2>
+                                    <p class="text-body-secondary mb-0">@SupportText["DraftGovernance"]</p>
                                 </div>
-                                <button class="btn btn-outline-primary" @onclick="GenerateDraftAsync" disabled="@isBusy">Draft reply</button>
+                                <button class="btn btn-outline-primary" @onclick="GenerateDraftAsync" disabled="@isBusy">@SupportText["DraftReply"]</button>
                             </div>
-                            <label class="form-label mt-3" for="support-reply-to">Reply to</label>
-                            <input id="support-reply-to" class="form-control" type="email" @bind="replyToEmail" placeholder="Customer email" disabled="@isBusy" />
+                            <div class="border rounded bg-light p-3 mt-3">
+                                <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
+                                    <div>
+                                        <strong>@SupportText["AnswerReadiness"]</strong>
+                                        <p class="small text-body-secondary mb-0">@SupportText["AnswerReadinessDescription"]</p>
+                                    </div>
+                                    <button class="btn btn-sm btn-outline-secondary" @onclick="AnalyzeAnswerabilityAsync" disabled="@(isBusy || supportAgentId is null)">@SupportText["RefreshAnalysis"]</button>
+                                </div>
+                                @if (supportAgentId is null)
+                                {
+                                    <p class="small text-body-secondary mt-3 mb-0">@SupportText["NoSupportAgent"]</p>
+                                }
+                                else if (answerability is not null)
+                                {
+                                    <div class="d-flex flex-wrap gap-2 mt-3">
+                                        <span class="badge text-bg-light">@answerability.State</span>
+                                        <span class="badge text-bg-light">@Percent(answerability.Score) answerable</span>
+                                        @if (answerability.RequiresReview)
+                                        {
+                                            <span class="badge text-bg-warning">@SupportText["ReviewRequired"]</span>
+                                        }
+                                    </div>
+                                    @if (answerability.MissingInformation.Count > 0)
+                                    {
+                                        <p class="small fw-semibold mt-3 mb-1">@SupportText["MissingInformation"]</p>
+                                        <ul class="small mb-0">
+                                            @foreach (var item in answerability.MissingInformation)
+                                            {
+                                                <li>@item</li>
+                                            }
+                                        </ul>
+                                    }
+                                    @if (answerability.QuestionsToAsk.Count > 0)
+                                    {
+                                        <p class="small fw-semibold mt-3 mb-1">@SupportText["QuestionsToAsk"]</p>
+                                        <ul class="small mb-0">
+                                            @foreach (var question in answerability.QuestionsToAsk)
+                                            {
+                                                <li>@question</li>
+                                            }
+                                        </ul>
+                                    }
+                                }
+                            </div>
+                            <label class="form-label mt-3" for="support-reply-to">@SupportText["ReplyTo"]</label>
+                <input id="support-reply-to" class="form-control" type="email" @bind="replyToEmail" placeholder="@SupportText["CustomerEmailPlaceholder"]" disabled="@isBusy" />
 
-                            @if (supportCase.ReplyDrafts.Count == 0)
+                            @if (ActiveReplyDrafts.Count == 0)
                             {
-                                <p class="text-body-secondary mt-3 mb-0">No reply draft exists yet.</p>
+                                <p class="text-body-secondary mt-3 mb-0">@SupportText["NoReplyDraft"]</p>
                             }
                             else
                             {
                                 <div class="list-group mt-3">
-                                    @foreach (var draft in supportCase.ReplyDrafts)
+                                    @foreach (var draft in ActiveReplyDrafts)
                                     {
                                         <div class="list-group-item">
                                             <div class="d-flex flex-wrap justify-content-between gap-2">
                                                 <strong>@draft.StatusLabel</strong>
-                                                <span class="small text-body-secondary">Confidence @Percent(draft.Confidence) | Answerability @Percent(draft.Answerability)</span>
+                                                <span class="small text-body-secondary">@SupportText["DraftConfidence", Percent(draft.Confidence), Percent(draft.Answerability)]</span>
                                             </div>
                                             @if (DraftEditable(draft))
                                             {
-                                                <label class="form-label mt-3" for="@($"support-draft-{draft.Id:D}")">Reply text</label>
+                                                <label class="form-label mt-3" for="@($"support-draft-{draft.Id:D}")">@SupportText["ReplyText"]</label>
                                                 <textarea id="@($"support-draft-{draft.Id:D}")" class="form-control" rows="8" value="@DraftBody(draft)" @onchange="eventArgs => SetDraftBody(draft.Id, eventArgs.Value?.ToString())"></textarea>
-                                                <label class="form-label mt-2" for="@($"support-tone-{draft.Id:D}")">Tone</label>
+                                                <label class="form-label mt-2" for="@($"support-tone-{draft.Id:D}")">@SupportText["Tone"]</label>
                                                 <select id="@($"support-tone-{draft.Id:D}")" class="form-select" value="@DraftTone(draft)" @onchange="eventArgs => SetDraftTone(draft.Id, eventArgs.Value?.ToString())">
-                                                    <option value="Helpful">Helpful</option>
-                                                    <option value="Concise">Concise</option>
-                                                    <option value="Empathetic">Empathetic</option>
-                                                    <option value="Formal">Formal</option>
+                                                    <option value="Helpful">@SupportText["ToneHelpful"]</option>
+                                                    <option value="Concise">@SupportText["ToneConcise"]</option>
+                                                    <option value="Empathetic">@SupportText["ToneEmpathetic"]</option>
+                                                    <option value="Formal">@SupportText["ToneFormal"]</option>
                                                 </select>
                                             }
                                             else
@@ -133,14 +177,14 @@
                                             <div class="d-flex flex-wrap gap-2">
                                                 @if (DraftEditable(draft))
                                                 {
-                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SaveDraftAsync(draft.Id)" disabled="@isBusy">Save draft</button>
-                                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@isBusy">Approve</button>
-                                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => RejectDraftAsync(draft.Id)" disabled="@isBusy">Reject</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SaveDraftAsync(draft.Id)" disabled="@isBusy">@SupportText["SaveDraft"]</button>
+                                                    <button class="btn btn-sm btn-outline-primary" @onclick="() => ApproveDraftAsync(draft.Id)" disabled="@isBusy">@SupportText["Approve"]</button>
+                                                    <button class="btn btn-sm btn-outline-danger" @onclick="() => RejectDraftAsync(draft.Id)" disabled="@isBusy">@SupportText["Reject"]</button>
                                                 }
                                                 @if (draft.Status == "approved" && !draft.SentUtc.HasValue)
                                                 {
-                                                    <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">Send</button>
-                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">Send and resolve</button>
+                                                    <button class="btn btn-sm btn-primary" @onclick="() => SendDraftAsync(draft.Id, false)" disabled="@isBusy">@SupportText["Send"]</button>
+                                                    <button class="btn btn-sm btn-outline-secondary" @onclick="() => SendDraftAsync(draft.Id, true)" disabled="@isBusy">@SupportText["SendAndResolve"]</button>
                                                 }
                                             </div>
                                         </div>
@@ -154,21 +198,21 @@
                             <section class="support-refund-panel" aria-labelledby="support-refund-title">
                                 <div class="support-refund-heading">
                                     <div>
-                                        <span class="dashboard-kicker">Finance handoff</span>
-                                        <h2 id="support-refund-title" class="h5 mb-1">Refund or credit</h2>
+                                        <span class="dashboard-kicker">@SupportText["FinanceHandoff"]</span>
+                                        <h2 id="support-refund-title" class="h5 mb-1">@SupportText["RefundOrCredit"]</h2>
                                         <p class="text-body-secondary mb-0">@RefundStatusMessage(refund)</p>
                                     </div>
                                     <span class="@RefundStatusBadge(refund.Status)">@refund.StatusLabel</span>
                                 </div>
 
                                 <dl class="support-refund-facts">
-                                    <div><dt>Amount</dt><dd>@refund.Currency @refund.Amount.ToString("N2", CultureInfo.CurrentCulture)</dd></div>
-                                    <div><dt>Customer invoice</dt><dd>@(refund.InvoiceId.HasValue ? "Linked" : "Not linked")</dd></div>
-                                    <div><dt>Support approval</dt><dd>@(refund.ApprovalRequestId.HasValue ? "Requested" : "Not requested")</dd></div>
-                                    <div><dt>Accounting system</dt><dd>@ProviderStepLabel(refund)</dd></div>
+                                    <div><dt>@SupportText["Amount"]</dt><dd>@LocalMoney.Format(refund.Amount, refund.Currency)</dd></div>
+                                    <div><dt>@SupportText["CustomerInvoice"]</dt><dd>@(refund.InvoiceId.HasValue ? SupportText["Linked"] : SupportText["NotLinked"])</dd></div>
+                                    <div><dt>@SupportText["SupportApproval"]</dt><dd>@(refund.ApprovalRequestId.HasValue ? SupportText["Requested"] : SupportText["NotRequested"])</dd></div>
+                                    <div><dt>@SupportText["AccountingSystem"]</dt><dd>@ProviderStepLabel(refund)</dd></div>
                                 </dl>
 
-                                <ol class="support-refund-progress" aria-label="Refund progress">
+                <ol class="support-refund-progress" aria-label="@SupportText["RefundProgress"]">
                                     @RefundStep("Requested", true)
                                     @RefundStep("Support approved", RefundAtLeast(refund, 1))
                                     @RefundStep("Finance approval", RefundAtLeast(refund, 2))
@@ -183,20 +227,20 @@
 
                                 <div class="support-refund-footer">
                                     <div class="support-refund-data-used">
-                                        <strong>Data used</strong>
+                                        <strong>@SupportText["DataUsed"]</strong>
                                         @if (refund.InvoiceId is Guid invoiceId)
                                         {
-                                            <a href="@($"/finance/invoices/{invoiceId:D}")">Customer invoice</a>
+                                            <a href="@($"/finance/invoices/{invoiceId:D}")">@SupportText["CustomerInvoice"]</a>
                                         }
                                         @if (refund.PaymentId.HasValue)
                                         {
-                                            <span>Linked payment</span>
+                                            <span>@SupportText["LinkedPayment"]</span>
                                         }
                                     </div>
                                     <div class="d-flex flex-wrap gap-2">
                                         @if (RefundApprovalId(refund) is Guid approvalId)
                                         {
-                                            <a class="btn btn-sm btn-outline-secondary" href="@BuildApprovalHref(approvalId)">Open approval</a>
+                                            <a class="btn btn-sm btn-outline-secondary" href="@BuildApprovalHref(approvalId)">@SupportText["OpenApproval"]</a>
                                         }
                                         @if (refund.AllowedActions.Contains("request_execution") || refund.AllowedActions.Contains("retry"))
                                         {
@@ -206,11 +250,11 @@
                                         }
                                         @if (refund.AllowedActions.Contains("reconcile"))
                                         {
-                                            <button class="btn btn-sm btn-outline-warning" @onclick="() => ReconcileRefundAsync(refund.Id)" disabled="@isBusy">Reconcile</button>
+                                            <button class="btn btn-sm btn-outline-warning" @onclick="() => ReconcileRefundAsync(refund.Id)" disabled="@isBusy">@SupportText["Reconcile"]</button>
                                         }
                                         @if (refund.AllowedActions.Contains("cancel"))
                                         {
-                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelRefundAsync(refund.Id)" disabled="@(isBusy || string.IsNullOrWhiteSpace(caseActionNote))">Cancel</button>
+                                            <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelRefundAsync(refund.Id)" disabled="@(isBusy || string.IsNullOrWhiteSpace(caseActionNote))">@SupportText["Cancel"]</button>
                                         }
                                     </div>
                                 </div>
@@ -220,118 +264,108 @@
 
                     <div class="col-12 col-xl-4">
                         <section class="border rounded bg-white p-3 mb-4">
-                            <h2 class="h5">Case controls</h2>
-                            <label class="form-label mt-2" for="support-assignee">Owner</label>
+                            <h2 class="h5">@SupportText["CaseControls"]</h2>
+                            <label class="form-label mt-2" for="support-assignee">@SupportText["Owner"]</label>
                             <select id="support-assignee" class="form-select" @bind="selectedAssignee">
-                                <option value="">Unassigned</option>
+                                <option value="">@SupportText["Unassigned"]</option>
                                 @foreach (var option in assignees)
                                 {
                                     <option value="@AssigneeKey(option)" disabled="@(!option.Available)">@option.DisplayName · @option.SecondaryText · @option.OpenCaseCount open</option>
                                 }
                             </select>
-                            <input class="form-control mt-2" @bind="assignmentReason" placeholder="Reason for assignment" />
-                            <button class="btn btn-outline-primary w-100 mt-2" @onclick="SaveAssignmentAsync" disabled="@isBusy">Save owner</button>
+            <input class="form-control mt-2" @bind="assignmentReason" placeholder="@SupportText["AssignmentReasonPlaceholder"]" />
+                            <button class="btn btn-outline-primary w-100 mt-2" @onclick="SaveAssignmentAsync" disabled="@isBusy">@SupportText["SaveOwner"]</button>
 
-                            <label class="form-label mt-3">Priority</label>
+                            <label class="form-label mt-3">@SupportText["Priority"]</label>
                             <select class="form-select" @bind="selectedPriority">
-                                <option value="low">Low</option>
-                                <option value="normal">Normal</option>
-                                <option value="high">High</option>
-                                <option value="urgent">Urgent</option>
+                                @foreach (var itemCode in Priorities) { <option value="@itemCode">@SupportStatusPresenter.Present(itemCode, SupportText)</option> }
                             </select>
 
-                            <label class="form-label mt-3">Category</label>
+                            <label class="form-label mt-3">@SupportText["Category"]</label>
                             <select class="form-select" @bind="selectedCategory">
-                                <option value="general_question">General question</option>
-                                <option value="billing">Billing</option>
-                                <option value="refund">Refund</option>
-                                <option value="technical_issue">Technical issue</option>
-                                <option value="account_access">Account access</option>
-                                <option value="complaint">Complaint</option>
-                                <option value="bug_report">Bug report</option>
-                                <option value="churn_risk">Churn risk</option>
+                                @foreach (var itemCode in Categories) { <option value="@itemCode">@SupportStatusPresenter.Present(itemCode, SupportText)</option> }
                             </select>
 
                             <div class="d-grid gap-2 mt-3">
-                                <button class="btn btn-primary" @onclick="SaveControlsAsync" disabled="@isBusy">Save changes</button>
-                                <button class="btn btn-outline-secondary" @onclick="TriageAsync" disabled="@isBusy">Run triage</button>
+                                <button class="btn btn-primary" @onclick="SaveControlsAsync" disabled="@isBusy">@SupportText["SaveChanges"]</button>
+                                <button class="btn btn-outline-secondary" @onclick="TriageAsync" disabled="@isBusy">@SupportText["RunTriage"]</button>
                             </div>
                         </section>
 
                         <section class="border rounded bg-white p-3 mb-4">
-                            <h2 class="h5">Next action</h2>
+                            <h2 class="h5">@SupportText["NextAction"]</h2>
                             @if (supportCase.AllowedActions.Contains("resolve"))
                             {
-                                <label class="form-label mt-2" for="support-resolution-summary">Resolution summary</label>
-                                <textarea id="support-resolution-summary" class="form-control" rows="3" @bind="resolutionSummary" placeholder="What solved the customer’s issue?"></textarea>
-                                <label class="form-label mt-2" for="support-resolution-outcome">Outcome</label>
-                                <input id="support-resolution-outcome" class="form-control" @bind="resolutionOutcome" placeholder="Resolved for customer" />
-                                <label class="form-label mt-2" for="support-root-cause">Root cause</label>
-                                <select id="support-root-cause" class="form-select" @bind="resolutionRootCause"><option value="product_guidance">Product guidance</option><option value="configuration">Configuration</option><option value="billing_error">Billing error</option><option value="product_defect">Product defect</option><option value="customer_error">Customer error</option><option value="third_party">Third party</option><option value="other">Other</option></select>
-                                <label class="form-label mt-2" for="support-action-taken">Action taken</label>
+                                <label class="form-label mt-2" for="support-resolution-summary">@SupportText["ResolutionSummary"]</label>
+                <textarea id="support-resolution-summary" class="form-control" rows="3" @bind="resolutionSummary" placeholder="@SupportText["ResolutionSummaryPlaceholder"]"></textarea>
+                                <label class="form-label mt-2" for="support-resolution-outcome">@SupportText["Outcome"]</label>
+                <input id="support-resolution-outcome" class="form-control" @bind="resolutionOutcome" placeholder="@SupportText["ResolutionOutcomePlaceholder"]" />
+                                <label class="form-label mt-2" for="support-root-cause">@SupportText["RootCause"]</label>
+                                <select id="support-root-cause" class="form-select" @bind="resolutionRootCause"><option value="product_guidance">@SupportText["RootCauseProductGuidance"]</option><option value="configuration">@SupportText["RootCauseConfiguration"]</option><option value="billing_error">@SupportText["RootCauseBillingError"]</option><option value="product_defect">@SupportText["RootCauseProductDefect"]</option><option value="customer_error">@SupportText["RootCauseCustomerError"]</option><option value="third_party">@SupportText["RootCauseThirdParty"]</option><option value="other">@SupportText["RootCauseOther"]</option></select>
+                                <label class="form-label mt-2" for="support-action-taken">@SupportText["ActionTaken"]</label>
                                 <textarea id="support-action-taken" class="form-control" rows="2" @bind="resolutionActionTaken"></textarea>
-                                <label class="form-label mt-2" for="support-reusable-answer">Reusable answer</label>
+                                <label class="form-label mt-2" for="support-reusable-answer">@SupportText["ReusableAnswer"]</label>
                                 <textarea id="support-reusable-answer" class="form-control" rows="3" @bind="resolutionReusableAnswer"></textarea>
-                                <label class="form-label mt-2" for="support-preference-observation">Explicit customer preference (optional)</label>
+                                <label class="form-label mt-2" for="support-preference-observation">@SupportText["CustomerPreferenceOptional"]</label>
                                 <textarea id="support-preference-observation" class="form-control" rows="2" @bind="resolutionPreferenceObservation"></textarea>
-                                <label class="form-check mt-2"><input class="form-check-input" type="checkbox" @bind="resolutionReuseEligible" /> <span class="form-check-label">Eligible for approved answer reuse</span></label>
-                                <button class="btn btn-primary w-100 mt-2" @onclick="ResolveCaseAsync" disabled="@isBusy">Resolve case</button>
+                                <label class="form-check mt-2"><input class="form-check-input" type="checkbox" @bind="resolutionReuseEligible" /> <span class="form-check-label">@SupportText["EligibleAnswerReuse"]</span></label>
+                                <button class="btn btn-primary w-100 mt-2" @onclick="ResolveCaseAsync" disabled="@isBusy">@SupportText["ResolveCase"]</button>
                             }
 
-                            <label class="form-label mt-3" for="support-action-note">Reason or note</label>
-                            <textarea id="support-action-note" class="form-control" rows="2" @bind="caseActionNote" placeholder="Explain why this action is needed"></textarea>
+                            <label class="form-label mt-3" for="support-action-note">@SupportText["ReasonOrNote"]</label>
+            <textarea id="support-action-note" class="form-control" rows="2" @bind="caseActionNote" placeholder="@SupportText["ActionNotePlaceholder"]"></textarea>
                             <div class="d-grid gap-2 mt-2">
                                 @if (supportCase.AllowedActions.Contains("wait_for_customer"))
                                 {
-                                    <button class="btn btn-outline-secondary" @onclick='() => ChangeCaseStateAsync("waiting_for_customer")' disabled="@isBusy">Wait for customer</button>
+                                    <button class="btn btn-outline-secondary" @onclick='() => ChangeCaseStateAsync("waiting_for_customer")' disabled="@isBusy">@SupportText["WaitForCustomer"]</button>
                                 }
                                 @if (supportCase.AllowedActions.Contains("wait_internally"))
                                 {
-                                    <button class="btn btn-outline-secondary" @onclick='() => ChangeCaseStateAsync("waiting_internal")' disabled="@isBusy">Wait internally</button>
+                                    <button class="btn btn-outline-secondary" @onclick='() => ChangeCaseStateAsync("waiting_internal")' disabled="@isBusy">@SupportText["WaitInternally"]</button>
                                 }
                                 @if (supportCase.AllowedActions.Contains("escalate"))
                                 {
-                                    <button class="btn btn-outline-warning" @onclick='() => ChangeCaseStateAsync("escalated")' disabled="@isBusy">Escalate</button>
+                                    <button class="btn btn-outline-warning" @onclick='() => ChangeCaseStateAsync("escalated")' disabled="@isBusy">@SupportText["Escalate"]</button>
                                 }
                                 @if (supportCase.AllowedActions.Contains("reopen"))
                                 {
-                                    <button class="btn btn-outline-primary" @onclick="ReopenCaseAsync" disabled="@isBusy">Reopen case</button>
+                                    <button class="btn btn-outline-primary" @onclick="ReopenCaseAsync" disabled="@isBusy">@SupportText["ReopenCase"]</button>
                                 }
                                 @if (supportCase.AllowedActions.Contains("close"))
                                 {
-                                    <button class="btn btn-outline-secondary" @onclick="CloseCaseAsync" disabled="@isBusy">Close case</button>
+                                    <button class="btn btn-outline-secondary" @onclick="CloseCaseAsync" disabled="@isBusy">@SupportText["CloseCase"]</button>
                                 }
                             </div>
                         </section>
 
                         <section class="border rounded bg-white p-3 mb-4">
-                            <h2 class="h5">Customer context</h2>
+                            <h2 class="h5">@SupportText["CustomerContext"]</h2>
                             <dl class="mb-0">
-                                <dt>Customer</dt>
+                                <dt>@SupportText["Customer"]</dt>
                                 <dd>@(supportCase.CustomerName ?? "No customer linked")</dd>
-                                <dt>Contact</dt>
+                                <dt>@SupportText["Contact"]</dt>
                                 <dd>@(supportCase.ContactName ?? "No contact linked")</dd>
-                                <dt>Email</dt>
+                                <dt>@SupportText["Email"]</dt>
                                 <dd>@(supportCase.ContactEmail ?? "No email linked")</dd>
-                                <dt>Match</dt>
+                                <dt>@SupportText["Match"]</dt>
                                 <dd>@supportCase.Context.MatchRationale</dd>
                             </dl>
                         </section>
 
                         <section class="border rounded bg-white p-3 mb-4">
-                            <h2 class="h5">Refund or credit handoff</h2>
-                            <input class="form-control mb-2" type="number" step="0.01" @bind="refundAmount" placeholder="Amount" />
-                            <input class="form-control mb-2" @bind="refundCurrency" placeholder="Currency" />
-                            <input class="form-control mb-2" @bind="refundReason" placeholder="Reason code" />
-                            <textarea class="form-control mb-2" rows="3" @bind="refundExplanation" placeholder="Explanation"></textarea>
-                            <button class="btn btn-outline-primary" @onclick="RequestRefundAsync" disabled="@isBusy">Request finance review</button>
+                            <h2 class="h5">@SupportText["RefundHandoff"]</h2>
+        <input class="form-control mb-2" type="number" step="0.01" @bind="refundAmount" placeholder="@SupportText["AmountPlaceholder"]" />
+        <input class="form-control mb-2" @bind="refundCurrency" placeholder="@SupportText["CurrencyPlaceholder"]" />
+        <input class="form-control mb-2" @bind="refundReason" placeholder="@SupportText["ReasonCodePlaceholder"]" />
+        <textarea class="form-control mb-2" rows="3" @bind="refundExplanation" placeholder="@SupportText["ExplanationPlaceholder"]"></textarea>
+                            <button class="btn btn-outline-primary" @onclick="RequestRefundAsync" disabled="@isBusy">@SupportText["RequestFinanceReview"]</button>
                         </section>
 
                         <section class="border rounded bg-white p-3">
-                            <h2 class="h5">Activity</h2>
+                            <h2 class="h5">@SupportText["Activity"]</h2>
                             @if (supportCase.Events.Count == 0)
                             {
-                                <p class="text-body-secondary mb-0">No activity yet.</p>
+                                <p class="text-body-secondary mb-0">@SupportText["NoActivity"]</p>
                             }
                             else
                             {
@@ -341,7 +375,7 @@
                                         <div class="list-group-item px-0">
                                             <strong>@evt.EventLabel</strong>
                                             <div>@evt.Summary</div>
-                                            <small class="text-body-secondary">@evt.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                            <small class="text-body-secondary">@LocalDateTime.DateTime(evt.OccurredUtc)</small>
                                         </div>
                                     }
                                 </div>
@@ -355,6 +389,8 @@
 </section>
 
 @code {
+    private static readonly string[] Priorities = ["low", "normal", "high", "urgent"];
+    private static readonly string[] Categories = ["general_question", "billing", "refund", "technical_issue", "account_access", "complaint", "bug_report", "churn_risk"];
     [Parameter] public Guid CaseId { get; set; }
 
     private SupportCaseDetailResponse? supportCase;
@@ -380,6 +416,8 @@
     private string refundReason = "customer_request";
     private string? refundExplanation;
     private string? replyToEmail;
+    private Guid? supportAgentId;
+    private SupportAnswerabilityResultViewModel? answerability;
     private Guid? loadedCaseId;
     private readonly Dictionary<Guid, string> draftBodies = [];
     private readonly Dictionary<Guid, string> draftTones = [];
@@ -425,6 +463,8 @@
                 draftBodies.TryAdd(draft.Id, draft.DraftBody);
                 draftTones.TryAdd(draft.Id, draft.Tone);
             }
+
+            supportAgentId = supportCase.AssignedAgentId ?? await ResolveSupportAgentIdAsync(companyId);
         }
         catch (SupportApiException ex)
         {
@@ -500,6 +540,10 @@
 
     private static bool DraftEditable(SupportReplyDraftDto draft) =>
         (draft.Status is "draft" or "needs_review") && !draft.SentUtc.HasValue;
+    private IReadOnlyList<SupportReplyDraftDto> ActiveReplyDrafts => supportCase?.ReplyDrafts
+        .Where(draft => draft.Status is not "rejected")
+        .OrderByDescending(draft => draft.UpdatedUtc)
+        .ToList() ?? [];
     private string DraftBody(SupportReplyDraftDto draft) => draftBodies.GetValueOrDefault(draft.Id, draft.DraftBody);
     private string DraftTone(SupportReplyDraftDto draft) => draftTones.GetValueOrDefault(draft.Id, draft.Tone);
     private void SetDraftBody(Guid id, string? value) => draftBodies[id] = value ?? string.Empty;
@@ -528,6 +572,27 @@
         {
             return "Source details need review.";
         }
+    }
+
+    private Task AnalyzeAnswerabilityAsync() => RunActionAsync(LoadAnswerabilityAsync);
+
+    private async Task LoadAnswerabilityAsync(Guid companyId)
+    {
+        if (supportAgentId is not Guid agentId)
+        {
+            answerability = null;
+            return;
+        }
+
+        var latestDraft = ActiveReplyDrafts.FirstOrDefault();
+        var draftBody = latestDraft is null ? null : DraftBody(latestDraft);
+        answerability = await SupportApiClient.AnalyzeAnswerabilityAsync(companyId, agentId,
+            new SupportAnswerabilityRequestViewModel
+            {
+                SupportCaseId = CaseId,
+                DraftBody = draftBody,
+                Objective = "Assess whether the current case can be answered safely from trusted company knowledge."
+            });
     }
 
     private static string SafetyAlertClass(string decision) => decision switch
@@ -673,8 +738,7 @@
         _ => "badge text-bg-primary"
     };
 
-    private static string Percent(decimal value) =>
-        value.ToString("P0", CultureInfo.CurrentCulture);
+    private string Percent(decimal value) => LocalNumber.Percentage(value);
 
     private SupportMessageDto? LatestInboundMessage() =>
         supportCase?.Messages

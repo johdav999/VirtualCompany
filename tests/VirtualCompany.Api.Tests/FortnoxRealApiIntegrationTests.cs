@@ -35,7 +35,7 @@ public sealed class FortnoxRealApiIntegrationTests
             TimeProvider.System);
 
         var result = await client.GetCompanyInformationAsync(
-            new FortnoxRequestContext(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), correlationId: "fortnox-live-test"),
+            new FortnoxRequestContext(Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"), CorrelationId: "fortnox-live-test"),
             CancellationToken.None);
 
         Assert.False(string.IsNullOrWhiteSpace(result.CompanyName));
@@ -72,10 +72,10 @@ public sealed class FortnoxRealApiIntegrationTests
 
 internal static class OptionsMonitorTestExtensions
 {
-    public static IOptionsMonitor<T> ToMonitor<T>(this IOptions<T> options) =>
+    public static IOptionsMonitor<T> ToMonitor<T>(this IOptions<T> options) where T : class =>
         new StaticOptionsMonitor<T>(options.Value);
 
-    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T>
+    private sealed class StaticOptionsMonitor<T>(T value) : IOptionsMonitor<T> where T : class
     {
         public T CurrentValue => value;
         public T Get(string? name) => value;

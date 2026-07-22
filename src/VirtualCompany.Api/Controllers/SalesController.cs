@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using VirtualCompany.Api.ProblemHandling;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.CustomerMemory;
@@ -351,9 +352,5 @@ public sealed class SalesController : ControllerBase
         _companyContextAccessor.UserId is { } userId && userId != Guid.Empty ? userId : throw new UnauthorizedAccessException("A resolved user is required.");
 
     private ActionResult ValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
-        ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase))
-        {
-            Status = StatusCodes.Status400BadRequest,
-            Title = "Validation failed."
-        });
+        base.ValidationProblem(StableProblemDetails.CreateValidation(HttpContext, errors, ApiProblemCodes.SalesRequestInvalid));
 }

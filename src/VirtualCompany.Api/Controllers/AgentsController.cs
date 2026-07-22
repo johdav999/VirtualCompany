@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using VirtualCompany.Api.ProblemHandling;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Infrastructure.Tenancy;
@@ -16,17 +17,43 @@ public sealed class AgentsController : ControllerBase
     private readonly IAgentStatusAggregationService _agentStatusAggregationService;
     private readonly IAgentToolExecutionService _agentToolExecutionService;
     private readonly IAgentScheduledTriggerService _agentScheduledTriggerService;
+    private readonly IAgentBriefDraftService _agentBriefDraftService;
+    private readonly IAgentCapabilityCatalog _agentCapabilityCatalog;
 
     public AgentsController(
         ICompanyAgentService agentService,
         IAgentStatusAggregationService agentStatusAggregationService,
         IAgentToolExecutionService agentToolExecutionService,
-        IAgentScheduledTriggerService agentScheduledTriggerService)
+        IAgentScheduledTriggerService agentScheduledTriggerService,
+        IAgentBriefDraftService agentBriefDraftService,
+        IAgentCapabilityCatalog agentCapabilityCatalog)
     {
         _agentService = agentService;
         _agentStatusAggregationService = agentStatusAggregationService;
         _agentToolExecutionService = agentToolExecutionService;
         _agentScheduledTriggerService = agentScheduledTriggerService;
+        _agentBriefDraftService = agentBriefDraftService;
+        _agentCapabilityCatalog = agentCapabilityCatalog;
+    }
+
+    [HttpGet("{agentId:guid}/capabilities")]
+    public async Task<ActionResult<AgentCapabilityCatalogDto>> GetCapabilitiesAsync(
+        Guid companyId,
+        Guid agentId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _agentCapabilityCatalog.GetEffectiveCatalogAsync(companyId, agentId, cancellationToken));
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
     }
 
     [HttpGet("templates")]
@@ -113,11 +140,7 @@ public sealed class AgentsController : ControllerBase
         }
         catch (AgentValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return AgentValidationProblem(ex.Errors);
         }
         catch (AgentTemplateNotFoundException)
         {
@@ -211,11 +234,7 @@ public sealed class AgentsController : ControllerBase
         }
         catch (AgentValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return AgentValidationProblem(ex.Errors);
         }
         catch (KeyNotFoundException)
         {
@@ -224,6 +243,61 @@ public sealed class AgentsController : ControllerBase
         catch (UnauthorizedAccessException)
         {
             return Forbid();
+        }
+    }
+
+    [HttpPut("{agentId:guid}/brief")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentOperatingProfileDto>> UpdateBriefAsync(
+        Guid companyId,
+        Guid agentId,
+        [FromBody] UpdateAgentBriefCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _agentService.UpdateBriefAsync(companyId, agentId, command, cancellationToken));
+        }
+        catch (AgentValidationException ex)
+        {
+            return AgentValidationProblem(ex.Errors);
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+    }
+
+    [HttpPost("{agentId:guid}/brief/draft")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<AgentBriefDraftDto>> GenerateBriefDraftAsync(
+        Guid companyId,
+        Guid agentId,
+        [FromBody] GenerateAgentBriefDraftCommand command,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _agentBriefDraftService.GenerateAsync(companyId, agentId, command, cancellationToken));
+        }
+        catch (ArgumentException ex)
+        {
+            return AgentValidationProblem(new Dictionary<string, string[]> { [nameof(command.Category)] = [ex.Message] });
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
+        catch (AgentBriefDraftUnavailableException ex)
+        {
+            return Problem(
+                title: "Draft generation is unavailable",
+                detail: ex.Message,
+                statusCode: StatusCodes.Status503ServiceUnavailable);
         }
     }
 
@@ -290,11 +364,7 @@ public sealed class AgentsController : ControllerBase
         }
         catch (AgentScheduledTriggerValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return AgentValidationProblem(ex.Errors);
         }
         catch (KeyNotFoundException)
         {
@@ -322,11 +392,7 @@ public sealed class AgentsController : ControllerBase
         }
         catch (AgentScheduledTriggerValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return AgentValidationProblem(ex.Errors);
         }
         catch (KeyNotFoundException)
         {
@@ -421,11 +487,7 @@ public sealed class AgentsController : ControllerBase
         }
         catch (AgentExecutionValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return AgentValidationProblem(ex.Errors);
         }
         catch (KeyNotFoundException)
         {
@@ -436,4 +498,7 @@ public sealed class AgentsController : ControllerBase
             return Forbid();
         }
     }
+
+    private ActionResult AgentValidationProblem(IReadOnlyDictionary<string, string[]> errors) =>
+        ValidationProblem(StableProblemDetails.CreateValidation(HttpContext, errors, ApiProblemCodes.AgentValidation));
 }

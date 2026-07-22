@@ -39,9 +39,12 @@ public sealed class ExecutionExceptionService : IExecutionExceptionRecorder, IEx
         var severity = ExecutionExceptionSeverityValues.Parse(request.Severity);
         var sourceType = ExecutionExceptionSourceTypeValues.Parse(request.SourceType);
 
-        var existing = await _dbContext.ExecutionExceptionRecords
-            .IgnoreQueryFilters()
-            .SingleOrDefaultAsync(x =>
+        var existing = _dbContext.ExecutionExceptionRecords.Local.SingleOrDefault(x =>
+                x.CompanyId == request.CompanyId &&
+                x.IncidentKey == request.IncidentKey)
+            ?? await _dbContext.ExecutionExceptionRecords
+                .IgnoreQueryFilters()
+                .SingleOrDefaultAsync(x =>
                 x.CompanyId == request.CompanyId &&
                 x.IncidentKey == request.IncidentKey,
                 cancellationToken);

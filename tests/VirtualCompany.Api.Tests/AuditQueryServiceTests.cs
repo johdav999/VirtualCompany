@@ -52,7 +52,7 @@ public sealed class AuditQueryServiceTests
             AuditTargetTypes.AgentToolExecution,
             Guid.NewGuid().ToString(),
             AuditEventOutcomes.Succeeded,
-            ["policy guardrails"]));
+            dataSources: ["policy guardrails"]));
         await dbContext.SaveChangesAsync();
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
@@ -457,7 +457,7 @@ public sealed class AuditQueryServiceTests
             "application/pdf",
             ".pdf",
             1200,
-            accessScope: CompanyKnowledgeDocumentAccessScope.CompanyWide(companyId));
+            accessScope: new CompanyKnowledgeDocumentAccessScope(companyId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
         var chunk = new CompanyKnowledgeChunk(
             chunkId,
             companyId,
@@ -477,7 +477,7 @@ public sealed class AuditQueryServiceTests
             "operations",
             "Investigate failed invoice sync",
             null,
-            WorkTaskPriority.Medium,
+            WorkTaskPriority.Normal,
             agentId,
             null,
             AuditActorTypes.Agent,

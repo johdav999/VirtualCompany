@@ -137,6 +137,7 @@ internal sealed class ContactConfiguration : IEntityTypeConfiguration<Contact>
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         builder.Property(x => x.Title).HasColumnName("title").HasMaxLength(120);
         builder.Property(x => x.Phone).HasColumnName("phone").HasMaxLength(64);
+        builder.Property(x => x.PreferredLanguage).HasColumnName("preferred_language").HasMaxLength(20);
         ConfigureAudit(builder);
 
         builder.HasIndex(x => x.CompanyId);
@@ -534,6 +535,7 @@ internal sealed class SalesCampaignConfiguration : IEntityTypeConfiguration<Sale
         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160).IsRequired();
         builder.Property(x => x.AudienceType).HasColumnName("audience_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(SalesStatuses.Draft).IsRequired();
+        builder.Property(x => x.CommunicationLanguage).HasColumnName("communication_language").HasMaxLength(20);
         builder.Property(x => x.OutboundEnabled).HasColumnName("outbound_enabled").HasDefaultValue(true).IsRequired();
         builder.Property(x => x.MaxEmailsPerDay).HasColumnName("max_emails_per_day").HasDefaultValue(50).IsRequired();
         builder.Property(x => x.ApprovalRequired).HasColumnName("approval_required").HasDefaultValue(false).IsRequired();

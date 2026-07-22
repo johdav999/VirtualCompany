@@ -209,19 +209,22 @@ public sealed class ExecutiveCockpitDashboardCacheTests
     {
         var now = DateTime.UtcNow;
         var dashboard = new ExecutiveCockpitDashboardDto(
-            companyId,
-            companyName,
-            now,
-            null,
-            [],
-            null,
-            new ExecutiveCockpitPendingApprovalsDto(0, [], $"/approvals?companyId={companyId}&status=pending"),
-            [],
-            [],
-            [],
-            [],
-            new ExecutiveCockpitSetupStateDto(false, false, false, 0, 0, 0, true),
-            new ExecutiveCockpitEmptyStateFlagsDto(true, true, true, true, true, true));
+            CompanyId: companyId,
+            CompanyName: companyName,
+            GeneratedAtUtc: now,
+            BusinessSignals: [],
+            CacheTimestampUtc: null,
+            SummaryKpis: [],
+            DailyBriefing: null,
+            CashPosition: null,
+            Finance: null,
+            PendingApprovals: new ExecutiveCockpitPendingApprovalsDto(0, [], $"/approvals?companyId={companyId}&status=pending"),
+            Alerts: [],
+            DepartmentKpis: [],
+            DepartmentSections: [],
+            RecentActivity: [],
+            SetupState: new ExecutiveCockpitSetupStateDto(false, false, false, 0, 0, 0, true),
+            EmptyStateFlags: new ExecutiveCockpitEmptyStateFlagsDto(true, true, true, true, true, true));
 
         return new CachedExecutiveCockpitDashboardDto(companyId, now, dashboard);
     }

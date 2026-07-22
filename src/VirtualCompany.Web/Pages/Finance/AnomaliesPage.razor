@@ -3,20 +3,20 @@
 @inherits FinancePageBase
 @using VirtualCompany.Web.Services
 
-<PageTitle>Finance issues</PageTitle>
+<PageTitle>@FinanceText["FinanceIssues"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Issues"
-    Description="Review finance items that need attention."
-    LoadingMessage="Loading finance issues...">
+    Title="@FinanceText["Issues"]"
+    Description="@FinanceText["IssuesDescription"]"
+    LoadingMessage="@FinanceText["LoadingFinanceIssues"]">
     <form class="agent-filter-bar mb-4" @onsubmit="HandleApplyFiltersAsync" @onsubmit:preventDefault="true">
         <div>
-            <label class="form-label" for="finance-anomaly-type">Issue type</label>
+            <label class="form-label" for="finance-anomaly-type">@FinanceText["IssueType"]</label>
             <select id="finance-anomaly-type" class="form-select" @bind="Filters.AnomalyType" @bind:after="HandleFiltersChangedAsync">
-                <option value="">All issue types</option>
+                <option value="">@FinanceText["AllIssueTypes"]</option>
                 @foreach (var option in AnomalyTypeOptions)
                 {
                     <option value="@option">@FinanceAnomalyPresentation.FormatLabel(option)</option>
@@ -24,9 +24,9 @@
             </select>
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-status">Status</label>
+            <label class="form-label" for="finance-anomaly-status">@FinanceText["Status"]</label>
             <select id="finance-anomaly-status" class="form-select" @bind="Filters.Status" @bind:after="HandleFiltersChangedAsync">
-                <option value="">All statuses</option>
+                <option value="">@FinanceText["AllStatuses"]</option>
                 @foreach (var option in StatusOptions)
                 {
                     <option value="@option">@FinanceAnomalyPresentation.FormatLabel(option)</option>
@@ -34,27 +34,27 @@
             </select>
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-confidence-min">Confidence min</label>
+            <label class="form-label" for="finance-anomaly-confidence-min">@FinanceText["ConfidenceMin"]</label>
             <input id="finance-anomaly-confidence-min" class="form-control" type="number" min="0" max="1" step="0.01" @bind="Filters.ConfidenceMin" @bind:after="HandleFiltersChangedAsync" />
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-confidence-max">Confidence max</label>
+            <label class="form-label" for="finance-anomaly-confidence-max">@FinanceText["ConfidenceMax"]</label>
             <input id="finance-anomaly-confidence-max" class="form-control" type="number" min="0" max="1" step="0.01" @bind="Filters.ConfidenceMax" @bind:after="HandleFiltersChangedAsync" />
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-supplier">Supplier</label>
+            <label class="form-label" for="finance-anomaly-supplier">@FinanceText["Supplier"]</label>
             <input id="finance-anomaly-supplier" class="form-control" type="text" @bind="Filters.Supplier" @bind:after="HandleFiltersChangedAsync" />
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-from">Detected from</label>
+            <label class="form-label" for="finance-anomaly-from">@FinanceText["DetectedFrom"]</label>
             <input id="finance-anomaly-from" class="form-control" type="date" @bind="Filters.DateFrom" @bind:format="yyyy-MM-dd" @bind:after="HandleFiltersChangedAsync" />
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-to">Detected to</label>
+            <label class="form-label" for="finance-anomaly-to">@FinanceText["DetectedTo"]</label>
             <input id="finance-anomaly-to" class="form-control" type="date" @bind="Filters.DateTo" @bind:format="yyyy-MM-dd" @bind:after="HandleFiltersChangedAsync" />
         </div>
         <div>
-            <label class="form-label" for="finance-anomaly-page-size">Page size</label>
+            <label class="form-label" for="finance-anomaly-page-size">@FinanceText["PageSize"]</label>
             <select id="finance-anomaly-page-size" class="form-select" @bind="Filters.PageSize" @bind:after="HandlePageSizeChangedAsync">
                 @foreach (var option in PageSizeOptions)
                 {
@@ -63,19 +63,19 @@
             </select>
         </div>
         <div class="dashboard-actions">
-            <button class="btn btn-primary" type="submit">Apply filters</button>
-            <button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">Clear</button>
+            <button class="btn btn-primary" type="submit">@FinanceText["ApplyFilters"]</button>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">@FinanceText["Clear"]</button>
         </div>
     </form>
 
     <section class="finance-summary-grid mb-4">
         <article class="wizard-card finance-metric-card finance-metric-card--hero">
-            <span class="dashboard-kicker">Matching issues</span>
+            <span class="dashboard-kicker">@FinanceText["MatchingIssues"]</span>
             <h2 class="finance-metric-card__value">@(Workbench?.TotalCount ?? 0)</h2>
-            <p class="text-body-secondary mb-0">Use filters to find finance items that need attention.</p>
+            <p class="text-body-secondary mb-0">@FinanceText["FindIssuesHelp"]</p>
         </article>
         <article class="wizard-card finance-metric-card">
-            <span class="dashboard-kicker">Current page</span>
+            <span class="dashboard-kicker">@FinanceText["CurrentPage"]</span>
             <div class="finance-metric-card__value finance-metric-card__value--compact">@CurrentPageSummary</div>
             <p class="text-body-secondary mb-0">@VisibleRangeSummary</p>
         </article>
@@ -85,11 +85,11 @@
         IsLoading="@IsListLoading"
         IsEmpty="@IsListEmpty"
         ErrorMessage="@ListErrorMessage"
-        LoadingTitle="Loading issues"
-        LoadingMessage="Fetching issues, follow-up status, and related finance records."
-        EmptyTitle="No issues"
-        EmptyMessage="No finance issues match the current filters."
-        RetryText="Reload issues"
+        LoadingTitle="@FinanceText["LoadingIssues"]"
+        LoadingMessage="@FinanceText["FetchingIssues"]"
+        EmptyTitle="@FinanceText["NoIssues"]"
+        EmptyMessage="@FinanceText["NoIssuesDescription"]"
+        RetryText="@FinanceText["ReloadIssues"]"
         OnRetry="@ReloadAsync">
         @if (Workbench is not null && Workbench.Items.Count > 0)
         {
@@ -98,12 +98,12 @@
                     <table class="table finance-anomaly-table">
                         <thead>
                             <tr>
-                                <th scope="col">Type</th>
-                                <th scope="col">Affected record</th>
-                                <th scope="col">Explanation</th>
-                                <th scope="col">Confidence</th>
-                                <th scope="col">Recommended action</th>
-                                <th scope="col">Follow-up status</th>
+                                <th scope="col">@FinanceText["Type"]</th>
+                                <th scope="col">@FinanceText["AffectedRecord"]</th>
+                                <th scope="col">@FinanceText["Explanation"]</th>
+                                <th scope="col">@FinanceText["Confidence"]</th>
+                                <th scope="col">@FinanceText["RecommendedAction"]</th>
+                                <th scope="col">@FinanceText["FollowUpStatus"]</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -125,11 +125,11 @@
                                             <div class="finance-anomaly-inline-meta small">
                                                 @if (!string.IsNullOrWhiteSpace(deduplication.Key))
                                                 {
-                                                    <span>Dedup key: @deduplication.Key</span>
+                                                    <span>@FinanceText["DedupKeyValue", deduplication.Key]</span>
                                                 }
                                                 @if (deduplication.WindowStartUtc.HasValue || deduplication.WindowEndUtc.HasValue)
                                                 {
-                                                    <span>Window: @FinanceAnomalyPresentation.FormatWindow(deduplication.WindowStartUtc, deduplication.WindowEndUtc)</span>
+                                                    <span>@FinanceText["WindowValue", FinanceAnomalyPresentation.FormatWindow(deduplication.WindowStartUtc, deduplication.WindowEndUtc)]</span>
                                                 }
                                             </div>
                                         }
@@ -157,8 +157,8 @@
                 <div class="finance-workbench-pagination mt-3">
                     <span class="text-body-secondary">@VisibleRangeSummary</span>
                     <div class="dashboard-actions">
-                        <button class="btn btn-outline-secondary" type="button" @onclick="PreviousPageAsync" disabled="@(!CanGoToPreviousPage)">Previous</button>
-                        <button class="btn btn-outline-secondary" type="button" @onclick="NextPageAsync" disabled="@(!CanGoToNextPage)">Next</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="PreviousPageAsync" disabled="@(!CanGoToPreviousPage)">@FinanceText["Previous"]</button>
+                        <button class="btn btn-outline-secondary" type="button" @onclick="NextPageAsync" disabled="@(!CanGoToNextPage)">@FinanceText["Next"]</button>
                     </div>
                 </div>
             </section>

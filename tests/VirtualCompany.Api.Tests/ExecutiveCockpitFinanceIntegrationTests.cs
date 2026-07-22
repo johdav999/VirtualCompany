@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ExecutiveCockpitFinanceIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ExecutiveCockpitFinanceIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Dashboard_surfaces_finance_widgets_actions_and_low_cash_alert_for_finance_authorized_users()
@@ -383,6 +380,42 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IClassFixture<Test
         public int ActiveInsightCount { get; set; }
         public int CriticalInsightCount { get; set; }
         public int HighInsightCount { get; set; }
+    }
+
+    private sealed class FinanceCockpitCashResponse
+    {
+        public string DisplayValue { get; set; } = string.Empty;
+        public string TrendDisplay { get; set; } = string.Empty;
+        public DateTime LastRefreshedUtc { get; set; }
+    }
+
+    private sealed class FinanceCockpitRunwayResponse
+    {
+        public string Status { get; set; } = string.Empty;
+        public string StatusLabel { get; set; } = string.Empty;
+        public string DisplayValue { get; set; } = string.Empty;
+    }
+
+    private sealed class FinanceCockpitActionResponse
+    {
+        public string Key { get; set; } = string.Empty;
+        public string? OrchestrationEndpoint { get; set; }
+        public string HttpMethod { get; set; } = string.Empty;
+    }
+
+    private sealed class FinanceCockpitLinkResponse
+    {
+        public string Key { get; set; } = string.Empty;
+        public string Route { get; set; } = string.Empty;
+    }
+
+    private sealed class FinanceAlertDetailResponse
+    {
+        public Guid AlertId { get; set; }
+        public string Summary { get; set; } = string.Empty;
+        public List<string> ContributingFactors { get; set; } = [];
+        public List<FinanceCockpitActionResponse> AvailableActions { get; set; } = [];
+        public List<FinanceCockpitLinkResponse> Links { get; set; } = [];
     }
 
     private sealed class FinanceInsightFeedItemResponse

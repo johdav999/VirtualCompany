@@ -69,11 +69,9 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             throw new CompanyDocumentValidationException(validationErrors);
         }
 
-        var documentId = Guid.NewGuid();
         var normalizedFileName = Path.GetFileName(command.OriginalFileName.Trim());
         var fileExtension = Path.GetExtension(normalizedFileName).ToLowerInvariant();
         var normalizedContentType = NormalizeContentType(command.ContentType);
-        var storageKey = BuildStorageKey(companyId, documentId, normalizedFileName);
         var checksumSha256 = await TryComputeSha256Async(command.Content, cancellationToken);
         var normalizedMetadata = NormalizeMetadata(
             command.Metadata,
@@ -82,6 +80,23 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
             fileExtension,
             command.Length,
             checksumSha256);
+
+        var duplicate = await FindMatchingAgentBriefAsync(
+            companyId,
+            command.Length,
+            normalizedMetadata,
+            cancellationToken);
+        if (duplicate is not null)
+        {
+            _logger.LogInformation(
+                "Reused agent brief document {DocumentId} for company {CompanyId} instead of storing duplicate content.",
+                duplicate.Id,
+                companyId);
+            return MapDto(duplicate);
+        }
+
+        var documentId = Guid.NewGuid();
+        var storageKey = BuildStorageKey(companyId, documentId, normalizedFileName);
 
         DocumentStorageWriteResult storageResult;
         try
@@ -420,6 +435,86 @@ public sealed class CompanyDocumentService : ICompanyDocumentService
         var hash = await sha256.ComputeHashAsync(content, cancellationToken);
         RewindStream(content);
         return Convert.ToHexString(hash).ToLowerInvariant();
+    }
+
+    private async Task<CompanyKnowledgeDocument?> FindMatchingAgentBriefAsync(
+        Guid companyId,
+        long fileSizeBytes,
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        CancellationToken cancellationToken)
+    {
+        if (!TryGetMetadataString(metadata, "purpose", out var purpose) ||
+            !string.Equals(purpose, "agent_brief", StringComparison.OrdinalIgnoreCase) ||
+            !TryGetMetadataString(metadata, "checksum_sha256", out var checksum) ||
+            !TryGetMetadataString(metadata, "briefingCategory", out var category))
+        {
+            return null;
+        }
+
+        var shared = TryGetMetadataBoolean(metadata, "shareWithAgentTeam", out var shareWithTeam) && shareWithTeam;
+        var agentId = TryGetMetadataString(metadata, "agentId", out var ownerAgentId) ? ownerAgentId : string.Empty;
+        var candidates = await _dbContext.CompanyKnowledgeDocuments
+            .AsNoTracking()
+            .Where(document =>
+                document.CompanyId == companyId &&
+                document.FileSizeBytes == fileSizeBytes &&
+                document.IngestionStatus != CompanyKnowledgeDocumentIngestionStatus.Failed)
+            .OrderByDescending(document => document.UpdatedUtc)
+            .ThenByDescending(document => document.Id)
+            .ToListAsync(cancellationToken);
+
+        return candidates.FirstOrDefault(document =>
+            TryGetMetadataString(document.Metadata, "purpose", out var existingPurpose) &&
+            string.Equals(existingPurpose, "agent_brief", StringComparison.OrdinalIgnoreCase) &&
+            TryGetMetadataString(document.Metadata, "checksum_sha256", out var existingChecksum) &&
+            string.Equals(existingChecksum, checksum, StringComparison.OrdinalIgnoreCase) &&
+            TryGetMetadataString(document.Metadata, "briefingCategory", out var existingCategory) &&
+            string.Equals(existingCategory, category, StringComparison.OrdinalIgnoreCase) &&
+            HasMatchingBriefAudience(document.Metadata, shared, agentId));
+    }
+
+    private static bool HasMatchingBriefAudience(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        bool shared,
+        string agentId)
+    {
+        var existingShared = TryGetMetadataBoolean(metadata, "shareWithAgentTeam", out var shareWithTeam) && shareWithTeam;
+        if (shared || existingShared)
+        {
+            return shared && existingShared;
+        }
+
+        return TryGetMetadataString(metadata, "agentId", out var existingAgentId) &&
+               string.Equals(existingAgentId, agentId, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool TryGetMetadataString(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        string key,
+        out string value)
+    {
+        value = string.Empty;
+        if (!metadata.TryGetValue(key, out var node) ||
+            node is not JsonValue jsonValue ||
+            !jsonValue.TryGetValue<string>(out var candidate) ||
+            string.IsNullOrWhiteSpace(candidate))
+        {
+            return false;
+        }
+
+        value = candidate;
+        return true;
+    }
+
+    private static bool TryGetMetadataBoolean(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        string key,
+        out bool value)
+    {
+        value = false;
+        return metadata.TryGetValue(key, out var node) &&
+               node is JsonValue jsonValue &&
+               jsonValue.TryGetValue<bool>(out value);
     }
 
     private Task EnqueueAuditEventAsync(

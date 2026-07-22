@@ -7,12 +7,14 @@ internal static class MailboxOAuthCallbackRoutes
 {
     public const string GmailCallbackPath = "/api/mailbox-connections/gmail/callback";
     public const string Microsoft365CallbackPath = "/api/mailbox-connections/microsoft365/callback";
+    public const string StandardEmailCallbackPath = "/api/mailbox-connections/standard-email/callback";
 
     public static string GetProviderCallbackPath(MailboxProvider provider) =>
         provider switch
         {
             MailboxProvider.Gmail => GmailCallbackPath,
             MailboxProvider.Microsoft365 => Microsoft365CallbackPath,
+            MailboxProvider.StandardEmail => StandardEmailCallbackPath,
             _ => throw new ArgumentOutOfRangeException(nameof(provider), "Unsupported mailbox provider.")
         };
 

@@ -216,8 +216,6 @@ public sealed class TodayFocusPanelTests
         {
             Content = JsonContent.Create(new { title, detail })
         };
-    }
-
     private sealed class AsyncStubHttpMessageHandler : HttpMessageHandler
     {
         private readonly Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> _handler;

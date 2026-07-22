@@ -31,10 +31,10 @@ public sealed class FinanceSimulationServiceTests
             CancellationToken.None);
 
         var result = await service.AdvanceAsync(
-            new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, accelerated: true),
+            new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, Accelerated: true),
             CancellationToken.None);
 
-        Assert.Equal(initialClock.SimulatedUtc.AddHours(72), result.CurrentUtc);
+        Assert.Equal(initialClock.CurrentUtc.AddHours(72), result.CurrentUtc);
         Assert.Equal(72, result.TotalHoursProcessed);
         Assert.Equal(24, result.ExecutionStepHours);
         Assert.Equal(3, result.Logs.Count);
@@ -74,24 +74,24 @@ public sealed class FinanceSimulationServiceTests
         Assert.Equal(result.EventsEmitted, activityEvents.Length);
         Assert.All(transactions, transaction =>
         {
-            Assert.InRange(transaction.TransactionUtc, initialClock.SimulatedUtc, result.CurrentUtc);
-            Assert.InRange(transaction.CreatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
+            Assert.InRange(transaction.TransactionUtc, initialClock.CurrentUtc, result.CurrentUtc);
+            Assert.InRange(transaction.CreatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
         });
         Assert.All(invoices, invoice =>
         {
-            Assert.InRange(invoice.IssuedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
-            Assert.InRange(invoice.CreatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
-            Assert.InRange(invoice.UpdatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
+            Assert.InRange(invoice.IssuedUtc, initialClock.CurrentUtc, result.CurrentUtc);
+            Assert.InRange(invoice.CreatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
+            Assert.InRange(invoice.UpdatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
         });
         Assert.All(bills, bill =>
         {
-            Assert.InRange(bill.ReceivedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
-            Assert.InRange(bill.CreatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
-            Assert.InRange(bill.UpdatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
+            Assert.InRange(bill.ReceivedUtc, initialClock.CurrentUtc, result.CurrentUtc);
+            Assert.InRange(bill.CreatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
+            Assert.InRange(bill.UpdatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
         });
         Assert.All(activityEvents, activityEvent =>
         {
-            Assert.InRange(activityEvent.CreatedUtc, initialClock.SimulatedUtc, result.CurrentUtc);
+            Assert.InRange(activityEvent.CreatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
             Assert.Equal(companyId.ToString(), activityEvent.SourceMetadata["companyId"]?.GetValue<string>());
             Assert.Equal(1, activityEvent.SourceMetadata["eventsEmitted"]?.GetValue<int>());
         });
@@ -121,7 +121,7 @@ public sealed class FinanceSimulationServiceTests
 
         var stopwatch = Stopwatch.StartNew();
         var result = await service.AdvanceAsync(
-            new AdvanceCompanySimulationTimeCommand(companyId, 24 * 30, 24, accelerated: true),
+            new AdvanceCompanySimulationTimeCommand(companyId, 24 * 30, 24, Accelerated: true),
             CancellationToken.None);
         stopwatch.Stop();
 

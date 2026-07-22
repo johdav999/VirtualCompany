@@ -12,13 +12,13 @@
 @using VirtualCompany.Shared
 @using VirtualCompany.Web.Services
 
-<PageTitle>Dashboard</PageTitle>
+<PageTitle>@CommonText["DashboardPageTitle"]</PageTitle>
 
 @if (isLoading)
 {
     <section class="py-4">
-        <h1>Workspace dashboard</h1>
-        <p class="text-body-secondary mb-0">Loading web dashboard context...</p>
+        <h1>@CommonText["DashboardWorkspace"]</h1>
+        <p class="text-body-secondary mb-0">@CommonText["DashboardLoading"]</p>
     </section>
 }
 else if (CompanyId is null)
@@ -26,11 +26,11 @@ else if (CompanyId is null)
     <section class="py-4 dashboard-hero">
         <div class="dashboard-shell">
             <div class="wizard-card dashboard-summary">
-                <span class="dashboard-kicker">Web-first onboarding</span>
-                <h1>Choose a company dashboard or continue onboarding</h1>
-                <p class="lead mb-3">The Blazor web app is the primary surface for company creation and guided setup. Resume onboarding for new workspaces, or open an active company dashboard.</p>
+                <span class="dashboard-kicker">@CommonText["DashboardChooseCompanyKicker"]</span>
+                <h1>@CommonText["DashboardChooseCompany"]</h1>
+                <p class="lead mb-3">@CommonText["DashboardChooseCompanyDescription"]</p>
                 <div class="dashboard-actions">
-                    <a class="btn btn-primary" href="onboarding">Resume web onboarding</a>
+                    <a class="btn btn-primary" href="onboarding">@CommonText["DashboardResumeOnboarding"]</a>
                 </div>
 
                 @if (ActiveMemberships.Count > 0)
@@ -40,14 +40,14 @@ else if (CompanyId is null)
                         {
                             <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
                                 <strong>@membership.CompanyName</strong>
-                                <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                                <div class="text-body-secondary mt-2">@CommonText["DashboardMembership", FormatMembershipRole(membership.MembershipRole), FormatMembershipStatus(membership.Status)]</div>
                             </a>
                         }
                     </div>
                 }
                 else
                 {
-                    <p class="text-body-secondary mt-4 mb-0">No active company membership is selected yet. Start in the onboarding wizard to create the first workspace from the web app.</p>
+                    <p class="text-body-secondary mt-4 mb-0">@CommonText["DashboardNoMembership"]</p>
                 }
 
                 @if (!string.IsNullOrWhiteSpace(errorMessage))
@@ -57,11 +57,10 @@ else if (CompanyId is null)
             </div>
 
             <div class="wizard-card wizard-card--compact">
-                <h2 class="h5">Dashboard handoff</h2>
+                <h2 class="h5">@CommonText["DashboardHandoff"]</h2>
                 <ul class="mb-0">
-                    <li>Incomplete company setup is routed back into onboarding.</li>
-                    <li>Completed setup lands in the company dashboard with starter guidance.</li>
-                    <li>Mobile remains a companion surface and does not own onboarding orchestration.</li>
+                    <li>@CommonText["DashboardHandoffIncomplete"]</li>
+                    <li>@CommonText["DashboardHandoffComplete"]</li>
                 </ul>
             </div>
         </div>
@@ -77,14 +76,14 @@ else
                     {
                         <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
                             <div>
-                                <span class="dashboard-kicker">Finance admin</span>
-                                <h2 class="h6 mb-0">Financial data reset</h2>
+                                <span class="dashboard-kicker">@CommonText["DashboardFinanceAdmin"]</span>
+                                <h2 class="h6 mb-0">@CommonText["DashboardFinancialReset"]</h2>
                             </div>
                             <button type="button"
                                     class="btn btn-outline-danger btn-sm"
                                     disabled="@isResettingFinancialData"
                                     @onclick="HandleResetFinancialDataAsync">
-                                @(isResettingFinancialData ? "Resetting..." : "Reset finance data")
+                                @(isResettingFinancialData ? CommonText["DashboardResetting"] : CommonText["DashboardResetFinance"])
                             </button>
                         </div>
                     }
@@ -100,19 +99,19 @@ else
 
                     <div class="dashboard-finance-strip__grid">
                         <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">Revenue</span>
+                            <span class="dashboard-finance-strip__label">@CommonText["DashboardRevenue"]</span>
                             <strong class="dashboard-finance-strip__value">@RevenueDisplay</strong>
                         </article>
                         <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">Costs</span>
+                            <span class="dashboard-finance-strip__label">@CommonText["DashboardCosts"]</span>
                             <strong class="dashboard-finance-strip__value">@CostsDisplay</strong>
                         </article>
                         <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">Profit</span>
+                            <span class="dashboard-finance-strip__label">@CommonText["DashboardProfit"]</span>
                             <strong class="dashboard-finance-strip__value">@ProfitDisplay</strong>
                         </article>
                         <article class="dashboard-finance-strip__item">
-                            <span class="dashboard-finance-strip__label">Available cash</span>
+                            <span class="dashboard-finance-strip__label">@CommonText["DashboardAvailableCash"]</span>
                             <strong class="dashboard-finance-strip__value">@AvailableCashDisplay</strong>
                         </article>
                     </div>
@@ -121,7 +120,7 @@ else
                 <div class="dashboard-home-grid">
                     <section class="wizard-card dashboard-section-card dashboard-briefing-card" data-testid="latest-briefing-panel">
                         <div class="dashboard-section-card__heading">
-                            <h2 class="h3 mb-0">Latest Briefing</h2>
+                            <h2 class="h3 mb-0">@CommonText["DashboardLatestBriefing"]</h2>
                         </div>
 
                         <div class="dashboard-briefing-agent">
@@ -137,12 +136,12 @@ else
 
                     <section class="wizard-card dashboard-section-card dashboard-briefing-summary-card" data-testid="latest-briefing-summary-panel">
                         <div class="dashboard-section-card__heading">
-                            <h2 class="h3 mb-0">Summary</h2>
+                            <h2 class="h3 mb-0">@CommonText["DashboardSummary"]</h2>
                         </div>
 
                         @if (isSummaryLoading)
                         {
-                            <p class="text-body-secondary mb-0">Generating dashboard summary...</p>
+                            <p class="text-body-secondary mb-0">@CommonText["DashboardGeneratingSummary"]</p>
                         }
                         else if (!string.IsNullOrWhiteSpace(summaryErrorMessage))
                         {
@@ -150,7 +149,7 @@ else
                         }
                         else if (briefingSummary is null || string.IsNullOrWhiteSpace(briefingSummary.Summary))
                         {
-                            <p class="text-body-secondary mb-0">No briefing summary is available yet.</p>
+                            <p class="text-body-secondary mb-0">@CommonText["DashboardNoSummary"]</p>
                         }
                         else
                         {
@@ -164,9 +163,9 @@ else
                             <TopActionsList CompanyId="actionCompanyId"
                                             Count="5"
                                             Kicker=""
-                                            Title="What to do next"
+                                            Title="@CommonText["DashboardWhatNext"]"
                                             Subtitle=""
-                                            QueueLinkLabel="Open work"
+                                            QueueLinkLabel="@CommonText["DashboardOpenWork"]"
                                             OnActionClick="HandleDashboardActionAsync" />
                         </div>
                     }
@@ -214,8 +213,21 @@ else
     private string ProfitDisplay => financeMonthlySummary?.NetResult ?? "USD --";
     private string AvailableCashDisplay => financeCashPosition?.AvailableBalance ?? "USD --";
     private static string LatestBriefingAgentName => "LAURA";
-    private static string LatestBriefingAgentRole => "Finance Manager";
+    private string LatestBriefingAgentRole => CommonText["DashboardFinanceManager"];
     private static string LatestBriefingAvatarUrl => "/images/laura.png";
+    private string FormatMembershipRole(string? role) =>
+        role?.Trim().ToLowerInvariant() switch
+        {
+            "owner" => CommonText["MembershipOwner"],
+            "admin" or "administrator" => CommonText["MembershipAdmin"],
+            "member" => CommonText["MembershipMember"],
+            _ => role ?? CommonText["MembershipMember"]
+        };
+
+    private string FormatMembershipStatus(string? status) =>
+        string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["MembershipActive"]
+            : CommonText["MembershipInactive"];
     private bool CanResetFinanceData =>
         companyAccess is not null &&
         FinanceAccess.CanAccessSandboxAdmin(companyAccess.MembershipRole);
@@ -363,7 +375,7 @@ else
 
         var confirmed = await JS.InvokeAsync<bool>(
             "confirm",
-            "Reset all generated financial data for this company? This keeps company setup and master data.");
+            CommonText["DashboardResetConfirm"]);
         if (!confirmed)
         {
             return;
@@ -376,7 +388,7 @@ else
         try
         {
             var result = await FinanceApiClient.ResetFinancialDataAsync(companyId);
-            financeResetSuccessMessage = $"Financial data reset completed. Deleted {result.TotalDeleted} record(s).";
+            financeResetSuccessMessage = CommonText["DashboardResetComplete", LocalNumber.Integer(result.TotalDeleted)];
             await LoadFinanceSnapshotAsync(companyId);
         }
         catch (FinanceApiException ex)

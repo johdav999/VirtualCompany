@@ -23,18 +23,49 @@ public sealed class ExecutiveCockpitController : ControllerBase
     private readonly IExecutiveCockpitDashboardService _dashboardService;
     private readonly IExecutiveCockpitKpiQueryService _kpiQueryService;
     private readonly IDepartmentDashboardConfigurationService _departmentDashboardConfigurationService;
+    private readonly IAgentStaffOverviewQueryService _agentStaffOverviewQueryService;
     private readonly ILogger<ExecutiveCockpitController> _logger;
 
     public ExecutiveCockpitController(
         IExecutiveCockpitDashboardService dashboardService,
         IExecutiveCockpitKpiQueryService kpiQueryService,
         IDepartmentDashboardConfigurationService departmentDashboardConfigurationService,
+        IAgentStaffOverviewQueryService agentStaffOverviewQueryService,
         ILogger<ExecutiveCockpitController> logger)
     {
         _dashboardService = dashboardService;
         _kpiQueryService = kpiQueryService;
         _departmentDashboardConfigurationService = departmentDashboardConfigurationService;
+        _agentStaffOverviewQueryService = agentStaffOverviewQueryService;
         _logger = logger;
+    }
+
+    [HttpGet("agent-staff")]
+    public async Task<ActionResult<AgentStaffOverviewDto>> GetAgentStaffAsync(
+        Guid companyId,
+        [FromQuery] int? year,
+        [FromQuery] int? month,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _agentStaffOverviewQueryService.GetAsync(
+                new GetAgentStaffOverviewQuery(companyId, year, month),
+                cancellationToken));
+        }
+        catch (ArgumentOutOfRangeException ex)
+        {
+            ModelState.AddModelError("period", ex.Message);
+            return ValidationProblem(ModelState);
+        }
+        catch (UnauthorizedAccessException)
+        {
+            return Forbid();
+        }
+        catch (KeyNotFoundException)
+        {
+            return NotFound();
+        }
     }
 
     [HttpGet]

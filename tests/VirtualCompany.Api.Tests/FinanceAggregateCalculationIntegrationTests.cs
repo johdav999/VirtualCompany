@@ -7,14 +7,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceAggregateCalculationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceAggregateCalculationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceAggregateCalculationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Internal_finance_summary_endpoints_calculate_aggregates_from_underlying_records()

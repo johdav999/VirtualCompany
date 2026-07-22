@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net9.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="bunit" Version="1.30.3" />
+    <PackageReference Include="Microsoft.AspNetCore.Mvc.Testing" Version="9.0.1" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.14" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.12.0" />
+    <PackageReference Include="xunit" Version="2.9.2" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="2.8.2"><PrivateAssets>all</PrivateAssets></PackageReference>
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\VirtualCompany.Web\VirtualCompany.Web.csproj" />
+    <ProjectReference Include="..\..\src\VirtualCompany.Application\VirtualCompany.Application.csproj" />
+    <ProjectReference Include="..\..\src\VirtualCompany.Api\VirtualCompany.Api.csproj" />
+    <ProjectReference Include="..\..\src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="..\VirtualCompany.Api.Tests\*PageTests.cs" Link="Pages\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*ComponentTests.cs" Link="Components\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*PanelTests.cs" Link="Components\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*PresentationTests.cs" Link="Presentation\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*FilterStateTests.cs" Link="State\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*RoutesTests.cs" Link="Routes\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*RouteRegistrationTests.cs" Link="Routes\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*TelemetrySessionTests.cs" Link="Telemetry\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*ApiClientTenantContextTests.cs" Link="Clients\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*SnapshotCardTests.cs" Link="Components\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\*AccessResolverTests.cs" Link="Access\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\DepartmentDashboardSectionViewModelTests.cs" Link="Presentation\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\FinanceSummaryPresenterCashPositionTests.cs" Link="Presentation\%(Filename)%(Extension)" />
+    <Compile Include="..\VirtualCompany.Api.Tests\TopActionsListTests.cs" Link="Components\%(Filename)%(Extension)" />
+    <Compile Include="GlobalUsings.cs" />
+    <Compile Include="AgentApiClientTests.cs" />
+    <Compile Include="AgentStaffOverviewApiClientTests.cs" />
+    <Compile Include="AgentBriefDocumentStatusPresenterTests.cs" />
+    <Compile Include="AgentCapabilityPresenterTests.cs" />
+    <Compile Include="AgentManagementNavigationPolicyTests.cs" />
+    <Compile Include="LocalizationRequestPolicyTests.cs" />
+    <Compile Include="LocalizationQualityGateTests.cs" />
+    <Compile Include="LocalizedProblemPresenterTests.cs" />
+    <Compile Include="PresentationFormatterTests.cs" />
+    <Compile Include="SharedLocalizationTests.cs" />
+    <Compile Include="CompanyApiTransportTests.cs" />
+  </ItemGroup>
+</Project>

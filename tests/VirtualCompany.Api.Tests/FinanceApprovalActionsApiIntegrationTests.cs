@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceApprovalActionsApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceApprovalActionsApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceApprovalActionsApiIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Approve_endpoint_updates_pending_task_status()
@@ -77,7 +74,7 @@ public sealed class FinanceApprovalActionsApiIntegrationTests : IClassFixture<Te
         var response = await client.PostAsJsonAsync($"/api/finance/approvals/{seed.OtherCompanyTaskId}/approve", new { comment = "Should not resolve." });
 
         Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
-        await AssertPersistedStatusAsync(seed.OtherCompanyTaskId, ApprovalTaskStatus.Pending);
+        await AssertPersistedStatusAsync(seed.OtherCompanyTaskId!.Value, ApprovalTaskStatus.Pending);
     }
 
     [Fact]

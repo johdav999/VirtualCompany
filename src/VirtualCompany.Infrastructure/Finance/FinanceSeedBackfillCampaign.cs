@@ -526,7 +526,9 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
         FinanceBackfillDispatchPacingState pacingState,
         CancellationToken cancellationToken)
     {
-        var concurrency = Math.Max(1, options.MaxConcurrentEnqueues);
+        var concurrency = _dbContext.Database.IsSqlite()
+            ? 1
+            : Math.Max(1, options.MaxConcurrentEnqueues);
         using var gate = new SemaphoreSlim(concurrency, concurrency);
         var tasks = new List<Task<FinanceSeedBackfillScheduleResult>>(candidates.Count);
 
@@ -563,7 +565,6 @@ public sealed class FinanceSeedBackfillOrchestrator : IFinanceSeedBackfillOrches
         await _dbContext.Companies
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.FinanceSeedStatus != FinanceSeedingState.Seeded)
             .OrderBy(x => x.CreatedUtc)
             .ThenBy(x => x.Id)
             .Skip(pageIndex * pageSize)

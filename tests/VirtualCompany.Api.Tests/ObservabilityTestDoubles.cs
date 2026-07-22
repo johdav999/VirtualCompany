@@ -38,20 +38,13 @@ internal sealed class ScopeCapturingLogger<T> : ILogger<T>
         where TState : notnull
     {
         var flattened = new Dictionary<string, object?>(StringComparer.Ordinal);
-
-        foreach (var scope in _activeScopes)
+        if (state is IEnumerable<KeyValuePair<string, object?>> values)
         {
-            if (scope is not IEnumerable<KeyValuePair<string, object?>> scopeValues)
+            foreach (var value in values)
             {
-                continue;
-            }
-
-            foreach (var scopeValue in scopeValues)
-            {
-                flattened[scopeValue.Key] = scopeValue.Value;
+                flattened[value.Key] = value.Value;
             }
         }
-
         return flattened;
     }
 

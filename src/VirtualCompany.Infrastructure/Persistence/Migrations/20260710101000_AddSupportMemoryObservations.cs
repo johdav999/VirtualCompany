@@ -5,10 +5,17 @@ using Microsoft.EntityFrameworkCore.Migrations;
 
 namespace VirtualCompany.Infrastructure.Persistence.Migrations
 {
+    [Microsoft.EntityFrameworkCore.Infrastructure.DbContext(typeof(VirtualCompanyDbContext))]
+    [Migration("20260710101000_AddSupportMemoryObservations")]
     public partial class AddSupportMemoryObservations : Migration
     {
         protected override void Up(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.AddUniqueConstraint(
+                name: "AK_support_case_resolutions_company_id_id",
+                table: "support_case_resolutions",
+                columns: new[] { "company_id", "id" });
+
             migrationBuilder.CreateTable(
                 name: "support_memory_observations",
                 columns: table => new
@@ -82,6 +89,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
         protected override void Down(MigrationBuilder migrationBuilder)
         {
             migrationBuilder.DropTable(name: "support_memory_observations");
+
+            migrationBuilder.DropUniqueConstraint(
+                name: "AK_support_case_resolutions_company_id_id",
+                table: "support_case_resolutions");
         }
     }
 }

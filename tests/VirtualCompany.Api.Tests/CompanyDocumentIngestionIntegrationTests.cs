@@ -19,14 +19,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class CompanyDocumentIngestionIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public CompanyDocumentIngestionIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Upload_persists_metadata_stores_file_and_marks_document_scan_clean_via_placeholder_scanner()
@@ -79,7 +76,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         Assert.Equal("text/plain", document.Metadata["content_type"]!.GetValue<string>());
         Assert.False(string.IsNullOrWhiteSpace(document.Metadata["checksum_sha256"]!.GetValue<string>()));
         Assert.Equal("clean", document.Metadata["virus_scan"]!["outcome"]!.GetValue<string>());
-        Assert.Equal("no_op_placeholder", document.Metadata["virus_scan"]!["scanner_name"]!.GetValue<string>());
+        Assert.Equal("test_placeholder_scanner", document.Metadata["virus_scan"]!["scanner_name"]!.GetValue<string>());
         Assert.Null(document.ProcessedUtc);
         Assert.Null(document.ProcessingStartedUtc);
         Assert.True(_factory.DocumentStorage.StoredObjects.TryGetValue(document.StorageKey, out var storedBytes));
@@ -87,6 +84,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         Assert.Equal("Important internal operating guidance.", Encoding.UTF8.GetString(storedBytes));
 
         var auditEvent = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
             .SingleAsync(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.TargetType == AuditTargetTypes.CompanyDocument &&
@@ -95,6 +93,54 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
 
         Assert.Equal(AuditEventOutcomes.Succeeded, auditEvent.Outcome);
    }
+
+    [Fact]
+    public async Task Upload_reuses_matching_agent_brief_instead_of_creating_a_duplicate()
+    {
+        _factory.DocumentStorage.Reset();
+        _factory.DocumentVirusScanner.Reset();
+        var seed = await SeedSingleMembershipAsync("manager", "manager@example.com", CompanyMembershipRole.Manager);
+        var agentId = Guid.NewGuid();
+        var metadata = $$"""{"purpose":"agent_brief","agentId":"{{agentId}}","briefingCategory":"products_and_services","shareWithAgentTeam":true}""";
+        const string accessScope = """{"visibility":"company","data_scopes":["knowledge","products_and_services"]}""";
+
+        using var client = CreateAuthenticatedClient("manager", "manager@example.com", "Manager");
+        using var firstContent = CreateUploadContent(
+            "Product catalog",
+            "reference",
+            "product-catalog.md",
+            "text/markdown",
+            "A stable product catalog.",
+            accessScope,
+            metadata);
+        using var secondContent = CreateUploadContent(
+            "Product catalog",
+            "reference",
+            "product-catalog.md",
+            "text/markdown",
+            "A stable product catalog.",
+            accessScope,
+            metadata);
+
+        var firstResponse = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", firstContent);
+        var secondResponse = await client.PostAsync($"/api/companies/{seed.CompanyId}/documents", secondContent);
+
+        Assert.Equal(HttpStatusCode.Created, firstResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Created, secondResponse.StatusCode);
+        var first = await firstResponse.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
+        var second = await secondResponse.Content.ReadFromJsonAsync<CompanyDocumentResponse>();
+        Assert.Equal(first!.Id, second!.Id);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        Assert.Equal(
+            1,
+            await dbContext.CompanyKnowledgeDocuments
+                .IgnoreQueryFilters()
+                .CountAsync(document => document.CompanyId == seed.CompanyId));
+        Assert.Single(_factory.DocumentStorage.StoredObjects);
+        Assert.Equal(1, _factory.DocumentVirusScanner.ScanCount);
+    }
 
     [Fact]
     public async Task Upload_accepts_supported_docx_files_with_case_insensitive_extension_checks()
@@ -281,6 +327,8 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
                 5,
                 accessScope: new CompanyKnowledgeDocumentAccessScope(companyAId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
             companyADocument.MarkUploaded(companyADocument.StorageKey);
+            companyADocument.MarkScanClean();
+            companyADocument.MarkProcessing();
             companyADocument.MarkProcessed();
 
             var companyBDocument = new CompanyKnowledgeDocument(
@@ -296,6 +344,8 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
                 5,
                 accessScope: new CompanyKnowledgeDocumentAccessScope(companyBId, CompanyKnowledgeDocumentAccessScope.CompanyVisibility));
             companyBDocument.MarkUploaded(companyBDocument.StorageKey);
+            companyBDocument.MarkScanClean();
+            companyBDocument.MarkProcessing();
             companyBDocument.MarkProcessed();
 
             dbContext.CompanyKnowledgeDocuments.AddRange(companyADocument, companyBDocument);
@@ -343,6 +393,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         Assert.False(await dbContext.CompanyKnowledgeDocuments.IgnoreQueryFilters().AnyAsync());
 
         var auditEvent = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
             .SingleAsync(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.TargetType == AuditTargetTypes.CompanyDocument &&
@@ -379,7 +430,16 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
 
         using (var scope = _factory.Services.CreateScope())
         {
+            scope.ServiceProvider
+                .GetRequiredService<VirtualCompany.Application.Auth.ICompanyContextAccessor>()
+                .SetCompanyId(seed.CompanyId);
             var ingestionStatusService = scope.ServiceProvider.GetRequiredService<ICompanyDocumentIngestionStatusService>();
+            await ingestionStatusService.MarkScanCleanAsync(
+                seed.CompanyId,
+                seed.DocumentId,
+                CompanyDocumentVirusScanResult.CleanPlaceholder(),
+                CancellationToken.None);
+            await ingestionStatusService.MarkProcessingAsync(seed.CompanyId, seed.DocumentId, CancellationToken.None);
             await ingestionStatusService.MarkProcessedAsync(seed.CompanyId, seed.DocumentId, CancellationToken.None);
         }
 
@@ -394,7 +454,7 @@ public sealed class CompanyDocumentIngestionIntegrationTests : IClassFixture<Tes
         Assert.Null(document.FailureCode);
         Assert.Null(document.FailureMessage);
 
-        var auditEvent = await dbContext.AuditEvents.SingleAsync(x =>
+        var auditEvent = await dbContext.AuditEvents.IgnoreQueryFilters().SingleAsync(x =>
             x.CompanyId == seed.CompanyId &&
             x.TargetType == AuditTargetTypes.CompanyDocument &&
             x.TargetId == seed.DocumentId.ToString("D") &&

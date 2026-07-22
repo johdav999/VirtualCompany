@@ -5,13 +5,13 @@
 @inject OnboardingApiClient ApiClient
 @inject NavigationManager Navigation
 
-<PageTitle>Create Company Workspace</PageTitle>
+<PageTitle>@CommonText["OnboardingPageTitle"]</PageTitle>
 
 @if (isLoading)
 {
     <section class="py-4">
-        <h1>Create company workspace</h1>
-        <p class="text-body-secondary mb-0">Loading saved setup progress...</p>
+        <h1>@CommonText["OnboardingPageTitle"]</h1>
+        <p class="text-body-secondary mb-0">@CommonText["OnboardingLoading"]</p>
     </section>
 }
 else
@@ -20,8 +20,8 @@ else
         <div class="dashboard-shell">
             <div class="wizard-panel">
                 <div class="wizard-card">
-                    <h1>Create company workspace</h1>
-                    <p class="text-body-secondary">Blazor web is the primary onboarding surface for company workspace creation. Set up the company profile, save progress between sessions, and resume the same company setup later.</p>
+                    <h1>@CommonText["OnboardingPageTitle"]</h1>
+                    <p class="text-body-secondary">@CommonText["OnboardingIntro"]</p>
 
                     @if (!string.IsNullOrWhiteSpace(statusMessage))
                     {
@@ -31,8 +31,8 @@ else
                     @if (currentUser?.ActiveCompany is not null && !model.CompanyId.HasValue && !showCompletedState)
                     {
                         <div class="alert alert-secondary mt-3 mb-0">
-                            You already have an active company context for <strong>@currentUser.ActiveCompany.CompanyName</strong>.
-                            Use this web wizard to create another workspace or <a href="@($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}")">return to the dashboard</a>.
+                            @CommonText["OnboardingActiveCompany", currentUser.ActiveCompany.CompanyName]
+                            @CommonText["OnboardingCreateAnother"] <a href="@($"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}")">@CommonText["OnboardingReturnDashboard"]</a>.
                         </div>
                     }
 
@@ -44,11 +44,11 @@ else
                     @if (showCompletedState)
                     {
                         <div class="mt-4">
-                            <h2 class="h5">Workspace already completed</h2>
-                            <p class="text-body-secondary">This company setup is complete. You can open the dashboard or start a fresh workspace setup without reopening the finished session.</p>
+                            <h2 class="h5">@CommonText["OnboardingAlreadyCompleted"]</h2>
+                            <p class="text-body-secondary">@CommonText["OnboardingCompletedDescription"]</p>
                             <div class="d-flex gap-2 flex-wrap">
-                                <button type="button" class="btn btn-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">Open dashboard</button>
-                                <button type="button" class="btn btn-outline-secondary" @onclick="StartAnotherWorkspace">Start another workspace</button>
+                                <button type="button" class="btn btn-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">@CommonText["OnboardingOpenDashboard"]</button>
+                                <button type="button" class="btn btn-outline-secondary" @onclick="StartAnotherWorkspace">@CommonText["OnboardingStartAnother"]</button>
                             </div>
                         </div>
                     }
@@ -70,43 +70,43 @@ else
                         {
                             <div class="row g-3 mt-1">
                                 <div class="col-12">
-                                    <label class="form-label">Starting template</label>
+                                    <label class="form-label">@CommonText["OnboardingStartingTemplate"]</label>
                                     <select class="form-select" value="@model.SelectedTemplateId" @onchange="OnTemplateChanged">
-                                        <option value="">No template</option>
+                                        <option value="">@CommonText["OnboardingNoTemplate"]</option>
                                         @foreach (var template in templates)
                                         {
                                             <option value="@template.TemplateId">@template.Name</option>
                                         }
                                     </select>
-                                    <div class="form-text">Optional. Use an existing template to prefill industry and locale defaults.</div>
+                                    <div class="form-text">@CommonText["OnboardingTemplateHelp"]</div>
                                     @RenderError(nameof(model.SelectedTemplateId))
                                 </div>
 
                                 <div class="col-12">
-                                    <label class="form-label">Company name</label>
+                                    <label class="form-label">@CommonText["OnboardingCompanyName"]</label>
                                     <input class="form-control" @bind="model.Name" @bind:after="ClearMessages" />
                                     @RenderError(nameof(model.Name))
                                 </div>
 
                                 <div class="col-md-6">
-                                    <label class="form-label">Industry</label>
+                                    <label class="form-label">@CommonText["OnboardingIndustry"]</label>
                                     <select class="form-select" value="@model.Industry" @onchange="OnIndustryChangedAsync">
-                                        <option value="">Select industry</option>
+                                        <option value="">@CommonText["OnboardingSelectIndustry"]</option>
                                         @foreach (var industry in IndustryOptions)
                                         {
-                                            <option value="@industry">@industry</option>
+                                            <option value="@industry">@DisplayOption(industry)</option>
                                         }
                                     </select>
                                     @RenderError(nameof(model.Industry))
                                 </div>
 
                                 <div class="col-md-6">
-                                    <label class="form-label">Business type</label>
+                                    <label class="form-label">@CommonText["OnboardingBusinessType"]</label>
                                     <select class="form-select" value="@model.BusinessType" @onchange="OnBusinessTypeChangedAsync">
-                                        <option value="">Select business type</option>
+                                        <option value="">@CommonText["OnboardingSelectBusinessType"]</option>
                                         @foreach (var businessType in BusinessTypeOptions)
                                         {
-                                            <option value="@businessType">@businessType</option>
+                                            <option value="@businessType">@DisplayOption(businessType)</option>
                                         }
                                     </select>
                                     @RenderError(nameof(model.BusinessType))
@@ -116,7 +116,7 @@ else
                                     @if (recommendedTemplate is not null && SelectedTemplate is null)
                                     {
                                         <div class="alert alert-secondary mb-0">
-                                            Recommended defaults will use <strong>@recommendedTemplate.Name</strong> based on the current @DescribeRecommendationMatch(recommendedTemplate.MatchKind).
+                                            @CommonText["OnboardingRecommendedDefaults", recommendedTemplate.Name, DescribeRecommendationMatch(recommendedTemplate.MatchKind)]
                                         </div>
                                     }
                                 </div>
@@ -126,9 +126,9 @@ else
                         {
                             <div class="row g-3 mt-1">
                                 <div class="col-md-6">
-                                    <label class="form-label">Timezone</label>
+                                    <label class="form-label">@CommonText["OnboardingTimezone"]</label>
                                     <select class="form-select" value="@model.Timezone" @onchange="OnTimezoneChanged">
-                                        <option value="">Select timezone</option>
+                                        <option value="">@CommonText["OnboardingSelectTimezone"]</option>
                                         @foreach (var timezone in TimezoneOptions)
                                         {
                                             <option value="@timezone">@timezone</option>
@@ -138,9 +138,9 @@ else
                                 </div>
 
                                 <div class="col-md-6">
-                                    <label class="form-label">Currency</label>
+                                    <label class="form-label">@CommonText["OnboardingCurrency"]</label>
                                     <select class="form-select" value="@model.Currency" @onchange="OnCurrencyChanged">
-                                        <option value="">Select currency</option>
+                                        <option value="">@CommonText["OnboardingSelectCurrency"]</option>
                                         @foreach (var currency in CurrencyOptions)
                                         {
                                             <option value="@currency">@currency</option>
@@ -150,9 +150,9 @@ else
                                 </div>
 
                                 <div class="col-md-6">
-                                    <label class="form-label">Language</label>
+                                    <label class="form-label">@CommonText["OnboardingLanguage"]</label>
                                     <select class="form-select" value="@model.Language" @onchange="OnLanguageChanged">
-                                        <option value="">Select language</option>
+                                        <option value="">@CommonText["OnboardingSelectLanguage"]</option>
                                         @foreach (var language in LanguageOptions)
                                         {
                                             <option value="@language.Value">@language.Label</option>
@@ -162,12 +162,12 @@ else
                                 </div>
 
                                 <div class="col-md-6">
-                                    <label class="form-label">Compliance region</label>
+                                    <label class="form-label">@CommonText["OnboardingComplianceRegion"]</label>
                                     <select class="form-select" value="@model.ComplianceRegion" @onchange="OnComplianceRegionChanged">
-                                        <option value="">Select compliance region</option>
+                                        <option value="">@CommonText["OnboardingSelectComplianceRegion"]</option>
                                         @foreach (var region in ComplianceRegionOptions)
                                         {
-                                            <option value="@region">@region</option>
+                                            <option value="@region">@DisplayOption(region)</option>
                                         }
                                     </select>
                                     @RenderError(nameof(model.ComplianceRegion))
@@ -177,22 +177,22 @@ else
                         else
                         {
                             <div class="mt-4">
-                                <h2 class="h5">Review setup</h2>
+                                <h2 class="h5">@CommonText["OnboardingReviewSetup"]</h2>
                                 <dl class="row mb-0">
-                                    <dt class="col-sm-4">Company</dt>
+                                    <dt class="col-sm-4">@CommonText["OnboardingCompany"]</dt>
                                     <dd class="col-sm-8">@model.Name</dd>
-                                    <dt class="col-sm-4">Industry</dt>
-                                    <dd class="col-sm-8">@DisplayValue(model.Industry)</dd>
-                                    <dt class="col-sm-4">Business type</dt>
-                                    <dd class="col-sm-8">@DisplayValue(model.BusinessType)</dd>
-                                    <dt class="col-sm-4">Timezone</dt>
+                                    <dt class="col-sm-4">@CommonText["OnboardingIndustry"]</dt>
+                                    <dd class="col-sm-8">@DisplayOptionValue(model.Industry)</dd>
+                                    <dt class="col-sm-4">@CommonText["OnboardingBusinessType"]</dt>
+                                    <dd class="col-sm-8">@DisplayOptionValue(model.BusinessType)</dd>
+                                    <dt class="col-sm-4">@CommonText["OnboardingTimezone"]</dt>
                                     <dd class="col-sm-8">@DisplayValue(model.Timezone)</dd>
-                                    <dt class="col-sm-4">Currency</dt>
+                                    <dt class="col-sm-4">@CommonText["OnboardingCurrency"]</dt>
                                     <dd class="col-sm-8">@DisplayValue(model.Currency)</dd>
-                                    <dt class="col-sm-4">Language</dt>
+                                    <dt class="col-sm-4">@CommonText["OnboardingLanguage"]</dt>
                                     <dd class="col-sm-8">@DisplayValue(model.Language)</dd>
-                                    <dt class="col-sm-4">Compliance</dt>
-                                    <dd class="col-sm-8">@DisplayValue(model.ComplianceRegion)</dd>
+                                    <dt class="col-sm-4">@CommonText["OnboardingCompliance"]</dt>
+                                    <dd class="col-sm-8">@DisplayOptionValue(model.ComplianceRegion)</dd>
                                 </dl>
                             </div>
                         }
@@ -200,28 +200,28 @@ else
                         <div class="d-flex gap-2 mt-4 flex-wrap">
                             @if (currentStep > 1)
                             {
-                                <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="GoBack">Back</button>
+                                <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="GoBack">@CommonText["OnboardingBack"]</button>
                             }
 
                             <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="SaveAndExitAsync">
-                                @(isSubmitting ? "Saving..." : "Save and exit")
+                                @(isSubmitting ? CommonText["OnboardingSaving"] : CommonText["OnboardingSaveExit"])
                             </button>
 
                             @if (model.CompanyId.HasValue)
                             {
-                                <button type="button" class="btn btn-outline-danger" disabled="@isSubmitting" @onclick="DiscardAsync">Discard saved setup</button>
+                                <button type="button" class="btn btn-outline-danger" disabled="@isSubmitting" @onclick="DiscardAsync">@CommonText["OnboardingDiscard"]</button>
                             }
 
                             @if (currentStep < StepCount)
                             {
                                 <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="ContinueAsync">
-                                    @(isSubmitting ? "Saving..." : "Continue")
+                                    @(isSubmitting ? CommonText["OnboardingSaving"] : CommonText["OnboardingContinue"])
                                 </button>
                             }
                             else
                             {
                                 <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="CompleteAsync">
-                                    @(isSubmitting ? "Completing setup..." : "Complete workspace setup")
+                                    @(isSubmitting ? CommonText["OnboardingCompleting"] : CommonText["OnboardingComplete"])
                                 </button>
                             }
                         </div>
@@ -231,18 +231,18 @@ else
 
             <aside class="wizard-panel">
                 <div class="wizard-card wizard-card--compact">
-                    <h2 class="h5">Workspace outcome</h2>
-                    <p class="text-body-secondary mb-2">Signed-in user becomes the initial <strong>owner</strong> membership.</p>
-                    <p class="text-body-secondary mb-0">Saved progress is restored for the same authenticated user and company setup session.</p>
+                    <h2 class="h5">@CommonText["OnboardingOutcome"]</h2>
+                    <p class="text-body-secondary mb-2">@CommonText["OnboardingOutcomeOwner"]</p>
+                    <p class="text-body-secondary mb-0">@CommonText["OnboardingOutcomeResume"]</p>
                 </div>
                 <div class="wizard-card wizard-card--compact mt-3">
-                    <h2 class="h5">Resume state</h2>
-                    <p class="text-body-secondary mb-2">Session status: @DisplaySessionStatus()</p>
-                    <p class="text-body-secondary mb-2">Draft company id: @(model.CompanyId?.ToString() ?? "No active draft")</p>
-                    <p class="text-body-secondary mb-0">Last saved: @(lastSavedLabel ?? "No saved setup yet")</p>
+                    <h2 class="h5">@CommonText["OnboardingResumeState"]</h2>
+                    <p class="text-body-secondary mb-2">@CommonText["OnboardingSessionStatus", DisplaySessionStatus()]</p>
+                    <p class="text-body-secondary mb-2">@CommonText["OnboardingDraftCompanyId", model.CompanyId?.ToString() ?? CommonText["OnboardingNoActiveDraft"].Value]</p>
+                    <p class="text-body-secondary mb-0">@CommonText["OnboardingLastSaved", lastSavedLabel ?? CommonText["OnboardingNotSaved"].Value]</p>
                 </div>
                 <div class="wizard-card wizard-card--compact mt-3">
-                    <h2 class="h5">Starter guidance</h2>
+                    <h2 class="h5">@CommonText["OnboardingStarterGuidance"]</h2>
                     <ul class="mb-0">
                         @foreach (var item in Guidance)
                         {
@@ -257,12 +257,6 @@ else
 
 @code {
     private const int StepCount = 3;
-    private static readonly string[] DefaultGuidance =
-    [
-        "Invite teammates after the workspace is live.",
-        "Assign one owner for each core workflow.",
-        "Upload company policies and documents as workspace knowledge."
-    ];
     private static readonly string[] FallbackIndustryOptions =
     [
         "Services",
@@ -316,7 +310,7 @@ else
         .ToList();
     private static readonly IReadOnlyList<SelectOption> SystemLanguageOptions = CultureInfo.GetCultures(CultureTypes.NeutralCultures)
         .Where(culture => !string.IsNullOrWhiteSpace(culture.Name))
-        .Select(culture => new SelectOption(culture.Name, $"{culture.EnglishName} ({culture.Name})"))
+        .Select(culture => new SelectOption(culture.Name, $"{culture.NativeName} ({culture.Name})"))
         .DistinctBy(option => option.Value, StringComparer.OrdinalIgnoreCase)
         .OrderBy(option => option.Label, StringComparer.OrdinalIgnoreCase)
         .ToList();
@@ -368,7 +362,12 @@ else
             ? recommendedTemplate.StarterGuidance
         : savedGuidance.Count > 0
             ? savedGuidance
-        : DefaultGuidance;
+        :
+        [
+            CommonText["OnboardingGuidanceInvite"],
+            CommonText["OnboardingGuidanceOwner"],
+            CommonText["OnboardingGuidanceDocuments"]
+        ];
     private bool showCompletedState => string.Equals(sessionStatus, "completed", StringComparison.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
@@ -410,7 +409,7 @@ else
             ClearMessages();
             var progress = await PersistProgressAsync(Math.Min(StepCount, currentStep + 1));
             ApplyProgress(progress);
-            statusMessage = "Setup progress saved.";
+            statusMessage = CommonText["OnboardingSaved"];
         }
         catch (OnboardingApiException ex)
         {
@@ -436,7 +435,7 @@ else
             ClearMessages();
             var progress = await PersistProgressAsync(currentStep);
             ApplyProgress(progress);
-            statusMessage = "Setup saved. You can resume later from the same step.";
+            statusMessage = CommonText["OnboardingSavedResume"];
         }
         catch (OnboardingApiException ex)
         {
@@ -484,7 +483,7 @@ else
             sessionStatus = "completed";
             savedGuidance = result.StarterGuidance;
             Navigation.NavigateTo(result.DashboardPath, replace: true);
-            statusMessage = "Workspace setup is complete.";
+            statusMessage = CommonText["OnboardingCompleteMessage"];
         }
         catch (OnboardingApiException ex)
         {
@@ -511,7 +510,7 @@ else
             ClearMessages();
             var progress = await ApiClient.AbandonAsync(model.CompanyId.Value);
             ApplyProgress(progress, startFresh: true);
-            statusMessage = "Saved setup was discarded. You can start again with the restored values.";
+            statusMessage = CommonText["OnboardingDiscardedMessage"];
         }
         catch (OnboardingApiException ex)
         {
@@ -550,7 +549,7 @@ else
         completedDashboardPath = null;
         lastSavedLabel = null;
         ClearMessages();
-        statusMessage = "Starting a new workspace setup.";
+        statusMessage = CommonText["OnboardingStartingNew"];
     }
 
     private void OnTemplateChanged(ChangeEventArgs args)
@@ -662,14 +661,14 @@ else
         if (progress.CanResume && !startFresh)
         {
             currentStep = Math.Clamp(progress.CurrentStep, 1, StepCount);
-            statusMessage = "Saved company setup restored.";
+            statusMessage = CommonText["OnboardingRestored"];
             return;
         }
 
         if (string.Equals(progress.Status, "completed", StringComparison.OrdinalIgnoreCase) && !startFresh)
         {
             currentStep = StepCount;
-            statusMessage = "This company setup is already complete.";
+            statusMessage = CommonText["OnboardingAlreadyCompleteMessage"];
             return;
         }
 
@@ -744,10 +743,10 @@ else
 
         if (string.IsNullOrWhiteSpace(model.Name))
         {
-            validationErrors[nameof(model.Name)] = "Company name is required to save setup progress.";
+            validationErrors[nameof(model.Name)] = CommonText["OnboardingNameRequiredSave"];
         }
 
-        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before saving." : null;
+        errorMessage = validationErrors.Count > 0 ? CommonText["OnboardingFixBeforeSaving"].Value : null;
         return validationErrors.Count == 0;
     }
 
@@ -757,20 +756,20 @@ else
 
         if (step >= 1)
         {
-            if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = "Company name is required.";
-            if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = "Industry is required.";
-            if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = "Business type is required.";
+            if (string.IsNullOrWhiteSpace(model.Name)) validationErrors[nameof(model.Name)] = Required("OnboardingCompanyName");
+            if (string.IsNullOrWhiteSpace(model.Industry)) validationErrors[nameof(model.Industry)] = Required("OnboardingIndustry");
+            if (string.IsNullOrWhiteSpace(model.BusinessType)) validationErrors[nameof(model.BusinessType)] = Required("OnboardingBusinessType");
         }
 
         if (step >= 2 || currentStep >= 2)
         {
-            if (string.IsNullOrWhiteSpace(model.Timezone)) validationErrors[nameof(model.Timezone)] = "Timezone is required.";
-            if (string.IsNullOrWhiteSpace(model.Currency)) validationErrors[nameof(model.Currency)] = "Currency is required.";
-            if (string.IsNullOrWhiteSpace(model.Language)) validationErrors[nameof(model.Language)] = "Language is required.";
-            if (string.IsNullOrWhiteSpace(model.ComplianceRegion)) validationErrors[nameof(model.ComplianceRegion)] = "Compliance region is required.";
+            if (string.IsNullOrWhiteSpace(model.Timezone)) validationErrors[nameof(model.Timezone)] = Required("OnboardingTimezone");
+            if (string.IsNullOrWhiteSpace(model.Currency)) validationErrors[nameof(model.Currency)] = Required("OnboardingCurrency");
+            if (string.IsNullOrWhiteSpace(model.Language)) validationErrors[nameof(model.Language)] = Required("OnboardingLanguage");
+            if (string.IsNullOrWhiteSpace(model.ComplianceRegion)) validationErrors[nameof(model.ComplianceRegion)] = Required("OnboardingComplianceRegion");
         }
 
-        errorMessage = validationErrors.Count > 0 ? "Fix the highlighted fields before continuing." : null;
+        errorMessage = validationErrors.Count > 0 ? CommonText["OnboardingFixBeforeContinuing"].Value : null;
         return validationErrors.Count == 0;
     }
 
@@ -787,7 +786,7 @@ else
         validationErrors.Clear();
         foreach (var error in errors)
         {
-            validationErrors[error.Key] = error.Value.FirstOrDefault() ?? "Invalid value.";
+            validationErrors[error.Key] = error.Value.FirstOrDefault() ?? CommonText["OnboardingInvalidValue"];
         }
     }
 
@@ -801,33 +800,64 @@ else
         return wizardStep < currentStep ? "is-complete" : string.Empty;
     }
 
-    private static string GetStepTitle(int wizardStep) =>
+    private string GetStepTitle(int wizardStep) =>
         wizardStep switch
         {
-            1 => "Company profile",
-            2 => "Workspace defaults",
-            3 => "Review and complete",
-            _ => "Setup"
+            1 => CommonText["OnboardingStepCompany"],
+            2 => CommonText["OnboardingStepDefaults"],
+            3 => CommonText["OnboardingStepReview"],
+            _ => CommonText["OnboardingStepSetup"]
         };
 
-    private static string DescribeRecommendationMatch(string matchKind) =>
+    private string DescribeRecommendationMatch(string matchKind) =>
         matchKind switch
         {
-            "industry_business_type" => "industry and business type",
-            "business_type" => "business type",
-            _ => "industry"
+            "industry_business_type" => CommonText["OnboardingMatchIndustryBusiness"],
+            "business_type" => CommonText["OnboardingMatchBusiness"],
+            _ => CommonText["OnboardingMatchIndustry"]
         };
     private string DisplaySessionStatus() =>
         sessionStatus switch
         {
-            "in_progress" => "In progress",
-            "completed" => "Completed",
-            "abandoned" => "Discarded",
-            _ => "Not started"
+            "in_progress" => CommonText["OnboardingStatusInProgress"],
+            "completed" => CommonText["OnboardingStatusCompleted"],
+            "abandoned" => CommonText["OnboardingStatusDiscarded"],
+            _ => CommonText["OnboardingStatusNotStarted"]
         };
 
-    private static string DisplayValue(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? "Not set" : value;
+    private string DisplayValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? CommonText["OnboardingNotSet"] : value;
+
+    private string DisplayOptionValue(string? value) =>
+        string.IsNullOrWhiteSpace(value) ? CommonText["OnboardingNotSet"] : DisplayOption(value);
+
+    private string DisplayOption(string value) =>
+        value.Trim().ToLowerInvariant() switch
+        {
+            "services" => CommonText["OptionServices"],
+            "retail" => CommonText["OptionRetail"],
+            "manufacturing" => CommonText["OptionManufacturing"],
+            "software" => CommonText["OptionSoftware"],
+            "consulting" => CommonText["OptionConsulting"],
+            "agency" => CommonText["OptionAgency"],
+            "e-commerce" => CommonText["OptionEcommerce"],
+            "saas" => CommonText["OptionSaas"],
+            "consultancy" => CommonText["OptionConsultancy"],
+            "distributor" => CommonText["OptionDistributor"],
+            "sweden" => CommonText["OptionSweden"],
+            "norway" => CommonText["OptionNorway"],
+            "denmark" => CommonText["OptionDenmark"],
+            "finland" => CommonText["OptionFinland"],
+            "united kingdom" => CommonText["OptionUnitedKingdom"],
+            "united states" => CommonText["OptionUnitedStates"],
+            "canada" => CommonText["OptionCanada"],
+            "australia" => CommonText["OptionAustralia"],
+            "global" => CommonText["OptionGlobal"],
+            _ => value
+        };
+
+    private string Required(string labelKey) =>
+        CommonText["OnboardingRequired", CommonText[labelKey]];
 
     private string? GetEffectiveTemplateId() =>
         !string.IsNullOrWhiteSpace(model.SelectedTemplateId)

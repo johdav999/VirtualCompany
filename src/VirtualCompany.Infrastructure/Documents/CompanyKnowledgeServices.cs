@@ -467,53 +467,60 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
 
     private async Task<bool> TryClaimDocumentAsync(Guid companyId, Guid documentId, CancellationToken cancellationToken)
     {
-        var utcNow = DateTime.UtcNow;
-
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-        try
+        var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+        return await executionStrategy.ExecuteAsync(async () =>
         {
-            await LockDocumentRowAsync(companyId, documentId, cancellationToken);
+            var utcNow = DateTime.UtcNow;
+            _dbContext.ChangeTracker.Clear();
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+                IsolationLevel.Serializable,
+                cancellationToken);
 
-            var document = await _dbContext.CompanyKnowledgeDocuments
-                .IgnoreQueryFilters()
-                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
-
-            if (document is null || !document.TryAcquireIndexingLease(utcNow, ClaimTimeout))
+            try
             {
+                await LockDocumentRowAsync(companyId, documentId, cancellationToken);
+
+                var document = await _dbContext.CompanyKnowledgeDocuments
+                    .IgnoreQueryFilters()
+                    .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
+
+                if (document is null || !document.TryAcquireIndexingLease(utcNow, ClaimTimeout))
+                {
+                    await transaction.RollbackAsync(cancellationToken);
+                    return false;
+                }
+
+                document.SetMetadataValue(
+                    "last_indexing_attempt",
+                    BuildIndexingAttemptMetadata(
+                        utcNow,
+                        document.IndexingRequestedUtc,
+                        document.IndexingStartedUtc,
+                        ClaimTimeout,
+                        _options.MaxAttempts));
+
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return true;
+            }
+            catch (DbUpdateConcurrencyException ex)
+            {
+                _logger.LogDebug(
+                    ex,
+                    "Knowledge indexing claim contention detected. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
+                    companyId,
+                    documentId);
+
+                _dbContext.ChangeTracker.Clear();
                 await transaction.RollbackAsync(cancellationToken);
                 return false;
             }
-
-            document.SetMetadataValue(
-                "last_indexing_attempt",
-                BuildIndexingAttemptMetadata(
-                    utcNow,
-                    document.IndexingRequestedUtc,
-                    document.IndexingStartedUtc,
-                    ClaimTimeout,
-                    _options.MaxAttempts));
-
-            await _dbContext.SaveChangesAsync(cancellationToken);
-            await transaction.CommitAsync(cancellationToken);
-            return true;
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            _logger.LogDebug(
-                ex,
-                "Knowledge indexing claim contention detected. CompanyId: {CompanyId}, DocumentId: {DocumentId}.",
-                companyId,
-                documentId);
-
-            _dbContext.ChangeTracker.Clear();
-            await transaction.RollbackAsync(cancellationToken);
-            return false;
-        }
-        catch
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            throw;
-        }
+            catch
+            {
+                await transaction.RollbackAsync(cancellationToken);
+                throw;
+            }
+        });
     }
 
     private static JsonObject BuildIndexingAttemptMetadata(
@@ -597,81 +604,88 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
 
         try
         {
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-            await LockDocumentRowAsync(companyId, documentId, cancellationToken);
-            await _dbContext.Entry(document).ReloadAsync(cancellationToken);
-
-            var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
-                .IgnoreQueryFilters()
-                .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
-                .ToListAsync(cancellationToken);
-
-            if (CanReuseCurrentChunkSet(document, currentActiveChunks, chunkDrafts.Count, chunkSetFingerprint))
+            var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+            await executionStrategy.ExecuteAsync(async () =>
             {
-                document.SetExtractedText(extractedText);
-                document.Metadata.Remove("last_indexing_failure");
-                if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+                _dbContext.ChangeTracker.Clear();
+                await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+                    IsolationLevel.Serializable,
+                    cancellationToken);
+                await LockDocumentRowAsync(companyId, documentId, cancellationToken);
+
+                var transactionDocument = await _dbContext.CompanyKnowledgeDocuments
+                    .IgnoreQueryFilters()
+                    .SingleAsync(x => x.CompanyId == companyId && x.Id == documentId, cancellationToken);
+                var currentActiveChunks = await _dbContext.CompanyKnowledgeChunks
+                    .IgnoreQueryFilters()
+                    .Where(chunk => chunk.CompanyId == companyId && chunk.DocumentId == documentId && chunk.IsActive)
+                    .ToListAsync(cancellationToken);
+
+                if (CanReuseCurrentChunkSet(transactionDocument, currentActiveChunks, chunkDrafts.Count, chunkSetFingerprint))
                 {
-                    document.MarkProcessed();
-                }
+                    transactionDocument.SetExtractedText(extractedText);
+                    transactionDocument.Metadata.Remove("last_indexing_failure");
+                    if (transactionDocument.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+                    {
+                        transactionDocument.MarkProcessed();
+                    }
 
-                document.MarkIndexed(
-                    extractedText,
-                    document.CurrentChunkSetVersion,
-                    currentActiveChunks.Count,
-                    embeddingBatch.Provider,
-                    embeddingBatch.Model,
-                    embeddingBatch.ModelVersion,
-                    embeddingBatch.Dimensions,
-                    chunkSetFingerprint);
+                    transactionDocument.MarkIndexed(
+                        extractedText,
+                        transactionDocument.CurrentChunkSetVersion,
+                        currentActiveChunks.Count,
+                        embeddingBatch.Provider,
+                        embeddingBatch.Model,
+                        embeddingBatch.ModelVersion,
+                        embeddingBatch.Dimensions,
+                        chunkSetFingerprint);
 
-                indexedChunkSetVersion = document.CurrentChunkSetVersion;
-                indexedChunkCount = currentActiveChunks.Count;
-
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                await transaction.CommitAsync(cancellationToken);
-            }
-            else
-            {
-                var nextVersion = document.CurrentChunkSetVersion + 1;
-
-                foreach (var currentActiveChunk in currentActiveChunks)
-                {
-                    currentActiveChunk.Deactivate();
-                }
-
-                if (IsPostgreSql())
-                {
-                    await InsertChunksPostgreSqlAsync(document, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
+                    indexedChunkSetVersion = transactionDocument.CurrentChunkSetVersion;
+                    indexedChunkCount = currentActiveChunks.Count;
                 }
                 else
                 {
-                    _dbContext.CompanyKnowledgeChunks.AddRange(BuildChunkEntities(document, nextVersion, chunkDrafts, embeddingBatch));
+                    var nextVersion = transactionDocument.CurrentChunkSetVersion + 1;
+
+                    foreach (var currentActiveChunk in currentActiveChunks)
+                    {
+                        currentActiveChunk.Deactivate();
+                    }
+
+                    if (IsPostgreSql())
+                    {
+                        await InsertChunksPostgreSqlAsync(transactionDocument, nextVersion, chunkDrafts, embeddingBatch, cancellationToken);
+                    }
+                    else
+                    {
+                        _dbContext.CompanyKnowledgeChunks.AddRange(
+                            BuildChunkEntities(transactionDocument, nextVersion, chunkDrafts, embeddingBatch));
+                    }
+
+                    transactionDocument.SetExtractedText(extractedText);
+                    transactionDocument.Metadata.Remove("last_indexing_failure");
+                    if (transactionDocument.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
+                    {
+                        transactionDocument.MarkProcessed();
+                    }
+
+                    transactionDocument.MarkIndexed(
+                        extractedText,
+                        nextVersion,
+                        chunkDrafts.Count,
+                        embeddingBatch.Provider,
+                        embeddingBatch.Model,
+                        embeddingBatch.ModelVersion,
+                        embeddingBatch.Dimensions,
+                        chunkSetFingerprint);
+
+                    indexedChunkSetVersion = nextVersion;
+                    indexedChunkCount = chunkDrafts.Count;
                 }
-
-                document.SetExtractedText(extractedText);
-                document.Metadata.Remove("last_indexing_failure");
-                if (document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processing)
-                {
-                    document.MarkProcessed();
-                }
-
-                document.MarkIndexed(
-                    extractedText,
-                    nextVersion,
-                    chunkDrafts.Count,
-                    embeddingBatch.Provider,
-                    embeddingBatch.Model,
-                    embeddingBatch.ModelVersion,
-                    embeddingBatch.Dimensions,
-                    chunkSetFingerprint);
-
-                indexedChunkSetVersion = nextVersion;
-                indexedChunkCount = chunkDrafts.Count;
 
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
-            }
+            });
         }
         catch (Exception)
         {
@@ -729,6 +743,7 @@ public sealed class CompanyKnowledgeIndexingProcessor : ICompanyKnowledgeIndexin
                 cancellationToken);
 
             if (result.Outcome == BackgroundJobExecutionOutcome.Succeeded ||
+                result.Outcome == BackgroundJobExecutionOutcome.Blocked ||
                 result.Outcome == BackgroundJobExecutionOutcome.PermanentFailure ||
                 result.Outcome == BackgroundJobExecutionOutcome.RetryExhausted)
             {
@@ -1155,12 +1170,6 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
             throw new CompanyKnowledgeSearchValidationException("QueryText is required.");
         }
 
-        var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
-        if (membership is null && !HasRequestedMembership(query.AccessContext))
-        {
-            throw new UnauthorizedAccessException("The current user cannot search knowledge for this company.");
-        }
-
         if (query.AccessContext is not null && query.AccessContext.CompanyId != Guid.Empty && query.AccessContext.CompanyId != query.CompanyId)
         {
             throw new CompanyKnowledgeSearchValidationException("AccessContext.CompanyId must match CompanyId.");
@@ -1169,6 +1178,12 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
         if (query.TopN is < 1 or > 20)
         {
             throw new CompanyKnowledgeSearchValidationException("TopN must be between 1 and 20.");
+        }
+
+        var membership = await _membershipContextResolver.ResolveAsync(query.CompanyId, cancellationToken);
+        if (membership is null && !HasRequestedMembership(query.AccessContext))
+        {
+            throw new UnauthorizedAccessException("The current user cannot search knowledge for this company.");
         }
 
         var scopedSearch = new ScopedKnowledgeSearchRequest(

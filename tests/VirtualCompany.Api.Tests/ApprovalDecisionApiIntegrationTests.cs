@@ -13,14 +13,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ApprovalDecisionApiIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ApprovalDecisionApiIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Canonical_decision_endpoint_approve_updates_approval_task_step_and_audit_state()

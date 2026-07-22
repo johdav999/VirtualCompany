@@ -231,6 +231,7 @@ public sealed class FinanceSeedDatasetGeneratorTests
             companyId,
             dataset.WindowStartUtc,
             dataset.WindowEndUtc,
+            true,
             dataset.CategoryIds,
             await dbContext.FinanceAccounts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),
             await dbContext.FinanceCounterparties.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToArrayAsync(),

@@ -195,6 +195,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
     private readonly ISupportMemoryUpdateService? _supportMemory;
+    private readonly ISupportReplyDeliveryDispatcher? _supportReplyDelivery;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -213,7 +214,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
         IBriefingUpdateJobProducer briefingUpdateJobProducer,
         ILogger<CompanyOutboxProcessor> logger,
-        ISupportMemoryUpdateService? supportMemory = null)
+        ISupportMemoryUpdateService? supportMemory = null,
+        ISupportReplyDeliveryDispatcher? supportReplyDelivery = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -232,6 +234,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _briefingUpdateJobProducer = briefingUpdateJobProducer;
         _logger = logger;
         _supportMemory = supportMemory;
+        _supportReplyDelivery = supportReplyDelivery;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -504,6 +507,24 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Support memory payload tenant does not match the outbox message tenant.");
                 if (_supportMemory is null) throw new InvalidOperationException("Support memory processing is not configured.");
                 await _supportMemory.ProcessJobAsync(payload.CompanyId, payload.JobId, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SupportReplyDeliveryRequested:
+            {
+                var payload = Deserialize<SupportReplyDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                {
+                    throw new CompanyOutboxPermanentException("Support reply payload tenant does not match the outbox message tenant.");
+                }
+
+                if (_supportReplyDelivery is null)
+                {
+                    throw new InvalidOperationException("Support reply delivery is not configured.");
+                }
+
+                await _supportReplyDelivery.DispatchAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
+                    cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.TaskCreated:

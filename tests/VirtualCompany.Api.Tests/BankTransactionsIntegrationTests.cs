@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class BankTransactionsIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public BankTransactionsIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Bank_transaction_endpoints_filter_and_isolate_by_company()
@@ -262,6 +259,8 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
         var firstPaymentId = Guid.Empty;
         var secondPaymentId = Guid.Empty;
         var pendingPaymentId = Guid.Empty;
+        var cashAccountId = Guid.Empty;
+        var receivablesAccountId = Guid.Empty;
 
         await _factory.SeedAsync(dbContext =>
         {
@@ -271,6 +270,8 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
 
             var cashAccount = new FinanceAccount(Guid.NewGuid(), companyId, "1000", "Operating Cash", "asset", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
             var receivablesAccount = new FinanceAccount(Guid.NewGuid(), companyId, "1100", "Receivables", "asset", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            cashAccountId = cashAccount.Id;
+            receivablesAccountId = receivablesAccount.Id;
             dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount);
 
             var fiscalPeriod = new FiscalPeriod(
@@ -353,8 +354,8 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
             email,
             displayName,
             bankTransactionId,
-            cashAccount.Id,
-            receivablesAccount.Id,
+            cashAccountId,
+            receivablesAccountId,
             firstPaymentId, secondPaymentId, pendingPaymentId);
     }
 
@@ -387,7 +388,7 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
         Guid SecondPaymentId,
         Guid PendingPaymentId);
 
-    private sealed class BankTransactionResponse
+    private class BankTransactionResponse
     {
         public Guid Id { get; set; }
         public Guid BankAccountId { get; set; }
@@ -415,8 +416,30 @@ public sealed class BankTransactionsIntegrationTests : IClassFixture<TestWebAppl
         public string DisplayName { get; set; } = string.Empty;
     }
 
-    private sealed record ReconcileBankTransactionRequest(
-        List<ReconcileBankTransactionPaymentRequest> Payments);
+    private sealed class ReconcileBankTransactionRequest
+    {
+        public ReconcileBankTransactionRequest()
+        {
+        }
 
-    private sealed record ReconcileBankTransactionPaymentRequest(Guid PaymentId, decimal AllocatedAmount);
+        public ReconcileBankTransactionRequest(List<ReconcileBankTransactionPaymentRequest> payments) => Payments = payments;
+
+        public List<ReconcileBankTransactionPaymentRequest> Payments { get; init; } = [];
+    }
+
+    private sealed class ReconcileBankTransactionPaymentRequest
+    {
+        public ReconcileBankTransactionPaymentRequest()
+        {
+        }
+
+        public ReconcileBankTransactionPaymentRequest(Guid paymentId, decimal allocatedAmount)
+        {
+            PaymentId = paymentId;
+            AllocatedAmount = allocatedAmount;
+        }
+
+        public Guid PaymentId { get; init; }
+        public decimal AllocatedAmount { get; init; }
+    }
 }

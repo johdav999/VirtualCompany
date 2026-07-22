@@ -31,7 +31,7 @@ public sealed class FinancePageTests
         });
         var requestedPaths = new List<string>();
 
-        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, requestResponse: null, retryResponse: null, manualSeedResponse: null, requestedPaths);
+        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, requestResponse: null, retryResponse: null, manualSeedResponse: null, requestedPaths: requestedPaths);
         harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
@@ -75,7 +75,7 @@ public sealed class FinancePageTests
         var requestedPaths = new List<string>();
         FinanceManualSeedRequest? capturedManualSeedRequest = null;
 
-        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, requestResponse: null, retryResponse: null, manualSeedResponse, requestedPaths, request => capturedManualSeedRequest = request);
+        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, requestResponse: null, retryResponse: null, manualSeedResponse, requestedPaths: requestedPaths, onManualSeedRequest: request => capturedManualSeedRequest = request);
         harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
@@ -135,7 +135,7 @@ public sealed class FinancePageTests
             Message = "Finance setup was requested in the background."
         };
 
-        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, requestResponse, retryResponse);
+        using var harness = CreateHarness(companyId, CreateCurrentUser(companyId, "owner"), entryResponses, requestResponse, retryResponse, manualSeedResponse: null);
         harness.Navigation.NavigateTo($"http://localhost/finance?companyId={companyId:D}");
 
         var cut = harness.Context.RenderComponent<FinancePage>(parameters => parameters.Add(x => x.CompanyId, companyId));
@@ -416,10 +416,10 @@ public sealed class FinancePageTests
             requestedPaths?.Add(request.RequestUri?.AbsolutePath ?? string.Empty);
             if (financeOverrideHandler is not null)
             {
-                var overridden = await financeOverrideHandler(request, _);
+                var overridden = financeOverrideHandler(request, _).GetAwaiter().GetResult();
                 if (overridden is not null)
                 {
-                    return overridden;
+                    return Task.FromResult(overridden);
                 }
             }
             if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/entry-state" &&
@@ -454,7 +454,7 @@ public sealed class FinancePageTests
             if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/manual-seed" &&
                 request.Method == HttpMethod.Post)
             {
-                var payload = await request.Content!.ReadFromJsonAsync<FinanceManualSeedRequest>(cancellationToken: _);
+                var payload = request.Content!.ReadFromJsonAsync<FinanceManualSeedRequest>(cancellationToken: _).GetAwaiter().GetResult();
                 onManualSeedRequest?.Invoke(payload!);
                 return Task.FromResult(CreateJsonResponse(manualSeedResponse!));
             }

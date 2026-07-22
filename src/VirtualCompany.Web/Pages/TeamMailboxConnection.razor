@@ -1,0 +1,842 @@
+@page "/agents/mailboxes/connect"
+@rendermode InteractiveServer
+@using Microsoft.AspNetCore.Components
+@inject FinanceApiClient FinanceApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+@inject IStringLocalizer<AgentsResources> AgentText
+@inject ILogger<TeamMailboxConnection> Logger
+
+<PageTitle>@AgentText["ConnectTeamInbox"]</PageTitle>
+
+<section class="team-mailbox-page py-4">
+    <a class="team-mailbox-back" href="@BackToAgentManagementHref">
+        <span class="bi bi-arrow-left" aria-hidden="true"></span>
+        @AgentText["BackToAgentManagement"]
+    </a>
+
+    <header class="team-mailbox-header">
+        <span class="dashboard-kicker">@AgentText["MailboxConnectionKicker"]</span>
+        <h1>@AgentText["ConnectTeamInbox"]</h1>
+        <p>@AgentText["ConnectTeamInboxDescription"]</p>
+    </header>
+
+    @if (isLoading)
+    {
+        <div class="team-mailbox-loading" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            @AgentText["LoadingMailboxConfiguration"]
+        </div>
+    }
+    else if (CompanyId is not Guid)
+    {
+        <div class="alert alert-warning" role="alert">@AgentText["MailboxCompanyRequired"]</div>
+    }
+    else
+    {
+        @if (!string.IsNullOrWhiteSpace(successMessage))
+        {
+            <div class="alert alert-success" role="status">@successMessage</div>
+        }
+        @if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert alert-danger" role="alert">@errorMessage</div>
+        }
+
+        <div class="team-mailbox-workflow">
+            <section class="team-mailbox-step" aria-labelledby="mailbox-function-title">
+                <div class="team-mailbox-step-copy">
+                    <span class="agent-access-step">1</span>
+                    <div>
+                        <h2 id="mailbox-function-title">@AgentText["SelectMailboxFunction"]</h2>
+                        <p>@AgentText["SelectMailboxFunctionDescription"]</p>
+                    </div>
+                </div>
+                <div class="team-mailbox-segment" role="group" aria-label="@AgentText["SelectMailboxFunction"]">
+                    @foreach (var option in PurposeOptions)
+                    {
+                        <button type="button"
+                                class="team-mailbox-segment-option @(selectedPurpose == option.Key ? "is-selected" : null)"
+                                aria-pressed="@(selectedPurpose == option.Key)"
+                                @onclick="@(() => SelectPurpose(option.Key))">
+                            <span class="bi @option.Icon" aria-hidden="true"></span>
+                            <span>@AgentText[option.LabelKey]</span>
+                            @if (selectedPurpose == option.Key)
+                            {
+                                <span class="bi bi-check-circle-fill team-mailbox-check" aria-hidden="true"></span>
+                            }
+                        </button>
+                    }
+                </div>
+            </section>
+
+            <section class="team-mailbox-step" aria-labelledby="mailbox-provider-title">
+                <div class="team-mailbox-step-copy">
+                    <span class="agent-access-step">2</span>
+                    <div>
+                        <h2 id="mailbox-provider-title">@AgentText["SelectEmailProvider"]</h2>
+                        <p>@AgentText["SelectEmailProviderDescription"]</p>
+                    </div>
+                </div>
+                <div class="team-mailbox-provider-options" role="group" aria-label="@AgentText["SelectEmailProvider"]">
+                    @foreach (var option in ProviderOptions)
+                    {
+                        var availability = GetProviderAvailability(option.Key);
+                        <button type="button"
+                                class="team-mailbox-provider-option @(selectedProvider == option.Key ? "is-selected" : null)"
+                                aria-pressed="@(selectedProvider == option.Key)"
+                                @onclick="@(() => SelectProvider(option.Key))">
+                            <span class="team-mailbox-provider-mark" aria-hidden="true">@option.Mark</span>
+                            <span>
+                                <strong>@option.DisplayName</strong>
+                                <small>@(availability.IsConfigured ? AgentText["ProviderReady"] : AgentText["ProviderNeedsSetup"])</small>
+                            </span>
+                            @if (selectedProvider == option.Key)
+                            {
+                                <span class="bi bi-check-circle-fill team-mailbox-check" aria-hidden="true"></span>
+                            }
+                        </button>
+                    }
+                </div>
+            </section>
+
+            <section class="team-mailbox-step" aria-labelledby="mailbox-review-title">
+                <div class="team-mailbox-step-copy">
+                    <span class="agent-access-step">3</span>
+                    <div>
+                        <h2 id="mailbox-review-title">@AgentText["ReviewAndConnectMailbox"]</h2>
+                        <p>@AgentText["ReviewAndConnectMailboxDescription", SelectedProviderDisplayName]</p>
+                    </div>
+                </div>
+
+                <div class="team-mailbox-review">
+                    @if (selectedProvider == "standard_email")
+                    {
+                        <div class="hosted-mailbox-form">
+                            <div class="hosted-mailbox-profile-row">
+                                @foreach (var profile in standardProfiles)
+                                {
+                                    <button type="button"
+                                            class="team-mailbox-provider-option @(standardModel.ProfileKey == profile.ProfileKey ? "is-selected" : null)"
+                                            aria-pressed="@(standardModel.ProfileKey == profile.ProfileKey)"
+                                            @onclick="@(() => SelectStandardProfile(profile.ProfileKey))">
+                                        <span class="team-mailbox-provider-mark bi @(profile.ProfileKey == "zoho-eu" ? "bi-envelope-check" : "bi-globe2")" aria-hidden="true"></span>
+                                        <span><strong>@profile.DisplayName</strong><small>@profile.Region</small></span>
+                                    </button>
+                                }
+                            </div>
+
+                            <div class="hosted-mailbox-fields">
+                                <div>
+                                    <label class="form-label" for="hosted-authentication">@AgentText["MailboxAuthenticationMethod"]</label>
+                                    <InputSelect id="hosted-authentication" class="form-select" @bind-Value="standardModel.AuthenticationType">
+                                        @if (SupportsStandardAuthentication("oauth2"))
+                                        {
+                                            <option value="oauth2">@AgentText["OAuthAuthentication"]</option>
+                                        }
+                                        @if (SupportsStandardAuthentication("application_password"))
+                                        {
+                                            <option value="application_password">@AgentText["ApplicationPassword"]</option>
+                                        }
+                                    </InputSelect>
+                                </div>
+                                <div>
+                                    <label class="form-label" for="hosted-email">@AgentText["EmailAddress"]</label>
+                                    <InputText id="hosted-email" class="form-control" autocomplete="email" @bind-Value="standardModel.EmailAddress" @onblur="CopyEmailToUsername" />
+                                </div>
+                                <div>
+                                    <label class="form-label" for="hosted-username">@AgentText["MailboxUsername"]</label>
+                                    <InputText id="hosted-username" class="form-control" autocomplete="username" @bind-Value="standardModel.Username" />
+                                </div>
+                                @if (standardModel.AuthenticationType == "application_password")
+                                {
+                                <div class="hosted-mailbox-password">
+                                    <label class="form-label" for="hosted-password">@AgentText["ApplicationPassword"]</label>
+                                    <InputText id="hosted-password" class="form-control" type="password" autocomplete="new-password" @bind-Value="standardModel.Credential" />
+                                    <small><span class="bi bi-shield-exclamation" aria-hidden="true"></span> @AgentText["ApplicationPasswordWarning"]</small>
+                                </div>
+                                }
+                            </div>
+
+                            @if (SelectedStandardProfile?.AllowsEndpointOverride == true)
+                            {
+                                <div class="hosted-mailbox-endpoints">
+                                    <fieldset>
+                                        <legend>@AgentText["IncomingMailServer"]</legend>
+                                        <div class="hosted-mailbox-endpoint-grid">
+                                            <div><label class="form-label" for="imap-host">@AgentText["ServerHost"]</label><InputText id="imap-host" class="form-control" @bind-Value="standardModel.Imap!.Host" /></div>
+                                            <div><label class="form-label" for="imap-port">@AgentText["Port"]</label><InputNumber id="imap-port" class="form-control" @bind-Value="standardModel.Imap!.Port" /></div>
+                                            <div><label class="form-label" for="imap-tls">@AgentText["SecureConnection"]</label><InputSelect id="imap-tls" class="form-select" @bind-Value="standardModel.Imap!.TlsMode"><option value="implicit_tls">@AgentText["TlsFromStart"]</option></InputSelect></div>
+                                        </div>
+                                    </fieldset>
+                                    <fieldset>
+                                        <legend>@AgentText["OutgoingMailServer"]</legend>
+                                        <div class="hosted-mailbox-endpoint-grid">
+                                            <div><label class="form-label" for="smtp-host">@AgentText["ServerHost"]</label><InputText id="smtp-host" class="form-control" @bind-Value="standardModel.Smtp!.Host" /></div>
+                                            <div><label class="form-label" for="smtp-port">@AgentText["Port"]</label><InputNumber id="smtp-port" class="form-control" @bind-Value="standardModel.Smtp!.Port" /></div>
+                                            <div><label class="form-label" for="smtp-tls">@AgentText["SecureConnection"]</label><InputSelect id="smtp-tls" class="form-select" @bind-Value="standardModel.Smtp!.TlsMode"><option value="implicit_tls">@AgentText["TlsFromStart"]</option><option value="starttls">STARTTLS</option></InputSelect></div>
+                                        </div>
+                                    </fieldset>
+                                </div>
+                            }
+
+                            @if (standardModel.AuthenticationType == "application_password")
+                            {
+                            <div class="hosted-mailbox-test-panel">
+                                <div class="hosted-mailbox-test-actions">
+                                    <button type="button" class="btn btn-outline-primary" @onclick="TestIncomingHostedMailboxAsync" disabled="@isTestingHostedMailbox">
+                                        @if (isTestingHostedMailbox && activeHostedMailboxTest == "incoming")
+                                        {
+                                            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> @AgentText["TestingIncomingMail"]
+                                        }
+                                        else
+                                        {
+                                            <span class="bi bi-inbox" aria-hidden="true"></span> @AgentText["TestIncomingMail"]
+                                        }
+                                    </button>
+                                    <button type="button" class="btn btn-outline-primary" @onclick="TestSendingHostedMailboxAsync" disabled="@isTestingHostedMailbox">
+                                        @if (isTestingHostedMailbox && activeHostedMailboxTest == "sending")
+                                        {
+                                            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span> @AgentText["TestingSending"]
+                                        }
+                                        else
+                                        {
+                                            <span class="bi bi-send-check" aria-hidden="true"></span> @AgentText["TestSending"]
+                                        }
+                                    </button>
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(hostedMailboxTestMessage))
+                                {
+                                    <div class="alert @(hostedMailboxTestSucceeded ? "alert-success" : "alert-danger") mt-3 mb-0" role="status">
+                                        @hostedMailboxTestMessage
+                                    </div>
+                                }
+                                @if (standardTestResult is not null)
+                                {
+                                    <div class="hosted-mailbox-capabilities" role="status">
+                                        <h3>@AgentText["MailboxCapabilities"]</h3>
+                                        @foreach (var capability in CapabilityRows)
+                                        {
+                                            <div><span class="bi @(capability.Available ? "bi-check-circle-fill" : "bi-dash-circle")" aria-hidden="true"></span><span>@AgentText[capability.LabelKey]</span><strong>@(capability.Available ? AgentText["Available"] : AgentText["NotAvailable"])</strong></div>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            }
+
+                            <div class="hosted-mailbox-footer">
+                                <p>@AgentText["HostedMailboxSaveHelp"]</p>
+                                @if (standardModel.AuthenticationType == "oauth2")
+                                {
+                                    <button type="button" class="btn btn-primary" @onclick="StartHostedOAuthAsync" disabled="@isConnecting">
+                                        <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span> @AgentText["ContinueToProvider", SelectedStandardProfile?.DisplayName ?? SelectedProviderDisplayName]
+                                    </button>
+                                }
+                                else
+                                {
+                                    <button type="button" class="btn btn-primary" @onclick="SaveHostedMailboxAsync" disabled="@(isConnecting || standardTestResult?.IncomingSucceeded != true || standardTestResult?.SendingSucceeded != true)">
+                                        <span class="bi bi-link-45deg" aria-hidden="true"></span> @AgentText["ConnectMailbox"]
+                                    </button>
+                                }
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                    <dl>
+                        <div>
+                            <dt><span class="bi bi-people" aria-hidden="true"></span>@AgentText["SelectedFunction"]</dt>
+                            <dd>@SelectedPurposeLabel</dd>
+                        </div>
+                        <div>
+                            <dt><span class="bi bi-envelope" aria-hidden="true"></span>@AgentText["ExpectedMailboxUse"]</dt>
+                            <dd>@AgentText[SelectedPurpose.UseKey]</dd>
+                        </div>
+                        <div>
+                            <dt><span class="bi bi-shield-check" aria-hidden="true"></span>@AgentText["ConnectionStatus"]</dt>
+                            <dd><span class="@ProviderReadinessBadgeClass">@ProviderReadinessLabel</span></dd>
+                        </div>
+                    </dl>
+
+                    @if (!SelectedProviderAvailability.IsConfigured)
+                    {
+                        @if (CanManageProviderSettings && providerSettings?.IsWritable == true)
+                        {
+                            <EditForm Model="@providerSettingsModel" OnValidSubmit="@SaveProviderAndContinueAsync" class="team-mailbox-provider-setup">
+                                <div>
+                                    <h3>@AgentText["SetUpProviderForMailbox", SelectedProviderDisplayName]</h3>
+                                    <p>@AgentText["ProviderSetupOnConnectionPage", SelectedProviderDisplayName]</p>
+                                </div>
+                                <div class="team-mailbox-provider-fields">
+                                    <div>
+                                        <label class="form-label" for="mailbox-client-id">@AgentText["OAuthClientId"]</label>
+                                        <InputText id="mailbox-client-id" class="form-control" autocomplete="off" @bind-Value="SelectedProviderSettingsModel.ClientId" />
+                                    </div>
+                                    <div>
+                                        <label class="form-label" for="mailbox-client-secret">@AgentText["OAuthClientSecret"]</label>
+                                        <InputText id="mailbox-client-secret" class="form-control" type="password" autocomplete="new-password"
+                                                   placeholder="@SelectedSecretPlaceholder" @bind-Value="SelectedProviderSettingsModel.ClientSecret" />
+                                    </div>
+                                </div>
+                                <div class="form-text">@AgentText["MailboxOAuthRedirectUri", SelectedProviderCallbackUri]</div>
+                                <button class="btn btn-primary" type="submit" disabled="@isConnecting">
+                                    <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span>
+                                    @(isConnecting ? AgentText["OpeningProvider"] : AgentText["SaveAndContinueToProvider", SelectedProviderDisplayName])
+                                </button>
+                            </EditForm>
+                        }
+                        else
+                        {
+                            <div class="alert alert-warning mb-0" role="status">
+                                @AgentText["MailboxProviderAskAdministrator", SelectedProviderDisplayName]
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <button class="btn btn-primary team-mailbox-connect-button" type="button" @onclick="ConnectAsync" disabled="@isConnecting">
+                            <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span>
+                            @(isConnecting ? AgentText["OpeningProvider"] : AgentText["ContinueToProvider", SelectedProviderDisplayName])
+                        </button>
+                    }
+                    }
+                </div>
+            </section>
+        </div>
+
+        <div class="team-mailbox-security-note">
+            <span class="bi bi-shield-lock" aria-hidden="true"></span>
+            <p><strong>@AgentText["MailboxCredentialsStoredSecurely"]</strong> @AgentText["MailboxCredentialsReuseDescription"]</p>
+        </div>
+
+        <section class="team-mailbox-current" aria-labelledby="current-mailbox-title">
+            <div>
+                <h2 id="current-mailbox-title">@AgentText["CurrentFunctionMailbox", SelectedPurposeLabel]</h2>
+                <p>@AgentText["CurrentFunctionMailboxDescription", SelectedPurposeLabel]</p>
+            </div>
+            @if (SelectedStatus?.IsConnected == true)
+            {
+                <span class="badge text-bg-success">@AgentText["MailboxConnected"]</span>
+            }
+            else
+            {
+                <span class="badge text-bg-light">@AgentText["MailboxNotConnected"]</span>
+            }
+
+            @if (SelectedStatus?.IsConnected == true)
+            {
+                <dl class="team-mailbox-current-details">
+                    <div><dt>@AgentText["EmailAddress"]</dt><dd>@SelectedStatus.EmailAddress</dd></div>
+                    <div><dt>@AgentText["Provider"]</dt><dd>@GetProviderDisplayName(SelectedStatus.Provider)</dd></div>
+                    <div><dt>@AgentText["SelectedFunction"]</dt><dd>@SelectedPurposeLabel</dd></div>
+                    <div><dt>@AgentText["ConnectedOn"]</dt><dd>@FormatDateTime(SelectedStatus.ConnectedAtUtc)</dd></div>
+                </dl>
+                <button class="btn btn-link text-danger p-0" type="button" @onclick="DisconnectAsync" disabled="@isConnecting">
+                    @AgentText["DisconnectMailbox"]
+                </button>
+            }
+            else
+            {
+                <p class="team-mailbox-empty-state">@AgentText["NoFunctionMailboxConnected", SelectedPurposeLabel]</p>
+            }
+        </section>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "agentId")]
+    public Guid? AgentId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "purpose")]
+    public string? Purpose { get; set; }
+
+    [SupplyParameterFromQuery(Name = "provider")]
+    public string? Provider { get; set; }
+
+    [SupplyParameterFromQuery(Name = "mailboxConnection")]
+    public string? MailboxConnectionResult { get; set; }
+
+    [SupplyParameterFromQuery(Name = "mailboxMessage")]
+    public string? MailboxConnectionMessage { get; set; }
+
+    private static readonly IReadOnlyList<PurposeOption> PurposeOptions =
+    [
+        new("finance", "FinanceFunction", "FinanceMailboxUse", "bi-receipt"),
+        new("sales", "SalesFunction", "SalesMailboxUse", "bi-briefcase"),
+        new("support", "SupportFunction", "SupportMailboxUse", "bi-headset")
+    ];
+
+    private static readonly IReadOnlyList<ProviderOption> ProviderOptions =
+    [
+        new("gmail", "Gmail", "G"),
+        new("microsoft365", "Microsoft 365", "M"),
+        new("standard_email", "Hosted email", "@")
+    ];
+
+    private readonly Dictionary<string, MailboxConnectionStatusResponse> statuses = new(StringComparer.OrdinalIgnoreCase);
+    private MailboxProviderAvailabilityResponse providerAvailability = new();
+    private FinanceEmailSettingsResponse? providerSettings;
+    private UpdateFinanceEmailSettingsRequest providerSettingsModel = new();
+    private CompanyAccessViewModel? companyAccess;
+    private string selectedPurpose = "support";
+    private string selectedProvider = "gmail";
+    private bool isLoading = true;
+    private bool isConnecting;
+    private string? successMessage;
+    private string? errorMessage;
+    private IReadOnlyList<StandardMailboxProfileResponse> standardProfiles = [];
+    private StandardMailboxConnectionRequest standardModel = new();
+    private StandardMailboxConnectionResultResponse? standardTestResult;
+    private bool isTestingHostedMailbox;
+    private string? activeHostedMailboxTest;
+    private string? hostedMailboxTestMessage;
+    private bool hostedMailboxTestSucceeded;
+
+    private PurposeOption SelectedPurpose => PurposeOptions.First(x => x.Key == selectedPurpose);
+    private string SelectedPurposeLabel => AgentText[SelectedPurpose.LabelKey];
+    private string SelectedProviderDisplayName => ProviderOptions.First(x => x.Key == selectedProvider).DisplayName;
+    private MailboxConnectionStatusResponse? SelectedStatus => statuses.GetValueOrDefault(selectedPurpose);
+    private MailboxProviderAvailability SelectedProviderAvailability => GetProviderAvailability(selectedProvider);
+    private StandardMailboxProfileResponse? SelectedStandardProfile => standardProfiles.FirstOrDefault(profile => profile.ProfileKey == standardModel.ProfileKey);
+    private IReadOnlyList<CapabilityRow> CapabilityRows =>
+    [
+        new("CapabilityFolders", standardTestResult?.Folders.Count > 0 == true),
+        new("CapabilityAttachments", HasCapability(2)),
+        new("CapabilityDrafts", HasCapability(16)),
+        new("CapabilityReplies", HasCapability(32)),
+        new("CapabilitySending", standardTestResult?.SendingSucceeded == true)
+    ];
+    private bool CanManageProviderSettings =>
+        string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
+
+    private UpdateFinanceEmailProviderSettingsRequest SelectedProviderSettingsModel =>
+        selectedProvider == "gmail" ? providerSettingsModel.Gmail : providerSettingsModel.Microsoft365;
+
+    private FinanceEmailProviderSettingsResponse? SelectedCurrentProviderSettings =>
+        selectedProvider == "gmail" ? providerSettings?.Gmail : providerSettings?.Microsoft365;
+
+    private string SelectedSecretPlaceholder => SelectedCurrentProviderSettings?.IsClientSecretConfigured == true
+        ? AgentText["SecretAlreadyConfigured"]
+        : AgentText["SecretNotConfigured"];
+
+    private string ProviderReadinessLabel => SelectedProviderAvailability.IsConfigured
+        ? AgentText["ReadyToConnect"]
+        : AgentText["ProviderSetupRequired"];
+
+    private string ProviderReadinessBadgeClass => SelectedProviderAvailability.IsConfigured
+        ? "badge text-bg-success"
+        : "badge text-bg-warning";
+
+    private string SelectedProviderCallbackUri =>
+        $"http://localhost:5301/api/mailbox-connections/{selectedProvider}/callback";
+
+    private string BackToAgentManagementHref
+    {
+        get
+        {
+            if (CompanyId is not Guid companyId)
+            {
+                return "/agents/manage";
+            }
+
+            var agentQuery = AgentId is Guid agentId ? $"&agentId={agentId:D}" : string.Empty;
+            return $"/agents/manage?companyId={companyId:D}{agentQuery}#agent-access-configuration";
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        selectedPurpose = NormalizePurpose(Purpose);
+        selectedProvider = NormalizeProvider(Provider);
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            if (CompanyId is not Guid companyId)
+            {
+                return;
+            }
+
+            var accessTask = OnboardingApiClient.GetCompanyAccessAsync(companyId);
+            var availabilityTask = FinanceApiClient.GetMailboxProviderAvailabilityAsync(companyId);
+            var standardProfilesTask = FinanceApiClient.GetStandardMailboxProfilesAsync(companyId);
+            var statusTasks = PurposeOptions.ToDictionary(
+                option => option.Key,
+                option => FinanceApiClient.GetMailboxConnectionStatusAsync(companyId, option.Key),
+                StringComparer.OrdinalIgnoreCase);
+
+            await Task.WhenAll(statusTasks.Values);
+            companyAccess = await accessTask;
+            providerAvailability = await availabilityTask;
+            standardProfiles = await standardProfilesTask;
+            if (standardProfiles.Count > 0 && standardProfiles.All(profile => profile.ProfileKey != standardModel.ProfileKey))
+            {
+                SelectStandardProfile(standardProfiles[0].ProfileKey);
+            }
+            foreach (var (purpose, task) in statusTasks)
+            {
+                statuses[purpose] = await task ?? new MailboxConnectionStatusResponse { Purpose = purpose };
+            }
+
+            if (CanManageProviderSettings)
+            {
+                providerSettings = await FinanceApiClient.GetEmailSettingsAsync(companyId);
+                providerSettingsModel = new UpdateFinanceEmailSettingsRequest
+                {
+                    Gmail = new UpdateFinanceEmailProviderSettingsRequest { ClientId = providerSettings.Gmail.ClientId },
+                    Microsoft365 = new UpdateFinanceEmailProviderSettingsRequest { ClientId = providerSettings.Microsoft365.ClientId }
+                };
+            }
+
+            ApplyCallbackMessage();
+        }
+        catch (Exception ex) when (ex is FinanceApiException or OnboardingApiException)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private void ApplyCallbackMessage()
+    {
+        if (string.Equals(MailboxConnectionResult, "connected", StringComparison.OrdinalIgnoreCase))
+        {
+            successMessage = AgentText["MailboxConnectedForFunction", SelectedPurposeLabel];
+        }
+        else if (string.Equals(MailboxConnectionResult, "denied", StringComparison.OrdinalIgnoreCase))
+        {
+            errorMessage = AgentText["MailboxConnectionDenied"];
+        }
+        else if (string.Equals(MailboxConnectionResult, "failed", StringComparison.OrdinalIgnoreCase))
+        {
+            errorMessage = string.IsNullOrWhiteSpace(MailboxConnectionMessage)
+                ? AgentText["MailboxConnectionFailed"]
+                : MailboxConnectionMessage;
+        }
+    }
+
+    private void SelectPurpose(string purpose)
+    {
+        selectedPurpose = NormalizePurpose(purpose);
+        successMessage = null;
+        errorMessage = null;
+    }
+
+    private void SelectProvider(string provider)
+    {
+        selectedProvider = NormalizeProvider(provider);
+        successMessage = null;
+        errorMessage = null;
+        standardTestResult = null;
+        hostedMailboxTestMessage = null;
+    }
+
+    private void SelectStandardProfile(string profileKey)
+    {
+        var profile = standardProfiles.FirstOrDefault(item => item.ProfileKey == profileKey);
+        if (profile is null)
+        {
+            return;
+        }
+
+        standardModel.ProfileKey = profile.ProfileKey;
+        standardModel.Imap = new MailboxEndpointResponse { Host = profile.Imap.Host, Port = profile.Imap.Port, TlsMode = profile.Imap.TlsMode };
+        standardModel.Smtp = new MailboxEndpointResponse { Host = profile.Smtp.Host, Port = profile.Smtp.Port, TlsMode = profile.Smtp.TlsMode };
+        standardModel.AuthenticationType = profile.AuthenticationTypes.Contains("oauth2", StringComparer.OrdinalIgnoreCase)
+            ? "oauth2"
+            : "application_password";
+        standardTestResult = null;
+        hostedMailboxTestMessage = null;
+    }
+
+    private bool SupportsStandardAuthentication(string authenticationType) =>
+        SelectedStandardProfile?.AuthenticationTypes.Contains(authenticationType, StringComparer.OrdinalIgnoreCase) == true;
+
+    private async Task StartHostedOAuthAsync()
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isConnecting = true;
+        errorMessage = null;
+        try
+        {
+            CopyEmailToUsername();
+            standardModel.ReturnUri = Navigation.Uri;
+            var authorizationUrl = await FinanceApiClient.StartStandardMailboxOAuthAsync(companyId, selectedPurpose, standardModel);
+            Navigation.NavigateTo(authorizationUrl, forceLoad: true);
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+            isConnecting = false;
+        }
+    }
+
+    private void CopyEmailToUsername()
+    {
+        if (string.IsNullOrWhiteSpace(standardModel.Username))
+        {
+            standardModel.Username = standardModel.EmailAddress;
+        }
+    }
+
+    private async Task TestHostedMailboxAsync(string target)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isTestingHostedMailbox = true;
+        activeHostedMailboxTest = target;
+        hostedMailboxTestMessage = null;
+        hostedMailboxTestSucceeded = false;
+        errorMessage = null;
+        try
+        {
+            standardModel.TestTarget = target;
+            var result = await FinanceApiClient.TestStandardMailboxAsync(companyId, selectedPurpose, standardModel);
+            standardTestResult = MergeTestResult(standardTestResult, result, target);
+            if ((target == "incoming" && !result.IncomingSucceeded) ||
+                (target == "sending" && !result.SendingSucceeded))
+            {
+                hostedMailboxTestMessage = result.FailureMessage ?? AgentText["MailboxConnectionFailed"];
+                errorMessage = hostedMailboxTestMessage;
+            }
+            else
+            {
+                hostedMailboxTestSucceeded = true;
+                hostedMailboxTestMessage = target == "incoming"
+                    ? AgentText["IncomingMailTestSucceeded"]
+                    : AgentText["SendingMailTestSucceeded"];
+            }
+        }
+        catch (FinanceApiException ex)
+        {
+            standardTestResult = null;
+            hostedMailboxTestMessage = ex.Message;
+            errorMessage = ex.Message;
+        }
+        catch (OperationCanceledException)
+        {
+            standardTestResult = null;
+            hostedMailboxTestMessage = AgentText["MailboxTestTimedOut"];
+            errorMessage = hostedMailboxTestMessage;
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError(ex, "Hosted mailbox {TestTarget} test failed unexpectedly.", target);
+            standardTestResult = null;
+            hostedMailboxTestMessage = AgentText["MailboxTestUnexpectedFailure"];
+            errorMessage = hostedMailboxTestMessage;
+        }
+        finally
+        {
+            standardModel.TestTarget = null;
+            isTestingHostedMailbox = false;
+            activeHostedMailboxTest = null;
+        }
+    }
+
+    private Task TestIncomingHostedMailboxAsync() => TestHostedMailboxAsync("incoming");
+
+    private Task TestSendingHostedMailboxAsync() => TestHostedMailboxAsync("sending");
+
+    private static StandardMailboxConnectionResultResponse MergeTestResult(
+        StandardMailboxConnectionResultResponse? current,
+        StandardMailboxConnectionResultResponse latest,
+        string target)
+    {
+        if (current is null)
+        {
+            return latest;
+        }
+
+        latest.IncomingSucceeded = target == "incoming" ? latest.IncomingSucceeded : current.IncomingSucceeded;
+        latest.SendingSucceeded = target == "sending" ? latest.SendingSucceeded : current.SendingSucceeded;
+        latest.Capabilities |= current.Capabilities;
+        if (latest.Folders.Count == 0)
+        {
+            latest.Folders = current.Folders;
+        }
+
+        return latest;
+    }
+
+    private async Task SaveHostedMailboxAsync()
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isConnecting = true;
+        errorMessage = null;
+        try
+        {
+            standardModel.SelectedFolderIds = standardTestResult?.Folders.Where(folder => folder.IsInbox).Select(folder => folder.FolderId).ToList();
+            standardTestResult = await FinanceApiClient.SaveStandardMailboxAsync(companyId, selectedPurpose, standardModel);
+            standardModel.Credential = null;
+            statuses[selectedPurpose] = await FinanceApiClient.GetMailboxConnectionStatusAsync(companyId, selectedPurpose) ?? new MailboxConnectionStatusResponse { Purpose = selectedPurpose };
+            successMessage = AgentText["MailboxConnectedForFunction", SelectedPurposeLabel];
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isConnecting = false;
+        }
+    }
+
+    private async Task SaveProviderAndContinueAsync()
+    {
+        if (CompanyId is not Guid companyId || !CanManageProviderSettings)
+        {
+            return;
+        }
+
+        isConnecting = true;
+        errorMessage = null;
+        try
+        {
+            providerSettings = await FinanceApiClient.UpdateEmailSettingsAsync(companyId, providerSettingsModel);
+            providerAvailability = await FinanceApiClient.GetMailboxProviderAvailabilityAsync(companyId);
+            providerSettingsModel.Gmail.ClientSecret = null;
+            providerSettingsModel.Microsoft365.ClientSecret = null;
+
+            if (!SelectedProviderAvailability.IsConfigured)
+            {
+                errorMessage = AgentText["ProviderStillNotConfigured", SelectedProviderDisplayName];
+                return;
+            }
+
+            await StartOAuthAsync(companyId);
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isConnecting = false;
+        }
+    }
+
+    private async Task ConnectAsync()
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isConnecting = true;
+        errorMessage = null;
+        try
+        {
+            await StartOAuthAsync(companyId);
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+            isConnecting = false;
+        }
+    }
+
+    private async Task StartOAuthAsync(Guid companyId)
+    {
+        var returnUri = Navigation.ToAbsoluteUri(BuildConnectionPageHref(companyId, selectedPurpose, selectedProvider)).ToString();
+        var authorizationUrl = await FinanceApiClient.StartPurposeMailboxConnectionAsync(
+            companyId,
+            selectedPurpose,
+            selectedProvider,
+            returnUri);
+        Navigation.NavigateTo(authorizationUrl, forceLoad: true);
+    }
+
+    private async Task DisconnectAsync()
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return;
+        }
+
+        isConnecting = true;
+        errorMessage = null;
+        successMessage = null;
+        try
+        {
+            statuses[selectedPurpose] = await FinanceApiClient.DisconnectMailboxConnectionAsync(companyId, selectedPurpose);
+            successMessage = AgentText["MailboxDisconnected"];
+        }
+        catch (FinanceApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isConnecting = false;
+        }
+    }
+
+    private string BuildConnectionPageHref(Guid companyId, string purpose, string provider)
+    {
+        var agentQuery = AgentId is Guid agentId ? $"&agentId={agentId:D}" : string.Empty;
+        return $"/agents/mailboxes/connect?companyId={companyId:D}&purpose={Uri.EscapeDataString(purpose)}&provider={Uri.EscapeDataString(provider)}{agentQuery}";
+    }
+
+    private MailboxProviderAvailability GetProviderAvailability(string provider) => provider switch
+    {
+        "gmail" => providerAvailability.Gmail,
+        "microsoft365" => providerAvailability.Microsoft365,
+        "standard_email" => providerAvailability.HostedEmail,
+        _ => new MailboxProviderAvailability()
+    };
+
+    private static string NormalizePurpose(string? purpose) => purpose?.Trim().ToLowerInvariant() switch
+    {
+        "finance" => "finance",
+        "sales" => "sales",
+        "support" => "support",
+        _ => "support"
+    };
+
+    private static string NormalizeProvider(string? provider) => provider?.Trim().ToLowerInvariant() switch
+    {
+        "microsoft365" => "microsoft365",
+        "standard_email" => "standard_email",
+        _ => "gmail"
+    };
+
+    private static string GetProviderDisplayName(string? provider) => provider?.ToLowerInvariant() switch
+    {
+        "gmail" => "Gmail",
+        "microsoft365" => "Microsoft 365",
+        "standard_email" => "Hosted email",
+        _ => provider ?? string.Empty
+    };
+
+    private static string FormatDateTime(DateTime? value) => value?.ToLocalTime().ToString("g") ?? "-";
+
+    private sealed record PurposeOption(string Key, string LabelKey, string UseKey, string Icon);
+    private sealed record ProviderOption(string Key, string DisplayName, string Mark);
+    private sealed record CapabilityRow(string LabelKey, bool Available);
+
+    private bool HasCapability(int capability) => standardTestResult is not null && (standardTestResult.Capabilities & capability) == capability;
+}

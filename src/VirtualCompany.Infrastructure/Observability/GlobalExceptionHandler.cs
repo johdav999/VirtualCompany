@@ -3,8 +3,10 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using VirtualCompany.Application.Companies;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Sales;
 
@@ -66,7 +68,7 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
 
         httpContext.Response.StatusCode = mappedException.StatusCode;
         httpContext.Response.Headers[_options.Value.CorrelationId.HeaderName] = correlationId;
-        await httpContext.Response.WriteAsJsonAsync(
+        await httpContext.Response.WriteAsJsonAsync<object>(
             problemDetails,
             options: null,
             contentType: ProblemDetailsContentType,
@@ -119,6 +121,14 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
                 StatusCodes.Status404NotFound,
                 "Not Found",
                 "The requested resource was not found."),
+            AgentAiConflictException conflictException => new ExceptionHandlingResult(
+                StatusCodes.Status409Conflict,
+                "The requested AI operation conflicts with the current state",
+                conflictException.Message),
+            DbUpdateConcurrencyException => new ExceptionHandlingResult(
+                StatusCodes.Status409Conflict,
+                "The record changed",
+                "The record was updated by another operation. Reload it and try again."),
             ArgumentException => new ExceptionHandlingResult(
                 StatusCodes.Status400BadRequest,
                 "Invalid request",

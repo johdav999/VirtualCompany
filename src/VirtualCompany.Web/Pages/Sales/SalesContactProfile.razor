@@ -4,32 +4,32 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Sales
 
-<PageTitle>Customer profile</PageTitle>
+<PageTitle>@SalesText["CustomerProfile"]</PageTitle>
 
 <div class="sales-workspace">
     <main class="sales-main">
         <header class="sales-page-header">
-            <span>SALES</span>
-            <h1>@(profile?.ContactName ?? "Customer profile")</h1>
-            <p>Review relationship memory, past interactions, engagement, and deal history before Alex drafts the next message.</p>
-            <nav class="sales-tabs" aria-label="Sales sections">
-                <a href="@BuildPath("/app/sales")">Overview</a>
-                <a href="@BuildPath("/app/sales/leads")">Leads</a>
-                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
-                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+            <h1>@(profile?.ContactName ?? SalesText["CustomerProfile"])</h1>
+            <p>@SalesText["CustomerProfileDescription"]</p>
+            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
+                <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+                <a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
+                <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+                <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
         </header>
 
         @if (isLoading)
         {
-            <section class="sales-card sales-empty">Loading customer profile...</section>
+            <section class="sales-card sales-empty">@SalesText["LoadingCustomerProfile"]</section>
         }
         else if (!string.IsNullOrWhiteSpace(errorMessage))
         {
             <section class="sales-card sales-error">
-                <h2>Customer profile is unavailable</h2>
+                <h2>@SalesText["CustomerProfileUnavailable"]</h2>
                 <p>@errorMessage</p>
-                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
             </section>
         }
         else if (profile is not null)
@@ -38,10 +38,10 @@
                 <div>
                     <span class="sales-badge sales-badge--active">@EngagementBand(profile.EngagementScore)</span>
                     <h2>@profile.ContactName</h2>
-                    <p>@profile.ContactEmail - @(profile.CustomerCompanyName ?? "No company linked")</p>
+                    <p>@profile.ContactEmail - @(profile.CustomerCompanyName ?? SalesText["NoCompanyLinked"])</p>
                 </div>
                 <div class="sales-detail-hero__value">
-                    <span>Engagement score</span>
+                    <span>@SalesText["EngagementScore"]</span>
                     <strong>@Score(profile.EngagementScore)</strong>
                 </div>
             </section>
@@ -49,24 +49,24 @@
             <section class="sales-card">
                 <div class="sales-section-heading">
                     <div>
-                        <span>MEMORY</span>
-                        <h2>Relationship profile</h2>
+                        <span>@SalesText["Memory"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                        <h2>@SalesText["RelationshipProfile"]</h2>
                     </div>
-                    <span class="sales-badge">Updated @profile.RefreshedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</span>
+                    <span class="sales-badge">@SalesText["UpdatedAt", LocalDateTime.DateTime(profile.RefreshedUtc)]</span>
                 </div>
                 <div class="sales-memory-layout">
                     <div class="sales-score-card">
-                        <span>Engagement score</span>
+                        <span>@SalesText["EngagementScore"]</span>
                         <strong>@Score(profile.EngagementScore)</strong>
                         <small>@EngagementBand(profile.EngagementScore)</small>
                     </div>
                     <div class="sales-memory-copy">
-                        <h3>AI summary</h3>
-                        <p>@EmptyText(profile.AiSummary, "No AI summary available")</p>
-                        <h3>Relationship memory</h3>
-                        <p>@EmptyText(profile.RelationshipMemory, "No relationship memory recorded yet")</p>
-                        <h3>Last outreach</h3>
-                        <p>@(string.IsNullOrWhiteSpace(profile.LastOutreachSummary) ? "No outreach has been recorded yet." : profile.LastOutreachSummary)</p>
+                        <h3>@SalesText["AiSummary"]</h3>
+                        <p>@EmptyText(profile.AiSummary, SalesText["NoAiSummary"])</p>
+                        <h3>@SalesText["RelationshipMemory"]</h3>
+                        <p>@EmptyText(profile.RelationshipMemory, SalesText["NoRelationshipMemory"])</p>
+                        <h3>@SalesText["LastOutreach"]</h3>
+                        <p>@(string.IsNullOrWhiteSpace(profile.LastOutreachSummary) ? SalesText["NoOutreach"] : profile.LastOutreachSummary)</p>
                     </div>
                 </div>
             </section>
@@ -76,13 +76,13 @@
                     <section class="sales-card">
                         <div class="sales-section-heading">
                             <div>
-                                <span>INTERACTIONS</span>
-                                <h2>Historical interactions</h2>
+                                <span>@SalesText["Interactions"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                <h2>@SalesText["HistoricalInteractions"]</h2>
                             </div>
                         </div>
                         @if (profile.PastConversations.Count == 0)
                         {
-                            <div class="sales-empty">No interactions found for this contact.</div>
+                            <div class="sales-empty">@SalesText["NoInteractions"]</div>
                         }
                         else
                         {
@@ -93,7 +93,7 @@
                                         <span></span>
                                         <div>
                                             <strong>@item.Summary</strong>
-                                            <small>@PlainLabel(item.SourceType) - @item.OccurredUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</small>
+                                            <small>@PlainLabel(item.SourceType) - @LocalDateTime.DateTime(item.OccurredUtc)</small>
                                         </div>
                                     </div>
                                 }
@@ -104,13 +104,13 @@
                     <section class="sales-card">
                         <div class="sales-section-heading">
                             <div>
-                                <span>DEALS</span>
-                                <h2>Past deals</h2>
+                                <span>@SalesText["Deals"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                <h2>@SalesText["PastDeals"]</h2>
                             </div>
                         </div>
                         @if (profile.PreviousDeals.Count == 0)
                         {
-                            <div class="sales-empty">No prior deals.</div>
+                            <div class="sales-empty">@SalesText["NoPriorDeals"]</div>
                         }
                         else
                         {
@@ -123,7 +123,7 @@
                                             <span>@deal.Summary</span>
                                         </div>
                                         <div class="sales-list-row__meta">
-                                            <span class="@BadgeClass(deal.Status)">@deal.Status</span>
+                                            <span class="@BadgeClass(deal.Status)">@SalesStatusPresenter.Present(deal.Status, SalesText)</span>
                                             <strong>@Money(deal.Amount, deal.Currency)</strong>
                                         </div>
                                     </a>
@@ -137,31 +137,31 @@
                     <section class="sales-card">
                         <div class="sales-section-heading">
                             <div>
-                                <span>SIGNALS</span>
-                                <h2>Preferences</h2>
+                                <span>@SalesText["Signals"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                <h2>@SalesText["Preferences"]</h2>
                             </div>
                         </div>
-                        <SignalList Items="@profile.Preferences" EmptyText="No preferences recorded yet." />
+                        <SignalList Items="@profile.Preferences" EmptyText="@SalesText["NoPreferences"]" />
                     </section>
 
                     <section class="sales-card">
                         <div class="sales-section-heading">
                             <div>
-                                <span>SIGNALS</span>
-                                <h2>Price sensitivity</h2>
+                                <span>@SalesText["Signals"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                <h2>@SalesText["PriceSensitivity"]</h2>
                             </div>
                         </div>
-                        <SignalList Items="@profile.PriceSensitivityIndicators" EmptyText="No price sensitivity indicators found." />
+                        <SignalList Items="@profile.PriceSensitivityIndicators" EmptyText="@SalesText["NoPriceSensitivity"]" />
                     </section>
 
                     <section class="sales-card">
                         <div class="sales-section-heading">
                             <div>
-                                <span>SIGNALS</span>
-                                <h2>Industry signals</h2>
+                                <span>@SalesText["Signals"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                                <h2>@SalesText["IndustrySignals"]</h2>
                             </div>
                         </div>
-                        <SignalList Items="@profile.IndustrySignals" EmptyText="No industry signals recorded yet." />
+                        <SignalList Items="@profile.IndustrySignals" EmptyText="@SalesText["NoIndustrySignals"]" />
                     </section>
                 </aside>
             </div>
@@ -195,7 +195,7 @@
             profile = await SalesApiClient.GetContactProfileAsync(ResolvedCompanyId!.Value, ContactId);
             if (profile is null)
             {
-                errorMessage = "This contact was not found for the active company.";
+                errorMessage = SalesText["ContactNotFound"];
             }
 
             await RefreshAgentPanelAsync();
@@ -213,7 +213,7 @@
 
     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
     private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
-    private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";
+    private string EngagementBand(decimal score) => score >= 75m ? SalesText["StrongEngagement"] : score >= 45m ? SalesText["ModerateEngagement"] : SalesText["LightEngagement"];
     private static string EmptyText(string? value, string emptyText) => string.IsNullOrWhiteSpace(value) ? emptyText : value;
     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
     private static string PlainLabel(string value) => CultureInfo.CurrentCulture.TextInfo.ToTitleCase(value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal));
@@ -223,6 +223,8 @@
     {
         [Parameter] public IReadOnlyList<CustomerMemorySignal> Items { get; set; } = [];
         [Parameter] public string EmptyText { get; set; } = "No signals recorded yet.";
+        [Inject] public INumberFormatter LocalNumber { get; set; } = default!;
+        [Inject] public ILocalDateTimeFormatter LocalDateTime { get; set; } = default!;
 
         protected override void BuildRenderTree(Microsoft.AspNetCore.Components.Rendering.RenderTreeBuilder builder)
         {
@@ -248,7 +250,7 @@
                 builder.AddContent(sequence++, signal.Value);
                 builder.CloseElement();
                 builder.OpenElement(sequence++, "small");
-                builder.AddContent(sequence++, $"{Math.Round(signal.Confidence * 100m, 0)}% confidence - {signal.ObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}");
+                builder.AddContent(sequence++, $"{LocalNumber.Percentage(signal.Confidence, 0)} confidence - {LocalDateTime.DateTime(signal.ObservedUtc)}");
                 builder.CloseElement();
                 builder.CloseElement();
             }

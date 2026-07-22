@@ -1,14 +1,14 @@
 <section class="invoice-review-workbench">
     <header class="invoice-review-workbench__header">
         <div>
-            <span class="dashboard-kicker">Invoice workbench</span>
-            <h2 class="h4 mb-1">Review queue</h2>
-            <p class="text-body-secondary mb-0">Work through invoice recommendations, inspect risk, and keep approvals moving.</p>
+            <span class="dashboard-kicker">@FinanceText["InvoiceWorkbench"]</span>
+            <h2 class="h4 mb-1">@FinanceText["ReviewQueue"]</h2>
+            <p class="text-body-secondary mb-0">@FinanceText["ReviewQueueDescription"]</p>
         </div>
         <div class="invoice-review-workbench__selection-hint">
             @if (VisibleCount > 0)
             {
-                <span>@VisibleCount invoice@(VisibleCount == 1 ? string.Empty : "s") visible</span>
+                <span>@FinanceText[VisibleCount == 1 ? "VisibleInvoiceCountOne" : "VisibleInvoiceCountMany", VisibleCount]</span>
             }
         </div>
     </header>
@@ -29,20 +29,20 @@
 
     @if (IsLoading)
     {
-        <FinanceLoadingState Title="Loading invoice reviews" Message="Fetching finance workflow review recommendations for the active company." />
+        <FinanceLoadingState Title="@FinanceText["LoadingInvoiceReviews"]" Message="@FinanceText["LoadingInvoiceReviewsDescription"]" />
     }
     else if (!string.IsNullOrWhiteSpace(ErrorMessage))
     {
-        <FinanceErrorState Title="Invoice reviews are unavailable" Message="@(ErrorMessage!)" RetryText="Retry" OnRetry="@OnRetry" />
+        <FinanceErrorState Title="@FinanceText["InvoiceReviewsUnavailable"]" Message="@(ErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@OnRetry" />
     }
     else if (Items.Count == 0)
     {
         <section class="wizard-card finance-state-card invoice-review-empty-state">
-            <h3 class="h5 mb-2">No invoice reviews matched the active filters</h3>
-            <p class="text-body-secondary mb-3">Try clearing the filters or generate sample finance data to populate the review queue.</p>
+            <h3 class="h5 mb-2">@FinanceText["NoReviewsMatched"]</h3>
+            <p class="text-body-secondary mb-3">@FinanceText["NoReviewsDescription"]</p>
             @if (!string.IsNullOrWhiteSpace(EmptyStateActionHref))
             {
-                <a class="btn btn-outline-primary" href="@EmptyStateActionHref">Open sandbox admin</a>
+                <a class="btn btn-outline-primary" href="@EmptyStateActionHref">@FinanceText["OpenSandboxAdmin"]</a>
             }
         </section>
     }

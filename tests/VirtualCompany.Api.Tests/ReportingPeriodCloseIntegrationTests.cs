@@ -13,14 +13,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class ReportingPeriodCloseIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class ReportingPeriodCloseIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public ReportingPeriodCloseIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Validation_endpoint_returns_all_period_close_blocking_issue_types()

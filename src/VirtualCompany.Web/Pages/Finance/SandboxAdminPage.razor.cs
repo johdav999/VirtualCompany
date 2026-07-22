@@ -1,5 +1,3 @@
-using System.ComponentModel.DataAnnotations;
-using System.Globalization;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Forms;
 using Microsoft.Extensions.Options;
@@ -16,16 +14,17 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
     [Inject] private IOptions<FinanceSimulationControlPanelOptions> SimulationOptions { get; set; } = default!;
 
     private readonly SeedGenerationFormModel _seedGenerationForm = new();
-    private readonly IReadOnlyList<GenerationModeOption> _generationModeOptions =
+    private IReadOnlyList<GenerationModeOption> _generationModeOptions =>
     [
-        new(FinanceSandboxSeedGenerationModes.Refresh, "Replace existing dataset", "Generate a clean demo dataset for the active company."),
-        new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, "Replace existing dataset and add anomalies", "Generate the dataset and add anomaly scenarios for validation coverage.")
+        new(FinanceSandboxSeedGenerationModes.Refresh, FinanceText["SandboxReplaceDataset"], FinanceText["SandboxReplaceDatasetDescription"]),
+        new(FinanceSandboxSeedGenerationModes.RefreshWithAnomalies, FinanceText["SandboxReplaceDatasetWithAnomalies"], FinanceText["SandboxReplaceDatasetWithAnomaliesDescription"])
     ];
     private EditContext _seedGenerationEditContext = default!;
     private EditContext _anomalyInjectionEditContext = default!;
     private EditContext _simulationControlsEditContext = default!;
     private ValidationMessageStore _seedGenerationMessageStore = default!;
     private ValidationMessageStore _anomalyInjectionMessageStore = default!;
+    private ValidationMessageStore _simulationControlsMessageStore = default!;
     private FinanceSandboxSeedGenerationViewModel? _seedGenerationResult;
     private string? _seedGenerationErrorMessage;
     private readonly AnomalyInjectionFormModel _anomalyInjectionForm = new();
@@ -57,6 +56,9 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
     private int _datasetGenerationSectionVersion;
     private int _anomalyInjectionSectionVersion;
     private int _simulationDiagnosticsSectionVersion;
+    private string DatasetGenerationSectionKey => $"dataset-generation:{_datasetGenerationSectionVersion}";
+    private string AnomalyInjectionSectionKey => $"anomaly-injection:{_anomalyInjectionSectionVersion}";
+    private string SimulationDiagnosticsSectionKey => $"simulation-diagnostics:{_simulationDiagnosticsSectionVersion}";
 
     [Parameter]
     public int SimulationPollingIntervalMilliseconds { get; set; } = DefaultSimulationPollingIntervalMilliseconds;
@@ -74,12 +76,12 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
     private string SelectedGenerationModeDescription =>
         _generationModeOptions.FirstOrDefault(option => string.Equals(option.Value, _seedGenerationForm.GenerationMode, StringComparison.OrdinalIgnoreCase))?.Description
-        ?? "Select how the demo dataset should be generated.";
+        ?? FinanceText["SandboxSelectGenerationModeHelp"];
 
     private string CompanySelectionDescription =>
         _companyOptions.Count > 1
-            ? "Changing company updates the route before you submit the generation request."
-            : "The active company is applied automatically.";
+            ? FinanceText["SandboxChangingCompanyHelp"]
+            : FinanceText["SandboxActiveCompanyHelp"];
 
     private bool IsSimulationBusy => _isAdvancingSimulation || _isStartingProgressionRun || _isChangingSimulationLifecycle;
 
@@ -96,6 +98,9 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         _anomalyInjectionEditContext.OnFieldChanged += HandleAnomalyInjectionFieldChanged;
 
         _simulationControlsEditContext = new EditContext(_simulationControlsForm);
+        _simulationControlsMessageStore = new ValidationMessageStore(_simulationControlsEditContext);
+        _simulationControlsEditContext.OnValidationRequested += HandleSimulationControlsValidationRequested;
+        _simulationControlsEditContext.OnFieldChanged += HandleSimulationControlsFieldChanged;
         _simulationControlsForm.AdvanceHours = 24;
         _simulationControlsForm.ProgressionRunHours = 24;
         _simulationControlsForm.ExecutionStepHours = 24;
@@ -228,7 +233,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         {
             ApplySeedGenerationValidation(ex.Errors);
             _seedGenerationErrorMessage = string.IsNullOrWhiteSpace(ex.Message)
-                ? "The finance API rejected the dataset request. Update the highlighted fields and try again."
+                ? FinanceText["SandboxDatasetRejected"]
                 : ex.Message;
         }
         catch (FinanceApiException ex)
@@ -241,8 +246,18 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         }
     }
 
-    private void HandleSeedGenerationValidationRequested(object? sender, ValidationRequestedEventArgs e) =>
-        ClearSeedGenerationValidation();
+    private void HandleSeedGenerationValidationRequested(object? sender, ValidationRequestedEventArgs e)
+    {
+        _seedGenerationMessageStore.Clear();
+        if (_seedGenerationForm.SeedValue <= 0)
+            _seedGenerationMessageStore.Add(new FieldIdentifier(_seedGenerationForm, nameof(SeedGenerationFormModel.SeedValue)), FinanceText["SandboxValidationPositiveSeed"]);
+        if (_seedGenerationForm.CompanyId == Guid.Empty)
+            _seedGenerationMessageStore.Add(new FieldIdentifier(_seedGenerationForm, nameof(SeedGenerationFormModel.CompanyId)), FinanceText["SandboxValidationSelectCompany"]);
+        if (_seedGenerationForm.AnchorDateUtc == default)
+            _seedGenerationMessageStore.Add(new FieldIdentifier(_seedGenerationForm, nameof(SeedGenerationFormModel.AnchorDateUtc)), FinanceText["SandboxValidationSelectDate"]);
+        if (!FinanceSandboxSeedGenerationModes.IsSupported(_seedGenerationForm.GenerationMode))
+            _seedGenerationMessageStore.Add(new FieldIdentifier(_seedGenerationForm, nameof(SeedGenerationFormModel.GenerationMode)), FinanceText["SandboxValidationGenerationMode"]);
+    }
 
     private void HandleSeedGenerationFieldChanged(object? sender, FieldChangedEventArgs e)
     {
@@ -250,13 +265,36 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         _seedGenerationEditContext.NotifyValidationStateChanged();
     }
 
-    private void HandleAnomalyInjectionValidationRequested(object? sender, ValidationRequestedEventArgs e) =>
-        ClearAnomalyInjectionValidation();
+    private void HandleAnomalyInjectionValidationRequested(object? sender, ValidationRequestedEventArgs e)
+    {
+        _anomalyInjectionMessageStore.Clear();
+        if (_anomalyInjectionForm.CompanyId == Guid.Empty)
+            _anomalyInjectionMessageStore.Add(new FieldIdentifier(_anomalyInjectionForm, nameof(AnomalyInjectionFormModel.CompanyId)), FinanceText["SandboxValidationAnomalyCompany"]);
+        if (string.IsNullOrWhiteSpace(_anomalyInjectionForm.ScenarioProfileCode))
+            _anomalyInjectionMessageStore.Add(new FieldIdentifier(_anomalyInjectionForm, nameof(AnomalyInjectionFormModel.ScenarioProfileCode)), FinanceText["SandboxValidationScenario"]);
+    }
 
     private void HandleAnomalyInjectionFieldChanged(object? sender, FieldChangedEventArgs e)
     {
         _anomalyInjectionMessageStore.Clear(e.FieldIdentifier);
         _anomalyInjectionEditContext.NotifyValidationStateChanged();
+    }
+
+    private void HandleSimulationControlsValidationRequested(object? sender, ValidationRequestedEventArgs e)
+    {
+        _simulationControlsMessageStore.Clear();
+        if (_simulationControlsForm.AdvanceHours is < 1 or > 720)
+            _simulationControlsMessageStore.Add(new FieldIdentifier(_simulationControlsForm, nameof(SimulationControlsFormModel.AdvanceHours)), FinanceText["SandboxValidationAdvanceIncrement"]);
+        if (_simulationControlsForm.ProgressionRunHours is < 1 or > 720)
+            _simulationControlsMessageStore.Add(new FieldIdentifier(_simulationControlsForm, nameof(SimulationControlsFormModel.ProgressionRunHours)), FinanceText["SandboxValidationProgressionDuration"]);
+        if (_simulationControlsForm.ExecutionStepHours is < 1 or > 168)
+            _simulationControlsMessageStore.Add(new FieldIdentifier(_simulationControlsForm, nameof(SimulationControlsFormModel.ExecutionStepHours)), FinanceText["SandboxValidationExecutionStep"]);
+    }
+
+    private void HandleSimulationControlsFieldChanged(object? sender, FieldChangedEventArgs e)
+    {
+        _simulationControlsMessageStore.Clear(e.FieldIdentifier);
+        _simulationControlsEditContext.NotifyValidationStateChanged();
     }
 
     private void ClearAnomalyInjectionValidation()
@@ -290,14 +328,14 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
             _selectedAnomalyId = detail.Id;
             _selectedAnomalyDetail = detail;
-            _anomalyInjectionSuccessMessage = $"Scenario '{detail.ScenarioProfileName}' was registered successfully.";
+            _anomalyInjectionSuccessMessage = FinanceText["SandboxScenarioRegistered", detail.ScenarioProfileName];
             _anomalyInjectionSectionVersion++;
         }
         catch (FinanceApiValidationException ex)
         {
             ApplyAnomalyInjectionValidation(ex.Errors);
             _anomalyInjectionErrorMessage = string.IsNullOrWhiteSpace(ex.Message)
-                ? "The finance API rejected the anomaly injection request. Update the highlighted fields and try again."
+                ? FinanceText["SandboxAnomalyRejected"]
                 : ex.Message;
         }
         catch (FinanceApiException ex)
@@ -447,7 +485,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
     private string SelectedScenarioProfileDescription(FinanceSandboxAnomalyInjectionViewModel injection) =>
         injection.AvailableScenarioProfiles.FirstOrDefault(profile => string.Equals(profile.Code, _anomalyInjectionForm.ScenarioProfileCode, StringComparison.OrdinalIgnoreCase))?.Description
-        ?? "Choose the scenario to add to the lab.";
+        ?? FinanceText["SandboxChooseScenarioHelp"];
 
     private async Task HandleStartOrResumeSimulationAsync(FinanceSandboxSimulationDiagnosticsViewModel diagnostics)
     {
@@ -460,7 +498,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         {
             await ExecuteCompanySimulationLifecycleActionAsync(
                 () => SandboxAdminService.ResumeCompanySimulationAsync(companyId),
-                "Simulation resumed.");
+                FinanceText["SandboxSimulationResumed"]);
             return;
         }
 
@@ -472,28 +510,28 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
                 GenerationEnabled = diagnostics.GenerationEnabled ?? true,
                 Seed = _seedGenerationForm.SeedValue
             }),
-            "Simulation started.");
+            FinanceText["SandboxSimulationStarted"]);
     }
 
     private Task HandlePauseSimulationAsync() =>
         AccessState.CompanyId is Guid companyId
             ? ExecuteCompanySimulationLifecycleActionAsync(
                 () => SandboxAdminService.PauseCompanySimulationAsync(companyId),
-                "Simulation paused.")
+                FinanceText["SandboxSimulationPaused"])
             : Task.CompletedTask;
 
     private Task HandleStopSimulationAsync() =>
         AccessState.CompanyId is Guid companyId
             ? ExecuteCompanySimulationLifecycleActionAsync(
                 () => SandboxAdminService.StopCompanySimulationAsync(companyId),
-                "Simulation stopped.")
+                FinanceText["SandboxSimulationStopped"])
             : Task.CompletedTask;
 
     private Task HandleStepForwardOneDayAsync() =>
         AccessState.CompanyId is Guid companyId
             ? ExecuteCompanySimulationLifecycleActionAsync(
                 () => SandboxAdminService.StepForwardCompanySimulationAsync(companyId),
-                "Simulation advanced by one day.")
+                FinanceText["SandboxSimulationAdvancedDay"])
             : Task.CompletedTask;
 
     private Task HandleToggleGenerationAsync(FinanceSandboxSimulationDiagnosticsViewModel diagnostics)
@@ -506,7 +544,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         var nextValue = !diagnostics.GenerationEnabled.Value;
         return ExecuteCompanySimulationLifecycleActionAsync(
             () => SandboxAdminService.UpdateCompanySimulationGenerationAsync(companyId, nextValue),
-            nextValue ? "Finance data generation enabled." : "Finance data generation disabled.");
+            nextValue ? FinanceText["SandboxGenerationEnabled"] : FinanceText["SandboxGenerationDisabled"]);
     }
 
     private async Task ExecuteCompanySimulationLifecycleActionAsync(
@@ -561,43 +599,43 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
             _ => "badge text-bg-secondary"
         };
 
-    private static string ResolveSimulationLifecycleLabel(string? status) =>
+    private string ResolveSimulationLifecycleLabel(string? status) =>
         status?.Trim().ToLowerInvariant() switch
         {
-            FinanceCompanySimulationStatusValues.Running => "Running",
-            FinanceCompanySimulationStatusValues.Paused => "Paused",
-            FinanceCompanySimulationStatusValues.Stopped => "Stopped",
-            _ => "Not started"
+            FinanceCompanySimulationStatusValues.Running => FinanceText["SandboxRunning"],
+            FinanceCompanySimulationStatusValues.Paused => FinanceText["SandboxPaused"],
+            FinanceCompanySimulationStatusValues.Stopped => FinanceText["SandboxStopped"],
+            _ => FinanceText["SandboxNotStarted"]
         };
 
     private static bool IsPausedSimulation(string? status) =>
         string.Equals(status, FinanceCompanySimulationStatusValues.Paused, StringComparison.OrdinalIgnoreCase);
 
-    private static string FormatPlainLabel(string? value)
+    private string FormatPlainLabel(string? value)
     {
         var formatted = FinanceAnomalyPresentation.FormatLabel(value);
         return string.IsNullOrWhiteSpace(formatted)
-            ? "None"
+            ? FinanceText["None"]
             : formatted;
     }
 
-    private static string FormatProfileName(string? value) =>
+    private string FormatProfileName(string? value) =>
         FormatPlainLabel(value);
 
-    private static string FormatAnomalyList(IReadOnlyList<string> values) =>
+    private string FormatAnomalyList(IReadOnlyList<string> values) =>
         values.Count == 0
-            ? "None"
+            ? FinanceText["None"]
             : string.Join(", ", values.Select(FormatPlainLabel));
 
-    private static string FormatMessageList(IReadOnlyList<string> values) =>
+    private string FormatMessageList(IReadOnlyList<string> values) =>
         values.Count == 0
-            ? "None"
+            ? FinanceText["None"]
             : string.Join(" | ", values.Select(FormatPlainLabel));
 
-    private static string FormatUtc(DateTime? value, string fallback = "Unavailable") =>
-        value?.ToString("u", CultureInfo.InvariantCulture) ?? fallback;
+    private string FormatUtc(DateTime? value, string? fallback = null) =>
+        value.HasValue ? LocalDateTime.DateTime(value.Value) : fallback ?? FinanceText["SandboxUnavailable"];
 
-    private static string FormatSimulationSnapshotMessage(
+    private string FormatSimulationSnapshotMessage(
         IReadOnlyList<string> anomalies,
         IReadOnlyList<string> warnings,
         IReadOnlyList<string> errors)
@@ -605,21 +643,21 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         var segments = new List<string>();
         if (anomalies.Count > 0)
         {
-            segments.Add($"Anomalies: {FormatAnomalyList(anomalies)}");
+            segments.Add(FinanceText["SandboxSnapshotAnomalies", FormatAnomalyList(anomalies)]);
         }
 
         if (warnings.Count > 0)
         {
-            segments.Add($"Warnings: {FormatMessageList(warnings)}");
+            segments.Add(FinanceText["SandboxSnapshotWarnings", FormatMessageList(warnings)]);
         }
 
         if (errors.Count > 0)
         {
-            segments.Add($"Errors: {FormatMessageList(errors)}");
+            segments.Add(FinanceText["SandboxSnapshotErrors", FormatMessageList(errors)]);
         }
 
         return segments.Count == 0
-            ? "No warnings, errors, or injected anomalies were captured for the selected session."
+            ? FinanceText["SandboxSnapshotClear"]
             : string.Join(" ", segments);
     }
 
@@ -766,12 +804,12 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         _isPollingSimulationControls = false;
     }
 
-    private static string BuildSimulationSuccessMessage(string runType, int incrementHours, string? status) =>
+    private string BuildSimulationSuccessMessage(string runType, int incrementHours, string? status) =>
         string.Equals(runType, "advance", StringComparison.OrdinalIgnoreCase)
-            ? $"Simulation advanced by {incrementHours} hour(s)."
+            ? FinanceText["SandboxAdvancedHoursMessage", incrementHours]
             : IsNonTerminalProgressionStatus(status)
-                ? $"Progression run started for {incrementHours} hour(s). Status updates will refresh automatically."
-                : $"Progression run completed for {incrementHours} hour(s).";
+                ? FinanceText["SandboxProgressionStartedMessage", incrementHours]
+                : FinanceText["SandboxProgressionCompletedMessage", incrementHours];
 
     private static bool IsNonTerminalProgressionStatus(string? status) =>
         !string.IsNullOrWhiteSpace(status) && !IsTerminalProgressionStatus(status);
@@ -800,7 +838,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
     private string ResolveCompanyName(Guid companyId) =>
         _companyOptions.FirstOrDefault(option => option.CompanyId == companyId)?.CompanyName
-        ?? AccessState.CompanyName ?? "Active company";
+        ?? AccessState.CompanyName ?? FinanceText["SandboxActiveCompany"];
 
     private Task<FinanceSandboxToolExecutionVisibilityViewModel?> LoadToolExecutionVisibilityAsync(Guid companyId, CancellationToken cancellationToken) =>
         SandboxAdminService.GetToolExecutionVisibilityAsync(companyId, cancellationToken);
@@ -854,72 +892,36 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         _seedGenerationEditContext.OnFieldChanged -= HandleSeedGenerationFieldChanged;
         _anomalyInjectionEditContext.OnValidationRequested -= HandleAnomalyInjectionValidationRequested;
         _anomalyInjectionEditContext.OnFieldChanged -= HandleAnomalyInjectionFieldChanged;
+        _simulationControlsEditContext.OnValidationRequested -= HandleSimulationControlsValidationRequested;
+        _simulationControlsEditContext.OnFieldChanged -= HandleSimulationControlsFieldChanged;
         StopSimulationPolling();
     }
 
-    private sealed class SeedGenerationFormModel : IValidatableObject
+    private sealed class SeedGenerationFormModel
     {
         public Guid CompanyId { get; set; }
         public string CompanyName { get; set; } = string.Empty;
 
-        [Range(1, int.MaxValue, ErrorMessage = "Enter a positive reproducibility value.")]
         public int SeedValue { get; set; } = 302;
 
-        [Required(ErrorMessage = "Select an anchor date.")]
         public DateTime AnchorDateUtc { get; set; }
 
-        [Required(ErrorMessage = "Select a generation mode.")]
         public string GenerationMode { get; set; } = FinanceSandboxSeedGenerationModes.Refresh;
-
-        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
-        {
-            if (CompanyId == Guid.Empty)
-            {
-                yield return new ValidationResult("Select a company before regenerating finance data.", [nameof(CompanyId)]);
-            }
-
-            if (AnchorDateUtc == default)
-            {
-                yield return new ValidationResult("Select an anchor date.", [nameof(AnchorDateUtc)]);
-            }
-
-            if (!FinanceSandboxSeedGenerationModes.IsSupported(GenerationMode))
-            {
-                yield return new ValidationResult("Select a supported generation mode.", [nameof(GenerationMode)]);
-            }
-        }
     }
 
-    private sealed class AnomalyInjectionFormModel : IValidatableObject
+    private sealed class AnomalyInjectionFormModel
     {
         public Guid CompanyId { get; set; }
 
-        [Required(ErrorMessage = "Select a scenario profile.")]
         public string ScenarioProfileCode { get; set; } = string.Empty;
-
-        public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
-        {
-            if (CompanyId == Guid.Empty)
-            {
-                yield return new ValidationResult("Select a company before injecting an anomaly.", [nameof(CompanyId)]);
-            }
-
-            if (string.IsNullOrWhiteSpace(ScenarioProfileCode))
-            {
-                yield return new ValidationResult("Select a scenario profile.", [nameof(ScenarioProfileCode)]);
-            }
-        }
     }
 
     private sealed class SimulationControlsFormModel
     {
-        [Range(1, 720, ErrorMessage = "Enter a positive advance increment.")]
         public int AdvanceHours { get; set; } = 24;
 
-        [Range(1, 720, ErrorMessage = "Enter a positive progression run duration.")]
         public int ProgressionRunHours { get; set; } = 24;
 
-        [Range(1, 168, ErrorMessage = "Enter a positive execution step size.")]
         public int? ExecutionStepHours { get; set; } = 24;
 
         public bool Accelerated { get; set; } = true;

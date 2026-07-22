@@ -9,8 +9,21 @@ public abstract class FinancePageBase : ComponentBase
     [Inject] protected FinanceAccessResolver FinanceAccessResolver { get; set; } = default!;
     [Inject] protected NavigationManager Navigation { get; set; } = default!;
 
-    [SupplyParameterFromQuery(Name = FinanceRoutes.CompanyIdQueryKey)]
+    [Parameter]
     public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = FinanceRoutes.CompanyIdQueryKey)]
+    public Guid? CompanyIdFromQuery
+    {
+        get => CompanyId;
+        set
+        {
+            if (value.HasValue)
+            {
+                CompanyId = value;
+            }
+        }
+    }
 
     [SupplyParameterFromQuery(Name = DashboardRoutes.SourceQueryKey)]
     public string? Source { get; set; }

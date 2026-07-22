@@ -383,10 +383,12 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
         try
         {
-            var accessToken = _fieldEncryption.Decrypt(
-                companyId,
-                CompanyMailboxConnectionService.BuildTokenPurpose(context.MailboxConnection.Provider, "access_token"),
-                context.MailboxConnection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
+            var accessToken = context.MailboxConnection.Provider == MailboxProvider.StandardEmail
+                ? StandardMailboxSessionCodec.Create(context.MailboxConnection, _fieldEncryption)
+                : _fieldEncryption.Decrypt(
+                    companyId,
+                    CompanyMailboxConnectionService.BuildTokenPurpose(context.MailboxConnection.Provider, "access_token"),
+                    context.MailboxConnection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
             var provider = _mailboxProviderRegistry.Resolve(context.MailboxConnection.Provider);
             var request = new MailboxReplyExecutionRequest(
                 companyId,
@@ -981,7 +983,12 @@ public sealed class SalesOperationsService : ISalesOperationsService
         var link = await linkQuery.OrderByDescending(x => x.CreatedUtc).FirstOrDefaultAsync(cancellationToken)
             ?? throw Validation(nameof(recommendation.Id), "No originating email thread was found for this recommendation.");
         var connection = await _dbContext.MailboxConnections.IgnoreQueryFilters()
-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == link.MailboxConnectionId && x.Status == MailboxConnectionStatus.Active, cancellationToken)
+            .SingleOrDefaultAsync(x =>
+                x.CompanyId == companyId &&
+                x.Id == link.MailboxConnectionId &&
+                x.Purpose == MailboxPurpose.Sales &&
+                x.Status == MailboxConnectionStatus.Active,
+                cancellationToken)
             ?? throw Validation(nameof(recommendation.Id), "The mailbox used for this recommendation is not connected.");
         var contact = link.ContactId.HasValue
             ? await _dbContext.Contacts.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == link.ContactId && !x.IsDeleted, cancellationToken)

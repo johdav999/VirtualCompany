@@ -1,51 +1,51 @@
 @page "/finance/balances"
 @inherits FinanceSummaryPageBase<BalancesSummaryViewModel>
 
-<PageTitle>Balances</PageTitle>
+<PageTitle>@FinanceText["Balances"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Balances"
-    Description="Browse account balances with company-level navigation."
-    LoadingMessage="Loading balances shell...">
+    Title="@FinanceText["Balances"]"
+    Description="@FinanceText["BalancesDescription"]"
+    LoadingMessage="@FinanceText["LoadingBalances"]">
     <FinanceDataState
         IsLoading="@IsSummaryLoading"
         IsEmpty="@IsSummaryEmpty"
         ErrorMessage="@SummaryErrorMessage"
-        LoadingTitle="Loading balances"
-        LoadingMessage="Fetching balances from finance services."
-        EmptyTitle="No balances yet"
-        EmptyMessage="No account balances are available for the active tenant."
-        RetryText="Reload balances"
+        LoadingTitle="@FinanceText["LoadingBalances"]"
+        LoadingMessage="@FinanceText["FetchingBalances"]"
+        EmptyTitle="@FinanceText["NoBalances"]"
+        EmptyMessage="@FinanceText["NoBalancesDescription"]"
+        RetryText="@FinanceText["ReloadBalances"]"
         OnRetry="@RetryAsync">
         @if (ViewModel is not null)
         {
             <section class="finance-summary-stack" aria-labelledby="balances-heading">
                 <div class="finance-summary-grid">
                     <article class="wizard-card finance-metric-card finance-metric-card--hero">
-                        <span class="dashboard-kicker">Total balance</span>
+                        <span class="dashboard-kicker">@FinanceText["TotalBalance"]</span>
                         <h2 id="balances-heading" class="finance-metric-card__value">@ViewModel.TotalBalance</h2>
-                        <p class="text-body-secondary mb-0">As of @ViewModel.AsOf</p>
+                        <p class="text-body-secondary mb-0">@FinanceText["AsOfValue", ViewModel.AsOf]</p>
                     </article>
                     <article class="wizard-card finance-metric-card">
-                        <span class="dashboard-kicker">Tracked accounts</span>
+                        <span class="dashboard-kicker">@FinanceText["TrackedAccounts"]</span>
                         <div class="finance-metric-card__value finance-metric-card__value--compact">@ViewModel.Accounts.Count</div>
-                        <p class="text-body-secondary mb-0">All values are scoped to the active tenant.</p>
+                        <p class="text-body-secondary mb-0">@FinanceText["ActiveCompanyScope"]</p>
                     </article>
                 </div>
                 <article class="wizard-card">
-                    <h2 class="h5">Account balances</h2>
+                    <h2 class="h5">@FinanceText["AccountBalances"]</h2>
                     <div class="table-responsive">
                         <table class="table finance-table mb-0">
                             <thead>
                                 <tr>
-                                    <th scope="col">Code</th>
-                                    <th scope="col">Account</th>
-                                    <th scope="col">Type</th>
-                                    <th scope="col">As of</th>
-                                    <th scope="col" class="finance-table__number">Amount</th>
+                                    <th scope="col">@FinanceText["Code"]</th>
+                                    <th scope="col">@FinanceText["Account"]</th>
+                                    <th scope="col">@FinanceText["Type"]</th>
+                                    <th scope="col">@FinanceText["AsOf"]</th>
+                                    <th scope="col" class="finance-table__number">@FinanceText["Amount"]</th>
                                 </tr>
                             </thead>
                             <tbody>

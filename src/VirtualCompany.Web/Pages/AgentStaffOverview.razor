@@ -1,0 +1,536 @@
+@page "/agents/staff"
+@rendermode InteractiveServer
+@implements IDisposable
+@inject OnboardingApiClient OnboardingApiClient
+@inject AgentStaffOverviewApiClient AgentStaffApiClient
+@inject NavigationManager Navigation
+@inject IStringLocalizer<AgentsResources> AgentText
+
+@using System.Globalization
+
+<PageTitle>@AgentText["AgentStaff"]</PageTitle>
+
+@if (isLoading)
+{
+    <main class="agent-staff-page">
+        <div class="agent-staff-state" role="status">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>@AgentText["LoadingAgentStaff"]</span>
+        </div>
+    </main>
+}
+else if (CompanyId is null)
+{
+    <main class="agent-staff-page">
+        <section class="agent-staff-empty">
+            <span class="dashboard-kicker">@AgentText["AgentOperations"]</span>
+            <h1>@AgentText["SelectCompany"]</h1>
+            <p>@AgentText["ChooseCompanyForAgentStaff"]</p>
+            @if (ActiveMemberships.Count == 0)
+            {
+                <p class="mb-0">@AgentText["NoActiveMemberships"]</p>
+            }
+            else
+            {
+                <div class="agent-staff-company-list">
+                    @foreach (var membership in ActiveMemberships)
+                    {
+                        <a href="@BuildOverviewUri(membership.CompanyId, SelectedPeriod)">
+                            <strong>@membership.CompanyName</strong>
+                            <span>@AgentText["MembershipRole", membership.MembershipRole]</span>
+                        </a>
+                    }
+                </div>
+            }
+        </section>
+    </main>
+}
+else if (!string.IsNullOrWhiteSpace(errorMessage) || overview is null)
+{
+    <main class="agent-staff-page">
+        <section class="agent-staff-empty">
+            <span class="dashboard-kicker">@AgentText["AgentOperations"]</span>
+            <h1>@AgentText["AgentStaff"]</h1>
+            <p>@(errorMessage ?? AgentText["AgentStaffUnavailable"])</p>
+            <a class="btn btn-outline-secondary" href="@($"/agents?companyId={CompanyId:D}")">@AgentText["OpenAgentDirectory"]</a>
+        </section>
+    </main>
+}
+else
+{
+    <main class="agent-staff-page">
+        <header class="agent-staff-header">
+            <div>
+                <span class="dashboard-kicker">@AgentText["AgentOperations"]</span>
+                <h1>@AgentText["AgentStaff"]</h1>
+                <p>@AgentText["AgentStaffDescription"]</p>
+            </div>
+            <div class="agent-staff-header-actions">
+                <label for="agent-staff-period">@AgentText["ReportingPeriod"]</label>
+                <select id="agent-staff-period" class="form-select" value="@SelectedPeriod.ToString("yyyy-MM", CultureInfo.InvariantCulture)" @onchange="ChangePeriodAsync">
+                    @foreach (var period in PeriodOptions)
+                    {
+                        <option value="@period.ToString("yyyy-MM", CultureInfo.InvariantCulture)">@period.ToString("MMMM yyyy", CultureInfo.CurrentCulture)</option>
+                    }
+                </select>
+                <button type="button" class="btn btn-outline-secondary agent-staff-icon-button" title="@AgentText["Refresh"]" aria-label="@AgentText["Refresh"]" @onclick="RefreshAsync" disabled="@isRefreshing">
+                    <span class="bi bi-arrow-clockwise" aria-hidden="true"></span>
+                </button>
+                <a class="btn btn-primary" href="@($"/tasks?companyId={CompanyId:D}")">
+                    <span class="bi bi-plus-lg" aria-hidden="true"></span>
+                    @AgentText["CreateTask"]
+                </a>
+            </div>
+        </header>
+
+        <section class="agent-staff-summary" aria-labelledby="company-summary-heading">
+            <div class="agent-staff-section-heading">
+                <div>
+                    <span class="dashboard-kicker">@overview.CompanyName</span>
+                    <h2 id="company-summary-heading">@AgentText["CompanySummary"]</h2>
+                </div>
+                <span class="agent-staff-updated-at">@AgentText["UpdatedAt", LocalDateTime.DateTime(overview.GeneratedAtUtc)]</span>
+            </div>
+            <div class="agent-staff-kpis">
+                <a class="agent-staff-kpi" href="@overview.Finance.Route">
+                    <span>@AgentText["Revenue"]</span>
+                    <strong>@FormatFinancialValue(overview.Finance.Revenue)</strong>
+                    <small>@FormatChange(overview.Finance.RevenueChangePercentage)</small>
+                </a>
+                <a class="agent-staff-kpi" href="@overview.Finance.Route">
+                    <span>@AgentText["Costs"]</span>
+                    <strong>@FormatFinancialValue(overview.Finance.Costs)</strong>
+                    <small>@FormatChange(overview.Finance.CostsChangePercentage)</small>
+                </a>
+                <a class="agent-staff-kpi agent-staff-kpi--result" href="@overview.Finance.Route">
+                    <span>@AgentText["Result"]</span>
+                    <strong>@FormatFinancialValue(overview.Finance.Result)</strong>
+                    <small>@FormatChange(overview.Finance.ResultChangePercentage)</small>
+                </a>
+                <a class="agent-staff-kpi" href="@overview.Sales.Route">
+                    <span>@AgentText["PipelineValue"]</span>
+                    <strong>@LocalMoney.Format(overview.Sales.PipelineValue, overview.Sales.Currency)</strong>
+                    <small>@AgentText["ForecastRevenue", LocalMoney.Format(overview.Sales.ForecastRevenue, overview.Sales.Currency)]</small>
+                </a>
+                <a class="agent-staff-kpi agent-staff-kpi--support" href="@overview.Support.Route">
+                    <span>@AgentText["CasesAtSlaRisk"]</span>
+                    <strong>@LocalNumber.Integer(overview.Support.CasesAtSlaRisk)</strong>
+                    <small>@AgentText["AlreadyBreached", LocalNumber.Integer(overview.Support.BreachedCases)]</small>
+                </a>
+            </div>
+            @if (!overview.Finance.CanView || !overview.Finance.HasData)
+            {
+                <p class="agent-staff-data-note"><span class="bi bi-info-circle" aria-hidden="true"></span>@GetFinanceExplanation()</p>
+            }
+        </section>
+
+        <div class="agent-staff-workspace">
+            <section class="agent-staff-board" aria-labelledby="agent-work-heading">
+                <div class="agent-staff-section-heading">
+                    <div>
+                        <span class="dashboard-kicker">@AgentText["WorkBoard"]</span>
+                        <h2 id="agent-work-heading">@AgentText["WorkByAgent"]</h2>
+                    </div>
+                    <a class="btn btn-sm btn-outline-secondary" href="@($"/tasks?companyId={CompanyId:D}")">@AgentText["OpenTaskList"]</a>
+                </div>
+
+                @if (overview.Agents.Count == 0)
+                {
+                    <div class="agent-staff-empty agent-staff-empty--compact">
+                        <h3>@AgentText["NoAgentsOnboarded"]</h3>
+                        <p>@AgentText["NoAgentsOnboardedDescription"]</p>
+                        <a class="btn btn-primary" href="@($"/agents/manage?companyId={CompanyId:D}")">@AgentText["ManageAgents"]</a>
+                    </div>
+                }
+                else
+                {
+                    <div class="agent-staff-matrix" role="table" aria-label="@AgentText["WorkByAgent"]">
+                        <div class="agent-staff-matrix-header" role="row">
+                            <div role="columnheader">@AgentText["Agent"]</div>
+                            <div role="columnheader"><span>@AgentText["Planned"]</span><strong>@LocalNumber.Integer(overview.StageCounts.Planned)</strong></div>
+                            <div role="columnheader"><span>@AgentText["InProgress"]</span><strong>@LocalNumber.Integer(overview.StageCounts.InProgress)</strong></div>
+                            <div role="columnheader"><span>@AgentText["AwaitingHumanApproval"]</span><strong>@LocalNumber.Integer(overview.StageCounts.AwaitingHumanApproval)</strong></div>
+                            <div role="columnheader"><span>@AgentText["Completed"]</span><strong>@LocalNumber.Integer(overview.StageCounts.Completed)</strong></div>
+                        </div>
+                        @foreach (var agent in overview.Agents)
+                        {
+                            <div class="agent-staff-matrix-row" role="row">
+                                <div class="agent-staff-agent" role="rowheader">
+                                    @if (!string.IsNullOrWhiteSpace(agent.AvatarUrl))
+                                    {
+                                        <object class="agent-staff-avatar-object" data="@agent.AvatarUrl" type="image/png" aria-label="">
+                                            <span class="agent-staff-avatar" aria-hidden="true">@GetInitials(agent.DisplayName)</span>
+                                        </object>
+                                    }
+                                    else
+                                    {
+                                        <span class="agent-staff-avatar" aria-hidden="true">@GetInitials(agent.DisplayName)</span>
+                                    }
+                                    <div>
+                                        <a href="@agent.ProfileRoute">@agent.DisplayName</a>
+                                        <span>@agent.RoleName</span>
+                                        <small><i class="@GetAgentStatusCss(agent.Status)"></i>@GetStatusLabel(agent.Status)</small>
+                                    </div>
+                                </div>
+                                @RenderTaskStage(agent.Planned, agent.StageCounts.Planned, "planned", AgentText["NoPlannedWork"])
+                                @RenderTaskStage(agent.InProgress, agent.StageCounts.InProgress, "in-progress", AgentText["NoInProgressWork"])
+                                @RenderTaskStage(agent.AwaitingHumanApproval, agent.StageCounts.AwaitingHumanApproval, "approval", AgentText["NoApprovalWork"])
+                                @RenderTaskStage(agent.Completed, agent.StageCounts.Completed, "completed", AgentText["NoCompletedWork"])
+                            </div>
+                        }
+                    </div>
+                }
+            </section>
+
+            <aside class="agent-staff-attention" aria-labelledby="attention-heading">
+                <div class="agent-staff-section-heading">
+                    <div>
+                        <span class="dashboard-kicker">@AgentText["Attention"]</span>
+                        <h2 id="attention-heading">@AgentText["TeamAttention"]</h2>
+                    </div>
+                    <span class="agent-staff-count">@overview.AttentionItems.Count</span>
+                </div>
+                @if (overview.AttentionItems.Count == 0)
+                {
+                    <div class="agent-staff-attention-empty">
+                        <span class="bi bi-check2-circle" aria-hidden="true"></span>
+                        <p>@AgentText["NothingNeedsAttention"]</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="agent-staff-attention-list">
+                        @foreach (var item in overview.AttentionItems)
+                        {
+                            <article class="agent-staff-attention-item agent-staff-attention-item--@NormalizeCssToken(item.Severity)">
+                                <span class="agent-staff-attention-marker" aria-hidden="true"></span>
+                                <div>
+                                    <h3>@GetAttentionTitle(item)</h3>
+                                    <p>@GetAttentionSummary(item)</p>
+                                    @if (!string.IsNullOrWhiteSpace(item.Route))
+                                    {
+                                        <a href="@item.Route">@GetAttentionAction(item)<span class="bi bi-arrow-right" aria-hidden="true"></span></a>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    </div>
+                }
+            </aside>
+        </div>
+    </main>
+}
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")]
+    public Guid? CompanyId { get; set; }
+
+    [SupplyParameterFromQuery(Name = "year")]
+    public int? Year { get; set; }
+
+    [SupplyParameterFromQuery(Name = "month")]
+    public int? Month { get; set; }
+
+    private bool isLoading = true;
+    private bool isRefreshing;
+    private string? errorMessage;
+    private CurrentUserContextViewModel? currentUser;
+    private AgentStaffOverviewViewModel? overview;
+    private CancellationTokenSource? refreshCancellationTokenSource;
+
+    private DateTime SelectedPeriod => IsValidPeriod(Year, Month)
+        ? new DateTime(Year!.Value, Month!.Value, 1)
+        : overview is not null
+            ? new DateTime(overview.Period.Year, overview.Period.Month, 1)
+        : new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1);
+
+    private IReadOnlyList<DateTime> PeriodOptions
+    {
+        get
+        {
+            var periods = Enumerable.Range(0, 12)
+                .Select(offset => new DateTime(DateTime.UtcNow.Year, DateTime.UtcNow.Month, 1).AddMonths(-offset))
+                .ToList();
+            if (!periods.Contains(SelectedPeriod))
+            {
+                periods.Add(SelectedPeriod);
+            }
+
+            return periods.OrderByDescending(period => period).ToList();
+        }
+    }
+
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships => currentUser?.Memberships
+        .Where(membership => string.Equals(membership.Status, "active", StringComparison.OrdinalIgnoreCase))
+        .OrderBy(membership => membership.CompanyName)
+        .ToList() ?? [];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        StopRefresh();
+        isLoading = true;
+        errorMessage = null;
+        overview = null;
+
+        try
+        {
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            if (CompanyId is null && currentUser?.ActiveCompany is not null)
+            {
+                Navigation.NavigateTo($"/agents/staff?companyId={currentUser.ActiveCompany.CompanyId:D}", replace: true);
+                return;
+            }
+
+            if (CompanyId is Guid companyId)
+            {
+                var access = await OnboardingApiClient.GetCompanyAccessAsync(companyId);
+                if (access is null)
+                {
+                    errorMessage = AgentText["NoCompanyAccess"];
+                    return;
+                }
+
+                await LoadOverviewAsync(companyId, CancellationToken.None);
+                StartRefresh(companyId);
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        if (CompanyId is not Guid companyId || isRefreshing)
+        {
+            return;
+        }
+
+        isRefreshing = true;
+        try
+        {
+            await LoadOverviewAsync(companyId, CancellationToken.None);
+        }
+        finally
+        {
+            isRefreshing = false;
+        }
+    }
+
+    private async Task LoadOverviewAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var loaded = IsValidPeriod(Year, Month)
+            ? await AgentStaffApiClient.GetAsync(companyId, Year, Month, cancellationToken)
+            : await AgentStaffApiClient.GetAsync(companyId, cancellationToken: cancellationToken);
+        if (loaded is null)
+        {
+            errorMessage = AgentText["NoAgentStaffAccess"];
+            overview = null;
+            return;
+        }
+
+        overview = loaded;
+        errorMessage = null;
+    }
+
+    private void StartRefresh(Guid companyId)
+    {
+        refreshCancellationTokenSource = new CancellationTokenSource();
+        var cancellationToken = refreshCancellationTokenSource.Token;
+        _ = Task.Run(async () =>
+        {
+            using var timer = new PeriodicTimer(TimeSpan.FromSeconds(15));
+            try
+            {
+                while (await timer.WaitForNextTickAsync(cancellationToken))
+                {
+                    await InvokeAsync(async () =>
+                    {
+                        await LoadOverviewAsync(companyId, cancellationToken);
+                        StateHasChanged();
+                    });
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (OnboardingApiException ex)
+            {
+                await InvokeAsync(() =>
+                {
+                    errorMessage = ex.Message;
+                    StateHasChanged();
+                });
+            }
+        }, cancellationToken);
+    }
+
+    private void StopRefresh()
+    {
+        refreshCancellationTokenSource?.Cancel();
+        refreshCancellationTokenSource?.Dispose();
+        refreshCancellationTokenSource = null;
+    }
+
+    private Task ChangePeriodAsync(ChangeEventArgs eventArgs)
+    {
+        if (DateTime.TryParseExact(eventArgs.Value?.ToString(), "yyyy-MM", CultureInfo.InvariantCulture, DateTimeStyles.None, out var period) && CompanyId is Guid companyId)
+        {
+            Navigation.NavigateTo(BuildOverviewUri(companyId, period));
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private RenderFragment RenderTaskStage(IReadOnlyList<AgentStaffTaskViewModel> tasks, int totalCount, string stage, string emptyMessage) => @<div class="agent-staff-stage agent-staff-stage--@stage" role="cell">
+            @if (tasks.Count == 0)
+            {
+                <span class="agent-staff-stage-empty">@emptyMessage</span>
+            }
+            else
+            {
+                @foreach (var task in tasks)
+                {
+                    <article class="agent-staff-task agent-staff-task--@stage">
+                        <div class="agent-staff-task-topline">
+                            <span class="agent-staff-priority agent-staff-priority--@NormalizeCssToken(task.Priority)">@FormatPriority(task.Priority)</span>
+                            <span>@FormatTaskDate(task)</span>
+                        </div>
+                        <a class="agent-staff-task-title" href="@task.Route">@task.Title</a>
+                        @if (!string.IsNullOrWhiteSpace(task.Context))
+                        {
+                            <p>@task.Context</p>
+                        }
+                        <div class="agent-staff-task-footer">
+                            <span>@GetStatusLabel(task.Status)</span>
+                            @if (!string.IsNullOrWhiteSpace(task.ApprovalRoute))
+                            {
+                                <a href="@task.ApprovalRoute">@AgentText["Review"]</a>
+                            }
+                        </div>
+                    </article>
+                }
+                @if (totalCount > tasks.Count)
+                {
+                    <a class="agent-staff-more" href="@($"/tasks?companyId={CompanyId:D}")">@AgentText["MoreItems", totalCount - tasks.Count]</a>
+                }
+            }
+        </div>;
+
+    private string FormatFinancialValue(decimal? value)
+    {
+        if (overview?.Finance is not { CanView: true, HasData: true } finance || value is null)
+        {
+            return "--";
+        }
+
+        return LocalMoney.Format(value.Value, finance.Currency ?? "---");
+    }
+
+    private string FormatChange(decimal? percentage) => percentage is null
+        ? AgentText["NoPreviousPeriodComparison"]
+        : AgentText["ChangeFromPreviousMonth", $"{percentage.Value:+0.0;-0.0;0.0}%"];
+
+    private string FormatTaskDate(AgentStaffTaskViewModel task)
+    {
+        if (task.CompletedUtc is DateTime completedUtc)
+        {
+            return AgentText["CompletedAt", LocalDateTime.DateTime(completedUtc)];
+        }
+
+        return task.DueUtc is DateTime dueUtc
+            ? AgentText["DueAt", LocalDateTime.DateTime(dueUtc)]
+            : AgentText["NoDueDate"];
+    }
+
+    private string FormatPriority(string? priority) => priority?.Trim().ToLowerInvariant() switch
+    {
+        "critical" => AgentText["PriorityCritical"],
+        "high" => AgentText["PriorityHigh"],
+        "low" => AgentText["PriorityLow"],
+        _ => AgentText["PriorityNormal"]
+    };
+
+    private string GetFinanceExplanation() => overview?.Finance switch
+    {
+        { CanView: false } => AgentText["FinanceAccessRequiredSummary"],
+        { IsInitialized: false } => AgentText["FinanceNotInitializedSummary"],
+        _ => AgentText["NoFinanceActivitySummary"]
+    };
+
+    private string GetAttentionTitle(AgentStaffAttentionItemViewModel item) => item.Key switch
+    {
+        "approvals" => overview?.StageCounts.AwaitingHumanApproval == 1
+            ? AgentText["OneApprovalNeedsReview"]
+            : AgentText["ApprovalsNeedReview", overview?.StageCounts.AwaitingHumanApproval ?? 0],
+        "sales" when overview?.Sales.DealsNeedingAttention > 0 => overview.Sales.DealsNeedingAttention == 1
+            ? AgentText["OneSalesDealNeedsAttention"]
+            : AgentText["SalesDealsNeedAttention", overview.Sales.DealsNeedingAttention],
+        "sales" => AgentText["SalesPipelineUpToDate"],
+        "support" when overview?.Support.BreachedCases > 0 => overview.Support.BreachedCases == 1
+            ? AgentText["OneSupportCaseMissedTarget"]
+            : AgentText["SupportCasesMissedTargets", overview.Support.BreachedCases],
+        "support" when overview?.Support.CasesAtSlaRisk > 0 => overview.Support.CasesAtSlaRisk == 1
+            ? AgentText["OneSupportCaseAtRisk"]
+            : AgentText["SupportCasesAtRisk", overview.Support.CasesAtSlaRisk],
+        "support" => AgentText["SupportSlaOnTrack"],
+        _ => item.Title
+    };
+
+    private string GetAttentionSummary(AgentStaffAttentionItemViewModel item) => item.Key switch
+    {
+        "approvals" => AgentText["ApprovalsNeedReviewSummary"],
+        "sales" when overview?.Sales.DealsNeedingAttention > 0 => AgentText["SalesDealsNeedAttentionSummary"],
+        "sales" when overview?.Sales.HasData == true => AgentText["NoOpenDealsStale"],
+        "sales" => AgentText["NoActivePipeline"],
+        "support" when overview?.Support.BreachedCases > 0 => overview.Support.BreachedCases == 1
+            ? AgentText["OneSupportCaseBreached"]
+            : AgentText["SupportCasesBreached", overview.Support.BreachedCases],
+        "support" when overview?.Support.CasesAtSlaRisk > 0 => AgentText["SupportReviewBeforeMiss"],
+        "support" => AgentText["NoSupportRisk"],
+        _ => item.Summary
+    };
+
+    private string GetAttentionAction(AgentStaffAttentionItemViewModel item) => item.Key switch
+    {
+        "approvals" => AgentText["OpenApprovals"],
+        "sales" when overview?.Sales.HasData == true || overview?.Sales.DealsNeedingAttention > 0 => AgentText["ReviewSales"],
+        "support" when overview?.Support.OpenCases > 0 || overview?.Support.CasesAtSlaRisk > 0 => AgentText["ReviewCases"],
+        _ => AgentText["Review"]
+    };
+
+    private string GetStatusLabel(string? status) => status?.Trim().ToLowerInvariant() switch
+    {
+        "planned" => AgentText["Planned"],
+        "in_progress" => AgentText["InProgress"],
+        "awaiting_approval" => AgentText["AwaitingHumanApproval"],
+        "completed" => AgentText["Completed"],
+        _ => SharedStatusPresenter.Format(status, CommonText)
+    };
+
+    private static string GetInitials(string? displayName)
+    {
+        var parts = displayName?.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries) ?? [];
+        return parts.Length == 0 ? "?" : string.Concat(parts.Take(2).Select(part => char.ToUpperInvariant(part[0])));
+    }
+
+    private static string GetAgentStatusCss(string? status) => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
+        ? "agent-staff-status agent-staff-status--active"
+        : "agent-staff-status";
+
+    private static string NormalizeCssToken(string? value) => string.IsNullOrWhiteSpace(value)
+        ? "normal"
+        : new string(value.Trim().ToLowerInvariant().Where(character => char.IsLetterOrDigit(character) || character == '-').ToArray());
+
+    private static bool IsValidPeriod(int? year, int? month) => year is >= 2000 and <= 2100 && month is >= 1 and <= 12;
+
+    private static string BuildOverviewUri(Guid companyId, DateTime period) =>
+        $"/agents/staff?companyId={companyId:D}&year={period.Year}&month={period.Month}";
+
+    public void Dispose() => StopRefresh();
+}

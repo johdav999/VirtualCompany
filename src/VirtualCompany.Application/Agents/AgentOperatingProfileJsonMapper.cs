@@ -1,10 +1,16 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Text.Json.Nodes;
 
 namespace VirtualCompany.Application.Agents;
 
 public static class AgentOperatingProfileJsonMapper
 {
+    private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web)
+    {
+        DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
+    };
+
     public static Dictionary<string, JsonNode?>? ToJsonDictionary(AgentObjectivesInput? input) =>
         input is null ? null : ToJsonDictionary(input.Sections);
 
@@ -91,7 +97,7 @@ public static class AgentOperatingProfileJsonMapper
 
         if (input.Conditions.Count > 0)
         {
-            payload["conditions"] = JsonSerializer.SerializeToNode(input.Conditions);
+            payload["conditions"] = JsonSerializer.SerializeToNode(input.Conditions, SerializerOptions);
         }
 
         AddExtensionData(payload, input.AdditionalProperties, "enabled", "conditions");
@@ -114,7 +120,7 @@ public static class AgentOperatingProfileJsonMapper
 
         if (input.Windows.Count > 0)
         {
-            payload["windows"] = JsonSerializer.SerializeToNode(input.Windows);
+            payload["windows"] = JsonSerializer.SerializeToNode(input.Windows, SerializerOptions);
         }
 
         AddExtensionData(payload, input.AdditionalProperties, "timezone", "windows");
@@ -162,12 +168,12 @@ public static class AgentOperatingProfileJsonMapper
         string propertyName,
         IReadOnlyCollection<string>? values)
     {
-        if (values is null)
+        if (values is null || values.Count == 0)
         {
             return;
         }
 
-        payload[propertyName] = JsonSerializer.SerializeToNode(values);
+        payload[propertyName] = JsonSerializer.SerializeToNode(values, SerializerOptions);
     }
 
     private static void AddExtensionData(

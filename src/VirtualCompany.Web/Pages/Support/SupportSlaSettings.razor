@@ -1,19 +1,20 @@
 @page "/support/settings/sla"
 @rendermode InteractiveServer
 @inherits SupportPageBase
+@using System.Globalization
 
-<PageTitle>Support SLA settings</PageTitle>
+<PageTitle>@SupportText["SlaSettings"]</PageTitle>
 
 <section class="py-4 dashboard-hero">
     <div class="dashboard-shell">
         <div class="wizard-card dashboard-summary">
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                 <div>
-                    <span class="dashboard-kicker">Support settings</span>
-                    <h1>Response targets</h1>
-                    <p class="text-body-secondary mb-0">Set when customer cases need a first response and resolution.</p>
+                    <span class="dashboard-kicker">@SupportText["SupportSettings"]</span>
+                    <h1>@SupportText["ResponseTargets"]</h1>
+                    <p class="text-body-secondary mb-0">@SupportText["ResponseTargetsDescription"]</p>
                 </div>
-                <a class="btn btn-outline-secondary" href="/support">Back to support</a>
+                <a class="btn btn-outline-secondary" href="/support">@SupportText["BackToSupport"]</a>
             </div>
 
             @if (!string.IsNullOrWhiteSpace(errorMessage))
@@ -24,70 +25,70 @@
             <div class="row g-4 mt-1">
                 <div class="col-12 col-xl-5">
                     <section class="border rounded bg-white p-3">
-                        <h2 class="h5">@(editingId.HasValue ? "Edit response target" : "Add response target")</h2>
-                        <label class="form-label mt-2">Name</label>
+                        <h2 class="h5">@(editingId.HasValue ? SupportText["EditResponseTarget"] : SupportText["AddResponseTarget"])</h2>
+                        <label class="form-label mt-2">@SupportText["Name"]</label>
                         <input class="form-control" @bind="name" />
                         <div class="row g-2 mt-1">
                             <div class="col-6">
-                                <label class="form-label">Category</label>
+                                <label class="form-label">@SupportText["Category"]</label>
                                 <select class="form-select" @bind="category">
-                                    <option value="general_question">General question</option><option value="billing">Billing</option><option value="refund">Refund</option><option value="technical_issue">Technical issue</option><option value="account_access">Account access</option><option value="complaint">Complaint</option><option value="bug_report">Bug report</option><option value="churn_risk">Churn risk</option>
+                                    @foreach (var value in Categories) { <option value="@value">@SupportStatusPresenter.Present(value, SupportText)</option> }
                                 </select>
                             </div>
                             <div class="col-6">
-                                <label class="form-label">Priority</label>
-                                <select class="form-select" @bind="priority"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="urgent">Urgent</option></select>
+                                <label class="form-label">@SupportText["Priority"]</label>
+                                <select class="form-select" @bind="priority">@foreach (var value in Priorities) { <option value="@value">@SupportStatusPresenter.Present(value, SupportText)</option> }</select>
                             </div>
                         </div>
-                        <label class="form-label mt-2">Customer tier (optional)</label>
+                        <label class="form-label mt-2">@SupportText["CustomerTierOptional"]</label>
                         <input class="form-control" @bind="customerTier" />
                         <div class="row g-2 mt-1">
-                            <div class="col-6"><label class="form-label">First response (minutes)</label><input class="form-control" type="number" min="1" @bind="firstResponseMinutes" /></div>
-                            <div class="col-6"><label class="form-label">Resolution (minutes)</label><input class="form-control" type="number" min="1" @bind="resolutionMinutes" /></div>
+                            <div class="col-6"><label class="form-label">@SupportText["FirstResponseMinutes"]</label><input class="form-control" type="number" min="1" @bind="firstResponseMinutes" /></div>
+                            <div class="col-6"><label class="form-label">@SupportText["ResolutionMinutes"]</label><input class="form-control" type="number" min="1" @bind="resolutionMinutes" /></div>
                         </div>
-                        <label class="form-label mt-2">Clock</label>
-                        <select class="form-select" @bind="timeBasis"><option value="elapsed">Elapsed time</option><option value="business">Business hours</option></select>
-                        <div class="row g-2 mt-1"><div class="col-6"><label class="form-label">At-risk window (minutes)</label><input class="form-control" type="number" min="1" @bind="riskThresholdMinutes" /></div><div class="col-6"><label class="form-label">Notify role</label><select class="form-select" @bind="escalationRecipientRole"><option value="support_supervisor">Support supervisor</option><option value="manager">Manager</option><option value="admin">Admin</option><option value="owner">Owner</option></select></div></div>
-                        <button class="btn btn-primary w-100 mt-3" @onclick="SaveAsync" disabled="@isBusy">Save target</button>
+                        <label class="form-label mt-2">@SupportText["Clock"]</label>
+                        <select class="form-select" @bind="timeBasis"><option value="elapsed">@SupportText["ElapsedTime"]</option><option value="business">@SupportText["BusinessHours"]</option></select>
+                        <div class="row g-2 mt-1"><div class="col-6"><label class="form-label">@SupportText["AtRiskWindowMinutes"]</label><input class="form-control" type="number" min="1" @bind="riskThresholdMinutes" /></div><div class="col-6"><label class="form-label">@SupportText["NotifyRole"]</label><select class="form-select" @bind="escalationRecipientRole"><option value="support_supervisor">@SupportText["SupportSupervisor"]</option><option value="manager">@SupportText["Manager"]</option><option value="admin">@SupportText["Admin"]</option><option value="owner">@SupportText["Owner"]</option></select></div></div>
+                        <button class="btn btn-primary w-100 mt-3" @onclick="SaveAsync" disabled="@isBusy">@SupportText["SaveTarget"]</button>
                     </section>
 
                     <section class="border rounded bg-white p-3 mt-3">
-                        <h2 class="h5">Preview</h2>
-                        <button class="btn btn-outline-secondary" @onclick="PreviewAsync" disabled="@isBusy">Preview current selection</button>
+                        <h2 class="h5">@SupportText["Preview"]</h2>
+                        <button class="btn btn-outline-secondary" @onclick="PreviewAsync" disabled="@isBusy">@SupportText["PreviewSelection"]</button>
                         @if (preview is not null)
                         {
-                            <dl class="mt-3 mb-0"><dt>Policy</dt><dd>@preview.PolicyName</dd><dt>First response</dt><dd>@preview.FirstResponseMinutes minutes</dd><dt>Resolution</dt><dd>@preview.ResolutionMinutes minutes</dd><dt>Why</dt><dd>@preview.Rationale</dd></dl>
+                            <dl class="mt-3 mb-0"><dt>@SupportText["Policy"]</dt><dd>@preview.PolicyName</dd><dt>@SupportText["FirstResponse"]</dt><dd>@SupportText["Minutes", preview.FirstResponseMinutes]</dd><dt>@SupportText["Resolution"]</dt><dd>@SupportText["Minutes", preview.ResolutionMinutes]</dd><dt>@SupportText["Why"]</dt><dd>@preview.Rationale</dd></dl>
                         }
                     </section>
                 </div>
                 <div class="col-12 col-xl-7">
                     <section class="border rounded bg-white p-3">
-                        <h2 class="h5">Configured targets</h2>
-                        @if (isLoading) { <p class="text-body-secondary">Loading response targets...</p> }
-                        else if (policies.Count == 0) { <p class="text-body-secondary">No custom targets exist. Documented defaults apply.</p> }
+                        <h2 class="h5">@SupportText["ConfiguredTargets"]</h2>
+                        @if (isLoading) { <p class="text-body-secondary">@SupportText["LoadingTargets"]</p> }
+                        else if (policies.Count == 0) { <p class="text-body-secondary">@SupportText["NoCustomTargets"]</p> }
                         else
                         {
                             <div class="list-group list-group-flush">
                                 @foreach (var policy in policies)
                                 {
                                     <div class="list-group-item px-0">
-                                        <div class="d-flex flex-wrap justify-content-between gap-3"><div><strong>@policy.Name</strong><div class="text-body-secondary">@policy.CategoryLabel · @policy.PriorityLabel@(string.IsNullOrWhiteSpace(policy.CustomerTier) ? "" : $" · {policy.CustomerTier}")</div></div><span class="badge @(policy.IsActive ? "text-bg-success" : "text-bg-light")">@(policy.IsActive ? "Active" : "Inactive")</span></div>
-                                        <p class="mb-2 mt-2">First response in @policy.FirstResponseMinutes minutes · resolution in @policy.ResolutionMinutes minutes</p>
-                                        <div class="d-flex gap-2"><button class="btn btn-sm btn-outline-primary" @onclick="() => Edit(policy)" disabled="@isBusy">Edit</button>@if (policy.IsActive) { <button class="btn btn-sm btn-outline-secondary" @onclick="() => DeactivateAsync(policy.Id)" disabled="@isBusy">Deactivate</button> }</div>
+                                        <div class="d-flex flex-wrap justify-content-between gap-3"><div><strong>@policy.Name</strong><div class="text-body-secondary">@policy.CategoryLabel · @policy.PriorityLabel@(string.IsNullOrWhiteSpace(policy.CustomerTier) ? "" : $" · {policy.CustomerTier}")</div></div><span class="badge @(policy.IsActive ? "text-bg-success" : "text-bg-light")">@(policy.IsActive ? SupportText["Active"] : SupportText["Inactive"])</span></div>
+                                        <p class="mb-2 mt-2">@SupportText["ResponseResolutionSummary", policy.FirstResponseMinutes, policy.ResolutionMinutes]</p>
+                                        <div class="d-flex gap-2"><button class="btn btn-sm btn-outline-primary" @onclick="() => Edit(policy)" disabled="@isBusy">@SupportText["Edit"]</button>@if (policy.IsActive) { <button class="btn btn-sm btn-outline-secondary" @onclick="() => DeactivateAsync(policy.Id)" disabled="@isBusy">@SupportText["Deactivate"]</button> }</div>
                                     </div>
                                 }
                             </div>
                         }
                     </section>
                     <section class="border rounded bg-white p-3 mt-3">
-                        <h2 class="h5">Business calendar</h2>
-                        <p class="text-body-secondary">Used by response targets measured in business hours.</p>
-                        <label class="form-label">Time zone</label><input class="form-control" @bind="calendarTimeZone" />
-                        <div class="row g-2 mt-1"><div class="col-6"><label class="form-label">Workday starts</label><input class="form-control" type="time" @bind="workdayStart" /></div><div class="col-6"><label class="form-label">Workday ends</label><input class="form-control" type="time" @bind="workdayEnd" /></div></div>
-                        <label class="form-label mt-2">Working days</label>
-                        <div class="d-flex flex-wrap gap-3">@foreach (var day in Weekdays) { <label class="form-check-label"><input class="form-check-input me-1" type="checkbox" checked="@workingDays.Contains(day)" @onchange="e => ToggleWorkingDay(day, e.Value as bool? == true)" />@day</label> }</div>
-                        <label class="form-label mt-2">Holidays (one YYYY-MM-DD date per line)</label><textarea class="form-control" rows="4" @bind="holidayText"></textarea>
-                        <button class="btn btn-outline-primary mt-3" @onclick="SaveCalendarAsync" disabled="@isBusy">Save calendar</button>
+                        <h2 class="h5">@SupportText["BusinessCalendar"]</h2>
+                        <p class="text-body-secondary">@SupportText["BusinessCalendarDescription"]</p>
+                        <label class="form-label">@SupportText["TimeZone"]</label><input class="form-control" @bind="calendarTimeZone" />
+                        <div class="row g-2 mt-1"><div class="col-6"><label class="form-label">@SupportText["WorkdayStarts"]</label><input class="form-control" type="time" @bind="workdayStart" /></div><div class="col-6"><label class="form-label">@SupportText["WorkdayEnds"]</label><input class="form-control" type="time" @bind="workdayEnd" /></div></div>
+                        <label class="form-label mt-2">@SupportText["WorkingDays"]</label>
+                        <div class="d-flex flex-wrap gap-3">@foreach (var day in Weekdays) { <label class="form-check-label"><input class="form-check-input me-1" type="checkbox" checked="@workingDays.Contains(day)" @onchange="e => ToggleWorkingDay(day, e.Value as bool? == true)" />@CultureInfo.CurrentCulture.DateTimeFormat.GetDayName(day)</label> }</div>
+                        <label class="form-label mt-2">@SupportText["HolidaysHelp"]</label><textarea class="form-control" rows="4" @bind="holidayText"></textarea>
+                        <button class="btn btn-outline-primary mt-3" @onclick="SaveCalendarAsync" disabled="@isBusy">@SupportText["SaveCalendar"]</button>
                     </section>
                 </div>
             </div>
@@ -114,6 +115,8 @@
     private HashSet<DayOfWeek> workingDays = [DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday];
     private string holidayText = string.Empty;
     private static readonly DayOfWeek[] Weekdays = [DayOfWeek.Monday, DayOfWeek.Tuesday, DayOfWeek.Wednesday, DayOfWeek.Thursday, DayOfWeek.Friday, DayOfWeek.Saturday, DayOfWeek.Sunday];
+    private static readonly string[] Categories = ["general_question", "billing", "refund", "technical_issue", "account_access", "complaint", "bug_report", "churn_risk"];
+    private static readonly string[] Priorities = ["low", "normal", "high", "urgent"];
     private bool isLoading = true;
     private bool isBusy;
     private string? errorMessage;

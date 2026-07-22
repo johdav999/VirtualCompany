@@ -7,43 +7,43 @@
                 <tr>
                     <th scope="col">
                         <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.InvoiceNumber))">
-                            Invoice number
+                            @FinanceText["InvoiceNumber"]
                             @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.InvoiceNumber))
                         </button>
                     </th>
                     <th scope="col">
                         <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.SupplierName))">
-                            Supplier
+                            @FinanceText["Supplier"]
                             @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.SupplierName))
                         </button>
                     </th>
                     <th scope="col" class="finance-table__number">
                         <button class="invoice-review-table__sort invoice-review-table__sort--number" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.Amount))">
-                            Amount
+                            @FinanceText["Amount"]
                             @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.Amount))
                         </button>
                     </th>
-                    <th scope="col">Currency</th>
+                    <th scope="col">@FinanceText["Currency"]</th>
                     <th scope="col">
                         <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.RiskLevel))">
-                            Risk
+                            @FinanceText["Risk"]
                             @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.RiskLevel))
                         </button>
                     </th>
-                    <th scope="col">Recommendation</th>
+                    <th scope="col">@FinanceText["Recommendation"]</th>
                     <th scope="col">
                         <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.Confidence))">
-                            Confidence
+                            @FinanceText["Confidence"]
                             @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.Confidence))
                         </button>
                     </th>
                     <th scope="col">
                         <button class="invoice-review-table__sort" type="button" @onclick="() => OnSort.InvokeAsync(nameof(FinanceInvoiceReviewListItemResponse.LastUpdatedUtc))">
-                            Last updated
+                            @FinanceText["LastUpdated"]
                             @RenderSortGlyph(nameof(FinanceInvoiceReviewListItemResponse.LastUpdatedUtc))
                         </button>
                     </th>
-                    <th scope="col">Review status</th>
+                    <th scope="col">@FinanceText["ReviewStatus"]</th>
                 </tr>
             </thead>
             <tbody>
@@ -58,7 +58,7 @@
                             </button>
                         </td>
                         <td>@item.SupplierName</td>
-                        <td class="finance-table__number">@item.Amount.ToString("N2", CultureInfo.InvariantCulture)</td>
+                        <td class="finance-table__number">@LocalNumber.Decimal(item.Amount)</td>
                         <td>@item.Currency</td>
                         <td>
                             <span class="@BuildRiskBadgeClass(item.RiskLevel)">@FormatLabel(item.RiskLevel)</span>
@@ -70,7 +70,7 @@
                             </div>
                         </td>
                         <td>
-                            <div class="invoice-review-confidence" aria-label="Confidence @FormatConfidence(item.Confidence)">
+                            <div class="invoice-review-confidence" aria-label="@FinanceText["ConfidenceAccessible", FormatConfidence(item.Confidence)]">
                                 <div class="invoice-review-confidence__track">
                                     <span class="invoice-review-confidence__fill" style="@BuildConfidenceWidth(item.Confidence)"></span>
                                 </div>
@@ -109,18 +109,17 @@
         builder.CloseElement();
     };
 
-    private static string FormatLabel(string? value) =>
+    private string FormatLabel(string? value) =>
         string.IsNullOrWhiteSpace(value)
-            ? "n/a"
-            : string.Join(" ", value.Trim().Replace("-", "_", StringComparison.Ordinal).Split('_', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+            ? FinanceText["NotAvailable"]
+            : FinanceStatusPresenter.Present(value, FinanceText, CommonText);
 
-    private static string FormatDateTime(DateTime value) =>
+    private string FormatDateTime(DateTime value) =>
         value == default
-            ? "Unknown"
-            : value.ToLocalTime().ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture);
+            ? FinanceText["UnknownTime"]
+            : LocalDateTime.DateTime(value);
 
-    private static string FormatConfidence(decimal confidence) =>
-        $"{Math.Clamp(confidence, 0m, 1m):P0}";
+    private string FormatConfidence(decimal confidence) => LocalNumber.Percentage(Math.Clamp(confidence, 0m, 1m));
 
     private static string BuildConfidenceWidth(decimal confidence) =>
         $"width: {(Math.Clamp(confidence, 0m, 1m) * 100m).ToString("0", CultureInfo.InvariantCulture)}%;";

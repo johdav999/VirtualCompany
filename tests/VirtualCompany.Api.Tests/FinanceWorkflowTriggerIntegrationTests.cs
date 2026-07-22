@@ -11,14 +11,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinanceWorkflowTriggerIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinanceWorkflowTriggerIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Payment_event_runs_finance_trigger_pipeline_and_replay_is_idempotent()
@@ -42,7 +39,7 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IClassFixture<TestW
             company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, utcNow, utcNow);
 
             dbContext.Companies.Add(company);
-            dbContext.Users.Add(new User(userId, "approver@virtualcompany.test", "Finance Approver"));
+            dbContext.Users.Add(new User(userId, "approver@virtualcompany.test", "Finance Approver", "dev-header", "finance-approver"));
             dbContext.CompanyMemberships.Add(new CompanyMembership(
                 Guid.NewGuid(),
                 companyId,

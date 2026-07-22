@@ -1,8 +1,10 @@
+using System.Data;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -15,6 +17,11 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ILogger<EfCompanySimulationStateRepository> _logger;
 
+    public EfCompanySimulationStateRepository(VirtualCompanyDbContext dbContext)
+        : this(dbContext, NullLogger<EfCompanySimulationStateRepository>.Instance)
+    {
+    }
+
     public EfCompanySimulationStateRepository(
         VirtualCompanyDbContext dbContext,
         ILogger<EfCompanySimulationStateRepository> logger)
@@ -23,22 +30,30 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
         _logger = logger;
     }
 
-    public Task<CompanySimulationState?> GetCurrentAsync(Guid companyId, CancellationToken cancellationToken) =>
-        _dbContext.CompanySimulationStates
+    public async Task<CompanySimulationState?> GetCurrentAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
+        return await _dbContext.CompanySimulationStates
             .IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
+    }
 
-    public Task<CompanySimulationState?> GetByActiveSessionAsync(Guid companyId, Guid activeSessionId, CancellationToken cancellationToken) =>
-        _dbContext.CompanySimulationStates
+    public async Task<CompanySimulationState?> GetByActiveSessionAsync(Guid companyId, Guid activeSessionId, CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
+        return await _dbContext.CompanySimulationStates
             .IgnoreQueryFilters()
             .SingleOrDefaultAsync(
                 x => x.CompanyId == companyId &&
                      x.ActiveSessionId.HasValue &&
                      x.ActiveSessionId.Value == activeSessionId,
                 cancellationToken);
+    }
 
-    public async Task<IReadOnlyList<CompanySimulationRunHistory>> GetRecentHistoryAsync(Guid companyId, int limit, CancellationToken cancellationToken) =>
-        await _dbContext.Set<CompanySimulationRunHistory>()
+    public async Task<IReadOnlyList<CompanySimulationRunHistory>> GetRecentHistoryAsync(Guid companyId, int limit, CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
+        return await _dbContext.Set<CompanySimulationRunHistory>()
             .IgnoreQueryFilters()
             .Include(x => x.StatusTransitions.OrderBy(y => y.TransitionedUtc))
             .Include(x => x.DayLogs.OrderBy(y => y.SimulatedDateUtc))
@@ -46,12 +61,14 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
             .OrderByDescending(x => x.StartedUtc)
             .Take(Math.Max(1, limit))
             .ToListAsync(cancellationToken);
+    }
 
     public async Task<CompanySimulationState> StartAsync(
         StartCompanySimulationStateCommand command,
         CancellationToken cancellationToken)
     {
         ValidateCompany(command.CompanyId);
+        _dbContext.ChangeTracker.Clear();
 
         var transitionedUtc = NormalizeUtc(command.TransitionedUtc ?? DateTime.UtcNow);
         var sessionId = command.SessionId ?? Guid.NewGuid();
@@ -130,6 +147,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
         CancellationToken cancellationToken)
     {
         ValidateCompany(command.CompanyId);
+        _dbContext.ChangeTracker.Clear();
 
         var updatedUtc = NormalizeUtc(command.UpdatedUtc ?? DateTime.UtcNow);
         var referenceSimulatedUtc = NormalizeUtc(command.ReferenceSimulatedUtc);
@@ -168,6 +186,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
         CancellationToken cancellationToken)
     {
         ValidateCompany(command.CompanyId);
+        _dbContext.ChangeTracker.Clear();
         var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
         state.Update(
             command.CurrentSimulatedUtc,
@@ -182,6 +201,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
             if (runHistory is not null)
             {
                 runHistory.ApplyLifecycleUpdate(state.Status, state.CurrentSimulatedUtc, command.UpdatedUtc ?? DateTime.UtcNow);
+                _dbContext.CompanySimulationRunTransitions.Add(runHistory.StatusTransitions.Last());
             }
         }
 
@@ -194,6 +214,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
         CancellationToken cancellationToken)
     {
         ValidateCompany(command.CompanyId);
+        _dbContext.ChangeTracker.Clear();
 
         var updatedUtc = NormalizeUtc(command.UpdatedUtc ?? DateTime.UtcNow);
         var currentSimulatedUtc = NormalizeUtc(command.CurrentSimulatedUtc);
@@ -207,29 +228,26 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
             ? NormalizeUtc(command.ExpectedLastProgressedUtc.Value)
             : (DateTime?)null;
 
-        var rowsAffected = await _dbContext.CompanySimulationStates
-            .IgnoreQueryFilters()
-            .Where(x =>
-                x.CompanyId == command.CompanyId &&
-                x.Status != CompanySimulationStatus.Stopped &&
-                x.ActiveSessionId.HasValue &&
-                x.CurrentSimulatedUtc == expectedCurrentSimulatedUtc &&
-                x.LastProgressedUtc == expectedLastProgressedUtc)
-            .ExecuteUpdateAsync(
-                setters => setters
-                    .SetProperty(x => x.CurrentSimulatedUtc, currentSimulatedUtc)
-                    .SetProperty(x => x.LastProgressedUtc, lastProgressedUtc)
-                    .SetProperty(x => x.UpdatedUtc, updatedUtc),
-                cancellationToken);
-
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
         var state = await _dbContext.CompanySimulationStates
             .IgnoreQueryFilters()
-            .AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId, cancellationToken);
-        if (rowsAffected <= 0 || state?.ActiveSessionId is not Guid activeSessionId)
+        if (state?.ActiveSessionId is not Guid activeSessionId ||
+            state.Status == CompanySimulationStatus.Stopped ||
+            state.CurrentSimulatedUtc.Ticks != expectedCurrentSimulatedUtc?.Ticks ||
+            state.LastProgressedUtc?.Ticks != expectedLastProgressedUtc?.Ticks)
         {
+            await transaction.RollbackAsync(cancellationToken);
             return new ProgressCompanySimulationStateResult(state, false);
         }
+
+        state.Update(
+            currentSimulatedUtc,
+            lastProgressedUtc,
+            generationEnabled: null,
+            deterministicConfigurationJson: null,
+            updatedUtc: updatedUtc);
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         await _dbContext.CompanySimulationRunHistories
             .IgnoreQueryFilters()
@@ -240,6 +258,13 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
                     .SetProperty(x => x.UpdatedUtc, updatedUtc),
                 cancellationToken);
 
+        await transaction.CommitAsync(cancellationToken);
+        _dbContext.ChangeTracker.Clear();
+        state = await _dbContext.CompanySimulationStates
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(x => x.CompanyId == command.CompanyId, cancellationToken);
+
         return new ProgressCompanySimulationStateResult(state, true);
     }
 
@@ -248,6 +273,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
         CancellationToken cancellationToken)
     {
         ValidateCompany(command.CompanyId);
+        _dbContext.ChangeTracker.Clear();
         var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
         var sessionId = state.ActiveSessionId;
         state.Pause(command.PausedUtc ?? DateTime.UtcNow);
@@ -257,6 +283,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
             if (runHistory is not null)
             {
                 runHistory.ApplyLifecycleUpdate(CompanySimulationStatus.Paused, state.CurrentSimulatedUtc, command.PausedUtc ?? DateTime.UtcNow, "Simulation paused.");
+                _dbContext.CompanySimulationRunTransitions.Add(runHistory.StatusTransitions.Last());
             }
         }
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -268,6 +295,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
         CancellationToken cancellationToken)
     {
         ValidateCompany(command.CompanyId);
+        _dbContext.ChangeTracker.Clear();
         var state = await RequireCurrentAsync(command.CompanyId, cancellationToken);
         var sessionId = state.ActiveSessionId;
         state.Resume(command.ResumedUtc ?? DateTime.UtcNow);
@@ -277,6 +305,7 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
             if (runHistory is not null)
             {
                 runHistory.ApplyLifecycleUpdate(CompanySimulationStatus.Running, state.CurrentSimulatedUtc, command.ResumedUtc ?? DateTime.UtcNow, "Simulation resumed.");
+                _dbContext.CompanySimulationRunTransitions.Add(runHistory.StatusTransitions.Last());
             }
         }
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -449,23 +478,40 @@ public sealed class EfCompanySimulationStateRepository : ICompanySimulationState
                 continue;
             }
 
-            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
-                $"""
-                IF NOT EXISTS (
-                    SELECT 1
-                    FROM [company_simulation_run_day_logs]
-                    WHERE [company_id] = {companyId}
-                      AND [session_id] = {sessionId}
-                      AND [simulated_date_at] = {simulatedDateUtc})
-                BEGIN
-                    INSERT INTO [company_simulation_run_day_logs]
+            var dayLogId = CreateDeterministicGuid(companyId, $"run-day:{sessionId:N}:{simulatedDateUtc:yyyyMMdd}");
+            if (_dbContext.Database.IsSqlite())
+            {
+                await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                    $"""
+                    INSERT OR IGNORE INTO [company_simulation_run_day_logs]
                         ([id], [company_id], [run_history_id], [session_id], [simulated_date_at], [transactions_generated],
                          [invoices_generated], [asset_purchases_generated], [bills_generated], [recurring_expense_instances_generated], [alerts_generated],
                          [injected_anomalies_json], [warnings_json], [errors_json], [created_at], [updated_at])
                     VALUES
-                        ({CreateDeterministicGuid(companyId, $"run-day:{sessionId:N}:{simulatedDateUtc:yyyyMMdd}")}, {companyId}, {runHistory.Id}, {sessionId}, {simulatedDateUtc}, {Math.Max(0, log.TransactionsCreated)},
+                        ({dayLogId}, {companyId}, {runHistory.Id}, {sessionId}, {simulatedDateUtc}, {Math.Max(0, log.TransactionsCreated)},
                          {Math.Max(0, log.InvoicesCreated)}, {Math.Max(0, log.AssetPurchasesCreated)}, {Math.Max(0, log.BillsCreated)}, {Math.Max(0, log.RecurringExpenseInstancesCreated)}, {Math.Max(0, log.AlertsCreated)},
                          {JsonSerializer.Serialize(NormalizeDistinct(log.InjectedAnomalies))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Warnings))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Errors))}, {observedUtc}, {observedUtc});
+                    """,
+                    cancellationToken);
+                continue;
+            }
+
+            await _dbContext.Database.ExecuteSqlInterpolatedAsync(
+                $"""
+                IF NOT EXISTS (
+                    SELECT 1 FROM [company_simulation_run_day_logs]
+                    WHERE [company_id] = {companyId}
+                      AND [session_id] = {sessionId}
+                      AND [simulated_date_at] = {simulatedDateUtc})
+                BEGIN
+                INSERT INTO [company_simulation_run_day_logs]
+                    ([id], [company_id], [run_history_id], [session_id], [simulated_date_at], [transactions_generated],
+                     [invoices_generated], [asset_purchases_generated], [bills_generated], [recurring_expense_instances_generated], [alerts_generated],
+                     [injected_anomalies_json], [warnings_json], [errors_json], [created_at], [updated_at])
+                VALUES
+                    ({dayLogId}, {companyId}, {runHistory.Id}, {sessionId}, {simulatedDateUtc}, {Math.Max(0, log.TransactionsCreated)},
+                     {Math.Max(0, log.InvoicesCreated)}, {Math.Max(0, log.AssetPurchasesCreated)}, {Math.Max(0, log.BillsCreated)}, {Math.Max(0, log.RecurringExpenseInstancesCreated)}, {Math.Max(0, log.AlertsCreated)},
+                     {JsonSerializer.Serialize(NormalizeDistinct(log.InjectedAnomalies))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Warnings))}, {JsonSerializer.Serialize(NormalizeDistinct(log.Errors))}, {observedUtc}, {observedUtc});
                 END
                 """,
                 cancellationToken);

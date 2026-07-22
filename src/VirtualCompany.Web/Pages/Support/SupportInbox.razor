@@ -5,26 +5,26 @@
 @using System.Globalization
 @using Microsoft.AspNetCore.Components
 
-<PageTitle>Support</PageTitle>
+<PageTitle>@SupportText["Support"]</PageTitle>
 
 <section class="py-4 dashboard-hero">
     <div class="dashboard-shell">
         <div class="wizard-card dashboard-summary">
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                 <div>
-                    <span class="dashboard-kicker">Support</span>
-                    <h1>Customer support</h1>
-                    <p class="text-body-secondary mb-0">Review cases, Ben's triage, SLA risk, and replies that need action.</p>
+                    <span class="dashboard-kicker">@SupportText["Support"]</span>
+                    <h1>@SupportText["CustomerSupport"]</h1>
+                    <p class="text-body-secondary mb-0">@SupportText["SupportDescription"]</p>
                 </div>
-                <button class="btn btn-primary" @onclick="CreateCaseAsync" disabled="@isBusy">Create case</button>
-                <a class="btn btn-outline-secondary" href="/support/knowledge-gaps">Knowledge gaps</a>
-                <a class="btn btn-outline-secondary" href="@BuildPath("/support/memory")">Memory review</a>
-                <a class="btn btn-outline-secondary" href="/support/settings/sla">SLA settings</a>
+                <button class="btn btn-primary" @onclick="CreateCaseAsync" disabled="@isBusy">@SupportText["CreateCase"]</button>
+                <a class="btn btn-outline-secondary" href="/support/knowledge-gaps">@SupportText["KnowledgeGaps"]</a>
+                <a class="btn btn-outline-secondary" href="@BuildPath("/support/memory")">@SupportText["MemoryReview"]</a>
+                <a class="btn btn-outline-secondary" href="/support/settings/sla">@SupportText["SlaSettings"]</a>
             </div>
 
             @if (isLoading)
             {
-                <p class="text-body-secondary mt-4 mb-0">Loading support cases...</p>
+                <p class="text-body-secondary mt-4 mb-0">@SupportText["LoadingCases"]</p>
             }
             else if (!string.IsNullOrWhiteSpace(ShellErrorMessage) || !string.IsNullOrWhiteSpace(errorMessage))
             {
@@ -33,69 +33,84 @@
             else if (cases is not null)
             {
                 <div class="row g-3 mt-4">
-                    <div class="col-6 col-xl-2">@MetricCard("Open", cases.Summary.Open, "open")</div>
-                    <div class="col-6 col-xl-2">@MetricCard("SLA risk", cases.Summary.SlaRisk, "sla-risk")</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Breached", cases.Summary.SlaBreached, "breached")</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Escalated", cases.Summary.Escalated, "escalated")</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Approvals", cases.Summary.AwaitingApproval, "approvals")</div>
-                    <div class="col-6 col-xl-2">@MetricCard("Resolved today", cases.Summary.ResolvedToday, "resolved")</div>
+                    <div class="col-6 col-xl-2">@MetricCard(SupportText["Open"], cases.Summary.Open, "open")</div>
+                    <div class="col-6 col-xl-2">@MetricCard(SupportText["SlaRisk"], cases.Summary.SlaRisk, "sla-risk")</div>
+                    <div class="col-6 col-xl-2">@MetricCard(SupportText["Breached"], cases.Summary.SlaBreached, "breached")</div>
+                    <div class="col-6 col-xl-2">@MetricCard(SupportText["Escalated"], cases.Summary.Escalated, "escalated")</div>
+                    <div class="col-6 col-xl-2">@MetricCard(SupportText["Approvals"], cases.Summary.AwaitingApproval, "approvals")</div>
+                    <div class="col-6 col-xl-2">@MetricCard(SupportText["ResolvedToday"], cases.Summary.ResolvedToday, "resolved")</div>
                 </div>
 
-                <div class="border rounded p-3 mt-4 bg-white">
-                    <div class="row g-3 align-items-end">
-                        <div class="col-12 col-lg-4">
-                            <label class="form-label" for="support-search">Search</label>
-                            <input id="support-search" class="form-control" value="@search" @onchange="OnSearchChanged" placeholder="Case number, subject, or summary" />
+                <div class="border rounded p-3 mt-4 bg-white support-filter-panel">
+                    <div class="support-filter-grid">
+                        <div class="support-filter-field support-filter-field--search">
+                            <label class="form-label" for="support-search">@SupportText["Search"]</label>
+                            <input id="support-search" class="form-control" value="@search" @onchange="OnSearchChanged" placeholder="@SupportText["SearchPlaceholder"]" />
                         </div>
-                        <div class="col-6 col-lg-2">
-                            <label class="form-label" for="support-status">Status</label>
+                        <div class="support-filter-field">
+                            <label class="form-label" for="support-status">@SupportText["Status"]</label>
                             <select id="support-status" class="form-select" @bind="status">
-                                <option value="">All</option>
-                                <option value="new">New</option>
-                                <option value="triaged">Triaged</option>
-                                <option value="waiting_for_customer">Waiting for customer</option>
-                                <option value="waiting_internal">Waiting internally</option>
-                                <option value="escalated">Escalated</option>
-                                <option value="awaiting_approval">Awaiting approval</option>
-                                <option value="resolved">Resolved</option>
+                                <option value="">@SupportText["All"]</option>
+                                @foreach (var itemCode in CaseStatuses)
+                                {
+                                    <option value="@itemCode">@SupportStatusPresenter.Present(itemCode, SupportText)</option>
+                                }
                             </select>
                         </div>
-                        <div class="col-6 col-lg-2">
-                            <label class="form-label" for="support-priority">Priority</label>
+                        <div class="support-filter-field">
+                            <label class="form-label" for="support-priority">@SupportText["Priority"]</label>
                             <select id="support-priority" class="form-select" @bind="priority">
-                                <option value="">All</option>
-                                <option value="urgent">Urgent</option>
-                                <option value="high">High</option>
-                                <option value="normal">Normal</option>
-                                <option value="low">Low</option>
+                                <option value="">@SupportText["All"]</option>
+                                @foreach (var itemCode in Priorities)
+                                {
+                                    <option value="@itemCode">@SupportStatusPresenter.Present(itemCode, SupportText)</option>
+                                }
                             </select>
                         </div>
-                        <div class="col-6 col-lg-2">
-                            <label class="form-label" for="support-category">Category</label>
+                        <div class="support-filter-field">
+                            <label class="form-label" for="support-category">@SupportText["Category"]</label>
                             <select id="support-category" class="form-select" @bind="category">
-                                <option value="">All</option>
-                                <option value="billing">Billing</option>
-                                <option value="refund">Refund</option>
-                                <option value="technical_issue">Technical issue</option>
-                                <option value="account_access">Account access</option>
-                                <option value="complaint">Complaint</option>
-                                <option value="bug_report">Bug report</option>
-                                <option value="churn_risk">Churn risk</option>
+                                <option value="">@SupportText["All"]</option>
+                                @foreach (var itemCode in Categories)
+                                {
+                                    <option value="@itemCode">@SupportStatusPresenter.Present(itemCode, SupportText)</option>
+                                }
                             </select>
                         </div>
-                        <div class="col-6 col-lg-2">
-                            <label class="form-label" for="support-owner">Owner</label>
+                        <div class="support-filter-field">
+                            <label class="form-label" for="support-owner">@SupportText["Owner"]</label>
                             <select id="support-owner" class="form-select" @bind="ownerFilter">
-                                <option value="">All</option>
-                                <option value="unassigned">Unassigned</option>
-                                <option value="mine">Assigned to me</option>
+                                <option value="">@SupportText["All"]</option>
+                                <option value="unassigned">@SupportText["Unassigned"]</option>
+                                <option value="mine">@SupportText["AssignedToMe"]</option>
                             </select>
                         </div>
-                        <div class="col-6 col-lg-2"><label class="form-label" for="support-view">Attention view</label><select id="support-view" class="form-select" @bind="attentionView"><option value="">All cases</option><option value="open">Open cases</option><option value="waiting">Waiting too long</option><option value="failed-reply">Failed replies</option><option value="sla-risk">SLA risk</option><option value="breached">Breached</option><option value="approvals">Awaiting approval</option><option value="escalated">Escalated</option><option value="resolved">Resolved today</option></select></div>
-                        <div class="col-6 col-lg-2"><label class="form-label" for="support-sort">Sort</label><select id="support-sort" class="form-select" @bind="sortBy"><option value="attention">Attention</option><option value="updated">Recently updated</option><option value="created">Recently created</option><option value="due">Due date</option></select></div>
-                        <div class="col-12 d-flex gap-2 justify-content-end">
-                            <button class="btn btn-outline-secondary flex-fill" @onclick="ApplyFiltersAsync" disabled="@isBusy">Apply</button>
-                            <button class="btn btn-outline-secondary flex-fill" @onclick="ClearFiltersAsync" disabled="@isBusy">Clear</button>
+                        <div class="support-filter-field">
+                            <label class="form-label" for="support-view">@SupportText["AttentionView"]</label>
+                            <select id="support-view" class="form-select" @bind="attentionView">
+                                <option value="">@SupportText["AllCases"]</option>
+                                <option value="open">@SupportText["OpenCases"]</option>
+                                <option value="waiting">@SupportText["WaitingTooLong"]</option>
+                                <option value="failed-reply">@SupportText["FailedReplies"]</option>
+                                <option value="sla-risk">@SupportText["SlaRisk"]</option>
+                                <option value="breached">@SupportText["Breached"]</option>
+                                <option value="approvals">@SupportText["AwaitingApproval"]</option>
+                                <option value="escalated">@SupportText["Escalated"]</option>
+                                <option value="resolved">@SupportText["ResolvedToday"]</option>
+                            </select>
+                        </div>
+                        <div class="support-filter-field">
+                            <label class="form-label" for="support-sort">@SupportText["Sort"]</label>
+                            <select id="support-sort" class="form-select" @bind="sortBy">
+                                <option value="attention">@SupportText["Attention"]</option>
+                                <option value="updated">@SupportText["RecentlyUpdated"]</option>
+                                <option value="created">@SupportText["RecentlyCreated"]</option>
+                                <option value="due">@SupportText["DueDate"]</option>
+                            </select>
+                        </div>
+                        <div class="support-filter-actions">
+                            <button class="btn btn-outline-secondary" @onclick="ApplyFiltersAsync" disabled="@isBusy">@SupportText["Apply"]</button>
+                            <button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync" disabled="@isBusy">@SupportText["Clear"]</button>
                         </div>
                     </div>
                 </div>
@@ -113,36 +128,36 @@
                     <div class="border rounded p-3 mt-4 bg-white">
                         <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                             <div>
-                                <h2 class="h6 mb-1">SLA performance</h2>
+                                <h2 class="h6 mb-1">@SupportText["SlaPerformance"]</h2>
                                 <p class="text-body-secondary mb-0">@analytics.SlaPerformance.Rationale</p>
                             </div>
-                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/settings/sla")">Review targets</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/settings/sla")">@SupportText["ReviewTargets"]</a>
                         </div>
                         <div class="row g-3 mt-2">
-                            <div class="col-6 col-lg-2">@MetricCard("At risk now", analytics.SlaPerformance.OpenAtRisk, "sla-risk")</div>
-                            <div class="col-6 col-lg-2">@MetricCard("Breached now", analytics.SlaPerformance.OpenBreached, "breached")</div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Responses met</div><strong>@analytics.SlaPerformance.FirstResponsesMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Responses missed</div><strong>@analytics.SlaPerformance.FirstResponsesMissed.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Resolutions met</div><strong>@analytics.SlaPerformance.ResolutionsMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Missing targets</div><strong>@analytics.SlaPerformance.MissingTargets.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2">@MetricCard(SupportText["AtRiskNow"], analytics.SlaPerformance.OpenAtRisk, "sla-risk")</div>
+                            <div class="col-6 col-lg-2">@MetricCard(SupportText["BreachedNow"], analytics.SlaPerformance.OpenBreached, "breached")</div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ResponsesMet"]</div><strong>@analytics.SlaPerformance.FirstResponsesMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ResponsesMissed"]</div><strong>@analytics.SlaPerformance.FirstResponsesMissed.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ResolutionsMet"]</div><strong>@analytics.SlaPerformance.ResolutionsMet.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["MissingTargets"]</div><strong>@analytics.SlaPerformance.MissingTargets.ToString(CultureInfo.CurrentCulture)</strong></div></div>
                         </div>
                     </div>
 
                     <div class="border rounded p-3 mt-4 bg-white">
                         <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                             <div>
-                                <h2 class="h6 mb-1">Learning impact</h2>
+                                <h2 class="h6 mb-1">@SupportText["LearningImpact"]</h2>
                                 <p class="text-body-secondary mb-0">@analytics.Learning.Rationale</p>
                             </div>
-                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/memory")">Review memory</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/memory")">@SupportText["ReviewMemory"]</a>
                         </div>
                         <div class="row g-3 mt-2">
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Memory used</div><strong>@analytics.Learning.DraftsUsingMemory.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Needs review</div><strong>@analytics.Learning.ReviewMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Approved memory</div><strong>@analytics.Learning.ApprovedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Rejected memory</div><strong>@analytics.Learning.RejectedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Answerability with memory</div><strong>@FormatPercent(analytics.Learning.AverageAnswerabilityWithMemory)</strong></div></div>
-                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">Reopened cases</div><strong>@analytics.Learning.ReopenedCases.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["MemoryUsed"]</div><strong>@analytics.Learning.DraftsUsingMemory.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["NeedsReview"]</div><strong>@analytics.Learning.ReviewMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ApprovedMemory"]</div><strong>@analytics.Learning.ApprovedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["RejectedMemory"]</div><strong>@analytics.Learning.RejectedMemoryObservations.ToString(CultureInfo.CurrentCulture)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["AnswerabilityWithMemory"]</div><strong>@FormatPercent(analytics.Learning.AverageAnswerabilityWithMemory)</strong></div></div>
+                            <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["ReopenedCases"]</div><strong>@analytics.Learning.ReopenedCases.ToString(CultureInfo.CurrentCulture)</strong></div></div>
                         </div>
                     </div>
                 }
@@ -151,13 +166,13 @@
                     <table class="table align-middle">
                         <thead>
                             <tr>
-                                <th>Case</th>
-                                <th>Customer</th>
-                                <th>Category</th>
-                                <th>Priority</th>
-                                <th>Status</th>
-                                <th>Due</th>
-                                <th>Updated</th>
+                                <th>@SupportText["Case"]</th>
+                                <th>@SupportText["Customer"]</th>
+                                <th>@SupportText["Category"]</th>
+                                <th>@SupportText["Priority"]</th>
+                                <th>@SupportText["Status"]</th>
+                                <th>@SupportText["Due"]</th>
+                                <th>@SupportText["Updated"]</th>
                                 <th></th>
                             </tr>
                         </thead>
@@ -165,7 +180,7 @@
                             @if (cases.Items.Count == 0)
                             {
                                 <tr>
-                                    <td colspan="8" class="text-body-secondary py-4">No support cases match the current filters.</td>
+                                    <td colspan="8" class="text-body-secondary py-4">@SupportText["NoMatchingCases"]</td>
                                 </tr>
                             }
                             else
@@ -178,28 +193,28 @@
                                             <div>@item.Subject</div>
                                         </td>
                                         <td>
-                                            @(item.CustomerName ?? item.ContactName ?? "Unmatched")
+                                            @(item.CustomerName ?? item.ContactName ?? SupportText["Unmatched"])
                                             <div class="small text-body-secondary">@item.ContactEmail</div>
                                         </td>
-                                        <td>@item.CategoryLabel</td>
-                                        <td><span class="@PriorityBadge(item.Priority)">@item.PriorityLabel</span></td>
-                                        <td><span class="badge text-bg-light">@item.StatusLabel</span></td>
+                                        <td>@SupportStatusPresenter.Present(item.Category, SupportText)</td>
+                                        <td><span class="@PriorityBadge(item.Priority)">@SupportStatusPresenter.Present(item.Priority, SupportText)</span></td>
+                                        <td><span class="badge text-bg-light">@SupportStatusPresenter.Present(item.Status, SupportText)</span></td>
                                         <td>
                                             @if (item.IsSlaBreached)
                                             {
-                                                <span class="badge text-bg-danger">Breached</span>
+                                                <span class="badge text-bg-danger">@SupportText["Breached"]</span>
                                             }
                                             else if (item.IsSlaRisk)
                                             {
-                                                <span class="badge text-bg-warning">At risk</span>
+                                                <span class="badge text-bg-warning">@SupportText["AtRisk"]</span>
                                             }
                                             else
                                             {
                                                 <span class="text-body-secondary">@FormatDue(item.ResolutionDueUtc)</span>
                                             }
                                         </td>
-                                        <td>@item.UpdatedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)</td>
-                                        <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@BuildPath($"/support/cases/{item.Id:D}")">Open</a></td>
+                                        <td>@LocalDateTime.DateTime(item.UpdatedUtc)</td>
+                                        <td class="text-end"><a class="btn btn-sm btn-outline-primary" href="@BuildPath($"/support/cases/{item.Id:D}")">@SupportText["OpenCase"]</a></td>
                                     </tr>
                                 }
                             }
@@ -208,11 +223,11 @@
                 </div>
                 @if (cases.TotalCount > pageSize)
                 {
-                    <nav class="d-flex align-items-center justify-content-between gap-3 mt-3" aria-label="Support case pages">
-                        <span class="small text-body-secondary">Showing @(pageIndex * pageSize + 1)-@(Math.Min(cases.TotalCount, (pageIndex + 1) * pageSize)) of @cases.TotalCount</span>
+                    <nav class="d-flex align-items-center justify-content-between gap-3 mt-3" aria-label="@SupportText["SupportPages"]">
+                        <span class="small text-body-secondary">@SupportText["ShowingRange", pageIndex * pageSize + 1, Math.Min(cases.TotalCount, (pageIndex + 1) * pageSize), cases.TotalCount]</span>
                         <div class="btn-group">
-                            <button class="btn btn-sm btn-outline-secondary" @onclick="PreviousPageAsync" disabled="@(isBusy || pageIndex == 0)">Previous</button>
-                            <button class="btn btn-sm btn-outline-secondary" @onclick="NextPageAsync" disabled="@(isBusy || (pageIndex + 1) * pageSize >= cases.TotalCount)">Next</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="PreviousPageAsync" disabled="@(isBusy || pageIndex == 0)">@SupportText["Previous"]</button>
+                            <button class="btn btn-sm btn-outline-secondary" @onclick="NextPageAsync" disabled="@(isBusy || (pageIndex + 1) * pageSize >= cases.TotalCount)">@SupportText["Next"]</button>
                         </div>
                     </nav>
                 }
@@ -222,6 +237,9 @@
 </section>
 
 @code {
+    private static readonly string[] CaseStatuses = ["new", "triaged", "waiting_for_customer", "waiting_internal", "escalated", "awaiting_approval", "resolved"];
+    private static readonly string[] Priorities = ["urgent", "high", "normal", "low"];
+    private static readonly string[] Categories = ["billing", "refund", "technical_issue", "account_access", "complaint", "bug_report", "churn_risk"];
     private SupportCaseListResponse? cases;
     private SupportAnalyticsDashboardResponse? analytics;
     private bool isLoading = true;
@@ -369,8 +387,8 @@
         }
     }
 
-    private static string FormatDue(DateTime? value) =>
-        value is DateTime due ? due.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "Not set";
+    private string FormatDue(DateTime? value) =>
+        value is DateTime due ? LocalDateTime.DateTime(due) : SupportText["NotSet"];
 
     private static string PriorityBadge(string priority) => priority switch
     {
@@ -380,8 +398,8 @@
         _ => "badge text-bg-primary"
     };
 
-    private static string FormatPercent(decimal? value) =>
-        value is decimal actual ? actual.ToString("P0", CultureInfo.CurrentCulture) : "No data";
+    private string FormatPercent(decimal? value) =>
+        value is decimal actual ? LocalNumber.Percentage(actual) : SupportText["NoData"];
 
     private RenderFragment MetricCard(string label, int value, string view) => @<button type="button" class="border rounded bg-white p-3 h-100 w-100 text-start" @onclick="() => ApplyViewAsync(view)">
         <div class="small text-body-secondary">@label</div>

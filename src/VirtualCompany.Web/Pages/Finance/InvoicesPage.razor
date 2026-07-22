@@ -2,27 +2,27 @@
 @page "/finance/invoices/{InvoiceId:guid}"
 @inherits FinancePageBase
 
-<PageTitle>Invoices</PageTitle>
+<PageTitle>@FinanceText["Invoices"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="Invoices"
-    Description="Track invoices, approval status, and collection work for the active company."
-    LoadingMessage="Loading invoices..."
+    Title="@FinanceText["Invoices"]"
+    Description="@FinanceText["InvoicesDescription"]"
+    LoadingMessage="@FinanceText["LoadingInvoices"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <section class="invoices-dashboard" aria-labelledby="invoices-heading">
         <div class="finance-overview-header">
             <div>
-                <span class="finance-overview-kicker">Finance module</span>
-                <h1 id="invoices-heading" class="finance-overview-title">Invoices</h1>
-                <p class="finance-overview-subtitle">Track invoices, approval status, and collection work for the active company.</p>
+                <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                <h1 id="invoices-heading" class="finance-overview-title">@FinanceText["Invoices"]</h1>
+                <p class="finance-overview-subtitle">@FinanceText["InvoicesDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">Finance overview</a>
-                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">Company dashboard</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>
 
@@ -32,20 +32,20 @@
             <article class="invoice-list-card">
                 <div class="invoice-list-card__header">
                     <div>
-                        <h2>Invoice list</h2>
-                        <p>Review invoice status, customer, amount, and due date.</p>
+                        <h2>@FinanceText["InvoiceList"]</h2>
+                        <p>@FinanceText["InvoiceListDescription"]</p>
                     </div>
-                    <span>@Invoices.Count item@(Invoices.Count == 1 ? string.Empty : "s")</span>
+                    <span>@CommonText[Invoices.Count == 1 ? "ItemCountOne" : "ItemCountMany", Invoices.Count]</span>
                 </div>
 
                 <FinanceDataState
                     IsLoading="@IsListLoading"
                     IsEmpty="@IsListEmpty"
                     ErrorMessage="@ListErrorMessage"
-                    LoadingTitle="Loading invoices"
-                    LoadingMessage="Fetching invoices."
-                    EmptyTitle="No invoices available"
-                    EmptyMessage="This company does not have invoice records to review yet."
+                    LoadingTitle="@FinanceText["LoadingInvoices"]"
+                    LoadingMessage="@FinanceText["FetchingInvoices"]"
+                    EmptyTitle="@FinanceText["NoInvoices"]"
+                    EmptyMessage="@FinanceText["NoInvoicesDescription"]"
                     OnRetry="@ReloadAsync">
                     <div class="invoice-list">
                         @foreach (var invoice in InvoiceItems)
@@ -75,18 +75,18 @@
             <aside class="invoice-detail-card">
                 @if (IsDetailLoading)
                 {
-                    <FinanceLoadingState Title="Loading invoice detail" Message="Opening the selected invoice." />
+                    <FinanceLoadingState Title="@FinanceText["LoadingInvoiceDetail"]" Message="@FinanceText["OpeningInvoice"]" />
                 }
                 else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
                 {
-                    <FinanceErrorState Title="Invoice detail unavailable" Message="@(DetailErrorMessage!)" RetryText="Retry" OnRetry="@ReloadAsync" />
+                    <FinanceErrorState Title="@FinanceText["InvoiceDetailUnavailable"]" Message="@(DetailErrorMessage!)" RetryText="@CommonText["Retry"]" OnRetry="@ReloadAsync" />
                 }
                 else if (SelectedInvoice is null)
                 {
                     <div class="invoice-detail-empty">
                         <div class="invoice-detail-empty__icon" aria-hidden="true">doc</div>
-                        <h2>No invoice selected</h2>
-                        <p>Select an invoice to open the detail panel.</p>
+                        <h2>@FinanceText["NoInvoiceSelected"]</h2>
+                        <p>@FinanceText["SelectInvoiceDetail"]</p>
                     </div>
                 }
                 else if (SelectedInvoiceDisplay is { } detail)
@@ -109,24 +109,24 @@
                         <div class="invoice-detail-panel__amount">@detail.DisplayAmount</div>
 
                         <dl class="invoice-detail-list">
-                            <div><dt>Customer</dt><dd>@detail.DisplayCustomerName</dd></div>
-                            <div><dt>Issued date</dt><dd>@detail.DisplayIssuedDate</dd></div>
-                            <div><dt>Due date</dt><dd>@detail.DisplayDueDate</dd></div>
-                            <div><dt>Document type</dt><dd>@detail.DocumentKindLabel</dd></div>
-                            <div><dt>Payment status</dt><dd>@detail.FriendlyStatusLabel</dd></div>
+                            <div><dt>@FinanceText["Customer"]</dt><dd>@detail.DisplayCustomerName</dd></div>
+                            <div><dt>@FinanceText["IssuedDate"]</dt><dd>@detail.DisplayIssuedDate</dd></div>
+                            <div><dt>@FinanceText["DueDate"]</dt><dd>@detail.DisplayDueDate</dd></div>
+                            <div><dt>@FinanceText["DocumentType"]</dt><dd>@detail.DocumentKindLabel</dd></div>
+                            <div><dt>@FinanceText["PaymentStatus"]</dt><dd>@detail.FriendlyStatusLabel</dd></div>
                             @if (detail.PaymentSummary is not null)
                             {
-                                <div><dt>Payment details</dt><dd>@detail.PaymentSummary.Summary</dd></div>
+                                <div><dt>@FinanceText["PaymentDetails"]</dt><dd>@detail.PaymentSummary.Summary</dd></div>
                             }
                             @if (!string.IsNullOrWhiteSpace(detail.ReviewBadgeLabel))
                             {
-                                <div><dt>Flag status</dt><dd>@detail.ReviewBadgeLabel</dd></div>
+                                <div><dt>@FinanceText["FlagStatus"]</dt><dd>@detail.ReviewBadgeLabel</dd></div>
                             }
-                            <div><dt>Approval status</dt><dd>@detail.ApprovalStatus</dd></div>
+                            <div><dt>@FinanceText["ApprovalStatus"]</dt><dd>@detail.ApprovalStatus</dd></div>
                         </dl>
 
                         <form class="invoice-detail-form" @onsubmit="HandleStatusSaveAsync" @onsubmit:preventDefault="true">
-                            <label class="form-label" for="invoice-status-input">Update status</label>
+                            <label class="form-label" for="invoice-status-input">@FinanceText["UpdateStatus"]</label>
                             <select id="invoice-status-input" class="form-select" @bind="EditableStatus" disabled="@(!CanChangeInvoiceApprovalStatus || IsSavingStatus)">
                                 @foreach (var option in EditableStatusOptions)
                                 {
@@ -137,16 +137,16 @@
                             {
                                 <div class="text-danger small mt-1">@StatusValidationMessage</div>
                             }
-                            <div class="form-text">@(CanChangeInvoiceApprovalStatus ? "Save a new invoice status when the review is complete." : "Approval access is required to update invoice status.")</div>
+                            <div class="form-text">@(CanChangeInvoiceApprovalStatus ? FinanceText["InvoiceStatusSaveHelp"] : FinanceText["InvoiceStatusApprovalHelp"])</div>
                             <div class="invoice-detail-actions">
-                                <button class="btn btn-primary" type="submit" disabled="@(!CanChangeInvoiceApprovalStatus || IsSavingStatus)">Save status</button>
+                                <button class="btn btn-primary" type="submit" disabled="@(!CanChangeInvoiceApprovalStatus || IsSavingStatus)">@FinanceText["SaveStatus"]</button>
                                 @if (detail.CanOpenApproval && detail.ApprovalRequestId is Guid approvalRequestId)
                                 {
-                                    <a class="btn btn-outline-secondary" href="@BuildApprovalHref(approvalRequestId)">Open approval</a>
+                                    <a class="btn btn-outline-secondary" href="@BuildApprovalHref(approvalRequestId)">@FinanceText["OpenApproval"]</a>
                                 }
                                 @if (detail.CanOpenReview && detail.WorkflowInstanceId is Guid workflowInstanceId)
                                 {
-                                    <a class="btn btn-outline-secondary" href="@BuildWorkflowHref(workflowInstanceId)">Review invoice</a>
+                                    <a class="btn btn-outline-secondary" href="@BuildWorkflowHref(workflowInstanceId)">@FinanceText["ReviewInvoice"]</a>
                                 }
                             </div>
                         </form>
@@ -158,7 +158,7 @@
                     }
 
                     <section class="invoice-detail-section">
-                        <h3>Review notes</h3>
+                        <h3>@FinanceText["ReviewNotes"]</h3>
                         @if (detail.PaymentSummary?.IsPartiallyPaid == true)
                         {
                             <p>@detail.PaymentSummary.ReviewReason</p>
@@ -170,10 +170,10 @@
                     </section>
 
                     <section class="invoice-detail-section">
-                        <h3>Related transactions</h3>
+                        <h3>@FinanceText["RelatedTransactions"]</h3>
                         @if (detail.RelatedTransactions.Count == 0)
                         {
-                            <p>No ledger transactions are linked to this invoice yet.</p>
+                            <p>@FinanceText["NoInvoiceTransactions"]</p>
                         }
                         else
                         {
@@ -196,7 +196,7 @@
                     @if (detail.SourceDetails.Count > 0)
                     {
                         <section class="invoice-detail-section">
-                            <h3>Source details</h3>
+                            <h3>@FinanceText["SourceDetails"]</h3>
                             <dl class="invoice-detail-list invoice-source-detail-list">
                                 @foreach (var sourceDetail in detail.SourceDetails)
                                 {
@@ -207,7 +207,7 @@
                     }
 
                     <section class="invoice-detail-section">
-                        <h3>Linked document</h3>
+                        <h3>@FinanceText["LinkedDocument"]</h3>
                     <FinanceLinkedResourceState
                         Availability="@SelectedInvoice.LinkedDocument.Availability"
                         Message="@SelectedInvoice.LinkedDocument.Message"
@@ -216,13 +216,13 @@
                         TypeText="@SelectedInvoice.LinkedDocument.Document?.ContentType"
                         CanNavigate="@SelectedInvoice.LinkedDocument.CanNavigate"
                         NavigateHref="@(SelectedInvoice.LinkedDocument.Document is null ? null : BuildDocumentHref(SelectedInvoice.LinkedDocument.Document.Id))"
-                        ActionText="Open linked document" />
+                        ActionText="@FinanceText["OpenLinkedDocument"]" />
                     </section>
 
                     <AgentInsightsPanel
-                        Title="Agent insights"
-                        Subtitle="Finance notes linked to this invoice."
-                        EmptyMessage="No agent insights are linked to this invoice."
+                        Title="@FinanceText["AgentInsights"]"
+                        Subtitle="@FinanceText["InvoiceAgentInsightsSubtitle"]"
+                        EmptyMessage="@FinanceText["NoInvoiceAgentInsights"]"
                         TestId="invoice-agent-insights-panel"
                         Items="@SelectedInvoice.AgentInsights" />
                 }

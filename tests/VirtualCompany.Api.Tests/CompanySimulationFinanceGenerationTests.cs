@@ -104,13 +104,15 @@ public sealed class CompanySimulationFinanceGenerationTests
             .ToListAsync();
         var alerts = await dbContext.Alerts
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId && x.Type == AlertType.Anomaly)
+            .Where(x => x.CompanyId == companyId)
             .OrderBy(x => x.Fingerprint)
+            .ThenBy(x => x.Id)
             .ToListAsync();
         var seedAnomalies = await dbContext.FinanceSeedAnomalies
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId && x.Type == AlertType.Anomaly)
-            .OrderBy(x => x.Fingerprint)
+            .Where(x => x.CompanyId == companyId)
+            .OrderBy(x => x.AnomalyType)
+            .ThenBy(x => x.Id)
             .ToListAsync();
 
         Assert.Equal(new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc), state.CurrentSimulatedDateTime);
@@ -279,7 +281,7 @@ public sealed class CompanySimulationFinanceGenerationTests
             await dbContext.AuditEvents.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.Action.StartsWith("finance.", StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.Action).ThenBy(x => x.TargetId).Select(x => $"{x.Action}:{x.TargetType}:{x.TargetId}").ToListAsync());
     }
 
-    private static async Task<(int Invoices, int Bills, int Transactions, int Balances, int Tasks, int Approvals, int Alerts, int Audits)> CaptureCountsAsync(
+    private static async Task<(int Invoices, int Bills, int Transactions, int Balances, int Tasks, int Approvals, int SeedAnomalies, int Alerts, int Audits)> CaptureCountsAsync(
         VirtualCompanyDbContext dbContext,
         Guid companyId) =>
         (
@@ -323,7 +325,7 @@ public sealed class CompanySimulationFinanceGenerationTests
         IReadOnlyList<string> AlertFingerprints,
         IReadOnlyList<string> AuditKeys);
 
-    private static async Task<(int Invoices, int Bills, int Transactions, int Balances, int Tasks, int Approvals, int SeedAnomalies, int Alerts, int Audits)> CaptureCountsAsync(
+    private sealed class MutableTimeProvider : TimeProvider
     {
         private DateTimeOffset _utcNow;
 

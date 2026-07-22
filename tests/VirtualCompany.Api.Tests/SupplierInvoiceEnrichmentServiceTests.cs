@@ -21,7 +21,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         var bill = await fixture.AddSupplierBillAsync();
 
         var result = await fixture.Service.SuggestAsync(
-            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal(SupplierInvoiceEnrichmentActionStatuses.AwaitingApproval, result.Status);
@@ -41,12 +41,12 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         await using var fixture = await SupplierInvoiceEnrichmentFixture.CreateAsync(provider);
         var bill = await fixture.AddSupplierBillAsync();
         var suggestion = await fixture.Service.SuggestAsync(
-            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
         await fixture.ApproveAsync(suggestion.ApprovalRequestId!.Value);
 
         var result = await fixture.Service.SyncApprovedAsync(
-            new SyncSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new SyncSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal(SupplierInvoiceEnrichmentActionStatuses.Synced, result.Status);
@@ -103,7 +103,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         await fixture.AddPaymentTransactionsAsync(bill.Id, count: 2);
 
         var result = await fixture.Service.ReconcileAsync(
-            new ReconcileSupplierInvoiceCommand(fixture.CompanyId, bill.Id),
+            new ReconcileSupplierInvoiceCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Contains(result.ReconciliationWarnings.OfType<JsonObject>(), warning => warning["code"]?.ToString() == "duplicate_payment");
@@ -118,7 +118,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
             settlementStatus: FinanceSettlementStatuses.Unpaid);
 
         var result = await fixture.Service.ReconcileAsync(
-            new ReconcileSupplierInvoiceCommand(fixture.CompanyId, bill.Id),
+            new ReconcileSupplierInvoiceCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Contains(result.ReconciliationWarnings.OfType<JsonObject>(), warning => warning["code"]?.ToString() == "unpaid_after_due_date");
@@ -128,10 +128,10 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
     public async Task SuggestAsync_works_in_fortnox_only_mode_without_simulation_seed()
     {
         await using var fixture = await SupplierInvoiceEnrichmentFixture.CreateAsync(new CapturingEnrichmentProvider());
-        var bill = await fixture.AddSupplierBillAsync(processingStatus: FinanceDocumentProcessingStatuses.Synced);
+        var bill = await fixture.AddSupplierBillAsync(processingStatus: FinanceDocumentProcessingStatuses.None);
 
         var result = await fixture.Service.SuggestAsync(
-            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal(SupplierInvoiceEnrichmentActionStatuses.AwaitingApproval, result.Status);
@@ -145,7 +145,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         var bill = await fixture.AddSupplierBillAsync(metadataAccountCode: null);
 
         var result = await fixture.Service.SuggestAsync(
-            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal("4010", result.SuggestionPayload["coding"]?["ledgerAccount"]?.ToString());
@@ -159,7 +159,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         var bill = await fixture.AddSupplierBillAsync(metadataAccountCode: "6540");
 
         var result = await fixture.Service.SuggestAsync(
-            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId),
+            new SuggestSupplierInvoiceEnrichmentCommand(fixture.CompanyId, bill.Id, fixture.ActorUserId, "Test User"),
             CancellationToken.None);
 
         Assert.Equal("6540", result.SuggestionPayload["coding"]?["ledgerAccount"]?.ToString());
@@ -207,6 +207,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
             await db.Database.EnsureCreatedAsync();
             var fixture = new SupplierInvoiceEnrichmentFixture(connection, db, provider);
 
+            db.Users.Add(new User(fixture.ActorUserId, "enrichment-actor@example.test", "Enrichment Actor", "test", fixture.ActorUserId.ToString("N")));
             db.Companies.Add(new Company(fixture.CompanyId, "Fortnox-only company"));
             db.FinanceAccounts.Add(new FinanceAccount(
                 fixture.AccountId,
@@ -499,7 +500,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
                 steps,
                 steps.FirstOrDefault(),
                 approval.DecisionSummary,
-                approval.RejectionComment,
+                approval.DecisionSummary,
                 string.Empty,
                 string.Empty,
                 [],

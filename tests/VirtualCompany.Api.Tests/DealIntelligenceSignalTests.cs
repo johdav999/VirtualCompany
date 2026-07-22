@@ -63,7 +63,7 @@ public sealed class DealIntelligenceSignalTests
     {
         var companyId = Guid.NewGuid();
         await using var dbContext = CreateDbContext(companyId);
-        dbContext.Companies.Add(new Company(companyId, "Tenant A", "tenant-a"));
+        dbContext.Companies.Add(new Company(companyId, "Tenant A"));
         await dbContext.SaveChangesAsync();
 
         var repository = new DealIntelligenceSignalRepository(dbContext, new FixedCompanyContextAccessor(companyId));
@@ -119,6 +119,16 @@ public sealed class DealIntelligenceSignalTests
             CompanyId = companyId;
         }
 
-        public Guid? CompanyId { get; }
+        public Guid? CompanyId { get; private set; }
+        public Guid? UserId { get; private set; }
+        public bool IsResolved => CompanyId.HasValue;
+        public ResolvedCompanyMembershipContext? Membership { get; private set; }
+        public void SetCompanyId(Guid? companyId) => CompanyId = companyId;
+        public void SetCompanyContext(ResolvedCompanyMembershipContext? companyContext)
+        {
+            Membership = companyContext;
+            CompanyId = companyContext?.CompanyId;
+            UserId = companyContext?.UserId;
+        }
     }
 }

@@ -15,6 +15,8 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class MailboxConnectionFlowTests
 {
+    private static readonly IDataProtectionProvider TestDataProtectionProvider = new EphemeralDataProtectionProvider();
+
     [Fact]
     public async Task Start_oauth_returns_provider_authorization_url_with_minimal_scopes()
     {
@@ -39,7 +41,7 @@ public sealed class MailboxConnectionFlowTests
     }
 
     [Fact]
-    public async Task Start_oauth_protects_company_user_provider_and_return_uri_in_state()
+    public async Task Start_oauth_protects_company_user_provider_and_return_uri_in_state_with_callback_metadata()
     {
         await using var connection = await OpenConnectionAsync();
         var companyId = Guid.NewGuid();
@@ -55,7 +57,8 @@ public sealed class MailboxConnectionFlowTests
                 userId,
                 MailboxProvider.Microsoft365,
                 new Uri("https://app.example.test/api/mailbox-connections/microsoft365/callback"),
-                returnUri),
+                returnUri,
+                Purpose: MailboxPurpose.Support),
             CancellationToken.None);
 
         var query = System.Web.HttpUtility.ParseQueryString(result.AuthorizationUrl.Query);
@@ -65,6 +68,7 @@ public sealed class MailboxConnectionFlowTests
         Assert.Equal(companyId, state.CompanyId);
         Assert.Equal(userId, state.UserId);
         Assert.Equal(MailboxProvider.Microsoft365, state.Provider);
+        Assert.Equal(MailboxPurpose.Support, state.Purpose);
         Assert.Equal(returnUri, state.ReturnUri);
         Assert.Equal(
             "https://app.example.test/api/mailbox-connections/microsoft365/callback",
@@ -133,6 +137,7 @@ public sealed class MailboxConnectionFlowTests
         await using var connection = await OpenConnectionAsync();
         var companyId = Guid.NewGuid();
         var userId = Guid.NewGuid();
+        await SeedCompanyAndUserAsync(connection, companyId, userId);
         var provider = new FakeProvider(MailboxProvider.Microsoft365);
         var service = CreateService(connection, companyId, userId, provider);
         var start = await service.StartOAuthConnectionAsync(
@@ -159,11 +164,80 @@ public sealed class MailboxConnectionFlowTests
     }
 
     [Fact]
+    public async Task Startup_refresh_restores_expiring_support_mailbox_credentials_without_interactive_authentication()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var now = new DateTime(2026, 7, 19, 8, 0, 0, DateTimeKind.Utc);
+        await SeedConnectedMailboxAsync(
+            connection,
+            companyId,
+            userId,
+            MailboxProvider.Gmail,
+            purpose: MailboxPurpose.Support,
+            accessTokenExpiresUtc: now.AddMinutes(-1));
+        var provider = new FakeProvider(MailboxProvider.Gmail);
+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+        var refresher = new MailboxConnectionCredentialRefresher(
+            dbContext,
+            new FakeProviderRegistry(provider),
+            CreateEncryption(),
+            new FakeTimeProvider(now),
+            NullLogger<MailboxConnectionCredentialRefresher>.Instance);
+
+        await refresher.RefreshExpiringConnectionsAsync(companyId, CancellationToken.None);
+
+        dbContext.ChangeTracker.Clear();
+        var stored = await dbContext.MailboxConnections.SingleAsync();
+        Assert.Equal(1, provider.RefreshCallCount);
+        Assert.Equal(MailboxPurpose.Support, stored.Purpose);
+        Assert.Equal(MailboxConnectionStatus.Active, stored.Status);
+        Assert.Null(stored.LastErrorSummary);
+        Assert.True(stored.AccessTokenExpiresUtc > now);
+    }
+
+    [Fact]
+    public async Task Startup_restore_marks_credentials_from_an_unavailable_key_ring_for_reconnection()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var now = new DateTime(2026, 7, 19, 8, 0, 0, DateTimeKind.Utc);
+        var unavailableEncryption = new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());
+        await SeedConnectedMailboxAsync(
+            connection,
+            companyId,
+            userId,
+            MailboxProvider.Gmail,
+            purpose: MailboxPurpose.Support,
+            accessTokenExpiresUtc: now.AddHours(1),
+            encryption: unavailableEncryption);
+        var provider = new FakeProvider(MailboxProvider.Gmail);
+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+        var refresher = new MailboxConnectionCredentialRefresher(
+            dbContext,
+            new FakeProviderRegistry(provider),
+            CreateEncryption(),
+            new FakeTimeProvider(now),
+            NullLogger<MailboxConnectionCredentialRefresher>.Instance);
+
+        await refresher.RefreshExpiringConnectionsAsync(companyId, CancellationToken.None);
+
+        dbContext.ChangeTracker.Clear();
+        var stored = await dbContext.MailboxConnections.SingleAsync();
+        Assert.Equal(0, provider.RefreshCallCount);
+        Assert.Equal(MailboxConnectionStatus.TokenExpired, stored.Status);
+        Assert.Equal("Automatic mailbox authentication could not be restored. Reconnect this mailbox.", stored.LastErrorSummary);
+    }
+
+    [Fact]
     public async Task Callback_uses_protected_state_for_company_user_provider_and_return_uri()
     {
         await using var connection = await OpenConnectionAsync();
         var companyId = Guid.NewGuid();
         var userId = Guid.NewGuid();
+        await SeedCompanyAndUserAsync(connection, companyId, userId);
         var returnUri = new Uri("https://app.example.test/finance/mailbox?tab=connections");
         var provider = new FakeProvider(MailboxProvider.Gmail);
         var service = CreateService(connection, companyId, userId, provider);
@@ -182,7 +256,6 @@ public sealed class MailboxConnectionFlowTests
                 state,
                 "oauth-code",
                 new Uri("https://app.example.test/api/mailbox-connections/gmail/callback"),
-                MailboxProvider.Gmail),
                 MailboxProvider.Gmail),
             CancellationToken.None);
 
@@ -220,7 +293,7 @@ public sealed class MailboxConnectionFlowTests
     }
 
     [Fact]
-    public async Task Callback_rejects_expired_state_before_token_exchange_and_persistence()
+    public async Task Callback_rejects_expired_state_before_token_exchange_and_persistence_for_replayed_state()
     {
         await using var connection = await OpenConnectionAsync();
         var companyId = Guid.NewGuid();
@@ -246,7 +319,7 @@ public sealed class MailboxConnectionFlowTests
     }
 
     [Fact]
-    public async Task Callback_rejects_cross_tenant_completion_before_token_exchange_and_persistence()
+    public async Task Callback_rejects_cross_tenant_completion_before_token_exchange_and_persistence_for_active_context()
     {
         await using var connection = await OpenConnectionAsync();
         var companyId = Guid.NewGuid();
@@ -380,23 +453,25 @@ public sealed class MailboxConnectionFlowTests
             new TriggerManualMailboxScanCommand(companyId, userId, await ReadMailboxConnectionIdAsync(connection)),
             CancellationToken.None);
 
+        Assert.True(result.FailureDetails is null, result.FailureDetails);
         Assert.Equal(new DateTime(2026, 3, 27, 12, 0, 0, DateTimeKind.Utc), result.ScanFromUtc);
         Assert.Equal(new DateTime(2026, 4, 26, 12, 0, 0, DateTimeKind.Utc), result.ScanToUtc);
         Assert.Equal(3, result.ScannedMessageCount);
-        Assert.Equal(1, result.DetectedCandidateCount);
+        Assert.Equal(2, result.DetectedCandidateCount);
         Assert.Equal(result.ScanFromUtc, provider.LastQuery!.FromUtc);
         Assert.Equal(result.ScanToUtc, provider.LastQuery.ToUtc);
         Assert.Single(provider.LastQuery.Folders);
         Assert.Equal("INBOX", provider.LastQuery.Folders.Single().ProviderFolderId);
-        Assert.Equal(2, result.NonCandidateMessageCount);
-        Assert.Equal(1, result.CandidateAttachmentSnapshotCount);
+        Assert.Equal(1, result.NonCandidateMessageCount);
+        Assert.Equal(2, result.CandidateAttachmentSnapshotCount);
         Assert.Equal(0, result.DeduplicatedAttachmentCount);
 
         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
         Assert.Single(await dbContext.EmailIngestionRuns.ToListAsync());
-        var snapshot = await dbContext.EmailMessageSnapshots.Include(x => x.Attachments).SingleAsync();
-        Assert.Equal(BillSourceType.PdfAttachment, snapshot.SourceType);
-        Assert.Single(snapshot.Attachments);
+        var snapshots = await dbContext.EmailMessageSnapshots.Include(x => x.Attachments).ToListAsync();
+        Assert.Equal(2, snapshots.Count);
+        Assert.All(snapshots, snapshot => Assert.Equal(BillSourceType.PdfAttachment, snapshot.SourceType));
+        Assert.All(snapshots, snapshot => Assert.Single(snapshot.Attachments));
         Assert.Equal(0, await dbContext.Payments.CountAsync());
         Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());
     }
@@ -637,22 +712,40 @@ public sealed class MailboxConnectionFlowTests
         Guid companyId,
         Guid userId,
         MailboxProvider provider,
-        string emailAddress = "ap@example.com")
+        string emailAddress = "ap@example.com",
+        MailboxPurpose purpose = MailboxPurpose.Finance,
+        DateTime? accessTokenExpiresUtc = null,
+        IFieldEncryptionService? encryption = null)
     {
         await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
         await dbContext.Database.EnsureCreatedAsync();
-        dbContext.Companies.Add(new Company(companyId, "Mailbox Flow Company"));
-        dbContext.Users.Add(new User(userId, $"user-{userId:N}@example.com", "Mailbox User", "test", userId.ToString("N")));
-        var encryption = new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());
-        var mailbox = new MailboxConnection(Guid.NewGuid(), companyId, userId, provider, emailAddress);
+        if (!await dbContext.Companies.IgnoreQueryFilters().AnyAsync(x => x.Id == companyId))
+        {
+            dbContext.Companies.Add(new Company(companyId, "Mailbox Flow Company"));
+        }
+
+        if (!await dbContext.Users.IgnoreQueryFilters().AnyAsync(x => x.Id == userId))
+        {
+            dbContext.Users.Add(new User(userId, $"user-{userId:N}@example.com", "Mailbox User", "test", userId.ToString("N")));
+        }
+        encryption ??= CreateEncryption();
+        var mailbox = new MailboxConnection(Guid.NewGuid(), companyId, userId, provider, emailAddress, purpose: purpose);
         mailbox.StoreEncryptedCredentials(
             encryption.Encrypt(companyId, $"mailbox:{provider.ToStorageValue()}:access_token", "access-token"),
             encryption.Encrypt(companyId, $"mailbox:{provider.ToStorageValue()}:refresh_token", "refresh-token"),
-            DateTime.UtcNow.AddHours(1),
+            accessTokenExpiresUtc ?? DateTime.UtcNow.AddHours(1),
             ["scope"]);
         mailbox.ConfigureFolders([new MailboxFolderSelection("INBOX", "Inbox")]);
         mailbox.SetStatus(MailboxConnectionStatus.Active);
         dbContext.MailboxConnections.Add(mailbox);
+        await dbContext.SaveChangesAsync();
+    }
+
+    private static async Task SeedCompanyAndUserAsync(SqliteConnection connection, Guid companyId, Guid userId)
+    {
+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+        dbContext.Companies.Add(new Company(companyId, "Mailbox Flow Company"));
+        dbContext.Users.Add(new User(userId, $"user-{userId:N}@example.com", "Mailbox User", "test", userId.ToString("N")));
         await dbContext.SaveChangesAsync();
     }
 
@@ -710,6 +803,8 @@ public sealed class MailboxConnectionFlowTests
     {
         var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(null, null));
+        await dbContext.Database.EnsureCreatedAsync();
         return connection;
     }
 
@@ -717,7 +812,7 @@ public sealed class MailboxConnectionFlowTests
         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options, accessor);
 
     private static DataProtectionFieldEncryptionService CreateEncryption() =>
-        new(new EphemeralDataProtectionProvider());
+        new(TestDataProtectionProvider);
 
     private sealed class FakeProviderRegistry : IMailboxProviderRegistry
     {
@@ -735,6 +830,7 @@ public sealed class MailboxConnectionFlowTests
         public MailboxMessageQuery? LastQuery { get; private set; }
         public MailboxTokenExchangeRequest? LastTokenExchangeRequest { get; private set; }
         public int ExchangeCallCount { get; private set; }
+        public int RefreshCallCount { get; private set; }
         public bool ThrowOnList { get; init; }
 
         public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request) =>
@@ -750,8 +846,11 @@ public sealed class MailboxConnectionFlowTests
             return Task.FromResult(new MailboxOAuthTokenResult("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), DefaultScopes));
         }
 
-        public Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken) =>
-            Task.FromResult(new MailboxOAuthTokenResult("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), DefaultScopes));
+        public Task<MailboxOAuthTokenResult> RefreshTokenAsync(MailboxRefreshTokenRequest request, CancellationToken cancellationToken)
+        {
+            RefreshCallCount++;
+            return Task.FromResult(new MailboxOAuthTokenResult("access-token", "refresh-token", DateTime.UtcNow.AddHours(1), DefaultScopes));
+        }
 
         public Task<MailboxAccountProfile> GetAccountProfileAsync(string accessToken, CancellationToken cancellationToken) =>
             Task.FromResult(new MailboxAccountProfile("ap@example.com", "AP", "provider-account"));

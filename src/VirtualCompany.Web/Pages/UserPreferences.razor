@@ -1,0 +1,202 @@
+@page "/settings/profile"
+@rendermode InteractiveServer
+@using System.Globalization
+@using Microsoft.Extensions.Localization
+@using VirtualCompany.Web.Localization
+@using VirtualCompany.Web.Localization.UserPreferences
+@inject IStringLocalizer<UserPreferencesResources> L
+@inject OnboardingApiClient ApiClient
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>@L["Page.Title"]</PageTitle>
+
+<main class="user-preferences-page">
+    <header class="user-preferences-header">
+        <span class="dashboard-kicker">@L["Page.Kicker"]</span>
+        <h1>@L["Page.Title"]</h1>
+        <p>@L["Page.Description"]</p>
+    </header>
+
+    @if (isLoading)
+    {
+        <div class="user-preferences-state" aria-live="polite">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <span>@L["States.Loading"]</span>
+        </div>
+    }
+    else if (!isAuthenticated)
+    {
+        <div class="alert alert-warning" role="alert">@L["States.Unauthorized"]</div>
+    }
+    else
+    {
+        <EditForm Model="model" OnValidSubmit="SaveAsync" class="user-preferences-form">
+            <DataAnnotationsValidator />
+
+            <div class="user-preferences-fields">
+                <div>
+                    <label class="form-label" for="ui-culture">@L["Fields.InterfaceLanguage"]</label>
+                    <InputSelect id="ui-culture" class="form-select" @bind-Value="model.UiCulture">
+                        @foreach (var culture in SupportedWebCultures.All)
+                        {
+                            <option value="@culture.Name">@culture.DisplayName</option>
+                        }
+                    </InputSelect>
+                </div>
+                <div>
+                    <label class="form-label" for="formatting-culture">@L["Fields.FormattingCulture"]</label>
+                    <InputSelect id="formatting-culture" class="form-select" @bind-Value="model.FormattingCulture">
+                        <option value="">@L["Fields.FollowInterfaceLanguage"]</option>
+                        @foreach (var culture in SupportedWebCultures.All)
+                        {
+                            <option value="@culture.Name">@culture.DisplayName</option>
+                        }
+                    </InputSelect>
+                </div>
+            </div>
+
+            <p class="user-preferences-help">
+                <span class="bi bi-info-circle" aria-hidden="true"></span>
+                @L["Help.GlobalPreference"]
+            </p>
+
+            @if (!string.IsNullOrWhiteSpace(errorMessage))
+            {
+                <div class="alert alert-danger" role="alert">@errorMessage</div>
+            }
+
+            <footer class="user-preferences-actions">
+                @if (saved)
+                {
+                    <span class="user-preferences-success" role="status">
+                        <span class="bi bi-check-circle" aria-hidden="true"></span>
+                        @L["States.Saved"]
+                    </span>
+                }
+                <button class="btn btn-primary" type="submit" disabled="@isSaving">
+                    @(isSaving ? L["Actions.Saving"] : L["Actions.Save"])
+                </button>
+            </footer>
+        </EditForm>
+    }
+</main>
+
+<form id="vc-culture-sync-preferences" method="post" action="/localization/apply" class="visually-hidden" aria-hidden="true">
+    <AntiforgeryToken />
+    <input type="hidden" name="culture" value="@cultureToApply" />
+    <input type="hidden" name="returnUrl" value="/settings/profile" />
+</form>
+
+@code {
+    private readonly UserPreferenceFormModel model = new();
+    private bool isLoading = true;
+    private bool isAuthenticated;
+    private bool isSaving;
+    private bool saved;
+    private bool submitCultureForm;
+    private string? cultureToApply;
+    private string? errorMessage;
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var context = await ApiClient.GetCurrentUserContextAsync();
+            isAuthenticated = context is not null;
+            if (context is null)
+            {
+                return;
+            }
+
+            var preference = await ApiClient.GetUserPreferencesAsync();
+            model.UiCulture = preference.UiCulture;
+            model.FormattingCulture = preference.FormattingCulture ?? string.Empty;
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!submitCultureForm)
+        {
+            return;
+        }
+
+        submitCultureForm = false;
+        await JS.InvokeVoidAsync("virtualCompanyLocalization.submit", "vc-culture-sync-preferences");
+    }
+
+    private async Task SaveAsync()
+    {
+        saved = false;
+        errorMessage = null;
+        if (!SupportedWebCultures.TryNormalize(model.UiCulture, out var uiCulture) ||
+            !TryNormalizeFormattingCulture(model.FormattingCulture, out var formattingCulture))
+        {
+            errorMessage = L["Validation.UiCulture"];
+            return;
+        }
+
+        isSaving = true;
+        try
+        {
+            var updated = await ApiClient.UpdateUserPreferencesAsync(new UpdateUserPreferenceRequest
+            {
+                UiCulture = uiCulture,
+                FormattingCulture = formattingCulture
+            });
+            model.UiCulture = updated.UiCulture;
+            model.FormattingCulture = updated.FormattingCulture ?? string.Empty;
+
+            if (!string.Equals(updated.UiCulture, CultureInfo.CurrentUICulture.Name, StringComparison.OrdinalIgnoreCase))
+            {
+                cultureToApply = updated.UiCulture;
+                submitCultureForm = true;
+            }
+            else
+            {
+                saved = true;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = string.IsNullOrWhiteSpace(ex.Message) ? L["States.Failed"] : ex.Message;
+        }
+        finally
+        {
+            isSaving = false;
+        }
+    }
+
+    private static bool TryNormalizeFormattingCulture(string? value, out string? normalized)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            normalized = null;
+            return true;
+        }
+
+        if (SupportedWebCultures.TryNormalize(value, out var supported))
+        {
+            normalized = supported;
+            return true;
+        }
+
+        normalized = null;
+        return false;
+    }
+
+    private sealed class UserPreferenceFormModel
+    {
+        public string UiCulture { get; set; } = SupportedWebCultures.Default;
+        public string FormattingCulture { get; set; } = string.Empty;
+    }
+}

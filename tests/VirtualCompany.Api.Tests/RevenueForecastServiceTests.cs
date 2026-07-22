@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class RevenueForecastServiceTests : IClassFixture<TestWebApplicationFactory>
+public sealed class RevenueForecastServiceTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public RevenueForecastServiceTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Forecast_uses_active_deals_in_30_60_90_day_windows()

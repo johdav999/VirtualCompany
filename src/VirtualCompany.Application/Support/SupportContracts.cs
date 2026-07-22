@@ -360,7 +360,8 @@ public sealed record SupportCaseListItem(
     bool IsSlaRisk,
     bool IsSlaBreached,
     bool IsChurnRisk,
-    bool IsVipRisk);
+    bool IsVipRisk,
+    string? ConversationLanguage = null);
 
 public sealed record SupportCaseDetailResponse(
     Guid Id,
@@ -402,7 +403,11 @@ public sealed record SupportCaseDetailResponse(
     IReadOnlyList<SupportReplyDraftDto> ReplyDrafts,
     IReadOnlyList<SupportRefundRequestDto> RefundRequests,
     IReadOnlyList<SupportKnowledgeGapDto> KnowledgeGaps,
-    SupportCaseContextSummary Context);
+    SupportCaseContextSummary Context,
+    string? CommunicationLanguage = null,
+    string? CommunicationLanguageSource = null,
+    decimal? CommunicationLanguageConfidence = null,
+    bool CommunicationLanguageRequiresReview = false);
 
 public sealed record SupportMessageDto(
     Guid Id,
@@ -509,7 +514,8 @@ public sealed record CreateSupportCaseRequest(
     string? Source,
     string? SenderEmail = null,
     Guid? ContactId = null,
-    Guid? CustomerCompanyId = null);
+    Guid? CustomerCompanyId = null,
+    string? ConversationLanguage = null);
 
 public sealed record AddSupportInternalNoteRequest(string Body);
 public sealed record ChangeSupportStatusRequest(string Status, string? Note = null);

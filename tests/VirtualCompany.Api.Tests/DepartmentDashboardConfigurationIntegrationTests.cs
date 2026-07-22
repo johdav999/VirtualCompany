@@ -9,14 +9,11 @@ using VirtualCompany.Application.Cockpit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class DepartmentDashboardConfigurationIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class DepartmentDashboardConfigurationIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public DepartmentDashboardConfigurationIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Department_sections_are_returned_in_deterministic_order_with_ordered_widgets()

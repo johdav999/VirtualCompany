@@ -123,9 +123,11 @@ public interface IFortnoxApiClient
         string fileName,
         string? contentType,
         Stream content,
-        CancellationToken cancellationToken);
+        CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Multipart uploads are not supported by this Fortnox client implementation.");
     Task<TResponse?> PutAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
-    Task<TResponse?> PutDirectAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken);
+    Task<TResponse?> PutDirectAsync<TRequest, TResponse>(FortnoxRequestContext context, string path, TRequest payload, CancellationToken cancellationToken) =>
+        throw new NotSupportedException("Direct updates are not supported by this Fortnox client implementation.");
     Task DeleteAsync(FortnoxRequestContext context, string path, CancellationToken cancellationToken);
 }
 

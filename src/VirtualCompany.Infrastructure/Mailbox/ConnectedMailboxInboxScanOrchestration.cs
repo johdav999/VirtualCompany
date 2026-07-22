@@ -5,10 +5,14 @@ using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Mailbox;
+using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Support;
+using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Infrastructure.Security;
 
 namespace VirtualCompany.Infrastructure.Mailbox;
 
@@ -59,6 +63,11 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IManualInboxBillScanOrchestrator _manualScanOrchestrator;
+    private readonly IMailboxProviderRegistry? _providerRegistry;
+    private readonly IFieldEncryptionService? _fieldEncryption;
+    private readonly ISalesEmailIngestionService? _salesIngestion;
+    private readonly ISupportMailboxIngestionService? _supportIngestion;
+    private readonly IDistributedLockProvider? _lockProvider;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyConnectedMailboxInboxScanOrchestrator> _logger;
 
@@ -74,10 +83,44 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
         _logger = logger;
     }
 
+    public CompanyConnectedMailboxInboxScanOrchestrator(
+        VirtualCompanyDbContext dbContext,
+        IManualInboxBillScanOrchestrator manualScanOrchestrator,
+        IMailboxProviderRegistry providerRegistry,
+        IFieldEncryptionService fieldEncryption,
+        ISalesEmailIngestionService salesIngestion,
+        ISupportMailboxIngestionService supportIngestion,
+        IDistributedLockProvider lockProvider,
+        TimeProvider timeProvider,
+        ILogger<CompanyConnectedMailboxInboxScanOrchestrator> logger)
+        : this(dbContext, manualScanOrchestrator, timeProvider, logger)
+    {
+        _providerRegistry = providerRegistry;
+        _fieldEncryption = fieldEncryption;
+        _salesIngestion = salesIngestion;
+        _supportIngestion = supportIngestion;
+        _lockProvider = lockProvider;
+    }
+
     public async Task ExecuteConnectedMailboxScanAsync(
         ConnectedMailboxInboxScanJob job,
         CancellationToken cancellationToken)
     {
+        await using var scanLease = _lockProvider is null
+            ? null
+            : await _lockProvider.TryAcquireAsync(
+                BuildMailboxScanLockKey(job.CompanyId, job.MailboxConnectionId),
+                TimeSpan.FromMinutes(5),
+                cancellationToken);
+        if (_lockProvider is not null && scanLease is null)
+        {
+            _logger.LogInformation(
+                "Connected mailbox scan skipped because another worker owns the scan lease. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}.",
+                job.CompanyId,
+                job.MailboxConnectionId);
+            return;
+        }
+
         var connection = await _dbContext.MailboxConnections
             .SingleAsync(
                 x => x.CompanyId == job.CompanyId &&
@@ -92,6 +135,12 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
                 job.CompanyId,
                 job.MailboxConnectionId,
                 connection.Status);
+            return;
+        }
+
+        if (connection.Purpose is MailboxPurpose.Sales or MailboxPurpose.Support)
+        {
+            await ExecuteBusinessMailboxScanAsync(connection, cancellationToken);
             return;
         }
 
@@ -204,6 +253,129 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
             completedRun.DetectedCandidateCount);
     }
 
+    private async Task ExecuteBusinessMailboxScanAsync(
+        MailboxConnection connection,
+        CancellationToken cancellationToken)
+    {
+        if (_providerRegistry is null || _fieldEncryption is null || _salesIngestion is null || _supportIngestion is null)
+        {
+            throw new InvalidOperationException("Business mailbox ingestion services are not configured.");
+        }
+
+        var now = _timeProvider.GetUtcNow().UtcDateTime;
+        var accessToken = connection.Provider == MailboxProvider.StandardEmail
+            ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
+            : _fieldEncryption.Decrypt(
+                connection.CompanyId,
+                CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
+                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox credentials are unavailable."));
+        var provider = _providerRegistry.Resolve(connection.Provider);
+        var messages = await provider.ListMessagesAsync(
+            accessToken,
+            new MailboxMessageQuery(
+                now.Subtract(CompanyMailboxConnectionService.ManualScanWindow),
+                now,
+                CompanyMailboxConnectionService.NormalizeFolders(connection.ConfiguredFolders, connection.Provider)),
+            cancellationToken);
+
+        foreach (var summary in messages)
+        {
+            if (connection.Purpose == MailboxPurpose.Sales)
+            {
+                await _salesIngestion.ProcessMessageAsync(
+                    new ProcessSalesEmailMessageCommand(
+                        connection.CompanyId,
+                        connection.UserId,
+                        connection.Id,
+                        summary.ProviderMessageId),
+                    cancellationToken);
+                continue;
+            }
+
+            var message = await provider.GetMessageAsync(
+                accessToken,
+                new MailboxMessageFetchRequest(summary.ProviderMessageId),
+                cancellationToken);
+            if (string.IsNullOrWhiteSpace(message.Sender.Email))
+            {
+                continue;
+            }
+
+            await _supportIngestion.IngestMessageAsync(
+                connection.CompanyId,
+                new SupportMailboxMessageInput(
+                    connection.Id,
+                    null,
+                    message.Sender.Email,
+                    message.Sender.DisplayName,
+                    message.Recipients.FirstOrDefault()?.Email,
+                    message.Subject ?? "Support request",
+                    message.PlainTextBody ?? message.Subject ?? "Support request",
+                    message.ProviderMessageId,
+                    message.ProviderThreadId,
+                    message.ReceivedUtc ?? now),
+                cancellationToken);
+        }
+
+        if (connection.Provider == MailboxProvider.StandardEmail)
+        {
+            await AdvanceStandardMailboxCursorsAsync(connection, messages, now, cancellationToken);
+        }
+
+        connection.MarkScanSucceeded(now);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        _logger.LogInformation(
+            "Connected mailbox scan completed. CompanyId: {CompanyId}. Purpose: {Purpose}. ConnectionId: {ConnectionId}. Messages: {MessageCount}.",
+            connection.CompanyId,
+            connection.Purpose,
+            connection.Id,
+            messages.Count);
+    }
+
+    private async Task AdvanceStandardMailboxCursorsAsync(
+        MailboxConnection connection,
+        IReadOnlyList<MailboxMessageSummary> messages,
+        DateTime completedUtc,
+        CancellationToken cancellationToken)
+    {
+        var checkpoints = messages
+            .Where(message => !string.IsNullOrWhiteSpace(message.FolderId) &&
+                StandardMailboxMessageReference.TryRead(message.ProviderMessageId, out _, out _))
+            .Select(message =>
+            {
+                StandardMailboxMessageReference.TryRead(message.ProviderMessageId, out var uidValidity, out var uid);
+                return new { FolderId = message.FolderId!, UidValidity = uidValidity, Uid = uid };
+            })
+            .GroupBy(item => new { item.FolderId, item.UidValidity })
+            .Select(group => new { group.Key.FolderId, group.Key.UidValidity, LastUid = group.Max(item => item.Uid) })
+            .ToArray();
+
+        foreach (var checkpoint in checkpoints)
+        {
+            var cursor = await _dbContext.MailboxFolderSyncCursors.SingleOrDefaultAsync(
+                item => item.CompanyId == connection.CompanyId &&
+                    item.MailboxConnectionId == connection.Id &&
+                    item.FolderId == checkpoint.FolderId,
+                cancellationToken);
+            if (cursor is null)
+            {
+                cursor = new MailboxFolderSyncCursor(
+                    Guid.NewGuid(),
+                    connection.CompanyId,
+                    connection.Id,
+                    checkpoint.FolderId,
+                    completedUtc);
+                _dbContext.MailboxFolderSyncCursors.Add(cursor);
+            }
+            else if (cursor.Status == MailboxCursorStatus.ReconciliationRequired)
+            {
+                cursor.ResetAfterReconciliation(checkpoint.UidValidity, completedUtc);
+            }
+
+            cursor.Advance(checkpoint.UidValidity, checkpoint.LastUid, null, completedUtc);
+        }
+    }
+
     private async Task<Agent> ResolveOrCreateLauraAsync(Guid companyId, CancellationToken cancellationToken)
     {
         var laura = await _dbContext.Agents
@@ -287,6 +459,9 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
 
     private static string BuildCorrelationId(Guid companyId, Guid runId) =>
         $"{CorrelationPrefix}:{companyId:N}:{runId:N}";
+
+    internal static string BuildMailboxScanLockKey(Guid companyId, Guid connectionId) =>
+        $"mailbox-sync:{companyId:N}:{connectionId:N}";
 
     private static string FormatProvider(MailboxProvider provider) =>
         provider switch

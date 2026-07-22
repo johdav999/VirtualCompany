@@ -59,7 +59,7 @@ file static class VirtualCompany
 {
 }
 
-static class HostEnvironmentExtensions
+file static class HostEnvironmentExtensions
 {
     public static bool IsDevelopment(this IHostEnvironment environment) =>
         string.Equals(environment.EnvironmentName, Environments.Development, StringComparison.OrdinalIgnoreCase);
@@ -67,4 +67,3 @@ static class HostEnvironmentExtensions
     public static bool IsEnvironment(this IHostEnvironment environment, string environmentName) =>
         string.Equals(environment.EnvironmentName, environmentName, StringComparison.OrdinalIgnoreCase);
     }
-}

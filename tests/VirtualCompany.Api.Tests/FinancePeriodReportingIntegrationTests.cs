@@ -8,14 +8,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class FinancePeriodReportingIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class FinancePeriodReportingIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public FinancePeriodReportingIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Profit_and_loss_reports_include_only_posted_entries_inside_requested_fiscal_period()

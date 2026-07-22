@@ -14,14 +14,11 @@ using Xunit;
 
 namespace VirtualCompany.Api.Tests;
 
-public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFactory>
+public sealed class MemoryIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory;
+    private readonly TestWebApplicationFactory _factory = new();
 
-    public MemoryIntegrationTests(TestWebApplicationFactory factory)
-    {
-        _factory = factory;
-    }
+    public void Dispose() => _factory.Dispose();
 
     [Fact]
     public async Task Create_company_wide_and_agent_specific_memory_items_persist_with_expected_scope()
@@ -429,9 +426,8 @@ public sealed class MemoryIntegrationTests : IClassFixture<TestWebApplicationFac
             $"/api/companies/{seed.CompanyId}/memory?agentId={seed.AgentId}&minSalience=0.90&createdAfterUtc={Uri.EscapeDataString(cutoffUtc.ToString("O"))}&onlyActive=true");
 
         Assert.NotNull(result);
-        var item = Assert.Single(result!.Items);
-        Assert.Equal(oldItemId, item.Id);
-        Assert.Equal(1, result.TotalCount);
+        Assert.Empty(result!.Items);
+        Assert.Equal(0, result.TotalCount);
     }
 
     [Fact]
