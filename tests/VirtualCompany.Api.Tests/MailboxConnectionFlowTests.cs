@@ -8,6 +8,7 @@ using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Mailbox;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Application.Security;
 using VirtualCompany.Infrastructure.Security;
 using Xunit;
 

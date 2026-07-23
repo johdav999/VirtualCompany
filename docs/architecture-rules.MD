@@ -14,13 +14,21 @@ The production project boundaries are:
 
 - `VirtualCompany.Domain`: entities, value semantics, storage values, and deterministic domain rules.
 - `VirtualCompany.Application`: use-case contracts, commands, queries, policies, and orchestration interfaces.
-- `VirtualCompany.Infrastructure`: EF Core persistence, application-service implementations, provider adapters, workers, module registration, and external side effects.
+- `VirtualCompany.Persistence`: the shared EF Core DbContext, entity configurations, and seed resources. It does not reference infrastructure capability projects.
+- `VirtualCompany.Persistence.Migrations`: the SQL Server migration history, model snapshot, and design-time DbContext factory. It references only `VirtualCompany.Persistence`.
+- `VirtualCompany.Infrastructure.Platform`: tenant, security, authorization, audit, observability, background execution, and database-provider wiring.
+- `VirtualCompany.Infrastructure.Mailbox`: mailbox provider adapters, connection lifecycle, polling, and mailbox-specific workers.
+- `VirtualCompany.Infrastructure.Finance`: Finance implementations, provider adapters, policies, and workers.
+- `VirtualCompany.Infrastructure.Sales`: Sales and customer-memory implementations, provider adapters, policies, and workers.
+- `VirtualCompany.Infrastructure.Support`: Support implementations, grounding, delivery, policies, and workers.
+- `VirtualCompany.Infrastructure.Operations`: company operations, documents, activity, communication, memory, and shared orchestration implementations.
+- `VirtualCompany.Infrastructure`: a thin compatibility facade that composes the extracted infrastructure modules. It must not regain capability implementations or package ownership.
 - `VirtualCompany.Api`: HTTP transport, authorization, request mapping, problem responses, and host startup.
 - `VirtualCompany.Web`: Blazor UI, presenters/view models, and typed API clients.
 - `VirtualCompany.Mobile`: mobile companion application.
 - `VirtualCompany.Shared`: deliberately shared wire contracts and primitives only.
 
-Dependencies must point inward. Domain must not depend on Infrastructure, API, or Web. Application must not depend on API or Web. UI and transport layers must not own business decisions.
+Dependencies must point inward. Domain must not depend on Infrastructure, API, or Web. Application must not depend on API or Web. Persistence and Platform must not depend on capability implementations. Capability projects communicate through Application contracts, Domain entities, or durable workflow/outbox messages; they must not reference sibling capability implementation projects. UI and transport layers must not own business decisions.
 
 ## Current Modules
 
@@ -41,9 +49,9 @@ Place functionality in the narrowest owning capability. Current business and pla
 - Audit and Explainability
 - Background Execution
 
-Finance, Sales, and Support Infrastructure registrations are owned by `AddFinanceModule`, `AddSalesModule`, and `AddSupportModule`. Add new services to the owning module registration. Do not re-register them in the root composition file.
+Infrastructure registrations are owned by each extracted project through `AddPlatformInfrastructure`, `AddOperationsInfrastructure`, `AddMailboxInfrastructure`, `AddFinanceInfrastructure`, `AddSalesInfrastructure`, and `AddSupportInfrastructure`. Add new services to the owning module registration. Do not re-register them in the root facade.
 
-Root `DependencyInjection` composition may coordinate modules and register genuinely cross-cutting platform services. It must not become the ownership location for capability-specific registrations.
+Root `DependencyInjection` composition only invokes module registration in dependency order. Cross-cutting implementation ownership belongs in Platform, not in the facade. The facade must not become the ownership location for capability-specific registrations.
 
 Provider collections intentionally resolved through `IEnumerable<T>` may have multiple registrations. A non-collection service must have one intentional effective registration. DbContext-dependent services are scoped. Stateless deterministic policies may be singleton. Hosted services are registered once and create scopes for scoped work.
 
@@ -53,7 +61,7 @@ The refactor removed broad catch-all source files. Preserve that organization:
 
 - Finance application contracts belong under `Application/Finance/Contracts` and are grouped by bills, invoices, payments, reporting, integrations, simulation, insights/policy, counterparties, or core concerns.
 - Domain entities belong in one file per entity or closely related aggregate. Do not recreate `FinanceEntities.cs`, `SalesEntities.cs`, or `SupportEntities.cs`.
-- EF configurations belong under `Infrastructure/Persistence/Configurations`, normally one configuration per entity. Register configurations through the DbContext assembly convention. Do not recreate `EntityConfigurations.cs`.
+- EF configurations belong under `VirtualCompany.Persistence/Persistence/Configurations`, normally one configuration per entity. Register configurations through the DbContext assembly convention. Do not recreate `EntityConfigurations.cs`.
 - Support services belong in capability-specific files such as cases, mailbox, triage, knowledge, drafting, safety, refunds, SLA, memory, analytics, and delivery. Do not recreate `SupportServices.cs`.
 - Large Finance facades use capability-owned partial files where compatibility requires the existing interface or route facade. New behavior must go into the relevant capability file, not the base file.
 - Internal Finance endpoints belong in the matching `InternalFinanceController.<Capability>.cs` file. Keep controller actions transport-only.
@@ -89,6 +97,7 @@ SQL Server is the production provider. Local SQL Server and Docker SQL Server mu
 - `DatabaseInitializationService` owns startup migration validation/application and post-schema seed orchestration.
 - `DatabaseInitialization:ApplyMigrationsOnStartup` controls whether pending migrations are applied. When disabled, startup must fail clearly on incompatible pending migrations rather than silently changing schema.
 - Schema changes require a migration and an updated model snapshot.
+- Create and inspect migrations through `VirtualCompany.Persistence.Migrations`, using `VirtualCompany.Api` as the startup project. Runtime SQL Server wiring must explicitly select the `VirtualCompany.Persistence.Migrations` assembly.
 - Structural file movement must produce no pending model change.
 - Preserve existing migration IDs and upgrade paths. Never drop/recreate a production database as a migration workaround.
 - Keep `restore-local-sql-db.ps1` and `restore-virtualcompany-db.ps1` compatible with the same backup and migration history.

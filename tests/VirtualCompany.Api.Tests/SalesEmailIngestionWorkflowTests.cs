@@ -8,7 +8,7 @@ using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Mailbox;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Sales;
-using VirtualCompany.Infrastructure.Security;
+using VirtualCompany.Application.Security;
 
 namespace VirtualCompany.Api.Tests;
 

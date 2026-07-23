@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Application.Security;
 using VirtualCompany.Infrastructure.Security;
 using Xunit;
 

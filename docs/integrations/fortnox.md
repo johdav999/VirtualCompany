@@ -1,6 +1,6 @@
 # Fortnox Integration
 
-This page describes the Fortnox finance integration used by US-32.1 for configuration, OAuth connection, callback validation, and secure token lifecycle. It is grounded in the current implementation under `src/VirtualCompany.Api`, `src/VirtualCompany.Application/Finance`, and `src/VirtualCompany.Infrastructure/Finance`.
+This page describes the Fortnox finance integration used by US-32.1 for configuration, OAuth connection, callback validation, and secure token lifecycle. It is grounded in the current implementation under `src/VirtualCompany.Api`, `src/VirtualCompany.Application/Finance`, and `src/VirtualCompany.Infrastructure.Finance/Finance`.
 
 The integration is disabled by default. When enabled, configuration is validated on startup, OAuth state is stored server-side in the distributed cache, tokens are encrypted before persistence in `fortnox_connections`, and all connection reads are scoped by `CompanyId`.
 

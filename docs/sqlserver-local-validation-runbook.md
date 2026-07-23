@@ -58,8 +58,8 @@ Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Pas
 - Confirm it matches:
   - [appsettings.Development.json](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Api/appsettings.Development.json)
   - [appsettings.json](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Api/appsettings.json)
-  - [DependencyInjection.cs](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/DependencyInjection.cs)
-  - [VirtualCompanyDbContextFactory.cs](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs)
+  - `src/VirtualCompany.Infrastructure.Platform/DependencyInjection.cs`
+  - `src/VirtualCompany.Persistence.Migrations/Persistence/VirtualCompanyDbContextFactory.cs`
 
 ## 4. Restore and build
 
@@ -93,23 +93,26 @@ dotnet ef --version
 dotnet tool install --global dotnet-ef --version 9.0.14
 ```
 
-## 6. Apply the fresh SQL Server baseline migration
+## 6. Validate and apply SQL Server migrations
 
-- If the new baseline migration has not been created yet, scaffold it:
+- Check whether the model has pending changes:
 
 ```powershell
-dotnet ef migrations add InitialSqlServerBaseline --project src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj --startup-project src\VirtualCompany.Api\VirtualCompany.Api.csproj --output-dir Persistence\Migrations
+dotnet ef migrations has-pending-model-changes --project src\VirtualCompany.Persistence.Migrations\VirtualCompany.Persistence.Migrations.csproj --startup-project src\VirtualCompany.Api\VirtualCompany.Api.csproj --context VirtualCompanyDbContext
 ```
 
 - Apply migrations:
 
 ```powershell
-dotnet ef database update --project src\VirtualCompany.Infrastructure\VirtualCompany.Infrastructure.csproj --startup-project src\VirtualCompany.Api\VirtualCompany.Api.csproj
+dotnet ef database update --project src\VirtualCompany.Persistence.Migrations\VirtualCompany.Persistence.Migrations.csproj --startup-project src\VirtualCompany.Api\VirtualCompany.Api.csproj --context VirtualCompanyDbContext
 ```
 
 - Expected result:
-  - migration scaffolding emits SQL Server-oriented migration files under [Persistence/Migrations](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/Persistence/Migrations)
+  - existing migration IDs are discovered from `VirtualCompany.Persistence.Migrations`
+  - new migration scaffolding emits SQL Server-oriented migration files under `src/VirtualCompany.Persistence.Migrations/Persistence/Migrations`
   - generated migration should use SQL Server types and conventions, not `jsonb`, `uuid`, or PostgreSQL SQL functions
+
+- To add a migration, use the same project/startup/context arguments and append `migrations add <MigrationName> --output-dir Persistence\Migrations`.
 
 ## 7. Run the API
 
@@ -188,7 +191,7 @@ ORDER BY TABLE_NAME;
 
 ## 10. Validate seeded setup templates
 
-- The API seeds templates at startup through [CompanySetupTemplateSeeder.cs](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/Companies/CompanySetupTemplateSeeder.cs).
+- The API seeds templates at startup through `src/VirtualCompany.Infrastructure.Operations/Companies/CompanySetupTemplateSeeder.cs`.
 - Verify template data exists:
 
 ```sql
@@ -257,10 +260,10 @@ dotnet tool install --global dotnet-ef --version 9.0.14
   - model still contains provider-specific mapping
 - Fix:
   - re-check:
-    - [VirtualCompany.Infrastructure.csproj](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/VirtualCompany.Infrastructure.csproj)
-    - [DependencyInjection.cs](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/DependencyInjection.cs)
-    - [VirtualCompanyDbContextFactory.cs](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/Persistence/VirtualCompanyDbContextFactory.cs)
-    - [EntityConfigurations.cs](/abs/path/c:/Users/Johan/source/repos/Virtual%20Company/src/VirtualCompany.Infrastructure/Persistence/EntityConfigurations.cs)
+    - `src/VirtualCompany.Persistence.Migrations/VirtualCompany.Persistence.Migrations.csproj`
+    - `src/VirtualCompany.Infrastructure.Platform/Platform/PlatformModuleRegistration.cs`
+    - `src/VirtualCompany.Persistence.Migrations/Persistence/VirtualCompanyDbContextFactory.cs`
+    - `src/VirtualCompany.Persistence/Persistence/Configurations`
 
 ### API starts but health readiness fails on `database`
 

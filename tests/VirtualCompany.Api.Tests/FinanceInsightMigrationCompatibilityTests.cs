@@ -347,7 +347,11 @@ public sealed class FinanceInsightMigrationCompatibilityTests
     }
 
     private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
-        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options);
+        new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+            .UseSqlite(
+                connection,
+                sqlite => sqlite.MigrationsAssembly(typeof(VirtualCompanyDbContextFactory).Assembly.GetName().Name))
+            .Options);
 
     private static CompanyFinanceBootstrapRerunService CreateBootstrapRerunService(VirtualCompanyDbContext dbContext, Guid companyId)
     {
