@@ -62,9 +62,42 @@ public sealed class SharedAgentAiDomainTests
 
         var manifests = catalog.ListManifests();
 
-        Assert.Equal(7, manifests.Count);
+        var sharedIds = new[]
+        {
+            AgentCapabilityIds.GroundedQuestionAnswering,
+            AgentCapabilityIds.RoleBriefing,
+            AgentCapabilityIds.WorkPrioritization,
+            AgentCapabilityIds.Planning,
+            AgentCapabilityIds.ExceptionInterpretation,
+            AgentCapabilityIds.CrossAgentHandoff,
+            AgentCapabilityIds.MemoryProposal
+        };
+        Assert.All(sharedIds, id => Assert.Single(manifests, manifest => manifest.Id == id));
         Assert.Equal(manifests.Count, manifests.Select(x => x.Id).Distinct(StringComparer.Ordinal).Count());
         Assert.All(manifests, manifest => Assert.True(manifest.IsImplemented));
+    }
+
+    [Fact]
+    public void Capability_catalog_defines_marketing_capabilities_with_plain_language_metadata()
+    {
+        using var factory = new TestWebApplicationFactory();
+        using var scope = factory.Services.CreateScope();
+        var catalog = scope.ServiceProvider.GetRequiredService<IAgentCapabilityCatalog>();
+
+        var marketing = catalog.ListManifests()
+            .Where(x => x.Category == "Marketing")
+            .ToArray();
+
+        Assert.Equal(7, marketing.Length);
+        Assert.Contains(marketing, x => x.Id == AgentCapabilityIds.MarketingPlanning);
+        Assert.Contains(marketing, x => x.Id == AgentCapabilityIds.MarketingContentAdvice);
+        Assert.Contains(marketing, x => x.Id == AgentCapabilityIds.MarketingPerformanceAnalysis);
+        Assert.All(marketing, manifest =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(manifest.Name));
+            Assert.False(string.IsNullOrWhiteSpace(manifest.Description));
+            Assert.True(manifest.IsImplemented);
+        });
     }
 
     [Fact]

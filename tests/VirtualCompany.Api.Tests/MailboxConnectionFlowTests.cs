@@ -532,6 +532,82 @@ public sealed class MailboxConnectionFlowTests
     }
 
     [Fact]
+    public async Task Manual_scan_hydrates_weak_gmail_invoice_snippet_before_rejecting_body_only_message()
+    {
+        await using var connection = await OpenConnectionAsync();
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        const string messageId = "gmail-prosa-invoice";
+        const string fullBody = """
+            Hello,
+
+            Please find our test supplier invoice details below.
+
+            Supplier: Prosa Test Services AB
+            Org.nr: 559123-4567
+            Address: Testgatan 10, 111 22 Stockholm
+            VAT No: SE559123456701
+
+            Invoice number: VC-TEST-2026-001
+            Invoice date: 2026-07-25
+            Due date: 2026-08-24
+
+            Description: Test subscription services for Virtual Company
+            Amount excluding VAT: SEK 8,000.00
+            VAT: SEK 2,000.00
+            Total amount due: SEK 10,000.00
+
+            Payment reference: VC2026001
+            """;
+        var provider = new FakeProvider(MailboxProvider.Gmail)
+        {
+            Messages =
+            [
+                new MailboxMessageSummary(
+                    messageId,
+                    "Invoice Prosa Services",
+                    null,
+                    "Hello, Please find our test supplier invoice details below.",
+                    [],
+                    "johan@example.com",
+                    null,
+                    new DateTime(2026, 7, 25, 14, 41, 0, DateTimeKind.Utc),
+                    "INBOX",
+                    "Inbox")
+            ],
+            FullMessages = new Dictionary<string, MailboxInboundMessage>
+            {
+                [messageId] = new(
+                    messageId,
+                    null,
+                    null,
+                    "Invoice Prosa Services",
+                    fullBody,
+                    null,
+                    new MailboxAddress("johan@example.com", "Johan Davidsson"),
+                    [new MailboxAddress("finance@example.com", null)],
+                    new DateTime(2026, 7, 25, 14, 41, 0, DateTimeKind.Utc),
+                    new Dictionary<string, string>())
+            }
+        };
+        var service = CreateService(connection, companyId, userId, provider, nowUtc: new DateTime(2026, 7, 27, 8, 0, 0, DateTimeKind.Utc));
+        await SeedConnectedMailboxAsync(connection, companyId, userId, MailboxProvider.Gmail);
+
+        var result = await service.TriggerManualScanAsync(
+            new TriggerManualMailboxScanCommand(companyId, userId),
+            CancellationToken.None);
+
+        Assert.Equal(1, provider.GetMessageCallCount);
+        Assert.Equal(1, result.ScannedMessageCount);
+        Assert.Equal(1, result.DetectedCandidateCount);
+        await using var dbContext = CreateContext(connection, new TestCompanyContextAccessor(companyId, userId));
+        var snapshot = await dbContext.EmailMessageSnapshots.SingleAsync();
+        Assert.Equal(BillSourceType.EmailBodyOnly, snapshot.SourceType);
+        Assert.Contains("VC-TEST-2026-001", snapshot.UntrustedBodyText);
+        Assert.Equal(1, await dbContext.DetectedBills.CountAsync());
+    }
+
+    [Fact]
     public async Task Manual_scan_counts_non_candidates_without_creating_snapshots()
     {
         await using var connection = await OpenConnectionAsync();
@@ -828,10 +904,13 @@ public sealed class MailboxConnectionFlowTests
         public MailboxProvider Provider { get; }
         public IReadOnlyCollection<string> DefaultScopes { get; } = ["gmail.readonly"];
         public IReadOnlyList<MailboxMessageSummary> Messages { get; init; } = [];
+        public IReadOnlyDictionary<string, MailboxInboundMessage> FullMessages { get; init; } =
+            new Dictionary<string, MailboxInboundMessage>();
         public MailboxMessageQuery? LastQuery { get; private set; }
         public MailboxTokenExchangeRequest? LastTokenExchangeRequest { get; private set; }
         public int ExchangeCallCount { get; private set; }
         public int RefreshCallCount { get; private set; }
+        public int GetMessageCallCount { get; private set; }
         public bool ThrowOnList { get; init; }
 
         public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request) =>
@@ -865,6 +944,14 @@ public sealed class MailboxConnectionFlowTests
 
             LastQuery = query;
             return Task.FromResult(Messages);
+        }
+
+        public Task<MailboxInboundMessage> GetMessageAsync(string accessToken, MailboxMessageFetchRequest request, CancellationToken cancellationToken)
+        {
+            GetMessageCallCount++;
+            return FullMessages.TryGetValue(request.MessageId, out var message)
+                ? Task.FromResult(message)
+                : throw new NotSupportedException("This fake mailbox provider has no full message for the requested id.");
         }
     }
 

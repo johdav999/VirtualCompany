@@ -8,17 +8,26 @@ namespace VirtualCompany.Infrastructure.Companies;
 
 public sealed class CoreCompanyAgentSeeder : ICoreCompanyAgentSeeder
 {
-    private const string SalesTemplateId = "sales";
-    private const string SupportTemplateId = "support";
-
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly AgentTemplateCatalogSeeder _templateCatalogSeeder;
 
-    public CoreCompanyAgentSeeder(VirtualCompanyDbContext dbContext)
+    public CoreCompanyAgentSeeder(
+        VirtualCompanyDbContext dbContext,
+        AgentTemplateCatalogSeeder templateCatalogSeeder)
     {
         _dbContext = dbContext;
+        _templateCatalogSeeder = templateCatalogSeeder;
     }
 
     public async Task SeedAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        // Company-agent backfill must be safe when invoked outside the API startup
+        // sequence, including onboarding, mailbox ingestion, and focused tests.
+        await _templateCatalogSeeder.SeedAsync(cancellationToken);
+        await SeedCoreAsync(companyId, cancellationToken);
+    }
+
+    private async Task SeedCoreAsync(Guid companyId, CancellationToken cancellationToken)
     {
         var existingTemplateIds = await _dbContext.Agents
             .IgnoreQueryFilters()
@@ -33,26 +42,44 @@ public sealed class CoreCompanyAgentSeeder : ICoreCompanyAgentSeeder
             _dbContext.Agents.Add(LauraFinanceAgentSeedData.CreateCompanyAgent(companyId));
         }
 
-        var requiredTemplateIds = new[] { SalesTemplateId, SupportTemplateId }
-            .Where(templateId => !existing.Contains(templateId))
+        var missingAgents = new[]
+            {
+                new CoreAgentSeedDefinition(CoreAgentTemplateIds.Sales, "Alex", "Sales Manager", "Sales"),
+                new CoreAgentSeedDefinition(CoreAgentTemplateIds.Support, "Ben", "Support Manager", "Support"),
+                new CoreAgentSeedDefinition(CoreAgentTemplateIds.Marketing, "Maya", "Marketing Manager", "Marketing")
+            }
+            .Where(definition => !existing.Contains(definition.TemplateId))
             .ToArray();
 
-        if (requiredTemplateIds.Length == 0)
+        if (missingAgents.Length == 0)
         {
             return;
         }
 
+        var requiredTemplateIds = missingAgents
+            .Select(definition => definition.TemplateId)
+            .ToArray();
         var templates = await _dbContext.AgentTemplates
             .AsNoTracking()
             .Where(template => requiredTemplateIds.Contains(template.TemplateId) && template.IsActive)
             .ToDictionaryAsync(template => template.TemplateId, StringComparer.OrdinalIgnoreCase, cancellationToken);
 
-        AddFromTemplate(templates, companyId, SalesTemplateId, "Alex", "Sales Manager", "Sales");
-        AddFromTemplate(templates, companyId, SupportTemplateId, "Ben", "Support Manager", "Support");
+        foreach (var missingAgent in missingAgents)
+        {
+            AddFromTemplate(
+                templates,
+                companyId,
+                missingAgent.TemplateId,
+                missingAgent.DisplayName,
+                missingAgent.RoleName,
+                missingAgent.Department);
+        }
     }
 
     public async Task BackfillAllCompaniesAsync(CancellationToken cancellationToken)
     {
+        await _templateCatalogSeeder.SeedAsync(cancellationToken);
+
         var companyIds = await _dbContext.Companies
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -61,7 +88,7 @@ public sealed class CoreCompanyAgentSeeder : ICoreCompanyAgentSeeder
 
         foreach (var companyId in companyIds)
         {
-            await SeedAsync(companyId, cancellationToken);
+            await SeedCoreAsync(companyId, cancellationToken);
         }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -89,4 +116,10 @@ public sealed class CoreCompanyAgentSeeder : ICoreCompanyAgentSeeder
             null,
             autonomyLevel: AgentAutonomyLevel.Guided));
     }
+
+    private sealed record CoreAgentSeedDefinition(
+        string TemplateId,
+        string DisplayName,
+        string RoleName,
+        string Department);
 }

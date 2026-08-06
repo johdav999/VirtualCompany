@@ -3,6 +3,7 @@ using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Api.Controllers;
@@ -12,6 +13,8 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
 {
     private readonly ICompanyContextAccessor _companyContextAccessor;
     private readonly IFortnoxOAuthSessionStore _fortnoxOAuthSessionStore;
+    private readonly IFortnoxSyncService _fortnoxSyncService;
+    private readonly IFortnoxMappingService _fortnoxMappingService;
     private readonly IFinanceIntegrationProviderRegistry _providerRegistry;
     private readonly IWebHostEnvironment _hostEnvironment;
     private readonly ILogger<FinanceIntegrationConnectionsController> _logger;
@@ -19,12 +22,16 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
     public FinanceIntegrationConnectionsController(
         ICompanyContextAccessor companyContextAccessor,
         IFortnoxOAuthSessionStore fortnoxOAuthSessionStore,
+        IFortnoxSyncService fortnoxSyncService,
+        IFortnoxMappingService fortnoxMappingService,
         IFinanceIntegrationProviderRegistry providerRegistry,
         IWebHostEnvironment hostEnvironment,
         ILogger<FinanceIntegrationConnectionsController> logger)
     {
         _companyContextAccessor = companyContextAccessor;
         _fortnoxOAuthSessionStore = fortnoxOAuthSessionStore;
+        _fortnoxSyncService = fortnoxSyncService;
+        _fortnoxMappingService = fortnoxMappingService;
         _providerRegistry = providerRegistry;
         _hostEnvironment = hostEnvironment;
         _logger = logger;
@@ -208,6 +215,57 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
         catch (FortnoxApprovalRequiredException exception) when (provider.ProviderKey == FinanceIntegrationProviderKeys.Fortnox)
         {
             return Accepted(new { approvalId = exception.ApprovalId, message = exception.SafeMessage });
+        }
+    }
+
+    [Authorize(Policy = CompanyPolicies.CompanyAdmin)]
+    [RequireCompanyContext]
+    [HttpPost("api/companies/{companyId:guid}/finance/integrations/fortnox/recovery/supplier-invoices")]
+    public async Task<ActionResult<FortnoxSupplierInvoiceRepairResult>> RepairFortnoxSupplierInvoicesAsync(
+        Guid companyId,
+        [FromBody] RepairFortnoxSupplierInvoicesRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (request.ConnectionId == Guid.Empty || request.Invoices is not { Count: > 0 })
+        {
+            return BadRequest(new { message = "A connection and at least one supplier invoice are required." });
+        }
+
+        try
+        {
+            var invoices = request.Invoices
+                .Select(invoice => _fortnoxMappingService.MapSupplierInvoice(new FortnoxSupplierInvoice
+                {
+                    GivenNumber = invoice.ExternalId,
+                    SupplierNumber = invoice.SupplierNumber,
+                    SupplierName = invoice.SupplierName,
+                    InvoiceDate = invoice.InvoiceDate.ToString("yyyy-MM-dd"),
+                    DueDate = invoice.DueDate.ToString("yyyy-MM-dd"),
+                    Total = invoice.Total,
+                    Balance = invoice.Balance,
+                    Currency = invoice.Currency,
+                    Cancelled = invoice.Cancelled,
+                    Booked = invoice.Booked,
+                    FullyPaid = invoice.FullyPaid
+                }))
+                .ToArray();
+
+            return Ok(await _fortnoxSyncService.RepairDanglingSupplierInvoicesAsync(
+                new RepairFortnoxSupplierInvoicesCommand(
+                    companyId,
+                    request.ConnectionId,
+                    invoices,
+                    HttpContext.TraceIdentifier,
+                    ResolveUserId()),
+                cancellationToken));
+        }
+        catch (ArgumentException exception)
+        {
+            return BadRequest(new { message = exception.Message });
+        }
+        catch (InvalidOperationException exception)
+        {
+            return NotFound(new { message = exception.Message });
         }
     }
 
@@ -596,6 +654,7 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
     }
 
     private static bool IsProviderDisabledException(string providerKey, InvalidOperationException exception) =>
+        exception is FinanceIntegrationApplicationUnavailableException ||
         string.Equals(providerKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase) &&
         string.Equals(exception.Message, "Fortnox integration is disabled.", StringComparison.Ordinal);
 
@@ -610,9 +669,12 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
         };
 
     private static string CreateProviderNotConfiguredDetail(string providerKey) =>
+        $"{FormatProviderName(providerKey)} connections are temporarily unavailable. A Virtual Company administrator needs to finish the integration setup.";
+
+    private static string FormatProviderName(string providerKey) =>
         string.Equals(providerKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase)
-            ? "Add Fortnox client settings and enable the integration before connecting."
-            : "Add provider client settings and enable the integration before connecting.";
+            ? "Fortnox"
+            : "Finance provider";
 
     private NotFoundObjectResult UnknownProvider(string providerKey) =>
         NotFound(new ProblemDetails
@@ -685,6 +747,21 @@ public sealed class FinanceIntegrationConnectionsController : ControllerBase
 
     public sealed record StartFinanceIntegrationConnectionRequest(string? ReturnUri, bool Reconnect = false);
     public sealed record SyncFinanceIntegrationNowRequest(Guid? ConnectionId = null, bool FullSync = false);
+    public sealed record RepairFortnoxSupplierInvoicesRequest(
+        Guid ConnectionId,
+        IReadOnlyList<RepairFortnoxSupplierInvoiceRequest> Invoices);
+    public sealed record RepairFortnoxSupplierInvoiceRequest(
+        string ExternalId,
+        string SupplierNumber,
+        string SupplierName,
+        DateOnly InvoiceDate,
+        DateOnly DueDate,
+        decimal Total,
+        decimal Balance,
+        string Currency = "SEK",
+        bool Cancelled = false,
+        bool Booked = true,
+        bool FullyPaid = false);
     public sealed record CompleteFinanceIntegrationConnectionRequest(string? Code, string State, string? Nonce = null, string? ProviderError = null);
     public sealed record StartFinanceIntegrationConnectionResponse(string AuthorizationUrl, DateTime ExpiresUtc);
     public sealed record FinanceIntegrationProviderMetadataResponse(

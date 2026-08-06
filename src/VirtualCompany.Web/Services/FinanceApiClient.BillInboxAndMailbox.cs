@@ -29,6 +29,29 @@ public sealed partial class FinanceApiClient
             ? Task.FromResult<FinanceBillInboxDetailResponse?>(null)
             : GetAsync<FinanceBillInboxDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bill-inbox/{billId}", allowNotFound: true, cancellationToken);
 
+    public Task<SupplierApprovalAutomationResponse> GetSupplierApprovalAutomationAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<SupplierApprovalAutomationResponse>(
+            companyId,
+            $"internal/companies/{companyId}/finance/bill-inbox/{billId}/approval-automation",
+            allowNotFound: false,
+            cancellationToken)!;
+
+    public Task<SupplierApprovalAutomationResponse> SetSupplierApprovalAutomationAsync(
+        Guid companyId,
+        Guid billId,
+        string stage,
+        bool enabled,
+        CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<SetSupplierApprovalAutomationRequest, SupplierApprovalAutomationResponse>(
+            companyId,
+            HttpMethod.Put,
+            $"internal/companies/{companyId}/finance/bill-inbox/{billId}/approval-automation/{Uri.EscapeDataString(stage)}",
+            new SetSupplierApprovalAutomationRequest(enabled),
+            cancellationToken);
+
     public Task<FinanceBillReviewActionResultResponse> ApproveBillInboxItemAsync(Guid companyId, Guid billId, string rationale, CancellationToken cancellationToken = default) =>
         SendCompanyScopedAsync<FinanceBillReviewActionRequest, FinanceBillReviewActionResultResponse>(
             companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/bill-inbox/{billId}/approve", new FinanceBillReviewActionRequest(rationale), cancellationToken);
@@ -217,4 +240,26 @@ public sealed partial class FinanceApiClient
             cancellationToken);
     }
 
+}
+
+public sealed record SetSupplierApprovalAutomationRequest(bool Enabled);
+
+public sealed class SupplierApprovalAutomationResponse
+{
+    public Guid BillId { get; set; }
+    public string SupplierName { get; set; } = string.Empty;
+    public string? SupplierOrgNumber { get; set; }
+    public List<SupplierApprovalAutomationStageResponse> Stages { get; set; } = [];
+}
+
+public sealed class SupplierApprovalAutomationStageResponse
+{
+    public string Stage { get; set; } = string.Empty;
+    public string StepName { get; set; } = string.Empty;
+    public bool IsEnabled { get; set; }
+    public Guid? RuleId { get; set; }
+    public Guid AgentId { get; set; }
+    public string AgentDisplayName { get; set; } = string.Empty;
+    public bool CanConfigure { get; set; }
+    public string? BlockedReason { get; set; }
 }

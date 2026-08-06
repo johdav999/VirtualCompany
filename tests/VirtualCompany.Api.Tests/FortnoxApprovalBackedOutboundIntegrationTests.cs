@@ -1,8 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Security.Claims;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
 using Microsoft.Data.Sqlite;
@@ -10,6 +12,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -365,6 +368,160 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
     }
 
     [Fact]
+    public async Task Full_sync_repairs_a_dangling_supplier_invoice_reference()
+    {
+        var fakeApi = new FakeFortnoxApiClient
+        {
+            SupplierInvoices =
+            [
+                new FortnoxSupplierInvoice
+                {
+                    GivenNumber = "84",
+                    SupplierNumber = "S-84",
+                    SupplierName = "Repair Supplier AB",
+                    InvoiceDate = "2026-06-01",
+                    DueDate = "2026-06-30",
+                    Total = 1200m,
+                    Balance = 1200m,
+                    Currency = "SEK",
+                    Booked = true,
+                    FullyPaid = false,
+                    LastModified = "2026-06-01T10:00:00Z"
+                }
+            ]
+        };
+
+        await using var factory = CreateFactory(apiClient: fakeApi);
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+
+        await ExecuteScopedAsync(factory, seed.CompanyId, provider =>
+            provider.GetRequiredService<IFortnoxSyncService>().SyncAsync(
+                new RunFortnoxSyncCommand(seed.CompanyId, connectionId, "supplier-invoice-create", seed.UserId, FullSync: true),
+                CancellationToken.None));
+
+        var original = await ExecuteDbAsync(factory, async db => new
+        {
+            BillId = await db.FinanceBills.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && x.BillNumber == "84")
+                .Select(x => x.Id)
+                .SingleAsync(),
+            ReferenceId = await db.FinanceExternalReferences.IgnoreQueryFilters()
+                .Where(x =>
+                    x.CompanyId == seed.CompanyId &&
+                    x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                    x.EntityType == "supplier_invoice" &&
+                    x.ExternalId == "84")
+                .Select(x => x.Id)
+                .SingleAsync()
+        });
+
+        await ExecuteDbAsync(factory, async db =>
+        {
+            await db.FinanceBills.IgnoreQueryFilters()
+                .Where(x => x.Id == original.BillId)
+                .ExecuteDeleteAsync();
+            return true;
+        });
+
+        var repair = await ExecuteScopedAsync(factory, seed.CompanyId, provider =>
+            provider.GetRequiredService<IFortnoxSyncService>().SyncAsync(
+                new RunFortnoxSyncCommand(seed.CompanyId, connectionId, "supplier-invoice-repair", seed.UserId, FullSync: true),
+                CancellationToken.None));
+
+        var repaired = await ExecuteDbAsync(factory, async db => new
+        {
+            Bill = await db.FinanceBills.IgnoreQueryFilters()
+                .SingleAsync(x => x.CompanyId == seed.CompanyId && x.BillNumber == "84"),
+            Reference = await db.FinanceExternalReferences.IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == original.ReferenceId),
+            SourceType = await db.FinanceBills.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && x.BillNumber == "84")
+                .Select(x => EF.Property<string>(x, "SourceType"))
+                .SingleAsync()
+        });
+
+        Assert.True(repair.Created >= 1);
+        Assert.NotEqual(original.BillId, repaired.Bill.Id);
+        Assert.Equal(repaired.Bill.Id, repaired.Reference.InternalRecordId);
+        Assert.Equal(FinanceRecordSourceTypes.Fortnox, repaired.SourceType);
+    }
+
+    [Fact]
+    public async Task Offline_recovery_repairs_only_supplier_invoices_with_retained_fortnox_references()
+    {
+        var supplierInvoice = new FortnoxSupplierInvoice
+        {
+            GivenNumber = "85",
+            SupplierNumber = "S-85",
+            SupplierName = "Offline Recovery Supplier AB",
+            InvoiceDate = "2026-06-02",
+            DueDate = "2026-07-02",
+            Total = 1500m,
+            Balance = 1500m,
+            Currency = "SEK",
+            Booked = true,
+            FullyPaid = false
+        };
+        var fakeApi = new FakeFortnoxApiClient { SupplierInvoices = [supplierInvoice] };
+        await using var factory = CreateFactory(apiClient: fakeApi);
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+
+        await ExecuteScopedAsync(factory, seed.CompanyId, provider =>
+            provider.GetRequiredService<IFortnoxSyncService>().SyncAsync(
+                new RunFortnoxSyncCommand(seed.CompanyId, connectionId, "offline-recovery-create", seed.UserId, FullSync: true),
+                CancellationToken.None));
+
+        var originalBillId = await ExecuteDbAsync(factory, db =>
+            db.FinanceBills.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && x.BillNumber == "85")
+                .Select(x => x.Id)
+                .SingleAsync());
+        await ExecuteDbAsync(factory, async db =>
+        {
+            await db.FinanceBills.IgnoreQueryFilters()
+                .Where(x => x.Id == originalBillId)
+                .ExecuteDeleteAsync();
+            return true;
+        });
+
+        var result = await ExecuteScopedAsync(factory, seed.CompanyId, async provider =>
+        {
+            var mapper = provider.GetRequiredService<IFortnoxMappingService>();
+            var valid = mapper.MapSupplierInvoice(supplierInvoice);
+            var unknown = valid with { ExternalId = "unknown", ExternalNumber = "unknown" };
+            return await provider.GetRequiredService<IFortnoxSyncService>().RepairDanglingSupplierInvoicesAsync(
+                new RepairFortnoxSupplierInvoicesCommand(
+                    seed.CompanyId,
+                    connectionId,
+                    [valid, unknown],
+                    "offline-recovery",
+                    seed.UserId),
+                CancellationToken.None);
+        });
+
+        Assert.Equal(1, result.Repaired);
+        Assert.Equal(0, result.Skipped);
+        Assert.Equal(1, result.Rejected);
+        Assert.Contains(result.Items, x => x.ExternalId == "85" && x.Outcome == "repaired");
+        Assert.Contains(result.Items, x => x.ExternalId == "unknown" && x.Outcome == "rejected");
+
+        var repaired = await ExecuteDbAsync(factory, async db => new
+        {
+            Bills = await db.FinanceBills.IgnoreQueryFilters()
+                .CountAsync(x => x.CompanyId == seed.CompanyId && x.BillNumber == "85"),
+            Reference = await db.FinanceExternalReferences.IgnoreQueryFilters()
+                .SingleAsync(x =>
+                    x.CompanyId == seed.CompanyId &&
+                    x.EntityType == "supplier_invoice" &&
+                    x.ExternalId == "85")
+        });
+        Assert.Equal(1, repaired.Bills);
+        Assert.NotEqual(originalBillId, repaired.Reference.InternalRecordId);
+    }
+
+    [Fact]
     public async Task Sync_skips_entities_when_granted_fortnox_scopes_are_missing()
     {
         var fakeApi = new FakeFortnoxApiClient();
@@ -600,6 +757,139 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
     }
 
     [Fact]
+    public async Task Successful_supplier_invoice_registration_completes_the_bill_review()
+    {
+        var fakeApi = new FakeFortnoxApiClient
+        {
+            NextPostResponse = JsonNode.Parse("""{"SupplierInvoice":{"GivenNumber":"77"}}""")
+        };
+        await using var factory = CreateFactory(apiClient: fakeApi);
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+        var billId = Guid.NewGuid();
+        var writeRequestId = Guid.NewGuid();
+        var approvalId = Guid.NewGuid();
+        var payload = new JsonObject
+        {
+            ["SupplierInvoice"] = new JsonObject
+            {
+                ["SupplierNumber"] = "S-77",
+                ["InvoiceNumber"] = "VC-TEST-77",
+                ["Total"] = 10_000m
+            }
+        };
+
+        await ExecuteDbAsync(factory, async db =>
+        {
+            db.DetectedBills.Add(new DetectedBill(
+                billId,
+                seed.CompanyId,
+                "Prosa Test Services AB",
+                "559123-4567",
+                "VC-TEST-77",
+                Now.Date,
+                Now.Date.AddDays(30),
+                "SEK",
+                10_000m,
+                2_000m,
+                "VC2026077",
+                null,
+                null,
+                null,
+                null,
+                0.95m,
+                "high",
+                "valid",
+                "completed",
+                requiresReview: false,
+                isEligibleForApprovalProposal: true,
+                validationStatusPersisted: true,
+                "[]",
+                "email-77",
+                null,
+                validationStatusPersistedAtUtc: Now,
+                createdUtc: Now,
+                updatedUtc: Now));
+            db.FinanceBillReviewStates.Add(new FinanceBillReviewState(
+                Guid.NewGuid(),
+                seed.CompanyId,
+                billId,
+                FinanceBillInboxStatuses.Approved,
+                "Approved supplier bill.",
+                Now,
+                Now));
+
+            var command = new FinanceIntegrationWriteCommandRecord(
+                writeRequestId,
+                seed.CompanyId,
+                connectionId,
+                seed.UserId,
+                FinanceIntegrationWriteCommandTypes.InvoiceExport,
+                "POST",
+                "supplierinvoices",
+                "Prosa Test Services AB",
+                FortnoxWritePayloadSanitizer.CreateSummary(payload),
+                FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
+                FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
+                $"finance-bill-inbox:{billId:N}:fortnox-registration",
+                Now);
+            var approval = ApprovalRequest.CreateForTarget(
+                approvalId,
+                seed.CompanyId,
+                ApprovalTargetEntityType.FinanceIntegrationWrite,
+                writeRequestId,
+                "user",
+                seed.UserId,
+                "finance_integration_write",
+                new Dictionary<string, JsonNode?>
+                {
+                    ["provider"] = JsonValue.Create(FinanceIntegrationProviderKeys.Fortnox),
+                    ["direction"] = JsonValue.Create("outbound"),
+                    ["payloadSummary"] = JsonValue.Create(command.PayloadSummary)
+                },
+                CompanyMembershipRole.Owner.ToStorageValue(),
+                null,
+                []);
+            var stepId = approval.CurrentActionableStep!.Id;
+            approval.ApproveCurrentStep(stepId, seed.UserId, "Approved.");
+            command.AttachApproval(approval.Id, Now);
+            command.MarkApproved(approval.Id, seed.UserId, Now);
+            db.FinanceIntegrationWriteCommands.Add(command);
+            db.ApprovalRequests.Add(approval);
+            await db.SaveChangesAsync();
+            return true;
+        });
+
+        var result = await ExecuteScopedAsync(factory, seed.CompanyId, provider =>
+            provider.GetRequiredService<IFortnoxOutboundActionExecutor>().ExecuteApprovedAsync(
+                seed.CompanyId,
+                writeRequestId,
+                CancellationToken.None));
+
+        Assert.True(result.Executed);
+        var persisted = await ExecuteDbAsync(factory, async db => new
+        {
+            State = await db.FinanceBillReviewStates
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.CompanyId == seed.CompanyId && x.DetectedBillId == billId),
+            Action = await db.FinanceBillReviewActions
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.CompanyId == seed.CompanyId && x.DetectedBillId == billId && x.Action == "fortnox_registered"),
+            AuditCount = await db.AuditEvents
+                .IgnoreQueryFilters()
+                .CountAsync(x =>
+                    x.CompanyId == seed.CompanyId &&
+                    x.Action == "finance.bill_inbox.fortnox_registered" &&
+                    x.TargetId == billId.ToString("D"))
+        });
+
+        Assert.Equal(FinanceBillInboxStatuses.SentToPaymentExported, persisted.State.Status);
+        Assert.Equal(FinanceBillInboxStatuses.Approved, persisted.Action.PriorStatus);
+        Assert.Equal(FinanceBillInboxStatuses.SentToPaymentExported, persisted.Action.NewStatus);
+        Assert.Equal(1, persisted.AuditCount);
+    }
+
+    [Fact]
     public async Task Outbound_execution_failure_persists_safe_summary_and_retry_metadata()
     {
         var fakeApi = new FakeFortnoxApiClient
@@ -639,6 +929,151 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
         Assert.Equal(FinanceIntegrationWriteRetryPolicyValues.None, persisted.Command.RetryPolicy);
         Assert.DoesNotContain("access_token", persisted.Command.SafeFailureSummary!, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(FinanceIntegrationAuditOutcomes.Failed, persisted.FailedAudit.Outcome);
+    }
+
+    [Fact]
+    public async Task Approved_supplier_write_reopens_after_reconnect_preflight_failure()
+    {
+        await using var factory = CreateFactory(apiClient: new FakeFortnoxApiClient());
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+        var action = await SeedApprovedOutboundActionAsync(
+            factory,
+            seed,
+            connectionId,
+            commandType: FinanceIntegrationWriteCommandTypes.SupplierMasterData);
+
+        await ExecuteDbAsync(factory, async db =>
+        {
+            var command = await db.FinanceIntegrationWriteCommands
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == action.WriteRequestId);
+            command.MarkExecutionStarted(Now.AddMinutes(1));
+            command.MarkFailed(
+                "not_retryable",
+                "Fortnox needs to be reconnected.",
+                null,
+                Now.AddMinutes(2));
+            await db.SaveChangesAsync();
+            return true;
+        });
+
+        var result = await ExecuteScopedAsync(factory, seed.CompanyId, async provider =>
+        {
+            SetCurrentUser(provider, seed.UserId);
+            var db = provider.GetRequiredService<VirtualCompanyDbContext>();
+            var persisted = await db.FinanceIntegrationWriteCommands
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .SingleAsync(x => x.Id == action.WriteRequestId);
+            var service = provider.GetRequiredService<IFinanceIntegrationWriteCommandService>();
+            return await service.EnsureApprovedForExecutionAsync(
+                ToWriteCommand(persisted, action.ApprovalId),
+                CancellationToken.None);
+        });
+
+        Assert.True(result.CanExecute);
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Executing, result.Status);
+
+        var recovered = await ExecuteDbAsync(factory, async db => new
+        {
+            Command = await db.FinanceIntegrationWriteCommands
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == action.WriteRequestId),
+            RecoveryAudit = await db.FinanceIntegrationAuditEvents
+                .IgnoreQueryFilters()
+                .SingleAsync(x =>
+                    x.CompanyId == seed.CompanyId &&
+                    x.InternalRecordId == action.WriteRequestId &&
+                    x.EventType == "write_retry_after_reconnect")
+        });
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Executing, recovered.Command.Status);
+        Assert.Equal(2, recovered.Command.ExecutionAttemptCount);
+        Assert.Null(recovered.Command.FailureCategory);
+        Assert.Null(recovered.Command.SafeFailureSummary);
+        Assert.Equal(FinanceIntegrationAuditOutcomes.Succeeded, recovered.RecoveryAudit.Outcome);
+    }
+
+    [Fact]
+    public async Task Approved_supplier_write_does_not_reopen_after_provider_validation_failure()
+    {
+        await using var factory = CreateFactory(apiClient: new FakeFortnoxApiClient());
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+        var action = await SeedApprovedOutboundActionAsync(
+            factory,
+            seed,
+            connectionId,
+            commandType: FinanceIntegrationWriteCommandTypes.SupplierMasterData);
+
+        await ExecuteDbAsync(factory, async db =>
+        {
+            var command = await db.FinanceIntegrationWriteCommands
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == action.WriteRequestId);
+            command.MarkExecutionStarted(Now.AddMinutes(1));
+            command.MarkFailed(
+                "validation",
+                "Fortnox rejected the supplier.",
+                400,
+                Now.AddMinutes(2));
+            await db.SaveChangesAsync();
+            return true;
+        });
+
+        var exception = await Assert.ThrowsAsync<FortnoxApiException>(() =>
+            ExecuteScopedAsync(factory, seed.CompanyId, async provider =>
+            {
+                SetCurrentUser(provider, seed.UserId);
+                var db = provider.GetRequiredService<VirtualCompanyDbContext>();
+                var persisted = await db.FinanceIntegrationWriteCommands
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleAsync(x => x.Id == action.WriteRequestId);
+                var service = provider.GetRequiredService<IFinanceIntegrationWriteCommandService>();
+                return await service.EnsureApprovedForExecutionAsync(
+                    ToWriteCommand(persisted, action.ApprovalId),
+                    CancellationToken.None);
+            }));
+
+        Assert.Equal("not_retryable", exception.Category);
+        Assert.Contains("rejected", exception.SafeMessage, StringComparison.OrdinalIgnoreCase);
+    }
+
+    [Fact]
+    public async Task Unexpected_outbound_failure_does_not_leave_command_executing()
+    {
+        var fakeApi = new FakeFortnoxApiClient
+        {
+            NextException = new InvalidOperationException("Local token protection key is unavailable.")
+        };
+        await using var factory = CreateFactory(apiClient: fakeApi);
+        var seed = await SeedTenantAsync(factory, CompanyMembershipRole.Owner);
+        var connectionId = await SeedFinanceIntegrationConnectionAsync(factory, seed);
+        var action = await SeedApprovedOutboundActionAsync(
+            factory,
+            seed,
+            connectionId,
+            commandType: FinanceIntegrationWriteCommandTypes.SupplierMasterData);
+
+        var result = await ExecuteScopedAsync(factory, seed.CompanyId, provider =>
+            provider.GetRequiredService<IFortnoxOutboundActionExecutor>().ExecuteApprovedAsync(
+                seed.CompanyId,
+                action.WriteRequestId,
+                CancellationToken.None));
+
+        Assert.False(result.Executed);
+        Assert.DoesNotContain("token protection", result.Summary, StringComparison.OrdinalIgnoreCase);
+
+        var persisted = await ExecuteDbAsync(factory, async db =>
+            await db.FinanceIntegrationWriteCommands
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == action.WriteRequestId));
+
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Failed, persisted.Status);
+        Assert.Equal(nameof(InvalidOperationException), persisted.FailureCategory);
+        Assert.NotNull(persisted.FailedUtc);
+        Assert.DoesNotContain("token protection", persisted.SafeFailureSummary!, StringComparison.OrdinalIgnoreCase);
     }
 
     [Theory]
@@ -927,6 +1362,37 @@ public sealed class FortnoxApprovalBackedOutboundIntegrationTests
             FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload),
             "fortnox-outbound-test",
             Now);
+    }
+
+    private static FinanceIntegrationWriteCommand ToWriteCommand(
+        FinanceIntegrationWriteCommandRecord command,
+        Guid approvalId) =>
+        new(
+            FinanceIntegrationProviderKeys.Fortnox,
+            command.CompanyId,
+            command.ConnectionId,
+            command.ActorUserId,
+            command.CommandType,
+            command.HttpMethod,
+            command.Path,
+            command.TargetCompany,
+            command.PayloadSummary,
+            command.PayloadHash,
+            new FinanceIntegrationWritePayload(command.SanitizedPayloadJson),
+            command.Id,
+            command.CorrelationId,
+            approvalId);
+
+    private static void SetCurrentUser(IServiceProvider provider, Guid userId)
+    {
+        var identity = new ClaimsIdentity(
+        [
+            new Claim(CurrentUserClaimTypes.UserId, userId.ToString("D"))
+        ], "tests");
+        provider.GetRequiredService<IHttpContextAccessor>().HttpContext = new DefaultHttpContext
+        {
+            User = new ClaimsPrincipal(identity)
+        };
     }
 
     private static HttpClient CreateAuthenticatedClient(WebApplicationFactory<Program> factory, TenantSeed seed)

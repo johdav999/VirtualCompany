@@ -3,6 +3,7 @@
 @implements IAsyncDisposable
 @inject OnboardingApiClient ApiClient
 @inject FinanceApiClient FinanceApiClient
+@inject AgentStaffOverviewApiClient AgentStaffOverviewApiClient
 @inject DashboardSummaryApiClient DashboardSummaryApiClient
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
@@ -72,31 +73,6 @@ else
         <div class="company-dashboard-layout company-dashboard-layout--single">
             <div class="company-dashboard-main dashboard-home">
                 <section class="wizard-card dashboard-finance-strip" data-testid="dashboard-finance-strip">
-                    @if (CanResetFinanceData)
-                    {
-                        <div class="d-flex flex-wrap align-items-center justify-content-between gap-2 mb-3">
-                            <div>
-                                <span class="dashboard-kicker">@CommonText["DashboardFinanceAdmin"]</span>
-                                <h2 class="h6 mb-0">@CommonText["DashboardFinancialReset"]</h2>
-                            </div>
-                            <button type="button"
-                                    class="btn btn-outline-danger btn-sm"
-                                    disabled="@isResettingFinancialData"
-                                    @onclick="HandleResetFinancialDataAsync">
-                                @(isResettingFinancialData ? CommonText["DashboardResetting"] : CommonText["DashboardResetFinance"])
-                            </button>
-                        </div>
-                    }
-
-                    @if (!string.IsNullOrWhiteSpace(financeResetErrorMessage))
-                    {
-                        <div class="alert alert-danger mb-3" role="alert">@financeResetErrorMessage</div>
-                    }
-                    else if (!string.IsNullOrWhiteSpace(financeResetSuccessMessage))
-                    {
-                        <div class="alert alert-success mb-3" role="status">@financeResetSuccessMessage</div>
-                    }
-
                     <div class="dashboard-finance-strip__grid">
                         <article class="dashboard-finance-strip__item">
                             <span class="dashboard-finance-strip__label">@CommonText["DashboardRevenue"]</span>
@@ -113,6 +89,14 @@ else
                         <article class="dashboard-finance-strip__item">
                             <span class="dashboard-finance-strip__label">@CommonText["DashboardAvailableCash"]</span>
                             <strong class="dashboard-finance-strip__value">@AvailableCashDisplay</strong>
+                        </article>
+                        <article class="dashboard-finance-strip__item">
+                            <span class="dashboard-finance-strip__label">@CommonText["DashboardPipelineValue"]</span>
+                            <strong class="dashboard-finance-strip__value">@PipelineValueDisplay</strong>
+                        </article>
+                        <article class="dashboard-finance-strip__item">
+                            <span class="dashboard-finance-strip__label">@CommonText["DashboardSupportSlaRisk"]</span>
+                            <strong class="dashboard-finance-strip__value">@SupportSlaRiskDisplay</strong>
                         </article>
                     </div>
                 </section>
@@ -197,21 +181,25 @@ else
     private DashboardBriefingCardViewModel? briefings;
     private MonthlySummaryViewModel? financeMonthlySummary;
     private CashPositionSummaryViewModel? financeCashPosition;
+    private AgentStaffOverviewViewModel? agentStaffOverview;
     private DashboardBriefingSummaryViewModel? briefingSummary;
     private bool isSummaryLoading;
-    private bool isResettingFinancialData;
     private string? summaryErrorMessage;
-    private string? financeResetErrorMessage;
-    private string? financeResetSuccessMessage;
     private string? errorMessage;
     private IJSObjectReference? telemetryModule;
     private DotNetObjectReference<Dashboard>? dotNetReference;
     private string? scrollTrackerId;
     private Guid? trackedInteractionCompanyId;
-    private string RevenueDisplay => financeMonthlySummary?.Revenue ?? "USD --";
-    private string CostsDisplay => financeMonthlySummary?.Expenses ?? "USD --";
-    private string ProfitDisplay => financeMonthlySummary?.NetResult ?? "USD --";
-    private string AvailableCashDisplay => financeCashPosition?.AvailableBalance ?? "USD --";
+    private string RevenueDisplay => financeMonthlySummary?.Revenue ?? CommonText["NotAvailable"];
+    private string CostsDisplay => financeMonthlySummary?.Expenses ?? CommonText["NotAvailable"];
+    private string ProfitDisplay => financeMonthlySummary?.NetResult ?? CommonText["NotAvailable"];
+    private string AvailableCashDisplay => financeCashPosition?.AvailableBalance ?? CommonText["NotAvailable"];
+    private string PipelineValueDisplay => agentStaffOverview?.Sales.HasData == true
+        ? LocalMoney.Format(agentStaffOverview.Sales.PipelineValue, agentStaffOverview.Sales.Currency)
+        : CommonText["NotAvailable"];
+    private string SupportSlaRiskDisplay => agentStaffOverview is null
+        ? CommonText["NotAvailable"]
+        : CommonText["DashboardCasesAtRisk", agentStaffOverview.Support.CasesAtSlaRisk];
     private static string LatestBriefingAgentName => "LAURA";
     private string LatestBriefingAgentRole => CommonText["DashboardFinanceManager"];
     private static string LatestBriefingAvatarUrl => "/images/laura.png";
@@ -228,9 +216,6 @@ else
         string.Equals(status, "active", StringComparison.OrdinalIgnoreCase)
             ? CommonText["MembershipActive"]
             : CommonText["MembershipInactive"];
-    private bool CanResetFinanceData =>
-        companyAccess is not null &&
-        FinanceAccess.CanAccessSandboxAdmin(companyAccess.MembershipRole);
     private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
         currentUser?.Memberships
             .Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))
@@ -250,10 +235,9 @@ else
             dashboardEntry = null;
             briefings = null;
             financeMonthlySummary = null;
+            agentStaffOverview = null;
             briefingSummary = null;
             summaryErrorMessage = null;
-            financeResetErrorMessage = null;
-            financeResetSuccessMessage = null;
             isSummaryLoading = false;
 
             if (CompanyId is not Guid companyId)
@@ -279,7 +263,9 @@ else
             financeCashPosition = null;
             if (companyAccess is not null)
             {
-                await LoadFinanceSnapshotAsync(companyId);
+                var financeTask = LoadFinanceSnapshotAsync(companyId);
+                var staffTask = LoadAgentStaffSnapshotAsync(companyId);
+                await Task.WhenAll(financeTask, staffTask);
             }
 
             if (companyAccess is not null)
@@ -366,41 +352,6 @@ else
         return Task.CompletedTask;
     }
 
-    private async Task HandleResetFinancialDataAsync()
-    {
-        if (CompanyId is not Guid companyId || isResettingFinancialData || !CanResetFinanceData)
-        {
-            return;
-        }
-
-        var confirmed = await JS.InvokeAsync<bool>(
-            "confirm",
-            CommonText["DashboardResetConfirm"]);
-        if (!confirmed)
-        {
-            return;
-        }
-
-        financeResetErrorMessage = null;
-        financeResetSuccessMessage = null;
-        isResettingFinancialData = true;
-
-        try
-        {
-            var result = await FinanceApiClient.ResetFinancialDataAsync(companyId);
-            financeResetSuccessMessage = CommonText["DashboardResetComplete", LocalNumber.Integer(result.TotalDeleted)];
-            await LoadFinanceSnapshotAsync(companyId);
-        }
-        catch (FinanceApiException ex)
-        {
-            financeResetErrorMessage = ex.Message;
-        }
-        finally
-        {
-            isResettingFinancialData = false;
-        }
-    }
-
     private async Task LoadFinanceSnapshotAsync(Guid companyId)
     {
         try
@@ -416,6 +367,18 @@ else
         {
             financeMonthlySummary = null;
             financeCashPosition = null;
+        }
+    }
+
+    private async Task LoadAgentStaffSnapshotAsync(Guid companyId)
+    {
+        try
+        {
+            agentStaffOverview = await AgentStaffOverviewApiClient.GetAsync(companyId);
+        }
+        catch (OnboardingApiException)
+        {
+            agentStaffOverview = null;
         }
     }
 

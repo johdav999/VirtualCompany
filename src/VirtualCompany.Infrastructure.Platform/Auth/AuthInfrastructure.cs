@@ -22,6 +22,13 @@ public static class DevHeaderAuthenticationDefaults
     public const string ProviderHeader = "X-Dev-Auth-Provider";
 }
 
+public sealed class PlatformAdministrationOptions
+{
+    public const string SectionName = "PlatformAdministration";
+
+    public string[] AdministratorIdentities { get; set; } = [];
+}
+
 public sealed class DevHeaderAuthenticationHandler : AuthenticationHandler<AuthenticationSchemeOptions>
 {
     private readonly IHostEnvironment _hostEnvironment;
@@ -307,15 +314,18 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ClaimsPrincipalExternalUserIdentityFactory _externalUserIdentityFactory;
     private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
+    private readonly IOptions<PlatformAdministrationOptions> _platformAdministrationOptions;
 
     public UserClaimsTransformation(
         VirtualCompanyDbContext dbContext,
         ClaimsPrincipalExternalUserIdentityFactory externalUserIdentityFactory,
-        IExternalUserIdentityResolver externalUserIdentityResolver)
+        IExternalUserIdentityResolver externalUserIdentityResolver,
+        IOptions<PlatformAdministrationOptions> platformAdministrationOptions)
     {
         _dbContext = dbContext;
         _externalUserIdentityFactory = externalUserIdentityFactory;
         _externalUserIdentityResolver = externalUserIdentityResolver;
+        _platformAdministrationOptions = platformAdministrationOptions;
     }
 
     public async Task<ClaimsPrincipal> TransformAsync(ClaimsPrincipal principal)
@@ -348,8 +358,22 @@ public sealed class UserClaimsTransformation : IClaimsTransformation
         ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.AuthProvider, resolvedUser.ExternalIdentity.Provider);
         ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.AuthSubject, resolvedUser.ExternalIdentity.Subject);
         ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.UserId, resolvedUser.UserId.ToString());
+        if (IsPlatformAdministrator(resolvedUser))
+        {
+            ReplaceClaim(claimsIdentity, CurrentUserClaimTypes.PlatformRole, "platform_admin");
+        }
 
         return clonedPrincipal;
+    }
+
+    private bool IsPlatformAdministrator(ResolvedUserIdentity user)
+    {
+        var allowed = _platformAdministrationOptions.Value.AdministratorIdentities
+            .Where(value => !string.IsNullOrWhiteSpace(value))
+            .Select(value => value.Trim())
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        return allowed.Contains($"{user.ExternalIdentity.Provider}:{user.ExternalIdentity.Subject}") ||
+               allowed.Contains(user.Email);
     }
 
     private static void ReplaceClaim(ClaimsIdentity identity, string claimType, string claimValue)

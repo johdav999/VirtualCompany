@@ -44,10 +44,16 @@ public partial class SettingsPage : FinancePageBase, IDisposable
     private bool IsFinanceIntegrationBusy => IsFinanceIntegrationLoading || IsFinanceIntegrationConnecting || IsFinanceIntegrationSyncing || IsFinanceIntegrationDisconnecting;
     private bool IsFormDisabled => IsBusy || Settings?.IsWritable != true;
     private bool CanManageFinanceIntegrations => FinanceAccess.CanManageFinanceIntegrations(AccessState.MembershipRole);
-    private string EmailSettingsHref => BuildAgentMailboxSettingsHref();
+    private string EmailSettingsHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailProviderSettings, AccessState.CompanyId);
     private string IntegrationSettingsHref => FinanceRoutes.BuildFinanceIntegrationSettingsPath(SelectedProviderKey, AccessState.CompanyId);
     private string MailboxHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.Mailbox, AccessState.CompanyId);
     private bool IsIntegrationSettingsRoute => Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("finance/settings/integrations/", StringComparison.OrdinalIgnoreCase);
+    private bool IsSystemEmailProviderRoute => Navigation.ToBaseRelativePath(Navigation.Uri).StartsWith("system/admin/integrations/email-providers", StringComparison.OrdinalIgnoreCase);
+    private string SettingsArea => IsSystemEmailProviderRoute ? "SystemAdmin" : "Finance";
+    private string SettingsPageTitle => IsSystemEmailProviderRoute ? FinanceText["EmailIntegrationSettings"] : FinanceText["FinanceSettings"];
+    private string SettingsPageDescription => IsSystemEmailProviderRoute
+        ? FinanceText["EmailIntegrationSettingsDescription"]
+        : FinanceText["FinanceSettingsDescription"];
     private string SelectedProviderKey => string.IsNullOrWhiteSpace(ProviderKey) ? DefaultIntegrationProviderKey : ProviderKey.Trim();
     private string SelectedProviderDisplayName => SelectedFinanceIntegrationProvider?.DisplayName ?? FormatProviderName(SelectedProviderKey);
     private string LastFailureSummary => FortnoxIntegrationDisplayMapper.FormatSafeText(FinanceIntegrationStatus?.LastErrorSummary, "No recent sync issues.");
@@ -68,7 +74,12 @@ public partial class SettingsPage : FinancePageBase, IDisposable
     {
         await InvokeAsync(async () =>
         {
-            var route = GetCurrentSettingsRoute();
+            var route = GetSettingsRoute(args.Location);
+            if (!IsOwnedSettingsRoute(route))
+            {
+                return;
+            }
+
             if (string.Equals(route, LoadedSettingsRoute, StringComparison.OrdinalIgnoreCase))
             {
                 return;
@@ -108,9 +119,15 @@ public partial class SettingsPage : FinancePageBase, IDisposable
         {
             await LoadFinanceIntegrationStatusAsync(companyId);
         }
+        else if (IsSystemEmailProviderRoute)
+        {
+            await LoadSettingsAsync(companyId);
+        }
         else
         {
-            Navigation.NavigateTo(BuildAgentMailboxSettingsHref(), replace: true);
+            Navigation.NavigateTo(
+                FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailProviderSettings, companyId),
+                replace: true);
         }
     }
 
@@ -120,11 +137,20 @@ public partial class SettingsPage : FinancePageBase, IDisposable
             : "/agents/manage#agent-access-configuration";
 
     private string GetCurrentSettingsRoute()
+        => GetSettingsRoute(Navigation.Uri);
+
+    private string GetSettingsRoute(string uri)
     {
-        var relativePath = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var relativePath = Navigation.ToBaseRelativePath(uri);
         var queryIndex = relativePath.IndexOf('?', StringComparison.Ordinal);
         return queryIndex >= 0 ? relativePath[..queryIndex] : relativePath;
     }
+
+    private static bool IsOwnedSettingsRoute(string route) =>
+        string.Equals(route, "finance/settings", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(route, "finance/settings/email-settings", StringComparison.OrdinalIgnoreCase) ||
+        route.StartsWith("finance/settings/integrations/", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(route, "system/admin/integrations/email-providers", StringComparison.OrdinalIgnoreCase);
 
     private async Task ReloadAsync()
     {

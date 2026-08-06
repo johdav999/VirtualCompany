@@ -12,6 +12,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFortnoxApiClient _fortnoxApiClient;
     private readonly IFinanceIntegrationWriteApprovalService _writeApprovalService;
+    private readonly FinanceBillFortnoxRegistrationCompletionService _billCompletionService;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FortnoxOutboundActionExecutor> _logger;
 
@@ -19,12 +20,14 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         VirtualCompanyDbContext dbContext,
         IFortnoxApiClient fortnoxApiClient,
         IFinanceIntegrationWriteApprovalService writeApprovalService,
+        FinanceBillFortnoxRegistrationCompletionService billCompletionService,
         TimeProvider timeProvider,
         ILogger<FortnoxOutboundActionExecutor> logger)
     {
         _dbContext = dbContext;
         _fortnoxApiClient = fortnoxApiClient;
         _writeApprovalService = writeApprovalService;
+        _billCompletionService = billCompletionService;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -46,6 +49,16 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             command.Path,
             command.PayloadHash,
             command.ExecutionAttemptCount);
+        _logger.LogDebug(
+            "Fortnox outbound action persisted state. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ConnectionId: {ConnectionId}. Status: {Status}. FailureCategory: {FailureCategory}. ResponseStatusCode: {ResponseStatusCode}. RetrySupported: {RetrySupported}. FailedUtc: {FailedUtc}.",
+            companyId,
+            writeRequestId,
+            command.ConnectionId,
+            command.Status,
+            command.FailureCategory,
+            command.ResponseStatusCode,
+            command.RetrySupported,
+            command.FailedUtc);
 
         if (command.Status is FinanceIntegrationWriteCommandRecordStatuses.Executed or FinanceIntegrationWriteCommandRecordStatuses.Executing)
         {
@@ -96,6 +109,14 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             .OrderByDescending(x => x.ConnectedUtc ?? x.UpdatedUtc)
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new FortnoxApiException("Fortnox is not connected.", null, "authorization", requiresReconnect: true);
+        _logger.LogDebug(
+            "Fortnox outbound action resolved an active company connection. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. CommandConnectionId: {CommandConnectionId}. ActiveConnectionId: {ActiveConnectionId}. ConnectionStatus: {ConnectionStatus}. ConnectionUpdatedUtc: {ConnectionUpdatedUtc}.",
+            companyId,
+            writeRequestId,
+            command.ConnectionId,
+            activeConnection.Id,
+            activeConnection.Status,
+            activeConnection.UpdatedUtc);
 
         var approvalCheck = new FinanceIntegrationWriteApprovalCheck(
             FinanceIntegrationProviderKeys.Fortnox,
@@ -137,6 +158,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             await _writeApprovalService.RecordExecutionSucceededAsync(approvalCheck, response, cancellationToken);
             await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
+            await _billCompletionService.CompleteAsync(refreshed, cancellationToken);
             _logger.LogInformation(
                 "Fortnox outbound action succeeded. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. ExternalId: {ExternalId}.",
                 companyId,
@@ -159,6 +181,22 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 command.HttpMethod,
                 command.Path,
                 safeSummary);
+            await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
+            await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
+            var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
+            return ToResult(refreshed, safeSummary, executed: false);
+        }
+        catch (Exception exception) when (exception is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
+        {
+            const string safeSummary = "Fortnox could not complete the approved accounting-system action. Review the connection and try again.";
+            _logger.LogError(
+                exception,
+                "Fortnox outbound action failed unexpectedly. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. Method: {Method}. Path: {Path}.",
+                companyId,
+                writeRequestId,
+                approvalId,
+                command.HttpMethod,
+                command.Path);
             await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);

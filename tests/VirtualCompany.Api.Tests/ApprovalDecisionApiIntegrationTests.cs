@@ -69,6 +69,33 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Approving_a_supplier_payment_proposal_completes_its_approval_task()
+    {
+        var seed = await SeedPendingTaskApprovalAsync(
+            "supplier-payment",
+            taskType: "finance.supplier_invoice_payment_proposal",
+            approvalType: "supplier_invoice_payment_proposal");
+
+        using var client = CreateAuthenticatedClient(seed.ApproverSubject, seed.ApproverEmail, "Finance Approver");
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{seed.ApprovalId}/decisions", new
+        {
+            decision = "approve",
+            stepId = seed.StepId,
+            comment = "Approved for payment export."
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var task = await dbContext.WorkTasks
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleAsync(x => x.Id == seed.TaskId);
+        Assert.Equal(WorkTaskStatus.Completed, task.Status);
+        Assert.NotNull(task.CompletedUtc);
+    }
+
+    [Fact]
     public async Task Canonical_decision_endpoint_reject_updates_approval_task_step_and_audit_state()
     {
         var seed = await SeedPendingTaskApprovalAsync("reject");
@@ -191,7 +218,10 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
         return client;
     }
 
-    private async Task<ApprovalDecisionSeed> SeedPendingTaskApprovalAsync(string suffix)
+    private async Task<ApprovalDecisionSeed> SeedPendingTaskApprovalAsync(
+        string suffix,
+        string taskType = "orchestration",
+        string approvalType = "threshold")
     {
         var companyId = Guid.NewGuid();
         var otherCompanyId = Guid.NewGuid();
@@ -222,7 +252,7 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
             var task = new WorkTask(
                 taskId,
                 companyId,
-                "orchestration",
+                taskType,
                 $"Approval task {suffix}",
                 "Requires approval.",
                 WorkTaskPriority.High,
@@ -240,7 +270,7 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
                 taskId,
                 "agent",
                 requestedByAgentId,
-                "threshold",
+                approvalType,
                 new Dictionary<string, JsonNode?>
                 {
                     ["thresholdKey"] = JsonValue.Create("amount"),

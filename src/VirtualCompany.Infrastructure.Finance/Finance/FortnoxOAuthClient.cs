@@ -14,15 +14,18 @@ public sealed class FortnoxOAuthClient
     private readonly HttpClient _httpClient;
     private readonly TimeProvider _timeProvider;
     private readonly IOptionsMonitor<FortnoxOptions> _options;
+    private readonly IFinanceIntegrationRuntimeSettingsProvider? _runtimeSettings;
 
     public FortnoxOAuthClient(
         IHttpClientFactory httpClientFactory,
         TimeProvider timeProvider,
-        IOptionsMonitor<FortnoxOptions> options)
+        IOptionsMonitor<FortnoxOptions> options,
+        IFinanceIntegrationRuntimeSettingsProvider? runtimeSettings = null)
     {
         _httpClient = httpClientFactory.CreateClient(ClientName);
         _timeProvider = timeProvider;
         _options = options;
+        _runtimeSettings = runtimeSettings;
     }
 
     public Uri GetTokenEndpoint()
@@ -40,12 +43,48 @@ public sealed class FortnoxOAuthClient
     public Uri BuildAuthorizationUrl(string state, string nonce)
     {
         var options = RequireEnabledOptions();
-        var builder = new UriBuilder(options.AuthorizationUrl);
-        var scope = string.Join(" ", FortnoxScopeDefaults.Resolve(options.Scopes));
+        return BuildAuthorizationUrl(
+            options.ClientId,
+            options.RedirectUri,
+            FortnoxScopeDefaults.Resolve(options.Scopes),
+            options.AccountType,
+            options.AuthorizationUrl,
+            state,
+            nonce);
+    }
+
+    public async Task<Uri> BuildAuthorizationUrlAsync(
+        string state,
+        string nonce,
+        CancellationToken cancellationToken)
+    {
+        var runtime = await ResolveRuntimeAsync(cancellationToken);
+        var options = _options.CurrentValue;
+        return BuildAuthorizationUrl(
+            runtime.ClientId,
+            runtime.RedirectUri,
+            runtime.Scopes,
+            options.AccountType,
+            options.AuthorizationUrl,
+            state,
+            nonce);
+    }
+
+    private static Uri BuildAuthorizationUrl(
+        string clientId,
+        string redirectUri,
+        IReadOnlyCollection<string> scopes,
+        string accountType,
+        string authorizationUrl,
+        string state,
+        string nonce)
+    {
+        var builder = new UriBuilder(authorizationUrl);
+        var scope = string.Join(" ", scopes);
         var query = new Dictionary<string, string?>
         {
-            ["client_id"] = options.ClientId,
-            ["redirect_uri"] = options.RedirectUri,
+            ["client_id"] = clientId,
+            ["redirect_uri"] = redirectUri,
             ["response_type"] = "code",
             ["state"] = state,
             ["nonce"] = nonce,
@@ -57,9 +96,9 @@ public sealed class FortnoxOAuthClient
             query["scope"] = scope;
         }
 
-        if (!string.IsNullOrWhiteSpace(options.AccountType))
+        if (!string.IsNullOrWhiteSpace(accountType))
         {
-            query["account_type"] = options.AccountType.Trim();
+            query["account_type"] = accountType.Trim();
         }
 
         builder.Query = string.Join("&", query.Select(pair =>
@@ -67,35 +106,44 @@ public sealed class FortnoxOAuthClient
         return builder.Uri;
     }
 
-    public Task<FortnoxOAuthTokenResult> ExchangeCodeAsync(string code, CancellationToken cancellationToken) =>
-        SendTokenRequestAsync(
+    public async Task<FortnoxOAuthTokenResult> ExchangeCodeAsync(string code, CancellationToken cancellationToken)
+    {
+        var runtime = await ResolveRuntimeAsync(cancellationToken);
+        return await SendTokenRequestAsync(
+            runtime,
             new Dictionary<string, string>
             {
                 ["grant_type"] = "authorization_code",
                 ["code"] = code,
-                ["redirect_uri"] = RequireEnabledOptions().RedirectUri
+                ["redirect_uri"] = runtime.RedirectUri
             },
             cancellationToken);
+    }
 
-    public Task<FortnoxOAuthTokenResult> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken) =>
-        SendTokenRequestAsync(
+    public async Task<FortnoxOAuthTokenResult> RefreshTokenAsync(string refreshToken, CancellationToken cancellationToken)
+    {
+        var runtime = await ResolveRuntimeAsync(cancellationToken);
+        return await SendTokenRequestAsync(
+            runtime,
             new Dictionary<string, string>
             {
                 ["grant_type"] = "refresh_token",
                 ["refresh_token"] = refreshToken
             },
             cancellationToken);
+    }
 
     private async Task<FortnoxOAuthTokenResult> SendTokenRequestAsync(
+        FinanceIntegrationRuntimeSettings runtime,
         Dictionary<string, string> body,
         CancellationToken cancellationToken)
     {
-        var options = RequireEnabledOptions();
+        var options = _options.CurrentValue;
         using var request = new HttpRequestMessage(HttpMethod.Post, options.TokenUrl)
         {
             Content = new FormUrlEncodedContent(body)
         };
-        var credentials = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{options.ClientId}:{options.ClientSecret}"));
+        var credentials = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes($"{runtime.ClientId}:{runtime.ClientSecret}"));
         request.Headers.Authorization = new AuthenticationHeaderValue("Basic", credentials);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
@@ -136,6 +184,26 @@ public sealed class FortnoxOAuthClient
         return options.Enabled
             ? options
             : throw new InvalidOperationException("Fortnox integration is disabled.");
+    }
+
+    private async Task<FinanceIntegrationRuntimeSettings> ResolveRuntimeAsync(
+        CancellationToken cancellationToken)
+    {
+        if (_runtimeSettings is not null)
+        {
+            return await _runtimeSettings.GetRequiredAsync(
+                FinanceIntegrationProviderKeys.Fortnox,
+                cancellationToken);
+        }
+
+        var options = RequireEnabledOptions();
+        return new FinanceIntegrationRuntimeSettings(
+            FinanceIntegrationProviderKeys.Fortnox,
+            options.Enabled,
+            options.ClientId,
+            options.ClientSecret,
+            options.RedirectUri,
+            FortnoxScopeDefaults.Resolve(options.Scopes));
     }
 }
 

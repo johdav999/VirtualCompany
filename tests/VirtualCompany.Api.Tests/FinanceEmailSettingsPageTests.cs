@@ -34,6 +34,24 @@ public sealed class FinanceEmailSettingsPageTests
         });
     }
 
+    [Fact]
+    public void Settings_page_does_not_redirect_navigation_outside_its_owned_routes()
+    {
+        var companyId = Guid.Parse("f73175bd-58d6-4d5d-96d6-10b721ffbd5a");
+
+        using var harness = CreateHarness(companyId);
+        harness.Navigation.NavigateTo($"http://localhost/system/admin/integrations/email-providers?companyId={companyId:D}");
+
+        var cut = harness.Context.RenderComponent<SettingsPage>(parameters => parameters
+            .Add(x => x.CompanyId, companyId));
+        cut.WaitForAssertion(() => Assert.Contains("Email integration settings", cut.Markup));
+
+        var target = $"http://localhost/finance?companyId={companyId:D}";
+        harness.Navigation.NavigateTo(target);
+
+        cut.WaitForAssertion(() => Assert.Equal(target, harness.Navigation.Uri));
+    }
+
     private static EmailSettingsHarness CreateHarness(Guid companyId)
     {
         var context = new TestContext();

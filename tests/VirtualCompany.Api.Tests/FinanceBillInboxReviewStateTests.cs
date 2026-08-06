@@ -116,6 +116,40 @@ public sealed class FinanceBillInboxReviewStateTests
     }
 
     [Fact]
+    public void Fortnox_registration_completion_is_a_terminal_auditable_transition()
+    {
+        var actorId = Guid.NewGuid();
+        var occurredUtc = new DateTime(2026, 7, 31, 9, 30, 0, DateTimeKind.Utc);
+        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), FinanceBillInboxStatuses.Approved);
+
+        var action = state.MarkRegisteredInAccountingSystem(
+            actorId,
+            "Fortnox integration",
+            "Fortnox accepted the supplier invoice registration.",
+            occurredUtc);
+
+        Assert.Equal(FinanceBillInboxStatuses.SentToPaymentExported, state.Status);
+        Assert.Equal("fortnox_registered", action.Action);
+        Assert.Equal(FinanceBillInboxStatuses.Approved, action.PriorStatus);
+        Assert.Equal(FinanceBillInboxStatuses.SentToPaymentExported, action.NewStatus);
+        Assert.Equal(actorId, action.ActorUserId);
+        Assert.Equal(occurredUtc, action.OccurredUtc);
+    }
+
+    [Fact]
+    public void Fortnox_registration_completion_requires_an_approved_bill()
+    {
+        var state = CreateState(Guid.NewGuid(), Guid.NewGuid(), FinanceBillInboxStatuses.NeedsReview);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            state.MarkRegisteredInAccountingSystem(
+                null,
+                "Fortnox integration",
+                "Fortnox accepted the supplier invoice registration.",
+                DateTime.UtcNow));
+    }
+
+    [Fact]
     public void BillApprovalProposal_never_requests_payment_execution()
     {
         var proposal = new BillApprovalProposal(

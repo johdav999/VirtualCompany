@@ -1,0 +1,151 @@
+@inject InboxApiClient InboxApiClient
+@inject IStringLocalizer<UiConsolidationResources> UiText
+
+<div class="vc-work-layout">
+    <section class="vc-panel vc-work-list" aria-label="@UiText["Notifications"]">
+        @if (isLoading)
+        {
+            <p class="text-body-secondary mb-0">@UiText["LoadingNotifications"]</p>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert alert-danger mb-0">@errorMessage</div>
+        }
+        else if (inbox.Notifications.Count == 0)
+        {
+            <div class="vc-empty-state">
+                <h2>@UiText["NoNotifications"]</h2>
+                <p>@UiText["NoNotificationsDescription"]</p>
+            </div>
+        }
+        else
+        {
+            <div class="vc-list" role="list">
+                @foreach (var notification in inbox.Notifications)
+                {
+                    <button type="button" class="@ItemClass(notification)" @onclick="() => SelectAsync(notification)">
+                        <div>
+                            <strong>@notification.Title</strong>
+                            <span>@notification.Body</span>
+                        </div>
+                        <div class="vc-list-meta">
+                            <span class="@PriorityClass(notification.Priority)">@Display(notification.Priority)</span>
+                            <span>@Display(notification.Status)</span>
+                        </div>
+                    </button>
+                }
+            </div>
+        }
+    </section>
+
+    <aside class="vc-panel vc-work-detail" aria-label="@UiText["NotificationDetails"]">
+        @if (selected is null)
+        {
+            <div class="vc-empty-state">
+                <h2>@UiText["SelectNotification"]</h2>
+                <p>@UiText["SelectNotificationDescription"]</p>
+            </div>
+        }
+        else
+        {
+            <span class="vc-kicker">@Display(selected.Status)</span>
+            <h2>@selected.Title</h2>
+            <p>@selected.Body</p>
+            <dl class="vc-detail-list">
+                <dt>@UiText["Priority"]</dt><dd>@Display(selected.Priority)</dd>
+                <dt>@UiText["Created"]</dt><dd>@selected.CreatedAt.ToLocalTime().ToString("g")</dd>
+            </dl>
+            <div class="dashboard-actions mt-3">
+                @if (!IsRead(selected))
+                {
+                    <button class="btn btn-outline-secondary" type="button" @onclick='() => SetStatusAsync("read")'>@UiText["MarkRead"]</button>
+                }
+                else if (!IsActioned(selected))
+                {
+                    <button class="btn btn-outline-secondary" type="button" @onclick='() => SetStatusAsync("unread")'>@UiText["MarkUnread"]</button>
+                }
+                @if (!IsActioned(selected))
+                {
+                    <button class="btn btn-primary" type="button" @onclick='() => SetStatusAsync("actioned")'>@UiText["MarkActioned"]</button>
+                }
+                @if (!string.IsNullOrWhiteSpace(selected.ActionUrl))
+                {
+                    <a class="btn btn-outline-primary" href="@selected.ActionUrl">@UiText["OpenRelatedItem"]</a>
+                }
+            </div>
+        }
+    </aside>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public Guid? SelectedId { get; set; }
+    [Parameter] public EventCallback<Guid> SelectedIdChanged { get; set; }
+
+    private InboxViewModel inbox = new();
+    private NotificationListItemViewModel? selected;
+    private bool isLoading = true;
+    private string? errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            inbox = await InboxApiClient.GetInboxAsync(CompanyId);
+            selected = SelectedId is Guid id ? inbox.Notifications.FirstOrDefault(item => item.Id == id) : null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+            inbox = new();
+            selected = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SelectAsync(NotificationListItemViewModel notification)
+    {
+        selected = notification;
+        await SelectedIdChanged.InvokeAsync(notification.Id);
+    }
+
+    private async Task SetStatusAsync(string status)
+    {
+        if (selected is null)
+        {
+            return;
+        }
+
+        selected = await InboxApiClient.SetStatusAsync(CompanyId, selected.Id, status);
+        inbox = await InboxApiClient.GetInboxAsync(CompanyId);
+    }
+
+    private string ItemClass(NotificationListItemViewModel item) =>
+        selected?.Id == item.Id ? "vc-list-item selected" : "vc-list-item";
+    private static string PriorityClass(string value) => $"vc-status vc-status-{value.Trim().ToLowerInvariant()}";
+    private static bool IsRead(NotificationListItemViewModel item) =>
+        !string.Equals(item.Status, "unread", StringComparison.OrdinalIgnoreCase);
+    private static bool IsActioned(NotificationListItemViewModel item) =>
+        string.Equals(item.Status, "actioned", StringComparison.OrdinalIgnoreCase);
+    private string Display(string value)
+    {
+        var key = value.Trim().ToLowerInvariant() switch
+        {
+            "unread" => "StatusUnread",
+            "read" => "StatusRead",
+            "actioned" => "StatusActioned",
+            "low" => "PriorityLow",
+            "normal" => "PriorityNormal",
+            "high" => "PriorityHigh",
+            "urgent" => "PriorityUrgent",
+            _ => string.Empty
+        };
+
+        return string.IsNullOrEmpty(key) ? value : UiText[key];
+    }
+}

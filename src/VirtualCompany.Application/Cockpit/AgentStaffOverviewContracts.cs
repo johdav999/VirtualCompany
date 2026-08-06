@@ -1,6 +1,10 @@
 namespace VirtualCompany.Application.Cockpit;
 
-public sealed record GetAgentStaffOverviewQuery(Guid CompanyId, int? Year = null, int? Month = null);
+public sealed record GetAgentStaffOverviewQuery(
+    Guid CompanyId,
+    int? Year = null,
+    int? Month = null,
+    bool IncludeAllTasks = false);
 
 public sealed record AgentStaffOverviewDto(
     Guid CompanyId,

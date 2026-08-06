@@ -30,12 +30,33 @@ builder.Logging.ClearProviders();
 builder.Logging.AddConsole();
 builder.Logging.AddDebug();
 
-if (builder.Environment.IsDevelopment())
+var dataProtection = builder.Services
+    .AddDataProtection()
+    .SetApplicationName("VirtualCompany.Api");
+var configuredKeyRingPath = builder.Configuration["DataProtection:KeyRingPath"];
+if (!string.IsNullOrWhiteSpace(configuredKeyRingPath))
 {
-    builder.Services
-        .AddDataProtection()
-        .PersistKeysToFileSystem(new DirectoryInfo(Path.Combine(builder.Environment.ContentRootPath, ".data-protection")))
-        .SetApplicationName("VirtualCompany.Api");
+    var keyRingPath = Path.IsPathRooted(configuredKeyRingPath)
+        ? configuredKeyRingPath
+        : Path.GetFullPath(configuredKeyRingPath, builder.Environment.ContentRootPath);
+    dataProtection.PersistKeysToFileSystem(new DirectoryInfo(keyRingPath));
+}
+else if (builder.Environment.IsDevelopment() || builder.Environment.IsEnvironment("Testing"))
+{
+    var localApplicationData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+    if (string.IsNullOrWhiteSpace(localApplicationData))
+    {
+        throw new InvalidOperationException(
+            "A stable Data Protection key-ring location could not be resolved. Configure DataProtection:KeyRingPath.");
+    }
+
+    dataProtection.PersistKeysToFileSystem(
+        new DirectoryInfo(Path.Combine(localApplicationData, "VirtualCompany", "DataProtection-Keys")));
+}
+else
+{
+    throw new InvalidOperationException(
+        "DataProtection:KeyRingPath is required outside Development. Configure a durable, access-controlled path shared by every API instance.");
 }
 
 builder.Services

@@ -75,7 +75,10 @@ public sealed class FortnoxOAuthService : IFortnoxOAuthService
             command.ReturnUri);
         var stateHandle = await _sessionStore.CreateAsync(state, OAuthStateTtl, cancellationToken);
 
-        var authorizationUrl = _client.BuildAuthorizationUrl(stateHandle, nonce);
+        var authorizationUrl = await _client.BuildAuthorizationUrlAsync(
+            stateHandle,
+            nonce,
+            cancellationToken);
         _logger.LogInformation(
             "Fortnox OAuth authorization URL created. CompanyId: {CompanyId}. UserId: {UserId}. Reconnect: {Reconnect}.",
             command.CompanyId,

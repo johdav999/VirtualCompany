@@ -11,63 +11,126 @@
     Title="@FinanceText["SupplierBills"]"
     Description="@FinanceText["SupplierBillReviewListDescription"]"
     LoadingMessage="@FinanceText["LoadingSupplierBillReview"]">
-    <div class="finance-subtab-nav mb-3" aria-label="@FinanceText["SupplierBillSections"]">
-        <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">@FinanceText["Bills"]</a>
-        <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">@FinanceText["Review"]</a>
-    </div>
-
-    <div class="wizard-card wizard-card--compact">
-        <div class="d-flex justify-content-between gap-3 align-items-center mb-3">
-            <div>
-                <h2 class="h5 mb-1">@FinanceText["Review"]</h2>
-                <p class="text-body-secondary mb-0">@FinanceText["ReviewItemsDescription"]</p>
-            </div>
-            <span class="badge text-bg-light">@CommonText[Items.Count == 1 ? "ItemCountOne" : "ItemCountMany", Items.Count]</span>
+    <section class="bill-review-page" aria-labelledby="review-queue-heading">
+        <div class="finance-subtab-nav" aria-label="@FinanceText["SupplierBillSections"]">
+            <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBills, AccessState.CompanyId)">@FinanceText["Bills"]</a>
+            <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, AccessState.CompanyId)">@FinanceText["Review"]</a>
         </div>
 
-        <FinanceDataState
-            IsLoading="@IsListLoading"
-            IsEmpty="@IsListEmpty"
-            ErrorMessage="@ListErrorMessage"
-            LoadingTitle="@FinanceText["LoadingReviewItems"]"
-            LoadingMessage="@FinanceText["FetchingReviewItems"]"
-            EmptyTitle="@FinanceText["NoBillsNeedReview"]"
-            EmptyMessage="@FinanceText["NoBillsNeedReviewDescription"]"
-            OnRetry="@ReloadAsync">
-            <div class="table-responsive">
-                <table class="table align-middle">
-                    <thead>
-                        <tr>
-                            <th>@FinanceText["Bill"]</th>
-                            <th>@FinanceText["Supplier"]</th>
-                            <th>@FinanceText["Amount"]</th>
-                            <th>@FinanceText["Status"]</th>
-                            <th>@FinanceText["Confidence"]</th>
-                            <th>@FinanceText["Warnings"]</th>
-                            <th class="text-end">@FinanceText["Review"]</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        @foreach (var item in Items)
-                        {
-                            <tr>
-                                <td>
-                                    <strong>@item.BillReference</strong>
-                                    <div class="text-body-secondary small">@FormatDate(item.DetectedUtc)</div>
-                                </td>
-                                <td>@item.SupplierName</td>
-                                <td>@FormatAmount(item.Amount, item.Currency)</td>
-                                <td><span class="badge text-bg-light">@item.Status</span></td>
-                                <td>@item.ConfidenceLevel</td>
-                                <td>@FormatWarnings(item)</td>
-                                <td class="text-end">
-                                    <a class="btn btn-sm btn-outline-primary" href="@BuildDetailHref(item.Id)">@FinanceText["Open"]</a>
-                                </td>
-                            </tr>
-                        }
-                    </tbody>
-                </table>
-            </div>
-        </FinanceDataState>
-    </div>
+        <div class="bill-review-summary" aria-label="@FinanceText["ReviewQueueSummary"]">
+            <button type="button" class="bill-review-summary__card bill-review-summary__card--warning" @onclick="() => SetStatusFilter(StatusFilters.NeedsReview)">
+                <span class="bill-review-summary__icon" aria-hidden="true">!</span>
+                <span><small>@FinanceText["NeedsReview"]</small><strong>@NeedsReviewCount</strong><em>@FinanceText["BillsNeedChecking", NeedsReviewCount]</em></span>
+            </button>
+            <button type="button" class="bill-review-summary__card bill-review-summary__card--approval" @onclick="() => SetStatusFilter(StatusFilters.WaitingForApproval)">
+                <span class="bill-review-summary__icon" aria-hidden="true">&#8987;</span>
+                <span><small>@FinanceText["WaitingForApproval"]</small><strong>@WaitingForApprovalCount</strong><em>@FinanceText["BillsAwaitingDecision", WaitingForApprovalCount]</em></span>
+            </button>
+            <button type="button" class="bill-review-summary__card bill-review-summary__card--success" @onclick="() => SetStatusFilter(StatusFilters.ReadyToSend)">
+                <span class="bill-review-summary__icon" aria-hidden="true">&#10003;</span>
+                <span><small>@FinanceText["ReadyToSend"]</small><strong>@ReadyToSendCount</strong><em>@FinanceText["BillsCanMoveForward", ReadyToSendCount]</em></span>
+            </button>
+        </div>
+
+        <div class="bill-review-filter" aria-label="@FinanceText["BillFilters"]">
+            <label class="bill-review-filter__search">
+                <span class="visually-hidden">@FinanceText["SearchBills"]</span>
+                <span aria-hidden="true">&#9906;</span>
+                <input type="search" @bind="SearchTerm" @bind:event="oninput" placeholder="@FinanceText["SearchBillsPlaceholder"]" />
+            </label>
+            <label>
+                <span>@FinanceText["ReviewStatus"]</span>
+                <select @bind="SelectedStatusFilter">
+                    <option value="@StatusFilters.All">@FinanceText["AllStatuses"]</option>
+                    <option value="@StatusFilters.NeedsReview">@FinanceText["NeedsReview"]</option>
+                    <option value="@StatusFilters.WaitingForApproval">@FinanceText["WaitingForApproval"]</option>
+                    <option value="@StatusFilters.ReadyToSend">@FinanceText["ReadyToSend"]</option>
+                </select>
+            </label>
+            <label>
+                <span>@FinanceText["Attention"]</span>
+                <select @bind="SelectedAttentionFilter">
+                    <option value="@AttentionFilters.All">@FinanceText["AllBills"]</option>
+                    <option value="@AttentionFilters.Issues">@FinanceText["IssuesOnly"]</option>
+                    <option value="@AttentionFilters.NoIssues">@FinanceText["NoBillIssues"]</option>
+                </select>
+            </label>
+            <button type="button" class="bill-review-filter__clear" disabled="@(!HasActiveFilters)" @onclick="ClearFilters">@FinanceText["ClearFilters"]</button>
+        </div>
+
+        <article class="bill-review-queue">
+            <header class="bill-review-queue__header">
+                <div>
+                    <h2 id="review-queue-heading">@FinanceText["ReviewQueue"]</h2>
+                    <p>@FinanceText["SupplierBillReviewQueueDescription"]</p>
+                </div>
+                <span>@FinanceText["BillsShown", FilteredItems.Count, Items.Count]</span>
+            </header>
+
+            <FinanceDataState
+                IsLoading="@IsListLoading"
+                IsEmpty="@IsListEmpty"
+                ErrorMessage="@ListErrorMessage"
+                LoadingTitle="@FinanceText["LoadingReviewItems"]"
+                LoadingMessage="@FinanceText["FetchingReviewItems"]"
+                EmptyTitle="@FinanceText["NoBillsNeedReview"]"
+                EmptyMessage="@FinanceText["NoBillsNeedReviewDescription"]"
+                OnRetry="@ReloadAsync">
+                @if (FilteredItems.Count == 0)
+                {
+                    <div class="bill-review-no-results">
+                        <span aria-hidden="true">&#9906;</span>
+                        <h3>@FinanceText["NoMatchingBills"]</h3>
+                        <p>@FinanceText["NoMatchingBillsDescription"]</p>
+                        <button type="button" class="btn btn-outline-primary" @onclick="ClearFilters">@FinanceText["ClearFilters"]</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="table-responsive bill-review-table-wrap">
+                        <table class="table bill-review-table">
+                            <thead>
+                                <tr>
+                                    <th>@FinanceText["SupplierAndInvoice"]</th>
+                                    <th>@FinanceText["ReceivedDate"]</th>
+                                    <th>@FinanceText["Amount"]</th>
+                                    <th>@FinanceText["ReviewStatus"]</th>
+                                    <th>@FinanceText["Checks"]</th>
+                                    <th class="text-end"><span class="visually-hidden">@FinanceText["Actions"]</span></th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                @foreach (var item in FilteredItems)
+                                {
+                                    var presentation = Present(item);
+                                    <tr>
+                                        <td>
+                                            <div class="bill-review-identity">
+                                                <span class="bill-review-identity__icon" aria-hidden="true">&#9638;</span>
+                                                <span>
+                                                    <strong>@presentation.SupplierName</strong>
+                                                    <small>@presentation.InvoiceReference</small>
+                                                </span>
+                                            </div>
+                                        </td>
+                                        <td><span class="bill-review-date">@FormatDate(item.DetectedUtc)</span></td>
+                                        <td>
+                                            <strong class="bill-review-amount">@FormatAmount(item.Amount, item.Currency)</strong>
+                                            @if (!item.Amount.HasValue)
+                                            {
+                                                <small class="bill-review-cell-note">@FinanceText["CheckInvoiceDetails"]</small>
+                                            }
+                                        </td>
+                                        <td><span class="bill-review-status bill-review-status--@presentation.StatusTone"><i></i>@presentation.StatusLabel</span></td>
+                                        <td><span class="bill-review-check bill-review-check--@presentation.CheckTone"><i></i>@presentation.CheckLabel</span></td>
+                                        <td class="text-end"><a class="btn btn-sm btn-outline-primary bill-review-action" href="@BuildDetailHref(item.Id)">@FinanceText["ReviewBill"]</a></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                }
+            </FinanceDataState>
+        </article>
+    </section>
 </FinancePageLayout>

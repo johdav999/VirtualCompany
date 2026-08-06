@@ -484,6 +484,9 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
 
         return normalized switch
         {
+            FinanceDataSources.Operational => source.Where(x =>
+                EF.Property<string>(x, "SourceType") != FinanceRecordSourceTypes.Simulation ||
+                externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
             FinanceDataSources.Fortnox => source.Where(x =>
                 EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Fortnox ||
                 EF.Property<string?>(x, "ProviderKey") == FinanceIntegrationProviderKeys.Fortnox ||
@@ -491,7 +494,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             FinanceDataSources.Simulation => source.Where(x =>
                 EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation &&
                 !externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
-            _ => throw new ArgumentOutOfRangeException(nameof(sourceFilter), sourceFilter, "Source filter must be all, fortnox, or simulation.")
+            _ => throw new ArgumentOutOfRangeException(nameof(sourceFilter), sourceFilter, "Source filter must be operational, all, fortnox, or simulation.")
         };
     }
 

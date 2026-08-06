@@ -1,4 +1,6 @@
+using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -16,19 +18,25 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFieldEncryptionService _fieldEncryption;
+    private readonly TimeProvider _timeProvider;
+    private readonly ILogger<FortnoxTokenStore>? _logger;
 
     public FortnoxTokenStore(
         VirtualCompanyDbContext dbContext,
-        IFieldEncryptionService fieldEncryption)
+        IFieldEncryptionService fieldEncryption,
+        TimeProvider? timeProvider = null,
+        ILogger<FortnoxTokenStore>? logger = null)
     {
         _dbContext = dbContext;
         _fieldEncryption = fieldEncryption;
+        _timeProvider = timeProvider ?? TimeProvider.System;
+        _logger = logger;
     }
 
     public async Task<FortnoxTokenSnapshot?> GetAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken)
     {
         var query = _dbContext.FortnoxConnections
-            .AsNoTracking()
+            .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId);
 
         if (connectionId.HasValue)
@@ -37,12 +45,37 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
         }
 
         var connection = await query.SingleOrDefaultAsync(cancellationToken);
-        return connection is null ? null : ToSnapshot(connection, includeTokens: true);
+        if (connection is null)
+        {
+            return null;
+        }
+
+        try
+        {
+            return ToSnapshot(connection, includeTokens: true);
+        }
+        catch (CryptographicException)
+        {
+            var now = _timeProvider.GetUtcNow().UtcDateTime;
+            connection.SetStatus(
+                FortnoxConnectionStatus.NeedsReconnect,
+                "Fortnox credentials can no longer be decrypted. Reconnect Fortnox to continue.",
+                now);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            _logger?.LogWarning(
+                "Stored Fortnox credentials could not be decrypted and the connection was marked for reconnection. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}.",
+                companyId,
+                connection.Id);
+
+            return ToSnapshot(connection, includeTokens: false);
+        }
     }
 
     public async Task<FortnoxTokenSnapshot?> GetStatusAsync(Guid companyId, Guid? connectionId, CancellationToken cancellationToken)
     {
         var query = _dbContext.FortnoxConnections
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId);
 
@@ -67,6 +100,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
         CancellationToken cancellationToken)
     {
         var connection = await _dbContext.FortnoxConnections
+            .IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
 
         if (connection is null)
@@ -97,6 +131,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
         CancellationToken cancellationToken)
     {
         var connection = await _dbContext.FortnoxConnections
+            .IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == connectionId, cancellationToken)
             ?? throw new FortnoxOAuthException("Fortnox is not connected.", requiresReconnect: true);
 
@@ -121,6 +156,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
         CancellationToken cancellationToken)
     {
         var connection = await _dbContext.FortnoxConnections
+            .IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == connectionId, cancellationToken);
 
         if (connection is null)
@@ -136,6 +172,7 @@ public sealed class FortnoxTokenStore : IFortnoxTokenStore
     public async Task<FortnoxTokenSnapshot?> DisconnectAsync(Guid companyId, DateTime nowUtc, CancellationToken cancellationToken)
     {
         var connection = await _dbContext.FortnoxConnections
+            .IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
 
         if (connection is null)

@@ -49,6 +49,106 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         _diagnostics = diagnostics;
     }
 
+    public async Task<FortnoxSupplierInvoiceRepairResult> RepairDanglingSupplierInvoicesAsync(
+        RepairFortnoxSupplierInvoicesCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (command.CompanyId == Guid.Empty) throw new ArgumentException("CompanyId is required.", nameof(command));
+        if (command.ConnectionId == Guid.Empty) throw new ArgumentException("ConnectionId is required.", nameof(command));
+        if (command.Invoices.Count is < 1 or > 100)
+        {
+            throw new ArgumentOutOfRangeException(nameof(command), "Between 1 and 100 supplier invoices are required.");
+        }
+
+        var connectionExists = await _dbContext.FinanceIntegrationConnections
+            .AnyAsync(
+                x => x.Id == command.ConnectionId &&
+                     x.CompanyId == command.CompanyId &&
+                     x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox,
+                cancellationToken);
+        if (!connectionExists)
+        {
+            throw new InvalidOperationException("The Fortnox connection does not belong to this company.");
+        }
+
+        var duplicateExternalId = command.Invoices
+            .GroupBy(x => x.ExternalId.Trim(), StringComparer.OrdinalIgnoreCase)
+            .FirstOrDefault(group => group.Count() > 1);
+        if (duplicateExternalId is not null)
+        {
+            throw new ArgumentException(
+                $"Supplier invoice '{duplicateExternalId.Key}' occurs more than once.",
+                nameof(command));
+        }
+
+        var items = new List<FortnoxSupplierInvoiceRepairItem>(command.Invoices.Count);
+        foreach (var invoice in command.Invoices)
+        {
+            var reference = await FindReferenceAsync(
+                command.CompanyId,
+                command.ConnectionId,
+                "supplier_invoice",
+                invoice.ExternalId,
+                cancellationToken);
+            if (reference is null)
+            {
+                items.Add(new FortnoxSupplierInvoiceRepairItem(
+                    invoice.ExternalId,
+                    "rejected",
+                    Reason: "No retained Fortnox supplier invoice reference exists for this company and connection."));
+                continue;
+            }
+
+            var existingBillId = await _dbContext.FinanceBills
+                .Where(x => x.CompanyId == command.CompanyId && x.Id == reference.InternalRecordId)
+                .Select(x => (Guid?)x.Id)
+                .SingleOrDefaultAsync(cancellationToken);
+            if (existingBillId.HasValue)
+            {
+                items.Add(new FortnoxSupplierInvoiceRepairItem(
+                    invoice.ExternalId,
+                    "skipped",
+                    existingBillId,
+                    "The referenced supplier bill already exists."));
+                continue;
+            }
+
+            await UpsertSupplierInvoiceAsync(
+                command.CompanyId,
+                command.ConnectionId,
+                invoice,
+                cancellationToken);
+
+            items.Add(new FortnoxSupplierInvoiceRepairItem(
+                invoice.ExternalId,
+                "repaired",
+                reference.InternalRecordId));
+        }
+
+        await _dbContext.SaveChangesAsync(cancellationToken);
+
+        var repaired = items.Count(x => x.Outcome == "repaired");
+        var skipped = items.Count(x => x.Outcome == "skipped");
+        var rejected = items.Count(x => x.Outcome == "rejected");
+        _logger.LogWarning(
+            "Fortnox supplier invoice recovery completed for company {CompanyId}, connection {ConnectionId}, actor {ActorUserId}, correlation {CorrelationId}. Repaired={Repaired}, Skipped={Skipped}, Rejected={Rejected}.",
+            command.CompanyId,
+            command.ConnectionId,
+            command.ActorUserId,
+            command.CorrelationId,
+            repaired,
+            skipped,
+            rejected);
+
+        return new FortnoxSupplierInvoiceRepairResult(
+            command.CompanyId,
+            command.ConnectionId,
+            repaired,
+            skipped,
+            rejected,
+            items);
+    }
+
     public async Task<FortnoxSyncResult> SyncAsync(RunFortnoxSyncCommand command, CancellationToken cancellationToken)
     {
         var startedUtc = _timeProvider.GetUtcNow().UtcDateTime;
@@ -1153,6 +1253,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         bill = await _dbContext.FinanceBills.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
         if (bill is null)
         {
+            var missingInternalRecordId = existing.InternalRecordId;
             bill = new FinanceBill(
                 Guid.NewGuid(),
                 companyId,
@@ -1174,6 +1275,12 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
             existing.RepointToInternalRecord(bill.Id, model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
             existing.ReplaceMetadata(model.ProviderMetadata, _timeProvider.GetUtcNow().UtcDateTime);
             AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
+            _logger.LogWarning(
+                "Repaired dangling Fortnox supplier invoice reference {ReferenceId} for company {CompanyId}. Missing internal bill {MissingBillId} was replaced by {ReplacementBillId}.",
+                existing.Id,
+                companyId,
+                missingInternalRecordId,
+                bill.Id);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
         }
         bill.ApplySyncedSnapshot(

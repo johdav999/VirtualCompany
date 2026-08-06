@@ -31,8 +31,10 @@ public sealed partial class CompanyFinanceBillInboxService
                 bill => bill.Id,
                 state => state.DetectedBillId,
                 (bill, states) => new { Bill = bill, State = states.FirstOrDefault() })
-            .OrderByDescending(x => x.Bill.UpdatedUtc)
-            .ThenByDescending(x => x.Bill.CreatedUtc)
+            // The review queue represents bill arrival order. Reviewing or rejecting an older
+            // item must not move it above a bill that was received more recently.
+            .OrderByDescending(x => x.Bill.CreatedUtc)
+            .ThenByDescending(x => x.Bill.Id)
             .Take(limit)
             .ToListAsync(cancellationToken);
 

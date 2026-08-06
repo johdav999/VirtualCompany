@@ -40,6 +40,7 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
             .HasColumnName("purpose")
             .HasConversion(purpose => purpose.ToStorageValue(), value => MailboxPurposeValues.Parse(value))
             .HasMaxLength(32)
+            .HasSentinel((MailboxPurpose)0)
             .HasDefaultValue(MailboxPurpose.Finance)
             .IsRequired();
         builder.Property(x => x.Status)

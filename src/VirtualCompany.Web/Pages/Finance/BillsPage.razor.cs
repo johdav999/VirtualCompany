@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Components;
 using Microsoft.Extensions.Logging;
+using VirtualCompany.Web.Components.Finance;
 using VirtualCompany.Web.Services;
 
 namespace VirtualCompany.Web.Pages.Finance;
@@ -136,6 +137,10 @@ public partial class BillsPage : FinancePageBase
     private string BuildDocumentHref(Guid documentId) => $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
     private string BuildTransactionHref(Guid transactionId) =>
         FinanceRoutes.BuildTransactionDetailPath(transactionId, AccessState.CompanyId);
+    private string BuildBillReviewHref() =>
+        SelectedBill is null || AccessState.CompanyId is not Guid companyId
+            ? "/finance/supplier-bills/review"
+            : $"/finance/supplier-bills/review/{SelectedBill.Id:D}?companyId={companyId:D}";
 
     private void SetBillFilter(string filter)
     {
@@ -508,6 +513,18 @@ public partial class BillsPage : FinancePageBase
         {
             IsDraftBookkeepingSubmitting = false;
         }
+    }
+
+    private async Task RefreshAfterPaymentApprovalAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null)
+        {
+            return;
+        }
+
+        var billId = SelectedBill.Id;
+        await LoadBillsAsync(companyId);
+        await LoadDetailAsync(companyId, billId);
     }
 
     private async Task PostPaidSupplierBillExpenseAsync()
@@ -1004,6 +1021,10 @@ public partial class BillsPage : FinancePageBase
         var exportMode = NormalizeStatusToken(proposal.ExportMode);
         var exportStatus = NormalizeStatusToken(proposal.ExportStatus);
         var needsFortnoxBookkeep = NeedsFortnoxBookkeep(proposal);
+        var canUpgradeManualPaymentFile =
+            status == "ready_for_payment" &&
+            exportStatus == "export_requested" &&
+            exportMode == "prepare_payment_file";
         var (exportLabel, exportTone, canExport) = exportStatus switch
         {
             "export_requested" when exportMode == "prepare_payment_file" => ("Manual payment file required", "warning", false),
@@ -1017,8 +1038,10 @@ public partial class BillsPage : FinancePageBase
             "cancelled" => ("Export cancelled", "neutral", false),
             _ => ("Not exported", "neutral", status == "ready_for_payment")
         };
-        var exportActionLabel = exportMode == "prepare_payment_file"
-            ? "Retry payment file"
+        var exportActionLabel = canUpgradeManualPaymentFile
+            ? "Register payment in Fortnox"
+            : exportMode == "prepare_payment_file"
+                ? "Retry payment file"
             : needsFortnoxBookkeep
                 ? "Finalize payment in Fortnox"
                 : "Register payment in Fortnox";
@@ -1029,8 +1052,8 @@ public partial class BillsPage : FinancePageBase
             (exportStatus != "failed" || exportMode == "prepare_payment_file");
         var canRegisterPayment =
             status == "ready_for_payment" &&
-            (canExport || exportStatus is "" or "not_exported" or "failed") &&
-            exportMode != "prepare_payment_file";
+            (canExport || canUpgradeManualPaymentFile || exportStatus is "" or "not_exported" or "failed") &&
+            (exportMode != "prepare_payment_file" || canUpgradeManualPaymentFile);
         var (label, tone, description) = status switch
         {
             "awaiting_approval" => ("Awaiting approval", "warning", "Payment proposal is waiting for approval before it can be marked ready for payment/export."),
@@ -1043,6 +1066,10 @@ public partial class BillsPage : FinancePageBase
 
         return new PaymentProposalViewModel(
             proposal.Id,
+            proposal.Amount,
+            proposal.Currency,
+            proposal.DueUtc,
+            status,
             label,
             tone,
             description,
@@ -1062,6 +1089,148 @@ public partial class BillsPage : FinancePageBase
             proposal.ExportProviderKey,
             proposal.ExportResponseSummary,
             proposal.ExportRequestedUtc);
+    }
+
+    private SupplierBillProgressViewModel BuildSupplierBillProgress(BillDetailViewModel detail)
+    {
+        if (SelectedBill is null)
+        {
+            return new SupplierBillProgressViewModel([], null);
+        }
+
+        var billStatus = NormalizeStatusToken(SelectedBill.Status);
+        var postingStatus = NormalizeStatusToken(SelectedBill.PostingStatus);
+        var supplierConfirmed = SelectedBill.CounterpartyId != Guid.Empty &&
+            !string.IsNullOrWhiteSpace(SelectedBill.CounterpartyName);
+        var detailsChecked = SelectedBill.Amount != 0m &&
+            SelectedBill.DueUtc != default &&
+            !string.IsNullOrWhiteSpace(SelectedBill.BillNumber);
+        var billApproved = billStatus is "approved" or "paid" ||
+            detail.PaymentProposal is not null ||
+            detail.DraftAction.StatusTone == "success";
+        var sentToFortnox = postingStatus == "booked" ||
+            detail.DraftAction.StatusTone == "success" ||
+            detail.DraftAction.StatusLabel is "Updated" or "Booked" ||
+            detail.PaymentProposal is not null;
+        var paymentStatus = detail.PaymentProposal?.Status ?? string.Empty;
+        var paymentApprovalComplete = paymentStatus is "ready_for_payment" or "exported";
+        var paymentApprovalBlocked = paymentStatus is "rejected" or "cancelled";
+        var paymentRegistrationComplete = detail.PaymentProposal is
+        {
+            ExportStatus: "exported",
+            NeedsFortnoxBookkeep: false
+        };
+        var paymentRegistrationFailed = detail.PaymentProposal?.ExportTone == "danger";
+        var settled = detail.PaymentSummary?.IsFullyPaid == true ||
+            NormalizeStatusToken(SelectedBill.SettlementStatus) == "paid";
+        var workflowStopped = billStatus is "cancelled" or "credited";
+
+        var definitions = new[]
+        {
+            new ProgressDefinition(
+                ProgressKeys.Received,
+                "Invoice received",
+                "The supplier invoice is available in Virtual Company.",
+                true,
+                $"Received {detail.DisplayReceivedDate}"),
+            new ProgressDefinition(
+                ProgressKeys.Checked,
+                "Details checked",
+                detailsChecked
+                    ? "The invoice number, amount, and due date are available."
+                    : "Check the invoice number, amount, and due date before continuing.",
+                detailsChecked,
+                detailsChecked ? "Core invoice details available" : "Invoice details need attention"),
+            new ProgressDefinition(
+                ProgressKeys.Supplier,
+                "Supplier confirmed",
+                supplierConfirmed
+                    ? $"{detail.DisplaySupplierName} is linked to this bill."
+                    : "Confirm which supplier issued this invoice.",
+                supplierConfirmed,
+                supplierConfirmed ? detail.DisplaySupplierName : "Supplier missing"),
+            new ProgressDefinition(
+                ProgressKeys.BillApproval,
+                "Bill approved",
+                billApproved
+                    ? "The supplier bill has passed business review."
+                    : "Review and approve the bill before it is sent to the accounting system.",
+                billApproved,
+                billApproved ? "Business review complete" : workflowStopped ? "Bill closed" : "Approval required",
+                workflowStopped),
+            new ProgressDefinition(
+                ProgressKeys.Fortnox,
+                "Sent to Fortnox",
+                sentToFortnox
+                    ? "The supplier invoice has been created or updated in Fortnox."
+                    : "Create or update the supplier invoice in Fortnox.",
+                sentToFortnox,
+                sentToFortnox ? detail.DraftAction.StatusLabel : detail.DraftAction.StatusLabel,
+                Failed: detail.DraftAction.StatusTone == "danger"),
+            new ProgressDefinition(
+                ProgressKeys.PaymentApproval,
+                "Payment approved",
+                paymentApprovalComplete
+                    ? "The payment proposal has been approved."
+                    : paymentApprovalBlocked
+                        ? "The payment proposal was not approved. Review the decision before continuing."
+                        : detail.PaymentProposal is null
+                            ? "Create a payment proposal and send it for approval."
+                            : "A decision is needed before the payment can be registered.",
+                paymentApprovalComplete,
+                paymentApprovalComplete ? "Approved" : paymentApprovalBlocked ? "Not approved" : detail.PaymentProposal?.StatusLabel ?? "Not started",
+                paymentApprovalBlocked),
+            new ProgressDefinition(
+                ProgressKeys.PaymentRegistration,
+                "Payment registered",
+                paymentRegistrationComplete
+                    ? "The approved payment has been registered and booked in Fortnox."
+                    : "Register the approved payment in Fortnox or prepare it for manual handling.",
+                paymentRegistrationComplete,
+                paymentRegistrationComplete ? "Registered" : detail.PaymentProposal?.ExportLabel ?? "Not started",
+                Failed: paymentRegistrationFailed),
+            new ProgressDefinition(
+                ProgressKeys.Settled,
+                "Paid and reconciled",
+                settled
+                    ? "The bill is paid and no balance remains."
+                    : "Match the bank transaction when payment is confirmed.",
+                settled,
+                settled ? "Complete" : "Waiting for payment")
+        };
+
+        var currentIndex = Array.FindIndex(definitions, definition => !definition.Completed);
+        var currentKey = currentIndex >= 0 ? definitions[currentIndex].Key : null;
+        var steps = definitions.Select((definition, index) =>
+        {
+            var state = definition.Completed
+                ? SupplierBillProgressStates.Completed
+                : index == currentIndex
+                    ? definition.Blocked
+                        ? SupplierBillProgressStates.Blocked
+                        : definition.Failed
+                            ? SupplierBillProgressStates.Failed
+                            : SupplierBillProgressStates.Current
+                    : SupplierBillProgressStates.Upcoming;
+            var statusLabel = state switch
+            {
+                SupplierBillProgressStates.Completed => "Complete",
+                SupplierBillProgressStates.Blocked => "Stopped",
+                SupplierBillProgressStates.Failed => "Retry needed",
+                SupplierBillProgressStates.Current => "Action needed",
+                _ => "Upcoming"
+            };
+
+            return new SupplierBillProgressStep(
+                definition.Key,
+                definition.Title,
+                definition.Description,
+                state,
+                statusLabel,
+                definition.SupportingText);
+        }).ToList();
+
+        return new SupplierBillProgressViewModel(steps, currentKey);
     }
 
     private SourceDocumentAttachmentViewModel BuildSourceDocumentAttachmentViewModel(
@@ -1810,6 +1979,10 @@ public partial class BillsPage : FinancePageBase
 
     private sealed record PaymentProposalViewModel(
         Guid Id,
+        decimal Amount,
+        string Currency,
+        DateTime DueUtc,
+        string Status,
         string StatusLabel,
         string StatusTone,
         string Description,
@@ -1828,7 +2001,33 @@ public partial class BillsPage : FinancePageBase
         string ExportActionLabel,
         string? ExportProviderKey,
         string? ExportResponseSummary,
-        DateTime? ExportRequestedUtc);
+        DateTime? ExportRequestedUtc)
+    {
+        public bool NeedsFortnoxBookkeep =>
+            ExportStatus == "exported" &&
+            ExportLabel == "Finalize in Fortnox";
+    }
+
+    private sealed record ProgressDefinition(
+        string Key,
+        string Title,
+        string Description,
+        bool Completed,
+        string SupportingText,
+        bool Blocked = false,
+        bool Failed = false);
+
+    private static class ProgressKeys
+    {
+        public const string Received = "received";
+        public const string Checked = "checked";
+        public const string Supplier = "supplier";
+        public const string BillApproval = "bill_approval";
+        public const string Fortnox = "fortnox";
+        public const string PaymentApproval = "payment_approval";
+        public const string PaymentRegistration = "payment_registration";
+        public const string Settled = "settled";
+    }
 
     private sealed record SourceDocumentAttachmentViewModel(
         string StatusLabel,

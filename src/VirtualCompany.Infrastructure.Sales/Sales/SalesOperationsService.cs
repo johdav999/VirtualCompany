@@ -54,14 +54,23 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
         var pipelineValue = deals.Where(x => x.Status == SalesStatuses.Open).Sum(x => x.Amount);
         var forecastRevenue = deals.Where(x => x.Status == SalesStatuses.Open).Sum(x => x.Amount * ForecastWeight(x.PipelineStageId));
+        var attentionThreshold = _timeProvider.GetUtcNow().UtcDateTime.AddDays(-7);
+        var dealsRequiringAction = deals
+            .Where(x => x.Status == SalesStatuses.Open && x.UpdatedUtc <= attentionThreshold)
+            .OrderBy(x => x.ExpectedCloseUtc ?? DateTime.MaxValue)
+            .ThenBy(x => x.UpdatedUtc)
+            .Take(5)
+            .Select(MapDealSummary)
+            .ToList();
 
         return new SalesDashboardResponse(
             pipelineValue,
             deals.FirstOrDefault()?.Currency ?? leads.FirstOrDefault()?.Currency ?? "USD",
             leads.Count(x => x.Status == SalesStatuses.Open),
             leads.Count(x => ResolveTemperature(x) == "Hot"),
-            deals.Count(x => x.Status == SalesStatuses.Open && x.UpdatedUtc <= DateTime.UtcNow.AddDays(-7)),
+            deals.Count(x => x.Status == SalesStatuses.Open && x.UpdatedUtc <= attentionThreshold),
             Math.Round(forecastRevenue, 2),
+            dealsRequiringAction,
             recommendations.Select(MapRecommendation).ToList(),
             recentActivity.Select(MapActivity).ToList());
     }

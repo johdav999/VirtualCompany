@@ -406,10 +406,8 @@ public sealed class SupplierInvoicePaymentProposalService : IFinanceSupplierPaym
             return false;
         }
 
-        if (proposal.ExportProviderMetadata.TryGetPropertyValue("manualPaymentRequired", out var manualPaymentRequired) &&
-            manualPaymentRequired is JsonValue manualValue &&
-            manualValue.TryGetValue<bool>(out var isManual) &&
-            isManual)
+        if (ReadBool(proposal.ExportProviderMetadata, "manualPaymentRequired") == true ||
+            ReadBool(proposal.ExportProviderMetadata, "manualPaymentFileRequired") == true)
         {
             return true;
         }

@@ -14,8 +14,7 @@
             <p>@SalesText["CampaignsDescription"]</p>
             <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
                 <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
-                <a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
-                <a href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
+                <a href="@BuildPath("/app/sales/prospects")">@SalesText["Prospects"]</a>
                 <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
                 <a class="active" href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
@@ -112,10 +111,29 @@
                     else
                     {
                         <div class="sales-campaign-detail">
-                            <div class="sales-campaign-detail__header">
-                                <span class="@BadgeClass(selectedCampaign.Status)">@SalesStatusPresenter.Present(selectedCampaign.Status, SalesText)</span>
-                                <span>@SalesText["ContactCount", selectedCampaign.Audience.Count]</span>
-                                <span>@SalesText["StepCount", selectedCampaign.Steps.Count]</span>
+                            <div class="campaign-command-header">
+                                <div>
+                                    <div class="sales-campaign-detail__header">
+                                        <span class="@BadgeClass(initiative?.LifecycleStatus ?? selectedCampaign.Status)">@PresentCampaignState(initiative?.LifecycleStatus ?? selectedCampaign.Status)</span>
+                                        <span>@selectedCampaign.Audience.Count contacts</span>
+                                        <span>@activities.Count activities</span>
+                                    </div>
+                                    @if (initiative?.PrimaryObjective is not null)
+                                    {
+                                        <p class="campaign-objective">@ObjectiveLabel(initiative.PrimaryObjective)</p>
+                                    }
+                                    else
+                                    {
+                                        <p class="campaign-objective campaign-objective--missing">Add an objective, owner, offer, dates, and activity plan before approval.</p>
+                                    }
+                                </div>
+                                @if (readiness is not null)
+                                {
+                                    <div class="campaign-readiness">
+                                        <strong>@(readiness.IsReady ? "Ready for approval" : $"{readiness.MissingRequirements.Count} setup items remaining")</strong>
+                                        <span>@(readiness.IsReady ? "Governance checks passed." : readiness.MissingRequirements.FirstOrDefault())</span>
+                                    </div>
+                                }
                             </div>
 
                             <div class="sales-actions">
@@ -124,55 +142,107 @@
                                 <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("stop")'>@SalesText["Stop"]</button>
                             </div>
 
-                            <dl class="sales-definition-list">
-                                <div>
-                                    <dt>@SalesText["Policy"]</dt>
-                                    <dd>@PolicySummary(selectedCampaign.Policy)</dd>
-                                </div>
-                                <div>
-                                    <dt>@SalesText["Delivery"]</dt>
-                                    <dd>@SalesText["DeliverySummary", selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.SentUtc.HasValue), selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.Status == "Pending"), selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.BounceStatus is not null)]</dd>
-                                </div>
-                            </dl>
+                            <nav class="campaign-detail-tabs" aria-label="Campaign details">
+                                @foreach (var tab in CampaignTabs)
+                                {
+                                    <button class="@(activeTab == tab ? "active" : null)" @onclick="() => activeTab = tab">@tab</button>
+                                }
+                            </nav>
 
-                            <div class="sales-campaign-executions">
-                                @if (selectedCampaign.Executions.Count == 0)
-                                {
-                                    <div class="sales-empty sales-empty--compact">@SalesText["NoExecutions"]</div>
-                                }
-                                else
-                                {
-                                    @foreach (var execution in selectedCampaign.Executions.Take(8))
+                            @if (activeTab == "Overview")
+                            {
+                                <div class="campaign-overview-grid">
+                                    <section>
+                                        <span>Objective progress</span>
+                                        <strong>@ObjectiveProgressLabel</strong>
+                                        <small>@(performance?.Objective is null ? "No measurable objective configured" : performance.Objective.Unit)</small>
+                                    </section>
+                                    <section>
+                                        <span>Audience</span>
+                                        <strong>@(performance?.Audience ?? selectedCampaign.Audience.Count)</strong>
+                                        <small>Consent is checked again before sending</small>
+                                    </section>
+                                    <section>
+                                        <span>Planned budget</span>
+                                        <strong>@BudgetLabel</strong>
+                                        <small>Currency values are never combined</small>
+                                    </section>
+                                    <section>
+                                        <span>Schedule</span>
+                                        <strong>@ScheduleLabel</strong>
+                                        <small>@(initiative?.TimeZoneId ?? "Timezone not configured")</small>
+                                    </section>
+                                </div>
+                                <dl class="sales-definition-list">
+                                    <div><dt>@SalesText["Policy"]</dt><dd>@PolicySummary(selectedCampaign.Policy)</dd></div>
+                                    <div><dt>@SalesText["Delivery"]</dt><dd>@SalesText["DeliverySummary", performance?.Sent ?? 0, selectedCampaign.Executions.SelectMany(x => x.Steps).Count(x => x.Status == "Pending"), performance?.Bounced ?? 0]</dd></div>
+                                </dl>
+                            }
+                            else if (activeTab == "Audience")
+                            {
+                                <div class="campaign-audience-summary">
+                                    <h3>Saved audience segments</h3>
+                                    @if (segments.Count == 0)
                                     {
-                                        <article>
-                                            <header>
-                                                <strong>@execution.ContactName</strong>
-                                                <span class="@BadgeClass(execution.Status)">@SalesStatusPresenter.Present(execution.Status, SalesText)</span>
-                                            </header>
-                                            <div>
-                                                @foreach (var step in execution.Steps)
-                                                {
-                                                    <span title="@LocalDateTime.DateTime(step.ScheduledSendUtc)" class="@BadgeClass(step.Status)">@SalesText["StepNumber", step.StepOrder]</span>
-                                                }
-                                            </div>
-                                            @if (execution.Steps.FirstOrDefault(x => x.CurrentDraftSubject is not null) is { } draftStep)
-                                            {
-                                                <div class="sales-draft-audit">
-                                                    <strong>@(draftStep.CurrentDraftSubject ?? draftStep.OriginalGeneratedSubject)</strong>
-                                                    <small>
-                                                        @SalesText["GeneratedAt", draftStep.GeneratedDraftUtc.HasValue ? LocalDateTime.DateTime(draftStep.GeneratedDraftUtc.Value) : string.Empty]
-                                                        @if (draftStep.DraftUpdatedUtc is not null && draftStep.DraftUpdatedUtc != draftStep.GeneratedDraftUtc)
-                                                        {
-                                                            <span> - @SalesText["EditedAt", LocalDateTime.DateTime(draftStep.DraftUpdatedUtc.Value)]</span>
-                                                        }
-                                                    </small>
-                                                    <p>@TrimDraft(draftStep.CurrentDraftBody ?? draftStep.OriginalGeneratedBody)</p>
-                                                </div>
-                                            }
-                                        </article>
+                                        <p>No reusable audience segment has been configured. Existing explicit contacts remain available.</p>
                                     }
-                                }
-                            </div>
+                                    else
+                                    {
+                                        @foreach (var segment in segments)
+                                        {
+                                            <div><strong>@segment.Name</strong><span>@PresentSegmentKind(segment.SegmentKind)</span></div>
+                                        }
+                                    }
+                                </div>
+                            }
+                            else if (activeTab == "Activity plan")
+                            {
+                                <div class="campaign-activity-table">
+                                    <div class="campaign-activity-table__head"><span>Activity</span><span>Channel</span><span>Execution</span><span>Due</span><span>Status</span></div>
+                                    @if (activities.Count == 0)
+                                    {
+                                        <p>No campaign activities are planned yet.</p>
+                                    }
+                                    @foreach (var activity in activities.OrderBy(x => x.PlannedStartUtc))
+                                    {
+                                        <div>
+                                            <strong>@activity.Name</strong>
+                                            <span>@PresentValue(activity.Channel)</span>
+                                            <span>@PresentExecutionMode(activity.ExecutionMode)</span>
+                                            <span>@LocalDateTime.DateTime(activity.DueUtc)</span>
+                                            <span class="@BadgeClass(activity.Status)">@PresentCampaignState(activity.Status)</span>
+                                        </div>
+                                    }
+                                </div>
+                            }
+                            else if (activeTab == "Performance")
+                            {
+                                <div class="campaign-tab-toolbar">
+                                    <div>
+                                        <strong>Campaign review evidence</strong>
+                                        <span>Save the current KPI values with their definition versions and evidence.</span>
+                                    </div>
+                                    <button class="sales-button" disabled="@isSubmitting" @onclick="CapturePerformanceSnapshotAsync">
+                                        Save review snapshot
+                                    </button>
+                                </div>
+                                <div class="campaign-performance">
+                                    <div><span>Sent</span><strong>@(performance?.Sent.ToString() ?? "Unavailable")</strong></div>
+                                    <div><span>Delivered</span><strong>@(performance?.Delivered.ToString() ?? "Unavailable")</strong></div>
+                                    <div><span>Replies</span><strong>@(performance?.Replied.ToString() ?? "Unavailable")</strong></div>
+                                    <div><span>Opportunities</span><strong>@(performance?.Opportunities.ToString() ?? "Unavailable")</strong></div>
+                                    <div><span>Won deals</span><strong>@(performance?.WonDeals.ToString() ?? "Unavailable")</strong></div>
+                                    <div><span>Direct revenue</span><strong>@RevenueLabel</strong></div>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="campaign-alex-panel">
+                                    <h3>Alex campaign review</h3>
+                                    <p>@AlexCampaignSummary</p>
+                                    <a class="sales-button" href="@BuildPath("/agents/manage")">Review Alex's access</a>
+                                </div>
+                            }
                         </div>
                     }
                 </section>
@@ -345,6 +415,13 @@
     private List<string> validationErrors = [];
     private List<OutboundCampaignSummaryResponse> campaigns = [];
     private OutboundCampaignDetailResponse? selectedCampaign;
+    private CampaignInitiativeResponse? initiative;
+    private CampaignReadinessResponse? readiness;
+    private CampaignPerformanceResponse? performance;
+    private List<CampaignActivityResponse> activities = [];
+    private List<CampaignSegmentResponse> segments = [];
+    private string activeTab = "Overview";
+    private static readonly string[] CampaignTabs = ["Overview", "Audience", "Activity plan", "Performance", "Alex"];
     private OutboundAudienceOptionsResponse audienceOptions = new([], []);
     private CampaignDraft draft = CampaignDraft.CreateDefault();
 
@@ -377,9 +454,10 @@
             var companyId = ResolvedCompanyId!.Value;
             campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
             audienceOptions = await SalesApiClient.GetCampaignAudienceOptionsAsync(companyId);
+            segments = (await SalesApiClient.ListCampaignSegmentsAsync(companyId)).ToList();
             if (selectedCampaign is not null)
             {
-                selectedCampaign = await SalesApiClient.GetCampaignAsync(companyId, selectedCampaign.Id);
+                await LoadCampaignDetailAsync(companyId, selectedCampaign.Id);
             }
 
             EnsureAudienceSource();
@@ -420,12 +498,28 @@
         actionMessage = null;
         try
         {
-            selectedCampaign = await SalesApiClient.GetCampaignAsync(companyId, campaignId);
+            await LoadCampaignDetailAsync(companyId, campaignId);
         }
         catch (SalesApiException ex)
         {
             actionMessage = ex.Message;
         }
+    }
+
+    private async Task LoadCampaignDetailAsync(Guid companyId, Guid campaignId)
+    {
+        var detailTask = SalesApiClient.GetCampaignAsync(companyId, campaignId);
+        var initiativeTask = SalesApiClient.GetCampaignInitiativeAsync(companyId, campaignId);
+        var readinessTask = SalesApiClient.GetCampaignReadinessAsync(companyId, campaignId);
+        var activitiesTask = SalesApiClient.ListCampaignActivitiesAsync(companyId, campaignId);
+        var performanceTask = SalesApiClient.GetCampaignPerformanceAsync(companyId, campaignId);
+        await Task.WhenAll(detailTask, initiativeTask, readinessTask, activitiesTask, performanceTask);
+        selectedCampaign = await detailTask;
+        initiative = await initiativeTask;
+        readiness = await readinessTask;
+        activities = (await activitiesTask).ToList();
+        performance = await performanceTask;
+        activeTab = "Overview";
     }
 
     private async Task ChangeCampaignStateAsync(string action)
@@ -449,6 +543,30 @@
             campaigns = (await SalesApiClient.ListCampaignsAsync(companyId)).ToList();
             actionMessage = action == "launch" ? SalesText["CampaignStartRequested"] : action == "pause" ? SalesText["CampaignPaused"] : SalesText["CampaignStopped"];
             await RefreshAgentPanelAsync();
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private async Task CapturePerformanceSnapshotAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || selectedCampaign is null)
+        {
+            return;
+        }
+
+        isSubmitting = true;
+        actionMessage = null;
+        try
+        {
+            performance = await SalesApiClient.CaptureCampaignPerformanceSnapshotAsync(companyId, selectedCampaign.Id);
+            actionMessage = "Campaign review snapshot saved.";
         }
         catch (SalesApiException ex)
         {
@@ -568,6 +686,46 @@
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
     private static string PolicySummary(OutboundPolicyResponse policy) => $"{(policy.OutboundEnabled ? "Outbound enabled" : "Outbound disabled")}, {policy.MaxEmailsPerDay} emails per day, {(policy.ApprovalRequired ? "approval required" : "no launch approval required")}";
     private string TrimDraft(string? value) => string.IsNullOrWhiteSpace(value) ? SalesText["NoDraftContent"] : value.Length <= 180 ? value : $"{value[..180]}...";
+    private string ObjectiveProgressLabel => performance?.ObjectiveProgress is decimal value ? $"{Math.Clamp(value, 0, 999):0.#}%" : "Unavailable";
+    private string BudgetLabel => initiative?.PlannedBudget is decimal amount && !string.IsNullOrWhiteSpace(initiative.BudgetCurrency)
+        ? $"{amount:N0} {initiative.BudgetCurrency}"
+        : "Not configured";
+    private string ScheduleLabel => initiative?.ScheduledLaunchUtc is DateTime launch && initiative.EndsUtc is DateTime end
+        ? $"{LocalDateTime.DateTime(launch)} - {LocalDateTime.DateTime(end)}"
+        : "Not scheduled";
+    private string RevenueLabel => performance is null || performance.DirectRevenue.Count == 0
+        ? "Unavailable"
+        : string.Join(" / ", performance.DirectRevenue.Select(x => $"{x.Amount:N0} {x.Currency}"));
+    private string AlexCampaignSummary => readiness is null
+        ? "Campaign evidence is unavailable. Refresh before requesting advice."
+        : readiness.IsReady
+            ? "The deterministic readiness checks passed. Alex can review timing, audience quality, and message evidence without changing eligibility or launching the campaign."
+            : $"Complete the campaign setup first: {readiness.MissingRequirements.FirstOrDefault()}";
+    private static string ObjectiveLabel(CampaignObjectiveResponse objective) =>
+        $"{PresentValue(objective.Type)}: {objective.Target:N0} {objective.Unit} by {objective.TargetUtc:d}";
+    private static string PresentExecutionMode(string value) => value switch
+    {
+        "executable" => "Automatic",
+        "manual" => "Tracked task",
+        "approval" => "Human approval",
+        "handoff" => "Agent handoff",
+        _ => PresentValue(value)
+    };
+    private static string PresentSegmentKind(string value) => value switch
+    {
+        "b2b_account" => "B2B accounts",
+        "b2b_contact" => "B2B contacts",
+        "b2c_customer" => "B2C customers",
+        "explicit_list" => "Explicit contact list",
+        _ => PresentValue(value)
+    };
+    private static string PresentCampaignState(string value) => PresentValue(value);
+    private static string PresentValue(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "Not available";
+        var words = value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal);
+        return char.ToUpperInvariant(words[0]) + words[1..];
+    }
 
     private sealed class CampaignDraft
     {

@@ -12,6 +12,7 @@ Domain <- Application <- Persistence
                          +-- Infrastructure.Mailbox
                          +-- Infrastructure.Finance
                          +-- Infrastructure.Sales
+                             +-- Sales and Marketing capabilities
                          +-- Infrastructure.Support
                          +-- Infrastructure.Operations
 

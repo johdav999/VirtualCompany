@@ -9,6 +9,8 @@ namespace VirtualCompany.Web.Pages.Finance;
 public partial class BillInboxDetailPage : FinancePageBase
 {
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
+    [Inject] private ApprovalApiClient ApprovalApiClient { get; set; } = default!;
+    [Inject] private InboxApiClient InboxApiClient { get; set; } = default!;
     [Inject] private ILogger<BillInboxDetailPage> Logger { get; set; } = default!;
 
     [Parameter] public Guid BillId { get; set; }
@@ -16,12 +18,24 @@ public partial class BillInboxDetailPage : FinancePageBase
     private FinanceBillInboxDetailResponse? Detail { get; set; }
     private bool IsDetailLoading { get; set; }
     private bool IsSubmittingAction { get; set; }
+    private bool IsApprovalLoading { get; set; }
+    private bool IsSubmittingApprovalDecision { get; set; }
+    private bool IsUpdatingApprovalAutomation { get; set; }
     private string? DetailErrorMessage { get; set; }
     private string? ActionStatusMessage { get; set; }
     private string? FortnoxRegistrationStatusMessage { get; set; }
+    private string? ApprovalErrorMessage { get; set; }
+    private string? ApprovalStatusMessage { get; set; }
+    private string? ApprovalAutomationMessage { get; set; }
     private string Rationale { get; set; } = string.Empty;
+    private string ApprovalComment { get; set; } = string.Empty;
+    private ApprovalRequestViewModel? EmbeddedApproval { get; set; }
+    private SupplierApprovalAutomationResponse? ApprovalAutomation { get; set; }
     private bool IsBillProposalApproved => Detail?.Status.Equals("Approved", StringComparison.OrdinalIgnoreCase) == true;
     private bool IsSupplierCreationStep => string.Equals(Detail?.FortnoxRegistration?.ActionKind, "supplier_creation", StringComparison.OrdinalIgnoreCase);
+    private bool HasPendingEmbeddedApproval =>
+        EmbeddedApproval?.CurrentStep is not null &&
+        string.Equals(EmbeddedApproval.Status, "pending", StringComparison.OrdinalIgnoreCase);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -31,6 +45,11 @@ public partial class BillInboxDetailPage : FinancePageBase
         DetailErrorMessage = null;
         ActionStatusMessage = null;
         FortnoxRegistrationStatusMessage = null;
+        ApprovalStatusMessage = null;
+        ApprovalComment = string.Empty;
+        EmbeddedApproval = null;
+        ApprovalAutomation = null;
+        ApprovalAutomationMessage = null;
 
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
         {
@@ -56,6 +75,16 @@ public partial class BillInboxDetailPage : FinancePageBase
         try
         {
             Detail = await FinanceApiClient.GetBillInboxDetailAsync(companyId, BillId);
+            if (Detail?.Status.Equals("Sent to payment/exported", StringComparison.OrdinalIgnoreCase) == true)
+            {
+                Navigation.NavigateTo(
+                    FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, companyId),
+                    replace: true);
+                return;
+            }
+
+            await LoadApprovalAutomationAsync(companyId);
+            await LoadEmbeddedApprovalAsync(companyId);
         }
         catch (FinanceApiException ex)
         {
@@ -65,6 +94,150 @@ public partial class BillInboxDetailPage : FinancePageBase
         finally
         {
             IsDetailLoading = false;
+        }
+    }
+
+    private async Task LoadApprovalAutomationAsync(Guid companyId)
+    {
+        try
+        {
+            ApprovalAutomation = await FinanceApiClient.GetSupplierApprovalAutomationAsync(companyId, BillId);
+        }
+        catch (FinanceApiException ex)
+        {
+            ApprovalAutomation = null;
+            ApprovalAutomationMessage = ex.Message;
+            Logger.LogWarning(
+                ex,
+                "Supplier approval automation could not be loaded. CompanyId: {CompanyId}. BillId: {BillId}.",
+                companyId,
+                BillId);
+        }
+    }
+
+    private async Task ToggleApprovalAutomationAsync(SupplierApprovalAutomationStageResponse stage)
+    {
+        if (AccessState.CompanyId is not Guid companyId || !stage.CanConfigure)
+        {
+            return;
+        }
+
+        IsUpdatingApprovalAutomation = true;
+        ApprovalAutomationMessage = null;
+        try
+        {
+            ApprovalAutomation = await FinanceApiClient.SetSupplierApprovalAutomationAsync(
+                companyId,
+                BillId,
+                stage.Stage,
+                !stage.IsEnabled);
+            ApprovalAutomationMessage = stage.IsEnabled
+                ? $"Automatic {stage.StepName} approval was turned off for this supplier."
+                : $"{stage.AgentDisplayName} can now automatically approve this supplier's {stage.StepName}.";
+            await LoadAsync(companyId);
+        }
+        catch (FinanceApiException ex)
+        {
+            ApprovalAutomationMessage = ex.Message;
+        }
+        finally
+        {
+            IsUpdatingApprovalAutomation = false;
+        }
+    }
+
+    private async Task LoadEmbeddedApprovalAsync(Guid companyId)
+    {
+        var approvalId = Detail?.FortnoxRegistration?.ApprovalId;
+        if (approvalId is null)
+        {
+            EmbeddedApproval = null;
+            ApprovalErrorMessage = null;
+            return;
+        }
+
+        IsApprovalLoading = true;
+        ApprovalErrorMessage = null;
+
+        try
+        {
+            EmbeddedApproval = ApprovalPresentationFormatter.Format(
+                await ApprovalApiClient.GetAsync(companyId, approvalId.Value));
+        }
+        catch (OnboardingApiException ex)
+        {
+            EmbeddedApproval = null;
+            ApprovalErrorMessage = ex.Message;
+            Logger.LogWarning(
+                ex,
+                "Supplier bill approval could not be loaded in the bill review. CompanyId: {CompanyId}. BillId: {BillId}. ApprovalId: {ApprovalId}.",
+                companyId,
+                BillId,
+                approvalId);
+        }
+        finally
+        {
+            IsApprovalLoading = false;
+        }
+    }
+
+    private async Task DecideEmbeddedApprovalAsync(string decision)
+    {
+        if (AccessState.CompanyId is not Guid companyId ||
+            EmbeddedApproval?.CurrentStep is not { } currentStep)
+        {
+            return;
+        }
+
+        IsSubmittingApprovalDecision = true;
+        ApprovalErrorMessage = null;
+        ApprovalStatusMessage = null;
+
+        try
+        {
+            var result = await InboxApiClient.DecidePendingApprovalAsync(
+                companyId,
+                EmbeddedApproval.Id,
+                new ApprovalDecisionRequest
+                {
+                    ApprovalId = EmbeddedApproval.Id,
+                    StepId = currentStep.Id,
+                    Decision = decision,
+                    Comment = string.IsNullOrWhiteSpace(ApprovalComment) ? null : ApprovalComment.Trim()
+                });
+
+            EmbeddedApproval = ApprovalPresentationFormatter.Format(result.Approval);
+            ApprovalComment = string.Empty;
+            ApprovalStatusMessage = decision.StartsWith("reject", StringComparison.OrdinalIgnoreCase)
+                ? "Approval rejected."
+                : result.IsFinalized
+                    ? "Approval recorded."
+                    : "Approval recorded. The next approval step is now waiting.";
+
+            Logger.LogInformation(
+                "Supplier bill approval decided from bill review. CompanyId: {CompanyId}. BillId: {BillId}. ApprovalId: {ApprovalId}. Decision: {Decision}. IsFinalized: {IsFinalized}.",
+                companyId,
+                BillId,
+                EmbeddedApproval.Id,
+                decision,
+                result.IsFinalized);
+
+            await LoadAsync(companyId);
+        }
+        catch (OnboardingApiException ex)
+        {
+            ApprovalErrorMessage = ex.Message;
+            Logger.LogWarning(
+                ex,
+                "Supplier bill approval decision failed in bill review. CompanyId: {CompanyId}. BillId: {BillId}. ApprovalId: {ApprovalId}. Decision: {Decision}.",
+                companyId,
+                BillId,
+                EmbeddedApproval.Id,
+                decision);
+        }
+        finally
+        {
+            IsSubmittingApprovalDecision = false;
         }
     }
 
@@ -233,6 +406,14 @@ public partial class BillInboxDetailPage : FinancePageBase
                 result.ApprovalId,
                 result.Status,
                 result.HasExecuted);
+            if (result.HasExecuted &&
+                result.Status.Equals("Sent to Fortnox", StringComparison.OrdinalIgnoreCase))
+            {
+                Navigation.NavigateTo(
+                    FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierBillsReview, companyId));
+                return;
+            }
+
             await LoadAsync(companyId);
         }
         catch (FinanceApiException ex)
@@ -357,6 +538,87 @@ public partial class BillInboxDetailPage : FinancePageBase
             ? "Invoice from email"
             : "Invoice document";
 
+    private SourceInvoicePresentation BuildSourceInvoicePresentation(string bodyText)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var rawLine in bodyText.Replace("\r", string.Empty, StringComparison.Ordinal).Split('\n'))
+        {
+            var line = rawLine.Trim();
+            var separator = line.IndexOf(':');
+            if (separator <= 0 || separator == line.Length - 1)
+            {
+                continue;
+            }
+
+            var label = line[..separator].Trim();
+            var value = CleanSourceValue(line[(separator + 1)..]);
+            if (!string.IsNullOrWhiteSpace(value) && !fields.ContainsKey(label))
+            {
+                fields[label] = value;
+            }
+        }
+
+        string? Find(params string[] labels)
+        {
+            foreach (var label in labels)
+            {
+                if (fields.TryGetValue(label, out var value))
+                {
+                    return value;
+                }
+            }
+
+            return null;
+        }
+
+        var supplier = new List<SourceInvoiceField>();
+        AddSourceField(supplier, "Supplier", Find("Supplier", "Leverantör") ?? Detail?.SupplierName);
+        AddSourceField(supplier, "Organisation number", Find("Organisation number", "Organization number", "Org.nr", "Organisationsnummer") ?? Detail?.SupplierOrgNumber);
+        AddSourceField(supplier, "VAT number", Find("VAT number", "VAT No", "Momsregistreringsnummer"));
+        AddSourceField(supplier, "Address", Find("Address", "Adress"));
+        AddSourceField(supplier, "Email", Find("Email", "E-mail"));
+
+        var invoice = new List<SourceInvoiceField>();
+        AddSourceField(invoice, "Invoice number", Find("Invoice number", "Fakturanummer") ?? Detail?.BillReference);
+        AddSourceField(invoice, "Invoice date", Find("Invoice date", "Fakturadatum") ?? FormatDate(Detail?.BillDateUtc));
+        AddSourceField(invoice, "Due date", Find("Due date", "Förfallodatum") ?? FormatDate(Detail?.DueDateUtc));
+        AddSourceField(invoice, "Payment terms", Find("Payment terms", "Betalningsvillkor"));
+        AddSourceField(invoice, "Currency", Find("Currency", "Valuta") ?? Detail?.Currency);
+
+        var service = new List<SourceInvoiceField>();
+        AddSourceField(service, "Description", Find("Description", "Beskrivning"));
+        AddSourceField(service, "Quantity", Find("Quantity", "Antal"));
+        AddSourceField(service, "Amount excluding VAT", Find("Amount excluding VAT", "Amount excl. VAT", "Belopp exklusive moms"));
+        AddSourceField(service, "VAT rate", Find("VAT rate", "Momssats"));
+        AddSourceField(service, "VAT amount", Find("VAT amount", "VAT", "Moms") ?? FormatAmount(Detail?.VatAmount, Detail?.Currency));
+        AddSourceField(service, "Total amount due", Find("Total amount due", "Total", "Att betala") ?? FormatAmount(Detail?.Amount, Detail?.Currency), isTotal: true);
+
+        var payment = new List<SourceInvoiceField>();
+        AddSourceField(payment, "Bankgiro", Find("Bankgiro"));
+        AddSourceField(payment, "Payment reference", Find("Payment reference", "Reference", "OCR", "Betalningsreferens"));
+
+        var invoiceNumber = Find("Invoice number", "Fakturanummer") ?? Detail?.BillReference ?? "Supplier invoice";
+        var totalAmount = Find("Total amount due", "Total", "Att betala") ?? FormatAmount(Detail?.Amount, Detail?.Currency);
+        var recognizedFieldCount = supplier.Count + invoice.Count + service.Count + payment.Count;
+
+        return new SourceInvoicePresentation(supplier, invoice, service, payment, invoiceNumber, totalAmount, recognizedFieldCount >= 3);
+    }
+
+    private static void AddSourceField(List<SourceInvoiceField> fields, string label, string? value, bool isTotal = false)
+    {
+        if (!string.IsNullOrWhiteSpace(value) && !string.Equals(value, "n/a", StringComparison.OrdinalIgnoreCase))
+        {
+            fields.Add(new SourceInvoiceField(label, value, isTotal));
+        }
+    }
+
+    private static string CleanSourceValue(string value)
+    {
+        var cleaned = value.Trim();
+        var mailtoIndex = cleaned.IndexOf("<mailto:", StringComparison.OrdinalIgnoreCase);
+        return mailtoIndex >= 0 ? cleaned[..mailtoIndex].Trim() : cleaned;
+    }
+
     private string BuildLauraRecommendationHeadline()
     {
         if (Detail is null)
@@ -424,16 +686,23 @@ public partial class BillInboxDetailPage : FinancePageBase
     private static string FormatEvidenceLocation(FinanceBillEvidenceReferenceResponse evidence) =>
         string.Join(" / ", new[] { evidence.PageReference, evidence.SectionReference, evidence.TextSpan }.Where(x => !string.IsNullOrWhiteSpace(x)));
 
-    private string BuildApprovalHref(Guid approvalId) =>
-        AccessState.CompanyId is Guid companyId
-            ? $"/approvals?companyId={companyId:D}&approvalId={approvalId:D}"
-            : $"/approvals?approvalId={approvalId:D}";
-
     private static string BuildBillStatusClass(string status) =>
         $"bill-status-badge {ResolveBillToneClass(status)}";
 
     private static string BuildFortnoxStatusClass(string status) =>
         $"bill-status-badge {ResolveFortnoxToneClass(status)}";
+
+    private static string BuildApprovalStatusClass(string status) =>
+        $"bill-status-badge {ResolveApprovalToneClass(status)}";
+
+    private static string ResolveApprovalToneClass(string status) =>
+        status.ToLowerInvariant() switch
+        {
+            "approved" => "bill-status-badge--success",
+            "rejected" => "bill-status-badge--danger",
+            "pending" => "bill-status-badge--warning",
+            _ => "bill-status-badge--neutral"
+        };
 
     private static string ResolveBillToneClass(string status) =>
         status.ToLowerInvariant() switch
@@ -454,4 +723,15 @@ public partial class BillInboxDetailPage : FinancePageBase
             "failed" => "bill-status-badge--danger",
             _ => "bill-status-badge--neutral"
         };
+
+    private sealed record SourceInvoiceField(string Label, string Value, bool IsTotal = false);
+
+    private sealed record SourceInvoicePresentation(
+        IReadOnlyList<SourceInvoiceField> SupplierFields,
+        IReadOnlyList<SourceInvoiceField> InvoiceFields,
+        IReadOnlyList<SourceInvoiceField> ServiceFields,
+        IReadOnlyList<SourceInvoiceField> PaymentFields,
+        string InvoiceNumber,
+        string TotalAmount,
+        bool HasStructuredContent);
 }

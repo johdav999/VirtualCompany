@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Application.Security;
@@ -100,6 +101,45 @@ public sealed class FortnoxTokenStoreTests
         Assert.Null(disconnected.RefreshToken);
     }
 
+    [Fact]
+    public async Task GetAsync_marks_connection_for_reconnect_when_token_key_is_unavailable()
+    {
+        var companyId = Guid.NewGuid();
+        var userId = Guid.NewGuid();
+        var now = new DateTime(2026, 7, 29, 11, 0, 0, DateTimeKind.Utc);
+        await using var dbContext = CreateDbContext();
+        var originalEncryption = CreateEncryption();
+        var originalStore = new FortnoxTokenStore(dbContext, originalEncryption);
+        await originalStore.UpsertConnectedAsync(
+            companyId,
+            userId,
+            new FortnoxOAuthTokenResult(
+                "plain-access-token",
+                "plain-refresh-token",
+                now.AddHours(1),
+                ["bookkeeping"]),
+            now,
+            CancellationToken.None);
+
+        var storeWithDifferentKeyRing = new FortnoxTokenStore(
+            dbContext,
+            CreateEncryption(),
+            new FixedTimeProvider(now.AddMinutes(5)));
+
+        var snapshot = await storeWithDifferentKeyRing.GetAsync(companyId, null, CancellationToken.None);
+
+        Assert.NotNull(snapshot);
+        Assert.Equal("needs_reconnect", snapshot!.Status);
+        Assert.Null(snapshot.AccessToken);
+        Assert.Null(snapshot.RefreshToken);
+        Assert.Equal("Fortnox credentials can no longer be decrypted. Reconnect Fortnox to continue.", snapshot.LastErrorSummary);
+
+        var persisted = await dbContext.FortnoxConnections.IgnoreQueryFilters().SingleAsync();
+        Assert.Equal(FortnoxConnectionStatus.NeedsReconnect, persisted.Status);
+        Assert.NotNull(persisted.EncryptedAccessToken);
+        Assert.NotNull(persisted.EncryptedRefreshToken);
+    }
+
     private static VirtualCompanyDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
@@ -110,4 +150,9 @@ public sealed class FortnoxTokenStoreTests
 
     private static IFieldEncryptionService CreateEncryption() =>
         new DataProtectionFieldEncryptionService(new EphemeralDataProtectionProvider());
+
+    private sealed class FixedTimeProvider(DateTime utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(utcNow);
+    }
 }

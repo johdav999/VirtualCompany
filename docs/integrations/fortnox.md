@@ -1,14 +1,18 @@
 # Fortnox Integration
 
-This page describes the Fortnox finance integration used by US-32.1 for configuration, OAuth connection, callback validation, and secure token lifecycle. It is grounded in the current implementation under `src/VirtualCompany.Api`, `src/VirtualCompany.Application/Finance`, and `src/VirtualCompany.Infrastructure.Finance/Finance`.
+This page describes the Fortnox finance integration used by US-32.1 for OAuth connection, callback validation, and secure token lifecycle. Shared application credentials are now managed through the provider-neutral [finance provider application management](finance-provider-management.md) feature.
 
-The integration is disabled by default. When enabled, configuration is validated on startup, OAuth state is stored server-side in the distributed cache, tokens are encrypted before persistence in `fortnox_connections`, and all connection reads are scoped by `CompanyId`.
+The integration is disabled until a platform administrator configures and enables it. OAuth state is stored server-side in the distributed cache, tokens are encrypted before persistence in `fortnox_connections`, and all connection reads are scoped by `CompanyId`.
 
 ## Configuration
 
+Production and normal development setup is performed in **System / Admin → Finance providers**. Company users only see **Connect**, **Reconnect**, and **Disconnect**.
+
+The legacy `FinanceIntegrations:Fortnox` client ID, client secret, redirect URI, scopes, and enabled flag remain a bootstrap compatibility path. When no managed SQL configuration exists, the management service can read those settings; the first admin save moves the credential into the configured platform secret store. New deployments should use the management page.
+
 The API binds Fortnox settings from `FinanceIntegrations:Fortnox`.
 
-Required when `Enabled` is `true`:
+Legacy bootstrap values when `Enabled` is `true`:
 
 - `FinanceIntegrations:Fortnox:ClientId`
 - `FinanceIntegrations:Fortnox:ClientSecret`
@@ -29,7 +33,7 @@ Safe default endpoints:
 
 Do not store `ClientId`, `ClientSecret`, access tokens, or refresh tokens in committed configuration files.
 
-Startup validation is registered in `VirtualCompany.Infrastructure.DependencyInjection` with `FortnoxOptionsValidator` and `.ValidateOnStart()`. When `FinanceIntegrations:Fortnox:Enabled` is `true`, missing or blank required values fail startup. URI values must be absolute `http` or `https` URLs. Validation messages name configuration paths and do not echo configured secret values.
+Managed configuration is validated through the platform-admin page. URI values must be absolute `http` or `https` URLs, required scopes must be selected, and credential checks never echo values.
 
 The checked-in `appsettings.json` and `appsettings.Development.json` keep Fortnox disabled and use empty placeholders for secrets. Real values belong in user-secrets locally and in a production secret store.
 
@@ -63,6 +67,10 @@ The authorization request uses:
 - OAuth parameters: `client_id`, `redirect_uri`, `response_type`, `state`, `nonce`, and optional `scope`
 
 ## Local Development
+
+Sign in as the configured development platform administrator, open `/system/admin/finance-providers`, and save the Fortnox application there. The client secret is encrypted in a file outside the repository; no PowerShell commands are required.
+
+The following user-secret commands are retained only for bootstrapping older installations:
 
 The API project has a `UserSecretsId`, so ASP.NET Core user-secrets are available in development.
 
@@ -98,7 +106,9 @@ Enable the same scopes on the Fortnox Developer Portal app and in `FinanceIntegr
 
 ## Production Secrets
 
-Production secrets must be stored in the environment secret store. The current API supports Azure Key Vault through configuration loaded in `Program.cs`. Configure one of these non-secret values for the API:
+Use the provider-neutral management page and Azure Key Vault configuration documented in [finance provider application management](finance-provider-management.md). The platform administrator enters the credential once through the write-only form; company users never see it.
+
+The legacy configuration-based approach below is supported only as an upgrade bootstrap. Production secrets must be stored in the environment secret store. The API supports Azure Key Vault through configuration loaded in `Program.cs`. Configure one of these non-secret values for the API:
 
 - `AzureKeyVault:Uri`
 - `KeyVault:Uri`
@@ -148,6 +158,10 @@ The callback redirects back to `/finance/integrations/fortnox` or the validated 
 ## Token Storage And Refresh
 
 `FortnoxTokenStore` persists connection state in `fortnox_connections`. Access and refresh tokens are encrypted through `IFieldEncryptionService` before they are stored. Encryption purposes are separated for access tokens and refresh tokens, and encryption is company-scoped.
+
+The API uses the stable Data Protection application name `VirtualCompany.Api`. In development, keys are stored outside build output under the current user's local application-data directory at `VirtualCompany/DataProtection-Keys`, so rebuilding or replacing `x-build` output does not invalidate stored integration credentials. Other environments must configure `DataProtection:KeyRingPath` (environment variable `DataProtection__KeyRingPath`) to a persistent, access-controlled directory shared by every API instance. Container deployments must mount that directory on durable storage.
+
+If previously stored Fortnox credentials reference a key that is no longer available, the token store marks the connection `NeedsReconnect` and returns a safe reconnect-required result. It does not expose ciphertext or fail the approval request with an unhandled cryptographic exception. The lost key cannot be reconstructed; reconnect Fortnox to issue and encrypt replacement credentials.
 
 `FortnoxOAuthClient` exchanges authorization codes and refresh tokens with `POST /oauth-v1/token` using HTTP Basic authentication with the configured client id and client secret. It sends form-encoded bodies:
 

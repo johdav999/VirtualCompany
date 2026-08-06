@@ -97,6 +97,29 @@ public sealed partial class SalesApiClient
     public Task<OutboundAudienceOptionsResponse> GetCampaignAudienceOptionsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
         GetAsync<OutboundAudienceOptionsResponse>(companyId, "api/sales/campaigns/audience-options", allowNotFound: false, cancellationToken)!;
 
+    public Task<CampaignInitiativeResponse?> GetCampaignInitiativeAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
+        GetAsync<CampaignInitiativeResponse>(companyId, $"api/sales/campaigns/{campaignId:D}/initiative", allowNotFound: true, cancellationToken);
+
+    public Task<CampaignReadinessResponse?> GetCampaignReadinessAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
+        GetAsync<CampaignReadinessResponse>(companyId, $"api/sales/campaigns/{campaignId:D}/readiness", allowNotFound: true, cancellationToken);
+
+    public async Task<IReadOnlyList<CampaignActivityResponse>> ListCampaignActivitiesAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
+        await GetAsync<List<CampaignActivityResponse>>(companyId, $"api/sales/campaigns/{campaignId:D}/activities", allowNotFound: false, cancellationToken) ?? [];
+
+    public Task<CampaignPerformanceResponse?> GetCampaignPerformanceAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
+        GetAsync<CampaignPerformanceResponse>(companyId, $"api/sales/campaigns/{campaignId:D}/performance", allowNotFound: true, cancellationToken);
+
+    public Task<CampaignPerformanceResponse> CaptureCampaignPerformanceSnapshotAsync(
+        Guid companyId, Guid campaignId, CancellationToken cancellationToken = default) =>
+        SendAsync<object, CampaignPerformanceResponse>(
+            companyId, HttpMethod.Post, $"api/sales/campaigns/{campaignId:D}/performance-snapshots", new { }, cancellationToken);
+
+    public async Task<IReadOnlyList<CampaignSegmentResponse>> ListCampaignSegmentsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        await GetAsync<List<CampaignSegmentResponse>>(companyId, "api/sales/campaigns/segments", allowNotFound: false, cancellationToken) ?? [];
+
+    public Task<CampaignAudiencePreviewResponse?> PreviewCampaignSegmentAsync(Guid companyId, Guid segmentId, CancellationToken cancellationToken = default) =>
+        GetAsync<CampaignAudiencePreviewResponse>(companyId, $"api/sales/campaigns/segments/{segmentId:D}/preview", allowNotFound: true, cancellationToken);
+
     public Task<OutboundCampaignDetailResponse> CreateCampaignAsync(Guid companyId, CreateOutboundCampaignRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<CreateOutboundCampaignRequest, OutboundCampaignDetailResponse>(companyId, HttpMethod.Post, "api/sales/campaigns", request, cancellationToken);
 
@@ -240,6 +263,7 @@ public sealed record SalesDashboardResponse(
     int HotLeads,
     int DealsNeedingAttention,
     decimal ForecastRevenue,
+    IReadOnlyList<SalesDealSummaryResponse> DealsRequiringAction,
     IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
     IReadOnlyList<SalesActivityResponse> RecentActivity);
 
@@ -356,6 +380,34 @@ public sealed record StopCampaignRequest(string? Reason);
 public sealed record SaveSequenceDraftRequest(string Subject, string Body);
 public sealed record OutboundCampaignSummaryResponse(Guid Id, string Name, string Status, int AudienceCount, int PendingSteps, int SentSteps, int BouncedSteps, DateTime UpdatedUtc);
 public sealed record OutboundCampaignDetailResponse(Guid Id, string Name, string? Description, string Status, string AudienceType, OutboundPolicyResponse Policy, IReadOnlyList<OutboundCampaignContactResponse> Audience, IReadOnlyList<SequenceStepResponse> Steps, IReadOnlyList<SequenceExecutionResponse> Executions, DateTime CreatedUtc, DateTime UpdatedUtc);
+public sealed record CampaignInitiativeResponse(Guid Id, string Name, string CampaignType, string LifecycleStatus, string? Description,
+    Guid? OwnerUserId, Guid? OwnerAgentId, CampaignObjectiveResponse? PrimaryObjective, DateTime? PlanningStartsUtc,
+    DateTime? ScheduledLaunchUtc, DateTime? EndsUtc, DateTime? ReviewDueUtc, string? TimeZoneId, decimal? PlannedBudget,
+    string? BudgetCurrency, bool LegacySetupRequired, long Version, IReadOnlyList<string> MissingRequirements);
+public sealed record CampaignObjectiveResponse(string Type, decimal Target, string Unit, DateTime TargetUtc);
+public sealed record CampaignReadinessResponse(Guid CampaignId, string LifecycleStatus, bool IsReady, long Version, IReadOnlyList<string> MissingRequirements);
+public sealed record CampaignActivityResponse(Guid Id, string Name, string ActivityType, string Channel, string ExecutionMode, string Status,
+    DateTime PlannedStartUtc, DateTime DueUtc, Guid? OwnerUserId, Guid? OwnerAgentId, Guid? DependsOnActivityId,
+    string? RequiredToolCapability, int AttemptCount, string? ResultSummary, string? FailureReason);
+public sealed record CampaignPerformanceResponse(Guid CampaignId, string LifecycleStatus, CampaignObjectiveResponse? Objective,
+    decimal? ObjectiveProgress, int Audience, int Sent, int Delivered, int Replied, int Bounced, int Opportunities, int WonDeals,
+    IReadOnlyList<CampaignCurrencyAmountResponse> DirectRevenue, IReadOnlyList<CampaignCurrencyAmountResponse> PlannedBudget,
+    IReadOnlyList<CampaignCurrencyAmountResponse> Costs, IReadOnlyList<CampaignMetricResponse> Metrics,
+    IReadOnlyList<CampaignAttributionEvidenceResponse> Attribution, IReadOnlyList<CampaignEventResponse> Timeline, DateTime ObservedUtc);
+public sealed record CampaignCurrencyAmountResponse(decimal Amount, string Currency, string Classification);
+public sealed record CampaignMetricResponse(string Key, string Label, decimal? Value, string Unit, decimal? Target,
+    int DefinitionVersion, string EvidenceSummary);
+public sealed record CampaignAttributionEvidenceResponse(Guid SubjectId, string SubjectType, string Model,
+    string Classification, decimal Confidence, int WindowDays, IReadOnlyList<Guid> SourceEventIds);
+public sealed record CampaignEventResponse(Guid Id, string EventType, DateTime OccurredUtc, string Summary,
+    string SourceType, Guid? ContactId, Guid? DealId, Guid? ActivityId);
+public sealed record CampaignSegmentResponse(Guid Id, string Name, string SegmentKind, int Version, bool IsActive, string? Industry,
+    string? Country, int? MinEmployees, int? MaxEmployees, string? BuyingRole, string? CustomerLifecycle, string? ProductInterest,
+    string? PreferredLanguage, bool RequireCommunicationPermission, bool ExcludeOpenCriticalSupportCases);
+public sealed record CampaignAudiencePreviewMemberResponse(Guid ContactId, string ContactName, string Email, Guid? CustomerCompanyId,
+    string? CustomerCompanyName, string EligibilityStatus, string Reason, string ConsentStatus, string? CommunicationLanguage);
+public sealed record CampaignAudiencePreviewResponse(Guid SegmentId, int SegmentVersion, int Eligible, int Excluded, int Suppressed,
+    int Ambiguous, int MissingData, IReadOnlyList<CampaignAudiencePreviewMemberResponse> Members);
 public sealed record OutboundPolicyResponse(bool OutboundEnabled, int MaxEmailsPerDay, bool ApprovalRequired);
 public sealed record OutboundCampaignContactResponse(Guid ContactId, string ContactName, string Email, string Status, int? CurrentStepOrder, DateTime EnrolledUtc);
 public sealed record SequenceStepResponse(Guid Id, int StepOrder, int DelayDays, string Subject, bool AiPersonalizationEnabled);

@@ -31,8 +31,6 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
     private readonly IFinanceInsightPersistenceService _financeInsightPersistenceService;
     private readonly IReadOnlyList<IFinancialCheck> _financialChecks;
     private readonly FinanceRecordSourcePolicy _sourcePolicy;
-    private readonly Dictionary<string, bool> _optionalSupplierInvoiceTableAvailability = new(StringComparer.OrdinalIgnoreCase);
-
     public CompanyFinanceReadService(VirtualCompanyDbContext dbContext)
         : this(dbContext, null, null, null, null, null, null)
     {

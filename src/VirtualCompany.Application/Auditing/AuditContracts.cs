@@ -224,6 +224,8 @@ public static class AuditEventActions
     public const string ApprovalCompleted = "approval.completed";
     public const string ApprovalRejected = "approval.rejected";
     public const string ApprovalLinkedEntityStateUpdated = "approval.linked_entity.state_updated";
+    public const string SupplierApprovalAutomationGranted = "supplier.approval_automation.granted";
+    public const string SupplierApprovalAutomationRevoked = "supplier.approval_automation.revoked";
     public const string AgentToolExecutionApprovalRequested = "agent.tool_execution.approval_requested";
     public const string WorkflowInstanceStarted = "workflow.instance.started";
     public const string EscalationPolicyEvaluationStarted = "escalation.policy_evaluation.started";

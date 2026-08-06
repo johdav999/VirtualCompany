@@ -8,6 +8,7 @@ public static class CurrentUserClaimTypes
     public const string UserId = "virtual_company:user_id";
     public const string AuthProvider = "virtual_company:auth_provider";
     public const string AuthSubject = "virtual_company:auth_subject";
+    public const string PlatformRole = "virtual_company:platform_role";
 }
 
 public sealed record ExternalIdentityKey(

@@ -46,6 +46,47 @@ public sealed class AgentStaffOverviewIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Overview_can_return_all_lane_tasks_for_inline_expansion()
+    {
+        var seed = await SeedAsync();
+        await _factory.SeedAsync(dbContext =>
+        {
+            for (var index = 1; index <= 4; index++)
+            {
+                dbContext.WorkTasks.Add(new WorkTask(
+                    Guid.NewGuid(),
+                    seed.CompanyId,
+                    "finance_review",
+                    $"Additional planned task {index}",
+                    null,
+                    WorkTaskPriority.Normal,
+                    seed.FinanceAgentId,
+                    null,
+                    "user",
+                    null,
+                    status: WorkTaskStatus.New));
+            }
+
+            return Task.CompletedTask;
+        });
+        using var client = CreateAuthenticatedClient("owner", "owner@staff.example");
+        var period = $"year={DateTime.UtcNow.Year}&month={DateTime.UtcNow.Month}";
+
+        var preview = await client.GetFromJsonAsync<AgentStaffOverviewDto>(
+            $"/api/companies/{seed.CompanyId:D}/executive-cockpit/agent-staff?{period}");
+        var expanded = await client.GetFromJsonAsync<AgentStaffOverviewDto>(
+            $"/api/companies/{seed.CompanyId:D}/executive-cockpit/agent-staff?{period}&includeAllTasks=true");
+
+        Assert.NotNull(preview);
+        Assert.NotNull(expanded);
+        var previewFinance = Assert.Single(preview!.Agents, agent => agent.AgentId == seed.FinanceAgentId);
+        var expandedFinance = Assert.Single(expanded!.Agents, agent => agent.AgentId == seed.FinanceAgentId);
+        Assert.Equal(2, previewFinance.Planned.Count);
+        Assert.Equal(expandedFinance.StageCounts.Planned, expandedFinance.Planned.Count);
+        Assert.True(expandedFinance.Planned.Count > previewFinance.Planned.Count);
+    }
+
+    [Fact]
     public async Task Overview_projects_unassigned_department_work_to_the_active_department_agent()
     {
         var seed = await SeedAsync();
@@ -73,6 +114,106 @@ public sealed class AgentStaffOverviewIntegrationTests : IDisposable
         var support = Assert.Single(overview.Agents, agent => agent.AgentId == seed.SupportAgentId);
         var supportItem = Assert.Single(support.InProgress, item => item.Title == "Answer customer question");
         Assert.Contains($"/support/cases/{supportItem.Id:D}", supportItem.Route, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Overview_places_an_in_progress_task_with_a_pending_approval_in_the_human_approval_stage()
+    {
+        var seed = await SeedAsync();
+        var taskId = Guid.NewGuid();
+        var approvalId = Guid.NewGuid();
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.WorkTasks.Add(new WorkTask(
+                taskId,
+                seed.CompanyId,
+                "finance.supplier_invoice_payment_proposal",
+                "Approve payment proposal for OpenAI",
+                "Review the payment proposal before export.",
+                WorkTaskPriority.High,
+                seed.FinanceAgentId,
+                null,
+                "system",
+                null,
+                status: WorkTaskStatus.InProgress));
+            dbContext.ApprovalRequests.Add(ApprovalRequest.CreateForTarget(
+                approvalId,
+                seed.CompanyId,
+                ApprovalTargetEntityType.Task,
+                taskId,
+                "system",
+                Guid.NewGuid(),
+                "supplier_invoice_payment_proposal",
+                new Dictionary<string, JsonNode?> { ["reason"] = JsonValue.Create("Human approval is pending") },
+                "finance_approver",
+                null,
+                []));
+            return Task.CompletedTask;
+        });
+        using var client = CreateAuthenticatedClient("owner", "owner@staff.example");
+
+        var response = await client.GetAsync(
+            $"/api/companies/{seed.CompanyId:D}/executive-cockpit/agent-staff?year={DateTime.UtcNow.Year}&month={DateTime.UtcNow.Month}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var overview = await response.Content.ReadFromJsonAsync<AgentStaffOverviewDto>();
+        Assert.NotNull(overview);
+        var finance = Assert.Single(overview!.Agents, agent => agent.AgentId == seed.FinanceAgentId);
+        Assert.DoesNotContain(finance.InProgress, task => task.Id == taskId);
+        var approvalTask = Assert.Single(finance.AwaitingHumanApproval, task => task.Id == taskId);
+        Assert.Equal(WorkTaskStatus.AwaitingApproval.ToStorageValue(), approvalTask.Status);
+        Assert.Equal(approvalId, approvalTask.ApprovalId);
+        Assert.Contains($"approvalId={approvalId:D}", approvalTask.ApprovalRoute, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Overview_does_not_leave_an_approved_payment_proposal_task_in_progress()
+    {
+        var seed = await SeedAsync();
+        var taskId = Guid.NewGuid();
+        var approvalId = Guid.NewGuid();
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.WorkTasks.Add(new WorkTask(
+                taskId,
+                seed.CompanyId,
+                "finance.supplier_invoice_payment_proposal",
+                "Approve payment proposal for OpenAI",
+                "Review the payment proposal before export.",
+                WorkTaskPriority.High,
+                seed.FinanceAgentId,
+                null,
+                "system",
+                null,
+                status: WorkTaskStatus.InProgress));
+            var approval = ApprovalRequest.CreateForTarget(
+                approvalId,
+                seed.CompanyId,
+                ApprovalTargetEntityType.Task,
+                taskId,
+                "system",
+                Guid.NewGuid(),
+                "supplier_invoice_payment_proposal",
+                new Dictionary<string, JsonNode?> { ["reason"] = JsonValue.Create("Human approval is required") },
+                "finance_approver",
+                null,
+                []);
+            approval.ApproveCurrentStep(approval.CurrentActionableStep!.Id, Guid.NewGuid(), "Approved.");
+            dbContext.ApprovalRequests.Add(approval);
+            return Task.CompletedTask;
+        });
+        using var client = CreateAuthenticatedClient("owner", "owner@staff.example");
+
+        var response = await client.GetAsync(
+            $"/api/companies/{seed.CompanyId:D}/executive-cockpit/agent-staff?year={DateTime.UtcNow.Year}&month={DateTime.UtcNow.Month}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var overview = await response.Content.ReadFromJsonAsync<AgentStaffOverviewDto>();
+        Assert.NotNull(overview);
+        var finance = Assert.Single(overview!.Agents, agent => agent.AgentId == seed.FinanceAgentId);
+        Assert.DoesNotContain(finance.InProgress, task => task.Id == taskId);
+        var completedTask = Assert.Single(finance.Completed, task => task.Id == taskId);
+        Assert.Equal(WorkTaskStatus.Completed.ToStorageValue(), completedTask.Status);
     }
 
     [Fact]

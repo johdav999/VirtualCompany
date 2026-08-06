@@ -178,7 +178,41 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
             foreach (var message in messages)
             {
                 var detection = _billDetectionService.Detect(message);
-                LogScannedMessage(job, connection, run.Id, message, detection);
+                var evaluationMessage = message;
+                if (ShouldHydratePossibleBodyOnlyCandidate(message, detection))
+                {
+                    _logger.LogInformation(
+                        "Manual mailbox bill scan found a weak body-only bill signal and will fetch the full message before rejecting it. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. MessageId: {MessageId}. SubjectPresent: {SubjectPresent}. SnippetLength: {SnippetLength}. BodyPreviewLength: {BodyPreviewLength}. SenderDomain: {SenderDomain}. InitialReason: {InitialReason}.",
+                        job.CompanyId,
+                        connection.Provider,
+                        connection.Id,
+                        run.Id,
+                        message.ProviderMessageId,
+                        !string.IsNullOrWhiteSpace(message.Subject),
+                        message.Snippet?.Length ?? 0,
+                        message.BodyPreview?.Length ?? 0,
+                        GetSenderDomain(message.FromAddress),
+                        detection.ReasonSummary);
+
+                    evaluationMessage = await HydratePossibleBodyOnlyCandidateAsync(provider, accessToken, message, cancellationToken);
+                    if (!ReferenceEquals(evaluationMessage, message))
+                    {
+                        detection = _billDetectionService.Detect(evaluationMessage);
+                        _logger.LogInformation(
+                            "Manual mailbox bill scan re-evaluated a hydrated body-only message. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. MessageId: {MessageId}. Candidate: {Candidate}. SourceTypes: {SourceTypes}. BodyLength: {BodyLength}. Reason: {Reason}.",
+                            job.CompanyId,
+                            connection.Provider,
+                            connection.Id,
+                            run.Id,
+                            evaluationMessage.ProviderMessageId,
+                            detection.IsCandidate,
+                            FormatEnumList(detection.DetectedSourceTypes),
+                            evaluationMessage.BodyPreview?.Length ?? 0,
+                            detection.ReasonSummary);
+                    }
+                }
+
+                LogScannedMessage(job, connection, run.Id, evaluationMessage, detection);
                 if (!detection.IsCandidate)
                 {
                     if (ShouldPersistRejectedAttachmentMessage(detection))
@@ -188,14 +222,14 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                             .SingleOrDefaultAsync(
                                 x => x.CompanyId == job.CompanyId &&
                                     x.MailboxConnectionId == connection.Id &&
-                                    x.ExternalMessageId == message.ProviderMessageId,
+                                    x.ExternalMessageId == evaluationMessage.ProviderMessageId,
                                 cancellationToken);
                         if (existingRejectedSnapshot is null)
                         {
                             var rejectedSnapshot = CreateSnapshot(
                                 job,
                                 connection.Id,
-                                message,
+                                evaluationMessage,
                                 detection,
                                 knownAttachmentSnapshotIdsByHash,
                                 EmailCandidateDecision.NotCandidate,
@@ -213,13 +247,13 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                 }
 
                 detected++;
-                var extractionMessage = await HydrateBodyOnlyCandidateAsync(provider, accessToken, message, detection, cancellationToken);
+                var extractionMessage = await HydrateBodyOnlyCandidateAsync(provider, accessToken, evaluationMessage, detection, cancellationToken);
                 var existingSnapshot = await _dbContext.EmailMessageSnapshots
                     .Include(x => x.Attachments)
                     .SingleOrDefaultAsync(
                         x => x.CompanyId == job.CompanyId &&
                             x.MailboxConnectionId == connection.Id &&
-                            x.ExternalMessageId == message.ProviderMessageId,
+                            x.ExternalMessageId == extractionMessage.ProviderMessageId,
                         cancellationToken);
                 if (existingSnapshot is not null)
                 {
@@ -467,17 +501,19 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
         BillDetectionResult detection)
     {
         _logger.LogInformation(
-            "Manual mailbox bill scan evaluated message. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. MessageId: {MessageId}. ReceivedUtc: {ReceivedUtc}. From: {FromAddress}. Subject: {Subject}. Folder: {Folder}. Attachments: {Attachments}. Candidate: {IsCandidate}. MatchedRules: {MatchedRules}. SourceTypes: {SourceTypes}. Reason: {Reason}.",
+            "Manual mailbox bill scan evaluated message. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. MessageId: {MessageId}. ReceivedUtc: {ReceivedUtc}. SenderDomain: {SenderDomain}. Folder: {Folder}. SubjectPresent: {SubjectPresent}. SnippetLength: {SnippetLength}. BodyPreviewLength: {BodyPreviewLength}. AttachmentCount: {AttachmentCount}. Candidate: {IsCandidate}. MatchedRules: {MatchedRules}. SourceTypes: {SourceTypes}. Reason: {Reason}.",
             job.CompanyId,
             connection.Provider,
             connection.Id,
             runId,
             message.ProviderMessageId,
             message.ReceivedUtc,
-            message.FromAddress ?? "(unknown)",
-            RedactLogText(message.Subject),
+            GetSenderDomain(message.FromAddress),
             FormatFolder(message),
-            FormatAttachments(message),
+            !string.IsNullOrWhiteSpace(message.Subject),
+            message.Snippet?.Length ?? 0,
+            message.BodyPreview?.Length ?? 0,
+            message.AttachmentSummaries.Count,
             detection.IsCandidate,
             FormatEnumList(detection.MatchedRules),
             FormatEnumList(detection.DetectedSourceTypes),
@@ -496,15 +532,20 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
             : $"{message.FolderDisplayName ?? "(unknown)"} ({message.FolderId ?? "unknown"})";
     }
 
-    private static string FormatAttachments(MailboxMessageSummary message)
+    private static string GetSenderDomain(string? fromAddress)
     {
-        var attachments = message.AttachmentSummaries
-            .Select(attachment => string.IsNullOrWhiteSpace(attachment.FileName)
-                ? $"{attachment.ExternalAttachmentId} [{attachment.MimeType ?? "unknown"}]"
-                : $"{attachment.FileName} [{attachment.MimeType ?? "unknown"}]")
-            .ToArray();
+        if (string.IsNullOrWhiteSpace(fromAddress))
+        {
+            return "(unknown)";
+        }
 
-        return attachments.Length == 0 ? "(none)" : string.Join(", ", attachments.Select(RedactLogText));
+        var atIndex = fromAddress.LastIndexOf('@');
+        if (atIndex < 0 || atIndex == fromAddress.Length - 1)
+        {
+            return "(unknown)";
+        }
+
+        return fromAddress[(atIndex + 1)..].Trim().TrimEnd('>').ToLowerInvariant();
     }
 
     private static string FormatEnumList<T>(IReadOnlyCollection<T> values) where T : struct, Enum =>
@@ -596,6 +637,75 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
         !detection.IsCandidate &&
         detection.CandidateAttachments.Count > 0;
 
+    private static bool ShouldHydratePossibleBodyOnlyCandidate(
+        MailboxMessageSummary message,
+        BillDetectionResult detection)
+    {
+        if (detection.IsCandidate ||
+            detection.CandidateAttachments.Count > 0 ||
+            HasUsefulBodyPreview(message))
+        {
+            return false;
+        }
+
+        var weakSignalText = string.Join(
+            " ",
+            message.Subject,
+            message.Snippet,
+            message.FromAddress,
+            message.FolderId,
+            message.FolderDisplayName,
+            string.Join(" ", message.AttachmentFileNames));
+
+        return ContainsIgnoreCase(weakSignalText, "invoice") ||
+            ContainsIgnoreCase(weakSignalText, "faktura") ||
+            ContainsIgnoreCase(weakSignalText, "bill") ||
+            ContainsIgnoreCase(weakSignalText, "supplier") ||
+            ContainsIgnoreCase(weakSignalText, "amount due") ||
+            ContainsIgnoreCase(weakSignalText, "payment due") ||
+            ContainsIgnoreCase(weakSignalText, "due date");
+    }
+
+    private async Task<MailboxMessageSummary> HydratePossibleBodyOnlyCandidateAsync(
+        IMailboxProviderClient provider,
+        string accessToken,
+        MailboxMessageSummary message,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var fullMessage = await provider.GetMessageAsync(
+                accessToken,
+                new MailboxMessageFetchRequest(message.ProviderMessageId),
+                cancellationToken);
+            var bodyText = SelectBillBodyText(fullMessage);
+            if (string.IsNullOrWhiteSpace(bodyText))
+            {
+                _logger.LogInformation(
+                    "Manual mailbox bill scan fetched a weak body-only signal but no usable full body text was returned. MessageId: {MessageId}.",
+                    message.ProviderMessageId);
+                return message;
+            }
+
+            return message with
+            {
+                Subject = string.IsNullOrWhiteSpace(fullMessage.Subject) ? message.Subject : fullMessage.Subject,
+                BodyPreview = bodyText,
+                FromAddress = fullMessage.Sender.Email ?? message.FromAddress,
+                FromDisplayName = fullMessage.Sender.DisplayName ?? message.FromDisplayName,
+                ReceivedUtc = fullMessage.ReceivedUtc ?? message.ReceivedUtc
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Manual mailbox bill scan could not fetch full message body for weak body-only signal. MessageId: {MessageId}.",
+                message.ProviderMessageId);
+            return message;
+        }
+    }
+
     private async Task<MailboxMessageSummary> HydrateBodyOnlyCandidateAsync(
         IMailboxProviderClient provider,
         string accessToken,
@@ -618,9 +728,16 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
             var bodyText = SelectBillBodyText(fullMessage);
             if (string.IsNullOrWhiteSpace(bodyText))
             {
+                _logger.LogInformation(
+                    "Manual mailbox bill scan fetched a body-only candidate but no usable text was returned. MessageId: {MessageId}.",
+                    message.ProviderMessageId);
                 return message;
             }
 
+            _logger.LogInformation(
+                "Manual mailbox bill scan hydrated a body-only candidate. MessageId: {MessageId}. BodyLength: {BodyLength}.",
+                message.ProviderMessageId,
+                bodyText.Length);
             return message with
             {
                 Subject = string.IsNullOrWhiteSpace(fullMessage.Subject) ? message.Subject : fullMessage.Subject,
@@ -643,6 +760,10 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
     private static bool HasUsefulBodyPreview(MailboxMessageSummary message) =>
         !string.IsNullOrWhiteSpace(message.BodyPreview) &&
         !string.Equals(message.BodyPreview, message.Snippet, StringComparison.Ordinal);
+
+    private static bool ContainsIgnoreCase(string? value, string keyword) =>
+        !string.IsNullOrWhiteSpace(value) &&
+        value.Contains(keyword, StringComparison.OrdinalIgnoreCase);
 
     private static string? SelectBillBodyText(MailboxInboundMessage message) =>
         !string.IsNullOrWhiteSpace(message.PlainTextBody)

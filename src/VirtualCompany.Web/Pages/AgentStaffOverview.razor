@@ -76,7 +76,7 @@ else
                 <button type="button" class="btn btn-outline-secondary agent-staff-icon-button" title="@AgentText["Refresh"]" aria-label="@AgentText["Refresh"]" @onclick="RefreshAsync" disabled="@isRefreshing">
                     <span class="bi bi-arrow-clockwise" aria-hidden="true"></span>
                 </button>
-                <a class="btn btn-primary" href="@($"/tasks?companyId={CompanyId:D}")">
+                <a class="btn btn-primary" href="@($"/work?companyId={CompanyId:D}&tab=tasks")">
                     <span class="bi bi-plus-lg" aria-hidden="true"></span>
                     @AgentText["CreateTask"]
                 </a>
@@ -131,7 +131,7 @@ else
                         <span class="dashboard-kicker">@AgentText["WorkBoard"]</span>
                         <h2 id="agent-work-heading">@AgentText["WorkByAgent"]</h2>
                     </div>
-                    <a class="btn btn-sm btn-outline-secondary" href="@($"/tasks?companyId={CompanyId:D}")">@AgentText["OpenTaskList"]</a>
+                    <a class="btn btn-sm btn-outline-secondary" href="@($"/work?companyId={CompanyId:D}&tab=tasks")">@AgentText["OpenTaskList"]</a>
                 </div>
 
                 @if (overview.Agents.Count == 0)
@@ -172,48 +172,68 @@ else
                                         <small><i class="@GetAgentStatusCss(agent.Status)"></i>@GetStatusLabel(agent.Status)</small>
                                     </div>
                                 </div>
-                                @RenderTaskStage(agent.Planned, agent.StageCounts.Planned, "planned", AgentText["NoPlannedWork"])
-                                @RenderTaskStage(agent.InProgress, agent.StageCounts.InProgress, "in-progress", AgentText["NoInProgressWork"])
-                                @RenderTaskStage(agent.AwaitingHumanApproval, agent.StageCounts.AwaitingHumanApproval, "approval", AgentText["NoApprovalWork"])
-                                @RenderTaskStage(agent.Completed, agent.StageCounts.Completed, "completed", AgentText["NoCompletedWork"])
+                                @RenderTaskStage(agent, agent.Planned, agent.StageCounts.Planned, "planned", AgentText["NoPlannedWork"])
+                                @RenderTaskStage(agent, agent.InProgress, agent.StageCounts.InProgress, "in-progress", AgentText["NoInProgressWork"])
+                                @RenderTaskStage(agent, agent.AwaitingHumanApproval, agent.StageCounts.AwaitingHumanApproval, "approval", AgentText["NoApprovalWork"])
+                                @RenderTaskStage(agent, agent.Completed, agent.StageCounts.Completed, "completed", AgentText["NoCompletedWork"])
                             </div>
                         }
                     </div>
                 }
             </section>
 
-            <aside class="agent-staff-attention" aria-labelledby="attention-heading">
+            <aside class="agent-staff-details" aria-labelledby="task-details-heading">
                 <div class="agent-staff-section-heading">
                     <div>
-                        <span class="dashboard-kicker">@AgentText["Attention"]</span>
-                        <h2 id="attention-heading">@AgentText["TeamAttention"]</h2>
+                        <span class="dashboard-kicker">@AgentText["SelectedWork"]</span>
+                        <h2 id="task-details-heading">@AgentText["TaskDetails"]</h2>
                     </div>
-                    <span class="agent-staff-count">@overview.AttentionItems.Count</span>
                 </div>
-                @if (overview.AttentionItems.Count == 0)
+                @if (SelectedTask is not { } selection)
                 {
-                    <div class="agent-staff-attention-empty">
-                        <span class="bi bi-check2-circle" aria-hidden="true"></span>
-                        <p>@AgentText["NothingNeedsAttention"]</p>
+                    <div class="agent-staff-details-empty">
+                        <span class="bi bi-card-text" aria-hidden="true"></span>
+                        <h3>@AgentText["SelectTask"]</h3>
+                        <p>@AgentText["SelectTaskDescription"]</p>
                     </div>
                 }
                 else
                 {
-                    <div class="agent-staff-attention-list">
-                        @foreach (var item in overview.AttentionItems)
+                    <div class="agent-staff-details-body">
+                        <div class="agent-staff-details-badges">
+                            <span class="agent-staff-priority agent-staff-priority--@NormalizeCssToken(selection.Task.Priority)">@FormatPriority(selection.Task.Priority)</span>
+                            <span class="agent-staff-details-status">@GetStatusLabel(selection.Task.Status)</span>
+                        </div>
+                        <h3>@selection.Task.Title</h3>
+                        @if (!string.IsNullOrWhiteSpace(selection.Task.Context))
                         {
-                            <article class="agent-staff-attention-item agent-staff-attention-item--@NormalizeCssToken(item.Severity)">
-                                <span class="agent-staff-attention-marker" aria-hidden="true"></span>
-                                <div>
-                                    <h3>@GetAttentionTitle(item)</h3>
-                                    <p>@GetAttentionSummary(item)</p>
-                                    @if (!string.IsNullOrWhiteSpace(item.Route))
-                                    {
-                                        <a href="@item.Route">@GetAttentionAction(item)<span class="bi bi-arrow-right" aria-hidden="true"></span></a>
-                                    }
-                                </div>
-                            </article>
+                            <p class="agent-staff-details-context">@selection.Task.Context</p>
                         }
+                        <dl class="agent-staff-details-facts">
+                            <div>
+                                <dt>@AgentText["AssignedAgent"]</dt>
+                                <dd>@selection.Agent.DisplayName <span>@selection.Agent.RoleName</span></dd>
+                            </div>
+                            <div>
+                                <dt>@AgentText["Stage"]</dt>
+                                <dd>@GetStageLabel(selection.Stage)</dd>
+                            </div>
+                            <div>
+                                <dt>@AgentText["DueDate"]</dt>
+                                <dd>@FormatTaskDueDate(selection.Task)</dd>
+                            </div>
+                            <div>
+                                <dt>@AgentText["LastUpdated"]</dt>
+                                <dd>@LocalDateTime.DateTime(selection.Task.UpdatedUtc)</dd>
+                            </div>
+                        </dl>
+                        <div class="agent-staff-details-actions">
+                            @if (!string.IsNullOrWhiteSpace(selection.Task.ApprovalRoute))
+                            {
+                                <a class="btn btn-primary" href="@selection.Task.ApprovalRoute">@AgentText["ReviewApproval"]</a>
+                            }
+                            <a class="btn btn-outline-secondary" href="@selection.Task.Route">@AgentText["OpenTask"]</a>
+                        </div>
                     </div>
                 }
             </aside>
@@ -233,10 +253,15 @@ else
 
     private bool isLoading = true;
     private bool isRefreshing;
+    private const int CollapsedTasksPerLane = 2;
     private string? errorMessage;
     private CurrentUserContextViewModel? currentUser;
     private AgentStaffOverviewViewModel? overview;
+    private Guid? selectedTaskId;
+    private readonly HashSet<string> expandedTaskStages = new(StringComparer.Ordinal);
     private CancellationTokenSource? refreshCancellationTokenSource;
+
+    private SelectedTaskContext? SelectedTask => FindSelectedTask();
 
     private DateTime SelectedPeriod => IsValidPeriod(Year, Month)
         ? new DateTime(Year!.Value, Month!.Value, 1)
@@ -335,6 +360,10 @@ else
         }
 
         overview = loaded;
+        if (selectedTaskId.HasValue && SelectedTask is null)
+        {
+            selectedTaskId = null;
+        }
         errorMessage = null;
     }
 
@@ -387,40 +416,118 @@ else
         return Task.CompletedTask;
     }
 
-    private RenderFragment RenderTaskStage(IReadOnlyList<AgentStaffTaskViewModel> tasks, int totalCount, string stage, string emptyMessage) => @<div class="agent-staff-stage agent-staff-stage--@stage" role="cell">
+    private RenderFragment RenderTaskStage(AgentStaffRowViewModel agent, IReadOnlyList<AgentStaffTaskViewModel> tasks, int totalCount, string stage, string emptyMessage) => @<div class="agent-staff-stage agent-staff-stage--@stage" role="cell">
             @if (tasks.Count == 0)
             {
                 <span class="agent-staff-stage-empty">@emptyMessage</span>
             }
             else
             {
-                @foreach (var task in tasks)
-                {
-                    <article class="agent-staff-task agent-staff-task--@stage">
-                        <div class="agent-staff-task-topline">
-                            <span class="agent-staff-priority agent-staff-priority--@NormalizeCssToken(task.Priority)">@FormatPriority(task.Priority)</span>
-                            <span>@FormatTaskDate(task)</span>
-                        </div>
-                        <a class="agent-staff-task-title" href="@task.Route">@task.Title</a>
-                        @if (!string.IsNullOrWhiteSpace(task.Context))
-                        {
-                            <p>@task.Context</p>
-                        }
-                        <div class="agent-staff-task-footer">
-                            <span>@GetStatusLabel(task.Status)</span>
-                            @if (!string.IsNullOrWhiteSpace(task.ApprovalRoute))
+                var stageKey = BuildTaskStageKey(agent.AgentId, stage);
+                var isExpanded = expandedTaskStages.Contains(stageKey);
+                var visibleTasks = isExpanded ? tasks : tasks.Take(CollapsedTasksPerLane);
+                var hiddenTaskCount = Math.Max(0, tasks.Count - CollapsedTasksPerLane);
+                var taskListId = BuildTaskStageDomId(agent.AgentId, stage);
+                <div id="@taskListId" class="agent-staff-task-list">
+                    @foreach (var task in visibleTasks)
+                    {
+                        <button type="button"
+                                class="@GetTaskCardCss(stage, task.Id)"
+                                aria-pressed="@(selectedTaskId == task.Id)"
+                                @onclick="() => SelectTask(task.Id)">
+                            <div class="agent-staff-task-topline">
+                                <span class="agent-staff-priority agent-staff-priority--@NormalizeCssToken(task.Priority)">@FormatPriority(task.Priority)</span>
+                                <span>@FormatTaskDate(task)</span>
+                            </div>
+                            <span class="agent-staff-task-title">@task.Title</span>
+                            @if (!string.IsNullOrWhiteSpace(task.Context))
                             {
-                                <a href="@task.ApprovalRoute">@AgentText["Review"]</a>
+                                <p>@task.Context</p>
                             }
-                        </div>
-                    </article>
-                }
-                @if (totalCount > tasks.Count)
+                            <div class="agent-staff-task-footer">
+                                <span>@GetStatusLabel(task.Status)</span>
+                                @if (!string.IsNullOrWhiteSpace(task.ApprovalRoute))
+                                {
+                                    <strong>@AgentText["Review"]</strong>
+                                }
+                            </div>
+                        </button>
+                    }
+                </div>
+                @if (hiddenTaskCount > 0)
                 {
-                    <a class="agent-staff-more" href="@($"/tasks?companyId={CompanyId:D}")">@AgentText["MoreItems", totalCount - tasks.Count]</a>
+                    <button type="button"
+                            class="agent-staff-more"
+                            aria-expanded="@isExpanded"
+                            aria-controls="@taskListId"
+                            @onclick="() => ToggleTaskStage(agent.AgentId, stage)">
+                        @(isExpanded ? AgentText["ShowFewerItems"] : AgentText["MoreItems", Math.Max(hiddenTaskCount, totalCount - CollapsedTasksPerLane)])
+                    </button>
                 }
             }
         </div>;
+
+    private void SelectTask(Guid taskId) => selectedTaskId = taskId;
+
+    private void ToggleTaskStage(Guid agentId, string stage)
+    {
+        var key = BuildTaskStageKey(agentId, stage);
+        if (!expandedTaskStages.Add(key))
+        {
+            expandedTaskStages.Remove(key);
+        }
+    }
+
+    private static string BuildTaskStageKey(Guid agentId, string stage) => $"{agentId:N}:{stage}";
+
+    private static string BuildTaskStageDomId(Guid agentId, string stage) =>
+        $"agent-staff-stage-{agentId:N}-{stage.Replace("_", "-", StringComparison.Ordinal)}";
+
+    private SelectedTaskContext? FindSelectedTask()
+    {
+        if (overview is null || selectedTaskId is not Guid taskId)
+        {
+            return null;
+        }
+
+        foreach (var agent in overview.Agents)
+        {
+            var stages = new[]
+            {
+                (Name: "planned", Tasks: agent.Planned),
+                (Name: "in-progress", Tasks: agent.InProgress),
+                (Name: "approval", Tasks: agent.AwaitingHumanApproval),
+                (Name: "completed", Tasks: agent.Completed)
+            };
+            foreach (var stage in stages)
+            {
+                var task = stage.Tasks.FirstOrDefault(item => item.Id == taskId);
+                if (task is not null)
+                {
+                    return new SelectedTaskContext(agent, task, stage.Name);
+                }
+            }
+        }
+
+        return null;
+    }
+
+    private string GetTaskCardCss(string stage, Guid taskId) => selectedTaskId == taskId
+        ? $"agent-staff-task agent-staff-task--{stage} agent-staff-task--selected"
+        : $"agent-staff-task agent-staff-task--{stage}";
+
+    private string GetStageLabel(string stage) => stage switch
+    {
+        "planned" => AgentText["Planned"],
+        "in-progress" => AgentText["InProgress"],
+        "approval" => AgentText["AwaitingHumanApproval"],
+        "completed" => AgentText["Completed"],
+        _ => stage
+    };
+
+    private string FormatTaskDueDate(AgentStaffTaskViewModel task) => task.DueUtc is DateTime dueUtc
+        ? LocalDateTime.DateTime(dueUtc)
+        : AgentText["NoDueDate"];
 
     private string FormatFinancialValue(decimal? value)
     {
@@ -531,6 +638,11 @@ else
 
     private static string BuildOverviewUri(Guid companyId, DateTime period) =>
         $"/agents/staff?companyId={companyId:D}&year={period.Year}&month={period.Month}";
+
+    private sealed record SelectedTaskContext(
+        AgentStaffRowViewModel Agent,
+        AgentStaffTaskViewModel Task,
+        string Stage);
 
     public void Dispose() => StopRefresh();
 }

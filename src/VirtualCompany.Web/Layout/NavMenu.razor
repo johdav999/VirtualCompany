@@ -1,6 +1,7 @@
 @inject OnboardingApiClient ApiClient
 @inject FinanceAccessResolver FinanceAccessResolver
 @inject AgentApiClient AgentApiClient
+@inject FinanceIntegrationApplicationApiClient FinanceProviderAdminApiClient
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @inject IStringLocalizer<NavigationResources> NavigationText
@@ -12,112 +13,115 @@
 @using VirtualCompany.Web.Localization
 @using VirtualCompany.Shared
 
-<div class="top-row ps-3 navbar navbar-dark">
+<div class="top-row navbar">
     <div class="container-fluid">
-        <a class="navbar-brand" href="">Virtual Company</a>
-        <button title="@NavigationText["NavigationMenu"]" class="navbar-toggler" @onclick="ToggleNavMenu">
-            <span class="navbar-toggler-icon"></span>
+        <a class="navbar-brand" href="@dashboardHref">Virtual Company</a>
+        <button @ref="menuButton"
+                type="button"
+                title="@NavigationText["NavigationMenu"]"
+                aria-label="@NavigationText["NavigationMenu"]"
+                aria-expanded="@(!collapseNavMenu)"
+                aria-controls="vc-primary-navigation"
+                class="navbar-toggler"
+                @onclick="ToggleNavMenuAsync">
+            <span class="nav-menu-icon" aria-hidden="true"></span>
         </button>
     </div>
 </div>
 
-<div class="@NavMenuCssClass nav-scrollable" @onclick="ToggleNavMenu">
+@if (!collapseNavMenu)
+{
+    <button type="button"
+            class="nav-drawer-backdrop"
+            aria-label="@NavigationText["CloseNavigation"]"
+            @onclick="CloseNavMenuAsync"></button>
+}
+
+<div id="vc-primary-navigation"
+     @ref="menuPanel"
+     class="@NavMenuCssClass nav-scrollable"
+     role="dialog"
+     aria-modal="@(!collapseNavMenu)"
+     aria-label="@NavigationText["NavigationMenu"]">
     <div class="nav-menu-shell">
-        <nav class="nav flex-column nav-menu-primary">
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="bi bi-house-door-fill-nav-menu" aria-hidden="true"></span> @NavigationText["Home"]
-            </NavLink>
+        <div class="nav-drawer-heading">
+            <span>@NavigationText["NavigationMenu"]</span>
+            <button type="button"
+                    class="nav-drawer-close"
+                    aria-label="@NavigationText["CloseNavigation"]"
+                    @onclick="CloseNavMenuAsync">
+                <span class="bi bi-x-lg" aria-hidden="true"></span>
+            </button>
         </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="onboarding">
-                <span class="bi bi-building-add" aria-hidden="true"></span> @NavigationText["Onboarding"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@dashboardHref">
-                <span class="bi bi-grid-1x2" aria-hidden="true"></span> @NavigationText["Dashboard"]
-            </NavLink>
-        </div>
-        @if (!string.IsNullOrWhiteSpace(financeHref))
-        {
+
+        <nav class="nav flex-column nav-menu-primary" aria-label="@NavigationText["PrimaryNavigation"]">
             <div class="nav-item px-3">
-                <NavLink class="nav-link" href="@financeHref">
-                    <span class="bi bi-cash-stack" aria-hidden="true"></span> @NavigationText["Finance"]
+                <NavLink class="nav-link" href="@dashboardHref" @onclick="CloseNavMenuAsync">
+                    <span class="nav-icon nav-icon-overview" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <rect x="3" y="3" width="7" height="7" rx="1"></rect>
+                            <rect x="14" y="3" width="7" height="7" rx="1"></rect>
+                            <rect x="3" y="14" width="7" height="7" rx="1"></rect>
+                            <rect x="14" y="14" width="7" height="7" rx="1"></rect>
+                        </svg>
+                    </span>
+                    <span>@NavigationText["Overview"]</span>
                 </NavLink>
             </div>
-            @if (!string.IsNullOrWhiteSpace(simulationLabHref))
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="@agentStaffHref" @onclick="CloseNavMenuAsync">
+                    <span class="nav-icon nav-icon-agents" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <circle cx="12" cy="7" r="3"></circle>
+                            <circle cx="5.5" cy="9" r="2.25"></circle>
+                            <circle cx="18.5" cy="9" r="2.25"></circle>
+                            <path d="M7 20v-1.5A4.5 4.5 0 0 1 11.5 14h1a4.5 4.5 0 0 1 4.5 4.5V20"></path>
+                            <path d="M2 19v-1a3.5 3.5 0 0 1 3.5-3.5H7"></path>
+                            <path d="M22 19v-1a3.5 3.5 0 0 0-3.5-3.5H17"></path>
+                        </svg>
+                    </span>
+                    <span>@NavigationText["AgentTeam"]</span>
+                </NavLink>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(financeHref))
             {
                 <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="@simulationLabHref">
-                        <span class="bi bi-sliders" aria-hidden="true"></span> @NavigationText["SimulationLab"]
+                    <NavLink class="nav-link" href="@financeHref" @onclick="CloseNavMenuAsync">
+                        <span class="nav-icon nav-icon-finance" aria-hidden="true"></span>
+                        <span>@NavigationText["Finance"]</span>
                     </NavLink>
                 </div>
             }
-            @if (!string.IsNullOrWhiteSpace(systemAdminHref))
-            {
-                <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="@systemAdminHref">
-                        <span class="bi bi-tools" aria-hidden="true"></span> @NavigationText["SystemAdmin"]
-                    </NavLink>
-                </div>
-            }
-        }
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@salesHref">
-                <span class="bi bi-graph-up-arrow" aria-hidden="true"></span> @NavigationText["Sales"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@supportHref">
-                <span class="bi bi-headset" aria-hidden="true"></span> @NavigationText["Support"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@agentStaffHref">
-                <span class="bi bi-kanban" aria-hidden="true"></span> @NavigationText["AgentStaff"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@agentsHref">
-                <span class="bi bi-people" aria-hidden="true"></span> @NavigationText["Agents"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@workflowsHref">
-                <span class="bi bi-diagram-3" aria-hidden="true"></span> @NavigationText["Workflows"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@inboxHref">
-                <span class="bi bi-bell" aria-hidden="true"></span> @NavigationText["Inbox"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@activityHref">
-                <span class="bi bi-activity" aria-hidden="true"></span> @NavigationText["Activity"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@approvalsHref">
-                <span class="bi bi-check2-square" aria-hidden="true"></span> @NavigationText["Approvals"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@outboundReviewsHref">
-                <span class="bi bi-send-check" aria-hidden="true"></span> @NavigationText["MessageReview"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@auditHref">
-                <span class="bi bi-list-check" aria-hidden="true"></span> @NavigationText["Audit"]
-            </NavLink>
-        </div>
-        <div class="nav-item px-3">
-            <NavLink class="nav-link" href="@briefingHref">
-                <span class="bi bi-bell" aria-hidden="true"></span> @NavigationText["BriefingDelivery"]
-            </NavLink>
-        </div>
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="@salesHref" @onclick="CloseNavMenuAsync">
+                    <span class="nav-icon nav-icon-sales" aria-hidden="true"></span>
+                    <span>@NavigationText["Sales"]</span>
+                </NavLink>
+            </div>
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="@marketingHref" @onclick="CloseNavMenuAsync">
+                    <span class="nav-icon nav-icon-marketing" aria-hidden="true">
+                        <svg viewBox="0 0 24 24" focusable="false">
+                            <path d="M4 10v4a2 2 0 0 0 2 2h2l8 4V4L8 8H6a2 2 0 0 0-2 2Z"></path>
+                            <path d="M8 16l1.5 4"></path>
+                            <path d="M19 8.5a4.5 4.5 0 0 1 0 7"></path>
+                        </svg>
+                    </span>
+                    <span>@NavigationText["Marketing"]</span>
+                </NavLink>
+            </div>
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="@supportHref" @onclick="CloseNavMenuAsync">
+                    <span class="nav-icon nav-icon-support" aria-hidden="true"></span>
+                    <span>@NavigationText["Support"]</span>
+                </NavLink>
+            </div>
+            <div class="nav-item px-3">
+                <NavLink class="nav-link" href="@workHref" @onclick="CloseNavMenuAsync">
+                    <span class="nav-icon nav-icon-work" aria-hidden="true"></span>
+                    <span>@NavigationText["Work"]</span>
+                </NavLink>
+            </div>
         </nav>
 
         <div class="nav-menu-bottom">
@@ -130,15 +134,42 @@
                 ButtonRoute="@sidebarAgent.ButtonRoute"
                 ModuleKey="@sidebarAgent.ModuleKey" />
 
+            @if (!string.IsNullOrWhiteSpace(simulationLabHref) || !string.IsNullOrWhiteSpace(systemAdminHref))
+            {
+                <nav class="nav flex-column nav-menu-restricted" aria-label="@NavigationText["RestrictedNavigation"]">
+                    <div class="nav-section-label">@NavigationText["RestrictedTools"]</div>
+                    @if (!string.IsNullOrWhiteSpace(simulationLabHref))
+                    {
+                        <div class="nav-item px-3">
+                            <NavLink class="nav-link" href="@simulationLabHref" @onclick="CloseNavMenuAsync">
+                                <span class="nav-icon nav-icon-simulation" aria-hidden="true"></span>
+                                <span>@NavigationText["SimulationLab"]</span>
+                            </NavLink>
+                        </div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(systemAdminHref))
+                    {
+                        <div class="nav-item px-3">
+                            <NavLink class="nav-link" href="@systemAdminHref" @onclick="CloseNavMenuAsync">
+                                <span class="nav-icon nav-icon-admin" aria-hidden="true"></span>
+                                <span>@NavigationText["SystemAdmin"]</span>
+                            </NavLink>
+                        </div>
+                    }
+                </nav>
+            }
+
             <nav class="nav flex-column nav-menu-settings" aria-label="@NavigationText["SettingsNavigation"]">
                 <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="/settings/profile">
-                        <span class="bi bi-translate" aria-hidden="true"></span> @NavigationText["UserPreferences"]
+                    <NavLink class="nav-link" href="@historyHref" @onclick="CloseNavMenuAsync">
+                        <span class="nav-icon nav-icon-history" aria-hidden="true"></span>
+                        <span>@NavigationText["History"]</span>
                     </NavLink>
                 </div>
                 <div class="nav-item px-3">
-                    <NavLink class="nav-link" href="@settingsHref">
-                        <span class="bi bi-gear" aria-hidden="true"></span> @NavigationText["Settings"]
+                    <NavLink class="nav-link" href="@settingsHref" @onclick="CloseNavMenuAsync">
+                        <span class="nav-icon nav-icon-settings" aria-hidden="true"></span>
+                        <span>@NavigationText["Settings"]</span>
                     </NavLink>
                 </div>
             </nav>
@@ -161,17 +192,15 @@
     private CurrentUserContextViewModel? currentUser;
     private string dashboardHref = "/dashboard";
     private string salesHref = "/app/sales";
+    private string marketingHref = "/marketing";
     private string supportHref = "/support";
     private string agentStaffHref = "/agents/staff";
     private string agentsHref = "/agents";
-    private string workflowsHref = "/workflows";
-    private string inboxHref = "/inbox";
-    private string activityHref = "/activity-feed";
-    private string approvalsHref = "/approvals";
-    private string auditHref = "/audit";
-    private string outboundReviewsHref = "/outbound-review-queue";
-    private string briefingHref = "/briefing-preferences";
-    private string settingsHref = "/onboarding";
+    private string workHref = "/work";
+    private string historyHref = "/history";
+    private string settingsHref = "/settings";
+    private ElementReference menuButton;
+    private ElementReference menuPanel;
     private SidebarAgentContext sidebarAgent = SidebarAgentContext.Default("/agents");
     private int sidebarAgentRefreshVersion;
     private int navigationRefreshVersion;
@@ -187,9 +216,21 @@
         await RefreshNavigationContextAsync(reloadCurrentUser: true);
     }
 
-    private void ToggleNavMenu()
+    private async Task ToggleNavMenuAsync()
     {
         collapseNavMenu = !collapseNavMenu;
+        await JS.InvokeVoidAsync("virtualCompanyShell.setDrawerState", !collapseNavMenu, menuButton, menuPanel);
+    }
+
+    private async Task CloseNavMenuAsync()
+    {
+        if (collapseNavMenu)
+        {
+            return;
+        }
+
+        collapseNavMenu = true;
+        await JS.InvokeVoidAsync("virtualCompanyShell.setDrawerState", false, menuButton, menuPanel);
     }
 
     private void HandleLocationChanged(object? sender, LocationChangedEventArgs e)
@@ -227,30 +268,39 @@
             return;
         }
 
-        RefreshFinanceHref();
+        await RefreshFinanceHrefAsync();
         await RefreshContextualAgentAsync();
         await InvokeAsync(StateHasChanged);
     }
 
-    private void RefreshFinanceHref()
+    private async Task RefreshFinanceHrefAsync()
     {
         currentCompanyId = TryGetCompanyIdFromUri(Navigation.Uri) ?? currentUser?.ActiveCompany?.CompanyId;
         financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, currentCompanyId);
         simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin);
-        systemAdminHref = BuildRestrictedAreaHref(FinanceRoutes.TransparencyToolRegistry);
+        systemAdminHref = await ResolveSystemAdminHrefAsync();
         dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");
         salesHref = currentCompanyId is Guid salesCompanyId ? $"/app/sales?companyId={salesCompanyId:D}" : "/app/sales";
+        marketingHref = DashboardRoutes.EnsureCompanyContext("/marketing", currentCompanyId, "/marketing");
         supportHref = currentCompanyId is Guid supportCompanyId ? $"/support?companyId={supportCompanyId:D}" : "/support";
         agentStaffHref = DashboardRoutes.EnsureCompanyContext("/agents/staff", currentCompanyId, "/agents/staff");
         agentsHref = DashboardRoutes.EnsureCompanyContext("/agents", currentCompanyId, "/agents");
-        workflowsHref = DashboardRoutes.EnsureCompanyContext("/workflows", currentCompanyId, "/workflows");
-        inboxHref = currentCompanyId is Guid inboxCompanyId ? $"/inbox?companyId={inboxCompanyId:D}" : "/inbox";
-        activityHref = DashboardRoutes.EnsureCompanyContext("/activity-feed", currentCompanyId, "/activity-feed");
-        approvalsHref = DashboardRoutes.BuildApprovalsPath(currentCompanyId);
-        auditHref = currentCompanyId is Guid auditCompanyId ? $"/audit?companyId={auditCompanyId:D}" : "/audit";
-        outboundReviewsHref = currentCompanyId is Guid reviewCompanyId ? $"/outbound-review-queue?companyId={reviewCompanyId:D}" : "/outbound-review-queue";
-        briefingHref = currentCompanyId is Guid briefingCompanyId ? $"/briefing-preferences?companyId={briefingCompanyId:D}" : "/briefing-preferences";
-        settingsHref = currentCompanyId is Guid settingsCompanyId ? FinanceRoutes.WithCompanyContext(FinanceRoutes.Settings, settingsCompanyId) : "/onboarding";
+        workHref = DashboardRoutes.EnsureCompanyContext("/work", currentCompanyId, "/work");
+        historyHref = DashboardRoutes.EnsureCompanyContext("/history", currentCompanyId, "/history");
+        settingsHref = DashboardRoutes.EnsureCompanyContext("/settings", currentCompanyId, "/settings");
+    }
+
+    private async Task<string?> ResolveSystemAdminHrefAsync()
+    {
+        try
+        {
+            await FinanceProviderAdminApiClient.GetAllAsync();
+            return FinanceRoutes.FinanceProviderManagement;
+        }
+        catch (FinanceIntegrationApplicationApiException)
+        {
+            return BuildRestrictedAreaHref(FinanceRoutes.EmailProviderSettings);
+        }
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -346,6 +396,14 @@
                 "I'm watching your pipeline and surfacing the follow-ups that need attention.",
                 "Message sales",
                 route),
+            "marketing" => new SidebarAgentContext(
+                "marketing",
+                "Maya",
+                "Marketing Manager",
+                null,
+                "I'm coordinating campaigns, content, audiences, and measurable marketing outcomes.",
+                "Message Maya",
+                route),
             "support" => new SidebarAgentContext(
                 "support",
                 "Support agent",
@@ -364,6 +422,7 @@
         {
             "finance" => "Finance",
             "sales" => "Sales",
+            "marketing" => "Marketing",
             "support" => "Support",
             _ => "Executive"
         };
@@ -392,6 +451,11 @@
         if (path.StartsWith("sales", StringComparison.Ordinal) || path.StartsWith("app/sales", StringComparison.Ordinal))
         {
             return "sales";
+        }
+
+        if (path.StartsWith("marketing", StringComparison.Ordinal))
+        {
+            return "marketing";
         }
 
         if (path.StartsWith("support", StringComparison.Ordinal))

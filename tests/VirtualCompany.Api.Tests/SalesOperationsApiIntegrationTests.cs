@@ -30,9 +30,11 @@ public sealed class SalesOperationsApiIntegrationTests : IDisposable
 
         Assert.NotNull(dashboard);
         Assert.Equal(1000m, dashboard!.PipelineValue);
+        Assert.All(dashboard.DealsRequiringAction, deal => Assert.NotEqual(seed.DealBId, deal.Id));
         Assert.NotNull(leads);
-        Assert.Single(leads!);
-        Assert.Equal(seed.LeadAId, leads![0].Id);
+        Assert.Contains(leads!, lead => lead.Id == seed.LeadAId);
+        Assert.Contains(leads!, lead => lead.Id == seed.RejectLeadId);
+        Assert.DoesNotContain(leads!, lead => lead.Id == seed.LeadBId);
     }
 
     [Fact]

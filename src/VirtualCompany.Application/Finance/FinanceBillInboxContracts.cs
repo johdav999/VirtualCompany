@@ -37,6 +37,32 @@ public sealed record ExecuteFinanceBillFortnoxRegistrationCommand(
     Guid BillId,
     Guid? ActorUserId = null);
 
+public sealed record GetSupplierApprovalAutomationQuery(Guid CompanyId, Guid BillId);
+
+public sealed record SetSupplierApprovalAutomationCommand(
+    Guid CompanyId,
+    Guid BillId,
+    string Stage,
+    bool Enabled,
+    Guid? ActorUserId,
+    string ActorDisplayName);
+
+public sealed record SupplierApprovalAutomationStageDto(
+    string Stage,
+    string StepName,
+    bool IsEnabled,
+    Guid? RuleId,
+    Guid AgentId,
+    string AgentDisplayName,
+    bool CanConfigure,
+    string? BlockedReason);
+
+public sealed record SupplierApprovalAutomationDto(
+    Guid BillId,
+    string SupplierName,
+    string? SupplierOrgNumber,
+    IReadOnlyList<SupplierApprovalAutomationStageDto> Stages);
+
 public sealed record FinanceBillInboxRowDto(
     Guid Id,
     string SupplierName,
@@ -152,4 +178,6 @@ public interface IFinanceBillInboxService
     Task<FinanceBillFortnoxRegistrationDto> RequestFortnoxRegistrationAsync(RequestFinanceBillFortnoxRegistrationCommand command, CancellationToken cancellationToken);
     Task<FinanceBillFortnoxRegistrationDto> ExecuteFortnoxRegistrationAsync(ExecuteFinanceBillFortnoxRegistrationCommand command, CancellationToken cancellationToken);
     Task<FinanceBillFortnoxRegistrationDto> SendFortnoxRegistrationDirectAsync(ExecuteFinanceBillFortnoxRegistrationCommand command, CancellationToken cancellationToken);
+    Task<SupplierApprovalAutomationDto> GetApprovalAutomationAsync(GetSupplierApprovalAutomationQuery query, CancellationToken cancellationToken);
+    Task<SupplierApprovalAutomationDto> SetApprovalAutomationAsync(SetSupplierApprovalAutomationCommand command, CancellationToken cancellationToken);
 }

@@ -1,6 +1,7 @@
 using System.Reflection;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Companies;
@@ -15,8 +16,30 @@ public static class AgentTemplateSeedData
     public static object[] GetModelSeeds() =>
         Catalog.Value.Templates.Select(CreateSeed).ToArray();
 
+    public static IReadOnlyList<AgentTemplate> CreateRuntimeTemplates() =>
+        Catalog.Value.Templates.Select(CreateRuntimeTemplate).ToArray();
+
     public static bool TryGetTemplateVersion(string templateId, out int version) =>
         Catalog.Value.TemplateVersions.TryGetValue(templateId, out version);
+
+    private static AgentTemplate CreateRuntimeTemplate(AgentTemplateSeedDefinition template) =>
+        new(
+            template.Id,
+            template.TemplateId,
+            template.RoleName,
+            template.Department,
+            template.PersonaSummary,
+            AgentSeniorityValues.Parse(template.DefaultSeniority),
+            template.AvatarUrl,
+            template.SortOrder,
+            template.IsActive,
+            ClonePayload(template.Personality),
+            ClonePayload(template.Objectives),
+            ClonePayload(template.Kpis),
+            ClonePayload(template.Tools),
+            ClonePayload(template.Scopes),
+            ClonePayload(template.Thresholds),
+            ClonePayload(template.EscalationRules));
 
     private static object CreateSeed(AgentTemplateSeedDefinition template) =>
         new

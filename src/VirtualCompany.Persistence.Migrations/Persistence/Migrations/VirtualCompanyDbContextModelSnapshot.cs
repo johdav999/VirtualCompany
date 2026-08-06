@@ -7428,6 +7428,138 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceIntegrationProviderConfiguration", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<string>("CredentialSecretName")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("credential_secret_name");
+
+                    b.Property<string>("CredentialSecretVersion")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("credential_secret_version");
+
+                    b.Property<bool>("Enabled")
+                        .HasColumnType("bit")
+                        .HasColumnName("enabled");
+
+                    b.Property<DateTime?>("LastValidatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_validated_utc");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("RedirectUri")
+                        .IsRequired()
+                        .HasMaxLength(2048)
+                        .HasColumnType("nvarchar(2048)")
+                        .HasColumnName("redirect_uri");
+
+                    b.Property<string>("ScopesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("scopes_json");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_utc");
+
+                    b.Property<string>("ValidationStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("validation_status");
+
+                    b.Property<string>("ValidationSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("validation_summary");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderKey")
+                        .IsUnique();
+
+                    b.ToTable("finance_integration_provider_configurations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceIntegrationProviderConfigurationAudit", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<string>("ChangedFieldsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("changed_fields_json");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("OccurredUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("occurred_utc");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("summary");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderKey", "OccurredUtc");
+
+                    b.ToTable("finance_integration_provider_configuration_audits", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceIntegrationSyncState", b =>
                 {
                     b.Property<Guid>("Id")
@@ -10119,6 +10251,846 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingChannelObservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("MetricCode")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("metric_code");
+
+                    b.Property<DateTime>("PeriodEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("period_end_at");
+
+                    b.Property<DateTime>("PeriodStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("period_start_at");
+
+                    b.Property<string>("Provider")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("provider");
+
+                    b.Property<DateTime>("RetrievedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("retrieved_at");
+
+                    b.Property<Guid?>("SalesCampaignActivityId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_activity_id");
+
+                    b.Property<Guid?>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<string>("SourceReference")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("source_reference");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("unit");
+
+                    b.Property<decimal>("Value")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("value");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "MetricCode", "PeriodEndUtc");
+
+                    b.ToTable("marketing_channel_observations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingContentBrief", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Audience")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("audience");
+
+                    b.Property<string>("CallToAction")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("call_to_action");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("channel");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("DueUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("due_at");
+
+                    b.Property<string>("Language")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("language");
+
+                    b.Property<Guid?>("MarketingPlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("marketing_plan_id");
+
+                    b.Property<Guid?>("OwnerAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_agent_id");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<string>("Purpose")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("purpose");
+
+                    b.Property<Guid?>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Title")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("title");
+
+                    b.Property<string>("Tone")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)")
+                        .HasColumnName("tone");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "Status", "DueUtc");
+
+                    b.ToTable("marketing_content_briefs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingContentVariant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Body")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("body");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("GeneratedByAi")
+                        .HasColumnType("bit")
+                        .HasColumnName("generated_by_ai");
+
+                    b.Property<Guid>("MarketingContentBriefId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("marketing_content_brief_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("SourceReferences")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("source_references");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "MarketingContentBriefId", "Status");
+
+                    b.ToTable("marketing_content_variants", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingExperiment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Decision")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("decision");
+
+                    b.Property<DateTime>("EndsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("GuardrailMetric")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("guardrail_metric");
+
+                    b.Property<string>("Hypothesis")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("hypothesis");
+
+                    b.Property<int>("MinimumSampleSize")
+                        .HasColumnType("int")
+                        .HasColumnName("minimum_sample_size");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PrimaryMetric")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("primary_metric");
+
+                    b.Property<Guid?>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<DateTime>("StartsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "Status", "EndsUtc");
+
+                    b.ToTable("marketing_experiments", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingObjective", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("BaselineValue")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("baseline_value");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("ObjectiveType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("objective_type");
+
+                    b.Property<Guid?>("OwnerAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_agent_id");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<DateTime>("PeriodEndUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("period_end_at");
+
+                    b.Property<DateTime>("PeriodStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("period_start_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<decimal>("TargetValue")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("target_value");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("unit");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "Status", "PeriodEndUtc");
+
+                    b.ToTable("marketing_objectives", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingPlan", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BudgetCurrency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("budget_currency");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("EndsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("ends_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid?>("OwnerAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_agent_id");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<decimal?>("PlannedBudget")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("planned_budget");
+
+                    b.Property<DateTime>("StartsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("starts_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(4000)
+                        .HasColumnType("nvarchar(4000)")
+                        .HasColumnName("summary");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("[idempotency_key] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "Status", "StartsUtc", "EndsUtc");
+
+                    b.ToTable("marketing_plans", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingPlanObjective", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("MarketingObjectiveId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("marketing_objective_id");
+
+                    b.Property<Guid>("MarketingPlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("marketing_plan_id");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "MarketingObjectiveId");
+
+                    b.HasIndex("CompanyId", "MarketingPlanId", "MarketingObjectiveId")
+                        .IsUnique();
+
+                    b.ToTable("marketing_plan_objectives", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingQualificationDefinition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AudienceType")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("audience_type");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("EffectiveFromUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("effective_from_at");
+
+                    b.Property<DateTime?>("EffectiveToUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("effective_to_at");
+
+                    b.Property<string>("ExclusionsJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("exclusions_json");
+
+                    b.Property<int>("FreshnessDays")
+                        .HasColumnType("int")
+                        .HasColumnName("freshness_days");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<string>("RequiredChannel")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("required_channel");
+
+                    b.Property<bool>("RequiresCustomerCompany")
+                        .HasColumnType("bit")
+                        .HasColumnName("requires_customer_company");
+
+                    b.Property<string>("RulesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("rules_json");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<decimal>("Threshold")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)")
+                        .HasColumnName("threshold");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "AudienceType", "Status", "EffectiveFromUtc");
+
+                    b.ToTable("marketing_qualification_definitions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingQualificationEvaluation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ContactId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("contact_id");
+
+                    b.Property<int>("DefinitionVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("definition_version");
+
+                    b.Property<DateTime>("EvaluatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("evaluated_at");
+
+                    b.Property<DateTime>("EvidenceObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("evidence_observed_at");
+
+                    b.Property<string>("EvidenceReferencesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_references_json");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid>("MarketingQualificationDefinitionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("marketing_qualification_definition_id");
+
+                    b.Property<string>("ReasonCodesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("reason_codes_json");
+
+                    b.Property<decimal>("Score")
+                        .HasPrecision(5, 2)
+                        .HasColumnType("decimal(5,2)")
+                        .HasColumnName("score");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "MarketingQualificationDefinitionId");
+
+                    b.HasIndex("CompanyId", "Status", "EvaluatedUtc");
+
+                    b.ToTable("marketing_qualification_evaluations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingQualificationFeedback", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DecidedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<string>("Decision")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("decision");
+
+                    b.Property<Guid?>("LinkedDealId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("linked_deal_id");
+
+                    b.Property<Guid?>("LinkedLeadId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("linked_lead_id");
+
+                    b.Property<Guid>("MarketingQualificationEvaluationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("marketing_qualification_evaluation_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("reason");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "MarketingQualificationEvaluationId", "CreatedUtc");
+
+                    b.ToTable("marketing_qualification_feedback", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingSalesHandoff", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("ContactId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("contact_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CustomerCompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("customer_company_id");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("decision_reason");
+
+                    b.Property<string>("EvidenceReferences")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_references");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid?>("LinkedDealId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("linked_deal_id");
+
+                    b.Property<Guid?>("LinkedLeadId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("linked_lead_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid?>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("SuggestedAction")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("suggested_action");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<string>("Urgency")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("urgency");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "ExpiresUtc");
+
+                    b.ToTable("marketing_sales_handoffs", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.MemoryItem", b =>
                 {
                     b.Property<Guid>("Id")
@@ -12530,6 +13502,19 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(64)")
                         .HasColumnName("audience_type");
 
+                    b.Property<string>("BudgetCurrency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("budget_currency");
+
+                    b.Property<string>("CampaignType")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasDefaultValue("lead_generation")
+                        .HasColumnName("campaign_type");
+
                     b.Property<string>("CommunicationLanguage")
                         .HasMaxLength(20)
                         .HasColumnType("nvarchar(20)")
@@ -12543,13 +13528,43 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("completed_at");
 
+                    b.Property<long>("ConcurrencyVersion")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(1L)
+                        .HasColumnName("concurrency_version");
+
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2")
                         .HasColumnName("created_at");
 
+                    b.Property<string>("Description")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("description");
+
+                    b.Property<DateTime?>("EndsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("ends_at");
+
                     b.Property<DateTime?>("LaunchRequestedUtc")
                         .HasColumnType("datetime2")
                         .HasColumnName("launch_requested_at");
+
+                    b.Property<bool>("LegacySetupRequired")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bit")
+                        .HasDefaultValue(true)
+                        .HasColumnName("legacy_setup_required");
+
+                    b.Property<string>("LifecycleStatus")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasDefaultValue("draft")
+                        .HasColumnName("lifecycle_status");
 
                     b.Property<int>("MaxEmailsPerDay")
                         .ValueGeneratedOnAdd()
@@ -12569,13 +13584,57 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasDefaultValue(true)
                         .HasColumnName("outbound_enabled");
 
+                    b.Property<Guid?>("OwnerAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_agent_id");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_user_id");
+
                     b.Property<DateTime?>("PausedUtc")
                         .HasColumnType("datetime2")
                         .HasColumnName("paused_at");
 
+                    b.Property<decimal?>("PlannedBudget")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("planned_budget");
+
+                    b.Property<DateTime?>("PlanningStartsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("planning_starts_at");
+
+                    b.Property<decimal?>("PrimaryObjectiveTarget")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("primary_objective_target");
+
+                    b.Property<DateTime?>("PrimaryObjectiveTargetUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("primary_objective_target_at");
+
+                    b.Property<string>("PrimaryObjectiveType")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("primary_objective_type");
+
+                    b.Property<string>("PrimaryObjectiveUnit")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("primary_objective_unit");
+
+                    b.Property<DateTime?>("ReviewDueUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("review_due_at");
+
                     b.Property<Guid>("SalesSequenceId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("sales_sequence_id");
+
+                    b.Property<DateTime?>("ScheduledLaunchUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("scheduled_launch_at");
 
                     b.Property<DateTime?>("StartedUtc")
                         .HasColumnType("datetime2")
@@ -12593,6 +13652,14 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("stopped_at");
 
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasDefaultValue("UTC")
+                        .HasColumnName("time_zone_id");
+
                     b.Property<DateTime>("UpdatedUtc")
                         .HasColumnType("datetime2")
                         .HasColumnName("updated_at");
@@ -12603,11 +13670,359 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CompanyId", "SalesSequenceId");
 
+                    b.HasIndex("CompanyId", "LifecycleStatus", "ScheduledLaunchUtc");
+
                     b.HasIndex("CompanyId", "Status", "CreatedUtc");
 
                     b.HasIndex("CompanyId", "Status", "UpdatedUtc");
 
                     b.ToTable("sales_campaigns", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignActivity", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ActivityType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("activity_type");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<string>("Channel")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("channel");
+
+                    b.Property<string>("ClaimToken")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("claim_token");
+
+                    b.Property<DateTime?>("ClaimedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("claimed_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("DependsOnActivityId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("depends_on_activity_id");
+
+                    b.Property<DateTime>("DueUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("due_at");
+
+                    b.Property<string>("ExecutionMode")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("execution_mode");
+
+                    b.Property<string>("FailureReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_reason");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<Guid?>("MilestoneId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("milestone_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid?>("OwnerAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_agent_id");
+
+                    b.Property<Guid?>("OwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("owner_user_id");
+
+                    b.Property<DateTime>("PlannedStartUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("planned_start_at");
+
+                    b.Property<string>("RequiredToolCapability")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)")
+                        .HasColumnName("required_tool_capability");
+
+                    b.Property<string>("ResultSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("result_summary");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<Guid?>("SalesSequenceStepId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_sequence_step_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("TimeZoneId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("time_zone_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "PlannedStartUtc");
+
+                    b.HasIndex("CompanyId", "Status", "DueUtc");
+
+                    b.ToTable("sales_campaign_activities", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignAudienceMember", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AudienceSnapshotId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("audience_snapshot_id");
+
+                    b.Property<string>("CommunicationLanguage")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("communication_language");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ConsentStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("consent_status");
+
+                    b.Property<Guid?>("ContactId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("contact_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CustomerCompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("customer_company_id");
+
+                    b.Property<string>("EligibilityStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("eligibility_status");
+
+                    b.Property<string>("InclusionReason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("inclusion_reason");
+
+                    b.Property<Guid?>("ProspectAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("prospect_account_id");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "AudienceSnapshotId", "ContactId");
+
+                    b.ToTable("sales_campaign_audience_members", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignAudienceSegment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BuyingRole")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("buying_role");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Country")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("country");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CustomerLifecycle")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("customer_lifecycle");
+
+                    b.Property<bool>("ExcludeOpenCriticalSupportCases")
+                        .HasColumnType("bit")
+                        .HasColumnName("exclude_open_critical_support_cases");
+
+                    b.Property<string>("Industry")
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)")
+                        .HasColumnName("industry");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_active");
+
+                    b.Property<int?>("MaxEmployees")
+                        .HasColumnType("int")
+                        .HasColumnName("max_employees");
+
+                    b.Property<int?>("MinEmployees")
+                        .HasColumnType("int")
+                        .HasColumnName("min_employees");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("PreferredLanguage")
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("preferred_language");
+
+                    b.Property<string>("ProductInterest")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("product_interest");
+
+                    b.Property<bool>("RequireCommunicationPermission")
+                        .HasColumnType("bit")
+                        .HasColumnName("require_communication_permission");
+
+                    b.Property<string>("SegmentKind")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("segment_kind");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "Name")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "IsActive", "SegmentKind");
+
+                    b.ToTable("sales_campaign_audience_segments", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignAudienceSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AudienceSegmentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("audience_segment_id");
+
+                    b.Property<DateTime>("CapturedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("captured_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<int>("SegmentVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("segment_version");
+
+                    b.Property<int>("SnapshotVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("snapshot_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "SnapshotVersion")
+                        .IsUnique();
+
+                    b.ToTable("sales_campaign_audience_snapshots", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignContact", b =>
@@ -12686,6 +14101,367 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_sales_campaign_contacts_current_step_order_positive", "current_step_order IS NULL OR current_step_order > 0");
                         });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignCost", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("Classification")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("classification");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<Guid?>("FinanceRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("finance_record_id");
+
+                    b.Property<DateTime>("ObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<Guid?>("SalesCampaignActivityId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_activity_id");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)")
+                        .HasColumnName("source");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "Classification", "Currency", "ObservedUtc");
+
+                    b.ToTable("sales_campaign_costs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignKpiDefinition", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttributionWindowDays")
+                        .HasColumnType("int")
+                        .HasColumnName("attribution_window_days");
+
+                    b.Property<decimal?>("Baseline")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("baseline");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DataSource")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)")
+                        .HasColumnName("data_source");
+
+                    b.Property<string>("Denominator")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("denominator");
+
+                    b.Property<string>("Key")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("key");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("label");
+
+                    b.Property<string>("Numerator")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("numerator");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<decimal?>("Target")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("target");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("unit");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "Key", "Version")
+                        .IsUnique();
+
+                    b.ToTable("sales_campaign_kpi_definitions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignKpiSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("DefinitionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("definition_id");
+
+                    b.Property<int>("DefinitionVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("definition_version");
+
+                    b.Property<decimal?>("DenominatorValue")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("denominator_value");
+
+                    b.Property<string>("EvidenceSummary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("evidence_summary");
+
+                    b.Property<decimal?>("MetricValue")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("metric_value");
+
+                    b.Property<decimal?>("NumeratorValue")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("numerator_value");
+
+                    b.Property<DateTime>("ObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "DefinitionId", "ObservedUtc");
+
+                    b.ToTable("sales_campaign_kpi_snapshots", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignMilestone", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("DueUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("due_at");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("name");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "DueUtc");
+
+                    b.ToTable("sales_campaign_milestones", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignObjective", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsPrimary")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_primary");
+
+                    b.Property<string>("ObjectiveType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("objective_type");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<DateTime>("TargetUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("target_at");
+
+                    b.Property<decimal>("TargetValue")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("target_value");
+
+                    b.Property<string>("Unit")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("unit");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId", "IsPrimary");
+
+                    b.ToTable("sales_campaign_objectives", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignOffer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("KnowledgeDocumentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("knowledge_document_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<bool>("NoOfferRequired")
+                        .HasColumnType("bit")
+                        .HasColumnName("no_offer_required");
+
+                    b.Property<Guid>("SalesCampaignId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("sales_campaign_id");
+
+                    b.Property<string>("SourceReference")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("source_reference");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("source_type");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId");
+
+                    b.HasIndex("CompanyId", "SalesCampaignId");
+
+                    b.ToTable("sales_campaign_offers", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesContactPermission", b =>
@@ -14139,6 +15915,87 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                             t.HasCheckConstraint("CK_simulation_event_records_sequence_number_positive", "sequence_number > 0");
                         });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierApprovalAutomationRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AgentDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("agent_display_name");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("GrantedByDisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("granted_by_display_name");
+
+                    b.Property<Guid?>("GrantedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("granted_by_user_id");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_active");
+
+                    b.Property<DateTime?>("RevokedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("Stage")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("stage");
+
+                    b.Property<string>("SupplierKey")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("supplier_key");
+
+                    b.Property<string>("SupplierName")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("supplier_name");
+
+                    b.Property<string>("SupplierOrgNumber")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("supplier_org_number");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "AgentId", "IsActive");
+
+                    b.HasIndex("CompanyId", "SupplierKey", "Stage")
+                        .IsUnique();
+
+                    b.ToTable("supplier_approval_automation_rules", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierInvoiceCorrectionAction", b =>
@@ -16922,11 +18779,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CompanyId", "UpdatedUtc");
 
+                    b.HasIndex("State", "UpdatedUtc");
+
                     b.HasIndex("CompanyId", "DefinitionId", "StartedUtc");
 
                     b.HasIndex("CompanyId", "State", "UpdatedUtc");
-
-                    b.HasIndex("State", "UpdatedUtc");
 
                     b.HasIndex("CompanyId", "DefinitionId", "TriggerSource", "TriggerRef")
                         .IsUnique()
@@ -19035,6 +20892,53 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Navigation("User");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingContentVariant", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.MarketingContentBrief", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MarketingContentBriefId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingPlanObjective", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.MarketingObjective", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MarketingObjectiveId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.MarketingPlan", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MarketingPlanId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingQualificationEvaluation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.MarketingQualificationDefinition", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MarketingQualificationDefinitionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.MarketingQualificationFeedback", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.MarketingQualificationEvaluation", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MarketingQualificationEvaluationId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.MemoryItem", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Agent", "Agent")
@@ -19536,6 +21440,38 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Navigation("SalesSequence");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignActivity", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesCampaign", "SalesCampaign")
+                        .WithMany("Activities")
+                        .HasForeignKey("CompanyId", "SalesCampaignId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SalesCampaign");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignAudienceMember", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesCampaignAudienceSnapshot", null)
+                        .WithMany("Members")
+                        .HasForeignKey("CompanyId", "AudienceSnapshotId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignAudienceSnapshot", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesCampaign", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SalesCampaignId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignContact", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Contact", "Contact")
@@ -19553,6 +21489,40 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Contact");
+
+                    b.Navigation("SalesCampaign");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignMilestone", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesCampaign", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SalesCampaignId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignObjective", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesCampaign", "SalesCampaign")
+                        .WithMany("Objectives")
+                        .HasForeignKey("CompanyId", "SalesCampaignId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("SalesCampaign");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignOffer", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.SalesCampaign", "SalesCampaign")
+                        .WithMany("Offers")
+                        .HasForeignKey("CompanyId", "SalesCampaignId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
 
                     b.Navigation("SalesCampaign");
                 });
@@ -19795,6 +21765,26 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Navigation("Company");
 
                     b.Navigation("ParentEvent");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierApprovalAutomationRule", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "Agent")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "AgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Agent");
+
+                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SupplierInvoiceCorrectionAction", b =>
@@ -20575,7 +22565,18 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaign", b =>
                 {
+                    b.Navigation("Activities");
+
                     b.Navigation("Contacts");
+
+                    b.Navigation("Objectives");
+
+                    b.Navigation("Offers");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesCampaignAudienceSnapshot", b =>
+                {
+                    b.Navigation("Members");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.SalesPipelineStage", b =>

@@ -1,20 +1,34 @@
 @page "/finance/settings"
 @page "/finance/settings/email-settings"
 @page "/finance/settings/integrations/{ProviderKey}"
+@page "/system/admin/integrations/email-providers"
 @rendermode InteractiveServer
 @inherits FinancePageBase
 @using System.Globalization
 
-<PageTitle>@FinanceText["FinanceSettings"]</PageTitle>
+<PageTitle>@SettingsPageTitle</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="@FinanceText["FinanceSettings"]"
-    Description="@FinanceText["FinanceSettingsDescription"]"
-    LoadingMessage="@FinanceText["LoadingFinanceSettings"]">
+    Title="@SettingsPageTitle"
+    Description="@SettingsPageDescription"
+    LoadingMessage="@FinanceText["LoadingFinanceSettings"]"
+    Area="@SettingsArea">
+    @if (IsSystemEmailProviderRoute && !CanManageFinanceIntegrations)
+    {
+        <ForbiddenState
+            Title="@FinanceText["IntegrationAdminRequired"]"
+            Message="@FinanceText["IntegrationAdminRequired"]"
+            ReturnHref="@BuildAgentMailboxSettingsHref()"
+            ReturnText="@FinanceText["BackToMailbox"]" />
+    }
+    else
+    {
     <div class="wizard-card wizard-card--compact">
+        @if (!IsSystemEmailProviderRoute)
+        {
         <ul class="finance-settings-tabs" aria-label="@FinanceText["FinanceSettingsSections"]">
             <li>
                 <NavLink class="finance-settings-tab" href="@EmailSettingsHref" Match="NavLinkMatch.Prefix">@FinanceText["EmailSettings"]</NavLink>
@@ -23,6 +37,7 @@
                 <NavLink class="finance-settings-tab" href="@IntegrationSettingsHref" Match="NavLinkMatch.Prefix">@FinanceText["Integrations"]</NavLink>
             </li>
         </ul>
+        }
         @if (!IsIntegrationSettingsRoute)
         {
         <FinanceDataState
@@ -33,6 +48,8 @@
             LoadingMessage="@FinanceText["ReadingProviderConfiguration"]"
             ErrorTitle="@FinanceText["EmailSettingsUnavailable"]"
             OnRetry="@ReloadAsync">
+            @if (!IsSystemEmailProviderRoute)
+            {
             <section class="finance-settings-integration-callout mb-4">
                 <div class="finance-integration-card__identity">
                     <div class="finance-integration-card__mark" aria-hidden="true">Fi</div>
@@ -48,6 +65,7 @@
                 </div>
                 <NavLink class="btn btn-primary" href="@IntegrationSettingsHref">@FinanceText["OpenFinancialIntegrations"]</NavLink>
             </section>
+            }
 
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3 mb-4">
                 <div>
@@ -348,4 +366,5 @@
         </FinanceDataState>
         }
     </div>
+    }
 </FinancePageLayout>

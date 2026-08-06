@@ -1,7 +1,5 @@
 using System.Globalization;
-using System.Data;
 using System.Text.Json.Nodes;
-using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
 using VirtualCompany.Application.Auth;
@@ -173,14 +171,11 @@ public sealed partial class CompanyFinanceReadService
             return [];
         }
 
-        var attachments = await ReadOptionalSupplierInvoiceTableAsync(
-            "supplier_invoice_source_document_attachments",
-            () => _dbContext.SupplierInvoiceSourceDocumentAttachments
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
-                .ToListAsync(cancellationToken),
-            cancellationToken);
+        var attachments = await _dbContext.SupplierInvoiceSourceDocumentAttachments
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+            .ToListAsync(cancellationToken);
 
         return attachments.ToDictionary(x => x.BillId, SupplierInvoiceSourceDocumentAttachmentService.MapAttachment);
     }
@@ -196,14 +191,11 @@ public sealed partial class CompanyFinanceReadService
             return [];
         }
 
-        var actions = await ReadOptionalSupplierInvoiceTableAsync(
-            "supplier_invoice_draft_actions",
-            () => _dbContext.SupplierInvoiceDraftActions
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
-                .ToListAsync(cancellationToken),
-            cancellationToken);
+        var actions = await _dbContext.SupplierInvoiceDraftActions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+            .ToListAsync(cancellationToken);
 
         return actions.ToDictionary(x => x.BillId, SupplierInvoiceDraftActionService.MapAction);
     }
@@ -219,15 +211,12 @@ public sealed partial class CompanyFinanceReadService
             return [];
         }
 
-        var actions = await ReadOptionalSupplierInvoiceTableAsync(
-            "supplier_invoice_correction_actions",
-            () => _dbContext.SupplierInvoiceCorrectionActions
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
-                .OrderByDescending(x => x.UpdatedUtc)
-                .ToListAsync(cancellationToken),
-            cancellationToken);
+        var actions = await _dbContext.SupplierInvoiceCorrectionActions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+            .OrderByDescending(x => x.UpdatedUtc)
+            .ToListAsync(cancellationToken);
 
         return actions
             .GroupBy(x => x.BillId)
@@ -249,98 +238,13 @@ public sealed partial class CompanyFinanceReadService
             return [];
         }
 
-        var actions = await ReadOptionalSupplierInvoiceTableAsync(
-            "supplier_invoice_enrichment_actions",
-            () => _dbContext.SupplierInvoiceEnrichmentActions
-                .IgnoreQueryFilters()
-                .AsNoTracking()
-                .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
-                .ToListAsync(cancellationToken),
-            cancellationToken);
+        var actions = await _dbContext.SupplierInvoiceEnrichmentActions
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.BillId))
+            .ToListAsync(cancellationToken);
 
         return actions.ToDictionary(x => x.BillId, SupplierInvoiceEnrichmentService.MapAction);
     }
 
-    private async Task<List<T>> ReadOptionalSupplierInvoiceTableAsync<T>(
-        string tableName,
-        Func<Task<List<T>>> read,
-        CancellationToken cancellationToken)
-    {
-        if (!await OptionalSupplierInvoiceTableExistsAsync(tableName, cancellationToken))
-        {
-            return [];
-        }
-
-        try
-        {
-            return await read();
-        }
-        catch (SqlException ex) when (IsMissingSqlObject(ex))
-        {
-            _optionalSupplierInvoiceTableAvailability[tableName] = false;
-            return [];
-        }
-    }
-
-    private async Task<bool> OptionalSupplierInvoiceTableExistsAsync(string tableName, CancellationToken cancellationToken)
-    {
-        if (_optionalSupplierInvoiceTableAvailability.TryGetValue(tableName, out var cached))
-        {
-            return cached;
-        }
-
-        var connection = _dbContext.Database.GetDbConnection();
-        var shouldClose = connection.State == ConnectionState.Closed;
-        if (shouldClose)
-        {
-            await connection.OpenAsync(cancellationToken);
-        }
-
-        try
-        {
-            await using var command = connection.CreateCommand();
-            command.CommandText = """
-                SELECT CASE WHEN EXISTS (
-                    SELECT 1
-                    FROM sys.tables AS t
-                    INNER JOIN sys.schemas AS s ON s.schema_id = t.schema_id
-                    WHERE s.name = N'dbo' AND t.name = @tableName
-                ) THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END
-                """;
-
-            var parameter = command.CreateParameter();
-            parameter.ParameterName = "@tableName";
-            parameter.Value = tableName;
-            command.Parameters.Add(parameter);
-
-            var result = await command.ExecuteScalarAsync(cancellationToken);
-            var exists = result is bool value
-                ? value
-                : result is not null && Convert.ToInt32(result, CultureInfo.InvariantCulture) == 1;
-            _optionalSupplierInvoiceTableAvailability[tableName] = exists;
-            return exists;
-        }
-        finally
-        {
-            if (shouldClose)
-            {
-                await connection.CloseAsync();
-            }
-        }
-    }
-
-    private static bool IsMissingSqlObject(SqlException exception)
-    {
-        foreach (SqlError error in exception.Errors)
-        {
-            if (error.Number == 208)
-            {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
 }
-

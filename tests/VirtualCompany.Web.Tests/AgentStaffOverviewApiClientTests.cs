@@ -22,7 +22,7 @@ public sealed class AgentStaffOverviewApiClientTests
         Assert.NotNull(result);
         Assert.Equal(companyId, transport.CompanyId);
         Assert.Equal(HttpMethod.Get, transport.Method);
-        Assert.Equal($"api/companies/{companyId:D}/executive-cockpit/agent-staff?year=2026&month=7", transport.Uri);
+        Assert.Equal($"api/companies/{companyId:D}/executive-cockpit/agent-staff?year=2026&month=7&includeAllTasks=true", transport.Uri);
     }
 
     [Fact]
@@ -46,7 +46,7 @@ public sealed class AgentStaffOverviewApiClientTests
         var result = await client.GetAsync(companyId);
 
         Assert.NotNull(result);
-        Assert.Equal($"api/companies/{companyId:D}/executive-cockpit/agent-staff", transport.Uri);
+        Assert.Equal($"api/companies/{companyId:D}/executive-cockpit/agent-staff?includeAllTasks=true", transport.Uri);
     }
 
     private sealed class RecordingTransport : ICompanyApiTransport

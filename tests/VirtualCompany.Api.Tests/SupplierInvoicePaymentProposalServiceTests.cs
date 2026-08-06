@@ -315,6 +315,38 @@ public sealed class SupplierInvoicePaymentProposalServiceTests
     }
 
     [Fact]
+    public async Task ExportPaymentInstructionAsync_can_replace_manual_payment_file_request_with_fortnox_registration()
+    {
+        var apiClient = new CapturingFortnoxApiClient();
+        await using var fixture = await SupplierPaymentProposalFixture.CreateAsync(new FortnoxSupplierInvoicePaymentExportProvider(apiClient));
+        var bill = await fixture.AddSupplierBillAsync(amount: 12000m, settlementStatus: FinanceSettlementStatuses.Unpaid);
+        await fixture.CreateReadyProposalAsync(bill.Id);
+
+        await fixture.Service.ExportPaymentInstructionAsync(
+            new ExportSupplierInvoicePaymentInstructionCommand(
+                fixture.CompanyId,
+                bill.Id,
+                fixture.ActorUserId,
+                "Alice Admin",
+                SupplierInvoicePaymentExportModes.PreparePaymentFile),
+            CancellationToken.None);
+
+        var result = await fixture.Service.ExportPaymentInstructionAsync(
+            new ExportSupplierInvoicePaymentInstructionCommand(
+                fixture.CompanyId,
+                bill.Id,
+                fixture.ActorUserId,
+                "Alice Admin",
+                SupplierInvoicePaymentExportModes.RegisterPayment),
+            CancellationToken.None);
+
+        Assert.Equal(SupplierInvoicePaymentExportModes.RegisterPayment, result.ExportMode);
+        Assert.Equal(SupplierInvoicePaymentExportStatuses.Exported, result.ExportStatus);
+        Assert.Contains("supplierinvoicepayments", apiClient.Paths);
+        Assert.Contains("supplierinvoicepayments/77/bookkeep", apiClient.Paths);
+    }
+
+    [Fact]
     public async Task ExportPaymentInstructionAsync_prevents_duplicate_payment_file_preparation()
     {
         var provider = new QueueingPaymentExportProvider(SupplierInvoicePaymentExportStatuses.ExportRequested);

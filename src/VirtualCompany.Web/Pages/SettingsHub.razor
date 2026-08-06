@@ -1,0 +1,69 @@
+@page "/settings"
+@rendermode InteractiveServer
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+@inject IStringLocalizer<UiConsolidationResources> UiText
+
+<PageTitle>@UiText["Settings"]</PageTitle>
+
+<section class="vc-page">
+    <header class="vc-page-header">
+        <div>
+            <span class="vc-kicker">@UiText["Administration"]</span>
+            <h1>@UiText["Settings"]</h1>
+            <p>@UiText["SettingsDescription"]</p>
+        </div>
+    </header>
+
+    @if (CompanyId is Guid companyId)
+    {
+        <div class="vc-settings-grid">
+            @foreach (var group in Groups(companyId))
+            {
+                <section class="vc-panel vc-settings-group">
+                    <h2>@group.Title</h2>
+                    <p>@group.Description</p>
+                    <div class="vc-settings-links">
+                        @foreach (var link in group.Links)
+                        {
+                            <a href="@link.Href"><span>@link.Label</span><span class="bi bi-arrow-right" aria-hidden="true"></span></a>
+                        }
+                    </div>
+                </section>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is not null)
+        {
+            return;
+        }
+
+        var context = await OnboardingApiClient.GetCurrentUserContextAsync();
+        if (context?.ActiveCompany is { } activeCompany)
+        {
+            Navigation.NavigateTo($"/settings?companyId={activeCompany.CompanyId:D}", replace: true);
+        }
+    }
+
+    private IReadOnlyList<SettingGroup> Groups(Guid companyId) =>
+    [
+        new(UiText["CompanySetup"], UiText["CompanySetupDescription"], [new(UiText["CompanySetup"], $"/onboarding?companyId={companyId:D}")]),
+        new(UiText["Agents"], UiText["AgentsDescription"], [new(UiText["AgentSettings"], $"/settings/agents?companyId={companyId:D}")]),
+        new(UiText["Connections"], UiText["ConnectionsDescription"], [new(UiText["TeamMailboxes"], $"/settings/agents?companyId={companyId:D}"), new(UiText["FinanceIntegrations"], $"/finance/settings?companyId={companyId:D}")]),
+        new(UiText["Automation"], UiText["AutomationDescription"], [new(UiText["Workflows"], $"/workflows?companyId={companyId:D}"), new(UiText["OutboundAutomation"], $"/agents/automation?companyId={companyId:D}")]),
+        new(UiText["Briefings"], UiText["BriefingsDescription"], [new(UiText["BriefingDelivery"], $"/briefing-preferences?companyId={companyId:D}")]),
+        new(UiText["DepartmentSettings"], UiText["DepartmentSettingsDescription"], [new(UiText["Finance"], $"/finance/settings?companyId={companyId:D}"), new(UiText["SupportSla"], $"/support/settings/sla?companyId={companyId:D}")]),
+        new(UiText["SecurityAudit"], UiText["SecurityAuditDescription"], [new(UiText["AuditLog"], $"/audit?companyId={companyId:D}")]),
+        new(UiText["UserPreferences"], UiText["UserPreferencesDescription"], [new(UiText["ProfileLanguage"], $"/settings/profile?companyId={companyId:D}")])
+    ];
+
+    private sealed record SettingGroup(string Title, string Description, IReadOnlyList<SettingLink> Links);
+    private sealed record SettingLink(string Label, string Href);
+}

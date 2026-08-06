@@ -123,7 +123,14 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
         RoleCapability(AgentCapabilityIds.SupportRiskEscalation, "Support risk and escalation", "Explain SLA and severe-risk evidence while deterministic policy controls escalation.", "Support"),
         RoleCapability(AgentCapabilityIds.SupportRootCauseAnalysis, "Support root-cause analysis", "Explain recurring issue clusters and reviewable root-cause hypotheses.", "Support"),
         RoleCapability(AgentCapabilityIds.SupportKnowledgeCoverage, "Support knowledge coverage", "Identify repeated gaps, stale evidence, and documentation priorities.", "Support"),
-        RoleCapability(AgentCapabilityIds.SupportOperatingCadence, "Support operating cadence", "Prepare continuous, daily, and weekly Support management priorities.", "Support")
+        RoleCapability(AgentCapabilityIds.SupportOperatingCadence, "Support operating cadence", "Prepare continuous, daily, and weekly Support management priorities.", "Support"),
+        RoleCapability(AgentCapabilityIds.MarketingPlanning, "Marketing planning", "Turn company goals into reviewable marketing objectives, plans, budgets, and calendars.", "Marketing"),
+        RoleCapability(AgentCapabilityIds.MarketingAudienceIntelligence, "Audience intelligence", "Explain audience fit, qualification evidence, exclusions, consent, and freshness.", "Marketing"),
+        RoleCapability(AgentCapabilityIds.MarketingContentAdvice, "Content advice", "Prepare grounded content briefs and variants for human review without publishing.", "Marketing"),
+        RoleCapability(AgentCapabilityIds.MarketingCampaignCoordination, "Campaign coordination", "Coordinate approved campaign activities and bounded handoffs to Sales.", "Marketing"),
+        RoleCapability(AgentCapabilityIds.MarketingPerformanceAnalysis, "Marketing performance analysis", "Explain observed campaign outcomes, costs, attribution limits, and evidence gaps.", "Marketing"),
+        RoleCapability(AgentCapabilityIds.MarketingExperimentAdvice, "Marketing experiment advice", "Recommend bounded experiments with explicit hypotheses, metrics, and guardrails.", "Marketing"),
+        RoleCapability(AgentCapabilityIds.MarketingOperatingCadence, "Marketing operating cadence", "Prepare continuous, daily, weekly, and monthly Marketing management priorities.", "Marketing")
     ];
 
     private static AgentCapabilityManifest RoleCapability(string id, string name, string description, string category) =>
@@ -190,7 +197,7 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
     {
         var missing = new List<string>();
 
-        if (manifest.Category is "Finance" or "Sales" or "Support" &&
+        if (manifest.Category is "Finance" or "Sales" or "Support" or "Marketing" &&
             !DepartmentMatches(manifest.Category, profile.Department))
         {
             return ToDto(manifest, AgentCapabilityStates.PermissionDenied, "role_scope_mismatch",

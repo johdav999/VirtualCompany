@@ -191,6 +191,17 @@ function Remove-VcOldRunSnapshots
             continue
         }
 
-        Remove-Item -LiteralPath $resolvedCandidate -Recurse -Force
+        try
+        {
+            Remove-Item -LiteralPath $resolvedCandidate -Recurse -Force -ErrorAction Stop
+        }
+        catch [System.UnauthorizedAccessException]
+        {
+            Write-Warning "Could not remove old runtime snapshot '$resolvedCandidate' because one or more files are still in use. The snapshot was retained and startup will continue."
+        }
+        catch [System.IO.IOException]
+        {
+            Write-Warning "Could not remove old runtime snapshot '$resolvedCandidate' because one or more files are still in use. The snapshot was retained and startup will continue."
+        }
     }
 }

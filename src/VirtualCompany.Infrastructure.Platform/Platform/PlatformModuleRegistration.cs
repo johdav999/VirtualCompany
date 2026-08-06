@@ -35,6 +35,7 @@ public static class PlatformModuleRegistration
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.AddDataProtection();
         services.TryAddSingleton<IFieldEncryptionService, DataProtectionFieldEncryptionService>();
+        services.AddPlatformSecretStore(configuration);
         services.AddDbContext<VirtualCompanyDbContext>(options =>
             ConfigureDatabase(options, connectionString, configuration["Database:Provider"]));
 
@@ -48,6 +49,8 @@ public static class PlatformModuleRegistration
         services.AddScoped<IBackgroundExecutionRecorder, BackgroundExecutionRecorder>();
 
         services.AddHttpContextAccessor();
+        services.AddOptions<PlatformAdministrationOptions>()
+            .Bind(configuration.GetSection(PlatformAdministrationOptions.SectionName));
         services.AddScoped<ICompanyContextAccessor, RequestCompanyContextAccessor>();
         services.AddScoped<ICompanyExecutionScopeFactory, CompanyExecutionScopeFactory>();
         services.AddScoped<ClaimsPrincipalExternalUserIdentityFactory>();

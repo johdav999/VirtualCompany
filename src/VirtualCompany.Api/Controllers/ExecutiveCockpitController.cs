@@ -45,12 +45,13 @@ public sealed class ExecutiveCockpitController : ControllerBase
         Guid companyId,
         [FromQuery] int? year,
         [FromQuery] int? month,
+        [FromQuery] bool includeAllTasks,
         CancellationToken cancellationToken)
     {
         try
         {
             return Ok(await _agentStaffOverviewQueryService.GetAsync(
-                new GetAgentStaffOverviewQuery(companyId, year, month),
+                new GetAgentStaffOverviewQuery(companyId, year, month, includeAllTasks),
                 cancellationToken));
         }
         catch (ArgumentOutOfRangeException ex)

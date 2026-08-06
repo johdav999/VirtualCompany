@@ -1,0 +1,212 @@
+.supplier-bill-progress {
+    margin-top: 1.25rem;
+    padding: 1.25rem;
+    border: 1px solid var(--vc-border, #e5e7eb);
+    border-radius: 16px;
+    background: #fff;
+    box-shadow: 0 8px 24px rgb(15 23 42 / 5%);
+}
+
+.supplier-bill-progress__header,
+.supplier-bill-progress__title-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: .75rem;
+}
+
+.supplier-bill-progress__eyebrow {
+    margin: 0 0 .2rem;
+    color: #2563eb;
+    font-size: .72rem;
+    font-weight: 800;
+    letter-spacing: .08em;
+    text-transform: uppercase;
+}
+
+.supplier-bill-progress__header h3 {
+    margin: 0;
+    color: #0f172a;
+    font-size: 1.1rem;
+}
+
+.supplier-bill-progress__summary {
+    max-width: 9rem;
+    color: #64748b;
+    font-size: .78rem;
+    font-weight: 700;
+    line-height: 1.35;
+    text-align: right;
+}
+
+.supplier-bill-progress__steps {
+    margin: 1.1rem 0 0;
+    padding: 0;
+    list-style: none;
+}
+
+.supplier-bill-progress__step {
+    position: relative;
+    display: grid;
+    grid-template-columns: 2rem minmax(0, 1fr);
+    gap: .75rem;
+    min-height: 5rem;
+}
+
+.supplier-bill-progress__step:last-child {
+    min-height: 0;
+}
+
+.supplier-bill-progress__rail {
+    position: relative;
+    display: flex;
+    justify-content: center;
+}
+
+.supplier-bill-progress__rail::after {
+    position: absolute;
+    top: 1.8rem;
+    bottom: 0;
+    width: 2px;
+    background: #dbe3ef;
+    content: "";
+}
+
+.supplier-bill-progress__step:last-child .supplier-bill-progress__rail::after {
+    display: none;
+}
+
+.supplier-bill-progress__step--completed .supplier-bill-progress__rail::after {
+    background: #86efac;
+}
+
+.supplier-bill-progress__step--current .supplier-bill-progress__rail::after {
+    background: #bfdbfe;
+}
+
+.supplier-bill-progress__node {
+    position: relative;
+    z-index: 1;
+    display: grid;
+    width: 1.75rem;
+    height: 1.75rem;
+    place-items: center;
+    border: 2px solid #cbd5e1;
+    border-radius: 999px;
+    background: #f8fafc;
+    color: #64748b;
+    font-size: .72rem;
+    font-weight: 800;
+}
+
+.supplier-bill-progress__step--completed .supplier-bill-progress__node {
+    border-color: #16a34a;
+    background: #16a34a;
+    color: #fff;
+}
+
+.supplier-bill-progress__step--current .supplier-bill-progress__node {
+    border: 5px solid #dbeafe;
+    outline: 2px solid #2563eb;
+    background: #2563eb;
+    color: #fff;
+}
+
+.supplier-bill-progress__step--failed .supplier-bill-progress__node,
+.supplier-bill-progress__step--blocked .supplier-bill-progress__node {
+    border-color: #fecaca;
+    background: #fee2e2;
+    color: #dc2626;
+}
+
+.supplier-bill-progress__body {
+    min-width: 0;
+    padding: .15rem 0 1.25rem;
+}
+
+.supplier-bill-progress__title-row h4 {
+    margin: 0;
+    color: #0f172a;
+    font-size: .92rem;
+    line-height: 1.35;
+}
+
+.supplier-bill-progress__body > p {
+    margin: .3rem 0 0;
+    color: #64748b;
+    font-size: .82rem;
+    line-height: 1.5;
+}
+
+.supplier-bill-progress__body > small {
+    display: block;
+    margin-top: .35rem;
+    color: #64748b;
+    font-size: .75rem;
+}
+
+.supplier-bill-progress__status {
+    flex: 0 0 auto;
+    padding: .2rem .48rem;
+    border-radius: 999px;
+    background: #f1f5f9;
+    color: #64748b;
+    font-size: .67rem;
+    font-weight: 800;
+}
+
+.supplier-bill-progress__status--completed {
+    background: #dcfce7;
+    color: #15803d;
+}
+
+.supplier-bill-progress__status--current {
+    background: #dbeafe;
+    color: #1d4ed8;
+}
+
+.supplier-bill-progress__status--failed,
+.supplier-bill-progress__status--blocked {
+    background: #fee2e2;
+    color: #b91c1c;
+}
+
+.supplier-bill-progress__current-actions {
+    margin-top: .85rem;
+    padding: .9rem;
+    border: 1px solid #bfdbfe;
+    border-radius: 12px;
+    background: #f8fbff;
+}
+
+.supplier-bill-progress__current-actions :deep(.btn) {
+    width: 100%;
+}
+
+.supplier-bill-progress__current-actions :deep(.btn + .btn) {
+    margin-top: .5rem;
+}
+
+.supplier-bill-progress__current-actions :deep(.bill-payment-approval) {
+    margin: 0;
+    border: 0;
+    box-shadow: none;
+    background: transparent;
+    padding: 0;
+}
+
+@media (max-width: 720px) {
+    .supplier-bill-progress {
+        padding: 1rem;
+    }
+
+    .supplier-bill-progress__header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .supplier-bill-progress__summary {
+        max-width: none;
+        text-align: left;
+    }
+}

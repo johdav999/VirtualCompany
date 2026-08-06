@@ -524,7 +524,7 @@ public sealed class FortnoxSupplierInvoiceDraftActionProvider : ISupplierInvoice
                 request.SourceBillNumber);
             var response = await _apiClient.PutDirectAsync<JsonObject, JsonObject?>(
                 BuildContext(request, "supplier-invoice-bookkeep"),
-                $"supplierinvoices/{Uri.EscapeDataString(request.SourceBillNumber)}/bookkeep",
+                $"supplierinvoices/{Uri.EscapeDataString(request.SourceBillNumber)}/approvalbookkeep",
                 new JsonObject(),
                 cancellationToken);
             metadata["fortnoxResponse"] = response is null ? new JsonObject() : JsonNode.Parse(response.ToJsonString())?.AsObject() ?? new JsonObject();
@@ -577,15 +577,34 @@ public sealed class FortnoxSupplierInvoiceDraftActionProvider : ISupplierInvoice
 
         if (!string.IsNullOrWhiteSpace(request.AccountCode))
         {
+            var expenseAmount = request.VatAmount.HasValue
+                ? request.Amount - request.VatAmount.Value
+                : request.Amount;
+            var row = new JsonObject
+            {
+                ["Debit"] = expenseAmount
+            };
+            if (int.TryParse(request.AccountCode, out var accountNumber))
+            {
+                row["Account"] = accountNumber;
+            }
+            else
+            {
+                row["Account"] = request.AccountCode;
+            }
+            if (!string.IsNullOrWhiteSpace(request.CostCenter))
+            {
+                row["CostCenter"] = request.CostCenter;
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Project))
+            {
+                row["Project"] = request.Project;
+            }
+
             supplierInvoice["SupplierInvoiceRows"] = new JsonArray
             {
-                new JsonObject
-                {
-                    ["Account"] = request.AccountCode,
-                    ["CostCenter"] = request.CostCenter,
-                    ["Project"] = request.Project,
-                    ["Debit"] = request.Amount
-                }
+                row
             };
         }
 
@@ -619,13 +638,16 @@ public sealed class FortnoxSupplierInvoiceDraftActionProvider : ISupplierInvoice
             : fallback;
         _logger?.LogWarning(
             exception,
-            "Fortnox supplier invoice draft action failed. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. ActionId: {ActionId}. FortnoxInvoiceNumber: {InvoiceNumber}. SafeSummary: {SafeSummary}.",
+            "Fortnox supplier invoice draft action failed. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. ActionId: {ActionId}. FortnoxInvoiceNumber: {InvoiceNumber}. Category: {Category}. StatusCode: {StatusCode}. FortnoxErrorCode: {FortnoxErrorCode}. SafeSummary: {SafeSummary}.",
             request.CompanyId,
             request.ConnectionId,
             request.ActionId,
             request.SourceBillNumber,
+            exception is FortnoxApiException api ? api.Category : "transport",
+            exception is FortnoxApiException statusApi ? statusApi.StatusCode : null,
+            exception is FortnoxApiException codeApi ? codeApi.FortnoxErrorCode : null,
             safeSummary);
-        metadata["failureCategory"] = exception is FortnoxApiException api ? api.Category : "transport";
+        metadata["failureCategory"] = exception is FortnoxApiException failureApi ? failureApi.Category : "transport";
         metadata["failureMessage"] = safeSummary;
         return new SupplierInvoiceDraftActionProviderResult(
             ProviderKey,

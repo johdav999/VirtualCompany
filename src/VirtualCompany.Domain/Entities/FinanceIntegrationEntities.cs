@@ -536,6 +536,34 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
         UpdatedUtc = FailedUtc.Value;
     }
 
+    public void PrepareApprovedRetryAfterPreflightFailure(Guid? connectionId, DateTime updatedUtc)
+    {
+        if (Status != FinanceIntegrationWriteCommandRecordStatuses.Failed)
+        {
+            throw new InvalidOperationException("Only failed finance integration write commands can be prepared for retry.");
+        }
+
+        if (!ApprovalId.HasValue)
+        {
+            throw new InvalidOperationException("A failed finance integration write command requires an approval before retry.");
+        }
+
+        if (ResponseStatusCode.HasValue || !string.IsNullOrWhiteSpace(ExternalId))
+        {
+            throw new InvalidOperationException("A provider response cannot be retried as a preflight failure.");
+        }
+
+        ConnectionId = connectionId == Guid.Empty ? ConnectionId : connectionId;
+        Status = FinanceIntegrationWriteCommandRecordStatuses.Approved;
+        FailureCategory = null;
+        SafeFailureSummary = null;
+        ResponseStatusCode = null;
+        SafeResponseSummary = null;
+        ExecutionStartedUtc = null;
+        FailedUtc = null;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc, nameof(updatedUtc));
+    }
+
     public void ReplaceUnexecutedRequest(
         Guid? connectionId,
         Guid? actorUserId,

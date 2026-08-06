@@ -180,6 +180,57 @@ Laura, Finance Manager
 
 ---
 
+## Current Product Information Architecture
+
+The production app shell uses these primary destinations:
+
+- **Overview**: executive company health, trends, priorities, and agent recommendations.
+- **Agent team**: the operational Kanban with Finance, Sales, and Support agent rows and the stages Planned, In progress, Waiting for human approval, and Completed.
+- **Finance**: daily finance work organized as Overview, Cash, Customer invoices, Supplier bills, Payments, Transactions, and Issues.
+- **Sales**: daily sales work organized around Overview, Prospects, Pipeline, Campaigns, and customer or deal detail.
+- **Support**: case queue and case details, with Knowledge as the secondary support workspace.
+- **Work**: the shared action center for Tasks, Approvals, Messages, and Notifications.
+
+History and Settings are secondary destinations at the bottom of the navigation. Simulation Lab and System Administration remain restricted utilities and must be visually separated from daily company work.
+
+Do not add retired pages back to the primary navigation. Preserve legacy routes only as compatibility paths or detailed workflow destinations.
+
+The complete canonical and compatibility route map is maintained in `docs/ui-route-inventory.md`.
+
+## Settings Information Architecture
+
+Settings is the entry point for:
+
+- Company setup and onboarding
+- Agent roster, role briefs, capabilities, access, and team mailboxes
+- Finance and mailbox connections
+- Workflow and outbound automation
+- Briefing delivery
+- Finance and support operating policies
+- Audit history
+- User language and profile preferences
+
+Administrative settings must not be presented as daily operational actions.
+
+## Reference Screens
+
+The current consolidation references are stored in `docs/design/references/`:
+
+- `app-shell-navigation-reference.png`
+- `executive-overview-reference.png`
+- `agent-team-kanban-reference.png`
+- `work-center-reference.png`
+- `agent-settings-reference.png`
+- `finance-consolidated-overview-reference.png`
+- `finance-supplier-bills-reference.png`
+- `sales-overview-reference.png`
+- `sales-prospects-reference.png`
+- `support-cases-reference.png`
+- `support-knowledge-reference.png`
+- `settings-hub-reference.png`
+
+---
+
 ## Agent Design
 
 Each agent must have:

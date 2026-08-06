@@ -318,30 +318,15 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
 
     private async Task RemoveExistingFinanceSeedAsync(Guid companyId, CancellationToken cancellationToken)
     {
-        var budgets = await _dbContext.Budgets
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var transactions = await SimulationRecords(_dbContext.FinanceTransactions, companyId)
             .ToListAsync(cancellationToken);
-        var forecasts = await _dbContext.Forecasts
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var balances = await SimulationRecords(_dbContext.FinanceBalances, companyId)
             .ToListAsync(cancellationToken);
-        var transactions = await _dbContext.FinanceTransactions
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var invoices = await SimulationRecords(_dbContext.FinanceInvoices, companyId)
             .ToListAsync(cancellationToken);
-        var balances = await _dbContext.FinanceBalances
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var bills = await SimulationRecords(_dbContext.FinanceBills, companyId)
             .ToListAsync(cancellationToken);
-        var invoices = await _dbContext.FinanceInvoices
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
-            .ToListAsync(cancellationToken);
-        var bills = await _dbContext.FinanceBills
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
-            .ToListAsync(cancellationToken);
+        var invoiceIds = invoices.Select(x => x.Id).ToArray();
         var billIds = bills.Select(x => x.Id).ToArray();
         var supplierInvoicePaymentProposals = await _dbContext.SupplierInvoicePaymentProposals
             .IgnoreQueryFilters()
@@ -364,21 +349,44 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && billIds.Contains(x.BillId))
             .ToListAsync(cancellationToken);
+        var payments = await SimulationRecords(_dbContext.Payments, companyId)
+            .ToListAsync(cancellationToken);
+        var paymentIds = payments.Select(x => x.Id).ToArray();
+        var paymentAllocations = await _dbContext.PaymentAllocations
+            .IgnoreQueryFilters()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                (paymentIds.Contains(x.PaymentId) ||
+                 (x.InvoiceId.HasValue && invoiceIds.Contains(x.InvoiceId.Value)) ||
+                 (x.BillId.HasValue && billIds.Contains(x.BillId.Value))))
+            .ToListAsync(cancellationToken);
+        var bankTransactions = await SimulationRecords(_dbContext.BankTransactions, companyId)
+            .Concat(_dbContext.BankTransactions
+                .IgnoreQueryFilters()
+                .Where(x =>
+                    x.CompanyId == companyId &&
+                    x.ImportSource == "mock_import" &&
+                    !ProtectedFortnoxRecordIds(companyId).Contains(x.Id)))
+            .Distinct()
+            .ToListAsync(cancellationToken);
+        var bankTransactionIds = bankTransactions.Select(x => x.Id).ToArray();
+        var bankTransactionPostingStates = await _dbContext.BankTransactionPostingStateRecords
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId && bankTransactionIds.Contains(x.BankTransactionId))
+            .ToListAsync(cancellationToken);
         var bankTransactionPaymentLinks = await _dbContext.BankTransactionPaymentLinks
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x =>
+                x.CompanyId == companyId &&
+                (bankTransactionIds.Contains(x.BankTransactionId) || paymentIds.Contains(x.PaymentId)))
             .ToListAsync(cancellationToken);
         var bankTransactionCashLedgerLinks = await _dbContext.BankTransactionCashLedgerLinks
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.CompanyId == companyId && bankTransactionIds.Contains(x.BankTransactionId))
             .ToListAsync(cancellationToken);
         var paymentCashLedgerLinks = await _dbContext.PaymentCashLedgerLinks
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
-            .ToListAsync(cancellationToken);
-        var bankTransactions = await _dbContext.BankTransactions
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.CompanyId == companyId && paymentIds.Contains(x.PaymentId))
             .ToListAsync(cancellationToken);
         var cashPostingLedgerEntryIds = paymentCashLedgerLinks
             .Select(x => x.LedgerEntryId)
@@ -389,10 +397,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
             .IgnoreQueryFilters()
             .Where(x =>
                 x.CompanyId == companyId &&
-                (cashPostingLedgerEntryIds.Contains(x.LedgerEntryId) ||
-                 x.SourceType == FinanceCashPostingSourceTypes.BankTransaction ||
-                 x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation ||
-                 x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement))
+                cashPostingLedgerEntryIds.Contains(x.LedgerEntryId))
             .ToListAsync(cancellationToken);
         cashPostingLedgerEntryIds = cashPostingLedgerEntryIds
             .Concat(cashPostingSourceMappings.Select(x => x.LedgerEntryId))
@@ -410,38 +415,53 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
                 .IgnoreQueryFilters()
                 .Where(x => x.CompanyId == companyId && cashPostingLedgerEntryIds.Contains(x.Id))
                 .ToListAsync(cancellationToken);
-        var bankAccounts = await _dbContext.CompanyBankAccounts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync(cancellationToken);
-        var payments = await _dbContext.Payments
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var deterministicBankAccountIds = BankTransactionSeedData.GetDeterministicBankAccountIds(companyId);
+        var bankAccounts = await SimulationRecords(_dbContext.CompanyBankAccounts, companyId)
+            .Concat(_dbContext.CompanyBankAccounts
+                .IgnoreQueryFilters()
+                .Where(x =>
+                    x.CompanyId == companyId &&
+                    deterministicBankAccountIds.Contains(x.Id) &&
+                    !ProtectedFortnoxRecordIds(companyId).Contains(x.Id)))
+            .Distinct()
             .ToListAsync(cancellationToken);
-        var paymentAllocations = await _dbContext.PaymentAllocations
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var assets = await SimulationRecords(_dbContext.FinanceAssets, companyId)
             .ToListAsync(cancellationToken);
+        // FinancePolicyConfiguration predates source tracking and is unique per company.
+        // Replacement must remove the previous generated policy before creating its successor.
         var policies = await _dbContext.FinancePolicyConfigurations
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ToListAsync(cancellationToken);
-        var counterparties = await _dbContext.FinanceCounterparties
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var preservedCounterpartyIds = await PreservedRecordIds(_dbContext.FinanceInvoices, companyId)
+            .Where(x => x.CounterpartyId != Guid.Empty)
+            .Select(x => x.CounterpartyId)
+            .Concat(PreservedRecordIds(_dbContext.FinanceBills, companyId).Select(x => x.CounterpartyId))
+            .Concat(PreservedRecordIds(_dbContext.FinanceTransactions, companyId)
+                .Where(x => x.CounterpartyId.HasValue)
+                .Select(x => x.CounterpartyId.Value))
+            .Distinct()
             .ToListAsync(cancellationToken);
-        var assets = await _dbContext.FinanceAssets
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var counterparties = await SimulationRecords(_dbContext.FinanceCounterparties, companyId)
+            .Where(x => !preservedCounterpartyIds.Contains(x.Id))
             .ToListAsync(cancellationToken);
         var anomalies = await _dbContext.FinanceSeedAnomalies
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ToListAsync(cancellationToken);
-        var accounts = await _dbContext.FinanceAccounts
-            .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+        var preservedAccountIds = await PreservedRecordIds(_dbContext.FinanceTransactions, companyId)
+            .Select(x => x.AccountId)
+            .Concat(PreservedRecordIds(_dbContext.FinanceBalances, companyId).Select(x => x.AccountId))
+            .Concat(PreservedRecordIds(_dbContext.CompanyBankAccounts, companyId).Select(x => x.FinanceAccountId))
+            .Distinct()
             .ToListAsync(cancellationToken);
+        var accounts = await SimulationRecords(_dbContext.FinanceAccounts, companyId)
+            .Where(x => !preservedAccountIds.Contains(x.Id))
+            .ToListAsync(cancellationToken);
+        var accountIds = accounts.Select(x => x.Id).ToArray();
         var mappings = await _dbContext.FinancialStatementMappings
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.CompanyId == companyId && accountIds.Contains(x.FinanceAccountId))
             .ToListAsync(cancellationToken);
         var seedDocuments = await _dbContext.CompanyKnowledgeDocuments
             .IgnoreQueryFilters()
@@ -459,6 +479,7 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
         _dbContext.LedgerEntries.RemoveRange(cashPostingLedgerEntries);
         _dbContext.BankTransactionCashLedgerLinks.RemoveRange(bankTransactionCashLedgerLinks);
         _dbContext.BankTransactionPaymentLinks.RemoveRange(bankTransactionPaymentLinks);
+        _dbContext.BankTransactionPostingStateRecords.RemoveRange(bankTransactionPostingStates);
         _dbContext.BankTransactions.RemoveRange(bankTransactions);
         _dbContext.CompanyBankAccounts.RemoveRange(bankAccounts);
         _dbContext.FinancialStatementMappings.RemoveRange(mappings);
@@ -477,13 +498,49 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
         _dbContext.FinancePolicyConfigurations.RemoveRange(policies);
         _dbContext.FinanceAssets.RemoveRange(assets);
         _dbContext.FinanceCounterparties.RemoveRange(counterparties);
-        _dbContext.Budgets.RemoveRange(budgets);
-        _dbContext.Forecasts.RemoveRange(forecasts);
         _dbContext.FinanceAccounts.RemoveRange(accounts);
         _dbContext.CompanyKnowledgeDocuments.RemoveRange(seedDocuments);
         FinanceSeedingMetadata.MarkNotSeeded(company);
         await _dbContext.SaveChangesAsync(cancellationToken);
     }
+
+    private IQueryable<TEntity> SimulationRecords<TEntity>(
+        DbSet<TEntity> records,
+        Guid companyId)
+        where TEntity : class, ICompanyOwnedEntity
+    {
+        var protectedRecordIds = ProtectedFortnoxRecordIds(companyId);
+
+        return records
+            .IgnoreQueryFilters()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation &&
+                !protectedRecordIds.Contains(EF.Property<Guid>(x, "Id")));
+    }
+
+    private IQueryable<TEntity> PreservedRecordIds<TEntity>(
+        DbSet<TEntity> records,
+        Guid companyId)
+        where TEntity : class, ICompanyOwnedEntity
+    {
+        var protectedRecordIds = ProtectedFortnoxRecordIds(companyId);
+
+        return records
+            .IgnoreQueryFilters()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                (EF.Property<string>(x, "SourceType") != FinanceRecordSourceTypes.Simulation ||
+                 protectedRecordIds.Contains(EF.Property<Guid>(x, "Id"))));
+    }
+
+    private IQueryable<Guid> ProtectedFortnoxRecordIds(Guid companyId) =>
+        _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox)
+            .Select(x => x.InternalRecordId);
 
     private void EnqueueSeedPlatformEvents(Guid companyId, FinanceSeedDataset dataset)
     {

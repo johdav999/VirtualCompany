@@ -18,7 +18,7 @@ using VirtualCompany.Infrastructure.Tenancy;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
-public sealed class CompanyApprovalRequestService : IApprovalRequestService
+public sealed class CompanyApprovalRequestService : IApprovalRequestService, IApprovalAutomationService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _companyMembershipContextResolver;
@@ -45,6 +45,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
 
     private const string DefaultRationaleSummary = "This action exceeded a configured approval threshold.";
     private const string DefaultAffectedDataSummary = "Affected data details unavailable.";
+    private const string SupplierPaymentProposalApprovalType = "supplier_invoice_payment_proposal";
+    private const string SupplierPaymentProposalTaskType = "finance.supplier_invoice_payment_proposal";
     private const int SummaryMaxLength = 220;
 
     public async Task<ApprovalRequestDto> CreateAsync(
@@ -205,6 +207,83 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             finalized);
     }
 
+    public async Task<ApprovalDecisionResultDto> ApproveUnderStandingGrantAsync(
+        Guid companyId,
+        Guid approvalId,
+        AutomatedApprovalGrant grant,
+        CancellationToken cancellationToken)
+    {
+        var approval = await _dbContext.ApprovalRequests
+            .Include(x => x.Steps)
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == approvalId, cancellationToken)
+            ?? throw new KeyNotFoundException("Approval request not found.");
+
+        if (approval.Status != ApprovalRequestStatus.Pending)
+        {
+            return new ApprovalDecisionResultDto(
+                await ToDtoAsync(approval, cancellationToken),
+                approval.Steps.OrderByDescending(x => x.SequenceNo).Select(ToStepDto).First(),
+                approval.CurrentActionableStep is { } existingNext ? ToStepDto(existingNext) : null,
+                approval.Status != ApprovalRequestStatus.Pending);
+        }
+
+        var currentStep = approval.CurrentActionableStep
+            ?? throw new ApprovalValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(approvalId)] = ["Approval request has no current actionable step."]
+            });
+        var comment = $"Automatically approved by {grant.AgentDisplayName} under supplier trust rule {grant.GrantId:N} for {grant.SupplierName} ({grant.Stage}).";
+        var decidedStep = approval.ApproveCurrentStep(currentStep.Id, grant.GrantorUserId, comment);
+        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
+
+        await WriteDecisionAuditAsync(approval, decidedStep, grant.GrantorUserId, rejected: false, cancellationToken);
+        await _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                companyId,
+                "agent",
+                grant.AgentId,
+                AuditEventActions.ApprovalStepApproved,
+                AuditTargetTypes.ApprovalRequest,
+                approval.Id.ToString("N"),
+                AuditEventOutcomes.Succeeded,
+                DataSources: ["supplier_trust_rule", "approvals"],
+                RationaleSummary: comment,
+                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["standingGrantId"] = grant.GrantId.ToString("N"),
+                    ["agentId"] = grant.AgentId.ToString("N"),
+                    ["agentDisplayName"] = grant.AgentDisplayName,
+                    ["supplierName"] = grant.SupplierName,
+                    ["stage"] = grant.Stage
+                }),
+            cancellationToken);
+
+        var finalized = approval.Status != ApprovalRequestStatus.Pending;
+        if (finalized)
+        {
+            await MarkApprovalNotificationsActionedAsync(companyId, approval.Id, grant.GrantorUserId, cancellationToken);
+            await WriteCompletionAuditAsync(approval, grant.GrantorUserId, cancellationToken);
+            if (linkedEntityTransition is not null)
+            {
+                await WriteLinkedEntityStateAuditAsync(approval, linkedEntityTransition, grant.GrantorUserId, cancellationToken);
+            }
+        }
+        else
+        {
+            EnqueueApprovalNotification(approval);
+        }
+
+        EnqueueApprovalUpdatedEvent(approval, "automatically_approved");
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
+
+        return new ApprovalDecisionResultDto(
+            await ToDtoAsync(approval, cancellationToken),
+            ToStepDto(decidedStep),
+            approval.CurrentActionableStep is { } nextStep ? ToStepDto(nextStep) : null,
+            finalized);
+    }
+
     public async Task<IReadOnlyList<ApprovalRequestDto>> ListAsync(
         Guid companyId,
         string? status,
@@ -269,7 +348,10 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService
             var previousStatus = task.Status.ToStorageValue();
             if (approval.Status == ApprovalRequestStatus.Approved)
             {
-                task.UpdateStatus(WorkTaskStatus.InProgress);
+                var approvalCompletesTask =
+                    string.Equals(approval.ApprovalType, SupplierPaymentProposalApprovalType, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(task.Type, SupplierPaymentProposalTaskType, StringComparison.OrdinalIgnoreCase);
+                task.UpdateStatus(approvalCompletesTask ? WorkTaskStatus.Completed : WorkTaskStatus.InProgress);
                 await UpdateSupplierPaymentProposalAfterTaskApprovalAsync(approval, task, approved: true, cancellationToken);
                 await UpdateSupportRefundAfterTaskApprovalAsync(approval, task, cancellationToken);
                 return LinkedEntityStateTransition.ForTask(task.Id, previousStatus, task.Status.ToStorageValue());

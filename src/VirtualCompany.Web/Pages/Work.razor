@@ -1,0 +1,227 @@
+@page "/work"
+@rendermode InteractiveServer
+@inject OnboardingApiClient OnboardingApiClient
+@inject TaskApiClient TaskApiClient
+@inject NavigationManager Navigation
+@inject IStringLocalizer<UiConsolidationResources> UiText
+
+<PageTitle>@UiText["Work"]</PageTitle>
+
+<section class="vc-page">
+    <header class="vc-page-header">
+        <div>
+            <span class="vc-kicker">@UiText["WorkKicker"]</span>
+            <h1>@UiText["Work"]</h1>
+            <p>@UiText["WorkDescription"]</p>
+        </div>
+    </header>
+
+    @if (CompanyId is Guid companyId)
+    {
+        <nav class="vc-section-tabs" aria-label="@UiText["WorkSections"]">
+            <a class="@TabClass("tasks")" href="@BuildHref("tasks")">@UiText["Tasks"]</a>
+            <a class="@TabClass("approvals")" href="@BuildHref("approvals")">@UiText["Approvals"]</a>
+            <a class="@TabClass("messages")" href="@BuildHref("messages")">@UiText["Messages"]</a>
+            <a class="@TabClass("notifications")" href="@BuildHref("notifications")">@UiText["Notifications"]</a>
+        </nav>
+
+        @if (ActiveTab == "approvals")
+        {
+            <WorkApprovalsPanel CompanyId="companyId"
+                                SelectedId="ItemId"
+                                SelectedIdChanged="SelectWorkItemAsync" />
+        }
+        else if (ActiveTab == "notifications")
+        {
+            <WorkNotificationsPanel CompanyId="companyId"
+                                    SelectedId="ItemId"
+                                    SelectedIdChanged="SelectWorkItemAsync" />
+        }
+        else if (ActiveTab == "messages")
+        {
+            <WorkMessagesPanel SelectedId="ItemId"
+                               SelectedIdChanged="SelectWorkItemAsync" />
+        }
+        else if (isLoading)
+        {
+            <div class="vc-panel" aria-live="polite">@UiText["LoadingTasks"]</div>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert alert-danger" role="alert">@errorMessage</div>
+        }
+        else
+        {
+            <div class="vc-work-layout">
+                <section class="vc-panel vc-work-list" aria-label="@UiText["TaskList"]">
+                    <form class="vc-filter-row" method="get">
+                        <input type="hidden" name="companyId" value="@companyId" />
+                        <input type="hidden" name="tab" value="tasks" />
+                        <label>
+                            <span>@UiText["Status"]</span>
+                            <select class="form-select" name="status">
+                                <option value="">@UiText["AllTasks"]</option>
+                                @foreach (var status in SupportedStatuses)
+                                {
+                                    <option value="@status" selected="@string.Equals(Status, status, StringComparison.OrdinalIgnoreCase)">@Display(status)</option>
+                                }
+                            </select>
+                        </label>
+                        <button class="btn btn-outline-secondary" type="submit">@UiText["Apply"]</button>
+                    </form>
+
+                    @if (tasks.Count == 0)
+                    {
+                        <div class="vc-empty-state">
+                            <h2>@UiText["NoMatchingTasks"]</h2>
+                            <p>@UiText["NoMatchingTasksDescription"]</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="vc-list" role="list">
+                            @foreach (var task in tasks)
+                            {
+                                <a class="@TaskClass(task.Id)" href="@BuildTaskHref(task.Id)" role="listitem">
+                                    <div>
+                                        <strong>@task.Title</strong>
+                                        <span>@Display(task.Type) &middot; @(task.AssignedAgent?.DisplayName ?? UiText["Unassigned"].Value)</span>
+                                    </div>
+                                    <div class="vc-list-meta">
+                                        <span class="@PriorityClass(task.Priority)">@Display(task.Priority)</span>
+                                        <span>@Display(task.Status)</span>
+                                    </div>
+                                </a>
+                            }
+                        </div>
+                    }
+                </section>
+
+                <aside class="vc-panel vc-work-detail" aria-label="@UiText["TaskDetails"]">
+                    @if (selectedTask is null)
+                    {
+                        <div class="vc-empty-state">
+                            <h2>@UiText["SelectTask"]</h2>
+                            <p>@UiText["SelectTaskDescription"]</p>
+                        </div>
+                    }
+                    else
+                    {
+                        <span class="vc-kicker">@Display(selectedTask.Status)</span>
+                        <h2>@selectedTask.Title</h2>
+                        <dl class="vc-detail-list">
+                            <dt>@UiText["Priority"]</dt><dd>@Display(selectedTask.Priority)</dd>
+                            <dt>@UiText["Owner"]</dt><dd>@(selectedTask.AssignedAgent?.DisplayName ?? UiText["Unassigned"].Value)</dd>
+                            <dt>@UiText["Due"]</dt><dd>@(selectedTask.DueAt?.ToLocalTime().ToString("g") ?? UiText["NoDueDate"].Value)</dd>
+                            <dt>@UiText["Updated"]</dt><dd>@selectedTask.UpdatedAt.ToLocalTime().ToString("g")</dd>
+                        </dl>
+                        @if (!string.IsNullOrWhiteSpace(selectedTask.Description))
+                        {
+                            <h3>@UiText["Description"]</h3>
+                            <p>@selectedTask.Description</p>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(selectedTask.RationaleSummary))
+                        {
+                            <h3>@UiText["WhyWorkExists"]</h3>
+                            <p>@selectedTask.RationaleSummary</p>
+                        }
+                        @if (selectedTask.WorkflowInstanceId is Guid workflowId)
+                        {
+                            <a class="btn btn-outline-secondary" href="@($"/workflows?companyId={companyId:D}&workflowInstanceId={workflowId:D}")">@UiText["OpenWorkflow"]</a>
+                        }
+                    }
+                </aside>
+            </div>
+        }
+    }
+</section>
+
+@code {
+    private static readonly string[] SupportedStatuses = ["pending", "in_progress", "blocked", "awaiting_approval", "completed", "failed"];
+
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "tab")] public string? Tab { get; set; }
+    [SupplyParameterFromQuery(Name = "status")] public string? Status { get; set; }
+    [SupplyParameterFromQuery(Name = "taskId")] public Guid? TaskId { get; set; }
+    [SupplyParameterFromQuery(Name = "itemId")] public Guid? ItemId { get; set; }
+
+    private bool isLoading = true;
+    private string? errorMessage;
+    private List<TaskListItemViewModel> tasks = [];
+    private TaskDetailViewModel? selectedTask;
+    private string ActiveTab => Tab?.Trim().ToLowerInvariant() switch
+    {
+        "approvals" => "approvals",
+        "inbox" or "notifications" => "notifications",
+        "messages" => "messages",
+        _ => "tasks"
+    };
+
+    protected override async Task OnParametersSetAsync()
+    {
+        errorMessage = null;
+        isLoading = true;
+        try
+        {
+            if (CompanyId is null)
+            {
+                var context = await OnboardingApiClient.GetCurrentUserContextAsync();
+                if (context?.ActiveCompany is { } activeCompany)
+                {
+                    Navigation.NavigateTo($"/work?companyId={activeCompany.CompanyId:D}", replace: true);
+                }
+                return;
+            }
+
+            if (ActiveTab == "tasks")
+            {
+                var result = await TaskApiClient.ListAsync(CompanyId.Value, Status, null);
+                tasks = result.Items;
+                selectedTask = TaskId is Guid taskId
+                    ? await TaskApiClient.GetAsync(CompanyId.Value, taskId)
+                    : null;
+            }
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private string BuildHref(string tab) => $"/work?companyId={CompanyId:D}&tab={tab}";
+    private string BuildTaskHref(Guid taskId) => $"{BuildHref("tasks")}&taskId={taskId:D}{(string.IsNullOrWhiteSpace(Status) ? string.Empty : $"&status={Uri.EscapeDataString(Status)}")}";
+    private Task SelectWorkItemAsync(Guid itemId)
+    {
+        Navigation.NavigateTo($"{BuildHref(ActiveTab)}&itemId={itemId:D}");
+        return Task.CompletedTask;
+    }
+
+    private string TabClass(string tab) => ActiveTab == tab ? "active" : string.Empty;
+    private string TaskClass(Guid taskId) => TaskId == taskId ? "vc-list-item selected" : "vc-list-item";
+    private static string PriorityClass(string value) => $"vc-status vc-status-{value.Trim().ToLowerInvariant().Replace('_', '-')}";
+    private string Display(string value)
+    {
+        var key = value.Trim().ToLowerInvariant() switch
+        {
+            "pending" => "StatusPending",
+            "in_progress" => "StatusInProgress",
+            "blocked" => "StatusBlocked",
+            "awaiting_approval" => "StatusAwaitingApproval",
+            "completed" => "StatusCompleted",
+            "failed" => "StatusFailed",
+            "low" => "PriorityLow",
+            "normal" => "PriorityNormal",
+            "high" => "PriorityHigh",
+            "urgent" => "PriorityUrgent",
+            _ => string.Empty
+        };
+
+        return string.IsNullOrEmpty(key)
+            ? string.Join(" ", value.Split(['_', '-'], StringSplitOptions.RemoveEmptyEntries).Select(word => char.ToUpperInvariant(word[0]) + word[1..].ToLowerInvariant()))
+            : UiText[key];
+    }
+}

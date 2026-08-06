@@ -1,0 +1,77 @@
+@page "/settings/agents"
+@rendermode InteractiveServer
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+@inject IStringLocalizer<UiConsolidationResources> UiText
+
+<PageTitle>@UiText["AgentSettings"]</PageTitle>
+
+<section class="vc-page">
+    <header class="vc-page-header">
+        <div>
+            <span class="vc-kicker">@UiText["Agents"]</span>
+            <h1>@UiText["AgentSettings"]</h1>
+            <p>@UiText["AgentSettingsDescription"]</p>
+        </div>
+        @if (CompanyId is Guid companyId)
+        {
+            <a class="btn btn-outline-secondary" href="@($"/agents/staff?companyId={companyId:D}")">
+                <span class="bi bi-kanban" aria-hidden="true"></span>
+                @UiText["OpenAgentTeam"]
+            </a>
+        }
+    </header>
+
+    @if (CompanyId is Guid selectedCompanyId)
+    {
+        <div class="vc-settings-grid">
+            @foreach (var setting in Sections(selectedCompanyId))
+            {
+                <section class="vc-panel vc-settings-group">
+                    <span class="bi @setting.Icon" aria-hidden="true"></span>
+                    <h2>@setting.Title</h2>
+                    <p>@setting.Description</p>
+                    <a class="btn btn-outline-primary" href="@setting.Href">@UiText["ConfigureSection", setting.Title]</a>
+                </section>
+            }
+        </div>
+    }
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "agentId")] public Guid? AgentId { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is not null)
+        {
+            return;
+        }
+
+        var context = await OnboardingApiClient.GetCurrentUserContextAsync();
+        if (context?.ActiveCompany is { } activeCompany)
+        {
+            Navigation.NavigateTo($"/settings/agents?companyId={activeCompany.CompanyId:D}", replace: true);
+        }
+    }
+
+    private IReadOnlyList<AgentSettingSection> Sections(Guid companyId)
+    {
+        var agentQuery = AgentId is Guid agentId ? $"&agentId={agentId:D}" : string.Empty;
+        var manageBase = $"/agents/manage?companyId={companyId:D}{agentQuery}";
+
+        return
+        [
+            new(UiText["TeamAndRoles"], UiText["TeamAndRolesDescription"], "bi-people", $"{manageBase}#agents-roster-title"),
+            new(UiText["BriefsAndDocuments"], UiText["BriefsAndDocumentsDescription"], "bi-file-earmark-text", $"{manageBase}#agent-brief"),
+            new(UiText["Capabilities"], UiText["CapabilitiesDescription"], "bi-stars", $"{manageBase}#agent-capabilities"),
+            new(UiText["AccessAndDataScope"], UiText["AccessAndDataScopeDescription"], "bi-shield-check", $"{manageBase}#agent-access-configuration"),
+            new(UiText["InboxConnections"], UiText["InboxConnectionsDescription"], "bi-envelope-at", $"{manageBase}#team-mailboxes"),
+            new(UiText["AutonomyAndApprovals"], UiText["AutonomyAndApprovalsDescription"], "bi-person-check", $"{manageBase}#agent-operating-profile"),
+            new(UiText["Automation"], UiText["AgentAutomationDescription"], "bi-diagram-3", $"/agents/automation?companyId={companyId:D}")
+        ];
+    }
+
+    private sealed record AgentSettingSection(string Title, string Description, string Icon, string Href);
+}

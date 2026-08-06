@@ -30,6 +30,13 @@ public static class AgentCapabilityIds
     public const string SupportRootCauseAnalysis = "support_root_cause_analysis";
     public const string SupportKnowledgeCoverage = "support_knowledge_coverage";
     public const string SupportOperatingCadence = "support_operating_cadence";
+    public const string MarketingPlanning = "marketing_planning";
+    public const string MarketingAudienceIntelligence = "marketing_audience_intelligence";
+    public const string MarketingContentAdvice = "marketing_content_advice";
+    public const string MarketingCampaignCoordination = "marketing_campaign_coordination";
+    public const string MarketingPerformanceAnalysis = "marketing_performance_analysis";
+    public const string MarketingExperimentAdvice = "marketing_experiment_advice";
+    public const string MarketingOperatingCadence = "marketing_operating_cadence";
 }
 
 public static class AgentCapabilityStates

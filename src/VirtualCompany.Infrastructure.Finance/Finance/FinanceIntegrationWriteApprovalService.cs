@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
 using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
@@ -15,17 +16,20 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly TimeProvider _timeProvider;
     private readonly IFortnoxIntegrationDiagnostics? _diagnostics;
+    private readonly ILogger<FinanceIntegrationWriteApprovalService>? _logger;
 
     public FinanceIntegrationWriteApprovalService(
         IApprovalRequestService approvalRequestService,
         VirtualCompanyDbContext dbContext,
         TimeProvider timeProvider,
-        IFortnoxIntegrationDiagnostics? diagnostics = null)
+        IFortnoxIntegrationDiagnostics? diagnostics = null,
+        ILogger<FinanceIntegrationWriteApprovalService>? logger = null)
     {
         _approvalRequestService = approvalRequestService;
         _dbContext = dbContext;
         _timeProvider = timeProvider;
         _diagnostics = diagnostics;
+        _logger = logger;
     }
 
     public string ProviderKey => FinanceIntegrationProviderKeys.Fortnox;
@@ -63,6 +67,22 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
         if (existing?.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
         {
             existing.ReplaceOutdatedExecutedRequest(
+                request.ConnectionId,
+                request.ActorUserId,
+                request.HttpMethod,
+                request.Path,
+                await ResolveTargetCompanyAsync(request.CompanyId, cancellationToken),
+                request.PayloadSummary,
+                request.PayloadHash,
+                request.Payload.SanitizedJson,
+                request.CorrelationId,
+                now);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
+        if (existing is { Status: FinanceIntegrationWriteCommandRecordStatuses.Failed, RetrySupported: false })
+        {
+            existing.ReplaceUnexecutedRequest(
                 request.ConnectionId,
                 request.ActorUserId,
                 request.HttpMethod,
@@ -148,8 +168,55 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
             return new FinanceIntegrationWriteResult(request.ProviderKey, command.Id, command.ApprovalId, command.Status, "This accounting-system action has already completed.", false);
         }
 
+        if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Failed &&
+            !command.RetrySupported &&
+            IsRecoverablePreflightAuthorizationFailure(command))
+        {
+            var previousFailureCategory = command.FailureCategory;
+            var previousFailedUtc = command.FailedUtc;
+            _logger?.LogInformation(
+                "Reopening approved finance integration write after a recoverable authorization preflight failure. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. ConnectionId: {ConnectionId}. PreviousFailureCategory: {PreviousFailureCategory}. PreviousFailedUtc: {PreviousFailedUtc}. ExecutionAttemptCount: {ExecutionAttemptCount}.",
+                command.CompanyId,
+                command.Id,
+                command.ApprovalId,
+                request.ConnectionId,
+                previousFailureCategory,
+                previousFailedUtc,
+                command.ExecutionAttemptCount);
+            var recoveryUtc = _timeProvider.GetUtcNow().UtcDateTime;
+            command.PrepareApprovedRetryAfterPreflightFailure(
+                request.ConnectionId,
+                recoveryUtc);
+            var recoveryAudit = new FinanceIntegrationAuditEvent(
+                Guid.NewGuid(),
+                command.CompanyId,
+                command.ConnectionId,
+                request.ProviderKey,
+                "write_retry_after_reconnect",
+                FinanceIntegrationAuditOutcomes.Succeeded,
+                command.CommandType,
+                command.Id,
+                null,
+                command.ApprovalId?.ToString("N"),
+                "The approved accounting-system action was reopened after the connection was restored.",
+                recoveryUtc);
+            recoveryAudit.Metadata["previousFailureCategory"] = previousFailureCategory;
+            recoveryAudit.Metadata["previousFailedUtc"] = previousFailedUtc?.ToString("O");
+            recoveryAudit.Metadata["executionAttemptCount"] = command.ExecutionAttemptCount;
+            _dbContext.FinanceIntegrationAuditEvents.Add(recoveryAudit);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+
         if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Failed && !command.RetrySupported)
         {
+            _logger?.LogWarning(
+                "Finance integration write retry blocked because the previous failure is not safely retryable. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. FailureCategory: {FailureCategory}. ResponseStatusCode: {ResponseStatusCode}. ExecutionAttemptCount: {ExecutionAttemptCount}.",
+                command.CompanyId,
+                command.Id,
+                command.ApprovalId,
+                command.FailureCategory,
+                command.ResponseStatusCode,
+                command.ExecutionAttemptCount);
             throw new FortnoxApiException(
                 command.SafeFailureSummary ?? "This accounting-system action failed and cannot be retried automatically.",
                 null,
@@ -170,6 +237,13 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
         command.MarkApproved(approval.Id, approver, _timeProvider.GetUtcNow().UtcDateTime);
         command.MarkExecutionStarted(_timeProvider.GetUtcNow().UtcDateTime);
         await _dbContext.SaveChangesAsync(cancellationToken);
+        _logger?.LogDebug(
+            "Finance integration write passed approval recheck and entered execution. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. ConnectionId: {ConnectionId}. ExecutionAttemptCount: {ExecutionAttemptCount}.",
+            command.CompanyId,
+            command.Id,
+            approvalId,
+            command.ConnectionId,
+            command.ExecutionAttemptCount);
         return new FinanceIntegrationWriteResult(request.ProviderKey, command.Id, approval.Id, command.Status, "Accounting-system action is approved for execution.", true);
     }
 
@@ -249,6 +323,17 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
             ? fortnoxException.Category
             : exception.GetType().Name;
 
+        _logger?.LogWarning(
+            "Recording finance integration write failure. CompanyId: {CompanyId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. ConnectionId: {ConnectionId}. FailureCategory: {FailureCategory}. ResponseStatusCode: {ResponseStatusCode}. RequiresReconnect: {RequiresReconnect}. IsTransient: {IsTransient}. ExecutionAttemptCount: {ExecutionAttemptCount}.",
+            check.CompanyId,
+            check.WriteRequestId,
+            command.ApprovalId,
+            check.ConnectionId,
+            category,
+            (exception as FortnoxApiException)?.StatusCode,
+            (exception as FortnoxApiException)?.RequiresReconnect ?? false,
+            (exception as FortnoxApiException)?.IsTransient ?? false,
+            command.ExecutionAttemptCount);
         command.MarkFailed(category, safeMessage, (exception as FortnoxApiException)?.StatusCode is { } statusCode ? (int)statusCode : null, _timeProvider.GetUtcNow().UtcDateTime);
         _dbContext.FinanceIntegrationAuditEvents.Add(new FinanceIntegrationAuditEvent(
             Guid.NewGuid(),
@@ -265,6 +350,24 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
             _timeProvider.GetUtcNow().UtcDateTime,
             errorCount: 1));
         await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    private static bool IsRecoverablePreflightAuthorizationFailure(FinanceIntegrationWriteCommandRecord command)
+    {
+        if (command.ResponseStatusCode.HasValue ||
+            !string.IsNullOrWhiteSpace(command.ExternalId) ||
+            !command.ApprovalId.HasValue)
+        {
+            return false;
+        }
+
+        if (string.Equals(command.FailureCategory, "authorization", StringComparison.OrdinalIgnoreCase))
+        {
+            return true;
+        }
+
+        return string.Equals(command.FailureCategory, "not_retryable", StringComparison.OrdinalIgnoreCase) &&
+               command.SafeFailureSummary?.Contains("reconnect", StringComparison.OrdinalIgnoreCase) == true;
     }
 
     public Task RecordExecutionSucceededAsync(FinanceIntegrationWriteCommand request, object? responsePayload, CancellationToken cancellationToken) =>

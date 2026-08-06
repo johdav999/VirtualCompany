@@ -6,9 +6,11 @@
 
 <PageTitle>@SalesText["SalesLeads"]</PageTitle>
 
-<div class="sales-workspace">
+<div class="sales-workspace @(Embedded ? "sales-workspace--embedded" : null)">
     <main class="sales-main">
-        <header class="sales-page-header">
+        @if (!Embedded)
+        {
+            <header class="sales-page-header">
             <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
             <h1>@SalesText["Leads"]</h1>
             <p>@SalesText["LeadsDescription"]</p>
@@ -19,7 +21,8 @@
                 <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
                 <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
-        </header>
+            </header>
+        }
 
         @if (isLoading)
         {
@@ -161,10 +164,14 @@
         }
     </main>
 
-    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+    @if (!Embedded)
+    {
+        <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+    }
 </div>
 
 @code {
+    [Parameter] public bool Embedded { get; set; }
     private bool isLoading = true;
     private string? errorMessage;
     private string? actionMessage;
@@ -182,7 +189,20 @@
     private decimal convertAmount = 1000;
     private string convertCurrency = "USD";
 
-    protected override async Task OnParametersSetAsync() => await LoadAsync();
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!Embedded)
+        {
+            if (await ResolveCompanyAsync() && ResolvedCompanyId is Guid companyId)
+            {
+                Navigation.NavigateTo($"/app/sales/prospects?companyId={companyId:D}&view=leads", replace: true);
+            }
+
+            return;
+        }
+
+        await LoadAsync();
+    }
 
     private IReadOnlyList<SalesLeadSummaryResponse> FilteredLeads => leads
         .Where(x => string.IsNullOrWhiteSpace(statusFilter) || string.Equals(x.QualificationStatus, statusFilter, StringComparison.OrdinalIgnoreCase))

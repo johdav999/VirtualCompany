@@ -535,6 +535,24 @@ internal sealed class SalesCampaignConfiguration : IEntityTypeConfiguration<Sale
         builder.Property(x => x.Name).HasColumnName("name").HasMaxLength(160).IsRequired();
         builder.Property(x => x.AudienceType).HasColumnName("audience_type").HasMaxLength(64).IsRequired();
         builder.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).HasDefaultValue(SalesStatuses.Draft).IsRequired();
+        builder.Property(x => x.LifecycleStatus).HasColumnName("lifecycle_status").HasMaxLength(40).HasDefaultValue(CampaignLifecycleStatuses.Draft).IsRequired();
+        builder.Property(x => x.CampaignType).HasColumnName("campaign_type").HasMaxLength(64).HasDefaultValue(CampaignTypes.LeadGeneration).IsRequired();
+        builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(2000);
+        builder.Property(x => x.OwnerUserId).HasColumnName("owner_user_id");
+        builder.Property(x => x.OwnerAgentId).HasColumnName("owner_agent_id");
+        builder.Property(x => x.PrimaryObjectiveType).HasColumnName("primary_objective_type").HasMaxLength(64);
+        builder.Property(x => x.PrimaryObjectiveTarget).HasColumnName("primary_objective_target").HasPrecision(19, 4);
+        builder.Property(x => x.PrimaryObjectiveUnit).HasColumnName("primary_objective_unit").HasMaxLength(40);
+        builder.Property(x => x.PrimaryObjectiveTargetUtc).HasColumnName("primary_objective_target_at");
+        builder.Property(x => x.PlanningStartsUtc).HasColumnName("planning_starts_at");
+        builder.Property(x => x.ScheduledLaunchUtc).HasColumnName("scheduled_launch_at");
+        builder.Property(x => x.EndsUtc).HasColumnName("ends_at");
+        builder.Property(x => x.ReviewDueUtc).HasColumnName("review_due_at");
+        builder.Property(x => x.TimeZoneId).HasColumnName("time_zone_id").HasMaxLength(128).HasDefaultValue("UTC").IsRequired();
+        builder.Property(x => x.PlannedBudget).HasColumnName("planned_budget").HasPrecision(19, 4);
+        builder.Property(x => x.BudgetCurrency).HasColumnName("budget_currency").HasMaxLength(3);
+        builder.Property(x => x.LegacySetupRequired).HasColumnName("legacy_setup_required").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.ConcurrencyVersion).HasColumnName("concurrency_version").HasDefaultValue(1L).IsConcurrencyToken().IsRequired();
         builder.Property(x => x.CommunicationLanguage).HasColumnName("communication_language").HasMaxLength(20);
         builder.Property(x => x.OutboundEnabled).HasColumnName("outbound_enabled").HasDefaultValue(true).IsRequired();
         builder.Property(x => x.MaxEmailsPerDay).HasColumnName("max_emails_per_day").HasDefaultValue(50).IsRequired();
@@ -553,6 +571,7 @@ internal sealed class SalesCampaignConfiguration : IEntityTypeConfiguration<Sale
         builder.HasIndex(x => x.CompanyId);
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.LifecycleStatus, x.ScheduledLaunchUtc });
         builder.HasIndex(x => new { x.CompanyId, x.SalesSequenceId });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.SalesSequence)

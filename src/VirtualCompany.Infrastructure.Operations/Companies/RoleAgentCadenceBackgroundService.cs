@@ -7,6 +7,7 @@ using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Marketing;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -51,14 +52,16 @@ public sealed class RoleAgentCadenceBackgroundService(
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var agents = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(x => x.Status == AgentStatus.Active &&
-                (x.Department == "Finance" || x.Department == "Sales" || x.Department == "Support" || x.Department == "Customer Support"))
+                (x.Department == "Finance" || x.Department == "Sales" || x.Department == "Marketing" ||
+                 x.Department == "Support" || x.Department == "Customer Support"))
             .Select(x => new CadenceAgent(x.CompanyId, x.Id, x.Department)).ToListAsync(cancellationToken);
         foreach (var agent in agents)
         {
             await RunIfDueAsync(scope.ServiceProvider, db, agent, "daily", now.Date, 30, cancellationToken);
             if (now.DayOfWeek == _options.WeeklyDay)
                 await RunIfDueAsync(scope.ServiceProvider, db, agent, "weekly", now.Date, 90, cancellationToken);
-            if (agent.Department.Equals("Finance", StringComparison.OrdinalIgnoreCase) &&
+            if ((agent.Department.Equals("Finance", StringComparison.OrdinalIgnoreCase) ||
+                 agent.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase)) &&
                 now.Day == Math.Clamp(_options.MonthlyDay, 1, DateTime.DaysInMonth(now.Year, now.Month)))
                 await RunIfDueAsync(scope.ServiceProvider, db, agent, "monthly",
                     new DateTime(now.Year, now.Month, 1, 0, 0, 0, DateTimeKind.Utc), 365, cancellationToken);
@@ -84,6 +87,8 @@ public sealed class RoleAgentCadenceBackgroundService(
                 await services.GetRequiredService<IFinanceAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
             else if (agent.Department.Equals("Sales", StringComparison.OrdinalIgnoreCase))
                 await services.GetRequiredService<ISalesAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
+            else if (agent.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase))
+                await services.GetRequiredService<IMarketingAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
             else
                 await services.GetRequiredService<ISupportAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
         }

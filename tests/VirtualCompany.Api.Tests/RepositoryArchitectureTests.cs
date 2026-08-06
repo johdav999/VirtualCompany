@@ -149,6 +149,8 @@ public sealed class RepositoryArchitectureTests
         Assert.Equal("VirtualCompany.Persistence.Migrations", migrationsAssembly.GetName().Name);
         Assert.Contains("20260330170139_InitialSqlServerBaseline", migrations);
         Assert.Contains("20260720113000_AddWorkflowProgressionPollingIndex", migrations);
+        Assert.Contains("20260726170000_CancelInvalidDailyBriefingBacklog", migrations);
+        Assert.Contains("20260726173000_PurgeInvalidDailyBriefingBacklog", migrations);
         Assert.NotNull(snapshot);
         Assert.Equal(migrationsAssembly, snapshot!.GetType().Assembly);
     }

@@ -216,6 +216,96 @@ public sealed class FinanceSeedDatasetGeneratorTests
     }
 
     [Fact]
+    public async Task Replacing_simulation_seed_preserves_fortnox_records_and_external_references()
+    {
+        var companyId = Guid.Parse("91919191-aaaa-bbbb-cccc-dddddddddddd");
+        var now = new DateTime(2026, 6, 15, 0, 0, 0, DateTimeKind.Utc);
+        await using var connection = await OpenConnectionAsync();
+        await using var dbContext = CreateContext(connection);
+        await dbContext.Database.EnsureCreatedAsync();
+        dbContext.Companies.Add(new Company(companyId, "Source Preservation Company"));
+        await dbContext.SaveChangesAsync();
+
+        var service = new CompanyFinanceSeedBootstrapService(
+            dbContext,
+            outboxEnqueuer: null,
+            planningBaselineService: null,
+            Options.Create(new FinanceTransactionCreationOptions()));
+
+        await service.GenerateAsync(
+            new FinanceSeedBootstrapCommand(companyId, 1001, now),
+            CancellationToken.None);
+
+        var connectionId = Guid.NewGuid();
+        var supplier = new FinanceCounterparty(
+            Guid.NewGuid(),
+            companyId,
+            "Fortnox Supplier AB",
+            "supplier",
+            createdUtc: now,
+            updatedUtc: now);
+        var bill = new FinanceBill(
+            Guid.NewGuid(),
+            companyId,
+            supplier.Id,
+            "FORTNOX-100",
+            now.AddDays(-10),
+            now.AddDays(20),
+            5000m,
+            "SEK",
+            "booked",
+            createdUtc: now,
+            updatedUtc: now);
+        var externalReference = new FinanceExternalReference(
+            Guid.NewGuid(),
+            companyId,
+            connectionId,
+            FinanceIntegrationProviderKeys.Fortnox,
+            "supplier_invoice",
+            bill.Id,
+            "100",
+            "100",
+            now,
+            now);
+
+        dbContext.FinanceIntegrationConnections.Add(new FinanceIntegrationConnection(
+            connectionId,
+            companyId,
+            FinanceIntegrationProviderKeys.Fortnox,
+            FinanceIntegrationConnectionStatuses.Connected,
+            null,
+            now));
+        dbContext.FinanceCounterparties.Add(supplier);
+        dbContext.FinanceBills.Add(bill);
+        dbContext.FinanceExternalReferences.Add(externalReference);
+        dbContext.Entry(supplier).Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Fortnox;
+        dbContext.Entry(bill).Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Fortnox;
+        dbContext.Entry(supplier).Property("ProviderKey").CurrentValue = FinanceIntegrationProviderKeys.Fortnox;
+        dbContext.Entry(bill).Property("ProviderKey").CurrentValue = FinanceIntegrationProviderKeys.Fortnox;
+        dbContext.Entry(supplier).Property("FinanceExternalReferenceId").CurrentValue = externalReference.Id;
+        dbContext.Entry(bill).Property("FinanceExternalReferenceId").CurrentValue = externalReference.Id;
+        await dbContext.SaveChangesAsync();
+
+        await service.GenerateAsync(
+            new FinanceSeedBootstrapCommand(companyId, 1002, now.AddDays(1), ReplaceExisting: true),
+            CancellationToken.None);
+
+        Assert.True(await dbContext.FinanceBills.IgnoreQueryFilters().AnyAsync(x => x.Id == bill.Id));
+        Assert.True(await dbContext.FinanceCounterparties.IgnoreQueryFilters().AnyAsync(x => x.Id == supplier.Id));
+        Assert.Equal(
+            bill.Id,
+            await dbContext.FinanceExternalReferences.IgnoreQueryFilters()
+                .Where(x => x.Id == externalReference.Id)
+                .Select(x => x.InternalRecordId)
+                .SingleAsync());
+        Assert.NotEmpty(await dbContext.FinanceBills.IgnoreQueryFilters()
+            .Where(x =>
+                x.CompanyId == companyId &&
+                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation)
+            .ToArrayAsync());
+    }
+
+    [Fact]
     public async Task Consistency_validator_reports_zero_errors_for_generated_dataset()
     {
         var companyId = Guid.Parse("ffffffff-1111-2222-3333-444444444444");

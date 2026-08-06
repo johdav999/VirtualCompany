@@ -177,6 +177,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
+        services.AddScoped<AgentTemplateCatalogSeeder>();
         services.AddScoped<ICoreCompanyAgentSeeder, CoreCompanyAgentSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
         services.AddScoped<ICompanyDocumentService, CompanyDocumentService>();
@@ -259,7 +260,9 @@ public static class OperationsModuleRegistration
         services.AddScoped<ISingleAgentOrchestrationService, SingleAgentOrchestrationService>();
         services.AddScoped<IMultiAgentCoordinator, MultiAgentCoordinator>();
         services.AddScoped<CompanyWorkflowDefinitionSeeder>();
-        services.AddScoped<IApprovalRequestService, CompanyApprovalRequestService>();
+        services.AddScoped<CompanyApprovalRequestService>();
+        services.AddScoped<IApprovalRequestService>(services => services.GetRequiredService<CompanyApprovalRequestService>());
+        services.AddScoped<IApprovalAutomationService>(services => services.GetRequiredService<CompanyApprovalRequestService>());
         services.AddScoped<INotificationInboxService, CompanyNotificationService>();
         services.AddScoped<IExecutiveDashboardAggregateCache, ExecutiveDashboardAggregateCache>();
         services.AddScoped<IProactiveMessageService, CompanyProactiveMessageService>();

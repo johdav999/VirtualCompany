@@ -13,10 +13,13 @@
 @inject SalesApiClient SalesApiClient
 @inject SupportApiClient SupportApiClient
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
 @inject IStringLocalizer<AgentsResources> AgentText
 @inject IStringLocalizer<CommonResources> CommonText
 
 <PageTitle>@AgentText["VirtualCompanyAgents"]</PageTitle>
+<NavigationLock OnBeforeInternalNavigation="HandleLocationChangingAsync"
+                ConfirmExternalNavigation="@isBriefDirty" />
 
 @if (isLoading)
 {
@@ -63,7 +66,7 @@ else
             </div>
             @if (CanManageProfiles)
             {
-                <a class="btn btn-primary" href="#hire-agent">@AgentText["AddAgent"]</a>
+                <a class="btn btn-primary" href="@BuildAgentSectionUri("hire-agent")">@AgentText["AddAgent"]</a>
             }
         </header>
 
@@ -76,6 +79,16 @@ else
         {
             <div class="alert alert-success">@successMessage</div>
         }
+
+        <nav class="vc-section-tabs agents-configuration-tabs" aria-label="@AgentText["AgentConfiguration"]">
+            <a href="@BuildAgentSectionUri("agents-roster-title")">@AgentText["YourAgentTeam"]</a>
+            @if (CanManageProfiles && selectedAgentProfile is not null)
+            {
+                <a href="@BuildAgentSectionUri("agent-brief")">@AgentText["RoleBrief"]</a>
+                <a href="@BuildAgentSectionUri("agent-capabilities")">@AgentText["AgentCapabilities"]</a>
+                <a href="@BuildAgentSectionUri("agent-access-configuration")">@AgentText["Access"]</a>
+            }
+        </nav>
 
         <section class="agents-roster-section" aria-labelledby="agents-roster-title">
             <div class="agents-section-heading">
@@ -139,7 +152,7 @@ else
 
         @if (CanManageProfiles && selectedAgentProfile is not null)
         {
-            <section class="agent-brief-workspace" aria-labelledby="agent-brief-title">
+            <section id="agent-brief" class="agent-brief-workspace" aria-labelledby="agent-brief-title">
                 <header class="agent-brief-header">
                     <div class="agent-brief-agent">
                         <span class="agents-avatar agents-avatar--@GetDepartmentTone(selectedAgentProfile.Department)" aria-hidden="true">@GetInitials(selectedAgentProfile.DisplayName)</span>
@@ -253,7 +266,7 @@ else
                 </div>
             </section>
 
-            <section class="agent-capability-panel" aria-labelledby="agent-capability-title">
+            <section id="agent-capabilities" class="agent-capability-panel" aria-labelledby="agent-capability-title">
                 <div class="agent-capability-panel__heading">
                     <div>
                         <span class="dashboard-kicker">@AgentText["GovernedAi"]</span>
@@ -890,21 +903,15 @@ else
             }
             else
             {
-                @if (CanManageProviderSettings && mailboxProviderSettings is not null)
+                @if (CanManageProviderSettings)
                 {
-                    <EditForm Model="@mailboxProviderSettingsModel" OnValidSubmit="@SaveMailboxProviderSettingsAsync" class="agent-mailbox-provider-form mt-3">
-                        <div class="agent-mailbox-provider-grid">
-                            @RenderMailboxProviderFields("gmail", "Gmail", mailboxProviderSettingsModel.Gmail, mailboxProviderSettings.Gmail)
-                            @RenderMailboxProviderFields("microsoft365", "Microsoft 365", mailboxProviderSettingsModel.Microsoft365, mailboxProviderSettings.Microsoft365)
-                        </div>
-                        <div class="dashboard-actions mt-3">
-                            <button class="btn btn-outline-primary" type="submit" disabled="@(isSavingMailboxProviderSettings || !mailboxProviderSettings.IsWritable)">
-                                <span class="bi bi-key" aria-hidden="true"></span>
-                                @AgentText["SaveProviderSettings"]
-                            </button>
-                        </div>
-                        <p class="form-text mb-0">@AgentText["ProviderSecretHelp"]</p>
-                    </EditForm>
+                    <div class="d-flex flex-wrap align-items-center justify-content-between gap-3 mt-3">
+                        <p class="text-body-secondary mb-0">@AgentText["MailboxProviderSetupManagedDescription"]</p>
+                        <a class="btn btn-outline-primary" href="@BuildEmailProviderSettingsHref()">
+                            <span class="bi bi-gear" aria-hidden="true"></span>
+                            @AgentText["ConfigureEmailProvider"]
+                        </a>
+                    </div>
                 }
                 else if (!CanManageProviderSettings)
                 {
@@ -914,7 +921,7 @@ else
                     </p>
                 }
 
-                <div class="agent-mailbox-section-heading">
+                <div id="team-mailboxes" class="agent-mailbox-section-heading">
                     <span class="agent-access-step">2</span>
                     <div>
                         <h3>@AgentText["ConnectTeamMailboxesTitle"]</h3>
@@ -1086,7 +1093,7 @@ else
 
         @if (CanManageProfiles)
         {
-            <details class="agents-advanced-panel mt-4">
+            <details id="agent-operating-profile" class="agents-advanced-panel mt-4">
                 <summary>
                     <span>@AgentText["AdvancedOperatingProfile"]</span>
                     <small>@AgentText["AdvancedOperatingProfileDescription"]</small>
@@ -1370,17 +1377,30 @@ else
     private string selectedBriefCategory = "company_information";
     private bool shareBriefDocumentsWithTeam;
     private bool isBriefDirty;
+
+    private async Task HandleLocationChangingAsync(LocationChangingContext context)
+    {
+        if (!isBriefDirty)
+        {
+            return;
+        }
+
+        var shouldLeave = await JS.InvokeAsync<bool>(
+            "confirm",
+            AgentText["UnsavedBriefNavigationWarning"].Value);
+        if (!shouldLeave)
+        {
+            context.PreventNavigation();
+        }
+    }
     private bool isSavingBrief;
     private bool isGeneratingBriefDraft;
     private bool isGeneratedBriefDraft;
     private bool isUploadingBriefDocument;
     private bool isLoadingCapabilities;
     private bool isLoadingMailboxConfiguration;
-    private bool isSavingMailboxProviderSettings;
     private string? mailboxActionPurpose;
     private MailboxProviderAvailabilityResponse mailboxProviderAvailability = new();
-    private FinanceEmailSettingsResponse? mailboxProviderSettings;
-    private UpdateFinanceEmailSettingsRequest mailboxProviderSettingsModel = new();
     private readonly Dictionary<string, MailboxConnectionStatusResponse> mailboxStatuses = new(StringComparer.OrdinalIgnoreCase);
     private string? capabilityErrorMessage;
     private string agentQuestion = string.Empty;
@@ -1521,6 +1541,9 @@ else
 
     private string BuildFinanceIntegrationSettingsHref() =>
         FinanceRoutes.BuildFinanceIntegrationSettingsPath("fortnox", CompanyId);
+
+    private string BuildEmailProviderSettingsHref() =>
+        FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailProviderSettings, CompanyId);
 
     private string BuildMailboxConnectionHref(string purpose, string provider)
     {
@@ -1779,15 +1802,6 @@ else
                 mailboxStatuses[purpose] = await task ?? new MailboxConnectionStatusResponse { Purpose = purpose };
             }
 
-            if (CanManageProviderSettings)
-            {
-                mailboxProviderSettings = await FinanceApiClient.GetEmailSettingsAsync(companyId);
-                mailboxProviderSettingsModel = new UpdateFinanceEmailSettingsRequest
-                {
-                    Gmail = new UpdateFinanceEmailProviderSettingsRequest { ClientId = mailboxProviderSettings.Gmail.ClientId },
-                    Microsoft365 = new UpdateFinanceEmailProviderSettingsRequest { ClientId = mailboxProviderSettings.Microsoft365.ClientId }
-                };
-            }
         }
         catch (FinanceApiException ex)
         {
@@ -1796,34 +1810,6 @@ else
         finally
         {
             isLoadingMailboxConfiguration = false;
-        }
-    }
-
-    private async Task SaveMailboxProviderSettingsAsync()
-    {
-        if (CompanyId is not Guid companyId || !CanManageProviderSettings)
-        {
-            return;
-        }
-
-        isSavingMailboxProviderSettings = true;
-        errorMessage = null;
-        successMessage = null;
-        try
-        {
-            mailboxProviderSettings = await FinanceApiClient.UpdateEmailSettingsAsync(companyId, mailboxProviderSettingsModel);
-            mailboxProviderAvailability = await FinanceApiClient.GetMailboxProviderAvailabilityAsync(companyId);
-            mailboxProviderSettingsModel.Gmail.ClientSecret = null;
-            mailboxProviderSettingsModel.Microsoft365.ClientSecret = null;
-            successMessage = AgentText["ProviderSettingsSaved"];
-        }
-        catch (FinanceApiException ex)
-        {
-            errorMessage = ex.Message;
-        }
-        finally
-        {
-            isSavingMailboxProviderSettings = false;
         }
     }
 
@@ -2635,6 +2621,16 @@ else
         return $"/agents/manage?{string.Join("&", query)}";
     }
 
+    private string BuildAgentSectionUri(string fragment)
+    {
+        if (CompanyId is not Guid companyId)
+        {
+            return $"#{fragment}";
+        }
+
+        return $"{BuildAgentsUri(companyId, Department, Status, selectedAgentId)}#{fragment}";
+    }
+
     private void NavigateIfChanged(string targetUri)
     {
         var currentRelativeUri = Navigation.ToBaseRelativePath(Navigation.Uri);
@@ -2693,54 +2689,6 @@ else
     }
 
     private static bool IsManagerEditableStatus(string? status) => string.Equals(status, "active", StringComparison.OrdinalIgnoreCase) || string.Equals(status, "paused", StringComparison.OrdinalIgnoreCase);
-
-    private RenderFragment RenderMailboxProviderFields(
-        string providerKey,
-        string displayName,
-        UpdateFinanceEmailProviderSettingsRequest model,
-        FinanceEmailProviderSettingsResponse current) => builder =>
-    {
-        var sequence = 0;
-        var clientIdId = $"{providerKey}-client-id";
-        var secretId = $"{providerKey}-client-secret";
-
-        builder.OpenElement(sequence++, "fieldset");
-        builder.AddAttribute(sequence++, "id", $"mailbox-provider-{providerKey}");
-        builder.AddAttribute(sequence++, "class", "agent-mailbox-provider-card");
-        builder.OpenElement(sequence++, "legend");
-        builder.AddContent(sequence++, displayName);
-        builder.CloseElement();
-
-        builder.OpenElement(sequence++, "label");
-        builder.AddAttribute(sequence++, "class", "form-label");
-        builder.AddAttribute(sequence++, "for", clientIdId);
-        builder.AddContent(sequence++, AgentText["OAuthClientId"]);
-        builder.CloseElement();
-        builder.OpenElement(sequence++, "input");
-        builder.AddAttribute(sequence++, "id", clientIdId);
-        builder.AddAttribute(sequence++, "class", "form-control");
-        builder.AddAttribute(sequence++, "value", model.ClientId);
-        builder.AddAttribute(sequence++, "autocomplete", "off");
-        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string?>(this, value => model.ClientId = value, model.ClientId));
-        builder.CloseElement();
-
-        builder.OpenElement(sequence++, "label");
-        builder.AddAttribute(sequence++, "class", "form-label mt-3");
-        builder.AddAttribute(sequence++, "for", secretId);
-        builder.AddContent(sequence++, AgentText["OAuthClientSecret"]);
-        builder.CloseElement();
-        builder.OpenElement(sequence++, "input");
-        builder.AddAttribute(sequence++, "id", secretId);
-        builder.AddAttribute(sequence++, "class", "form-control");
-        builder.AddAttribute(sequence++, "type", "password");
-        builder.AddAttribute(sequence++, "value", model.ClientSecret);
-        builder.AddAttribute(sequence++, "autocomplete", "new-password");
-        builder.AddAttribute(sequence++, "placeholder", current.IsClientSecretConfigured ? AgentText["SecretAlreadyConfigured"] : AgentText["SecretNotConfigured"]);
-        builder.AddAttribute(sequence++, "onchange", EventCallback.Factory.CreateBinder<string?>(this, value => model.ClientSecret = value, model.ClientSecret));
-        builder.CloseElement();
-
-        builder.CloseElement();
-    };
 
     private RenderFragment RenderMailboxProviderAction(
         string purpose,

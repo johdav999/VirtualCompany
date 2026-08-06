@@ -341,6 +341,26 @@ public sealed class FinanceBillReviewState : ICompanyOwnedEntity
         return Transition("clarification_requested", FinanceBillInboxStatuses.NeedsReview, actorUserId, actorDisplayName, rationale, occurredUtc);
     }
 
+    public FinanceBillReviewAction MarkRegisteredInAccountingSystem(
+        Guid? actorUserId,
+        string actorDisplayName,
+        string rationale,
+        DateTime occurredUtc)
+    {
+        if (Status != FinanceBillInboxStatuses.Approved)
+        {
+            throw new InvalidOperationException("Only an approved finance bill can be completed after accounting-system registration.");
+        }
+
+        return Transition(
+            "fortnox_registered",
+            FinanceBillInboxStatuses.SentToPaymentExported,
+            actorUserId,
+            actorDisplayName,
+            rationale,
+            occurredUtc);
+    }
+
     private FinanceBillReviewAction Transition(string action, string newStatus, Guid? actorUserId, string actorDisplayName, string rationale, DateTime occurredUtc)
     {
         var priorStatus = FinanceBillInboxStatuses.Normalize(Status);

@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -122,13 +123,45 @@ public sealed class WorkflowProgressionService : IWorkflowProgressionService
         var effectiveNow = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
         var effectiveBatchSize = Math.Max(1, batchSize);
 
-        var candidates = await _dbContext.WorkflowInstances
+        var selectionTimer = Stopwatch.StartNew();
+        var candidateIds = await _dbContext.WorkflowInstances
             .IgnoreQueryFilters()
-            .Include(x => x.Definition)
+            .AsNoTracking()
             .Where(x => RunnableStates.Contains(x.State))
             .OrderBy(x => x.UpdatedUtc)
+            .ThenBy(x => x.Id)
+            .Select(x => x.Id)
             .Take(effectiveBatchSize)
             .ToListAsync(cancellationToken);
+
+        var candidatesById = candidateIds.Count == 0
+            ? new Dictionary<Guid, WorkflowInstance>()
+            : await _dbContext.WorkflowInstances
+                .IgnoreQueryFilters()
+                .Include(x => x.Definition)
+                .Where(x => candidateIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
+        var candidates = candidateIds
+            .Where(candidatesById.ContainsKey)
+            .Select(id => candidatesById[id])
+            .ToList();
+        selectionTimer.Stop();
+
+        if (selectionTimer.Elapsed > TimeSpan.FromSeconds(5))
+        {
+            _logger.LogWarning(
+                "Workflow progression candidate selection took {ElapsedMilliseconds} ms for {CandidateCount} instance(s) with batch size {BatchSize}.",
+                selectionTimer.ElapsedMilliseconds,
+                candidates.Count,
+                effectiveBatchSize);
+        }
+        else
+        {
+            _logger.LogDebug(
+                "Workflow progression selected {CandidateCount} runnable instance(s) in {ElapsedMilliseconds} ms.",
+                candidates.Count,
+                selectionTimer.ElapsedMilliseconds);
+        }
 
         var advanced = 0;
         var failures = 0;

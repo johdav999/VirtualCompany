@@ -19,7 +19,7 @@ The production project boundaries are:
 - `VirtualCompany.Infrastructure.Platform`: tenant, security, authorization, audit, observability, background execution, and database-provider wiring.
 - `VirtualCompany.Infrastructure.Mailbox`: mailbox provider adapters, connection lifecycle, polling, and mailbox-specific workers.
 - `VirtualCompany.Infrastructure.Finance`: Finance implementations, provider adapters, policies, and workers.
-- `VirtualCompany.Infrastructure.Sales`: Sales and customer-memory implementations, provider adapters, policies, and workers.
+- `VirtualCompany.Infrastructure.Sales`: Sales, Marketing, and customer-memory implementations, provider adapters, policies, and workers.
 - `VirtualCompany.Infrastructure.Support`: Support implementations, grounding, delivery, policies, and workers.
 - `VirtualCompany.Infrastructure.Operations`: company operations, documents, activity, communication, memory, and shared orchestration implementations.
 - `VirtualCompany.Infrastructure`: a thin compatibility facade that composes the extracted infrastructure modules. It must not regain capability implementations or package ownership.
@@ -36,6 +36,7 @@ Place functionality in the narrowest owning capability. Current business and pla
 
 - Finance
 - Sales
+- Marketing
 - Support
 - Identity and Tenant Access
 - Company Setup and Operations

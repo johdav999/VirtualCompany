@@ -41,6 +41,7 @@ public static class BankTransactionSeedData
 
         CompanyBankAccount operatingBankAccount;
         CompanyBankAccount reserveBankAccount;
+        var createdBankAccounts = new List<CompanyBankAccount>();
 
         if (bankAccounts.Count > 0)
         {
@@ -87,6 +88,8 @@ public static class BankTransactionSeedData
                 normalizedAnchorUtc.AddDays(-120));
 
             dbContext.CompanyBankAccounts.AddRange(operatingBankAccount, reserveBankAccount);
+            createdBankAccounts.Add(operatingBankAccount);
+            createdBankAccounts.Add(reserveBankAccount);
             bankAccounts.Add(operatingBankAccount);
             if (reserveBankAccount.Id != operatingBankAccount.Id)
             {
@@ -133,6 +136,7 @@ public static class BankTransactionSeedData
                 payment.PaymentDate);
 
             dbContext.BankTransactions.Add(transaction);
+            MarkAsSimulation(dbContext, transaction);
 
             if (reconciledAmount > 0m)
             {
@@ -218,7 +222,23 @@ public static class BankTransactionSeedData
                 "bank-manual:refund"));
 
         dbContext.BankTransactions.AddRange(manualTransactions);
+        foreach (var bankAccount in createdBankAccounts)
+        {
+            MarkAsSimulation(dbContext, bankAccount);
+        }
+
+        foreach (var transaction in manualTransactions)
+        {
+            MarkAsSimulation(dbContext, transaction);
+        }
     }
+
+    public static IReadOnlySet<Guid> GetDeterministicBankAccountIds(Guid companyId) =>
+        new HashSet<Guid>
+        {
+            StableId(companyId, "company-bank-account:operating"),
+            StableId(companyId, "company-bank-account:reserve")
+        };
 
     private static bool HasAnyBankTransactions(VirtualCompanyDbContext dbContext, Guid companyId) =>
         dbContext.BankTransactions.Local.Any(x => x.CompanyId == companyId) ||
@@ -365,5 +385,15 @@ public static class BankTransactionSeedData
         hash[8] = (byte)((hash[8] & 0x3F) | 0x80);
 
         return new Guid(hash);
+    }
+
+    private static void MarkAsSimulation<TEntity>(VirtualCompanyDbContext dbContext, TEntity entity)
+        where TEntity : class
+    {
+        var entry = dbContext.Entry(entity);
+        if (entry.Metadata.FindProperty("SourceType") is not null)
+        {
+            entry.Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Simulation;
+        }
     }
 }

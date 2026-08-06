@@ -20,6 +20,7 @@ public sealed class DatabaseInitializationService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly CompanySetupTemplateSeeder _templateSeeder;
+    private readonly AgentTemplateCatalogSeeder _agentTemplateSeeder;
     private readonly CompanyWorkflowDefinitionSeeder _workflowDefinitionSeeder;
     private readonly IPlanningBaselineService _planningBaselineService;
     private readonly ICoreCompanyAgentSeeder _coreCompanyAgentSeeder;
@@ -31,6 +32,7 @@ public sealed class DatabaseInitializationService
     public DatabaseInitializationService(
         VirtualCompanyDbContext dbContext,
         CompanySetupTemplateSeeder templateSeeder,
+        AgentTemplateCatalogSeeder agentTemplateSeeder,
         CompanyWorkflowDefinitionSeeder workflowDefinitionSeeder,
         IPlanningBaselineService planningBaselineService,
         ICoreCompanyAgentSeeder coreCompanyAgentSeeder,
@@ -41,6 +43,7 @@ public sealed class DatabaseInitializationService
     {
         _dbContext = dbContext;
         _templateSeeder = templateSeeder;
+        _agentTemplateSeeder = agentTemplateSeeder;
         _workflowDefinitionSeeder = workflowDefinitionSeeder;
         _planningBaselineService = planningBaselineService;
         _coreCompanyAgentSeeder = coreCompanyAgentSeeder;
@@ -86,6 +89,7 @@ public sealed class DatabaseInitializationService
         }
 
         await _templateSeeder.SeedAsync();
+        await _agentTemplateSeeder.SeedAsync(cancellationToken);
         await _coreCompanyAgentSeeder.BackfillAllCompaniesAsync(cancellationToken);
         await _workflowDefinitionSeeder.SeedAsync();
         await _planningBaselineService.BackfillAllCompaniesAsync(cancellationToken);

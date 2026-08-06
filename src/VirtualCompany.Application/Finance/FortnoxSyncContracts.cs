@@ -13,6 +13,27 @@ public sealed record GetFortnoxSyncHistoryQuery(
     Guid CompanyId,
     int Limit = 25);
 
+public sealed record RepairFortnoxSupplierInvoicesCommand(
+    Guid CompanyId,
+    Guid ConnectionId,
+    IReadOnlyList<FortnoxSupplierInvoiceSyncModel> Invoices,
+    string? CorrelationId = null,
+    Guid? ActorUserId = null);
+
+public sealed record FortnoxSupplierInvoiceRepairItem(
+    string ExternalId,
+    string Outcome,
+    Guid? BillId = null,
+    string? Reason = null);
+
+public sealed record FortnoxSupplierInvoiceRepairResult(
+    Guid CompanyId,
+    Guid ConnectionId,
+    int Repaired,
+    int Skipped,
+    int Rejected,
+    IReadOnlyList<FortnoxSupplierInvoiceRepairItem> Items);
+
 public sealed record FortnoxEntitySyncResult(
     string EntityType,
     int Created,
@@ -62,6 +83,9 @@ public interface IFortnoxSyncService
 {
     Task<FortnoxSyncResult> SyncAsync(RunFortnoxSyncCommand command, CancellationToken cancellationToken);
     Task<FortnoxSyncHistoryResult> GetHistoryAsync(GetFortnoxSyncHistoryQuery query, CancellationToken cancellationToken);
+    Task<FortnoxSupplierInvoiceRepairResult> RepairDanglingSupplierInvoicesAsync(
+        RepairFortnoxSupplierInvoicesCommand command,
+        CancellationToken cancellationToken);
 }
 
 public interface IFortnoxMappingService

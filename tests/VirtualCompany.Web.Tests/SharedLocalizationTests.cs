@@ -18,6 +18,7 @@ public sealed class SharedLocalizationTests
     {
         typeof(CommonResources),
         typeof(NavigationResources),
+        typeof(UiConsolidationResources),
         typeof(ValidationResources),
         typeof(AgentsResources),
         typeof(FinanceResources),

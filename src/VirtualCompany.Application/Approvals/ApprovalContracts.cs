@@ -77,6 +77,23 @@ public interface IApprovalRequestService
     Task<ApprovalDecisionResultDto> DecideAsync(Guid companyId, ApprovalDecisionCommand command, CancellationToken cancellationToken);
 }
 
+public sealed record AutomatedApprovalGrant(
+    Guid GrantId,
+    Guid GrantorUserId,
+    Guid AgentId,
+    string AgentDisplayName,
+    string SupplierName,
+    string Stage);
+
+public interface IApprovalAutomationService
+{
+    Task<ApprovalDecisionResultDto> ApproveUnderStandingGrantAsync(
+        Guid companyId,
+        Guid approvalId,
+        AutomatedApprovalGrant grant,
+        CancellationToken cancellationToken);
+}
+
 public sealed class ApprovalValidationException : Exception
 {
     public ApprovalValidationException(IDictionary<string, string[]> errors)

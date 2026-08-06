@@ -5,6 +5,7 @@ using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
@@ -74,6 +75,81 @@ public sealed class AgentManagementIntegrationTests : IDisposable
         Assert.Equal(baseline, afterSecondInitialization);
         Assert.Equal(RequiredTemplateIds.Length, afterSecondInitialization.Count(x => RequiredTemplateIds.Contains(x.TemplateId, StringComparer.OrdinalIgnoreCase)));
         Assert.All(RequiredTemplateIds, templateId => Assert.Single(afterSecondInitialization, x => string.Equals(x.TemplateId, templateId, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    [Fact]
+    public async Task Agent_template_catalog_reconciliation_restores_missing_core_template()
+    {
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<AgentTemplateCatalogSeeder>();
+
+        await dbContext.Database.EnsureCreatedAsync();
+        var salesTemplate = await dbContext.AgentTemplates
+            .SingleAsync(x => x.TemplateId == "sales");
+        dbContext.AgentTemplates.Remove(salesTemplate);
+        await dbContext.SaveChangesAsync();
+
+        await seeder.SeedAsync();
+
+        var restored = await dbContext.AgentTemplates
+            .AsNoTracking()
+            .SingleAsync(x => x.TemplateId == "sales");
+        Assert.True(restored.IsActive);
+        Assert.Equal("Sales Manager", restored.RoleName);
+    }
+
+    [Fact]
+    public async Task Core_agent_seeding_restores_missing_template_before_creating_company_agent()
+    {
+        var ids = await SeedMembershipAsync();
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<ICoreCompanyAgentSeeder>();
+
+        var salesTemplate = await dbContext.AgentTemplates
+            .SingleAsync(x => x.TemplateId == "sales");
+        dbContext.AgentTemplates.Remove(salesTemplate);
+        await dbContext.SaveChangesAsync();
+
+        await seeder.SeedAsync(ids.CompanyId, CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+
+        Assert.True(await dbContext.AgentTemplates.AnyAsync(x => x.TemplateId == "sales" && x.IsActive));
+        Assert.True(await dbContext.Agents
+            .IgnoreQueryFilters()
+            .AnyAsync(x => x.CompanyId == ids.CompanyId && x.TemplateId == "sales"));
+    }
+
+    [Fact]
+    public async Task Core_agent_seeding_only_loads_and_creates_agents_missing_from_existing_roster()
+    {
+        var ids = await SeedMembershipAsync();
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var seeder = scope.ServiceProvider.GetRequiredService<ICoreCompanyAgentSeeder>();
+
+        await seeder.SeedAsync(ids.CompanyId, CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+
+        var supportAgent = await dbContext.Agents
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.CompanyId == ids.CompanyId && x.TemplateId == "support");
+        dbContext.Agents.Remove(supportAgent);
+        await dbContext.SaveChangesAsync();
+
+        await seeder.SeedAsync(ids.CompanyId, CancellationToken.None);
+        await dbContext.SaveChangesAsync();
+
+        var coreTemplateIds = await dbContext.Agents
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == ids.CompanyId)
+            .Select(x => x.TemplateId)
+            .ToListAsync();
+
+        Assert.Single(coreTemplateIds, x => x == CoreAgentTemplateIds.Sales);
+        Assert.Single(coreTemplateIds, x => x == CoreAgentTemplateIds.Support);
+        Assert.Single(coreTemplateIds, x => x == CoreAgentTemplateIds.Marketing);
     }
 
     [Fact]

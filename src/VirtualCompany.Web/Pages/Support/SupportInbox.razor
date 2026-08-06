@@ -9,7 +9,7 @@
 
 <section class="py-4 dashboard-hero">
     <div class="dashboard-shell">
-        <div class="wizard-card dashboard-summary">
+        <div class="wizard-card dashboard-summary support-queue-workspace">
             <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                 <div>
                     <span class="dashboard-kicker">@SupportText["Support"]</span>
@@ -17,9 +17,7 @@
                     <p class="text-body-secondary mb-0">@SupportText["SupportDescription"]</p>
                 </div>
                 <button class="btn btn-primary" @onclick="CreateCaseAsync" disabled="@isBusy">@SupportText["CreateCase"]</button>
-                <a class="btn btn-outline-secondary" href="/support/knowledge-gaps">@SupportText["KnowledgeGaps"]</a>
-                <a class="btn btn-outline-secondary" href="@BuildPath("/support/memory")">@SupportText["MemoryReview"]</a>
-                <a class="btn btn-outline-secondary" href="/support/settings/sla">@SupportText["SlaSettings"]</a>
+                <a class="btn btn-outline-secondary" href="@BuildPath("/support/knowledge")">@SupportText["Knowledge"]</a>
             </div>
 
             @if (isLoading)
@@ -117,7 +115,7 @@
 
                 @if (analytics is not null && analytics.Insights.Count > 0)
                 {
-                    <div class="alert alert-warning mt-4 mb-0">
+                    <div class="alert alert-warning mt-4 mb-0 support-secondary-insight">
                         <strong>@analytics.Insights[0].Title</strong>
                         <div>@analytics.Insights[0].Summary @analytics.Insights[0].SuggestedAction</div>
                     </div>
@@ -125,7 +123,7 @@
 
                 @if (analytics is not null)
                 {
-                    <div class="border rounded p-3 mt-4 bg-white">
+                    <div class="border rounded p-3 mt-4 bg-white support-secondary-analytics">
                         <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                             <div>
                                 <h2 class="h6 mb-1">@SupportText["SlaPerformance"]</h2>
@@ -143,13 +141,13 @@
                         </div>
                     </div>
 
-                    <div class="border rounded p-3 mt-4 bg-white">
+                    <div class="border rounded p-3 mt-4 bg-white support-secondary-analytics">
                         <div class="d-flex flex-wrap justify-content-between align-items-start gap-3">
                             <div>
                                 <h2 class="h6 mb-1">@SupportText["LearningImpact"]</h2>
                                 <p class="text-body-secondary mb-0">@analytics.Learning.Rationale</p>
                             </div>
-                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/memory")">@SupportText["ReviewMemory"]</a>
+                            <a class="btn btn-sm btn-outline-secondary" href="@BuildPath("/support/knowledge?view=memory")">@SupportText["ReviewMemory"]</a>
                         </div>
                         <div class="row g-3 mt-2">
                             <div class="col-6 col-lg-2"><div class="border rounded p-3 h-100"><div class="small text-body-secondary">@SupportText["MemoryUsed"]</div><strong>@analytics.Learning.DraftsUsingMemory.ToString(CultureInfo.CurrentCulture)</strong></div></div>
@@ -162,7 +160,7 @@
                     </div>
                 }
 
-                <div class="table-responsive mt-4">
+                <div class="table-responsive mt-4 support-case-queue">
                     <table class="table align-middle">
                         <thead>
                             <tr>
@@ -223,7 +221,7 @@
                 </div>
                 @if (cases.TotalCount > pageSize)
                 {
-                    <nav class="d-flex align-items-center justify-content-between gap-3 mt-3" aria-label="@SupportText["SupportPages"]">
+                    <nav class="d-flex align-items-center justify-content-between gap-3 mt-3 support-case-pagination" aria-label="@SupportText["SupportPages"]">
                         <span class="small text-body-secondary">@SupportText["ShowingRange", pageIndex * pageSize + 1, Math.Min(cases.TotalCount, (pageIndex + 1) * pageSize), cases.TotalCount]</span>
                         <div class="btn-group">
                             <button class="btn btn-sm btn-outline-secondary" @onclick="PreviousPageAsync" disabled="@(isBusy || pageIndex == 0)">@SupportText["Previous"]</button>

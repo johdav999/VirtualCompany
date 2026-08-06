@@ -322,6 +322,8 @@ public sealed class FinanceIntegrationFoundationTests
         new(
             new TestCompanyContextAccessor(companyId, userId),
             null!,
+            null!,
+            null!,
             new SingleProviderRegistry(provider),
             new TestWebHostEnvironment(),
             NullLogger<FinanceIntegrationConnectionsController>.Instance);
@@ -348,6 +350,17 @@ public sealed class FinanceIntegrationFoundationTests
 
         public Task<FortnoxSyncHistoryResult> GetHistoryAsync(GetFortnoxSyncHistoryQuery query, CancellationToken cancellationToken) =>
             Task.FromResult(new FortnoxSyncHistoryResult(query.CompanyId, []));
+
+        public Task<FortnoxSupplierInvoiceRepairResult> RepairDanglingSupplierInvoicesAsync(
+            RepairFortnoxSupplierInvoicesCommand command,
+            CancellationToken cancellationToken) =>
+            Task.FromResult(new FortnoxSupplierInvoiceRepairResult(
+                command.CompanyId,
+                command.ConnectionId,
+                Repaired: 0,
+                Skipped: 0,
+                Rejected: command.Invoices.Count,
+                []));
     }
 
     private sealed class StubFortnoxOAuthService : IFortnoxOAuthService

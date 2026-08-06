@@ -333,7 +333,11 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
             var scheduleKey = string.IsNullOrWhiteSpace(command.ScheduleKey)
                 ? ResolveScheduleKey(definition) ?? definition.Code
                 : command.ScheduleKey.Trim();
-            var scheduleRef = $"{scheduleKey}:{scheduledAtUtc:yyyyMMddHHmm}";
+            var scheduleRef = ResolveScheduleOccurrenceRef(
+                definition,
+                scheduleKey,
+                scheduledAtUtc,
+                command.ScheduleKey);
 
             if (await HasExistingInstanceAsync(companyId, definition.Id, WorkflowTriggerType.Schedule, scheduleRef, cancellationToken))
             {
@@ -1310,6 +1314,52 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
         }
 
         return null;
+    }
+
+    private static string ResolveScheduleOccurrenceRef(
+        WorkflowDefinition definition,
+        string scheduleKey,
+        DateTime scheduledAtUtc,
+        string? requestedScheduleKey)
+    {
+        // Explicit trigger requests retain minute-level occurrence semantics. The
+        // background scheduler uses the cadence declared by the definition.
+        if (!string.IsNullOrWhiteSpace(requestedScheduleKey))
+        {
+            return $"{scheduleKey}:{scheduledAtUtc:yyyyMMddHHmm}";
+        }
+
+        var occurrence = ResolveScheduleOccurrence(definition);
+        return occurrence switch
+        {
+            "daily" => $"{scheduleKey}:{scheduledAtUtc:yyyyMMdd}",
+            "hourly" => $"{scheduleKey}:{scheduledAtUtc:yyyyMMddHH}",
+            _ => $"{scheduleKey}:{scheduledAtUtc:yyyyMMddHHmm}"
+        };
+    }
+
+    private static string? ResolveScheduleOccurrence(WorkflowDefinition definition)
+    {
+        if (definition.DefinitionJson.TryGetValue("schedule", out var node) &&
+            node is JsonObject schedule)
+        {
+            var occurrence = TryGetString(schedule, "occurrence") ??
+                TryGetString(schedule, "frequency");
+            if (!string.IsNullOrWhiteSpace(occurrence))
+            {
+                return occurrence.Trim().ToLowerInvariant();
+            }
+        }
+
+        // Existing databases contain version 1 of this immutable predefined
+        // definition without the occurrence field. Preserve daily behavior
+        // without mutating a versioned definition in place.
+        return string.Equals(
+            definition.Code,
+            "DAILY-EXECUTIVE-BRIEFING",
+            StringComparison.OrdinalIgnoreCase)
+            ? "daily"
+            : null;
     }
 
     private static bool MatchesSchedule(WorkflowDefinition definition, string? scheduleKey)

@@ -1,0 +1,161 @@
+@inject ApprovalApiClient ApprovalApiClient
+@inject IStringLocalizer<UiConsolidationResources> UiText
+
+<div class="vc-work-layout">
+    <section class="vc-panel vc-work-list" aria-label="@UiText["Approvals"]">
+        @if (isLoading)
+        {
+            <p class="text-body-secondary mb-0">@UiText["LoadingApprovals"]</p>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert alert-danger mb-0">@errorMessage</div>
+        }
+        else if (approvals.Count == 0)
+        {
+            <div class="vc-empty-state">
+                <h2>@UiText["NoPendingApprovals"]</h2>
+                <p>@UiText["NoPendingApprovalsDescription"]</p>
+            </div>
+        }
+        else
+        {
+            <div class="vc-list" role="list">
+                @foreach (var approval in approvals)
+                {
+                    <button type="button" class="@ItemClass(approval.Id)" @onclick="() => SelectAsync(approval.Id)">
+                        <div>
+                            <strong>@approval.DisplayTitle</strong>
+                            <span>@approval.DisplayReason</span>
+                        </div>
+                        <div class="vc-list-meta">
+                            @if (!string.IsNullOrWhiteSpace(approval.DisplayAmount))
+                            {
+                                <span>@approval.DisplayAmount</span>
+                            }
+                            <span class="vc-status">@approval.DisplayStatus</span>
+                        </div>
+                    </button>
+                }
+            </div>
+        }
+    </section>
+
+    <aside class="vc-panel vc-work-detail" aria-label="@UiText["ApprovalDetails"]">
+        @if (selected is null)
+        {
+            <div class="vc-empty-state">
+                <h2>@UiText["SelectApproval"]</h2>
+                <p>@UiText["SelectApprovalDescription"]</p>
+            </div>
+        }
+        else
+        {
+            <span class="vc-kicker">@selected.DisplayStatus</span>
+            <h2>@selected.DisplayTitle</h2>
+            <p>@selected.DisplayReason</p>
+            <dl class="vc-detail-list">
+                <dt>@UiText["Reference"]</dt><dd>@selected.DisplayReference</dd>
+                @if (!string.IsNullOrWhiteSpace(selected.DisplayAmount))
+                {
+                    <dt>@UiText["Amount"]</dt><dd>@selected.DisplayAmount</dd>
+                }
+                <dt>@UiText["Requested"]</dt><dd>@selected.CreatedAt.ToLocalTime().ToString("g")</dd>
+                <dt>@UiText["AffectedData"]</dt><dd>@selected.AffectedDataSummary</dd>
+            </dl>
+            @if (selected.CurrentStep is not null && IsPending(selected))
+            {
+                <label class="form-label mt-3" for="work-approval-comment">@UiText["DecisionNote"]</label>
+                <textarea id="work-approval-comment" class="form-control" rows="3" @bind="decisionComment"></textarea>
+                <div class="dashboard-actions mt-3">
+                    <button class="btn btn-primary" type="button" disabled="@isDeciding" @onclick='() => DecideAsync("approve")'>@UiText["Approve"]</button>
+                    <button class="btn btn-outline-danger" type="button" disabled="@isDeciding" @onclick='() => DecideAsync("reject")'>@UiText["Reject"]</button>
+                </div>
+            }
+        }
+    </aside>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public Guid? SelectedId { get; set; }
+    [Parameter] public EventCallback<Guid> SelectedIdChanged { get; set; }
+
+    private List<ApprovalRequestViewModel> approvals = [];
+    private ApprovalRequestViewModel? selected;
+    private bool isLoading = true;
+    private bool isDeciding;
+    private string? decisionComment;
+    private string? errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(CompanyId, "pending"));
+            if (SelectedId is Guid selectedId)
+            {
+                selected = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(CompanyId, selectedId));
+            }
+            else if (selected is not null && approvals.All(item => item.Id != selected.Id))
+            {
+                selected = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+            approvals = [];
+            selected = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task SelectAsync(Guid id)
+    {
+        selected = ApprovalPresentationFormatter.Format(await ApprovalApiClient.GetAsync(CompanyId, id));
+        decisionComment = null;
+        await SelectedIdChanged.InvokeAsync(id);
+    }
+
+    private async Task DecideAsync(string decision)
+    {
+        if (selected?.CurrentStep is null)
+        {
+            return;
+        }
+
+        isDeciding = true;
+        errorMessage = null;
+        try
+        {
+            await ApprovalApiClient.DecideAsync(CompanyId, selected.Id, new ApprovalDecisionRequest
+            {
+                ApprovalId = selected.Id,
+                StepId = selected.CurrentStep.Id,
+                Decision = decision,
+                Comment = decisionComment
+            });
+            approvals = ApprovalPresentationFormatter.Format(await ApprovalApiClient.ListAsync(CompanyId, "pending"));
+            selected = null;
+            decisionComment = null;
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isDeciding = false;
+        }
+    }
+
+    private string ItemClass(Guid id) => selected?.Id == id ? "vc-list-item selected" : "vc-list-item";
+    private static bool IsPending(ApprovalRequestViewModel approval) =>
+        string.Equals(approval.Status, "pending", StringComparison.OrdinalIgnoreCase);
+}

@@ -3,7 +3,9 @@ using System.Text.Json.Nodes;
 using System.Net;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Mailbox;
@@ -22,11 +24,14 @@ public sealed partial class CompanyFinanceBillInboxService : IFinanceBillInboxSe
     private readonly IFinanceIntegrationWriteCommandService _financeWriteCommands;
     private readonly IFortnoxOutboundActionExecutor _fortnoxOutboundActionExecutor;
     private readonly IFortnoxApiClient _fortnoxApiClient;
+    private readonly FinanceBillFortnoxRegistrationCompletionService _fortnoxRegistrationCompletionService;
     private readonly IMailboxProviderRegistry? _mailboxProviderRegistry;
     private readonly IFieldEncryptionService? _fieldEncryption;
     private readonly IReadOnlyList<IDocumentTextExtractor> _documentTextExtractors;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyFinanceBillInboxService> _logger;
+    private readonly IApprovalAutomationService _approvalAutomationService;
+    private readonly SupplierApprovalAutomationOptions _supplierApprovalAutomationOptions;
 
     public CompanyFinanceBillInboxService(
         VirtualCompanyDbContext dbContext,
@@ -34,8 +39,11 @@ public sealed partial class CompanyFinanceBillInboxService : IFinanceBillInboxSe
         IFinanceIntegrationWriteCommandService financeWriteCommands,
         IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor,
         IFortnoxApiClient fortnoxApiClient,
+        FinanceBillFortnoxRegistrationCompletionService fortnoxRegistrationCompletionService,
         TimeProvider timeProvider,
         ILogger<CompanyFinanceBillInboxService> logger,
+        IApprovalAutomationService approvalAutomationService,
+        IOptions<SupplierApprovalAutomationOptions> supplierApprovalAutomationOptions,
         ICompanyContextAccessor? companyContextAccessor = null,
         IMailboxProviderRegistry? mailboxProviderRegistry = null,
         IFieldEncryptionService? fieldEncryption = null,
@@ -46,11 +54,14 @@ public sealed partial class CompanyFinanceBillInboxService : IFinanceBillInboxSe
         _financeWriteCommands = financeWriteCommands;
         _fortnoxOutboundActionExecutor = fortnoxOutboundActionExecutor;
         _fortnoxApiClient = fortnoxApiClient;
+        _fortnoxRegistrationCompletionService = fortnoxRegistrationCompletionService;
         _mailboxProviderRegistry = mailboxProviderRegistry;
         _fieldEncryption = fieldEncryption;
         _documentTextExtractors = documentTextExtractors?.ToArray() ?? [];
         _timeProvider = timeProvider;
         _logger = logger;
+        _approvalAutomationService = approvalAutomationService;
+        _supplierApprovalAutomationOptions = supplierApprovalAutomationOptions.Value;
         _companyContextAccessor = companyContextAccessor;
     }
 }

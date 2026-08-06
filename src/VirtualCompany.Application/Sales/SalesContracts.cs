@@ -85,6 +85,7 @@ public sealed record SalesDashboardResponse(
     int HotLeads,
     int DealsNeedingAttention,
     decimal ForecastRevenue,
+    IReadOnlyList<SalesDealSummaryResponse> DealsRequiringAction,
     IReadOnlyList<SalesRecommendationResponse> AgentRecommendations,
     IReadOnlyList<SalesActivityResponse> RecentActivity);
 

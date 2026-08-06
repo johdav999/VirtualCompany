@@ -90,6 +90,34 @@ public sealed class BillDetectionServiceTests
     }
 
     [Fact]
+    public void Detects_body_only_supplier_invoice_from_gmail_snippet()
+    {
+        var result = _service.Detect(new MailboxMessageSummary(
+            "msg-prosa-1",
+            "Invoice Prosa Services",
+            """
+            Hello, Please find our test supplier invoice details below.
+            Supplier: Prosa Test Services AB
+            Org.nr: 559123-4567
+            Invoice number: VC-TEST-2026-001
+            Due date: 2026-08-24
+            Total amount due: SEK 10,000.00
+            """,
+            null,
+            [],
+            "Johan Davidsson <sender@example.com>",
+            "Johan Davidsson",
+            DateTime.UtcNow,
+            "INBOX",
+            "Inbox"));
+
+        Assert.True(result.IsCandidate);
+        Assert.Contains(BillSourceType.EmailBodyOnly, result.DetectedSourceTypes);
+        Assert.Contains(BillDetectionRuleMatch.KeywordMatch, result.MatchedRules);
+        Assert.Empty(result.CandidateAttachments);
+    }
+
+    [Fact]
     public void Rejects_unrelated_message()
     {
         var result = _service.Detect(new MailboxMessageSummary(

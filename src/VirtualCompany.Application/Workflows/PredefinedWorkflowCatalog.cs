@@ -36,6 +36,7 @@ public static class PredefinedWorkflowCatalog
                 json["schedule"] = new JsonObject
                 {
                     ["scheduleKey"] = "daily-executive-briefing",
+                    ["occurrence"] = "daily",
                     ["timezone"] = "company-default"
                 };
             }),

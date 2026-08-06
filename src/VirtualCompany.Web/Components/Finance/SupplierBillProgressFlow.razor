@@ -1,0 +1,59 @@
+<section class="supplier-bill-progress" aria-labelledby="supplier-bill-progress-title">
+    <header class="supplier-bill-progress__header">
+        <div>
+            <p class="supplier-bill-progress__eyebrow">Bill workflow</p>
+            <h3 id="supplier-bill-progress-title">Bill progress</h3>
+        </div>
+        <span class="supplier-bill-progress__summary">
+            @(Progress.IsComplete ? "Complete" : $"{Progress.CompletedCount} of {Progress.Steps.Count} steps complete")
+        </span>
+    </header>
+
+    <ol class="supplier-bill-progress__steps">
+        @for (var index = 0; index < Progress.Steps.Count; index++)
+        {
+            var step = Progress.Steps[index];
+            var isCurrent = step.Key == Progress.CurrentStepKey;
+            <li class="@($"supplier-bill-progress__step supplier-bill-progress__step--{step.State}")" aria-current="@(isCurrent ? "step" : null)">
+                <div class="supplier-bill-progress__rail" aria-hidden="true">
+                    <span class="supplier-bill-progress__node">
+                        @if (step.State == SupplierBillProgressStates.Completed)
+                        {
+                            <span>✓</span>
+                        }
+                        else if (step.State is SupplierBillProgressStates.Failed or SupplierBillProgressStates.Blocked)
+                        {
+                            <span>!</span>
+                        }
+                        else
+                        {
+                            <span>@(index + 1)</span>
+                        }
+                    </span>
+                </div>
+                <div class="supplier-bill-progress__body">
+                    <div class="supplier-bill-progress__title-row">
+                        <h4>@step.Title</h4>
+                        <span class="@($"supplier-bill-progress__status supplier-bill-progress__status--{step.State}")">@step.StatusLabel</span>
+                    </div>
+                    <p>@step.Description</p>
+                    @if (!string.IsNullOrWhiteSpace(step.SupportingText))
+                    {
+                        <small>@step.SupportingText</small>
+                    }
+                    @if (isCurrent && CurrentStepContent is not null)
+                    {
+                        <div class="supplier-bill-progress__current-actions">
+                            @CurrentStepContent
+                        </div>
+                    }
+                </div>
+            </li>
+        }
+    </ol>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public SupplierBillProgressViewModel Progress { get; set; } = null!;
+    [Parameter] public RenderFragment? CurrentStepContent { get; set; }
+}

@@ -30,6 +30,9 @@ internal sealed class FinanceRecordSourcePolicy(VirtualCompanyDbContext dbContex
 
         return normalized switch
         {
+            FinanceDataSources.Operational => source.Where(x =>
+                EF.Property<string>(x, "SourceType") != FinanceRecordSourceTypes.Simulation ||
+                fortnoxReferenceIds.Contains(EF.Property<Guid>(x, "Id"))),
             FinanceDataSources.Fortnox => source.Where(x =>
                 EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Fortnox ||
                 EF.Property<string?>(x, "ProviderKey") == FinanceIntegrationProviderKeys.Fortnox ||
@@ -40,7 +43,7 @@ internal sealed class FinanceRecordSourcePolicy(VirtualCompanyDbContext dbContex
             _ => throw new ArgumentOutOfRangeException(
                 nameof(sourceFilter),
                 sourceFilter,
-                "Source filter must be all, fortnox, or simulation.")
+                "Source filter must be operational, all, fortnox, or simulation.")
         };
     }
 

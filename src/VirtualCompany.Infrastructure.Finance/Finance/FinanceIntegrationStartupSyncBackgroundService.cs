@@ -95,7 +95,7 @@ public sealed class FinanceIntegrationStartupSyncBackgroundService : BackgroundS
 
                 try
                 {
-                    if (!IsProviderEnabled(scope.ServiceProvider, target.ProviderKey))
+                    if (!await IsProviderEnabledAsync(scope.ServiceProvider, target.ProviderKey, targetToken))
                     {
                         skipped++;
                         _logger.LogInformation(
@@ -245,10 +245,22 @@ public sealed class FinanceIntegrationStartupSyncBackgroundService : BackgroundS
             : resolved;
     }
 
-    private static bool IsProviderEnabled(IServiceProvider serviceProvider, string providerKey) =>
-        string.Equals(providerKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase)
-            ? serviceProvider.GetRequiredService<IOptionsMonitor<FortnoxOptions>>().CurrentValue.Enabled
-            : true;
+    private static async Task<bool> IsProviderEnabledAsync(
+        IServiceProvider serviceProvider,
+        string providerKey,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var settingsProvider = serviceProvider.GetRequiredService<IFinanceIntegrationRuntimeSettingsProvider>();
+            var settings = await settingsProvider.GetRequiredAsync(providerKey, cancellationToken);
+            return settings.Enabled;
+        }
+        catch (FinanceIntegrationApplicationUnavailableException)
+        {
+            return false;
+        }
+    }
 
     private sealed record StartupSyncTarget(string ProviderKey, Guid CompanyId, Guid ConnectionId);
 }

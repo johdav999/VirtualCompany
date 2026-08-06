@@ -20,6 +20,7 @@ public sealed record GetFinanceTransactionsQuery(
 public static class FinanceDataSources
 {
     public const string All = "all";
+    public const string Operational = "operational";
     public const string Fortnox = "fortnox";
     public const string Simulation = "simulation";
     public const string Manual = "manual";
@@ -785,4 +786,3 @@ public static class FinanceEntrySources
     public const string FallbackRead = "finance_fallback_seed";
     public const string Backfill = "finance_seed_backfill";
 }
-

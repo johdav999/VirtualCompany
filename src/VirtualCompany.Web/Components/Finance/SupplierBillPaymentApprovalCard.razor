@@ -1,0 +1,201 @@
+@inject ApprovalApiClient ApprovalApiClient
+@inject ILogger<SupplierBillPaymentApprovalCard> Logger
+
+@if (ApprovalRequestId is Guid approvalRequestId)
+{
+    <section class="bill-payment-approval" aria-labelledby="bill-payment-approval-heading" aria-live="polite">
+        @if (isLoading)
+        {
+            <div class="bill-payment-approval__loading">
+                <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                <span>@FinanceText["LoadingPaymentApproval"]</span>
+            </div>
+        }
+        else if (approval is null)
+        {
+            <div class="bill-payment-approval__header">
+                <div class="bill-payment-approval__agent">
+                    <span class="bill-payment-approval__avatar" aria-hidden="true">L</span>
+                    <span><strong>Laura</strong><small>@FinanceText["FinanceManager"]</small></span>
+                </div>
+                <span class="bill-status-badge bill-status-badge--warning">@FinanceText["ApprovalUnavailable"]</span>
+            </div>
+            <h3 id="bill-payment-approval-heading">@FinanceText["PaymentApproval"]</h3>
+            <p>@(errorMessage ?? FinanceText["PaymentApprovalLoadFailed"])</p>
+            <div class="bill-payment-approval__links">
+                <button type="button" class="btn btn-sm btn-outline-secondary" @onclick="LoadAsync">@CommonText["Retry"]</button>
+                <a class="btn btn-sm btn-link" href="@BuildWorkHref(approvalRequestId)">@FinanceText["OpenInWork"]</a>
+            </div>
+        }
+        else
+        {
+            <div class="bill-payment-approval__header">
+                <div class="bill-payment-approval__agent">
+                    <span class="bill-payment-approval__avatar" aria-hidden="true">L</span>
+                    <span><strong>Laura</strong><small>@FinanceText["FinanceManager"]</small></span>
+                </div>
+                <span class="@StatusClass(approval.Status)">@StatusLabel(approval.Status)</span>
+            </div>
+
+            <h3 id="bill-payment-approval-heading">@FinanceText["PaymentApproval"]</h3>
+
+            @if (IsPending(approval))
+            {
+                <p>@FinanceText["LauraWantsPaymentApproval", SupplierName]</p>
+                <div class="bill-payment-approval__reason">
+                    <span aria-hidden="true">i</span>
+                    <span>@approval.DisplayReason</span>
+                </div>
+                <dl class="bill-payment-approval__details">
+                    <div><dt>@FinanceText["Amount"]</dt><dd>@LocalMoney.Format(Amount, Currency)</dd></div>
+                    <div><dt>@FinanceText["DueDate"]</dt><dd>@LocalDateTime.Date(DateOnly.FromDateTime(DueUtc))</dd></div>
+                    <div><dt>@FinanceText["PaymentReference"]</dt><dd>@DisplayPaymentReference</dd></div>
+                </dl>
+                <label class="bill-payment-approval__note" for="bill-payment-approval-note">
+                    <span>@FinanceText["DecisionNoteOptional"]</span>
+                    <textarea id="bill-payment-approval-note" rows="3" maxlength="1000" placeholder="@FinanceText["DecisionNotePlaceholder"]" @bind="decisionComment"></textarea>
+                </label>
+                @if (!string.IsNullOrWhiteSpace(errorMessage))
+                {
+                    <div class="alert alert-danger mb-0" role="alert">@errorMessage</div>
+                }
+                <div class="bill-payment-approval__actions">
+                    <button class="btn btn-primary" type="button" disabled="@isDeciding" @onclick='() => DecideAsync("approve")'>
+                        @(isDeciding ? FinanceText["RecordingDecision"] : FinanceText["ApprovePayment"])
+                    </button>
+                    <button class="btn btn-outline-danger" type="button" disabled="@isDeciding" @onclick='() => DecideAsync("reject")'>@FinanceText["Reject"]</button>
+                </div>
+                <a class="bill-payment-approval__work-link" href="@BuildWorkHref(approval.Id)">@FinanceText["OpenInWork"]</a>
+            }
+            else
+            {
+                <div class="@DecisionClass(approval.Status)">
+                    <strong>@DecisionTitle(approval.Status)</strong>
+                    <span>@DecisionMessage(approval.Status)</span>
+                    @if (!string.IsNullOrWhiteSpace(approval.CurrentStep?.Comment ?? approval.RejectionComment))
+                    {
+                        <small>@FinanceText["DecisionNoteRecorded", approval.CurrentStep?.Comment ?? approval.RejectionComment!]</small>
+                    }
+                </div>
+            }
+        }
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public Guid? ApprovalRequestId { get; set; }
+    [Parameter] public string SupplierName { get; set; } = string.Empty;
+    [Parameter] public decimal Amount { get; set; }
+    [Parameter] public string Currency { get; set; } = string.Empty;
+    [Parameter] public DateTime DueUtc { get; set; }
+    [Parameter] public string? PaymentReference { get; set; }
+    [Parameter] public EventCallback OnDecisionCompleted { get; set; }
+
+    private ApprovalRequestViewModel? approval;
+    private Guid? loadedApprovalRequestId;
+    private bool isLoading;
+    private bool isDeciding;
+    private string? decisionComment;
+    private string? errorMessage;
+    private string DisplayPaymentReference => string.IsNullOrWhiteSpace(PaymentReference) ? FinanceText["NotAvailable"] : PaymentReference;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (ApprovalRequestId is null)
+        {
+            approval = null;
+            loadedApprovalRequestId = null;
+            return;
+        }
+
+        if (loadedApprovalRequestId != ApprovalRequestId)
+        {
+            await LoadAsync();
+        }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (ApprovalRequestId is not Guid approvalRequestId || CompanyId == Guid.Empty)
+        {
+            return;
+        }
+
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            approval = ApprovalPresentationFormatter.Format(
+                await ApprovalApiClient.GetAsync(CompanyId, approvalRequestId));
+            loadedApprovalRequestId = approvalRequestId;
+        }
+        catch (OnboardingApiException ex)
+        {
+            approval = null;
+            errorMessage = ex.Message;
+            Logger.LogWarning(ex,
+                "Supplier bill payment approval could not be loaded. CompanyId: {CompanyId}. ApprovalRequestId: {ApprovalRequestId}.",
+                CompanyId,
+                approvalRequestId);
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private async Task DecideAsync(string decision)
+    {
+        if (approval?.CurrentStep is null || !IsPending(approval) || CompanyId == Guid.Empty)
+        {
+            return;
+        }
+
+        isDeciding = true;
+        errorMessage = null;
+        try
+        {
+            var result = await ApprovalApiClient.DecideAsync(
+                CompanyId,
+                approval.Id,
+                new ApprovalDecisionRequest
+                {
+                    ApprovalId = approval.Id,
+                    StepId = approval.CurrentStep.Id,
+                    Decision = decision,
+                    Comment = string.IsNullOrWhiteSpace(decisionComment) ? null : decisionComment.Trim()
+                });
+            approval = ApprovalPresentationFormatter.Format(result.Approval);
+            decisionComment = null;
+            await OnDecisionCompleted.InvokeAsync();
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+            Logger.LogWarning(ex,
+                "Supplier bill payment approval decision failed. CompanyId: {CompanyId}. ApprovalRequestId: {ApprovalRequestId}. Decision: {Decision}.",
+                CompanyId,
+                approval.Id,
+                decision);
+        }
+        finally
+        {
+            isDeciding = false;
+        }
+    }
+
+    private string BuildWorkHref(Guid approvalId) => $"/work?companyId={CompanyId:D}&tab=approvals&itemId={approvalId:D}";
+    private static bool IsPending(ApprovalRequestViewModel value) =>
+        string.Equals(value.Status, "pending", StringComparison.OrdinalIgnoreCase) && value.CurrentStep is not null;
+    private static bool IsRejected(string status) => string.Equals(status, "rejected", StringComparison.OrdinalIgnoreCase);
+    private string StatusLabel(string status) => IsRejected(status)
+        ? FinanceText["Rejected"]
+        : string.Equals(status, "approved", StringComparison.OrdinalIgnoreCase)
+            ? FinanceText["Approved"]
+            : FinanceText["WaitingForApproval"];
+    private static string StatusClass(string status) => $"bill-status-badge bill-status-badge--{(IsRejected(status) ? "danger" : string.Equals(status, "approved", StringComparison.OrdinalIgnoreCase) ? "success" : "warning")}";
+    private static string DecisionClass(string status) => $"bill-payment-approval__decision bill-payment-approval__decision--{(IsRejected(status) ? "danger" : "success")}";
+    private string DecisionTitle(string status) => IsRejected(status) ? FinanceText["PaymentRejected"] : FinanceText["PaymentApproved"];
+    private string DecisionMessage(string status) => IsRejected(status) ? FinanceText["PaymentRejectedNextStep"] : FinanceText["DecisionRecordedNextStep"];
+}

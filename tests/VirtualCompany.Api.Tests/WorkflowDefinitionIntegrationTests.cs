@@ -639,7 +639,11 @@ public sealed class WorkflowDefinitionIntegrationTests : IDisposable
                 1,
                 new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["schedule"] = new JsonObject { ["scheduleKey"] = "daily-briefing" },
+                    ["schedule"] = new JsonObject
+                    {
+                        ["scheduleKey"] = "daily-briefing",
+                        ["occurrence"] = "daily"
+                    },
                     ["steps"] = new JsonArray(new JsonObject { ["id"] = "collect-signals" })
                 }));
             return Task.CompletedTask;
@@ -652,7 +656,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IDisposable
             10,
             CancellationToken.None);
         var second = await scheduler.RunDueSchedulesAsync(
-            DateTime.Parse("2026-04-12T08:00:00Z").ToUniversalTime(),
+            DateTime.Parse("2026-04-12T08:01:00Z").ToUniversalTime(),
             10,
             CancellationToken.None);
 
@@ -665,7 +669,7 @@ public sealed class WorkflowDefinitionIntegrationTests : IDisposable
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var persistedCount = await dbContext.WorkflowInstances
             .IgnoreQueryFilters()
-            .CountAsync(x => x.CompanyId == seed.CompanyId && x.DefinitionId == definitionId && x.TriggerRef == "daily-briefing:202604120800");
+            .CountAsync(x => x.CompanyId == seed.CompanyId && x.DefinitionId == definitionId && x.TriggerRef == "daily-briefing:20260412");
         Assert.Equal(1, persistedCount);
     }
 

@@ -153,17 +153,18 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
 
         var fullRoster = await client.GetFromJsonAsync<AgentRosterResponse>($"/api/companies/{companyId}/agents/roster");
         Assert.NotNull(fullRoster);
-        Assert.Equal(3, fullRoster!.Items.Count);
+        Assert.Equal(4, fullRoster!.Items.Count);
         Assert.Contains(fullRoster.Items, item => item.TemplateId == "laura-finance-agent" && item.DisplayName == "Laura");
         Assert.Contains(fullRoster.Items, item => item.TemplateId == "sales" && item.DisplayName == "Alex" && item.RoleName == "Sales Manager");
         Assert.Contains(fullRoster.Items, item => item.TemplateId == "support" && item.DisplayName == "Ben" && item.RoleName == "Support Manager");
+        Assert.Contains(fullRoster.Items, item => item.TemplateId == "marketing" && item.DisplayName == "Maya" && item.RoleName == "Marketing Manager");
 
         var roster = await client.GetFromJsonAsync<AgentRosterResponse>($"/api/companies/{companyId}/agents/roster?department=Finance");
         Assert.NotNull(roster);
         var lauraRosterItem = Assert.Single(roster!.Items, item => item.DisplayName == "Laura");
 
         Assert.Equal("laura-finance-agent", lauraRosterItem.TemplateId);
-        Assert.Equal("Finance Agent", lauraRosterItem.RoleName);
+        Assert.Equal("Finance Manager", lauraRosterItem.RoleName);
         Assert.Equal("Finance", lauraRosterItem.Department);
         Assert.Equal("active", lauraRosterItem.Status);
         Assert.Equal("finance", lauraRosterItem.RoleMetadata["roleKey"].GetString());
@@ -202,7 +203,8 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
                 "recommend_transaction_category",
                 "recommend_invoice_approval_decision",
                 "categorize_transaction",
-                "approve_invoice"
+                "approve_invoice",
+                "post_paid_supplier_bill_expense"
             },
             profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()));
         Assert.DoesNotContain("erp", profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()));
@@ -228,7 +230,7 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
         await dbContext.SaveChangesAsync();
 
         Assert.Equal(
-            3,
+            4,
             await dbContext.Agents.IgnoreQueryFilters().CountAsync(agent => agent.CompanyId == companyId));
     }
 

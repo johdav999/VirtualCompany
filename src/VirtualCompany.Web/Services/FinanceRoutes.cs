@@ -15,6 +15,7 @@ public sealed record FinanceRouteDefinition(
 
 public static class FinanceRoutes
 {
+    public const string FinanceProviderManagement = "/system/admin/finance-providers";
     public const string CompanyIdQueryKey = "companyId";
     public const string Home = "/finance";
     public const string CashPosition = "/finance/cash-position";
@@ -49,6 +50,7 @@ public static class FinanceRoutes
     public const string TransparencyToolRegistry = "/system/admin/tool-registry";
     public const string TransparencyToolExecutions = "/system/admin/tool-executions";
     public const string TransparencyToolExecutionDetail = "/system/admin/tool-executions/{ExecutionId:guid}";
+    public const string EmailProviderSettings = "/system/admin/integrations/email-providers";
     public const string SandboxAdmin = "/simulation-lab";
     public const string Settings = "/finance/settings";
     public const string EmailSettings = "/finance/settings/email-settings";
@@ -69,13 +71,12 @@ public static class FinanceRoutes
     public static IReadOnlyList<FinanceRouteDefinition> SectionPages { get; } =
         [
             new("Overview", Home, "Review key finance actions and open the operational finance workspace."),
-            new("Invoices", Invoices, "Track invoice review and collection workflows."),
+            new("Cash", CashPosition, "Track cash, liquidity, balances, and monthly results.", ActivePathPrefixes: [CashPosition, Balances, MonthlySummary]),
+            new("Customer invoices", Invoices, "Track invoice review and collection workflows.", ActivePathPrefixes: [Invoices, Reviews]),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
-            new("Mailbox", Mailbox, "Connect email and scan inbox messages for bill candidates."),
             new("Payments", Payments, "Track money coming in and going out."),
             new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity]),
-            new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies]),
-            new("Settings", Settings, "Configure finance integration settings for the active company.")
+            new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies])
         ];
 
     public static IReadOnlyList<FinanceRouteDefinition> SimulationLabPages { get; } =
@@ -88,6 +89,7 @@ public static class FinanceRoutes
 
     public static IReadOnlyList<FinanceRouteDefinition> SystemAdminPages { get; } =
         [
+            new("Email providers", EmailProviderSettings, "Configure the shared OAuth applications used to connect company mailboxes.", true),
             new("Tool registry", TransparencyToolRegistry, "Inspect finance tool manifests, schema summaries, and provider metadata.", true),
             new("Tool executions", TransparencyToolExecutions, "Review finance tool execution history and related approval links.", true),
             new("Transparency events", TransparencyEvents, "Inspect finance events, payload summaries, and trigger trace coverage.", true)

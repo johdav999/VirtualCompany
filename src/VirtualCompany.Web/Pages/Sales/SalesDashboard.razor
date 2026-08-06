@@ -6,210 +6,197 @@
 
 <PageTitle>@SalesText["Sales"]</PageTitle>
 
-<div class="sales-workspace">
-    <main class="sales-main">
-        <header class="sales-page-header">
-            <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+<main class="vc-page sales-overview-page">
+    <header class="vc-page-header sales-overview-header">
+        <div>
+            <span class="vc-kicker">@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
             <h1>@SalesText["SalesReview"]</h1>
             <p>@SalesText["SalesReviewDescription"]</p>
-            <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
-                <a class="active" href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
-                <a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
-                <a href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
-                <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
-                <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
-            </nav>
-        </header>
+        </div>
+        <div class="sales-overview-header__actions">
+            <a class="btn btn-outline-primary" href="@BuildPath("/app/sales/prospects")">@SalesText["ReviewLeads"]</a>
+            <a class="btn btn-primary" href="@BuildPath("/app/sales/pipeline")">@SalesText["OpenPipeline"]</a>
+        </div>
+    </header>
 
-        @if (isLoading)
-        {
-            <section class="sales-card sales-empty">@SalesText["LoadingSalesData"]</section>
-        }
-        else if (!string.IsNullOrWhiteSpace(errorMessage))
-        {
-            <section class="sales-card sales-error">
-                <h2>@SalesText["SalesUnavailable"]</h2>
-                <p>@errorMessage</p>
-                <button class="sales-button sales-button--primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
-            </section>
-        }
-        else if (dashboard is not null)
-        {
-            <section class="sales-kpi-grid" aria-label="@SalesText["SalesKpis"]">
-                <article class="sales-kpi-card">
-                    <span>@SalesText["PipelineValue"]</span>
-                    <strong>@Money(dashboard.PipelineValue, dashboard.Currency)</strong>
-                    <small>@SalesText["OpenDealsActivePipeline"]</small>
-                </article>
-                <article class="sales-kpi-card">
-                    <span>@SalesText["NewLeads"]</span>
-                    <strong>@dashboard.NewLeads</strong>
-                    <small>@SalesText["WaitingFirstReview"]</small>
-                </article>
-                <article class="sales-kpi-card">
-                    <span>@SalesText["HotLeads"]</span>
-                    <strong>@dashboard.HotLeads</strong>
-                    <small>@SalesText["AlexSeesBuyingIntent"]</small>
-                </article>
-                <article class="sales-kpi-card">
-                    <span>@SalesText["ForecastRevenue"]</span>
-                    <strong>@Money(PrimaryForecastValue, PrimaryForecastCurrency)</strong>
-                    <small>@SalesText["ExpectedNext30Days"]</small>
-                </article>
-            </section>
+    <nav class="vc-section-tabs" aria-label="@SalesText["SalesSections"]">
+        <a class="active" href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
+        <a href="@BuildPath("/app/sales/prospects")">@SalesText["Prospects"]</a>
+        <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
+        <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
+    </nav>
 
-            <section class="sales-briefing-card">
-                <div>
-                    <span>@SalesText["TodaysBriefing"]</span>
-                    <h2>@SalesText["DealsNeedFollowUp", dashboard.DealsNeedingAttention]</h2>
-                    <p>
-                        @if (dashboard.HotLeads > 0)
-                        {
-                            <text>@SalesText["HotLeadsReady", dashboard.HotLeads]</text>
-                        }
-                        @if (dashboard.AgentRecommendations.Count > 0)
-                        {
-                            <text>@SalesText["TopRecommendation", dashboard.AgentRecommendations[0].Recommendation]</text>
-                        }
-                        else
-                        {
-                            <text>@SalesText["NoUrgentRecommendation"]</text>
-                        }
-                    </p>
-                </div>
-                <div class="sales-actions">
-                    <a class="sales-button sales-button--primary" href="@BuildPath("/app/sales/leads")">@SalesText["ReviewLeads"]</a>
-                    <a class="sales-button" href="@BuildPath("/app/sales/pipeline")">@SalesText["OpenPipeline"]</a>
-                </div>
-            </section>
+    @if (isLoading)
+    {
+        <section class="vc-panel sales-overview-state" aria-live="polite">@SalesText["LoadingSalesData"]</section>
+    }
+    else if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <section class="vc-panel sales-overview-state sales-overview-state--error" role="alert">
+            <h2>@SalesText["SalesUnavailable"]</h2>
+            <p>@errorMessage</p>
+            <button class="btn btn-primary" @onclick="LoadAsync">@SalesText["Reload"]</button>
+        </section>
+    }
+    else if (dashboard is not null)
+    {
+        <section class="vc-panel sales-overview-kpis" aria-label="@SalesText["SalesKpis"]">
+            <article>
+                <span>@SalesText["PipelineValue"]</span>
+                <strong>@Money(dashboard.PipelineValue, dashboard.Currency)</strong>
+                <small>@SalesText["OpenDealsActivePipeline"]</small>
+            </article>
+            <article>
+                <span>@SalesText["OpenLeads"]</span>
+                <strong>@dashboard.NewLeads</strong>
+                <small>@SalesText["WaitingFirstReview"]</small>
+            </article>
+            <article>
+                <span>@SalesText["HotLeads"]</span>
+                <strong>@dashboard.HotLeads</strong>
+                <small>@SalesText["AlexSeesBuyingIntent"]</small>
+            </article>
+            <article>
+                <span>@SalesText["ForecastRevenue"]</span>
+                <strong>@Money(PrimaryForecastValue, PrimaryForecastCurrency)</strong>
+                <small>@SalesText["ExpectedNext30Days"]</small>
+            </article>
+        </section>
 
-            <section class="sales-card">
-                <div class="sales-section-heading">
-                    <div>
-                        <span>@SalesText["RevenueInsights"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                        <h2>@SalesText["ConversionAndForecast"]</h2>
+        <div class="sales-overview-layout">
+            <div class="sales-overview-content">
+                <section class="vc-panel sales-overview-panel">
+                    <div class="sales-overview-panel__header">
+                        <div>
+                            <span class="vc-kicker">@SalesText["Pipeline"]</span>
+                            <h2>@SalesText["PipelineByStage"]</h2>
+                            <p>@SalesText["PipelineByStageDescription"]</p>
+                        </div>
+                        <a href="@BuildPath("/app/sales/pipeline")">@SalesText["ViewAllDeals"]</a>
                     </div>
-                </div>
-                @if (analytics is null && forecast is null)
-                {
-                    <div class="sales-empty">@SalesText["NotEnoughConversionData"]</div>
-                }
-                else
-                {
-                    <div class="sales-kpi-grid sales-kpi-grid--compact">
-                        <article class="sales-kpi-card">
+                    @if (pipeline?.Stages.Count > 0)
+                    {
+                        <div class="sales-overview-stages">
+                            @foreach (var stage in pipeline.Stages)
+                            {
+                                <div class="sales-overview-stage">
+                                    <div>
+                                        <strong>@stage.Name</strong>
+                                        <span>@SalesText["DealCount", stage.DealCount]</span>
+                                    </div>
+                                    <div class="sales-overview-stage__bar" aria-hidden="true">
+                                        <span style="width: @StageWidth(stage)%"></span>
+                                    </div>
+                                    <strong>@Money(stage.TotalValue, dashboard.Currency)</strong>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sales-overview-empty">@SalesText["NoDealsInPipeline"]</div>
+                    }
+                </section>
+
+                <section class="vc-panel sales-overview-panel">
+                    <div class="sales-overview-panel__header">
+                        <div>
+                            <span class="vc-kicker">@SalesText["NeedsAttention"]</span>
+                            <h2>@SalesText["DealsRequiringAction"]</h2>
+                            <p>@SalesText["DealsRequiringActionDescription"]</p>
+                        </div>
+                    </div>
+                    @if (ActionDeals.Count > 0)
+                    {
+                        <div class="sales-overview-list">
+                            @foreach (var deal in ActionDeals)
+                            {
+                                <a href="@BuildPath($"/app/sales/deals/{deal.Id:D}")">
+                                    <div>
+                                        <strong>@deal.Title</strong>
+                                        <span>@(deal.CustomerCompanyName ?? SalesText["NoCompanyLinked"])</span>
+                                    </div>
+                                    <div class="sales-overview-list__meta">
+                                        <span>@deal.StageName</span>
+                                        <strong>@Money(deal.Amount, deal.Currency)</strong>
+                                        <small>@CloseDateLabel(deal)</small>
+                                    </div>
+                                </a>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sales-overview-empty">@SalesText["NoDealsNeedAction"]</div>
+                    }
+                </section>
+
+                <section class="vc-panel sales-overview-panel">
+                    <div class="sales-overview-panel__header">
+                        <div>
+                            <span class="vc-kicker">@SalesText["RevenueInsights"]</span>
+                            <h2>@SalesText["ConversionAndForecast"]</h2>
+                        </div>
+                    </div>
+                    <div class="sales-overview-metrics">
+                        <article>
                             <span>@SalesText["ReplyRate"]</span>
                             <strong>@Percent(analytics?.Rates.ReplyRate ?? 0m)</strong>
                             <small>@SalesText["RepliesFromSent", analytics?.Funnel.Replied ?? 0, analytics?.Funnel.Sent ?? 0]</small>
                         </article>
-                        <article class="sales-kpi-card">
+                        <article>
                             <span>@SalesText["ConversionRate"]</span>
                             <strong>@Percent(analytics?.Rates.ConversionRate ?? 0m)</strong>
                             <small>@SalesText["ConvertedOpportunities", analytics?.Funnel.Converted ?? 0]</small>
                         </article>
-                        <article class="sales-kpi-card">
+                        <article>
                             <span>@SalesText["SixtyDayForecast"]</span>
                             <strong>@Money(ForecastValue(60), PrimaryForecastCurrency)</strong>
                             <small>@SalesText["RiskAdjustedRevenue"]</small>
                         </article>
-                        <article class="sales-kpi-card">
+                        <article>
                             <span>@SalesText["HighRiskDeals"]</span>
                             <strong>@(forecast?.RiskDistribution.High ?? 0)</strong>
                             <small>@SalesText["ReviewBeforeForecast"]</small>
                         </article>
                     </div>
-                    <div class="sales-two-column sales-two-column--even">
-                        <div class="sales-list">
-                            <h3>@SalesText["CampaignPerformance"]</h3>
-                            @if (analytics?.Campaigns.Count > 0)
-                            {
-                                @foreach (var campaign in analytics.Campaigns)
-                                {
-                                    <div class="sales-list-row">
-                                        <div>
-                                            <strong>@campaign.CampaignName</strong>
-                                            <span>@SalesText["CampaignCounts", campaign.Counts.Sent, campaign.Counts.Replied, campaign.Counts.Converted]</span>
-                                        </div>
-                                        <span class="sales-badge sales-badge--active">@Percent(campaign.Rates.ReplyRate)</span>
-                                    </div>
-                                }
-                            }
-                            else
-                            {
-                                <div class="sales-empty">@SalesText["NoCampaignSends"]</div>
-                            }
-                        </div>
-                        <div class="sales-list">
-                            <h3>@SalesText["MessageVariants"]</h3>
-                            @if (analytics?.Variants.Count > 0)
-                            {
-                                @foreach (var variant in analytics.Variants)
-                                {
-                                    <div class="sales-list-row">
-                                        <div>
-                                            <strong>@variant.VariantKey</strong>
-                                            <span>@SalesText["CampaignCounts", variant.Counts.Sent, variant.Counts.Replied, variant.Counts.Converted]</span>
-                                        </div>
-                                        <span class="sales-badge sales-badge--active">@Percent(variant.Rates.ConversionRate)</span>
-                                    </div>
-                                }
-                            }
-                            else
-                            {
-                                <div class="sales-empty">@SalesText["NoVariantComparison"]</div>
-                            }
-                        </div>
-                    </div>
-                }
-            </section>
-
-            <div class="sales-two-column">
-                <section class="sales-card">
-                    <div class="sales-section-heading">
-                        <div>
-                            <span>@SalesText["AgentRecommendations"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-                            <h2>@SalesText["WhatAlexRecommends"]</h2>
-                        </div>
-                    </div>
-                    @if (dashboard.AgentRecommendations.Count == 0)
+                    @if (analytics?.Campaigns.Count > 0)
                     {
-                        <div class="sales-empty">@SalesText["NoRecommendations"]</div>
+                        <div class="sales-overview-campaigns">
+                            <div class="sales-overview-campaigns__heading">
+                                <h3>@SalesText["CampaignPerformance"]</h3>
+                                <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
+                            </div>
+                            @foreach (var campaign in analytics.Campaigns.Take(4))
+                            {
+                                <div>
+                                    <strong>@campaign.CampaignName</strong>
+                                    <span>@SalesText["CampaignCounts", campaign.Counts.Sent, campaign.Counts.Replied, campaign.Counts.Converted]</span>
+                                    <small>@Percent(campaign.Rates.ReplyRate)</small>
+                                </div>
+                            }
+                        </div>
                     }
                     else
                     {
-                        <div class="sales-list">
-                            @foreach (var recommendation in dashboard.AgentRecommendations)
-                            {
-                                <a class="sales-list-row" href="@RecommendationPath(recommendation)">
-                                    <div>
-                                        <strong>@recommendation.Recommendation</strong>
-                                        <span>@recommendation.Rationale</span>
-                                    </div>
-                                    <span class="@BadgeClass(recommendation.Status)">@SalesStatusPresenter.Present(recommendation.Status, SalesText)</span>
-                                </a>
-                            }
-                        </div>
+                        <div class="sales-overview-empty sales-overview-empty--bordered">@SalesText["NoCampaignSends"]</div>
                     }
                 </section>
 
-                <section class="sales-card">
-                    <div class="sales-section-heading">
+                <section class="vc-panel sales-overview-panel">
+                    <div class="sales-overview-panel__header">
                         <div>
-                            <span>@SalesText["RecentActivity"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
+                            <span class="vc-kicker">@SalesText["RecentActivity"]</span>
                             <h2>@SalesText["LatestSalesMovement"]</h2>
                         </div>
                     </div>
-                    @if (dashboard.RecentActivity.Count == 0)
+                    @if (dashboard.RecentActivity.Count > 0)
                     {
-                        <div class="sales-empty">@SalesText["NoSalesActivity"]</div>
-                    }
-                    else
-                    {
-                        <div class="sales-timeline">
-                            @foreach (var item in dashboard.RecentActivity)
+                        <div class="sales-overview-activity">
+                            @foreach (var item in dashboard.RecentActivity.Take(6))
                             {
-                                <a class="sales-timeline-row" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads"))">
-                                    <span></span>
+                                <a href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/prospects"))">
+                                    <span class="sales-overview-activity__marker"></span>
                                     <div>
                                         <strong>@item.Summary</strong>
                                         <small>@SalesText["ActivityAt", item.ActivityType, LocalDateTime.DateTime(item.OccurredUtc)]</small>
@@ -218,13 +205,95 @@
                             }
                         </div>
                     }
+                    else
+                    {
+                        <div class="sales-overview-empty">@SalesText["NoSalesActivity"]</div>
+                    }
                 </section>
             </div>
-        }
-    </main>
 
-    <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@(AgentPanelDashboard ?? dashboard)" ErrorMessage="@AgentPanelErrorMessage" />
-</div>
+            <aside class="sales-overview-rail">
+                <section class="vc-panel sales-overview-agent">
+                    <div class="sales-overview-agent__identity">
+                        <div class="sales-overview-agent__avatar">A</div>
+                        <div>
+                            <strong>Alex</strong>
+                            <span>@SalesText["SalesManager"]</span>
+                        </div>
+                    </div>
+                    <span class="vc-kicker">@SalesText["TopPriority"]</span>
+                    @if (dashboard.AgentRecommendations.Count > 0)
+                    {
+                        var recommendation = dashboard.AgentRecommendations[0];
+                        <h2>@recommendation.Recommendation</h2>
+                        <p>@recommendation.Rationale</p>
+                        <a class="btn btn-primary" href="@RecommendationPath(recommendation)">@SalesText["Review"]</a>
+                    }
+                    else
+                    {
+                        <h2>@SalesText["NoPriority"]</h2>
+                        <p>@SalesText["NoUrgentRecommendation"]</p>
+                    }
+                </section>
+
+                <section class="vc-panel sales-overview-panel">
+                    <div class="sales-overview-panel__header">
+                        <div>
+                            <span class="vc-kicker">@SalesText["Prospects"]</span>
+                            <h2>@SalesText["ProspectQueue"]</h2>
+                        </div>
+                        <a href="@BuildPath("/app/sales/prospects")">@SalesText["ViewAllProspects"]</a>
+                    </div>
+                    @if (OpenProspects.Count > 0)
+                    {
+                        <div class="sales-overview-prospects">
+                            @foreach (var lead in OpenProspects)
+                            {
+                                <a href="@BuildPath("/app/sales/prospects")">
+                                    <div>
+                                        <strong>@lead.Title</strong>
+                                        <span>@(lead.SourceEmail ?? SalesText["NoEmailLinked"])</span>
+                                    </div>
+                                    <span class="@BadgeClass(lead.Temperature)">@SalesStatusPresenter.Present(lead.Temperature, SalesText)</span>
+                                </a>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sales-overview-empty">@SalesText["NoProspectsAwaitingReview"]</div>
+                    }
+                </section>
+
+                <section class="vc-panel sales-overview-panel">
+                    <div class="sales-overview-panel__header">
+                        <div>
+                            <span class="vc-kicker">@SalesText["ForecastRevenue"]</span>
+                            <h2>@SalesText["ForecastWindows"]</h2>
+                        </div>
+                    </div>
+                    @if (forecast?.Windows.Count > 0)
+                    {
+                        <div class="sales-overview-forecast">
+                            @foreach (var window in forecast.Windows.OrderBy(x => x.Days))
+                            {
+                                <div>
+                                    <span>@SalesText["ForecastWindow", window.Days]</span>
+                                    <strong>@Money(window.ExpectedRevenue, forecast.Currency)</strong>
+                                    <small>@SalesText["DealsIncluded", window.DealCount]</small>
+                                </div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sales-overview-empty">@SalesText["NotEnoughConversionData"]</div>
+                    }
+                </section>
+            </aside>
+        </div>
+    }
+</main>
 
 @code {
     private bool isLoading = true;
@@ -232,6 +301,8 @@
     private SalesDashboardResponse? dashboard;
     private SalesAnalyticsDashboardResponse? analytics;
     private RevenueForecastSnapshotResponse? forecast;
+    private SalesPipelineResponse? pipeline;
+    private IReadOnlyList<SalesLeadSummaryResponse> leads = [];
 
     protected override async Task OnParametersSetAsync() => await LoadAsync();
 
@@ -247,9 +318,20 @@
                 return;
             }
 
-            dashboard = await SalesApiClient.GetDashboardAsync(ResolvedCompanyId!.Value);
-            analytics = await SalesApiClient.GetAnalyticsAsync(ResolvedCompanyId!.Value);
-            forecast = await SalesApiClient.GetRevenueForecastAsync(ResolvedCompanyId!.Value);
+            var companyId = ResolvedCompanyId!.Value;
+            var dashboardTask = SalesApiClient.GetDashboardAsync(companyId);
+            var analyticsTask = SalesApiClient.GetAnalyticsAsync(companyId);
+            var forecastTask = SalesApiClient.GetRevenueForecastAsync(companyId);
+            var pipelineTask = SalesApiClient.GetPipelineAsync(companyId);
+            var leadsTask = SalesApiClient.ListLeadsAsync(companyId);
+
+            await Task.WhenAll(dashboardTask, analyticsTask, forecastTask, pipelineTask, leadsTask);
+
+            dashboard = await dashboardTask;
+            analytics = await analyticsTask;
+            forecast = await forecastTask;
+            pipeline = await pipelineTask;
+            leads = await leadsTask;
             AgentPanelDashboard = dashboard;
         }
         catch (SalesApiException ex)
@@ -267,7 +349,24 @@
     private decimal PrimaryForecastValue => ForecastValue(30) > 0m ? ForecastValue(30) : dashboard?.ForecastRevenue ?? 0m;
     private string PrimaryForecastCurrency => forecast?.Currency ?? dashboard?.Currency ?? "USD";
     private decimal ForecastValue(int days) => forecast?.Windows.FirstOrDefault(x => x.Days == days)?.ExpectedRevenue ?? 0m;
-    private string RecommendationPath(SalesRecommendationResponse recommendation) => recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
+    private string RecommendationPath(SalesRecommendationResponse recommendation) => recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/prospects");
+    private IReadOnlyList<SalesDealSummaryResponse> ActionDeals => dashboard?.DealsRequiringAction ?? [];
+    private IReadOnlyList<SalesLeadSummaryResponse> OpenProspects =>
+        leads
+            .Where(x => string.Equals(x.Status, "Open", StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(x => string.Equals(x.Temperature, "Hot", StringComparison.OrdinalIgnoreCase))
+            .ThenByDescending(x => x.UpdatedUtc)
+            .Take(5)
+            .ToList();
+    private decimal StageWidth(SalesPipelineStageResponse stage)
+    {
+        var maximum = pipeline?.Stages.Max(x => x.TotalValue) ?? 0m;
+        return maximum <= 0m ? (stage.DealCount > 0 ? 12m : 0m) : Math.Max(4m, Math.Round(stage.TotalValue / maximum * 100m, 0));
+    }
+    private string CloseDateLabel(SalesDealSummaryResponse deal) =>
+        deal.ExpectedCloseUtc is DateTime closeDate
+            ? string.Format(CultureInfo.CurrentCulture, SalesText["ExpectedClose"].Value, closeDate.ToLocalTime().ToString("d", CultureInfo.CurrentCulture))
+            : SalesText["NoCloseDate"];
     private static string Money(decimal value, string currency) => string.Create(CultureInfo.CurrentCulture, $"{value:N0} {currency}");
     private static string Percent(decimal value) => string.Create(CultureInfo.CurrentCulture, $"{value:P0}");
     private static string BadgeClass(string status) => $"sales-badge sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";

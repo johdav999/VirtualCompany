@@ -25,6 +25,12 @@ public static class FinanceModuleRegistration
             .Bind(configuration.GetSection(SimulationFeatureOptions.SectionName))
             .Validate(options => !string.IsNullOrWhiteSpace(options.DisabledMessage), "SimulationFeatures:DisabledMessage is required.")
             .PostConfigure(options => options.DisabledMessage = options.DisabledMessage.Trim());
+        services.AddOptions<SupplierApprovalAutomationOptions>()
+            .Bind(configuration.GetSection(SupplierApprovalAutomationOptions.SectionName))
+            .Validate(
+                options => !string.IsNullOrWhiteSpace(options.DisabledMessage),
+                "SupplierApprovalAutomation:DisabledMessage is required.")
+            .PostConfigure(options => options.DisabledMessage = options.DisabledMessage.Trim());
         services.AddOptions<CompanySimulationProgressionWorkerOptions>()
             .Bind(configuration.GetSection(CompanySimulationProgressionWorkerOptions.SectionName))
             .PostConfigure(options =>
@@ -61,6 +67,12 @@ public static class FinanceModuleRegistration
         services.AddOptions<FortnoxOptions>()
             .Bind(configuration.GetSection(FortnoxOptions.SectionName))
             .ValidateOnStart();
+        services.AddSingleton<IFinanceIntegrationApplicationDefinition, FortnoxFinanceIntegrationApplicationDefinition>();
+        services.AddScoped<FinanceIntegrationApplicationManagementService>();
+        services.AddScoped<IFinanceIntegrationApplicationManagementService>(
+            provider => provider.GetRequiredService<FinanceIntegrationApplicationManagementService>());
+        services.AddScoped<IFinanceIntegrationRuntimeSettingsProvider>(
+            provider => provider.GetRequiredService<FinanceIntegrationApplicationManagementService>());
         services.AddHttpClient(FortnoxOAuthClient.ClientName);
         services.AddHttpClient<IFortnoxApiClient, FortnoxApiClient>((provider, client) =>
         {
@@ -84,6 +96,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<FinanceIntegrationWriteApprovalService>();
         services.AddScoped<IFinanceIntegrationWriteApprovalService>(provider => provider.GetRequiredService<FinanceIntegrationWriteApprovalService>());
         services.AddScoped<IFinanceIntegrationWriteCommandService>(provider => provider.GetRequiredService<FinanceIntegrationWriteApprovalService>());
+        services.AddScoped<FinanceBillFortnoxRegistrationCompletionService>();
         services.AddScoped<IFortnoxOutboundActionExecutor, FortnoxOutboundActionExecutor>();
         services.AddScoped<FortnoxSyncService>();
         services.AddScoped<IFortnoxSyncService>(provider => provider.GetRequiredService<FortnoxSyncService>());
@@ -234,6 +247,7 @@ public static class FinanceModuleRegistration
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
         services.AddHostedService<FinanceIntegrationStartupSyncBackgroundService>();
+        services.AddHostedService<FinanceBillFortnoxRegistrationReconciliationBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
         return services;
     }

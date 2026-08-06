@@ -20,6 +20,7 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
 {
     private const int PreviewItemsPerStage = 2;
     private const int CandidateLimitPerStage = 2000;
+    private const string SupplierPaymentProposalApprovalType = "supplier_invoice_payment_proposal";
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
@@ -103,30 +104,99 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
             .GroupBy(x => NormalizeDepartment(x.Department), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(x => x.Key, x => x.First().Id, StringComparer.OrdinalIgnoreCase);
 
+        var relevantTaskApprovalRows = await _dbContext.ApprovalRequests
+            .AsNoTracking()
+            .Where(x =>
+                x.CompanyId == query.CompanyId &&
+                x.TargetEntityType == ApprovalTargetEntityType.Task.ToStorageValue() &&
+                (x.Status == ApprovalRequestStatus.Pending ||
+                 (x.Status == ApprovalRequestStatus.Approved &&
+                  x.ApprovalType == SupplierPaymentProposalApprovalType)))
+            .OrderBy(x => x.CreatedUtc)
+            .Take(CandidateLimitPerStage)
+            .Select(x => new TaskApprovalProjection(
+                x.TargetEntityId,
+                x.Id,
+                x.Status,
+                x.ApprovalType,
+                x.DecidedUtc))
+            .ToListAsync(cancellationToken);
+        var pendingTaskApprovalRows = relevantTaskApprovalRows
+            .Where(x => x.Status == ApprovalRequestStatus.Pending)
+            .ToList();
+        var pendingApprovalByTaskId = pendingTaskApprovalRows
+            .GroupBy(x => x.TaskId)
+            .ToDictionary(x => x.Key, x => x.First().ApprovalId);
+        var pendingApprovalTaskIds = pendingApprovalByTaskId.Keys.ToArray();
+        var approvedPaymentApprovalByTaskId = relevantTaskApprovalRows
+            .Where(x =>
+                x.Status == ApprovalRequestStatus.Approved &&
+                string.Equals(x.ApprovalType, SupplierPaymentProposalApprovalType, StringComparison.OrdinalIgnoreCase) &&
+                !pendingApprovalByTaskId.ContainsKey(x.TaskId))
+            .GroupBy(x => x.TaskId)
+            .ToDictionary(x => x.Key, x => x.Last());
+        var approvedPaymentTaskIds = approvedPaymentApprovalByTaskId.Keys.ToArray();
+
         var plannedCandidates = await LoadTaskCandidatesAsync(
             query.CompanyId,
             agentIds,
             defaultAgentByDepartment,
-            x => x.Status != WorkTaskStatus.InProgress && x.Status != WorkTaskStatus.AwaitingApproval && x.Status != WorkTaskStatus.Completed,
+            x =>
+                !pendingApprovalTaskIds.Contains(x.Id) &&
+                !approvedPaymentTaskIds.Contains(x.Id) &&
+                x.Status != WorkTaskStatus.InProgress &&
+                x.Status != WorkTaskStatus.AwaitingApproval &&
+                x.Status != WorkTaskStatus.Completed,
             cancellationToken);
         var inProgressCandidates = await LoadTaskCandidatesAsync(
             query.CompanyId,
             agentIds,
             defaultAgentByDepartment,
-            x => x.Status == WorkTaskStatus.InProgress,
+            x =>
+                !pendingApprovalTaskIds.Contains(x.Id) &&
+                !approvedPaymentTaskIds.Contains(x.Id) &&
+                x.Status == WorkTaskStatus.InProgress,
             cancellationToken);
         var approvalCandidates = await LoadTaskCandidatesAsync(
             query.CompanyId,
             agentIds,
             defaultAgentByDepartment,
-            x => x.Status == WorkTaskStatus.AwaitingApproval,
+            x =>
+                !approvedPaymentTaskIds.Contains(x.Id) &&
+                (pendingApprovalTaskIds.Contains(x.Id) || x.Status == WorkTaskStatus.AwaitingApproval),
             cancellationToken);
+        approvalCandidates = approvalCandidates
+            .Select(task => task with { Status = WorkTaskStatus.AwaitingApproval })
+            .ToList();
         var completedCandidates = await LoadTaskCandidatesAsync(
             query.CompanyId,
             agentIds,
             defaultAgentByDepartment,
-            x => x.Status == WorkTaskStatus.Completed && x.CompletedUtc >= periodStartUtc && x.CompletedUtc < periodEndUtc,
+            x =>
+                !pendingApprovalTaskIds.Contains(x.Id) &&
+                (approvedPaymentTaskIds.Contains(x.Id) ||
+                 (x.Status == WorkTaskStatus.Completed &&
+                  x.CompletedUtc >= periodStartUtc &&
+                  x.CompletedUtc < periodEndUtc)),
             cancellationToken);
+        completedCandidates = completedCandidates
+            .Select(task =>
+            {
+                if (!approvedPaymentApprovalByTaskId.TryGetValue(task.Id, out var approval))
+                {
+                    return task;
+                }
+
+                var completedUtc = approval.DecidedUtc ?? task.UpdatedUtc;
+                return task with
+                {
+                    Status = WorkTaskStatus.Completed,
+                    UpdatedUtc = completedUtc,
+                    CompletedUtc = completedUtc
+                };
+            })
+            .Where(task => task.CompletedUtc >= periodStartUtc && task.CompletedUtc < periodEndUtc)
+            .ToList();
 
         await AddDepartmentWorkAsync(
             query.CompanyId,
@@ -154,24 +224,8 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
                 completedCandidates.Count(x => x.AgentId == agent.Id)))
             .ToList();
 
-        var awaitingTaskIds = approvalCandidates.Select(x => x.Id).ToArray();
-        List<TaskApprovalProjection> taskApprovalRows = awaitingTaskIds.Length == 0
-            ? []
-            : await _dbContext.ApprovalRequests
-                .AsNoTracking()
-                .Where(x =>
-                    x.CompanyId == query.CompanyId &&
-                    x.Status == ApprovalRequestStatus.Pending &&
-                    x.TargetEntityType == ApprovalTargetEntityType.Task.ToStorageValue() &&
-                    awaitingTaskIds.Contains(x.TargetEntityId))
-                .OrderBy(x => x.CreatedUtc)
-                .Select(x => new TaskApprovalProjection(x.TargetEntityId, x.Id))
-                .ToListAsync(cancellationToken);
-        var approvalByTaskId = taskApprovalRows
-            .GroupBy(x => x.TaskId)
-            .ToDictionary(x => x.Key, x => x.First().ApprovalId);
-
         var countsByAgent = counts.ToDictionary(x => x.AgentId);
+        var taskLimit = query.IncludeAllTasks ? CandidateLimitPerStage : PreviewItemsPerStage;
         var rows = agents.Select(agent =>
         {
             var agentCounts = countsByAgent.GetValueOrDefault(agent.Id) ?? new TaskCountProjection(agent.Id, 0, 0, 0, 0);
@@ -183,10 +237,10 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
                 agent.Status.ToStorageValue(),
                 agent.AvatarUrl,
                 $"/agents/{agent.Id:D}?companyId={query.CompanyId:D}",
-                MapTasks(plannedCandidates, agent.Id, query.CompanyId, approvalByTaskId),
-                MapTasks(inProgressCandidates, agent.Id, query.CompanyId, approvalByTaskId),
-                MapTasks(approvalCandidates, agent.Id, query.CompanyId, approvalByTaskId),
-                MapTasks(completedCandidates, agent.Id, query.CompanyId, approvalByTaskId),
+                MapTasks(plannedCandidates, agent.Id, query.CompanyId, pendingApprovalByTaskId, taskLimit),
+                MapTasks(inProgressCandidates, agent.Id, query.CompanyId, pendingApprovalByTaskId, taskLimit),
+                MapTasks(approvalCandidates, agent.Id, query.CompanyId, pendingApprovalByTaskId, taskLimit),
+                MapTasks(completedCandidates, agent.Id, query.CompanyId, pendingApprovalByTaskId, taskLimit),
                 new AgentStaffStageCountsDto(agentCounts.Planned, agentCounts.InProgress, agentCounts.AwaitingApproval, agentCounts.Completed));
         }).ToList();
 
@@ -555,10 +609,11 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
         IEnumerable<TaskProjection> candidates,
         Guid agentId,
         Guid companyId,
-        IReadOnlyDictionary<Guid, Guid> approvalByTaskId) =>
+        IReadOnlyDictionary<Guid, Guid> approvalByTaskId,
+        int taskLimit) =>
         candidates
             .Where(x => x.AgentId == agentId)
-            .Take(PreviewItemsPerStage)
+            .Take(taskLimit)
             .Select(task =>
             {
                 var approvalId = approvalByTaskId.GetValueOrDefault(task.Id);
@@ -743,5 +798,10 @@ public sealed class CompanyAgentStaffOverviewQueryService : IAgentStaffOverviewQ
 
     private sealed record TaskCountProjection(Guid AgentId, int Planned, int InProgress, int AwaitingApproval, int Completed);
 
-    private sealed record TaskApprovalProjection(Guid TaskId, Guid ApprovalId);
+    private sealed record TaskApprovalProjection(
+        Guid TaskId,
+        Guid ApprovalId,
+        ApprovalRequestStatus Status,
+        string ApprovalType,
+        DateTime? DecidedUtc);
 }

@@ -29,7 +29,8 @@ public sealed class SupplierInvoiceDraftActionServiceTests
         Assert.Equal(1, provider.UpdateCallCount);
         Assert.Equal("3", provider.LastRequest?.SourceBillNumber);
         Assert.Equal("1", provider.LastRequest?.SupplierNumber);
-        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.Id));
+        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x =>
+            x.InternalRecordId == bill.Id && x.CorrelationId == result.Id.ToString("N")));
     }
 
     [Fact]
@@ -112,9 +113,11 @@ public sealed class SupplierInvoiceDraftActionServiceTests
         Assert.Equal(SupplierInvoiceDraftActionStatuses.Updated, update.Status);
         Assert.Equal(SupplierInvoiceDraftActionStatuses.Booked, bookkeep.Status);
         Assert.Contains("supplierinvoices/3", apiClient.Paths);
-        Assert.Contains("supplierinvoices/3/bookkeep", apiClient.Paths);
-        Assert.Equal("INV-12", apiClient.LastPayload?["SupplierInvoice"]?["InvoiceNumber"]?.ToString());
-        Assert.Equal("1012", apiClient.LastPayload?["SupplierInvoice"]?["SupplierInvoiceRows"]?[0]?["Account"]?.ToString());
+        Assert.Contains("supplierinvoices/3/approvalbookkeep", apiClient.Paths);
+        Assert.Equal("INV-12", apiClient.UpdatePayload?["SupplierInvoice"]?["InvoiceNumber"]?.ToString());
+        Assert.Equal("1012", apiClient.UpdatePayload?["SupplierInvoice"]?["SupplierInvoiceRows"]?[0]?["Account"]?.ToString());
+        Assert.Equal("17600", apiClient.UpdatePayload?["SupplierInvoice"]?["SupplierInvoiceRows"]?[0]?["Debit"]?.ToString());
+        Assert.Equal("CC1", apiClient.UpdatePayload?["SupplierInvoice"]?["SupplierInvoiceRows"]?[0]?["CostCenter"]?.ToString());
     }
 
     private sealed class DraftActionFixture : IAsyncDisposable
@@ -282,7 +285,7 @@ public sealed class SupplierInvoiceDraftActionServiceTests
     private sealed class CapturingDraftActionFortnoxApiClient : IFortnoxApiClient
     {
         public List<string> Paths { get; } = [];
-        public JsonObject? LastPayload { get; private set; }
+        public JsonObject? UpdatePayload { get; private set; }
 
         public Task<TResponse?> PutDirectAsync<TRequest, TResponse>(
             FortnoxRequestContext context,
@@ -291,12 +294,15 @@ public sealed class SupplierInvoiceDraftActionServiceTests
             CancellationToken cancellationToken)
         {
             Paths.Add(path);
-            LastPayload = JsonNode.Parse(JsonSerializer.Serialize(payload))?.AsObject();
+            if (!path.Contains("/approvalbookkeep", StringComparison.OrdinalIgnoreCase))
+            {
+                UpdatePayload = JsonNode.Parse(JsonSerializer.Serialize(payload))?.AsObject();
+            }
             var response = new JsonObject
             {
                 ["SupplierInvoice"] = new JsonObject
                 {
-                    ["GivenNumber"] = path.Contains("/bookkeep", StringComparison.OrdinalIgnoreCase) ? "D1" : null
+                    ["GivenNumber"] = path.Contains("/approvalbookkeep", StringComparison.OrdinalIgnoreCase) ? "D1" : null
                 }
             };
             return Task.FromResult((TResponse?)(object)response);

@@ -12,6 +12,7 @@ public sealed partial class FinanceApiClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
     private const string FinanceDataSourceAll = "all";
+    private const string FinanceDataSourceOperational = "operational";
     private const string FinanceDataSourceFortnox = "fortnox";
     private const string FinanceDataSourceSimulation = "simulation";
     private readonly ICompanyApiTransport _transport;
@@ -191,16 +192,17 @@ public sealed partial class FinanceApiClient
     {
         if (string.IsNullOrWhiteSpace(value))
         {
-            return null;
+            return FinanceDataSourceOperational;
         }
 
         var normalized = value.Trim().ToLowerInvariant();
         return normalized switch
         {
-            FinanceDataSourceAll => null,
+            FinanceDataSourceAll => FinanceDataSourceAll,
+            FinanceDataSourceOperational => FinanceDataSourceOperational,
             FinanceDataSourceFortnox => FinanceDataSourceFortnox,
             FinanceDataSourceSimulation => FinanceDataSourceSimulation,
-            _ => null
+            _ => FinanceDataSourceOperational
         };
     }
 

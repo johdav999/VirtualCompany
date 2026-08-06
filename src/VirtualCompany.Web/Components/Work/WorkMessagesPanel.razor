@@ -1,0 +1,196 @@
+@inject SalesAutomationApiClient AutomationClient
+@inject IStringLocalizer<UiConsolidationResources> UiText
+
+<div class="vc-work-layout">
+    <section class="vc-panel vc-work-list" aria-label="@UiText["Messages"]">
+        @if (isLoading)
+        {
+            <p class="text-body-secondary mb-0">@UiText["LoadingMessages"]</p>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <div class="alert alert-danger mb-0">@errorMessage</div>
+        }
+        else if (items.Count == 0)
+        {
+            <div class="vc-empty-state">
+                <h2>@UiText["NoMessagesForReview"]</h2>
+                <p>@UiText["NoMessagesForReviewDescription"]</p>
+            </div>
+        }
+        else
+        {
+            <div class="vc-list" role="list">
+                @foreach (var item in items)
+                {
+                    <button type="button" class="@ItemClass(item.Id)" @onclick="() => SelectAsync(item.Id)">
+                        <div>
+                            <strong>@item.ContactName</strong>
+                            <span>@item.Reason</span>
+                        </div>
+                        <div class="vc-list-meta">
+                            <span>@item.RequestedUtc.ToLocalTime().ToString("g")</span>
+                            <span class="vc-status">@Display(item.Status)</span>
+                        </div>
+                    </button>
+                }
+            </div>
+        }
+    </section>
+
+    <aside class="vc-panel vc-work-detail" aria-label="@UiText["MessageDetails"]">
+        @if (!string.IsNullOrWhiteSpace(actionMessage))
+        {
+            <div class="alert alert-success">@actionMessage</div>
+        }
+        @if (selected is null)
+        {
+            <div class="vc-empty-state">
+                <h2>@UiText["SelectMessage"]</h2>
+                <p>@UiText["SelectMessageDescription"]</p>
+            </div>
+        }
+        else
+        {
+            <span class="vc-kicker">@Display(selected.Status)</span>
+            <h2>@selected.ContactName</h2>
+            <p>@selected.ContactEmail</p>
+            <div class="alert alert-info"><strong>@UiText["WhyReviewNeeded"]</strong> @selected.Reason</div>
+            <label class="form-label" for="work-message-subject">@UiText["Subject"]</label>
+            <input id="work-message-subject" class="form-control" @bind="subject" />
+            <label class="form-label mt-3" for="work-message-body">@UiText["Message"]</label>
+            <textarea id="work-message-body" class="form-control" rows="10" @bind="body"></textarea>
+            <label class="form-label mt-3" for="work-message-comment">@UiText["DecisionNote"]</label>
+            <textarea id="work-message-comment" class="form-control" rows="3" @bind="comment"></textarea>
+            <div class="dashboard-actions mt-3">
+                <button class="btn btn-primary" type="button" disabled="@isActing" @onclick="EditAndApproveAsync">@UiText["EditAndApprove"]</button>
+                <button class="btn btn-outline-primary" type="button" disabled="@isActing" @onclick="ApproveAsync">@UiText["ApproveOriginal"]</button>
+                <button class="btn btn-outline-danger" type="button" disabled="@isActing" @onclick="RejectAsync">@UiText["Reject"]</button>
+            </div>
+        }
+    </aside>
+</div>
+
+@code {
+    [Parameter] public Guid? SelectedId { get; set; }
+    [Parameter] public EventCallback<Guid> SelectedIdChanged { get; set; }
+
+    private IReadOnlyList<OutboundReviewQueueItemViewModel> items = [];
+    private OutboundReviewQueueDetailViewModel? selected;
+    private bool isLoading = true;
+    private bool isActing;
+    private string? subject;
+    private string? body;
+    private string? comment;
+    private string? actionMessage;
+    private string? errorMessage;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await RefreshAsync();
+        if (SelectedId is Guid selectedId)
+        {
+            await SelectAsync(selectedId, false);
+        }
+    }
+
+    private async Task RefreshAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            items = await AutomationClient.ListReviewQueueAsync();
+            if (selected is not null && items.All(item => item.Id != selected.Id))
+            {
+                selected = null;
+            }
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+            items = [];
+            selected = null;
+        }
+        finally
+        {
+            isLoading = false;
+        }
+    }
+
+    private Task SelectAsync(Guid id) => SelectAsync(id, true);
+
+    private async Task SelectAsync(Guid id, bool updateUrl)
+    {
+        selected = await AutomationClient.GetReviewAsync(id);
+        subject = selected?.EditedSubject ?? selected?.Subject;
+        body = selected?.EditedBody ?? selected?.Body;
+        comment = selected?.DecisionComment;
+        actionMessage = null;
+        if (updateUrl)
+        {
+            await SelectedIdChanged.InvokeAsync(id);
+        }
+    }
+
+    private Task ApproveAsync() => ActAsync(async () =>
+    {
+        if (selected is not null)
+        {
+            await AutomationClient.ApproveAsync(selected.Id, comment);
+            actionMessage = UiText["MessageApproved"];
+        }
+    });
+
+    private Task RejectAsync() => ActAsync(async () =>
+    {
+        if (selected is not null)
+        {
+            await AutomationClient.RejectAsync(selected.Id, comment);
+            actionMessage = UiText["MessageRejected"];
+        }
+    });
+
+    private Task EditAndApproveAsync() => ActAsync(async () =>
+    {
+        if (selected is not null)
+        {
+            await AutomationClient.EditAndApproveAsync(selected.Id, new OutboundEditAndApproveRequest(subject ?? string.Empty, body ?? string.Empty, comment));
+            actionMessage = UiText["EditedMessageApproved"];
+        }
+    });
+
+    private async Task ActAsync(Func<Task> action)
+    {
+        isActing = true;
+        errorMessage = null;
+        try
+        {
+            await action();
+            await RefreshAsync();
+        }
+        catch (Exception ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isActing = false;
+        }
+    }
+
+    private string ItemClass(Guid id) => selected?.Id == id ? "vc-list-item selected" : "vc-list-item";
+    private string Display(string value)
+    {
+        var key = value.Trim().ToLowerInvariant() switch
+        {
+            "pending" => "StatusPendingReview",
+            "approved" => "StatusApproved",
+            "rejected" => "StatusRejected",
+            "edited_and_approved" => "StatusEditedAndApproved",
+            _ => string.Empty
+        };
+
+        return string.IsNullOrEmpty(key) ? value : UiText[key];
+    }
+}

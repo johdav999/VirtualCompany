@@ -72,6 +72,8 @@
 
                             @if (!string.IsNullOrWhiteSpace(Detail.SourcePreview?.BodyText))
                             {
+                                var invoicePresentation = BuildSourceInvoicePresentation(Detail.SourcePreview.BodyText);
+
                                 <div class="bill-review-email-meta" aria-label="@FinanceText["EmailDetails"]">
                                     <div>
                                         <span>@FinanceText["Source"]</span>
@@ -104,7 +106,83 @@
                                     }
                                 </div>
 
-                                <pre class="bill-review-email-preview">@Detail.SourcePreview.BodyText</pre>
+                                @if (invoicePresentation.HasStructuredContent)
+                                {
+                                    <section class="bill-review-document" aria-label="Structured supplier invoice">
+                                        <header class="bill-review-document__header">
+                                            <div class="bill-review-document__icon" aria-hidden="true">&#64;</div>
+                                            <div>
+                                                <span>Supplier invoice</span>
+                                                <h3>@invoicePresentation.InvoiceNumber</h3>
+                                            </div>
+                                            @if (!string.IsNullOrWhiteSpace(invoicePresentation.TotalAmount))
+                                            {
+                                                <div class="bill-review-document__headline-total">
+                                                    <span>Total amount</span>
+                                                    <strong>@invoicePresentation.TotalAmount</strong>
+                                                </div>
+                                            }
+                                        </header>
+
+                                        <div class="bill-review-document__columns">
+                                            <section class="bill-review-document__section">
+                                                <h4>Supplier</h4>
+                                                <dl class="bill-review-document__fields">
+                                                    @foreach (var field in invoicePresentation.SupplierFields)
+                                                    {
+                                                        <div><dt>@field.Label</dt><dd>@field.Value</dd></div>
+                                                    }
+                                                </dl>
+                                            </section>
+                                            <section class="bill-review-document__section">
+                                                <h4>Invoice details</h4>
+                                                <dl class="bill-review-document__fields">
+                                                    @foreach (var field in invoicePresentation.InvoiceFields)
+                                                    {
+                                                        <div><dt>@field.Label</dt><dd>@field.Value</dd></div>
+                                                    }
+                                                </dl>
+                                            </section>
+                                        </div>
+
+                                        @if (invoicePresentation.ServiceFields.Count > 0)
+                                        {
+                                            <section class="bill-review-document__section bill-review-document__service">
+                                                <h4>Services and amounts</h4>
+                                                <dl class="bill-review-document__fields">
+                                                    @foreach (var field in invoicePresentation.ServiceFields)
+                                                    {
+                                                        <div class="@(field.IsTotal ? "bill-review-document__total" : null)">
+                                                            <dt>@field.Label</dt><dd>@field.Value</dd>
+                                                        </div>
+                                                    }
+                                                </dl>
+                                            </section>
+                                        }
+
+                                        @if (invoicePresentation.PaymentFields.Count > 0)
+                                        {
+                                            <section class="bill-review-document__section bill-review-document__payment">
+                                                <h4>Payment details</h4>
+                                                <dl class="bill-review-document__fields">
+                                                    @foreach (var field in invoicePresentation.PaymentFields)
+                                                    {
+                                                        <div><dt>@field.Label</dt><dd>@field.Value</dd></div>
+                                                    }
+                                                </dl>
+                                            </section>
+                                        }
+                                    </section>
+
+                                    <details class="bill-review-raw-source">
+                                        <summary>View raw email text</summary>
+                                        <pre class="bill-review-email-preview">@Detail.SourcePreview.BodyText</pre>
+                                    </details>
+                                }
+                                else
+                                {
+                                    <pre class="bill-review-email-preview">@Detail.SourcePreview.BodyText</pre>
+                                }
                             }
                             else
                             {
@@ -181,6 +259,139 @@
                             </div>
                         </article>
 
+                        @if (ApprovalAutomation is { Stages.Count: > 0 })
+                        {
+                            <article class="bill-review-card bill-review-trust-card" aria-labelledby="supplier-trust-heading">
+                                <div>
+                                    <h2 id="supplier-trust-heading">Trusted supplier approvals</h2>
+                                    <p>Choose which stages the Finance Manager may approve automatically for @ApprovalAutomation.SupplierName.</p>
+                                </div>
+
+                                @if (!string.IsNullOrWhiteSpace(ApprovalAutomationMessage))
+                                {
+                                    <div class="alert alert-info mb-0">@ApprovalAutomationMessage</div>
+                                }
+
+                                <div class="bill-review-trust-stages">
+                                    @foreach (var stage in ApprovalAutomation.Stages)
+                                    {
+                                        <div class="bill-review-trust-stage">
+                                            <div>
+                                                <strong>@System.Globalization.CultureInfo.InvariantCulture.TextInfo.ToTitleCase(stage.StepName)</strong>
+                                                @if (stage.IsEnabled)
+                                                {
+                                                    <span>@stage.AgentDisplayName may approve this stage automatically for this supplier.</span>
+                                                }
+                                                else
+                                                {
+                                                    <span>This stage still requires a person to approve it.</span>
+                                                }
+                                            </div>
+
+                                            @if (stage.CanConfigure)
+                                            {
+                                                <button class="@(stage.IsEnabled ? "btn btn-outline-secondary" : "btn btn-outline-primary")"
+                                                        disabled="@IsUpdatingApprovalAutomation"
+                                                        @onclick="() => ToggleApprovalAutomationAsync(stage)">
+                                                    @(stage.IsEnabled
+                                                        ? $"Stop allowing {stage.AgentDisplayName}"
+                                                        : $"Always allow {stage.AgentDisplayName} to approve this supplier — {stage.StepName}")
+                                                </button>
+                                            }
+                                            else if (!string.IsNullOrWhiteSpace(stage.BlockedReason))
+                                            {
+                                                <span class="bill-review-trust-blocked">@stage.BlockedReason</span>
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                            </article>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(ApprovalAutomationMessage))
+                        {
+                            <article class="bill-review-card">
+                                <h2>Trusted supplier approvals</h2>
+                                <div class="alert alert-warning mb-0">@ApprovalAutomationMessage</div>
+                            </article>
+                        }
+
+                        @if (Detail.FortnoxRegistration?.ApprovalId is not null)
+                        {
+                            <article class="bill-review-card bill-review-approval-card" aria-labelledby="embedded-approval-heading" aria-busy="@IsApprovalLoading">
+                                <div class="bill-review-card__split-header">
+                                    <div>
+                                        <h2 id="embedded-approval-heading">@FinanceText["Approval"]</h2>
+                                        <p>@(IsSupplierCreationStep ? FinanceText["SupplierApprovalHelp"] : FinanceText["SendingApprovalHelp"])</p>
+                                    </div>
+                                    @if (EmbeddedApproval is not null)
+                                    {
+                                        <span class="@BuildApprovalStatusClass(EmbeddedApproval.Status)">@EmbeddedApproval.DisplayStatus</span>
+                                    }
+                                </div>
+
+                                @if (IsApprovalLoading)
+                                {
+                                    <div class="bill-review-approval-loading" role="status">
+                                        <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                                        <span>@FinanceText["LoadingApproval"]</span>
+                                    </div>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(ApprovalErrorMessage))
+                                {
+                                    <div class="alert alert-danger mb-0">@ApprovalErrorMessage</div>
+                                    <button class="btn btn-outline-secondary mt-3" @onclick="ReloadAsync">@FinanceText["TryAgain"]</button>
+                                }
+                                else if (EmbeddedApproval is not null)
+                                {
+                                    <div class="bill-review-approval-context">
+                                        <div>
+                                            <span>@FinanceText["Reason"]</span>
+                                            <strong>@EmbeddedApproval.DisplayReason</strong>
+                                        </div>
+                                        @if (!string.IsNullOrWhiteSpace(EmbeddedApproval.RequiredRole))
+                                        {
+                                            <div>
+                                                <span>@FinanceText["Approver"]</span>
+                                                <strong>@EmbeddedApproval.RequiredRole</strong>
+                                            </div>
+                                        }
+                                    </div>
+
+                                    @if (!string.IsNullOrWhiteSpace(ApprovalStatusMessage))
+                                    {
+                                        <div class="alert alert-info mb-0">@ApprovalStatusMessage</div>
+                                    }
+
+                                    @if (HasPendingEmbeddedApproval)
+                                    {
+                                        <label class="form-label" for="embedded-approval-comment">@FinanceText["Comment"]</label>
+                                        <textarea id="embedded-approval-comment"
+                                                  class="form-control"
+                                                  rows="3"
+                                                  @bind="ApprovalComment"
+                                                  disabled="@IsSubmittingApprovalDecision"
+                                                  placeholder="@FinanceText["ApprovalCommentPlaceholder"]"></textarea>
+                                        <div class="bill-review-action-stack">
+                                            <button class="btn btn-primary"
+                                                    disabled="@IsSubmittingApprovalDecision"
+                                                    @onclick='() => DecideEmbeddedApprovalAsync("approve")'>
+                                                @FinanceText["Approve"]
+                                            </button>
+                                            <button class="btn btn-outline-danger"
+                                                    disabled="@IsSubmittingApprovalDecision"
+                                                    @onclick='() => DecideEmbeddedApprovalAsync("reject")'>
+                                                @FinanceText["Reject"]
+                                            </button>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <p class="bill-review-approval-complete">@FinanceText["ApprovalDecisionComplete"]</p>
+                                    }
+                                }
+                            </article>
+                        }
+
                         @if (Detail.FortnoxRegistration is not null)
                         {
                             <article class="bill-review-card bill-review-fortnox-card">
@@ -191,11 +402,6 @@
                                     </div>
                                     <span class="@BuildFortnoxStatusClass(Detail.FortnoxRegistration.Status)">@Detail.FortnoxRegistration.Status</span>
                                 </div>
-
-                                @if (Detail.FortnoxRegistration.ApprovalId is Guid approvalId)
-                                {
-                                    <a class="bill-review-inline-link" href="@BuildApprovalHref(approvalId)">@(IsSupplierCreationStep ? FinanceText["OpenSupplierApproval"] : FinanceText["OpenSendingApproval"])</a>
-                                }
 
                                 @if (!string.IsNullOrWhiteSpace(FortnoxRegistrationStatusMessage))
                                 {

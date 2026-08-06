@@ -1,0 +1,363 @@
+@page "/marketing"
+@rendermode InteractiveServer
+@using System.Globalization
+@using VirtualCompany.Web.Components.Marketing
+@inject MarketingApiClient MarketingApi
+@inject OnboardingApiClient OnboardingApi
+@inject AgentApiClient AgentApi
+@inject NavigationManager Navigation
+
+<PageTitle>Marketing</PageTitle>
+
+<main class="vc-page marketing-page">
+    <header class="vc-page-header marketing-header">
+        <div>
+            <span class="vc-kicker">MARKETING</span>
+            <h1>Marketing workspace</h1>
+            <p>Plan measurable growth, coordinate campaigns and content, and hand qualified demand to Sales.</p>
+        </div>
+        <div class="marketing-header__actions">
+            <button class="btn btn-outline-primary" disabled="@isLoading" @onclick="LoadAsync">Refresh</button>
+            <button class="btn btn-primary" disabled="@(isLoading || marketingAgentId is null)" @onclick="RunAnalysisAsync">Ask Maya for priorities</button>
+        </div>
+    </header>
+
+    <nav class="vc-section-tabs marketing-tabs" aria-label="Marketing sections">
+        @foreach (var tab in tabs)
+        {
+            <button type="button" class="@(activeTab == tab ? "active" : null)" @onclick="() => activeTab = tab">@tab</button>
+        }
+    </nav>
+
+    @if (isLoading)
+    {
+        <section class="vc-panel marketing-state" aria-live="polite">Loading current marketing data...</section>
+    }
+    else if (!string.IsNullOrWhiteSpace(errorMessage))
+    {
+        <section class="vc-panel marketing-state marketing-state--error" role="alert">
+            <h2>Marketing is unavailable</h2>
+            <p>@errorMessage</p>
+            <button class="btn btn-primary" @onclick="LoadAsync">Try again</button>
+        </section>
+    }
+    else if (dashboard is not null)
+    {
+        @if (activeTab == "Overview")
+        {
+            <section class="marketing-kpis" aria-label="Marketing performance">
+                @foreach (var metric in dashboard.Metrics.Take(4))
+                {
+                    <article class="vc-panel">
+                        <span>@FriendlyMetric(metric.Name)</span>
+                        <strong>@MetricValue(metric)</strong>
+                        <small>@metric.Explanation</small>
+                    </article>
+                }
+            </section>
+
+            <div class="marketing-overview-grid">
+                <div class="marketing-main-column">
+                    <section class="vc-panel marketing-section">
+                        <div class="marketing-section__header">
+                            <div><span class="vc-kicker">DIRECTION</span><h2>Objectives and plans</h2></div>
+                            <button class="btn btn-sm btn-outline-primary" @onclick="ShowObjectives">Manage</button>
+                        </div>
+                        @if (dashboard.Objectives.Count == 0)
+                        {
+                            <MarketingEmpty Title="No marketing objectives yet" Message="Create a measurable objective before campaigns and content are prioritized." ActionText="Create objective" OnAction="ShowObjectives" />
+                        }
+                        else
+                        {
+                            <div class="marketing-list">
+                                @foreach (var objective in dashboard.Objectives.Take(4))
+                                {
+                                    <article><div><strong>@objective.Name</strong><span>@objective.ObjectiveType / @objective.Status</span></div><strong>@objective.TargetValue.ToString("0.##") @objective.Unit</strong></article>
+                                }
+                            </div>
+                        }
+                    </section>
+
+                    <section class="vc-panel marketing-section">
+                        <div class="marketing-section__header">
+                            <div><span class="vc-kicker">DELIVERY</span><h2>Campaign and content calendar</h2></div>
+                            <a class="btn btn-sm btn-outline-primary" href="@WithCompany("/app/sales/campaigns")">Open campaigns</a>
+                        </div>
+                        @if (dashboard.Calendar.Count == 0)
+                        {
+                            <MarketingEmpty Title="No scheduled marketing work" Message="Campaign activities and plan dates will appear here when they are scheduled." />
+                        }
+                        else
+                        {
+                            <div class="marketing-calendar">
+                                @foreach (var item in dashboard.Calendar.OrderBy(x => x.StartsUtc).Take(8))
+                                {
+                                    <article><time>@item.StartsUtc.ToLocalTime().ToString("dd MMM")</time><div><strong>@item.Name</strong><span>@item.Kind · @item.Status</span></div></article>
+                                }
+                            </div>
+                        }
+                    </section>
+                </div>
+
+                <aside class="vc-panel marketing-section marketing-attention">
+                    <span class="vc-kicker">MAYA'S REVIEW</span>
+                    <h2>Priorities and evidence</h2>
+                    @if (analysis is null)
+                    {
+                        <p>Run a grounded review to rank current work using objectives, campaigns, observations, and approved company knowledge.</p>
+                    }
+                    else
+                    {
+                        <div class="marketing-analysis-status">Confidence @analysis.Confidence.ToString("P0") · @(analysis.RequiresReview ? "Human review needed" : "Ready to review")</div>
+                        <p>@analysis.Summary</p>
+                        @foreach (var priority in analysis.Priorities.Take(5))
+                        {
+                            <article class="marketing-priority"><strong>@priority.Title</strong><span>Priority score @priority.Score · @priority.Band</span></article>
+                        }
+                        @if (analysis.MissingEvidence.Count > 0)
+                        {
+                            <div class="marketing-evidence"><strong>Missing information</strong><span>@string.Join(", ", analysis.MissingEvidence)</span></div>
+                        }
+                    }
+                </aside>
+            </div>
+        }
+        else if (activeTab == "Objectives")
+        {
+            <section class="marketing-two-column">
+                <div class="vc-panel marketing-section">
+                    <div class="marketing-section__header"><div><span class="vc-kicker">OUTCOMES</span><h2>Marketing objectives</h2></div></div>
+                    @if (dashboard.Objectives.Count == 0) { <MarketingEmpty Title="No objectives" Message="Objectives connect marketing work to an explicit target and period." /> }
+                    <div class="marketing-list">
+                        @foreach (var item in dashboard.Objectives)
+                        {
+                            <article>
+                                <div><strong>@item.Name</strong><span>@item.PeriodStartUtc.ToString("d") - @item.PeriodEndUtc.ToString("d") / @item.Status</span></div>
+                                <div class="marketing-inline-actions">
+                                    <strong>@item.TargetValue.ToString("0.##") @item.Unit</strong>
+                                    @if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateObjectiveAsync(item.Id)">Activate</button>
+                                    }
+                                </div>
+                            </article>
+                        }
+                    </div>
+                </div>
+                <EditForm Model="objectiveForm" OnValidSubmit="CreateObjectiveAsync" class="vc-panel marketing-form">
+                    <h2>Create objective</h2>
+                    <label>Name<InputText @bind-Value="objectiveForm.Name" /></label>
+                    <label>Measure<InputText @bind-Value="objectiveForm.ObjectiveType" /></label>
+                    <div class="marketing-form__row"><label>Target<InputNumber @bind-Value="objectiveForm.TargetValue" /></label><label>Unit<InputText @bind-Value="objectiveForm.Unit" /></label></div>
+                    <button class="btn btn-primary" disabled="@isSaving">Create objective</button>
+                </EditForm>
+            </section>
+        }
+        else if (activeTab == "Plans")
+        {
+            <section class="marketing-two-column">
+                <div class="vc-panel marketing-section">
+                    <h2>Marketing plans</h2>
+                    @if (dashboard.Plans.Count == 0) { <MarketingEmpty Title="No active plans" Message="Create a bounded plan with a period, summary, and optional budget." /> }
+                    <div class="marketing-list">@foreach (var item in dashboard.Plans) { <article><div><strong>@item.Name</strong><span>@item.Summary / @item.Status</span></div><div class="marketing-inline-actions"><strong>@(item.PlannedBudget?.ToString("N0") ?? "No budget") @item.BudgetCurrency</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivatePlanAsync(item.Id)">Activate</button> }</div></article> }</div>
+                </div>
+                <EditForm Model="planForm" OnValidSubmit="CreatePlanAsync" class="vc-panel marketing-form">
+                    <h2>Create plan</h2>
+                    <label>Name<InputText @bind-Value="planForm.Name" /></label>
+                    <label>Summary<InputTextArea @bind-Value="planForm.Summary" /></label>
+                    <div class="marketing-form__row"><label>Budget<InputNumber @bind-Value="planForm.Budget" /></label><label>Currency<InputText @bind-Value="planForm.Currency" /></label></div>
+                    <button class="btn btn-primary" disabled="@isSaving">Create plan</button>
+                </EditForm>
+            </section>
+        }
+        else if (activeTab == "Calendar")
+        {
+            <section class="vc-panel marketing-section">
+                <div class="marketing-section__header"><div><span class="vc-kicker">SCHEDULE</span><h2>Marketing calendar</h2></div><a href="@WithCompany("/app/sales/campaigns")">Manage campaigns</a></div>
+                @if (dashboard.Calendar.Count == 0) { <MarketingEmpty Title="Calendar is empty" Message="Dated plans, campaigns, and campaign activities are combined here." /> }
+                <div class="marketing-calendar marketing-calendar--wide">@foreach (var item in dashboard.Calendar.OrderBy(x => x.StartsUtc)) { <article><time>@item.StartsUtc.ToLocalTime().ToString("dd MMM yyyy")</time><div><strong>@item.Name</strong><span>@item.Kind · @item.Status · ends @item.EndsUtc.ToLocalTime().ToString("dd MMM")</span></div></article> }</div>
+            </section>
+        }
+        else if (activeTab == "Content")
+        {
+            <section class="marketing-two-column">
+                <div class="vc-panel marketing-section">
+                    <h2>Content workflow</h2>
+                    @if (dashboard.Content.Count == 0) { <MarketingEmpty Title="No content briefs" Message="Briefs keep audience, claims, tone, channel, sources, and approval state together." /> }
+                    <div class="marketing-content-list">
+                        @foreach (var item in dashboard.Content)
+                        {
+                            <article><div><strong>@item.Title</strong><span>@item.Channel / @item.Audience / @item.Status</span><p>@item.Purpose</p></div>
+                            @if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <div class="marketing-inline-actions"><button class="btn btn-sm btn-outline-primary" @onclick="() => PreflightContentAsync(item.Id)">Check readiness</button><button class="btn btn-sm btn-primary" @onclick="() => SubmitContentAsync(item.Id)">Submit for review</button></div> }
+                            else if (item.Status.Equals("submitted", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => ReviewContentAsync(item.Id, true)">Approve</button><button class="btn btn-sm btn-outline-danger" @onclick="() => ReviewContentAsync(item.Id, false)">Reject</button></div> }</article>
+                        }
+                    </div>
+                </div>
+                <EditForm Model="contentForm" OnValidSubmit="CreateContentAsync" class="vc-panel marketing-form">
+                    <h2>Create content brief</h2>
+                    <label>Title<InputText @bind-Value="contentForm.Title" /></label>
+                    <label>Purpose<InputTextArea @bind-Value="contentForm.Purpose" /></label>
+                    <label>Audience<InputText @bind-Value="contentForm.Audience" /></label>
+                    <div class="marketing-form__row"><label>Channel<InputText @bind-Value="contentForm.Channel" /></label><label>Language<InputText @bind-Value="contentForm.Language" /></label></div>
+                    <label>Call to action<InputText @bind-Value="contentForm.CallToAction" /></label>
+                    <button class="btn btn-primary" disabled="@isSaving">Create brief</button>
+                </EditForm>
+            </section>
+            @if (contentPreflight is not null)
+            {
+                <section class="vc-panel marketing-section" aria-live="polite">
+                    <span class="vc-kicker">CONTENT CHECK</span>
+                    <h2>@(contentPreflight.ReadyForReview ? "Ready for review" : "Resolve before submission")</h2>
+                    @if (contentPreflight.Issues.Count == 0) { <p>No blocking content or evidence issues were found.</p> }
+                    <div class="marketing-list">@foreach (var issue in contentPreflight.Issues) { <article><div><strong>@issue.Explanation</strong><span>@issue.Severity</span></div></article> }</div>
+                </section>
+            }
+        }
+        else if (activeTab == "Audiences")
+        {
+            <section class="marketing-two-column">
+                <div class="vc-panel marketing-section">
+                    <div class="marketing-section__header"><div><span class="vc-kicker">QUALIFIED DEMAND</span><h2>Audience qualification</h2></div></div>
+                    @if (dashboard.QualificationDefinitions.Count == 0) { <MarketingEmpty Title="No qualification definition" Message="Define measurable B2B or B2C criteria before demand is handed to Sales." /> }
+                    <div class="marketing-list">
+                        @foreach (var item in dashboard.QualificationDefinitions)
+                        {
+                            <article><div><strong>@item.Name</strong><span>@item.AudienceType / @item.Channel / @item.Status</span></div><div class="marketing-inline-actions"><strong>Score @item.MinimumScore.ToString("0")+</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateQualificationAsync(item.Id)">Activate</button> }</div></article>
+                        }
+                    </div>
+                    @if (dashboard.QualificationEvaluations.Count > 0)
+                    {
+                        <h3>Recent evaluations</h3>
+                        <div class="marketing-list">@foreach (var item in dashboard.QualificationEvaluations.Take(10)) { <article><div><strong>@item.Status</strong><span>Contact @item.ContactId / @item.ObservedUtc.ToLocalTime().ToString("g")</span></div><strong>@item.Score.ToString("0")</strong></article> }</div>
+                    }
+                </div>
+                <EditForm Model="qualificationForm" OnValidSubmit="CreateQualificationAsync" class="vc-panel marketing-form">
+                    <h2>Create qualification definition</h2>
+                    <label>Name<InputText @bind-Value="qualificationForm.Name" /></label>
+                    <div class="marketing-form__row"><label>Audience type<InputSelect @bind-Value="qualificationForm.AudienceType"><option value="b2b">B2B</option><option value="b2c">B2C</option></InputSelect></label><label>Channel<InputText @bind-Value="qualificationForm.Channel" /></label></div>
+                    <div class="marketing-form__row"><label>Minimum score<InputNumber @bind-Value="qualificationForm.MinimumScore" /></label><label>Freshness in days<InputNumber @bind-Value="qualificationForm.FreshnessDays" /></label></div>
+                    <label><InputCheckbox @bind-Value="qualificationForm.RequiresCustomerCompany" /> Require a linked company</label>
+                    <button class="btn btn-primary" disabled="@isSaving">Create definition</button>
+                </EditForm>
+            </section>
+        }
+        else if (activeTab == "Handoffs")
+        {
+            <section class="vc-panel marketing-section">
+                <div class="marketing-section__header"><div><span class="vc-kicker">MARKETING TO SALES</span><h2>Qualified demand handoffs</h2></div><a href="@WithCompany("/app/sales/prospects")">Open Sales prospects</a></div>
+                @if (dashboard.Handoffs.Count == 0) { <MarketingEmpty Title="No handoffs" Message="Qualified engagement can be transferred to Sales with evidence, urgency, ownership, and an expiry." /> }
+                <div class="marketing-content-list">@foreach (var item in dashboard.Handoffs) { <article><div><strong>@item.Reason</strong><span>@item.Urgency / @item.Status / expires @item.ExpiresUtc.ToLocalTime().ToString("d")</span><p>@item.SuggestedAction</p></div>@if (item.Status.Equals("proposed", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => DecideHandoffAsync(item.Id, true)">Accept</button><button class="btn btn-sm btn-outline-danger" @onclick="() => DecideHandoffAsync(item.Id, false)">Decline</button></div> }</article> }</div>
+            </section>
+        }
+        else if (activeTab == "Experiments")
+        {
+            <section class="marketing-two-column">
+                <div class="vc-panel marketing-section">
+                    <h2>Experiments</h2>
+                    @if (dashboard.Experiments.Count == 0) { <MarketingEmpty Title="No experiments" Message="Define a hypothesis, primary metric, guardrail, sample size, and decision window." /> }
+                    <div class="marketing-list">@foreach (var item in dashboard.Experiments) { <article><div><strong>@item.Name</strong><span>@item.Hypothesis / @item.Status</span></div><div class="marketing-inline-actions"><strong>@item.PrimaryMetric</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivateExperimentAsync(item.Id)">Start</button> } else if (item.Status.Equals("active", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => CompleteExperimentAsync(item.Id)">Complete</button> }</div></article> }</div>
+                </div>
+                <EditForm Model="experimentForm" OnValidSubmit="CreateExperimentAsync" class="vc-panel marketing-form">
+                    <h2>Create experiment</h2>
+                    <label>Name<InputText @bind-Value="experimentForm.Name" /></label>
+                    <label>Hypothesis<InputTextArea @bind-Value="experimentForm.Hypothesis" /></label>
+                    <label>Primary metric<InputText @bind-Value="experimentForm.PrimaryMetric" /></label>
+                    <label>Guardrail metric<InputText @bind-Value="experimentForm.GuardrailMetric" /></label>
+                    <label>Minimum sample<InputNumber @bind-Value="experimentForm.MinimumSampleSize" /></label>
+                    <button class="btn btn-primary" disabled="@isSaving">Create experiment</button>
+                </EditForm>
+            </section>
+        }
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    private readonly string[] tabs = ["Overview", "Objectives", "Plans", "Calendar", "Content", "Audiences", "Handoffs", "Experiments"];
+    private string activeTab = "Overview";
+    private bool isLoading = true;
+    private bool isSaving;
+    private string? errorMessage;
+    private Guid? resolvedCompanyId;
+    private Guid? marketingAgentId;
+    private MarketingDashboardViewModel? dashboard;
+    private RoleAgentAnalysisViewModel? analysis;
+    private MarketingContentPreflightViewModel? contentPreflight;
+    private readonly ObjectiveForm objectiveForm = new();
+    private readonly PlanForm planForm = new();
+    private readonly ContentForm contentForm = new();
+    private readonly ExperimentForm experimentForm = new();
+    private readonly QualificationForm qualificationForm = new();
+
+    protected override Task OnInitializedAsync() => LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true; errorMessage = null;
+        try
+        {
+            var context = await OnboardingApi.GetCurrentUserContextAsync();
+            resolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
+            if (resolvedCompanyId is not Guid companyId) throw new MarketingApiException("Choose a company before opening Marketing.");
+            if (CompanyId is null) Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("companyId", companyId), true);
+            var to = DateTime.UtcNow.AddDays(1);
+            dashboard = await MarketingApi.GetDashboardAsync(companyId, to.AddDays(-30), to);
+            var roster = await AgentApi.GetRosterAsync(companyId);
+            marketingAgentId = roster.FirstOrDefault(x => x.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase) && !x.Status.Equals("archived", StringComparison.OrdinalIgnoreCase))?.Id;
+        }
+        catch (Exception ex) when (ex is MarketingApiException or OnboardingApiException) { errorMessage = ex.Message; }
+        finally { isLoading = false; }
+    }
+
+    private async Task ExecuteAndReloadAsync(Func<Guid, Task> action)
+    {
+        if (resolvedCompanyId is not Guid companyId) return;
+        isSaving = true; errorMessage = null;
+        try { await action(companyId); await LoadAsync(); }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+
+    private Task CreateObjectiveAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateObjectiveAsync(id,
+        new(objectiveForm.Name, objectiveForm.ObjectiveType, objectiveForm.TargetValue, objectiveForm.Unit, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddMonths(3))));
+    private Task CreatePlanAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreatePlanAsync(id,
+        new(planForm.Name, planForm.Summary, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddMonths(3), planForm.Budget, planForm.Currency)));
+    private Task CreateContentAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateContentAsync(id,
+        new(null, null, contentForm.Title, contentForm.Purpose, contentForm.Audience, contentForm.Channel, contentForm.Language, "Clear and helpful", contentForm.CallToAction, DateTime.UtcNow.AddDays(7))));
+    private Task CreateExperimentAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateExperimentAsync(id,
+        new(null, experimentForm.Name, experimentForm.Hypothesis, experimentForm.PrimaryMetric, experimentForm.GuardrailMetric, experimentForm.MinimumSampleSize, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddDays(30))));
+    private Task CreateQualificationAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateQualificationDefinitionAsync(id,
+        new(qualificationForm.Name, qualificationForm.AudienceType, qualificationForm.Channel, qualificationForm.MinimumScore,
+            qualificationForm.FreshnessDays, qualificationForm.RequiresCustomerCompany, DateTime.UtcNow)));
+    private Task ActivateObjectiveAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateObjectiveAsync(companyId, id));
+    private Task ActivatePlanAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivatePlanAsync(companyId, id));
+    private Task SubmitContentAsync(Guid id) => ExecuteAndReloadAsync(companyId => MarketingApi.SubmitContentAsync(companyId, id));
+    private async Task PreflightContentAsync(Guid id)
+    {
+        if (resolvedCompanyId is not Guid companyId) return;
+        try { contentPreflight = await MarketingApi.PreflightContentAsync(companyId, id); }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+    }
+    private Task ActivateQualificationAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateQualificationDefinitionAsync(companyId, id));
+    private Task ReviewContentAsync(Guid id, bool approved) => ExecuteAndReloadAsync(companyId => MarketingApi.ReviewContentAsync(companyId, id, approved));
+    private Task DecideHandoffAsync(Guid id, bool accepted) => ExecuteAndReloadAsync(async companyId => await MarketingApi.DecideHandoffAsync(companyId, id, accepted, accepted ? "Accepted by Marketing workspace user." : "Declined by Marketing workspace user."));
+    private Task ActivateExperimentAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateExperimentAsync(companyId, id));
+    private Task CompleteExperimentAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.CompleteExperimentAsync(companyId, id, "Completed after review of the primary metric and guardrail."));
+    private async Task RunAnalysisAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || marketingAgentId is not Guid agentId) return;
+        try { analysis = await MarketingApi.AnalyzeAsync(companyId, agentId, "Prioritize measurable marketing work for the next 30 days."); }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+    }
+
+    private string WithCompany(string path) => resolvedCompanyId is Guid id ? $"{path}?companyId={id:D}" : path;
+    private void ShowObjectives() => activeTab = "Objectives";
+    private static string FriendlyMetric(string value) => value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal);
+    private static string MetricValue(MarketingMetricViewModel metric) => metric.Value is decimal value ? $"{value:N1} {metric.Unit}".Trim() : "No data";
+
+    private sealed class ObjectiveForm { public string Name { get; set; } = ""; public string ObjectiveType { get; set; } = "qualified_demand"; public decimal TargetValue { get; set; } = 10; public string Unit { get; set; } = "leads"; }
+    private sealed class PlanForm { public string Name { get; set; } = ""; public string Summary { get; set; } = ""; public decimal? Budget { get; set; } public string Currency { get; set; } = "SEK"; }
+    private sealed class ContentForm { public string Title { get; set; } = ""; public string Purpose { get; set; } = ""; public string Audience { get; set; } = ""; public string Channel { get; set; } = "email"; public string Language { get; set; } = "English"; public string CallToAction { get; set; } = ""; }
+    private sealed class ExperimentForm { public string Name { get; set; } = ""; public string Hypothesis { get; set; } = ""; public string PrimaryMetric { get; set; } = "conversion_rate"; public string GuardrailMetric { get; set; } = "unsubscribe_rate"; public int MinimumSampleSize { get; set; } = 100; }
+    private sealed class QualificationForm { public string Name { get; set; } = ""; public string AudienceType { get; set; } = "b2b"; public string Channel { get; set; } = "email"; public decimal MinimumScore { get; set; } = 70; public int FreshnessDays { get; set; } = 30; public bool RequiresCustomerCompany { get; set; } = true; }
+}

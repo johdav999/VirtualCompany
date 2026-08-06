@@ -109,6 +109,11 @@ public sealed partial class CompanyFinanceBillInboxService
                 writeRequestId,
                 $"finance-bill-inbox:{bill.Id:N}:fortnox-registration"),
             cancellationToken);
+        writeResult = await ApplyTrustedSupplierApprovalAsync(
+            bill,
+            SupplierApprovalAutomationStages.InvoiceRegistration,
+            writeResult,
+            cancellationToken);
         _logger.LogInformation(
             "Bill inbox Fortnox registration write command approval request completed. CompanyId: {CompanyId}. BillId: {BillId}. WriteRequestId: {WriteRequestId}. ApprovalId: {ApprovalId}. Status: {Status}.",
             command.CompanyId,
@@ -193,6 +198,7 @@ public sealed partial class CompanyFinanceBillInboxService
             writeCommand.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed &&
             string.Equals(writeCommand.PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase))
         {
+            await _fortnoxRegistrationCompletionService.CompleteAsync(writeCommand, cancellationToken);
             return new FinanceBillFortnoxRegistrationDto(
                 writeCommand.Id,
                 writeCommand.ApprovalId,
@@ -301,6 +307,7 @@ public sealed partial class CompanyFinanceBillInboxService
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .SingleAsync(x => x.CompanyId == command.CompanyId && x.Id == writeRequestId, cancellationToken);
+            await _fortnoxRegistrationCompletionService.CompleteAsync(refreshed, cancellationToken);
             await WriteFortnoxDirectAuditAsync(refreshed, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted this supplier invoice.", cancellationToken);
             return new FinanceBillFortnoxRegistrationDto(
                 refreshed.Id,
@@ -373,6 +380,11 @@ public sealed partial class CompanyFinanceBillInboxService
                 writeRequestId,
                 $"finance-bill-inbox:{bill.Id:N}:fortnox-supplier-creation"),
             cancellationToken);
+        result = await ApplyTrustedSupplierApprovalAsync(
+            bill,
+            SupplierApprovalAutomationStages.SupplierCreation,
+            result,
+            cancellationToken);
 
         await WriteSupplierCreationAuditAsync(
             command.CompanyId,
@@ -424,6 +436,34 @@ public sealed partial class CompanyFinanceBillInboxService
                 HasExecuted: false,
                 FortnoxPath: "suppliers",
                 ActionKind: "supplier_creation");
+        }
+
+        if (IsStaleWriteExecution(writeCommand))
+        {
+            var interruptedAt = _timeProvider.GetUtcNow().UtcDateTime;
+            _logger.LogWarning(
+                "Recovering stale Fortnox supplier creation execution. CompanyId: {CompanyId}. BillId: {BillId}. WriteRequestId: {WriteRequestId}. ExecutionStartedUtc: {ExecutionStartedUtc}.",
+                command.CompanyId,
+                bill.Id,
+                writeRequestId,
+                writeCommand.ExecutionStartedUtc);
+            writeCommand.MarkFailed(
+                "execution_interrupted",
+                "The earlier Fortnox supplier creation attempt did not finish. A new approval is required before trying again.",
+                null,
+                interruptedAt);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return await RequestFortnoxSupplierCreationAsync(
+                new RequestFinanceBillFortnoxRegistrationCommand(
+                    command.CompanyId,
+                    command.BillId,
+                    command.ActorUserId,
+                    "Finance user",
+                    "Retrying supplier creation after an interrupted Fortnox request."),
+                bill,
+                connection,
+                cancellationToken);
         }
 
         if (writeCommand.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed)
@@ -744,6 +784,23 @@ public sealed partial class CompanyFinanceBillInboxService
                 "The earlier supplier creation request used older details. Create a new supplier proposal before sending this invoice.",
                 CanRequest: canRequest,
                 CanSendDirect: false,
+                CanExecute: false,
+                HasPendingRequest: false,
+                HasExecuted: false,
+                FortnoxPath: "suppliers",
+                ExternalId: command.ExternalId,
+                ActionKind: "supplier_creation");
+        }
+
+        if (IsStaleWriteExecution(command))
+        {
+            return new FinanceBillFortnoxRegistrationDto(
+                command.Id,
+                command.ApprovalId,
+                "Needs attention",
+                "The earlier Fortnox supplier creation attempt did not finish. Continue to create a fresh approval request.",
+                CanRequest: false,
+                CanSendDirect: true,
                 CanExecute: false,
                 HasPendingRequest: false,
                 HasExecuted: false,
@@ -1326,6 +1383,17 @@ public sealed partial class CompanyFinanceBillInboxService
         var currentPayload = BuildSupplierPayload(bill);
         var currentPayloadHash = FortnoxWritePayloadSanitizer.CreatePayloadHash(currentPayload);
         return !string.Equals(command.PayloadHash, currentPayloadHash, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private bool IsStaleWriteExecution(FinanceIntegrationWriteCommandRecord command)
+    {
+        if (command.Status != FinanceIntegrationWriteCommandRecordStatuses.Executing)
+        {
+            return false;
+        }
+
+        var startedUtc = command.ExecutionStartedUtc ?? command.UpdatedUtc;
+        return startedUtc <= _timeProvider.GetUtcNow().UtcDateTime.Subtract(TimeSpan.FromMinutes(5));
     }
 
     private static bool TryReadDecimal(JsonNode? node, out decimal value)

@@ -89,7 +89,7 @@ public sealed class SalesAgentDecisionServiceTests
 
     private static SalesAgentDecisionService CreateService(VirtualCompanyDbContext db,
         ICompanyKnowledgeSearchService? knowledge = null) =>
-        new(db, new StubAnalysis(), null!, knowledge!);
+        new(db, new StubAnalysis(), null!, new EmptyCampaignPlanning(), knowledge!);
 
     private static VirtualCompanyDbContext CreateDb() => new(
         new DbContextOptionsBuilder<VirtualCompanyDbContext>()
@@ -109,5 +109,61 @@ public sealed class SalesAgentDecisionServiceTests
         public Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchAsync(
             CompanyKnowledgeSemanticSearchQuery query, CancellationToken cancellationToken) =>
             Task.FromResult<IReadOnlyList<CompanyKnowledgeSearchResultDto>>([]);
+    }
+
+    private sealed class EmptyCampaignPlanning : ICampaignPlanningService
+    {
+        public Task<CampaignInitiativeResponse?> GetInitiativeAsync(
+            Guid companyId, Guid campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignInitiativeResponse?>(null);
+
+        public Task<CampaignInitiativeResponse?> ConfigureInitiativeAsync(
+            Guid companyId, Guid userId, Guid campaignId, ConfigureCampaignInitiativeRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignInitiativeResponse?>(null);
+
+        public Task<CampaignReadinessResponse?> GetReadinessAsync(
+            Guid companyId, Guid campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignReadinessResponse?>(null);
+
+        public Task<CampaignInitiativeResponse?> RequestReadinessAsync(
+            Guid companyId, Guid userId, Guid campaignId, long expectedVersion,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignInitiativeResponse?>(null);
+
+        public Task<IReadOnlyList<CampaignSegmentResponse>> ListSegmentsAsync(
+            Guid companyId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<CampaignSegmentResponse>>([]);
+
+        public Task<CampaignSegmentResponse> CreateSegmentAsync(
+            Guid companyId, Guid userId, CreateCampaignSegmentRequest request,
+            CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<CampaignAudiencePreviewResponse> PreviewSegmentAsync(
+            Guid companyId, Guid segmentId, CancellationToken cancellationToken) =>
+            throw new NotSupportedException();
+
+        public Task<CampaignAudienceSnapshotResponse?> CaptureAudienceAsync(
+            Guid companyId, Guid userId, Guid campaignId, Guid segmentId,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignAudienceSnapshotResponse?>(null);
+
+        public Task<IReadOnlyList<CampaignActivityResponse>> ListActivitiesAsync(
+            Guid companyId, Guid campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult<IReadOnlyList<CampaignActivityResponse>>([]);
+
+        public Task<CampaignActivityResponse?> AddActivityAsync(
+            Guid companyId, Guid userId, Guid campaignId, CreateCampaignActivityRequest request,
+            CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignActivityResponse?>(null);
+
+        public Task<CampaignPerformanceResponse?> GetPerformanceAsync(
+            Guid companyId, Guid campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignPerformanceResponse?>(null);
+
+        public Task<CampaignPerformanceResponse?> CapturePerformanceSnapshotAsync(
+            Guid companyId, Guid userId, Guid campaignId, CancellationToken cancellationToken) =>
+            Task.FromResult<CampaignPerformanceResponse?>(null);
     }
 }

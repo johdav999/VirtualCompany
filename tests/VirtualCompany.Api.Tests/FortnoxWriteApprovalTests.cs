@@ -126,6 +126,47 @@ public sealed class FortnoxWriteApprovalTests
     }
 
     [Fact]
+    public void Approved_preflight_failure_can_be_prepared_for_retry_without_losing_approval()
+    {
+        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.SupplierMasterData);
+        var approvalId = Guid.NewGuid();
+        var connectionId = Guid.NewGuid();
+        var failedUtc = DateTime.UtcNow;
+
+        command.MarkApproved(approvalId, Guid.NewGuid(), failedUtc.AddMinutes(-1));
+        command.MarkExecutionStarted(failedUtc.AddSeconds(-30));
+        command.MarkFailed("authorization", "Fortnox needs to be reconnected.", null, failedUtc);
+
+        command.PrepareApprovedRetryAfterPreflightFailure(connectionId, failedUtc.AddMinutes(1));
+
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Approved, command.Status);
+        Assert.Equal(approvalId, command.ApprovalId);
+        Assert.Equal(connectionId, command.ConnectionId);
+        Assert.Null(command.FailureCategory);
+        Assert.Null(command.SafeFailureSummary);
+        Assert.Null(command.FailedUtc);
+        Assert.Null(command.ExecutionStartedUtc);
+        Assert.Equal(1, command.ExecutionAttemptCount);
+    }
+
+    [Fact]
+    public void Provider_response_failure_cannot_be_prepared_as_a_preflight_retry()
+    {
+        var command = CreateCommand(FinanceIntegrationWriteCommandTypes.SupplierMasterData);
+        var now = DateTime.UtcNow;
+
+        command.MarkApproved(Guid.NewGuid(), Guid.NewGuid(), now.AddMinutes(-1));
+        command.MarkExecutionStarted(now.AddSeconds(-30));
+        command.MarkFailed("validation", "Fortnox rejected the supplier.", 400, now);
+
+        var exception = Assert.Throws<InvalidOperationException>(() =>
+            command.PrepareApprovedRetryAfterPreflightFailure(command.ConnectionId, now.AddMinutes(1)));
+
+        Assert.Contains("provider response", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(FinanceIntegrationWriteCommandRecordStatuses.Failed, command.Status);
+    }
+
+    [Fact]
     public void Real_fortnox_api_tests_are_opt_in_only()
     {
         var enabled = string.Equals(

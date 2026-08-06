@@ -260,37 +260,21 @@
 
                     @if (!SelectedProviderAvailability.IsConfigured)
                     {
-                        @if (CanManageProviderSettings && providerSettings?.IsWritable == true)
-                        {
-                            <EditForm Model="@providerSettingsModel" OnValidSubmit="@SaveProviderAndContinueAsync" class="team-mailbox-provider-setup">
+                        <div class="alert alert-warning mb-0" role="status">
+                            <div class="d-flex flex-wrap align-items-center justify-content-between gap-3">
                                 <div>
-                                    <h3>@AgentText["SetUpProviderForMailbox", SelectedProviderDisplayName]</h3>
-                                    <p>@AgentText["ProviderSetupOnConnectionPage", SelectedProviderDisplayName]</p>
+                                    <strong>@AgentText["SetUpProviderForMailbox", SelectedProviderDisplayName]</strong>
+                                    <div>@AgentText["MailboxProviderAskAdministrator", SelectedProviderDisplayName]</div>
                                 </div>
-                                <div class="team-mailbox-provider-fields">
-                                    <div>
-                                        <label class="form-label" for="mailbox-client-id">@AgentText["OAuthClientId"]</label>
-                                        <InputText id="mailbox-client-id" class="form-control" autocomplete="off" @bind-Value="SelectedProviderSettingsModel.ClientId" />
-                                    </div>
-                                    <div>
-                                        <label class="form-label" for="mailbox-client-secret">@AgentText["OAuthClientSecret"]</label>
-                                        <InputText id="mailbox-client-secret" class="form-control" type="password" autocomplete="new-password"
-                                                   placeholder="@SelectedSecretPlaceholder" @bind-Value="SelectedProviderSettingsModel.ClientSecret" />
-                                    </div>
-                                </div>
-                                <div class="form-text">@AgentText["MailboxOAuthRedirectUri", SelectedProviderCallbackUri]</div>
-                                <button class="btn btn-primary" type="submit" disabled="@isConnecting">
-                                    <span class="bi bi-box-arrow-up-right" aria-hidden="true"></span>
-                                    @(isConnecting ? AgentText["OpeningProvider"] : AgentText["SaveAndContinueToProvider", SelectedProviderDisplayName])
-                                </button>
-                            </EditForm>
-                        }
-                        else
-                        {
-                            <div class="alert alert-warning mb-0" role="status">
-                                @AgentText["MailboxProviderAskAdministrator", SelectedProviderDisplayName]
+                                @if (CanManageProviderSettings)
+                                {
+                                    <a class="btn btn-outline-primary" href="@EmailProviderSettingsHref">
+                                        <span class="bi bi-gear" aria-hidden="true"></span>
+                                        @AgentText["ConfigureEmailProvider"]
+                                    </a>
+                                }
                             </div>
-                        }
+                        </div>
                     }
                     else
                     {
@@ -378,8 +362,6 @@
 
     private readonly Dictionary<string, MailboxConnectionStatusResponse> statuses = new(StringComparer.OrdinalIgnoreCase);
     private MailboxProviderAvailabilityResponse providerAvailability = new();
-    private FinanceEmailSettingsResponse? providerSettings;
-    private UpdateFinanceEmailSettingsRequest providerSettingsModel = new();
     private CompanyAccessViewModel? companyAccess;
     private string selectedPurpose = "support";
     private string selectedProvider = "gmail";
@@ -413,16 +395,6 @@
         string.Equals(companyAccess?.MembershipRole, "owner", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(companyAccess?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase);
 
-    private UpdateFinanceEmailProviderSettingsRequest SelectedProviderSettingsModel =>
-        selectedProvider == "gmail" ? providerSettingsModel.Gmail : providerSettingsModel.Microsoft365;
-
-    private FinanceEmailProviderSettingsResponse? SelectedCurrentProviderSettings =>
-        selectedProvider == "gmail" ? providerSettings?.Gmail : providerSettings?.Microsoft365;
-
-    private string SelectedSecretPlaceholder => SelectedCurrentProviderSettings?.IsClientSecretConfigured == true
-        ? AgentText["SecretAlreadyConfigured"]
-        : AgentText["SecretNotConfigured"];
-
     private string ProviderReadinessLabel => SelectedProviderAvailability.IsConfigured
         ? AgentText["ReadyToConnect"]
         : AgentText["ProviderSetupRequired"];
@@ -431,8 +403,8 @@
         ? "badge text-bg-success"
         : "badge text-bg-warning";
 
-    private string SelectedProviderCallbackUri =>
-        $"http://localhost:5301/api/mailbox-connections/{selectedProvider}/callback";
+    private string EmailProviderSettingsHref =>
+        FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailProviderSettings, CompanyId);
 
     private string BackToAgentManagementHref
     {
@@ -485,16 +457,6 @@
             foreach (var (purpose, task) in statusTasks)
             {
                 statuses[purpose] = await task ?? new MailboxConnectionStatusResponse { Purpose = purpose };
-            }
-
-            if (CanManageProviderSettings)
-            {
-                providerSettings = await FinanceApiClient.GetEmailSettingsAsync(companyId);
-                providerSettingsModel = new UpdateFinanceEmailSettingsRequest
-                {
-                    Gmail = new UpdateFinanceEmailProviderSettingsRequest { ClientId = providerSettings.Gmail.ClientId },
-                    Microsoft365 = new UpdateFinanceEmailProviderSettingsRequest { ClientId = providerSettings.Microsoft365.ClientId }
-                };
             }
 
             ApplyCallbackMessage();
@@ -694,40 +656,6 @@
             standardModel.Credential = null;
             statuses[selectedPurpose] = await FinanceApiClient.GetMailboxConnectionStatusAsync(companyId, selectedPurpose) ?? new MailboxConnectionStatusResponse { Purpose = selectedPurpose };
             successMessage = AgentText["MailboxConnectedForFunction", SelectedPurposeLabel];
-        }
-        catch (FinanceApiException ex)
-        {
-            errorMessage = ex.Message;
-        }
-        finally
-        {
-            isConnecting = false;
-        }
-    }
-
-    private async Task SaveProviderAndContinueAsync()
-    {
-        if (CompanyId is not Guid companyId || !CanManageProviderSettings)
-        {
-            return;
-        }
-
-        isConnecting = true;
-        errorMessage = null;
-        try
-        {
-            providerSettings = await FinanceApiClient.UpdateEmailSettingsAsync(companyId, providerSettingsModel);
-            providerAvailability = await FinanceApiClient.GetMailboxProviderAvailabilityAsync(companyId);
-            providerSettingsModel.Gmail.ClientSecret = null;
-            providerSettingsModel.Microsoft365.ClientSecret = null;
-
-            if (!SelectedProviderAvailability.IsConfigured)
-            {
-                errorMessage = AgentText["ProviderStillNotConfigured", SelectedProviderDisplayName];
-                return;
-            }
-
-            await StartOAuthAsync(companyId);
         }
         catch (FinanceApiException ex)
         {

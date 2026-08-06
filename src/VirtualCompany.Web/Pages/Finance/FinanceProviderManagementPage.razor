@@ -1,0 +1,201 @@
+@page "/system/admin/finance-providers"
+@rendermode InteractiveServer
+
+<PageTitle>Finance providers</PageTitle>
+
+<main class="finance-provider-admin">
+    <header class="finance-provider-admin__header">
+        <div>
+            <span class="dashboard-kicker">System / Admin</span>
+            <h1>Finance providers</h1>
+            <p>Configure the shared provider applications used when companies connect their accounting systems.</p>
+        </div>
+        <button class="btn btn-outline-secondary" type="button" @onclick="LoadAsync" disabled="@IsBusy">Refresh</button>
+    </header>
+
+    @if (IsLoading)
+    {
+        <div class="wizard-card" role="status">Loading finance provider settings…</div>
+    }
+    else if (!string.IsNullOrWhiteSpace(AccessError))
+    {
+        <ForbiddenState
+            Title="Platform administrator access required"
+            Message="@AccessError"
+            ReturnHref="/settings"
+            ReturnText="Back to settings" />
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="alert alert-danger" role="alert">@ErrorMessage</div>
+    }
+    else
+    {
+        <div class="finance-provider-admin__workspace">
+            <aside class="wizard-card finance-provider-admin__providers" aria-label="Finance providers">
+                <h2>Providers</h2>
+                @foreach (var provider in Providers)
+                {
+                    <button type="button"
+                            class="finance-provider-admin__provider @(provider.ProviderKey == SelectedProvider?.ProviderKey ? "is-selected" : null)"
+                            @onclick="() => SelectProviderAsync(provider.ProviderKey)">
+                        <span class="finance-integration-card__mark" aria-hidden="true">@ProviderMark(provider.DisplayName)</span>
+                        <span>
+                            <strong>@provider.DisplayName</strong>
+                            <small>@provider.StatusMessage</small>
+                        </span>
+                        <span class="@StatusBadge(provider.Status)">@StatusLabel(provider.Status)</span>
+                    </button>
+                }
+
+                <div class="finance-provider-admin__extension">
+                    <strong>More providers</strong>
+                    <p>New provider adapters appear here automatically when they are registered.</p>
+                </div>
+            </aside>
+
+            @if (SelectedProvider is not null)
+            {
+                <section class="wizard-card finance-provider-admin__editor">
+                    <div class="finance-provider-admin__editor-heading">
+                        <div class="finance-integration-card__identity">
+                            <span class="finance-integration-card__mark" aria-hidden="true">@ProviderMark(SelectedProvider.DisplayName)</span>
+                            <div>
+                                <h2>@SelectedProvider.DisplayName application</h2>
+                                <p>One application is shared by every company. Company authorizations remain separate.</p>
+                            </div>
+                        </div>
+                        <span class="@StatusBadge(SelectedProvider.Status)">@StatusLabel(SelectedProvider.Status)</span>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(SuccessMessage))
+                    {
+                        <div class="alert alert-success" role="status">@SuccessMessage</div>
+                    }
+                    @if (!string.IsNullOrWhiteSpace(ActionError))
+                    {
+                        <div class="alert alert-danger" role="alert">@ActionError</div>
+                    }
+
+                    <EditForm Model="@Form" OnValidSubmit="SaveAsync">
+                        <DataAnnotationsValidator />
+                        <ValidationSummary />
+
+                        <div class="finance-provider-admin__section">
+                            <div>
+                                <h3>Provider application</h3>
+                                <p>Create this OAuth application in the provider’s developer portal.</p>
+                            </div>
+                            <label class="form-check form-switch">
+                                <InputCheckbox class="form-check-input" @bind-Value="Form.Enabled" disabled="@IsBusy" />
+                                <span class="form-check-label">Enabled for company connections</span>
+                            </label>
+                        </div>
+
+                        <div class="mb-4">
+                            <label class="form-label" for="provider-callback">Authorized callback URL</label>
+                            <div class="input-group">
+                                <InputText id="provider-callback" class="form-control" @bind-Value="Form.RedirectUri" disabled="@IsBusy" />
+                                <button class="btn btn-outline-secondary" type="button" @onclick="CopyCallbackAsync">Copy</button>
+                            </div>
+                            <div class="form-text">Register this exact URL with @SelectedProvider.DisplayName.</div>
+                        </div>
+
+                        <div class="row g-3 mb-4">
+                            <div class="col-12 col-lg-6">
+                                <label class="form-label" for="provider-client-id">Client ID</label>
+                                <InputText id="provider-client-id"
+                                           class="form-control"
+                                           @bind-Value="Form.ClientId"
+                                           autocomplete="off"
+                                           placeholder="@ClientIdPlaceholder"
+                                           disabled="@IsBusy" />
+                                <div class="form-text">@PreserveClientIdHelp</div>
+                            </div>
+                            <div class="col-12 col-lg-6">
+                                <label class="form-label" for="provider-client-secret">Client secret</label>
+                                <InputText id="provider-client-secret"
+                                           class="form-control"
+                                           @bind-Value="Form.ClientSecret"
+                                           type="password"
+                                           autocomplete="new-password"
+                                           placeholder="@SecretPlaceholder"
+                                           disabled="@(!SelectedProvider.SecretBackendSupportsWrites || IsBusy)" />
+                                <div class="form-text">@SecretHelp</div>
+                            </div>
+                        </div>
+
+                        <fieldset class="mb-4">
+                            <legend class="form-label">Permissions</legend>
+                            <div class="finance-provider-admin__scopes">
+                                @foreach (var scope in SelectedProvider.SupportedScopes)
+                                {
+                                    <label class="finance-provider-admin__scope">
+                                        <input type="checkbox"
+                                               checked="@Form.Scopes.Contains(scope, StringComparer.OrdinalIgnoreCase)"
+                                               @onchange="args => ToggleScope(scope, args.Value as bool? == true)"
+                                               disabled="@IsBusy" />
+                                        <span>@scope</span>
+                                    </label>
+                                }
+                            </div>
+                            <div class="form-text">Grant only the permissions required for synchronization and approved writes.</div>
+                        </fieldset>
+
+                        <div class="finance-provider-admin__actions">
+                            <button class="btn btn-primary" type="submit" disabled="@IsBusy">@(IsSaving ? "Saving…" : "Save configuration")</button>
+                            <button class="btn btn-outline-primary" type="button" @onclick="ValidateAsync" disabled="@IsBusy">@(IsValidating ? "Validating…" : "Validate setup")</button>
+                            <span class="text-body-secondary small">Secrets are stored in @SelectedProvider.SecretBackend and are never returned to the browser.</span>
+                        </div>
+                    </EditForm>
+
+                    @if (Validation is not null)
+                    {
+                        <section class="finance-provider-admin__validation" aria-live="polite">
+                            <h3>Validation</h3>
+                            <p>@Validation.Summary</p>
+                            <ul>
+                                @foreach (var check in Validation.Checks)
+                                {
+                                    <li class="@(check.Succeeded ? "is-success" : "is-failure")">
+                                        <strong>@check.Label:</strong> @check.Message
+                                    </li>
+                                }
+                            </ul>
+                        </section>
+                    }
+
+                    <section class="finance-provider-admin__audit">
+                        <div>
+                            <h3>Recent changes</h3>
+                            <p>Configuration actions are recorded without credential values.</p>
+                        </div>
+                        @if (AuditItems.Count == 0)
+                        {
+                            <p class="text-body-secondary">No changes have been recorded yet.</p>
+                        }
+                        else
+                        {
+                            <div class="table-responsive">
+                                <table class="table align-middle">
+                                    <thead><tr><th>Time</th><th>Action</th><th>Outcome</th><th>Summary</th></tr></thead>
+                                    <tbody>
+                                    @foreach (var item in AuditItems)
+                                    {
+                                        <tr>
+                                            <td>@LocalDateTime.DateTime(item.OccurredUtc)</td>
+                                            <td>@item.Action</td>
+                                            <td>@item.Outcome</td>
+                                            <td>@item.Summary</td>
+                                        </tr>
+                                    }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </section>
+                </section>
+            }
+        </div>
+    }
+</main>

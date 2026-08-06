@@ -22,7 +22,7 @@
         <section>
             <h2>@SalesText["NeedsAttention"]</h2>
             <div class="sales-agent-panel__metrics">
-                <a href="@BuildPath("/app/sales/leads")">
+                <a href="@BuildPath("/app/sales/prospects")">
                     <span>@Dashboard.HotLeads</span>
                     <small>@SalesText["HotLeads"]</small>
                 </a>
@@ -68,7 +68,7 @@
                 <div class="sales-agent-panel__list">
                     @foreach (var item in Dashboard.RecentActivity.Take(5))
                     {
-                        <a class="sales-agent-panel__item" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads"))">
+                        <a class="sales-agent-panel__item" href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/prospects"))">
                             <strong>@item.ActivityType</strong>
                             <span>@item.Summary</span>
                         </a>
@@ -87,5 +87,5 @@
     private string BuildPath(string path) => CompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
 
     private string ResolveRecommendationPath(SalesRecommendationResponse recommendation) =>
-        recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/leads");
+        recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/prospects");
 }

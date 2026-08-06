@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Shared;
 
@@ -67,6 +68,10 @@ public static class CompanyAuthorizationServiceCollectionExtensions
                     .AddRequirements(new CompanyMembershipRoleRequirement(
                         CompanyMembershipRole.Owner,
                         CompanyMembershipRole.Admin)));
+
+            options.AddPolicy(CompanyPolicies.PlatformAdministration, policy =>
+                policy.RequireAuthenticatedUser()
+                    .RequireClaim(CurrentUserClaimTypes.PlatformRole, "platform_admin"));
         });
 
         return services;

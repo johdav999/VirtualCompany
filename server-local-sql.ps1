@@ -1,4 +1,4 @@
-$serverInstance = if ([string]::IsNullOrWhiteSpace($env:VC_SQL_SERVER_INSTANCE)) { "localhost\SQLEXPRESS" } else { $env:VC_SQL_SERVER_INSTANCE }
+$serverInstance = if ([string]::IsNullOrWhiteSpace($env:VC_SQL_SERVER_INSTANCE)) { "lpc:.\SQLEXPRESS" } else { $env:VC_SQL_SERVER_INSTANCE }
 $databaseName = if ([string]::IsNullOrWhiteSpace($env:VC_SQL_DATABASE)) { "virtualcompany" } else { $env:VC_SQL_DATABASE }
 $useSqlAuthentication = $env:VC_SQL_USE_SQL_AUTH -in @("1", "true", "True", "TRUE", "yes", "Yes", "YES")
 

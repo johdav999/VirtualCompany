@@ -100,6 +100,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
     public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
+    public DbSet<SupplierSubscription> SupplierSubscriptions => Set<SupplierSubscription>();
+    public DbSet<SupplierSubscriptionBillMatch> SupplierSubscriptionBillMatches => Set<SupplierSubscriptionBillMatch>();
     public DbSet<FinanceAsset> FinanceAssets => Set<FinanceAsset>();
     public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
@@ -152,6 +154,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceExternalReference> FinanceExternalReferences => Set<FinanceExternalReference>();
     public DbSet<FinanceIntegrationAuditEvent> FinanceIntegrationAuditEvents => Set<FinanceIntegrationAuditEvent>();
     public DbSet<FinanceIntegrationWriteCommandRecord> FinanceIntegrationWriteCommands => Set<FinanceIntegrationWriteCommandRecord>();
+    public DbSet<FinanceIntegrationProviderConfiguration> FinanceIntegrationProviderConfigurations => Set<FinanceIntegrationProviderConfiguration>();
+    public DbSet<FinanceIntegrationProviderConfigurationAudit> FinanceIntegrationProviderConfigurationAudits => Set<FinanceIntegrationProviderConfigurationAudit>();
+    public DbSet<SupplierApprovalAutomationRule> SupplierApprovalAutomationRules => Set<SupplierApprovalAutomationRule>();
     public DbSet<Lead> Leads => Set<Lead>();
     public DbSet<Deal> Deals => Set<Deal>();
     public DbSet<Contact> Contacts => Set<Contact>();
@@ -165,6 +170,16 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesSequenceStep> SalesSequenceSteps => Set<SalesSequenceStep>();
     public DbSet<SalesCampaign> SalesCampaigns => Set<SalesCampaign>();
     public DbSet<SalesCampaignContact> SalesCampaignContacts => Set<SalesCampaignContact>();
+    public DbSet<SalesCampaignObjective> SalesCampaignObjectives => Set<SalesCampaignObjective>();
+    public DbSet<SalesCampaignOffer> SalesCampaignOffers => Set<SalesCampaignOffer>();
+    public DbSet<SalesCampaignAudienceSegment> SalesCampaignAudienceSegments => Set<SalesCampaignAudienceSegment>();
+    public DbSet<SalesCampaignAudienceSnapshot> SalesCampaignAudienceSnapshots => Set<SalesCampaignAudienceSnapshot>();
+    public DbSet<SalesCampaignAudienceMember> SalesCampaignAudienceMembers => Set<SalesCampaignAudienceMember>();
+    public DbSet<SalesCampaignMilestone> SalesCampaignMilestones => Set<SalesCampaignMilestone>();
+    public DbSet<SalesCampaignActivity> SalesCampaignActivities => Set<SalesCampaignActivity>();
+    public DbSet<SalesCampaignKpiDefinition> SalesCampaignKpiDefinitions => Set<SalesCampaignKpiDefinition>();
+    public DbSet<SalesCampaignKpiSnapshot> SalesCampaignKpiSnapshots => Set<SalesCampaignKpiSnapshot>();
+    public DbSet<SalesCampaignCost> SalesCampaignCosts => Set<SalesCampaignCost>();
     public DbSet<SalesSequenceExecution> SalesSequenceExecutions => Set<SalesSequenceExecution>();
     public DbSet<SalesSequenceExecutionStep> SalesSequenceExecutionSteps => Set<SalesSequenceExecutionStep>();
     public DbSet<SalesAutomationPolicy> SalesAutomationPolicies => Set<SalesAutomationPolicy>();
@@ -186,6 +201,17 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesSourceTouch> SalesSourceTouches => Set<SalesSourceTouch>();
     public DbSet<SalesSourceAttribution> SalesSourceAttributions => Set<SalesSourceAttribution>();
     public DbSet<SalesContactPermission> SalesContactPermissions => Set<SalesContactPermission>();
+    public DbSet<MarketingObjective> MarketingObjectives => Set<MarketingObjective>();
+    public DbSet<MarketingPlan> MarketingPlans => Set<MarketingPlan>();
+    public DbSet<MarketingPlanObjective> MarketingPlanObjectives => Set<MarketingPlanObjective>();
+    public DbSet<MarketingContentBrief> MarketingContentBriefs => Set<MarketingContentBrief>();
+    public DbSet<MarketingContentVariant> MarketingContentVariants => Set<MarketingContentVariant>();
+    public DbSet<MarketingSalesHandoff> MarketingSalesHandoffs => Set<MarketingSalesHandoff>();
+    public DbSet<MarketingChannelObservation> MarketingChannelObservations => Set<MarketingChannelObservation>();
+    public DbSet<MarketingExperiment> MarketingExperiments => Set<MarketingExperiment>();
+    public DbSet<MarketingQualificationDefinition> MarketingQualificationDefinitions => Set<MarketingQualificationDefinition>();
+    public DbSet<MarketingQualificationEvaluation> MarketingQualificationEvaluations => Set<MarketingQualificationEvaluation>();
+    public DbSet<MarketingQualificationFeedback> MarketingQualificationFeedback => Set<MarketingQualificationFeedback>();
     public DbSet<SupportCase> SupportCases => Set<SupportCase>();
     public DbSet<SupportMessage> SupportMessages => Set<SupportMessage>();
     public DbSet<SupportCaseEvent> SupportCaseEvents => Set<SupportCaseEvent>();
@@ -412,6 +438,16 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is SalesSequenceStep ||
                 entry.Entity is SalesCampaign ||
                 entry.Entity is SalesCampaignContact ||
+                entry.Entity is SalesCampaignObjective ||
+                entry.Entity is SalesCampaignOffer ||
+                entry.Entity is SalesCampaignAudienceSegment ||
+                entry.Entity is SalesCampaignAudienceSnapshot ||
+                entry.Entity is SalesCampaignAudienceMember ||
+                entry.Entity is SalesCampaignMilestone ||
+                entry.Entity is SalesCampaignActivity ||
+                entry.Entity is SalesCampaignKpiDefinition ||
+                entry.Entity is SalesCampaignKpiSnapshot ||
+                entry.Entity is SalesCampaignCost ||
                 entry.Entity is SalesSequenceExecution ||
                 entry.Entity is SalesSequenceExecutionStep ||
                 entry.Entity is SalesMessagePerformance ||
@@ -421,6 +457,17 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is SalesFinanceHandoff ||
                 entry.Entity is SalesEmailLink ||
                 entry.Entity is DealIntelligenceSignal ||
+                entry.Entity is MarketingObjective ||
+                entry.Entity is MarketingPlan ||
+                entry.Entity is MarketingPlanObjective ||
+                entry.Entity is MarketingContentBrief ||
+                entry.Entity is MarketingContentVariant ||
+                entry.Entity is MarketingSalesHandoff ||
+                entry.Entity is MarketingChannelObservation ||
+                entry.Entity is MarketingExperiment ||
+                entry.Entity is MarketingQualificationDefinition ||
+                entry.Entity is MarketingQualificationEvaluation ||
+                entry.Entity is MarketingQualificationFeedback ||
                 entry.Entity is SupportCase ||
                 entry.Entity is SupportMessage ||
                 entry.Entity is SupportCaseEvent ||
@@ -463,6 +510,15 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId != null && agent.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupplierApprovalAutomationRule>()
+            .HasQueryFilter(rule =>
+                CurrentCompanyId != null && rule.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupplierSubscription>()
+            .HasQueryFilter(subscription =>
+                CurrentCompanyId != null && subscription.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupplierSubscriptionBillMatch>()
+            .HasQueryFilter(match =>
+                CurrentCompanyId != null && match.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentOrchestrationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentHandoff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentMemoryCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -492,6 +548,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ApprovalRequest>()
             .HasQueryFilter(request =>
                 CurrentCompanyId != null && request.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ApprovalStep>()
+            .HasQueryFilter(step =>
+                CurrentCompanyId != null && step.Approval.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ApprovalTask>()
             .HasQueryFilter(task =>
                 CurrentCompanyId != null && task.CompanyId == CurrentCompanyId);
@@ -612,6 +671,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceAccount>()
             .HasQueryFilter(account =>
                 CurrentCompanyId != null && account.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinancialStatementMapping>()
+            .HasQueryFilter(mapping =>
+                CurrentCompanyId != null && mapping.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<Budget>()
             .HasQueryFilter(budget =>
                 CurrentCompanyId != null && budget.CompanyId == CurrentCompanyId);
@@ -839,6 +901,36 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SalesCampaignContact>()
             .HasQueryFilter(contact =>
                 CurrentCompanyId != null && contact.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignObjective>()
+            .HasQueryFilter(objective =>
+                CurrentCompanyId != null && objective.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignOffer>()
+            .HasQueryFilter(offer =>
+                CurrentCompanyId != null && offer.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignAudienceSegment>()
+            .HasQueryFilter(segment =>
+                CurrentCompanyId != null && segment.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignAudienceSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignAudienceMember>()
+            .HasQueryFilter(member =>
+                CurrentCompanyId != null && member.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignMilestone>()
+            .HasQueryFilter(milestone =>
+                CurrentCompanyId != null && milestone.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignActivity>()
+            .HasQueryFilter(activity =>
+                CurrentCompanyId != null && activity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignKpiDefinition>()
+            .HasQueryFilter(definition =>
+                CurrentCompanyId != null && definition.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignKpiSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesCampaignCost>()
+            .HasQueryFilter(cost =>
+                CurrentCompanyId != null && cost.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesSequenceExecution>()
             .HasQueryFilter(execution =>
                 CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
@@ -869,6 +961,33 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<DealRiskScoreSnapshot>()
             .HasQueryFilter(snapshot =>
                 CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesFinanceHandoff>()
+            .HasQueryFilter(handoff =>
+                CurrentCompanyId != null &&
+                handoff.CompanyId == CurrentCompanyId &&
+                !handoff.Deal.IsDeleted);
+        modelBuilder.Entity<MarketingObjective>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingPlan>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingPlanObjective>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingContentBrief>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingContentVariant>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSalesHandoff>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingChannelObservation>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingExperiment>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingQualificationDefinition>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingQualificationEvaluation>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingQualificationFeedback>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportCase>()
             .HasQueryFilter(supportCase =>
                 CurrentCompanyId != null && supportCase.CompanyId == CurrentCompanyId);

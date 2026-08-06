@@ -11,6 +11,7 @@ public static class CompanyPolicies
     public const string FinanceEdit = "FinanceEdit";
     public const string FinanceApproval = "FinanceApproval";
     public const string FinanceSandboxAdmin = "FinanceSandboxAdmin";
+    public const string PlatformAdministration = "PlatformAdministration";
 
     public const string CompanyMembership = CompanyMember;
     public const string CompanyAuditReview = AuditReview;

@@ -138,6 +138,52 @@ public sealed class FinanceBillInboxController : ControllerBase
             "Fortnox registration send blocked");
     }
 
+    [HttpGet("{billId:guid}/approval-automation")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierApprovalAutomationDto>> GetApprovalAutomationAsync(
+        Guid companyId,
+        Guid billId,
+        CancellationToken cancellationToken) =>
+        Ok(await _service.GetApprovalAutomationAsync(
+            new GetSupplierApprovalAutomationQuery(companyId, billId),
+            cancellationToken));
+
+    [HttpPut("{billId:guid}/approval-automation/{stage}")]
+    [Authorize(Policy = CompanyPolicies.FinanceApproval)]
+    public async Task<ActionResult<SupplierApprovalAutomationDto>> SetApprovalAutomationAsync(
+        Guid companyId,
+        Guid billId,
+        string stage,
+        [FromBody] SetSupplierApprovalAutomationRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _service.SetApprovalAutomationAsync(
+                new SetSupplierApprovalAutomationCommand(
+                    companyId,
+                    billId,
+                    stage,
+                    request.Enabled,
+                    ResolveActorId(),
+                    ResolveActorDisplayName()),
+                cancellationToken));
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ArgumentException)
+        {
+            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>
+            {
+                [nameof(stage)] = [ex.Message]
+            })
+            {
+                Title = "Supplier approval automation could not be changed",
+                Detail = ex.Message,
+                Status = StatusCodes.Status400BadRequest,
+                Instance = HttpContext.Request.Path
+            });
+        }
+    }
+
     private static FinanceBillInboxDetailDto ApplyFortnoxRegistrationPermissions(FinanceBillInboxDetailDto detail, bool canSendDirect)
     {
         if (detail.FortnoxRegistration is null)
@@ -244,5 +290,7 @@ public sealed class FinanceBillInboxController : ControllerBase
         User.FindFirstValue(ClaimTypes.Email) ??
         "Finance user";
 }
+
+public sealed record SetSupplierApprovalAutomationRequest(bool Enabled);
 
 public sealed record FinanceBillReviewActionRequest(string Rationale);

@@ -29,6 +29,15 @@ public sealed class GlobalExceptionHandler : IExceptionHandler
 
     public async ValueTask<bool> TryHandleAsync(HttpContext httpContext, Exception exception, CancellationToken cancellationToken)
     {
+        if (httpContext.RequestAborted.IsCancellationRequested || cancellationToken.IsCancellationRequested)
+        {
+            _logger.LogDebug(
+                "Request processing stopped because the client disconnected for HTTP {Method} {Path}.",
+                httpContext.Request.Method,
+                httpContext.Request.Path);
+            return true;
+        }
+
         if (httpContext.Response.HasStarted)
         {
             return false;

@@ -1,4 +1,5 @@
 @page "/app/sales/prospecting"
+@page "/app/sales/prospects"
 @rendermode InteractiveServer
 @inherits SalesPageBase
 @using System.Globalization
@@ -12,12 +13,11 @@
     <main class="sales-main">
         <header class="sales-page-header">
             <span>@SalesText["Sales"].Value.ToUpper(CultureInfo.CurrentUICulture)</span>
-<h1>@SalesText["Prospecting"]</h1>
+<h1>@SalesText["Prospects"]</h1>
 <p>@SalesText["ProspectingDescription"]</p>
             <nav class="sales-tabs" aria-label="@SalesText["SalesSections"]">
                 <a href="@BuildPath("/app/sales")">@SalesText["Overview"]</a>
-<a href="@BuildPath("/app/sales/leads")">@SalesText["Leads"]</a>
-<a class="active" href="@BuildPath("/app/sales/prospecting")">@SalesText["Prospecting"]</a>
+<a class="active" href="@BuildPath("/app/sales/prospects")">@SalesText["Prospects"]</a>
 <a href="@BuildPath("/app/sales/pipeline")">@SalesText["Pipeline"]</a>
 <a href="@BuildPath("/app/sales/campaigns")">@SalesText["Campaigns"]</a>
             </nav>
@@ -55,11 +55,12 @@
             </section>
 
             <nav class="prospecting-view-tabs" aria-label="@SalesText["ProspectingViews"]">
-                @foreach (var view in new[] { "Accounts", "ICP", "Runs", "Data sources", "Suppressions" })
-                { <button class="@(activeView == view ? "active" : null)" @onclick="() => activeView = view">@ProspectingViewLabel(view)</button> }
+                @foreach (var view in new[] { "Accounts", "Leads", "ICP", "Runs", "Data sources", "Suppressions" })
+                { <button class="@(activeView == view ? "active" : null)" @onclick="() => SelectView(view)">@ProspectingViewLabel(view)</button> }
             </nav>
 
             @if (activeView == "Accounts") { @AccountsView() }
+            else if (activeView == "Leads") { <SalesLeads CompanyId="@ResolvedCompanyId" Embedded="true" /> }
             else if (activeView == "ICP") { @IcpView() }
             else if (activeView == "Runs") { @RunsView() }
             else if (activeView == "Data sources") { @SourcesView() }
@@ -87,8 +88,22 @@
     private SaveSuppressionRequest suppressionForm = new("domain", "", "", "manual", null);
     private SaveProspectContactRequest contactForm = new("", null, "decision-maker", null, null, null, "unknown", null, null, .5m, "manual", Guid.NewGuid().ToString("N"));
     private SaveProspectSignalRequest signalForm = new("hiring", "manual", Guid.NewGuid().ToString("N"), "", DateTime.UtcNow, .8m, 90);
+    [SupplyParameterFromQuery(Name = "view")] public string? RequestedView { get; set; }
 
-    protected override async Task OnParametersSetAsync() => await LoadAsync();
+    protected override async Task OnParametersSetAsync()
+    {
+        activeView = string.Equals(RequestedView, "leads", StringComparison.OrdinalIgnoreCase)
+            ? "Leads"
+            : activeView;
+        await LoadAsync();
+    }
+
+    private void SelectView(string view)
+    {
+        activeView = view;
+        var viewToken = view == "Leads" ? "leads" : null;
+        Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("view", viewToken), replace: true);
+    }
     private async Task LoadAsync()
     {
         isLoading = true; errorMessage = null;
@@ -373,6 +388,7 @@
     private string ProspectingViewLabel(string view) => view switch
     {
         "Accounts" => SalesText["Accounts"],
+        "Leads" => SalesText["Leads"],
         "ICP" => SalesText["Icp"],
         "Runs" => SalesText["Runs"],
         "Data sources" => SalesText["DataSources"],

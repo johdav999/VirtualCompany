@@ -35,8 +35,8 @@ public sealed class AgentStaffOverviewApiClient(
         try
         {
             var periodQuery = year.HasValue
-                ? $"?year={year.Value}&month={month!.Value}"
-                : string.Empty;
+                ? $"?year={year.Value}&month={month!.Value}&includeAllTasks=true"
+                : "?includeAllTasks=true";
             using var response = await transport.SendAsync(
                 companyId,
                 HttpMethod.Get,

@@ -13,6 +13,7 @@ public sealed class SalesAgentDecisionService(
     VirtualCompanyDbContext db,
     ISalesAgentAnalysisService analysis,
     IConversionAnalyticsService conversionAnalytics,
+    ICampaignPlanningService campaignPlanning,
     ICompanyKnowledgeSearchService knowledge) : ISalesAgentDecisionService
 {
     public async Task<SalesIntelligenceBriefResult> BuildIntelligenceBriefAsync(Guid companyId, Guid agentId,
@@ -257,15 +258,42 @@ public sealed class SalesAgentDecisionService(
         if (request.CampaignId.HasValue && campaigns.Count == 0) throw new KeyNotFoundException("Sales campaign not found.");
         var experiments = new List<SalesCampaignExperimentDto>();
         var missing = new List<string>();
+        var evidence = new List<string>();
         foreach (var campaign in campaigns)
         {
             var performance = await conversionAnalytics.GetCampaignPerformanceAsync(companyId, campaign.Id, ct);
+            var governedPerformance = await campaignPlanning.GetPerformanceAsync(companyId, campaign.Id, ct);
+            var readiness = await campaignPlanning.GetReadinessAsync(companyId, campaign.Id, ct);
+            var sourceVersion = $"sales-campaign:{campaign.Id:N}:version:{campaign.ConcurrencyVersion}";
+            evidence.Add($"Campaign '{campaign.Name}' ({campaign.Id:D}) uses version {campaign.ConcurrencyVersion}; " +
+                         $"lifecycle={campaign.LifecycleStatus}; status={campaign.Status}; " +
+                         $"readiness={(readiness?.IsReady == true ? "ready" : "not ready")}; " +
+                         $"readiness gaps={string.Join(", ", readiness?.MissingRequirements ?? [])}.");
+            if (governedPerformance is not null)
+            {
+                evidence.Add($"Campaign '{campaign.Name}' evidence at {governedPerformance.ObservedUtc:O}: " +
+                             $"audience={governedPerformance.Audience}; sent={governedPerformance.Sent}; " +
+                             $"delivered={governedPerformance.Delivered}; replied={governedPerformance.Replied}; " +
+                             $"opportunities={governedPerformance.Opportunities}; won deals={governedPerformance.WonDeals}; " +
+                             $"objective progress={governedPerformance.ObjectiveProgress?.ToString(CultureInfo.InvariantCulture) ?? "unavailable"}%; " +
+                             $"costs={FormatAmounts(governedPerformance.Costs)}; " +
+                             $"direct revenue={FormatAmounts(governedPerformance.DirectRevenue)}; " +
+                             $"attribution={FormatAttribution(governedPerformance.Attribution)}.");
+                if (governedPerformance.Costs.Count == 0)
+                    missing.Add($"Recorded campaign costs for {campaign.Name}");
+                if (governedPerformance.Attribution.Count == 0)
+                    missing.Add($"Stable campaign attribution evidence for {campaign.Name}");
+                if (governedPerformance.Audience == 0)
+                    missing.Add($"Captured eligible audience for {campaign.Name}");
+            }
+            if (readiness is { IsReady: false })
+                missing.AddRange(readiness.MissingRequirements.Select(x => $"{campaign.Name}: {x}"));
             if (performance is null)
             {
                 missing.Add($"Campaign performance for {campaign.Name}");
                 experiments.Add(new SalesCampaignExperimentDto(campaign.Id, campaign.Name, 0, 0, 0, 0, 0m, 0m, 0m,
                     "Insufficient evidence: collect at least 30 delivered messages before choosing a variant or audience change.",
-                    false, campaign.ApprovalRequired, [$"sales-campaign:{campaign.Id:N}"]));
+                    false, campaign.ApprovalRequired, [sourceVersion]));
                 continue;
             }
             var sufficient = performance.Counts.Delivered >= 30;
@@ -279,11 +307,18 @@ public sealed class SalesAgentDecisionService(
                 performance.Counts.Delivered, performance.Counts.Replied, performance.Counts.Converted,
                 performance.Rates.DeliveryRate, performance.Rates.ReplyRate, performance.Rates.ConversionRate,
                 recommendation, sufficient && campaign.OutboundEnabled && approved && campaign.Status == SalesStatuses.Draft,
-                campaign.ApprovalRequired, [$"sales-campaign:{campaign.Id:N}", $"sales-campaign-performance:{campaign.Id:N}"]));
+                campaign.ApprovalRequired, [sourceVersion, $"sales-campaign-performance:{campaign.Id:N}"]));
         }
+        var analysisObjective = string.Join("\n", new[]
+        {
+            request.Objective ?? "Recommend the next bounded campaign decision.",
+            "Use only the following campaign evidence. Treat unavailable values as unknown, preserve currency boundaries, " +
+            "do not infer causation from influenced attribution, and recommend human review for consequential changes.",
+            string.Join("\n", evidence)
+        });
         var advice = await Analyze(companyId, agentId, actorUserId, SalesAgentAnalysisTypes.CampaignOptimization,
-            request.CampaignId, request.Objective, now, ct);
-        return new SalesCampaignOptimizationResult(advice, experiments, missing, true);
+            request.CampaignId, analysisObjective, now, ct);
+        return new SalesCampaignOptimizationResult(advice, experiments, missing.Distinct().ToList(), true);
     }
 
     public async Task<SalesProposalAdviceResult> AdviseProposalAsync(Guid companyId, Guid agentId,
@@ -352,6 +387,16 @@ public sealed class SalesAgentDecisionService(
     };
 
     private static bool IsAllowed(string status) => status is "allowed" or "granted" or "consented" or "opted_in";
+    private static string FormatAmounts(IReadOnlyList<CampaignCurrencyAmountResponse> amounts) =>
+        amounts.Count == 0
+            ? "unavailable"
+            : string.Join("; ", amounts.Select(x =>
+                $"{x.Amount.ToString(CultureInfo.InvariantCulture)} {x.Currency} ({x.Classification})"));
+    private static string FormatAttribution(IReadOnlyList<CampaignAttributionEvidenceResponse> attribution) =>
+        attribution.Count == 0
+            ? "unavailable"
+            : string.Join("; ", attribution.GroupBy(x => x.Classification)
+                .Select(x => $"{x.Count()} {x.Key}, confidence range {x.Min(v => v.Confidence):0.00}-{x.Max(v => v.Confidence):0.00}"));
     private static void AddFact(List<SalesIntelligenceFactDto> facts, string label, string value, string sourceId, DateTime asOf) =>
         facts.Add(new SalesIntelligenceFactDto(label, value, sourceId, Utc(asOf)));
     private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();

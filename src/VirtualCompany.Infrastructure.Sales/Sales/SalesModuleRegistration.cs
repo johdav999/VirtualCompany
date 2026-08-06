@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.CustomerMemory;
 using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Marketing;
 using VirtualCompany.Infrastructure.CustomerMemory;
 
 namespace VirtualCompany.Infrastructure.Sales;
@@ -14,16 +15,21 @@ public static class SalesModuleRegistration
     {
         services.AddOptions<SequenceExecutionWorkerOptions>()
             .Bind(configuration.GetSection(SequenceExecutionWorkerOptions.SectionName));
+        services.AddOptions<CampaignSchedulingWorkerOptions>()
+            .Bind(configuration.GetSection(CampaignSchedulingWorkerOptions.SectionName));
         services.AddOptions<PipelineRiskScoringWorkerOptions>()
             .Bind(configuration.GetSection(PipelineRiskScoringWorkerOptions.SectionName))
             .PostConfigure(options => options.RunIntervalHours = Math.Max(1, options.RunIntervalHours));
         services.AddHostedService<SequenceExecutionBackgroundService>();
+        services.AddHostedService<CampaignSchedulingBackgroundService>();
         services.AddHostedService<ProspectingRunBackgroundService>();
         services.AddHostedService<PipelineRiskScoringBackgroundService>();
         services.AddOptions<CustomerMemoryOptions>()
             .Bind(configuration.GetSection(CustomerMemoryOptions.SectionName));
         services.AddScoped<ICustomerMemoryService, CustomerMemoryService>();
         services.AddScoped<IOutboundCampaignService, OutboundCampaignService>();
+        services.AddScoped<ICampaignPlanningService, CampaignPlanningService>();
+        services.AddScoped<ICampaignSchedulingCoordinator, CampaignSchedulingCoordinator>();
         services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
         services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
         services.AddScoped<IConversionAnalyticsService, ConversionAnalyticsService>();
@@ -49,6 +55,8 @@ public static class SalesModuleRegistration
         services.AddSingleton<ISalesAutomationPolicyEvaluator, SalesAutomationPolicyEvaluator>();
         services.AddScoped<ISalesAgentAnalysisService, SalesAgentAnalysisService>();
         services.AddScoped<ISalesAgentDecisionService, SalesAgentDecisionService>();
+        services.AddScoped<IMarketingOperationsService, MarketingOperationsService>();
+        services.AddScoped<IMarketingAgentAnalysisService, MarketingAgentAnalysisService>();
         return services;
     }
 }
