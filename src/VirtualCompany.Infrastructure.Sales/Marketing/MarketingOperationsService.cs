@@ -1,5 +1,7 @@
 using Microsoft.EntityFrameworkCore;
+using System.Text.Json;
 using System.Text.Json.Nodes;
+using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -10,7 +12,11 @@ namespace VirtualCompany.Infrastructure.Sales;
 public sealed partial class MarketingOperationsService : IMarketingOperationsService
 {
     private readonly VirtualCompanyDbContext _db;
-    public MarketingOperationsService(VirtualCompanyDbContext db) => _db = db;
+    private readonly IMarketingAgentAnalysisService? _analysis;
+    private readonly IMarketingEventPublisher? _events;
+    public MarketingOperationsService(VirtualCompanyDbContext db, IMarketingAgentAnalysisService? analysis = null,
+        IMarketingEventPublisher? events = null)
+    { _db = db; _analysis = analysis; _events = events; }
 
     public async Task<MarketingDashboardDto> GetDashboardAsync(Guid companyId, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
@@ -132,8 +138,30 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
     public async Task<MarketingContentBriefDto> CreateContentBriefAsync(Guid companyId, Guid userId, CreateMarketingContentBriefRequest r, CancellationToken ct)
     {
         await ValidateReferences(companyId, r.CampaignId, r.PlanId, ct);
+        if (r.CampaignId.HasValue && !r.SegmentVersionId.HasValue)
+            throw new InvalidOperationException("Campaign-linked content requires an approved target segment version.");
+        MarketingCustomerSegmentVersion? segment = null;
+        if (r.SegmentVersionId.HasValue)
+            segment = await _db.MarketingCustomerSegmentVersions.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == r.SegmentVersionId &&
+                    (x.Status == MarketingStrategicStatuses.Approved || x.Status == MarketingStrategicStatuses.Active), ct)
+                ?? throw new InvalidOperationException("The selected target segment version is not approved or is unavailable.");
+        foreach (var (json, label) in new[] { (r.SupportingPointsJson, "Supporting points"),
+            (r.RequiredClaimsJson, "Required claims"), (r.ProhibitedClaimsJson, "Prohibited claims"),
+            (r.SeoRequirementsJson, "SEO requirements"), (r.DesiredFormatsJson, "Desired formats"),
+            (r.VariantRequirementsJson, "Variant requirements"), (r.EvidenceRequirementsJson, "Evidence requirements"),
+            (r.ApprovalPolicyJson, "Approval policy") }) ValidateMarketingJson(json, label);
+        var customerInsight = !string.IsNullOrWhiteSpace(r.CustomerInsight) ? r.CustomerInsight : segment is null
+            ? "Not specified"
+            : JsonSerializer.Serialize(new { segmentVersionId = segment.Id, segment.NeedsJson,
+                segment.BehaviorsJson, segment.ChannelsJson, segment.PricingJson, segment.SizeLow,
+                segment.SizeHigh, segment.Confidence });
         var brief = new MarketingContentBrief(Guid.NewGuid(), companyId, r.Title, r.Purpose, r.Audience,
-            r.Channel, r.Language, r.Tone, r.CallToAction, r.CampaignId, r.PlanId, r.DueUtc, userId, null);
+            r.Channel, r.Language, r.Tone, r.CallToAction, r.CampaignId, r.PlanId, r.DueUtc, userId, null,
+            r.SegmentVersionId, ValueOr(r.MeasurableObjective), ValueOr(r.FunnelStage, "awareness"), customerInsight,
+            ValueOr(r.KeyMessage), r.SupportingPointsJson, ValueOr(r.Offer), r.RequiredClaimsJson,
+            r.ProhibitedClaimsJson, r.SeoRequirementsJson, ValueOr(r.VisualDirection), r.DesiredFormatsJson,
+            r.VariantRequirementsJson, r.EvidenceRequirementsJson, r.ApprovalPolicyJson);
         _db.MarketingContentBriefs.Add(brief);
         await _db.SaveChangesAsync(ct);
         return Map(brief, []);
@@ -146,6 +174,88 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         _db.MarketingContentVariants.Add(variant);
         await _db.SaveChangesAsync(ct);
         return Map(variant);
+    }
+
+    public async Task<MarketingContentVariantDto?> CreateContentVariantVersionAsync(Guid companyId, Guid variantId,
+        CreateMarketingContentVariantVersionRequest r, CancellationToken ct)
+    {
+        var source = await _db.MarketingContentVariants.IgnoreQueryFilters().AsNoTracking().SingleOrDefaultAsync(x =>
+            x.CompanyId == companyId && x.Id == variantId, ct);
+        if (source is null) return null;
+        var nextVersion = await _db.MarketingContentVariants.IgnoreQueryFilters().Where(x =>
+            x.CompanyId == companyId && x.VariantFamilyId == source.VariantFamilyId).MaxAsync(x => x.VersionNumber, ct) + 1;
+        var variant = new MarketingContentVariant(Guid.NewGuid(), companyId, source.MarketingContentBriefId,
+            r.Name, r.Body, r.SourceReferences, false, source.ContentFormat, null, "human-revision",
+            "human-revision-v1", null, 0, source.VariantFamilyId, nextVersion);
+        _db.MarketingContentVariants.Add(variant);
+        await _db.SaveChangesAsync(ct);
+        return Map(variant);
+    }
+
+    public async Task<bool> RetireContentVariantAsync(Guid companyId, Guid variantId, CancellationToken ct)
+    {
+        var variant = await _db.MarketingContentVariants.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+            x.CompanyId == companyId && x.Id == variantId, ct);
+        if (variant is null) return false;
+        variant.Retire();
+        await _db.SaveChangesAsync(ct);
+        return true;
+    }
+
+    public async Task<GenerateMarketingContentVariantsResult> GenerateContentVariantsAsync(Guid companyId,
+        Guid userId, Guid briefId, GenerateMarketingContentVariantsRequest r, CancellationToken ct)
+    {
+        if (_analysis is null) throw new InvalidOperationException("Marketing reasoning is unavailable.");
+        if (r.VariantCount is < 1 or > 5) throw new ArgumentOutOfRangeException(nameof(r.VariantCount));
+        var format = r.ContentFormat.Trim().ToLowerInvariant();
+        if (format is not ("website" or "landing_page" or "article" or "social_post" or "email" or "ad" or
+            "webinar" or "video_script" or "case_study" or "sales_enablement"))
+            throw new ArgumentException("Unsupported Marketing content format.");
+        var existing = await _db.MarketingContentVariants.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.MarketingContentBriefId == briefId && x.IdempotencyKey == r.IdempotencyKey)
+            .OrderBy(x => x.BatchIndex).ToListAsync(ct);
+        if (existing.Count > 0)
+            return new GenerateMarketingContentVariantsResult(existing[0].GenerationRunId ?? Guid.Empty,
+                AgentAiRunStatuses.Completed, existing.Select(Map).ToArray(), [], false);
+        var brief = await _db.MarketingContentBriefs.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == briefId, ct)
+            ?? throw new InvalidOperationException("Content brief is unavailable.");
+        if (brief.Status != MarketingStatuses.Draft)
+            throw new InvalidOperationException("New variants can only be generated for a draft content brief.");
+        var objective = $"Generate {r.VariantCount} distinct {format} draft variants. Brief purpose: {brief.Purpose}. " +
+            $"Audience: {brief.Audience}. Channel: {brief.Channel}. Language: {brief.Language}. Tone: {brief.Tone}. " +
+            $"Objective: {brief.MeasurableObjective}. Funnel stage: {brief.FunnelStage}. Customer insight: {brief.CustomerInsight}. " +
+            $"Key message: {brief.KeyMessage}. Offer: {brief.Offer}. Required claims: {brief.RequiredClaimsJson}. " +
+            $"Prohibited claims: {brief.ProhibitedClaimsJson}. SEO: {brief.SeoRequirementsJson}. " +
+            $"Evidence requirements: {brief.EvidenceRequirementsJson}. Call to action: {brief.CallToAction}. Operator instructions: {r.Instructions}. " +
+            "Omit any product fact, price, statistic, testimonial, competitor claim, or regulated claim without a supplied source.";
+        var result = await _analysis.AnalyzeAsync(companyId, r.AgentId, userId,
+            new RoleAgentAnalysisRequest(MarketingAgentAnalysisTypes.ContentAdvice, briefId, 30, objective), ct);
+        var sourceIds = result.Sources.Select(x => x.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var invalidClaims = result.Claims.Where(x => x.SourceIds.Count == 0 ||
+            x.SourceIds.Any(id => !sourceIds.Contains(id))).ToArray();
+        if (result.Status != AgentAiRunStatuses.Completed || invalidClaims.Length > 0 || result.Claims.Count == 0)
+        {
+            var missing = result.MissingEvidence.Concat(invalidClaims.Length > 0
+                    ? ["Generated factual claims did not have accessible evidence."] : [])
+                .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            return new GenerateMarketingContentVariantsResult(result.RunId, AgentAiRunStatuses.NeedsReview,
+                [], missing, true);
+        }
+        var references = JsonSerializer.Serialize(result.Sources.Select(x => x.Id).Distinct(StringComparer.OrdinalIgnoreCase));
+        var variants = new List<MarketingContentVariant>();
+        for (var index = 0; index < r.VariantCount; index++)
+        {
+            var claim = result.Claims[index % result.Claims.Count];
+            var body = $"{result.Summary}\n\n{claim.Text}\n\n{brief.CallToAction}";
+            var variant = new MarketingContentVariant(Guid.NewGuid(), companyId, briefId,
+                $"Maya {format.Replace('_', ' ')} variant {index + 1}", body, references, true, format,
+                result.RunId, "1.0.0", "marketing-content-v1", r.IdempotencyKey, index);
+            variants.Add(variant); _db.MarketingContentVariants.Add(variant);
+        }
+        await _db.SaveChangesAsync(ct);
+        return new GenerateMarketingContentVariantsResult(result.RunId, result.Status,
+            variants.Select(Map).ToArray(), result.MissingEvidence, result.RequiresReview);
     }
 
     public async Task<bool> ReviewContentAsync(Guid companyId, Guid briefId, ReviewMarketingContentRequest r, CancellationToken ct)
@@ -203,6 +313,10 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         task?.UpdateStatus(WorkTaskStatus.Completed,
             new Dictionary<string, JsonNode?> { ["accepted"] = JsonValue.Create(r.Accepted), ["reason"] = JsonValue.Create(r.Reason) },
             r.Accepted ? "Sales accepted the marketing handoff." : "Sales declined the marketing handoff.");
+        if (_events is not null) await _events.PublishAsync(companyId, new PublishMarketingEventCommand(
+            MarketingEventTypes.SalesHandoffOutcome, "marketing_sales_handoff", handoff.Id.ToString("N"),
+            1, JsonSerializer.Serialize(new { accepted = r.Accepted, r.Reason, r.LeadId, r.DealId }),
+            $"marketing-handoff:{handoff.Id:N}", DateTime.UtcNow), ct);
         await _db.SaveChangesAsync(ct);
         return Map(handoff);
     }
@@ -217,10 +331,27 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         var existing = await _db.MarketingChannelObservations.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.IdempotencyKey == r.IdempotencyKey, ct);
         if (existing is not null) return Map(existing);
+        MarketingChannelObservation? corrected = null;
+        if (r.CorrectionOfObservationId.HasValue)
+        {
+            corrected = await _db.MarketingChannelObservations.IgnoreQueryFilters().SingleOrDefaultAsync(x =>
+                x.CompanyId == companyId && x.Id == r.CorrectionOfObservationId.Value, ct)
+                ?? throw new InvalidOperationException("The observation being corrected is unavailable.");
+            if (!corrected.MetricCode.Equals(r.MetricCode, StringComparison.OrdinalIgnoreCase) ||
+                !corrected.Unit.Equals(r.Unit, StringComparison.OrdinalIgnoreCase) ||
+                corrected.PeriodStartUtc != NormalizeUtc(r.PeriodStartUtc) || corrected.PeriodEndUtc != NormalizeUtc(r.PeriodEndUtc))
+                throw new InvalidOperationException("A correction must retain the metric, unit, and observation period.");
+        }
         var observation = new MarketingChannelObservation(Guid.NewGuid(), companyId, r.Provider, r.MetricCode,
             r.Value, r.Unit, r.PeriodStartUtc, r.PeriodEndUtc, r.CampaignId, r.ActivityId,
-            r.SourceReference, r.IdempotencyKey);
+            r.SourceReference, r.IdempotencyKey, r.CorrectionOfObservationId);
+        corrected?.Supersede();
         _db.MarketingChannelObservations.Add(observation);
+        if (_events is not null && r.CorrectionOfObservationId.HasValue)
+            await _events.PublishAsync(companyId, new PublishMarketingEventCommand(MarketingEventTypes.IntelligenceChange,
+                "marketing_observation", observation.Id.ToString("N"), 1,
+                JsonSerializer.Serialize(new { correctionOf = r.CorrectionOfObservationId, r.MetricCode, r.SourceReference }),
+                $"marketing-observation:{observation.Id:N}", DateTime.UtcNow), ct);
         await _db.SaveChangesAsync(ct);
         return Map(observation);
     }
@@ -256,6 +387,7 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         var evidence = await _db.MarketingChannelObservations.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId &&
                 x.SourceReference == $"experiment:{experiment.Id:D}" &&
+                !x.IsSuperseded &&
                 x.PeriodEndUtc >= experiment.StartsUtc && x.PeriodStartUtc <= experiment.EndsUtc)
             .Select(x => new { x.MetricCode, x.Value })
             .ToListAsync(ct);
@@ -267,6 +399,10 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         if (!evidence.Any(x => x.MetricCode == experiment.GuardrailMetric))
             throw new InvalidOperationException("Record the guardrail metric before completing the experiment.");
         experiment.Complete(request.Decision);
+        if (_events is not null) await _events.PublishAsync(companyId, new PublishMarketingEventCommand(
+            MarketingEventTypes.ExperimentThreshold, "marketing_experiment", experiment.Id.ToString("N"), 1,
+            JsonSerializer.Serialize(new { sampleSize, experiment.PrimaryMetric, experiment.GuardrailMetric, request.Decision }),
+            $"marketing-experiment:{experiment.Id:N}", DateTime.UtcNow), ct);
         await _db.SaveChangesAsync(ct);
         return Map(experiment);
     }
@@ -323,9 +459,14 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
     private static DateTime NormalizeUtc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
     private static MarketingObjectiveDto Map(MarketingObjective x) => new(x.Id, x.Name, x.ObjectiveType, x.TargetValue, x.Unit, x.BaselineValue, x.PeriodStartUtc, x.PeriodEndUtc, x.Status, x.Version);
     private static MarketingPlanDto Map(MarketingPlan x) => new(x.Id, x.Name, x.Summary, x.StartsUtc, x.EndsUtc, x.PlannedBudget, x.BudgetCurrency, x.Status, x.Version);
-    private static MarketingContentVariantDto Map(MarketingContentVariant x) => new(x.Id, x.Name, x.Body, x.SourceReferences, x.GeneratedByAi, x.Status, x.CreatedUtc);
-    private static MarketingContentBriefDto Map(MarketingContentBrief x, IReadOnlyList<MarketingContentVariantDto> variants) => new(x.Id, x.SalesCampaignId, x.MarketingPlanId, x.Title, x.Purpose, x.Audience, x.Channel, x.Language, x.Tone, x.CallToAction, x.DueUtc, x.Status, x.Version, variants);
+    private static MarketingContentVariantDto Map(MarketingContentVariant x) => new(x.Id, x.VariantFamilyId,
+        x.VersionNumber, x.Name, x.Body, x.ContentFormat, x.SourceReferences, x.GeneratedByAi,
+        x.GenerationRunId, x.CapabilityVersion, x.PromptVersion, x.Status, x.CreatedUtc);
+    private static MarketingContentBriefDto Map(MarketingContentBrief x, IReadOnlyList<MarketingContentVariantDto> variants) => new(x.Id, x.SalesCampaignId, x.MarketingPlanId, x.Title, x.Purpose, x.Audience, x.Channel, x.Language, x.Tone, x.CallToAction, x.DueUtc, x.Status, x.Version, variants, x.MarketingCustomerSegmentVersionId, x.MeasurableObjective, x.FunnelStage, x.CustomerInsight, x.KeyMessage, x.SupportingPointsJson, x.Offer, x.RequiredClaimsJson, x.ProhibitedClaimsJson, x.SeoRequirementsJson, x.VisualDirection, x.DesiredFormatsJson, x.VariantRequirementsJson, x.EvidenceRequirementsJson, x.ApprovalPolicyJson);
+    private static void ValidateMarketingJson(string value, string label)
+    { try { JsonNode.Parse(value); } catch (System.Text.Json.JsonException ex) { throw new ArgumentException($"{label} must be valid JSON.", ex); } }
+    private static string ValueOr(string? value, string fallback = "Not specified") => string.IsNullOrWhiteSpace(value) ? fallback : value.Trim();
     private static MarketingSalesHandoffDto Map(MarketingSalesHandoff x) => new(x.Id, x.SalesCampaignId, x.ContactId, x.CustomerCompanyId, x.LinkedLeadId, x.LinkedDealId, x.Reason, x.SuggestedAction, x.Urgency, x.ExpiresUtc, x.EvidenceReferences, x.Status, x.DecisionReason, x.UpdatedUtc);
-    private static MarketingObservationDto Map(MarketingChannelObservation x) => new(x.Id, x.SalesCampaignId, x.SalesCampaignActivityId, x.Provider, x.MetricCode, x.Value, x.Unit, x.PeriodStartUtc, x.PeriodEndUtc, x.SourceReference, x.RetrievedUtc);
+    private static MarketingObservationDto Map(MarketingChannelObservation x) => new(x.Id, x.SalesCampaignId, x.SalesCampaignActivityId, x.Provider, x.MetricCode, x.Value, x.Unit, x.PeriodStartUtc, x.PeriodEndUtc, x.SourceReference, x.RetrievedUtc, x.CorrectionOfObservationId, x.IsSuperseded);
     private static MarketingExperimentDto Map(MarketingExperiment x) => new(x.Id, x.SalesCampaignId, x.Name, x.Hypothesis, x.PrimaryMetric, x.GuardrailMetric, x.MinimumSampleSize, x.StartsUtc, x.EndsUtc, x.Status, x.Decision);
 }

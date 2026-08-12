@@ -9,13 +9,15 @@ namespace VirtualCompany.Infrastructure.Sales;
 public sealed class MarketingAgentAnalysisService(
     VirtualCompanyDbContext db,
     ICompanyKnowledgeSearchService knowledge,
-    IAgentReasoningGateway reasoning) : IMarketingAgentAnalysisService
+    IAgentReasoningGateway reasoning,
+    IMarketingAgentAccessGuard accessGuard) : IMarketingAgentAnalysisService
 {
     public async Task<RoleAgentAnalysisResult> AnalyzeAsync(Guid companyId, Guid agentId, Guid? actorUserId,
         RoleAgentAnalysisRequest request, CancellationToken ct)
     {
         if (companyId == Guid.Empty || agentId == Guid.Empty || !MarketingAgentAnalysisTypes.All.Contains(request.AnalysisType))
             throw new ArgumentException("A valid company, Marketing agent, and analysis type are required.");
+        await accessGuard.RequireActiveMarketingAgentAsync(companyId, agentId, ct);
         var now = request.AsOfUtc?.ToUniversalTime() ?? DateTime.UtcNow;
         var horizon = Math.Clamp(request.HorizonDays, 1, 365);
         var sources = new List<AgentAiSource>();
@@ -50,7 +52,7 @@ public sealed class MarketingAgentAnalysisService(
         }
 
         var observations = await db.MarketingChannelObservations.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.PeriodEndUtc >= now.AddDays(-horizon))
+            .Where(x => x.CompanyId == companyId && !x.IsSuperseded && x.PeriodEndUtc >= now.AddDays(-horizon))
             .OrderByDescending(x => x.PeriodEndUtc).Take(50).ToListAsync(ct);
         foreach (var group in observations.GroupBy(x => new { x.MetricCode, x.Unit }))
         {
@@ -64,6 +66,28 @@ public sealed class MarketingAgentAnalysisService(
         if (request.AnalysisType is MarketingAgentAnalysisTypes.PerformanceAnalysis or MarketingAgentAnalysisTypes.OperatingCadence &&
             observations.Count == 0) missing.Add("Source-linked channel observations");
 
+        var strategies = await db.MarketingStrategies.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && (x.Status == "active" || x.Status == "approved" || x.Status == "draft"))
+            .OrderByDescending(x => x.UpdatedUtc).Take(5).ToListAsync(ct);
+        foreach (var item in strategies)
+            sources.Add(new AgentAiSource($"marketing-strategy:{item.Id:N}", "marketing_strategy", item.Title,
+                $"Classification observed record; status {item.Status}; valid {item.ValidFromUtc:O} to {item.ValidToUtc:O}; summary {Trim(item.Summary, 1000)}; evidence {Trim(item.EvidenceReferencesJson, 1000)}; missing evidence {Trim(item.MissingEvidenceJson, 700)}.", item.UpdatedUtc));
+
+        var segments = await db.MarketingCustomerSegmentVersions.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && (x.Status == "active" || x.Status == "approved"))
+            .OrderByDescending(x => x.UpdatedUtc).Take(10).ToListAsync(ct);
+        foreach (var item in segments)
+            sources.Add(new AgentAiSource($"marketing-segment-version:{item.Id:N}", "marketing_segment", $"Segment version {item.VersionNumber}",
+                $"Classification observed record with estimated fields; target {item.TargetState}; size estimate {item.SizeLow?.ToString() ?? "unknown"} to {item.SizeHigh?.ToString() ?? "unknown"} using {item.SizeMethod}; confidence {item.Confidence:F2}; attractiveness {item.AttractivenessScore:F2}; needs {Trim(item.NeedsJson, 800)}; behavior {Trim(item.BehaviorsJson, 800)}; channels {Trim(item.ChannelsJson, 800)}; price sensitivity {Trim(item.PricingJson, 800)}; evidence {Trim(item.EvidenceJson, 1000)}.", item.UpdatedUtc));
+        if (request.AnalysisType == MarketingAgentAnalysisTypes.AudienceIntelligence && segments.Count == 0 && !request.IsBootstrap)
+            missing.Add("Approved strategic customer segments with size, needs, behavior, channel, and pricing evidence");
+
+        var intelligence = await db.MarketingIntelligenceRecords.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && !x.IsArchived).OrderByDescending(x => x.ObservedUtc).Take(15).ToListAsync(ct);
+        foreach (var item in intelligence)
+            sources.Add(new AgentAiSource($"marketing-intelligence:{item.Id:N}", item.Kind, item.Subject,
+                $"Classification {item.Classification}; confidence {item.Confidence:F2}; observed {item.ObservedUtc:O}; source type {item.SourceType}; source {item.SourceReference}; summary {Trim(item.Summary, 1000)}.", item.ObservedUtc));
+
         var content = await db.MarketingContentBriefs.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && (x.Status == "draft" || x.Status == "submitted"))
             .OrderBy(x => x.DueUtc).Take(20).ToListAsync(ct);
@@ -75,6 +99,38 @@ public sealed class MarketingAgentAnalysisService(
             priorities.Add(new RoleAgentPriority("marketing_content", item.Id, item.Title,
                 item.Status == "submitted" ? 80 : item.DueUtc < now.AddDays(3) ? 70 : 40,
                 item.Status, [item.Status == "submitted" ? "human_review_required" : "draft_not_submitted"], sourceId));
+        }
+
+        var attribution = await db.MarketingAttributionResults.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.PeriodEndUtc >= now.AddDays(-horizon))
+            .OrderByDescending(x => x.CreatedUtc).Take(15).ToListAsync(ct);
+        foreach (var item in attribution)
+            sources.Add(new AgentAiSource($"marketing-attribution:{item.Id:N}", "marketing_attribution", item.SubjectType,
+                $"Classification {item.Classification}; model {item.Model}; value {item.AttributedValue} {item.Unit}; confidence {item.Confidence:F2}; period {item.PeriodStartUtc:O} to {item.PeriodEndUtc:O}; evidence {Trim(item.EvidenceJson, 900)}. This record does not establish causality unless its classification explicitly supports direct observation.", item.CreatedUtc));
+
+        var actions = await db.MarketingChannelActions.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.UpdatedUtc >= now.AddDays(-horizon))
+            .OrderByDescending(x => x.UpdatedUtc).Take(15).ToListAsync(ct);
+        foreach (var item in actions)
+            sources.Add(new AgentAiSource($"marketing-channel-action:{item.Id:N}", "marketing_channel_action", item.ActionType,
+                $"Status {item.Status}; scheduled {item.ScheduledUtc?.ToString("O") ?? "not scheduled"}; attempts {item.AttemptCount}; failure {item.FailureCode ?? "none"}; approval linked {item.ApprovalRequestId.HasValue}.", item.UpdatedUtc));
+
+        var journeys = await db.MarketingLifecycleJourneys.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status != "completed").OrderByDescending(x => x.UpdatedUtc).Take(10).ToListAsync(ct);
+        foreach (var item in journeys)
+            sources.Add(new AgentAiSource($"marketing-journey:{item.Id:N}", "marketing_lifecycle_journey", item.Name,
+                $"Status {item.Status}; version {item.Version}; valid {item.ValidFromUtc:O} to {item.ValidToUtc:O}; frequency cap {item.FrequencyCap}; approval linked {item.ApprovalRequestId.HasValue}.", item.UpdatedUtc));
+
+        var events = await db.MarketingEventTriggers.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status != "resolved").OrderByDescending(x => x.CreatedUtc).Take(15).ToListAsync(ct);
+        foreach (var item in events)
+        {
+            var sourceId = $"marketing-event:{item.Id:N}";
+            sources.Add(new AgentAiSource(sourceId, "marketing_event", item.EventType,
+                $"Severity {item.Severity}; status {item.Status}; source {item.SourceType}:{item.SourceId} version {item.SourceVersion}; evidence {Trim(item.EvidenceJson, 800)}; failure {item.FailureSummary ?? "none"}.", item.UpdatedUtc));
+            if (item.Status is "pending" or "failed") priorities.Add(new RoleAgentPriority("marketing_event", item.Id,
+                item.EventType.Replace('_', ' '), item.Severity == "critical" ? 95 : item.Severity == "high" ? 85 : 65,
+                item.Status, [item.Severity, item.SourceType], sourceId));
         }
 
         if (request.AnalysisType is MarketingAgentAnalysisTypes.ContentAdvice or MarketingAgentAnalysisTypes.Planning or MarketingAgentAnalysisTypes.OperatingCadence)
@@ -94,15 +150,18 @@ public sealed class MarketingAgentAnalysisService(
             sources.Add(new AgentAiSource("marketing-state:empty", "marketing_state", "Marketing evidence state",
                 "No authoritative Marketing records matched this bounded analysis request.", now));
         var capability = CapabilityId(request.AnalysisType);
+        var bootstrapInstruction = request.IsBootstrap
+            ? " This is the company's first segment proposal: do not require a pre-existing approved segment. Treat unsupported size, needs, behavior, channel, pricing, and economics statements as explicit assumptions or evidence gaps for human review."
+            : string.Empty;
         var result = await reasoning.ReasonAsync(new AgentReasoningRequest(companyId, agentId, capability, "1.0.0",
             $"marketing-role-v1:{NormalizeCadence(request.Cadence)}", "1.0.0",
-            $"Act as a Marketing analysis adviser. Analyze '{request.AnalysisType}' over {horizon} days. Separate observed facts, attributed outcomes, inferences, and missing evidence. Recommend only internal review actions. Never publish content, spend budget, contact a person, launch a campaign, or modify Sales state. Objective: {request.Objective ?? "none"}.",
-            sources.Take(60).ToArray(), ["recommend"], [], actorUserId), ct);
+            $"Act as a Marketing analysis adviser. Analyze '{request.AnalysisType}' over {horizon} days. Every material claim must cite one supplied source ID and use the shared classification confirmed_fact, inference, or unknown. Use confirmed_fact only for directly supported evidence, inference for reasoned conclusions, and unknown for assumptions or evidence gaps. Estimates must be inference or unknown and state method, range, unit, period, geography and currency where relevant, confidence, and missing evidence; never use false precision. Explain how approved segment needs, behavior, channel presence, price sensitivity, size, economics, and target state affect Product, Price, Place, Promotion, positioning, objectives, budgets, campaigns, content, lifecycle, Sales handoffs, experiments, and measurement. Deterministic scoring and approval remain authoritative. Recommend only internal review actions. Never activate a segment or strategy, publish content, spend budget, contact a person, launch a campaign, or modify Sales state.{bootstrapInstruction} Objective: {request.Objective ?? "none"}.",
+            sources.Take(90).ToArray(), ["recommend"], [], actorUserId), ct);
         var allMissing = missing.Concat(result.MissingEvidence).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
         return new RoleAgentAnalysisResult(result.RunId, capability, result.Status, result.Summary, result.Confidence,
             now, metrics, priorities.OrderByDescending(x => x.Score).Take(30).ToArray(), result.Claims,
-            sources.Take(60).ToArray(), allMissing, result.NextActions,
-            result.Status != AgentAiRunStatuses.Completed || allMissing.Length > 0);
+            sources.Take(90).ToArray(), allMissing, result.NextActions,
+            result.Status != AgentAiRunStatuses.Completed || allMissing.Length > 0, result.FailureCode);
     }
 
     private static string CapabilityId(string type) => type.Trim().ToLowerInvariant() switch

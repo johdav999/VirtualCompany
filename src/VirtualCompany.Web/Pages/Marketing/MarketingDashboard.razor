@@ -5,6 +5,7 @@
 @inject MarketingApiClient MarketingApi
 @inject OnboardingApiClient OnboardingApi
 @inject AgentApiClient AgentApi
+@inject SalesApiClient SalesApi
 @inject NavigationManager Navigation
 
 <PageTitle>Marketing</PageTitle>
@@ -17,6 +18,7 @@
             <p>Plan measurable growth, coordinate campaigns and content, and hand qualified demand to Sales.</p>
         </div>
         <div class="marketing-header__actions">
+            <a class="btn btn-outline-primary" href="@WithCompany("/company-operation")">Company operation</a>
             <button class="btn btn-outline-primary" disabled="@isLoading" @onclick="LoadAsync">Refresh</button>
             <button class="btn btn-primary" disabled="@(isLoading || marketingAgentId is null)" @onclick="RunAnalysisAsync">Ask Maya for priorities</button>
         </div>
@@ -187,7 +189,12 @@
                     <div class="marketing-content-list">
                         @foreach (var item in dashboard.Content)
                         {
-                            <article><div><strong>@item.Title</strong><span>@item.Channel / @item.Audience / @item.Status</span><p>@item.Purpose</p></div>
+                            <article><div><strong>@item.Title</strong><span>@item.Channel / @item.Audience / @item.Status</span><p>@item.Purpose</p>
+                                @if (item.Variants.Count > 0)
+                                {
+                                    <div class="marketing-list">@foreach (var variant in item.Variants) { <article><div><strong>@variant.Name</strong><span>v@variant.VersionNumber · @Friendly(variant.ContentFormat) · @Friendly(variant.Status)</span><p>@variant.Body</p><small>Sources: @JsonSummary(variant.SourceReferences, "No sources recorded") · @variant.PromptVersion</small></div></article> }</div>
+                                }
+                            </div>
                             @if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <div class="marketing-inline-actions"><button class="btn btn-sm btn-outline-primary" @onclick="() => PreflightContentAsync(item.Id)">Check readiness</button><button class="btn btn-sm btn-primary" @onclick="() => SubmitContentAsync(item.Id)">Submit for review</button></div> }
                             else if (item.Status.Equals("submitted", StringComparison.OrdinalIgnoreCase)) { <div><button class="btn btn-sm btn-primary" @onclick="() => ReviewContentAsync(item.Id, true)">Approve</button><button class="btn btn-sm btn-outline-danger" @onclick="() => ReviewContentAsync(item.Id, false)">Reject</button></div> }</article>
                         }
@@ -199,6 +206,9 @@
                     <label>Purpose<InputTextArea @bind-Value="contentForm.Purpose" /></label>
                     <label>Audience<InputText @bind-Value="contentForm.Audience" /></label>
                     <div class="marketing-form__row"><label>Channel<InputText @bind-Value="contentForm.Channel" /></label><label>Language<InputText @bind-Value="contentForm.Language" /></label></div>
+                    <div class="marketing-form__row"><label>Measurable objective<InputText @bind-Value="contentForm.MeasurableObjective" /></label><label>Funnel stage<InputSelect @bind-Value="contentForm.FunnelStage"><option value="awareness">Awareness</option><option value="consideration">Consideration</option><option value="conversion">Conversion</option><option value="retention">Retention</option></InputSelect></label></div>
+                    <label>Key message<InputTextArea @bind-Value="contentForm.KeyMessage" /></label>
+                    <label>Offer<InputText @bind-Value="contentForm.Offer" /></label>
                     <label>Call to action<InputText @bind-Value="contentForm.CallToAction" /></label>
                     <button class="btn btn-primary" disabled="@isSaving">Create brief</button>
                 </EditForm>
@@ -267,13 +277,316 @@
                     <button class="btn btn-primary" disabled="@isSaving">Create experiment</button>
                 </EditForm>
             </section>
+            @if (dashboard.Content.Any(x => x.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)))
+            {
+                <section class="marketing-two-column">
+                    <EditForm Model="contentGenerationForm" OnValidSubmit="GenerateContentVariantsAsync" class="vc-panel marketing-form">
+                        <span class="vc-kicker">MAYA CONTENT STUDIO</span><h2>Generate grounded variants</h2>
+                        <label>Draft brief<InputSelect @bind-Value="contentGenerationForm.BriefId">@foreach (var brief in dashboard.Content.Where(x => x.Status.Equals("draft", StringComparison.OrdinalIgnoreCase))) { <option value="@brief.Id">@brief.Title</option> }</InputSelect></label>
+                        <div class="marketing-form__row"><label>Format<InputSelect @bind-Value="contentGenerationForm.ContentFormat"><option value="social_post">Social post</option><option value="email">Email</option><option value="landing_page">Landing page</option><option value="article">Article</option><option value="ad">Ad</option><option value="sales_enablement">Sales enablement</option></InputSelect></label><label>Variants<InputNumber @bind-Value="contentGenerationForm.VariantCount" /></label></div>
+                        <label>Instructions<InputTextArea @bind-Value="contentGenerationForm.Instructions" /></label>
+                        <button class="btn btn-primary" disabled="@(isSaving || marketingAgentId is null)">Generate drafts</button>
+                    </EditForm>
+                    <aside class="vc-panel marketing-section" aria-live="polite"><span class="vc-kicker">GENERATION SAFETY</span><h2>Evidence before claims</h2><p>Maya stores drafts only when every generated factual claim cites an accessible company source. Publishing remains a separate approved action.</p>@if (contentGenerationResult?.RequiresReview == true) { <div class="marketing-list">@foreach (var gap in contentGenerationResult.MissingEvidence) { <article><div><strong>Needs review</strong><span>@gap</span></div></article> }</div> }</aside>
+                </section>
+            }
+            <section class="vc-panel marketing-section marketing-creative-studio">
+                <div class="marketing-section__header"><div><span class="vc-kicker">CREATIVE STUDIO</span><h2>Governed visual assets</h2></div><span>@creativeAssets.Count immutable versions</span></div>
+                <div class="marketing-two-column">
+                    <div class="marketing-run-list">
+                        @if (creativeAssets.Count == 0) { <MarketingEmpty Title="No creative assets" Message="Generate from a submitted brief or upload a human-created alternative for review." /> }
+                        @foreach (var asset in creativeAssets)
+                        {
+                            var scan = LatestScan(asset.Id);
+                            <article><div><strong>@asset.Name · v@asset.VersionNumber</strong><span>@asset.Dimensions · @asset.MediaType · @Friendly(asset.Status)</span><p>@asset.AltText</p><small>Brand @asset.BrandProfileVersion · scan: @(scan is null ? "not available" : Friendly(scan.Result))</small>@if(scan?.Result != "passed"){<p role="status">Quarantined — an authoritative safety scan must pass before submission, approval, download, or publication. @(scan?.ReasonCode is null ? "" : Friendly(scan.ReasonCode))</p>}<details><summary>Provenance, scan, and audit</summary><pre>@JsonSummary(asset.ProvenanceJson)</pre>@if(scan is not null){<small>@scan.Provider · @scan.ScannerVersion · @scan.ScannedUtc.ToLocalTime().ToString("g")</small><pre>@JsonSummary(scan.EvidenceJson)</pre>}<small>Sources: @JsonSummary(asset.SourceAssetIdsJson) · @asset.AuditReference · checksum @asset.Checksum[..Math.Min(12, asset.Checksum.Length)]</small></details></div><div class="marketing-inline-actions">@if (scan?.Result != "passed") { <button class="btn btn-sm btn-outline-secondary" disabled="@isSaving" @onclick="() => RescanCreativeAsync(asset.Id)">Rescan</button> }@if (asset.Status is "draft" or "changes_requested") { <button class="btn btn-sm btn-primary" disabled="@(isSaving || scan?.Result != "passed")" @onclick="() => SubmitCreativeAsync(asset.Id)">Submit</button> }@if (asset.Status == "submitted") { <button class="btn btn-sm btn-primary" disabled="@(isSaving || scan?.Result != "passed")" @onclick="() => ReviewCreativeAsync(asset.Id, true)">Approve</button><button class="btn btn-sm btn-outline-secondary" disabled="@isSaving" @onclick="() => RequestCreativeChangesAsync(asset.Id)">Request changes</button><button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick="() => ReviewCreativeAsync(asset.Id, false)">Reject</button> }@if (asset.Status == "approved") { <button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick="() => RetireCreativeAsync(asset.Id)">Retire</button> }</div></article>
+                        }
+                    </div>
+                    @if (dashboard.Content.Any(x => x.Status is "submitted" or "approved"))
+                    {
+                        <EditForm Model="creativeForm" OnValidSubmit="GenerateCreativeAsync" class="marketing-form marketing-form--compact">
+                            <h3>Generate review draft</h3>
+                            <label>Approved brief<InputSelect @bind-Value="creativeForm.BriefId">@foreach(var brief in dashboard.Content.Where(x=>x.Status is "submitted" or "approved")){<option value="@brief.Id">@brief.Title</option>}</InputSelect></label>
+                            <label>Asset name<InputText @bind-Value="creativeForm.Name" /></label>
+                            <label>Art direction<InputTextArea @bind-Value="creativeForm.Prompt" /></label>
+                            <label>Accessible alt text<InputText @bind-Value="creativeForm.AltText" /></label>
+                            <button class="btn btn-primary" disabled="@isSaving">Generate immutable draft</button>
+                        </EditForm>
+                    }
+                </div>
+            </section>
+        }
+        else if (activeTab == "Strategy")
+        {
+            <section class="marketing-workspace-grid">
+                <article class="vc-panel marketing-section marketing-workspace-hero">
+                    <span class="vc-kicker">ACTIVE DIRECTION</span>
+                    @if (strategies.Count == 0) { <MarketingEmpty Title="No Marketing strategy yet" Message="Create a versioned 4P and STP strategy grounded in approved customer segments and evidence." /> }
+                    else
+                    {
+                        var item = strategies.First();
+                        <div class="marketing-section__header"><div><h2>@item.Title</h2><span class="marketing-status">@Friendly(item.Status) · version @item.Version</span></div><strong>@item.ValidFromUtc.ToString("d") – @item.ValidToUtc.ToString("d")</strong></div>
+                        <p>@item.Summary</p><div class="marketing-evidence"><strong>Evidence and gaps</strong><span>@JsonSummary(item.MissingEvidenceJson, "No missing evidence recorded")</span></div>
+                    }
+                </article>
+                <article class="vc-panel marketing-section"><span class="vc-kicker">GOVERNANCE</span><h2>Next action</h2><p>Strategy activation requires completed company approval. Maya can prepare recommendations and drafts, but cannot approve or activate them.</p></article>
+            </section>
+            @if (segments.SelectMany(x => x.Versions).Any(x => x.Status is "approved" or "active"))
+            {
+                <section class="marketing-two-column">
+                    <EditForm Model="strategyProposalForm" OnValidSubmit="PrepareStrategyProposalAsync" class="vc-panel marketing-form">
+                        <span class="vc-kicker">ASK MAYA</span><h2>Prepare a grounded strategy</h2>
+                        <label>Strategy title<InputText @bind-Value="strategyProposalForm.Title" /></label>
+                        <label>Business objective<InputTextArea @bind-Value="strategyProposalForm.Objective" /></label>
+                        <label>Approved target segment<InputSelect @bind-Value="strategyProposalForm.SegmentVersionId">@foreach (var segment in segments) { @foreach (var version in segment.Versions.Where(x => x.Status is "approved" or "active")) { <option value="@version.Id">@segment.Name · v@version.VersionNumber</option> } }</InputSelect></label>
+                        <button class="btn btn-primary" disabled="@(isSaving || marketingAgentId is null)">Preview proposal</button>
+                    </EditForm>
+                    <aside class="vc-panel marketing-section" aria-live="polite">
+                        <span class="vc-kicker">PROPOSAL REVIEW</span><h2>@(strategyProposal?.Title ?? "No proposal prepared")</h2>
+                        @if (strategyProposal is not null)
+                        {
+                            <p>@strategyProposal.Summary</p><div class="marketing-list">@foreach (var item in strategyProposal.MarketCustomerSynthesis.Concat(strategyProposal.StpAndPositioning).Concat(strategyProposal.FourPs).Concat(strategyProposal.CompetitiveAnalysis).Concat(strategyProposal.SwotAndFiveForces)) { <article><div><strong>@Friendly(item.Area)</strong><span>@item.Recommendation</span><small>@item.Classification · @item.Confidence.ToString("P0") · @string.Join(", ", item.SourceIds)</small></div></article> }</div>
+                            <div class="marketing-evidence"><strong>Source inspection</strong><span>@string.Join(" · ", strategyProposal.Sources.Select(x => x.Title))</span></div>
+                            <button class="btn btn-primary" disabled="@(isSaving || strategyProposal.RequiresReview)" @onclick="CommitStrategyProposalAsync">Create draft</button>
+                            @if (strategyProposal.RequiresReview) { <p>Resolve missing or invalid evidence before creating a draft: @string.Join("; ", strategyProposal.MissingEvidence)</p> }
+                        }
+                    </aside>
+                </section>
+            }
+            @if (strategies.Any(x => x.Status is "approved" or "active") && salesCampaigns.Count > 0 && dashboard.Objectives.Count > 0)
+            {
+                <section class="marketing-two-column">
+                    <EditForm Model="decompositionForm" OnValidSubmit="PreviewDecompositionAsync" class="vc-panel marketing-form">
+                        <span class="vc-kicker">STRATEGY TO WORK</span><h2>Decompose into campaign work</h2>
+                        <label>Approved strategy<InputSelect @bind-Value="decompositionForm.StrategyId">@foreach (var item in strategies.Where(x => x.Status is "approved" or "active")) { <option value="@item.Id">@item.Title</option> }</InputSelect></label>
+                        <label>Existing Sales campaign<InputSelect @bind-Value="decompositionForm.CampaignId">@foreach (var item in salesCampaigns) { <option value="@item.Id">@item.Name · @Friendly(item.Status)</option> }</InputSelect></label>
+                        <label>Objective<InputSelect @bind-Value="decompositionForm.ObjectiveId">@foreach (var item in dashboard.Objectives) { <option value="@item.Id">@item.Name</option> }</InputSelect></label>
+                        <label>Plan name<InputText @bind-Value="decompositionForm.PlanName" /></label>
+                        <button class="btn btn-outline-primary" disabled="@isSaving">Preview tree</button>
+                    </EditForm>
+                    <aside class="vc-panel marketing-section" aria-live="polite"><span class="vc-kicker">TREE AND READINESS</span><h2>@(decompositionProposal?.PlanName ?? "No decomposition preview")</h2>
+                        @if (decompositionProposal is not null) { <div class="marketing-list">@foreach (var item in decompositionProposal.Activities) { <article><div><strong>@item.Name</strong><span>@Friendly(item.ActivityType) · @item.Channel · @item.StartsUtc.ToString("d")–@item.DueUtc.ToString("d")</span><small>@(item.DependsOnName is null ? "No dependency" : $"After {item.DependsOnName}") · @(item.ContentRequired ? "Content brief required" : "No content brief")</small></div></article> }</div><div class="marketing-evidence"><strong>Readiness</strong><span>@(decompositionProposal.ReadinessGaps.Count == 0 ? "Ready to commit as drafts" : string.Join("; ", decompositionProposal.ReadinessGaps))</span></div><button class="btn btn-primary" disabled="@(isSaving || !decompositionProposal.ReadyToCommit)" @onclick="CommitDecompositionAsync">Commit drafts</button> }
+                    </aside>
+                </section>
+            }
+        }
+        else if (activeTab == "Segments")
+        {
+            <section class="vc-panel marketing-section">
+                <div class="marketing-section__header"><div><span class="vc-kicker">TARGET SELECTION</span><h2>Strategic customer segments</h2></div><button class="btn btn-sm btn-outline-primary" disabled="@(marketingAgentId is null || isSaving)" @onclick="PrepareSegmentProposalAsync">Ask Maya</button></div>
+                <div class="marketing-form__row"><label>Proposed segment name<InputText @bind-Value="segmentProposalForm.Name" /></label><label>Analysis objective<InputText @bind-Value="segmentProposalForm.Objective" /></label></div>
+                @if (segments.Count == 0) { <MarketingEmpty Title="No strategic segments" Message="Define needs, behaviours, channel presence, price sensitivity, size, economics, evidence, and target rationale." /> }
+                <div class="marketing-segment-grid">
+                    @foreach (var segment in segments)
+                    {
+                        var version = segment.Versions.FirstOrDefault();
+                        <article><div><strong>@segment.Name</strong><span>@segment.Description</span></div>
+                            @if (version is not null) { <dl><div><dt>Needs</dt><dd>@JsonSummary(version.NeedsJson)</dd></div><div><dt>Behaviour</dt><dd>@JsonSummary(version.BehaviorsJson)</dd></div><div><dt>Channels</dt><dd>@JsonSummary(version.ChannelsJson)</dd></div><div><dt>Price sensitivity</dt><dd>@JsonSummary(version.PricingJson)</dd></div><div><dt>Size</dt><dd>@Size(version)</dd></div><div><dt>Confidence</dt><dd>@version.Confidence.ToString("P0")</dd></div></dl><div class="marketing-inline-actions"><span class="marketing-status">@Friendly(version.TargetState) · score @version.AttractivenessScore.ToString("0")</span><button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick="() => ReviewSegmentImpactAsync(version.Id)">Review downstream impact</button></div> }
+                        </article>
+                    }
+                </div>
+                @if (segmentDecisionData is not null)
+                {
+                    <section class="marketing-segment-decision" aria-label="Structured segment decision evidence">
+                        <article><div class="marketing-section__header"><div><span class="vc-kicker">STRUCTURED ESTIMATES</span><h3>Size and economics</h3></div><span>@segmentDecisionData.SizeEstimates.Count size source@(segmentDecisionData.SizeEstimates.Count == 1 ? "" : "s")</span></div>
+                            @if (segmentDecisionData.SizeEstimates.Count == 0) { <p>Needs review: no queryable size estimate is available.</p> }
+                            @foreach (var estimate in segmentDecisionData.SizeEstimates) { <dl><div><dt>Range</dt><dd>@(estimate.Low?.ToString("N0") ?? "?") – @(estimate.High?.ToString("N0") ?? "?") @estimate.Unit</dd></div><div><dt>Scope</dt><dd>@estimate.Period · @estimate.Geography</dd></div><div><dt>Method</dt><dd>@Friendly(estimate.Method) · @estimate.Confidence.ToString("P0")</dd></div><div><dt>Freshness</dt><dd>@estimate.AsOfUtc.ToString("d") · @Friendly(estimate.Classification)</dd></div></dl> }
+                            <div class="marketing-economics-grid">@foreach (var estimate in segmentDecisionData.EconomicEstimates) { <div><span>@Friendly(estimate.MetricCode)</span><strong>@(estimate.Low?.ToString("N1") ?? "?") – @(estimate.High?.ToString("N1") ?? "?") @estimate.Unit</strong><small>@Friendly(estimate.Method) · @estimate.Confidence.ToString("P0")</small></div> }</div>
+                        </article>
+                        <article><span class="vc-kicker">DETERMINISTIC SCORE</span><h3>@(segmentDecisionData.ScorePolicy?.CalculatedScore?.ToString("0.##") ?? "Needs review")</h3>
+                            @if (segmentDecisionData.ScorePolicy is null) { <p>No versioned score policy is available.</p> }
+                            else { <p>@Friendly(segmentDecisionData.ScorePolicy.Decision) · target @segmentDecisionData.ScorePolicy.TargetThreshold.ToString("0.##")</p><small>Missing evidence: @Friendly(segmentDecisionData.ScorePolicy.MissingEvidenceBehavior)</small><div class="marketing-score-list">@foreach (var dimension in segmentDecisionData.ScorePolicy.Dimensions) { <div><span>@Friendly(dimension.Code)</span><strong>@(dimension.Score?.ToString("0.##") ?? "Missing")</strong><small>Weight @dimension.Weight.ToString("P0")</small></div> }</div> }
+                        </article>
+                        <article><span class="vc-kicker">TARGET DECISION</span><h3>Recommendation is not activation</h3>@if (segmentDecisionData.TargetDecisions.Count == 0) { <p>No target recommendation has been recorded. Approval and activation remain separate guarded actions.</p> } else { var decision = segmentDecisionData.TargetDecisions.First(); <p>@decision.Rationale</p><span class="marketing-status">@Friendly(decision.ApprovalStatus) · @decision.Confidence.ToString("P0")</span><small>Review @decision.ReviewUtc.ToString("d")</small> }<h3>Explicit mappings</h3>@if (segmentDecisionData.Mappings.Count == 0) { <p>No ICP, audience, qualification, or Sales handoff mapping.</p> } else { @foreach (var mapping in segmentDecisionData.Mappings) { <p><strong>@mapping.Label</strong><br /><small>@Friendly(mapping.MappingType)</small></p> } }</article>
+                    </section>
+                }
+                @if (segmentImpact is not null)
+                {
+                    <aside class="marketing-segment-impact"><h3>@(segmentImpact.RequiresReview ? "Downstream review required" : "Downstream impact")</h3><p>@(segmentImpact.IsCurrentVersion ? "These artifacts use the current segment version." : "This is not the current segment version. Linked artifacts were not silently rewritten.")</p><div class="marketing-review-history">@foreach (var item in segmentImpact.Artifacts) { <article><strong>@item.Label</strong><span>@Friendly(item.ArtifactType) · @Friendly(item.Status)</span><p>@item.ReviewReason</p></article> }</div></aside>
+                }
+                @if (segmentProposal is not null)
+                {
+                    <aside class="marketing-segment-impact"><h3>Maya's grounded segment proposal</h3><p>@segmentProposal.Summary</p><div class="marketing-review-history">@foreach (var claim in segmentProposal.Claims) { <article><strong>@Friendly(claim.Area) · @Friendly(claim.Classification)</strong><span>Confidence @claim.Confidence.ToString("P0")</span><p>@claim.Recommendation</p><small>Sources: @string.Join(", ", claim.SourceIds)</small></article> }</div>@if (segmentProposal.MissingEvidence.Count > 0) { <p><strong>Evidence to add before approval:</strong> @string.Join(", ", segmentProposal.MissingEvidence)</p> }@if (segmentProposal.CanCreateDraft) { <p role="status">You can save this as a reviewable draft now. Evidence gaps remain visible and do not bypass human approval.</p> } else { <p role="alert">Maya did not return any safely grounded draft content. Retry the analysis.</p> }<div class="marketing-inline-actions"><button class="btn btn-primary" disabled="@(isSaving || !segmentProposal.CanCreateDraft)" @onclick="CommitSegmentProposalAsync">Create reviewable draft</button>@if (!segmentProposal.CanCreateDraft) { <button class="btn btn-outline-primary" disabled="@isSaving" @onclick="PrepareSegmentProposalAsync">Retry Maya</button> }</div></aside>
+                }
+            </section>
+        }
+        else if (activeTab == "Intelligence")
+        {
+            <section class="marketing-workspace-grid marketing-intelligence-workspace">
+                <article class="vc-panel marketing-section">
+                    <div class="marketing-section__header"><div><span class="vc-kicker">SOURCE-GROUNDED</span><h2>Market intelligence</h2><p>Every record shows what we know, how certain it is, and when it needs review.</p></div></div>
+                    <div class="marketing-intelligence-filter"><label>Find intelligence<InputText @bind-Value="intelligenceSearch" placeholder="Search market, customer, or competitor evidence" /></label><label>Freshness<InputSelect @bind-Value="intelligenceFreshness"><option value="all">All records</option><option value="due">Needs review</option><option value="current">Current</option></InputSelect></label></div>
+                    @if (FilteredIntelligence.Count == 0) { <MarketingEmpty Title="No intelligence records" Message="Dated hypotheses, insights, competitor claims, sources, confidence, and review dates will appear here." /> }
+                    <div class="marketing-intelligence-list">
+                        @foreach (var item in FilteredIntelligence)
+                        {
+                            <button type="button" class="marketing-intelligence-row @(selectedIntelligence?.Id == item.Id ? "selected" : null)" @onclick="() => SelectIntelligenceAsync(item)">
+                                <span><strong>@item.Subject</strong><small>@Friendly(item.Kind) · @Friendly(item.Classification) · confidence @item.Confidence.ToString("P0")</small><small>@item.Summary</small></span>
+                                <span class="marketing-status @(item.ReviewDueUtc <= DateTime.UtcNow ? "warning" : null)">@(item.ReviewDueUtc <= DateTime.UtcNow ? "Needs review" : $"Review {item.ReviewDueUtc:d}")</span>
+                            </button>
+                        }
+                    </div>
+                </article>
+                <aside class="vc-panel marketing-section marketing-intelligence-detail">
+                    @if (selectedIntelligence is null)
+                    {
+                        <MarketingEmpty Title="No intelligence selected" Message="Select a record to inspect its evidence, uncertainty, and review history." />
+                    }
+                    else
+                    {
+                        <div class="marketing-section__header"><div><span class="vc-kicker">@Friendly(selectedIntelligence.Kind)</span><h2>@selectedIntelligence.Subject</h2></div><span class="marketing-status @(selectedIntelligence.ReviewDueUtc <= DateTime.UtcNow ? "warning" : null)">@Friendly(selectedIntelligence.ReviewStatus)</span></div>
+                        <h3>What this means</h3><p>@selectedIntelligence.Summary</p>
+                        <dl class="marketing-intelligence-facts"><div><dt>Classification</dt><dd>@Friendly(selectedIntelligence.Classification)</dd></div><div><dt>Confidence</dt><dd>@selectedIntelligence.Confidence.ToString("P0")</dd></div><div><dt>Data used</dt><dd>@selectedIntelligence.SourceReference</dd></div><div><dt>Observed</dt><dd>@selectedIntelligence.ObservedUtc.ToString("d")</dd></div><div><dt>Review due</dt><dd>@selectedIntelligence.ReviewDueUtc.ToString("d")</dd></div></dl>
+                        <details><summary>Comparison dimensions</summary><pre>@JsonSummary(selectedIntelligence.DimensionsJson)</pre></details>
+                        <label>Review note<InputTextArea @bind-Value="intelligenceReviewRationale" /></label>
+                        <div class="marketing-inline-actions"><button class="btn btn-sm btn-primary" disabled="@isSaving" @onclick="() => ReviewIntelligenceAsync(true)">Mark reviewed</button><button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick="() => ReviewIntelligenceAsync(false)">Needs more evidence</button><button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick="ArchiveIntelligenceAsync">Archive</button></div>
+                        <h3>Review history</h3>
+                        @if (intelligenceReviews.Count == 0) { <p>No reviews recorded yet.</p> }
+                        else { <div class="marketing-review-history">@foreach (var review in intelligenceReviews) { <article><strong>@Friendly(review.Outcome)</strong><span>@review.CreatedUtc.ToLocalTime().ToString("g")</span><p>@review.Rationale</p></article> }</div> }
+                    }
+                </aside>
+            </section>
+        }
+        else if (activeTab == "Channels")
+        {
+            <section class="marketing-operations-summary">
+                <article class="vc-panel">
+                    <span>Connect a channel</span><strong>Provider authorization</strong>
+                    <small>Connections open the provider's secure consent screen. The callback must be allowlisted by an operator.</small>
+                    <div class="marketing-inline-actions">
+                        <button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick='() => StartChannelOAuthAsync("linkedin")'>LinkedIn</button>
+                        <button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick='() => StartChannelOAuthAsync("meta")'>Meta</button>
+                        <button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick='() => StartChannelOAuthAsync("x")'>X</button>
+                    </div>
+                </article>
+                @foreach (var connection in channelConnections)
+                {
+                    <article class="vc-panel"><span>@Friendly(connection.Provider)</span><strong>@connection.DisplayName</strong><small class="marketing-status @(connection.HealthStatus == "reauthorization_required" ? "warning" : null)">@Friendly(connection.HealthStatus)</small><div class="marketing-inline-actions"><button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick="() => RefreshDestinationsAsync(connection.Id)">Refresh accounts</button><button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick="() => DisconnectChannelAsync(connection.Id)">Disconnect</button></div></article>
+                }
+                @if (channelConnections.Count == 0) { <article class="vc-panel"><span>Connections</span><strong>No provider connected</strong><small>Add protected provider credentials before external delivery.</small></article> }
+            </section>
+            <section class="marketing-workspace-grid">
+                <article class="vc-panel marketing-section">
+                    <div class="marketing-section__header"><div><span class="vc-kicker">APPROVAL-BACKED DELIVERY</span><h2>Channel action queue</h2></div></div>
+                    @if (channelDestinations.Count > 0) { <p>@channelDestinations.Count manageable destinations discovered: @string.Join(", ", channelDestinations.Where(x => x.Status == "active").Select(x => x.DisplayName))</p> }
+                    @if (channelActions.Count == 0) { <MarketingEmpty Title="No channel actions" Message="Approved content delivery will appear here before it is dispatched by the background worker." /> }
+                    <div class="marketing-run-list">@foreach (var action in channelActions) { <article><div><strong>@Friendly(action.ActionType)</strong><span>@action.DestinationReference · @(action.ScheduledUtc?.ToLocalTime().ToString("g") ?? "Ready when approved")</span><p>@(action.FailureCode is null ? $"Attempt {action.AttemptCount}" : Friendly(action.FailureCode))</p></div><div class="marketing-inline-actions"><span class="marketing-status @(action.Status is "failed" or "ambiguous" ? "warning" : null)">@Friendly(action.Status)</span>@if (action.Status == "awaiting_approval") { <button class="btn btn-sm btn-outline-primary" @onclick="() => SynchronizeChannelActionAsync(action.Id)">Check approval</button> }@if (action.Status is "ambiguous" or "dispatched") { <button class="btn btn-sm btn-outline-primary" @onclick="() => ReconcileChannelActionAsync(action.Id)">Reconcile</button> }@if (action.Status is "proposed" or "awaiting_approval" or "queued" or "retry_scheduled") { <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelChannelActionAsync(action.Id)">Cancel</button> }</div></article> }</div>
+                </article>
+                <aside class="vc-panel marketing-section"><span class="vc-kicker">LIFECYCLE AND CREATIVE</span><h2>Governed assets</h2><p>@creativeAssets.Count creative assets · @journeys.Count lifecycle journeys</p><div class="marketing-list">@foreach (var asset in creativeAssets.Take(5)) { <article><div><strong>@asset.Name</strong><span>@asset.Dimensions · @Friendly(asset.Status)</span><small>@asset.AltText</small></div></article> }</div>
+                    @if (dashboard.Content.Any(x => x.Status is "submitted" or "approved"))
+                    {
+                        <EditForm Model="creativeForm" OnValidSubmit="GenerateCreativeAsync" class="marketing-form marketing-form--compact">
+                            <h3>Generate review draft</h3>
+                            <label>Content brief<InputSelect @bind-Value="creativeForm.BriefId">@foreach(var brief in dashboard.Content.Where(x=>x.Status is "submitted" or "approved")){<option value="@brief.Id">@brief.Title</option>}</InputSelect></label>
+                            <label>Asset name<InputText @bind-Value="creativeForm.Name" /></label>
+                            <label>Art direction<InputTextArea @bind-Value="creativeForm.Prompt" /></label>
+                            <label>Alt text<InputText @bind-Value="creativeForm.AltText" /></label>
+                            <button class="btn btn-primary" disabled="@isSaving">Generate draft</button>
+                        </EditForm>
+                    }
+                </aside>
+            </section>
+        }
+        else if (activeTab == "Journeys")
+        {
+            <section class="marketing-journey-workspace">
+                <div class="vc-panel marketing-section marketing-journey-list">
+                    <div class="marketing-section__header"><div><span class="vc-kicker">LIFECYCLE</span><h2>Customer journeys</h2></div></div>
+                    @if (journeys.Count == 0) { <MarketingEmpty Title="No lifecycle journeys" Message="Create a consent-aware journey to coordinate nurture, activation, retention, or follow-up." /> }
+                    @foreach (var journey in journeys)
+                    {
+                        <button type="button" class="marketing-select-row @(selectedJourney?.Id == journey.Id ? "selected" : null)" @onclick="() => SelectJourneyAsync(journey)">
+                            <span><strong>@journey.Name</strong><small>Version @journey.Version · @journey.ValidToUtc.ToLocalTime().ToString("d")</small></span>
+                            <span class="marketing-status">@Friendly(journey.Status)</span>
+                        </button>
+                    }
+                </div>
+                <article class="vc-panel marketing-section marketing-journey-builder">
+                    @if (selectedJourney is null) { <p>Select a journey to review its definition and operating state.</p> }
+                    else
+                    {
+                        <div class="marketing-section__header"><div><span class="vc-kicker">VERSION @selectedJourney.Version</span><h2>@selectedJourney.Name</h2></div><span class="marketing-status">@Friendly(selectedJourney.Status)</span></div>
+                        <div class="marketing-journey-guardrails"><span>Consent checked</span><span>Suppression checked</span><span>@selectedJourney.FrequencyCap per day</span></div>
+                        <h3>Audience and entry</h3><pre>@JsonSummary(selectedJourney.AudienceEligibilityJson)</pre>
+                        <h3>Journey steps</h3><pre>@JsonSummary(selectedJourney.StepsJson)</pre>
+                        <h3>Exit criteria and guardrails</h3><pre>@JsonSummary(selectedJourney.EntryExitCriteriaJson)</pre><pre>@JsonSummary(selectedJourney.GuardrailsJson)</pre>
+                    }
+                </article>
+                <aside class="vc-panel marketing-section marketing-journey-review">
+                    <span class="vc-kicker">REVIEW AND OPERATE</span><h2>Readiness</h2>
+                    @if (journeyValidation is not null)
+                    {
+                        <div class="marketing-analysis-status">@(journeyValidation.Valid ? "Validation passed" : "Changes required") · @journeyValidation.StepCount steps</div>
+                        @foreach (var error in journeyValidation.Errors) { <p class="text-danger">@error</p> }
+                        @foreach (var warning in journeyValidation.Warnings) { <small>@warning</small> }
+                    }
+                    @if (journeyAudiencePreview is not null)
+                    {
+                        <h3>Audience preview</h3><div class="marketing-journey-counts"><span><strong>@journeyAudiencePreview.EligibleCount</strong> eligible</span><span><strong>@journeyAudiencePreview.SuppressedCount</strong> suppressed</span><span><strong>@journeyAudiencePreview.MissingConsentCount</strong> missing consent</span></div>
+                    }
+                    @if (selectedJourney is not null)
+                    {
+                        <div class="marketing-inline-actions">
+                            @if (selectedJourney.Status == "active") { <button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick='() => TransitionSelectedJourneyAsync("pause")'>Pause</button> }
+                            @if (selectedJourney.Status == "paused") { <button class="btn btn-sm btn-primary" disabled="@isSaving" @onclick='() => TransitionSelectedJourneyAsync("resume")'>Resume</button> }
+                            @if (selectedJourney.Status is "active" or "paused") { <button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick='() => TransitionSelectedJourneyAsync("complete")'>Complete</button> }
+                            @if (selectedJourney.Status is "draft" or "in_review" or "paused") { <button class="btn btn-sm btn-outline-danger" disabled="@isSaving" @onclick='() => TransitionSelectedJourneyAsync("cancel")'>Cancel</button> }
+                        </div>
+                        <h3>Active instances and exceptions</h3>
+                        <div class="marketing-review-history">@foreach (var enrollment in journeyEnrollments.Where(x => x.JourneyId == selectedJourney.Id).Take(12)) { <article><strong>@Friendly(enrollment.Status)</strong><span>Contact @enrollment.ContactId.ToString("N")[..8] · step @enrollment.NextStepIndex</span>@if (enrollment.FailureCode is not null) { <p>@Friendly(enrollment.FailureCode)</p> }</article> }</div>
+                    }
+                </aside>
+            </section>
+        }
+        else if (activeTab == "Performance")
+        {
+            <section class="marketing-kpis" aria-label="Marketing evidence classification">
+                @foreach (var group in attribution.GroupBy(x => x.Classification))
+                { <article class="vc-panel"><span>@Friendly(group.Key)</span><strong>@group.Sum(x => x.AttributedValue).ToString("N1") @group.First().Unit</strong><small>@group.Count() results · confidence @group.Average(x => x.Confidence).ToString("P0")</small></article> }
+            </section>
+            <section class="marketing-workspace-grid">
+                <article class="vc-panel marketing-section"><span class="vc-kicker">ATTRIBUTION WITH LIMITS</span><h2>Evidence and performance</h2>
+                    @if (attribution.Count == 0) { <MarketingEmpty Title="No attribution results" Message="Results explicitly distinguish observed evidence, configured rules, correlation, and inference." /> }
+                    <div class="marketing-list">@foreach (var item in attribution) { <article><div><strong>@Friendly(item.SubjectType) · @item.Model</strong><span>@Friendly(item.Classification) · @item.PeriodStartUtc.ToString("d")–@item.PeriodEndUtc.ToString("d")</span><p>@JsonSummary(item.EvidenceJson)</p></div><strong>@item.AttributedValue.ToString("N1") @item.Unit</strong></article> }</div>
+                </article>
+                <aside class="vc-panel marketing-section"><span class="vc-kicker">EVENT-DRIVEN REVIEW</span><h2>Needs attention</h2>@if (events.Count == 0) { <p>No unresolved Marketing events.</p> }<div class="marketing-run-list">@foreach (var item in events) { <article><div><strong>@Friendly(item.EventType)</strong><span>@Friendly(item.Severity) · @item.SourceType</span><p>@(item.FailureSummary ?? JsonSummary(item.EvidenceJson))</p>@if (item.RelatedTaskId is not null) { <small>Durable response task linked</small> }</div><div><span class="marketing-status @(item.Status == "failed" ? "warning" : null)">@Friendly(item.Status)</span>@if (item.Status != "resolved") { <button class="btn btn-sm btn-outline-primary" disabled="@isSaving" @onclick="() => ResolveEventAsync(item.Id)">Resolve</button> }</div></article> }</div></aside>
+            </section>
+        }
+        else if (activeTab == "Operations")
+        {
+            <section class="marketing-operations-summary">
+                <article class="vc-panel"><span>Why Maya started</span><strong>@(operatingRuns.FirstOrDefault()?.TriggerReference ?? "No operating run yet")</strong></article>
+                <article class="vc-panel"><span>Effective autonomy</span><strong>@Friendly(operatingRuns.FirstOrDefault()?.EffectiveAuthority ?? "recommend")</strong></article>
+                <article class="vc-panel"><span>Approvals and limits</span><strong>@(operatingRuns.FirstOrDefault()?.BudgetLimit is decimal limit ? $"Budget limit {limit:N0}" : "Policy limits apply")</strong></article>
+                <article class="vc-panel"><span>Evidence state</span><strong>@(operatingRuns.FirstOrDefault()?.RecoveryCode is null ? "Current or not yet reviewed" : "Evidence needs review")</strong></article>
+            </section>
+            <section class="marketing-workspace-grid">
+                <article class="vc-panel marketing-section"><div class="marketing-section__header"><div><span class="vc-kicker">INDEPENDENT DEPARTMENT LOOP</span><h2>Recent Marketing runs</h2></div><button class="btn btn-primary" disabled="@(isSaving || marketingAgentId is null)" @onclick="RequestOperatingRunAsync">Run governed review</button></div>
+                    @if (operatingRuns.Count == 0) { <MarketingEmpty Title="No Marketing operating runs" Message="Maya will start from company assignments, cadence, material events, or an operator request." /> }
+                    <div class="marketing-run-list">@foreach (var run in operatingRuns) { <button type="button" class="marketing-run-row @(selectedOperatingRun?.Id == run.Id ? "selected" : null)" @onclick="() => SelectOperatingRunAsync(run)"><span><strong>@Friendly(run.TriggerType) · @run.CreatedUtc.ToLocalTime().ToString("g")</strong><small>@run.TriggerReference</small><small>@(run.OutcomeSummary ?? "Waiting for a safe outcome")</small></span><span class="marketing-status @(run.Status == "blocked" ? "warning" : null)">@Friendly(run.Status)</span></button> }</div>
+                    @if (selectedOperatingRun is not null)
+                    {
+                        <section class="marketing-action-plan" aria-label="Selected Marketing run action plan">
+                            <div class="marketing-section__header"><div><span class="vc-kicker">DURABLE ACTION PLAN</span><h3>@operatingActions.Count action@(operatingActions.Count == 1 ? "" : "s")</h3></div><span>@selectedOperatingRun.BudgetUsed.ToString("N2") / @(selectedOperatingRun.BudgetLimit?.ToString("N2") ?? "policy limit")</span></div>
+                            @if (operatingActions.Count == 0) { <p>No actions were selected for this run.</p> }
+                            @foreach (var action in operatingActions)
+                            {
+                                <article class="marketing-action-card">
+                                    <div><strong>@action.Sequence. @action.Title</strong><span>@Friendly(action.Tool ?? action.ActionType) · @Friendly(action.AuthorityDecision)</span><p>Expected: @action.ExpectedCompletionEvidence</p>@if (!string.IsNullOrWhiteSpace(action.RecoveryGuidance)) { <p class="marketing-action-warning">@action.RecoveryGuidance</p> }</div>
+                                    <div class="marketing-action-state"><span class="marketing-status @(action.Status is "blocked" or "dead_letter" or "retry_wait" ? "warning" : null)">@Friendly(action.Status)</span><small>Attempt @action.AttemptCount / @action.MaximumAttempts</small>@if (action.ArtifactId.HasValue) { <small>@Friendly(action.ArtifactType ?? "artifact") · @action.ArtifactId.Value.ToString("N")[..8]</small> }@if (action.Status is "blocked" or "dead_letter" or "retry_wait") { <button class="btn btn-sm btn-outline-primary" @onclick="() => RetryOperatingActionAsync(action)">Retry</button> }@if (action.Status is "planned" or "retry_wait" or "blocked") { <button class="btn btn-sm btn-outline-danger" @onclick="() => CancelOperatingActionAsync(action)">Cancel</button> }</div>
+                                </article>
+                            }
+                        </section>
+                    }
+                </article>
+                <aside class="vc-panel marketing-section"><span class="vc-kicker">INSTRUCTION PRECEDENCE</span><h2>Company direction governs</h2><ol class="marketing-precedence"><li>Safety, consent, law, and tenant policy</li><li>Company pause, goals, plans, budgets, and instructions</li><li>Approved Marketing strategy and segments</li><li>Assigned task and dependencies</li><li>Maya's role and cadence</li><li>Model suggestions</li></ol><a href="@WithCompany("/company-operation")">Open Company operation</a></aside>
+            </section>
         }
     }
 </main>
 
 @code {
     [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
-    private readonly string[] tabs = ["Overview", "Objectives", "Plans", "Calendar", "Content", "Audiences", "Handoffs", "Experiments"];
+    private readonly string[] tabs = ["Overview", "Strategy", "Segments", "Intelligence", "Objectives", "Plans", "Calendar", "Content", "Audiences", "Handoffs", "Experiments", "Channels", "Journeys", "Performance", "Operations"];
     private string activeTab = "Overview";
     private bool isLoading = true;
     private bool isSaving;
@@ -283,11 +596,46 @@
     private MarketingDashboardViewModel? dashboard;
     private RoleAgentAnalysisViewModel? analysis;
     private MarketingContentPreflightViewModel? contentPreflight;
+    private GenerateMarketingContentVariantsResultViewModel? contentGenerationResult;
+    private IReadOnlyList<MarketingStrategyViewModel> strategies = [];
+    private MarketingStrategyProposalViewModel? strategyProposal;
+    private MarketingDecompositionProposalViewModel? decompositionProposal;
+    private IReadOnlyList<OutboundCampaignSummaryResponse> salesCampaigns = [];
+    private IReadOnlyList<MarketingSegmentViewModel> segments = [];
+    private MarketingSegmentImpactViewModel? segmentImpact;
+    private MarketingSegmentDecisionDataViewModel? segmentDecisionData;
+    private MarketingSegmentProposalViewModel? segmentProposal;
+    private readonly SegmentProposalForm segmentProposalForm = new();
+    private IReadOnlyList<MarketingIntelligenceViewModel> intelligence = [];
+    private IReadOnlyList<MarketingIntelligenceReviewViewModel> intelligenceReviews = [];
+    private MarketingIntelligenceViewModel? selectedIntelligence;
+    private string intelligenceSearch = string.Empty;
+    private string intelligenceFreshness = "all";
+    private string intelligenceReviewRationale = "Reviewed against the currently accessible source evidence.";
+    private IReadOnlyList<MarketingOperatingRunViewModel> operatingRuns = [];
+    private MarketingOperatingRunViewModel? selectedOperatingRun;
+    private IReadOnlyList<MarketingOperatingActionViewModel> operatingActions = [];
+    private IReadOnlyList<MarketingChannelConnectionViewModel> channelConnections = [];
+    private IReadOnlyList<MarketingChannelDestinationViewModel> channelDestinations = [];
+    private IReadOnlyList<MarketingChannelActionViewModel> channelActions = [];
+    private IReadOnlyList<MarketingJourneyViewModel> journeys = [];
+    private IReadOnlyList<MarketingJourneyEnrollmentViewModel> journeyEnrollments = [];
+    private MarketingJourneyViewModel? selectedJourney;
+    private MarketingJourneyValidationViewModel? journeyValidation;
+    private MarketingJourneyAudiencePreviewViewModel? journeyAudiencePreview;
+    private IReadOnlyList<MarketingCreativeAssetViewModel> creativeAssets = [];
+    private IReadOnlyDictionary<Guid, MarketingCreativeAssetScanViewModel> creativeScans = new Dictionary<Guid, MarketingCreativeAssetScanViewModel>();
+    private IReadOnlyList<MarketingAttributionViewModel> attribution = [];
+    private IReadOnlyList<MarketingEventTriggerViewModel> events = [];
     private readonly ObjectiveForm objectiveForm = new();
+    private readonly StrategyProposalForm strategyProposalForm = new();
+    private readonly DecompositionForm decompositionForm = new();
     private readonly PlanForm planForm = new();
     private readonly ContentForm contentForm = new();
+    private readonly ContentGenerationForm contentGenerationForm = new();
     private readonly ExperimentForm experimentForm = new();
     private readonly QualificationForm qualificationForm = new();
+    private readonly CreativeForm creativeForm = new();
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
@@ -299,9 +647,43 @@
             var context = await OnboardingApi.GetCurrentUserContextAsync();
             resolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
             if (resolvedCompanyId is not Guid companyId) throw new MarketingApiException("Choose a company before opening Marketing.");
-            if (CompanyId is null) Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("companyId", companyId), true);
+            if (CompanyId is null) Navigation.NavigateTo($"/marketing?companyId={companyId:D}", true);
             var to = DateTime.UtcNow.AddDays(1);
             dashboard = await MarketingApi.GetDashboardAsync(companyId, to.AddDays(-30), to);
+            if (contentGenerationForm.BriefId == Guid.Empty) contentGenerationForm.BriefId = dashboard.Content.FirstOrDefault(x => x.Status.Equals("draft", StringComparison.OrdinalIgnoreCase))?.Id ?? Guid.Empty;
+            if (creativeForm.BriefId == Guid.Empty) creativeForm.BriefId = dashboard.Content.FirstOrDefault(x => x.Status is "submitted" or "approved")?.Id ?? Guid.Empty;
+            strategies = await MarketingApi.GetStrategiesAsync(companyId);
+            segments = await MarketingApi.GetSegmentsAsync(companyId);
+            if (strategyProposalForm.SegmentVersionId == Guid.Empty) strategyProposalForm.SegmentVersionId = segments.SelectMany(x => x.Versions).FirstOrDefault(x => x.Status is "approved" or "active")?.Id ?? Guid.Empty;
+            salesCampaigns = await SalesApi.ListCampaignsAsync(companyId);
+            decompositionForm.StrategyId = decompositionForm.StrategyId == Guid.Empty ? strategies.FirstOrDefault(x => x.Status is "approved" or "active")?.Id ?? Guid.Empty : decompositionForm.StrategyId;
+            decompositionForm.CampaignId = decompositionForm.CampaignId == Guid.Empty ? salesCampaigns.FirstOrDefault()?.Id ?? Guid.Empty : decompositionForm.CampaignId;
+            decompositionForm.ObjectiveId = decompositionForm.ObjectiveId == Guid.Empty ? dashboard.Objectives.FirstOrDefault()?.Id ?? Guid.Empty : decompositionForm.ObjectiveId;
+            intelligence = await MarketingApi.GetIntelligenceAsync(companyId);
+            if (selectedIntelligence is null || !intelligence.Any(x => x.Id == selectedIntelligence.Id))
+                selectedIntelligence = intelligence.FirstOrDefault();
+            if (selectedIntelligence is not null)
+                intelligenceReviews = await MarketingApi.GetIntelligenceReviewsAsync(companyId, selectedIntelligence.Id);
+            operatingRuns = await MarketingApi.GetOperatingRunsAsync(companyId);
+            if (selectedOperatingRun is null || !operatingRuns.Any(x => x.Id == selectedOperatingRun.Id))
+                selectedOperatingRun = operatingRuns.FirstOrDefault();
+            operatingActions = selectedOperatingRun is null ? [] : await MarketingApi.GetOperatingRunActionsAsync(companyId, selectedOperatingRun.Id);
+            channelConnections = await MarketingApi.GetChannelConnectionsAsync(companyId);
+            channelDestinations = await MarketingApi.GetChannelDestinationsAsync(companyId);
+            channelActions = await MarketingApi.GetChannelActionsAsync(companyId);
+            journeys = await MarketingApi.GetJourneysAsync(companyId);
+            journeyEnrollments = await MarketingApi.GetJourneyEnrollmentsAsync(companyId);
+            if (selectedJourney is null || !journeys.Any(x => x.Id == selectedJourney.Id)) selectedJourney = journeys.FirstOrDefault();
+            if (selectedJourney is not null)
+            {
+                journeyValidation = await MarketingApi.ValidateJourneyAsync(companyId, selectedJourney.Id);
+                journeyAudiencePreview = await MarketingApi.PreviewJourneyAudienceAsync(companyId, selectedJourney.Id);
+            }
+            creativeAssets = await MarketingApi.GetCreativeAssetsAsync(companyId);
+            var scanSets = await Task.WhenAll(creativeAssets.Select(x => MarketingApi.GetCreativeAssetScansAsync(companyId, x.Id)));
+            creativeScans = scanSets.SelectMany(x => x).GroupBy(x => x.AssetId).ToDictionary(x => x.Key, x => x.OrderByDescending(y => y.ScannedUtc).First());
+            attribution = await MarketingApi.GetAttributionAsync(companyId);
+            events = await MarketingApi.GetEventsAsync(companyId);
             var roster = await AgentApi.GetRosterAsync(companyId);
             marketingAgentId = roster.FirstOrDefault(x => x.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase) && !x.Status.Equals("archived", StringComparison.OrdinalIgnoreCase))?.Id;
         }
@@ -320,10 +702,131 @@
 
     private Task CreateObjectiveAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateObjectiveAsync(id,
         new(objectiveForm.Name, objectiveForm.ObjectiveType, objectiveForm.TargetValue, objectiveForm.Unit, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddMonths(3))));
+    private async Task ReviewSegmentImpactAsync(Guid versionId)
+    {
+        if (resolvedCompanyId is not Guid companyId) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            var requests = new[] { MarketingApi.GetSegmentImpactAsync(companyId, versionId) };
+            await Task.WhenAll(requests);
+            segmentImpact = requests[0].Result;
+            segmentDecisionData = await MarketingApi.GetSegmentDecisionDataAsync(companyId, versionId);
+        }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+    private async Task PrepareSegmentProposalAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || marketingAgentId is not Guid agentId) return;
+        isSaving = true; errorMessage = null;
+        try { segmentProposal = await MarketingApi.PrepareSegmentProposalAsync(companyId,
+            new(agentId, segmentProposalForm.Name, segmentProposalForm.Objective)); }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+    private Task CommitSegmentProposalAsync() => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (segmentProposal is null) return;
+        var claims = segmentProposal.Claims.Select(x => new { area = x.Area, text = x.Recommendation,
+            classification = x.Classification, confidence = x.Confidence, sourceIds = x.SourceIds }).ToArray();
+        var claimJson = System.Text.Json.JsonSerializer.Serialize(claims);
+        var evidenceJson = System.Text.Json.JsonSerializer.Serialize(new { sourceIds = segmentProposal.Sources.Select(x => x.Id),
+            missingEvidence = segmentProposal.MissingEvidence });
+        var scores = new Dictionary<string, decimal> { ["sizeGrowth"] = 0, ["needIntensity"] = 0,
+            ["productFit"] = 0, ["differentiation"] = 0, ["reachability"] = 0, ["priceValueFit"] = 0,
+            ["economics"] = 0, ["evidenceQuality"] = 0, ["risk"] = 100 };
+        var key = $"segment-proposal:{segmentProposal.RunId:N}";
+        var version = new CreateMarketingSegmentVersionViewModel(
+            System.Text.Json.JsonSerializer.Serialize(new { basis = "Maya grounded proposal", requiresHumanReview = true }),
+            claimJson, claimJson, claimJson, claimJson, null, null, "not_estimated", segmentProposal.Confidence,
+            System.Text.Json.JsonSerializer.Serialize(new { status = "not_estimated", missingEvidence = true }),
+            System.Text.Json.JsonSerializer.Serialize(new { policy = "segment-attractiveness-v1", missingEvidenceScore = 0 }),
+            scores, evidenceJson, DateTime.UtcNow, key);
+        await MarketingApi.CommitSegmentProposalAsync(companyId, new(segmentProposal.AgentId, segmentProposal.RunId,
+            segmentProposal.SegmentName, segmentProposal.Summary, version, key));
+        segmentProposal = null;
+    });
+    private async Task PrepareStrategyProposalAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || marketingAgentId is not Guid agentId || strategyProposalForm.SegmentVersionId == Guid.Empty) return;
+        isSaving = true; errorMessage = null;
+        try { strategyProposal = await MarketingApi.PrepareStrategyProposalAsync(companyId, new(agentId,
+            strategyProposalForm.Objective, strategyProposalForm.Title, DateTime.UtcNow.Date,
+            DateTime.UtcNow.Date.AddMonths(6), [strategyProposalForm.SegmentVersionId])); }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+
+    private async Task SelectJourneyAsync(MarketingJourneyViewModel journey)
+    {
+        selectedJourney = journey;
+        if (resolvedCompanyId is not Guid companyId) return;
+        journeyValidation = await MarketingApi.ValidateJourneyAsync(companyId, journey.Id);
+        journeyAudiencePreview = await MarketingApi.PreviewJourneyAudienceAsync(companyId, journey.Id);
+    }
+
+    private Task TransitionSelectedJourneyAsync(string transition) => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (selectedJourney is null) return;
+        _ = transition switch
+        {
+            "pause" => await MarketingApi.PauseJourneyAsync(companyId, selectedJourney.Id),
+            "resume" => await MarketingApi.ResumeJourneyAsync(companyId, selectedJourney.Id),
+            "complete" => await MarketingApi.CompleteJourneyAsync(companyId, selectedJourney.Id),
+            "cancel" => await MarketingApi.CancelJourneyAsync(companyId, selectedJourney.Id),
+            _ => throw new InvalidOperationException("Unsupported journey transition.")
+        };
+    });
+    private Task CommitStrategyProposalAsync() => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (strategyProposal is null) return;
+        await MarketingApi.CommitStrategyProposalAsync(companyId, new(strategyProposal.AgentId,
+            strategyProposal.RunId, strategyProposal.Title, strategyProposal.BusinessContext,
+            strategyProposal.ValidFromUtc, strategyProposal.ValidToUtc,
+            [strategyProposalForm.SegmentVersionId], $"strategy-proposal:{strategyProposal.RunId:N}"));
+        strategyProposal = null;
+    });
+    private async Task PreviewDecompositionAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId) return;
+        var strategy = strategies.FirstOrDefault(x => x.Id == decompositionForm.StrategyId);
+        var segmentId = strategy?.SegmentVersionIds.FirstOrDefault() ?? Guid.Empty;
+        if (segmentId == Guid.Empty || decompositionForm.CampaignId == Guid.Empty || decompositionForm.ObjectiveId == Guid.Empty) return;
+        var start = DateTime.UtcNow.Date; var end = start.AddDays(42);
+        var activities = new MarketingDecompositionActivityViewModel[]
+        {
+            new("Audience and evidence validation", "research", "internal", start, start.AddDays(7), marketingAgentId, null, false),
+            new("Campaign message and offer", "planning", "internal", start.AddDays(7), start.AddDays(14), marketingAgentId, "Audience and evidence validation", true),
+            new("Content development", "content", "multi_channel", start.AddDays(14), start.AddDays(28), marketingAgentId, "Campaign message and offer", true),
+            new("Measurement readiness", "measurement", "internal", start.AddDays(28), end, marketingAgentId, "Content development", false)
+        };
+        isSaving = true; errorMessage = null;
+        try { decompositionProposal = await MarketingApi.PrepareDecompositionAsync(companyId,
+            new(decompositionForm.StrategyId, decompositionForm.CampaignId, segmentId,
+                decompositionForm.ObjectiveId, decompositionForm.PlanName,
+                "Execute the approved strategy through reviewable Sales-campaign work.", start, end, null, "SEK", activities)); }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+    private Task CommitDecompositionAsync() => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (decompositionProposal is null) return;
+        var request = new PrepareMarketingDecompositionViewModel(decompositionProposal.StrategyId,
+            decompositionProposal.CampaignId, decompositionProposal.TargetSegmentVersionId,
+            decompositionProposal.ObjectiveId, decompositionProposal.PlanName, decompositionProposal.PlanSummary,
+            decompositionProposal.StartsUtc, decompositionProposal.EndsUtc, decompositionProposal.PlannedBudget,
+            decompositionProposal.BudgetCurrency, decompositionProposal.Activities);
+        await MarketingApi.CommitDecompositionAsync(companyId, new(decompositionProposal.ProposalKey, request));
+        decompositionProposal = null;
+    });
     private Task CreatePlanAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreatePlanAsync(id,
         new(planForm.Name, planForm.Summary, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddMonths(3), planForm.Budget, planForm.Currency)));
     private Task CreateContentAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateContentAsync(id,
-        new(null, null, contentForm.Title, contentForm.Purpose, contentForm.Audience, contentForm.Channel, contentForm.Language, "Clear and helpful", contentForm.CallToAction, DateTime.UtcNow.AddDays(7))));
+        new(null, null, contentForm.Title, contentForm.Purpose, contentForm.Audience, contentForm.Channel, contentForm.Language, "Clear and helpful", contentForm.CallToAction, DateTime.UtcNow.AddDays(7),
+            null, contentForm.MeasurableObjective, contentForm.FunnelStage, null, contentForm.KeyMessage,
+            "[]", contentForm.Offer, "[]", "[]", "{}", "Not specified", $"[\"{contentForm.Channel}\"]",
+            "{\"count\":3}", "{\"citationsRequired\":true}", "{\"managerReviewRequired\":true}")));
     private Task CreateExperimentAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateExperimentAsync(id,
         new(null, experimentForm.Name, experimentForm.Hypothesis, experimentForm.PrimaryMetric, experimentForm.GuardrailMetric, experimentForm.MinimumSampleSize, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddDays(30))));
     private Task CreateQualificationAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateQualificationDefinitionAsync(id,
@@ -340,6 +843,21 @@
     }
     private Task ActivateQualificationAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateQualificationDefinitionAsync(companyId, id));
     private Task ReviewContentAsync(Guid id, bool approved) => ExecuteAndReloadAsync(companyId => MarketingApi.ReviewContentAsync(companyId, id, approved));
+    private async Task GenerateContentVariantsAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || marketingAgentId is not Guid agentId || contentGenerationForm.BriefId == Guid.Empty) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            contentGenerationResult = await MarketingApi.GenerateContentVariantsAsync(companyId,
+                contentGenerationForm.BriefId, new(agentId, contentGenerationForm.ContentFormat,
+                    contentGenerationForm.VariantCount, contentGenerationForm.Instructions,
+                    $"content:{contentGenerationForm.BriefId:N}:{Guid.NewGuid():N}"));
+            await LoadAsync();
+        }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
     private Task DecideHandoffAsync(Guid id, bool accepted) => ExecuteAndReloadAsync(async companyId => await MarketingApi.DecideHandoffAsync(companyId, id, accepted, accepted ? "Accepted by Marketing workspace user." : "Declined by Marketing workspace user."));
     private Task ActivateExperimentAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateExperimentAsync(companyId, id));
     private Task CompleteExperimentAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.CompleteExperimentAsync(companyId, id, "Completed after review of the primary metric and guardrail."));
@@ -349,15 +867,90 @@
         try { analysis = await MarketingApi.AnalyzeAsync(companyId, agentId, "Prioritize measurable marketing work for the next 30 days."); }
         catch (MarketingApiException ex) { errorMessage = ex.Message; }
     }
+    private Task RequestOperatingRunAsync() => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (marketingAgentId is Guid agentId) await MarketingApi.RequestOperatingRunAsync(companyId, agentId, "Operator requested a governed review of company goals and current Marketing evidence.");
+    });
+    private async Task SelectOperatingRunAsync(MarketingOperatingRunViewModel run)
+    {
+        selectedOperatingRun = run;
+        if (resolvedCompanyId is Guid companyId) operatingActions = await MarketingApi.GetOperatingRunActionsAsync(companyId, run.Id);
+    }
+    private Task RetryOperatingActionAsync(MarketingOperatingActionViewModel action) => ExecuteAndReloadAsync(async companyId =>
+        await MarketingApi.RetryOperatingActionAsync(companyId, action.MarketingOperatingRunId, action.Id,
+            "The operator reviewed the blocker and requested a governed retry."));
+    private Task CancelOperatingActionAsync(MarketingOperatingActionViewModel action) => ExecuteAndReloadAsync(async companyId =>
+        await MarketingApi.CancelOperatingActionAsync(companyId, action.MarketingOperatingRunId, action.Id,
+            "The operator cancelled this action; no external effect should occur."));
+    private Task SynchronizeChannelActionAsync(Guid actionId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.SynchronizeChannelActionAsync(companyId, actionId));
+    private IReadOnlyList<MarketingIntelligenceViewModel> FilteredIntelligence => intelligence
+        .Where(x => string.IsNullOrWhiteSpace(intelligenceSearch) || x.Subject.Contains(intelligenceSearch, StringComparison.OrdinalIgnoreCase) || x.Summary.Contains(intelligenceSearch, StringComparison.OrdinalIgnoreCase))
+        .Where(x => intelligenceFreshness == "all" || intelligenceFreshness == "due" && x.ReviewDueUtc <= DateTime.UtcNow || intelligenceFreshness == "current" && x.ReviewDueUtc > DateTime.UtcNow)
+        .ToArray();
+    private async Task SelectIntelligenceAsync(MarketingIntelligenceViewModel item)
+    {
+        selectedIntelligence = item;
+        if (resolvedCompanyId is Guid companyId)
+            intelligenceReviews = await MarketingApi.GetIntelligenceReviewsAsync(companyId, item.Id);
+    }
+    private Task ReviewIntelligenceAsync(bool verified) => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (selectedIntelligence is null) return;
+        selectedIntelligence = await MarketingApi.ReviewIntelligenceAsync(companyId, selectedIntelligence.Id,
+            new ReviewMarketingIntelligenceViewModel(verified, intelligenceReviewRationale, selectedIntelligence.Version));
+    });
+    private Task ArchiveIntelligenceAsync() => ExecuteAndReloadAsync(async companyId =>
+    {
+        if (selectedIntelligence is null) return;
+        await MarketingApi.ArchiveIntelligenceAsync(companyId, selectedIntelligence.Id, selectedIntelligence.Version);
+        selectedIntelligence = null; intelligenceReviews = [];
+    });
+    private Task CancelChannelActionAsync(Guid actionId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.CancelChannelActionAsync(companyId, actionId));
+    private Task ReconcileChannelActionAsync(Guid actionId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ReconcileChannelActionAsync(companyId, actionId));
+    private Task RefreshDestinationsAsync(Guid connectionId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.RefreshChannelDestinationsAsync(companyId, connectionId));
+    private Task DisconnectChannelAsync(Guid connectionId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.DisconnectChannelAsync(companyId, connectionId));
+    private async Task StartChannelOAuthAsync(string provider)
+    {
+        if (resolvedCompanyId is not Guid companyId) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            var callback = new Uri(new Uri(Navigation.BaseUri), "api/marketing/channel-oauth/callback").ToString();
+            var start = await MarketingApi.StartChannelOAuthAsync(companyId, provider, callback);
+            Navigation.NavigateTo(start.AuthorizationUri.ToString(), true);
+        }
+        catch (MarketingApiException ex) { errorMessage = ex.Message; }
+        finally { isSaving = false; }
+    }
+    private Task ResolveEventAsync(Guid eventId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ResolveEventAsync(companyId, eventId));
+    private Task GenerateCreativeAsync() => ExecuteAndReloadAsync(async companyId => await MarketingApi.GenerateCreativeAssetAsync(companyId,
+        new(creativeForm.BriefId, null, creativeForm.Name, creativeForm.Prompt, creativeForm.Dimensions,
+            creativeForm.Language, creativeForm.BrandProfileVersion, creativeForm.AltText,
+            $"creative:{creativeForm.BriefId:N}:{Guid.NewGuid():N}", creativeForm.Quality, "png")));
+    private Task SubmitCreativeAsync(Guid assetId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.SubmitCreativeAssetAsync(companyId, assetId));
+    private Task ReviewCreativeAsync(Guid assetId, bool approved) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ReviewCreativeAssetAsync(companyId, assetId, approved));
+    private Task RequestCreativeChangesAsync(Guid assetId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.RequestCreativeAssetChangesAsync(companyId, assetId));
+    private Task RescanCreativeAsync(Guid assetId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.RescanCreativeAssetAsync(companyId, assetId));
+    private MarketingCreativeAssetScanViewModel? LatestScan(Guid assetId) => creativeScans.GetValueOrDefault(assetId);
+    private Task RetireCreativeAsync(Guid assetId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.RetireCreativeAssetAsync(companyId, assetId));
 
     private string WithCompany(string path) => resolvedCompanyId is Guid id ? $"{path}?companyId={id:D}" : path;
     private void ShowObjectives() => activeTab = "Objectives";
     private static string FriendlyMetric(string value) => value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal);
     private static string MetricValue(MarketingMetricViewModel metric) => metric.Value is decimal value ? $"{value:N1} {metric.Unit}".Trim() : "No data";
+    private static string Friendly(string value) => value.Replace("_", " ", StringComparison.Ordinal).Replace('-', ' ');
+    private static string JsonSummary(string value, string fallback = "Not yet recorded")
+    { if (string.IsNullOrWhiteSpace(value) || value is "{}" or "[]") return fallback; var clean = value.Trim().Trim('{', '}', '[', ']').Replace('"', ' ').Replace(':', ' '); return clean.Length > 140 ? clean[..140] + "…" : clean; }
+    private static string Size(MarketingSegmentVersionViewModel value) => value.SizeLow.HasValue || value.SizeHigh.HasValue ? $"{value.SizeLow?.ToString("N0") ?? "?"}–{value.SizeHigh?.ToString("N0") ?? "?"} ({Friendly(value.SizeMethod)})" : "Not estimated";
 
     private sealed class ObjectiveForm { public string Name { get; set; } = ""; public string ObjectiveType { get; set; } = "qualified_demand"; public decimal TargetValue { get; set; } = 10; public string Unit { get; set; } = "leads"; }
+    private sealed class StrategyProposalForm { public string Title { get; set; } = "Growth strategy"; public string Objective { get; set; } = "Create an evidence-grounded 4P and STP strategy aligned to company goals, product facts, customer needs, price sensitivity, channel presence, and competitive evidence."; public Guid SegmentVersionId { get; set; } }
+    private sealed class SegmentProposalForm { public string Name { get; set; } = "Evidence-grounded target segment"; public string Objective { get; set; } = "Propose a lawful strategic segment using customer needs, behaviours, channel presence, price sensitivity, size and economics evidence. Classify every claim and identify missing evidence."; }
+    private sealed class DecompositionForm { public Guid StrategyId { get; set; } public Guid CampaignId { get; set; } public Guid ObjectiveId { get; set; } public string PlanName { get; set; } = "Strategy execution plan"; }
     private sealed class PlanForm { public string Name { get; set; } = ""; public string Summary { get; set; } = ""; public decimal? Budget { get; set; } public string Currency { get; set; } = "SEK"; }
-    private sealed class ContentForm { public string Title { get; set; } = ""; public string Purpose { get; set; } = ""; public string Audience { get; set; } = ""; public string Channel { get; set; } = "email"; public string Language { get; set; } = "English"; public string CallToAction { get; set; } = ""; }
+    private sealed class ContentForm { public string Title { get; set; } = ""; public string Purpose { get; set; } = ""; public string Audience { get; set; } = ""; public string Channel { get; set; } = "email"; public string Language { get; set; } = "English"; public string MeasurableObjective { get; set; } = "Increase qualified engagement"; public string FunnelStage { get; set; } = "awareness"; public string KeyMessage { get; set; } = ""; public string Offer { get; set; } = "Not specified"; public string CallToAction { get; set; } = ""; }
+    private sealed class ContentGenerationForm { public Guid BriefId { get; set; } public string ContentFormat { get; set; } = "social_post"; public int VariantCount { get; set; } = 3; public string Instructions { get; set; } = "Create distinct angles while preserving the brief's language, tone, evidence, and call to action."; }
     private sealed class ExperimentForm { public string Name { get; set; } = ""; public string Hypothesis { get; set; } = ""; public string PrimaryMetric { get; set; } = "conversion_rate"; public string GuardrailMetric { get; set; } = "unsubscribe_rate"; public int MinimumSampleSize { get; set; } = 100; }
     private sealed class QualificationForm { public string Name { get; set; } = ""; public string AudienceType { get; set; } = "b2b"; public string Channel { get; set; } = "email"; public decimal MinimumScore { get; set; } = 70; public int FreshnessDays { get; set; } = 30; public bool RequiresCustomerCompany { get; set; } = true; }
+    private sealed class CreativeForm { public Guid BriefId { get; set; } public string Name { get; set; } = "Campaign creative"; public string Prompt { get; set; } = "A clear, confident editorial image with generous negative space and no embedded text."; public string AltText { get; set; } = "Marketing campaign illustration"; public string Dimensions { get; set; } = "1024x1024"; public string Language { get; set; } = "English"; public string BrandProfileVersion { get; set; } = "current"; public string Quality { get; set; } = "medium"; }
 }

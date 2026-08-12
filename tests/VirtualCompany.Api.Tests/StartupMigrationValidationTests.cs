@@ -18,6 +18,9 @@ public sealed class StartupMigrationValidationTests
         Assert.Contains("20260425090000_AddFinanceInsightSnapshotCache", exception.Message, StringComparison.Ordinal);
         Assert.Contains("Test", exception.Message, StringComparison.Ordinal);
         Assert.Contains("dotnet ef database update", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("VirtualCompany.Persistence.Migrations.csproj", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("VirtualCompany.Api.csproj", exception.Message, StringComparison.Ordinal);
+        Assert.Contains("VirtualCompanyDbContext", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]

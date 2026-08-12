@@ -149,7 +149,13 @@ public sealed class MarketingContentBrief : ICompanyOwnedEntity
     private MarketingContentBrief() { }
     public MarketingContentBrief(Guid id, Guid companyId, string title, string purpose, string audience,
         string channel, string language, string tone, string callToAction, Guid? campaignId, Guid? planId,
-        DateTime? dueUtc, Guid? ownerUserId, Guid? ownerAgentId)
+        DateTime? dueUtc, Guid? ownerUserId, Guid? ownerAgentId, Guid? segmentVersionId = null,
+        string measurableObjective = "Not specified", string funnelStage = "awareness",
+        string customerInsight = "Not specified", string keyMessage = "Not specified",
+        string supportingPointsJson = "[]", string offer = "Not specified", string requiredClaimsJson = "[]",
+        string prohibitedClaimsJson = "[]", string seoRequirementsJson = "{}", string visualDirection = "Not specified",
+        string desiredFormatsJson = "[]", string variantRequirementsJson = "{}",
+        string evidenceRequirementsJson = "{}", string approvalPolicyJson = "{}")
     {
         SalesEntityText.EnsureCompany(companyId);
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -166,6 +172,21 @@ public sealed class MarketingContentBrief : ICompanyOwnedEntity
         DueUtc = dueUtc.HasValue ? SalesEntityText.NormalizeUtc(dueUtc.Value, nameof(dueUtc)) : null;
         OwnerUserId = ownerUserId;
         OwnerAgentId = ownerAgentId;
+        MarketingCustomerSegmentVersionId = segmentVersionId;
+        MeasurableObjective = SalesEntityText.NormalizeRequired(measurableObjective, nameof(measurableObjective), 1000);
+        FunnelStage = SalesEntityText.NormalizeRequired(funnelStage, nameof(funnelStage), 40).ToLowerInvariant();
+        CustomerInsight = SalesEntityText.NormalizeRequired(customerInsight, nameof(customerInsight), 4000);
+        KeyMessage = SalesEntityText.NormalizeRequired(keyMessage, nameof(keyMessage), 2000);
+        SupportingPointsJson = SalesEntityText.NormalizeRequired(supportingPointsJson, nameof(supportingPointsJson), 8000);
+        Offer = SalesEntityText.NormalizeRequired(offer, nameof(offer), 2000);
+        RequiredClaimsJson = SalesEntityText.NormalizeRequired(requiredClaimsJson, nameof(requiredClaimsJson), 8000);
+        ProhibitedClaimsJson = SalesEntityText.NormalizeRequired(prohibitedClaimsJson, nameof(prohibitedClaimsJson), 8000);
+        SeoRequirementsJson = SalesEntityText.NormalizeRequired(seoRequirementsJson, nameof(seoRequirementsJson), 8000);
+        VisualDirection = SalesEntityText.NormalizeRequired(visualDirection, nameof(visualDirection), 2000);
+        DesiredFormatsJson = SalesEntityText.NormalizeRequired(desiredFormatsJson, nameof(desiredFormatsJson), 4000);
+        VariantRequirementsJson = SalesEntityText.NormalizeRequired(variantRequirementsJson, nameof(variantRequirementsJson), 8000);
+        EvidenceRequirementsJson = SalesEntityText.NormalizeRequired(evidenceRequirementsJson, nameof(evidenceRequirementsJson), 8000);
+        ApprovalPolicyJson = SalesEntityText.NormalizeRequired(approvalPolicyJson, nameof(approvalPolicyJson), 8000);
         Status = MarketingStatuses.Draft;
         CreatedUtc = UpdatedUtc = DateTime.UtcNow;
     }
@@ -183,6 +204,21 @@ public sealed class MarketingContentBrief : ICompanyOwnedEntity
     public DateTime? DueUtc { get; private set; }
     public Guid? OwnerUserId { get; private set; }
     public Guid? OwnerAgentId { get; private set; }
+    public Guid? MarketingCustomerSegmentVersionId { get; private set; }
+    public string MeasurableObjective { get; private set; } = null!;
+    public string FunnelStage { get; private set; } = null!;
+    public string CustomerInsight { get; private set; } = null!;
+    public string KeyMessage { get; private set; } = null!;
+    public string SupportingPointsJson { get; private set; } = null!;
+    public string Offer { get; private set; } = null!;
+    public string RequiredClaimsJson { get; private set; } = null!;
+    public string ProhibitedClaimsJson { get; private set; } = null!;
+    public string SeoRequirementsJson { get; private set; } = null!;
+    public string VisualDirection { get; private set; } = null!;
+    public string DesiredFormatsJson { get; private set; } = null!;
+    public string VariantRequirementsJson { get; private set; } = null!;
+    public string EvidenceRequirementsJson { get; private set; } = null!;
+    public string ApprovalPolicyJson { get; private set; } = null!;
     public string Status { get; private set; } = null!;
     public int Version { get; private set; } = 1;
     public DateTime CreatedUtc { get; private set; }
@@ -207,7 +243,9 @@ public sealed class MarketingContentVariant : ICompanyOwnedEntity
 {
     private MarketingContentVariant() { }
     public MarketingContentVariant(Guid id, Guid companyId, Guid briefId, string name, string body,
-        string sourceReferences, bool generatedByAi)
+        string sourceReferences, bool generatedByAi, string contentFormat = "text", Guid? generationRunId = null,
+        string capabilityVersion = "manual", string promptVersion = "manual", string? idempotencyKey = null,
+        int batchIndex = 0, Guid? variantFamilyId = null, int versionNumber = 1)
     {
         SalesEntityText.EnsureCompany(companyId);
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -217,6 +255,13 @@ public sealed class MarketingContentVariant : ICompanyOwnedEntity
         Body = SalesEntityText.NormalizeRequired(body, nameof(body), 16000);
         SourceReferences = SalesEntityText.NormalizeRequired(sourceReferences, nameof(sourceReferences), 4000);
         GeneratedByAi = generatedByAi;
+        ContentFormat = SalesEntityText.NormalizeRequired(contentFormat, nameof(contentFormat), 60).ToLowerInvariant();
+        GenerationRunId = generationRunId;
+        CapabilityVersion = SalesEntityText.NormalizeRequired(capabilityVersion, nameof(capabilityVersion), 64);
+        PromptVersion = SalesEntityText.NormalizeRequired(promptVersion, nameof(promptVersion), 128);
+        IdempotencyKey = SalesEntityText.NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 160);
+        if (batchIndex < 0 || versionNumber < 1) throw new ArgumentOutOfRangeException(nameof(batchIndex));
+        BatchIndex = batchIndex; VariantFamilyId = variantFamilyId.GetValueOrDefault(Id); VersionNumber = versionNumber;
         Status = MarketingStatuses.Draft;
         CreatedUtc = DateTime.UtcNow;
     }
@@ -227,9 +272,26 @@ public sealed class MarketingContentVariant : ICompanyOwnedEntity
     public string Body { get; private set; } = null!;
     public string SourceReferences { get; private set; } = null!;
     public bool GeneratedByAi { get; private set; }
+    public Guid VariantFamilyId { get; private set; }
+    public int VersionNumber { get; private set; }
+    public string ContentFormat { get; private set; } = null!;
+    public Guid? GenerationRunId { get; private set; }
+    public string CapabilityVersion { get; private set; } = null!;
+    public string PromptVersion { get; private set; } = null!;
+    public string? IdempotencyKey { get; private set; }
+    public int BatchIndex { get; private set; }
     public string Status { get; private set; } = null!;
     public DateTime CreatedUtc { get; private set; }
-    public void Review(bool approved) => Status = approved ? MarketingStatuses.Approved : MarketingStatuses.Rejected;
+    public void Review(bool approved)
+    {
+        if (Status != MarketingStatuses.Draft) throw new InvalidOperationException("Only draft variants can be reviewed.");
+        Status = approved ? MarketingStatuses.Approved : MarketingStatuses.Rejected;
+    }
+    public void Retire()
+    {
+        if (Status == "retired") return;
+        Status = "retired";
+    }
 }
 
 public sealed class MarketingSalesHandoff : ICompanyOwnedEntity
@@ -288,7 +350,7 @@ public sealed class MarketingChannelObservation : ICompanyOwnedEntity
     private MarketingChannelObservation() { }
     public MarketingChannelObservation(Guid id, Guid companyId, string provider, string metricCode, decimal value,
         string unit, DateTime periodStartUtc, DateTime periodEndUtc, Guid? campaignId, Guid? activityId,
-        string sourceReference, string idempotencyKey)
+        string sourceReference, string idempotencyKey, Guid? correctionOfObservationId = null)
     {
         SalesEntityText.EnsureCompany(companyId);
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -304,6 +366,7 @@ public sealed class MarketingChannelObservation : ICompanyOwnedEntity
         SalesCampaignActivityId = activityId;
         SourceReference = SalesEntityText.NormalizeRequired(sourceReference, nameof(sourceReference), 1000);
         IdempotencyKey = SalesEntityText.NormalizeRequired(idempotencyKey, nameof(idempotencyKey), 160);
+        CorrectionOfObservationId = correctionOfObservationId;
         RetrievedUtc = DateTime.UtcNow;
     }
     public Guid Id { get; private set; }
@@ -318,7 +381,10 @@ public sealed class MarketingChannelObservation : ICompanyOwnedEntity
     public DateTime PeriodEndUtc { get; private set; }
     public string SourceReference { get; private set; } = null!;
     public string IdempotencyKey { get; private set; } = null!;
+    public Guid? CorrectionOfObservationId { get; private set; }
+    public bool IsSuperseded { get; private set; }
     public DateTime RetrievedUtc { get; private set; }
+    public void Supersede() => IsSuperseded = true;
 }
 
 public sealed class MarketingExperiment : ICompanyOwnedEntity

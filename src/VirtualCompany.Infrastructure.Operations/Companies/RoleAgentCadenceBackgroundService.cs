@@ -88,7 +88,11 @@ public sealed class RoleAgentCadenceBackgroundService(
             else if (agent.Department.Equals("Sales", StringComparison.OrdinalIgnoreCase))
                 await services.GetRequiredService<ISalesAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
             else if (agent.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase))
-                await services.GetRequiredService<IMarketingAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
+            {
+                var key = $"marketing-cadence:{agent.CompanyId:N}:{agent.AgentId:N}:{cadence}:{windowStart:yyyyMMdd}";
+                await services.GetRequiredService<IMarketingOperatingLoopService>().RunAsync(agent.CompanyId, agent.AgentId,
+                    new RequestMarketingOperatingRun("cadence", cadence, key, key, Cadence: cadence), ct);
+            }
             else
                 await services.GetRequiredService<ISupportAgentAnalysisService>().AnalyzeAsync(agent.CompanyId, agent.AgentId, null, request, ct);
         }

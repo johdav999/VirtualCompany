@@ -43,7 +43,9 @@ internal sealed class CompanyOperatingConfigurationConfiguration : IEntityTypeCo
         builder.Property(x => x.MaximumCollaborators).HasColumnName("maximum_collaborators"); builder.Property(x => x.MaximumRuntimeSeconds).HasColumnName("maximum_runtime_seconds");
         builder.Property(x => x.MaximumModelCallsPerCycle).HasColumnName("maximum_model_calls_per_cycle"); builder.Property(x => x.MaximumToolCallsPerCycle).HasColumnName("maximum_tool_calls_per_cycle");
         builder.Property(x => x.MaximumMonetaryBudgetPerCycle).HasColumnName("maximum_monetary_budget_per_cycle").HasPrecision(19, 4);
+        builder.Property(x => x.MaximumTasksPerDay).HasColumnName("maximum_tasks_per_day"); builder.Property(x => x.MaximumModelCallsPerDay).HasColumnName("maximum_model_calls_per_day"); builder.Property(x => x.MaximumToolCallsPerDay).HasColumnName("maximum_tool_calls_per_day"); builder.Property(x => x.MaximumMonetaryBudgetPerDay).HasColumnName("maximum_monetary_budget_per_day").HasPrecision(19, 4);
         builder.Property(x => x.IsPaused).HasColumnName("is_paused"); builder.Property(x => x.PauseReason).HasColumnName("pause_reason").HasMaxLength(500);
+        builder.Property(x => x.EmergencyStopped).HasColumnName("emergency_stopped"); builder.Property(x => x.EmergencyStopReason).HasColumnName("emergency_stop_reason").HasMaxLength(500); builder.Property(x => x.EmergencyStoppedUtc).HasColumnName("emergency_stopped_at");
         builder.Property(x => x.Version).HasColumnName("version").IsConcurrencyToken(); builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired(); builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.CoordinatorAgent).WithMany().HasForeignKey(x => x.CoordinatorAgentId).OnDelete(DeleteBehavior.NoAction);

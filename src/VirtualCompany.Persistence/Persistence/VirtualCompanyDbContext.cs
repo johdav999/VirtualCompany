@@ -38,6 +38,21 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AgentTemplate> AgentTemplates => Set<AgentTemplate>();
     public DbSet<CompanyKnowledgeChunk> CompanyKnowledgeChunks => Set<CompanyKnowledgeChunk>();
     public DbSet<Agent> Agents => Set<Agent>();
+    public DbSet<CompanyGoal> CompanyGoals => Set<CompanyGoal>();
+    public DbSet<CompanyOperatingConfiguration> CompanyOperatingConfigurations => Set<CompanyOperatingConfiguration>();
+    public DbSet<OperatingCycle> OperatingCycles => Set<OperatingCycle>();
+    public DbSet<OperatingPlan> OperatingPlans => Set<OperatingPlan>();
+    public DbSet<OperatingInitiative> OperatingInitiatives => Set<OperatingInitiative>();
+    public DbSet<OperatingPlanDependency> OperatingPlanDependencies => Set<OperatingPlanDependency>();
+    public DbSet<OperatingDecision> OperatingDecisions => Set<OperatingDecision>();
+    public DbSet<OperatingValidationResult> OperatingValidationResults => Set<OperatingValidationResult>();
+    public DbSet<OperatingReview> OperatingReviews => Set<OperatingReview>();
+    public DbSet<OperatingDispatch> OperatingDispatches => Set<OperatingDispatch>();
+    public DbSet<OperatingInitiativeCollaborator> OperatingInitiativeCollaborators => Set<OperatingInitiativeCollaborator>();
+    public DbSet<OperatingEvent> OperatingEvents => Set<OperatingEvent>();
+    public DbSet<OperatingCycleRequest> OperatingCycleRequests => Set<OperatingCycleRequest>();
+    public DbSet<CompanyOperatingLease> CompanyOperatingLeases => Set<CompanyOperatingLease>();
+    public DbSet<OperatingSnapshot> OperatingSnapshots => Set<OperatingSnapshot>();
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
     public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
     public DbSet<TriggerExecutionAttempt> TriggerExecutionAttempts => Set<TriggerExecutionAttempt>();
@@ -217,6 +232,42 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<MarketingQualificationDefinition> MarketingQualificationDefinitions => Set<MarketingQualificationDefinition>();
     public DbSet<MarketingQualificationEvaluation> MarketingQualificationEvaluations => Set<MarketingQualificationEvaluation>();
     public DbSet<MarketingQualificationFeedback> MarketingQualificationFeedback => Set<MarketingQualificationFeedback>();
+    public DbSet<MarketingStrategy> MarketingStrategies => Set<MarketingStrategy>();
+    public DbSet<MarketingStrategySegment> MarketingStrategySegments => Set<MarketingStrategySegment>();
+    public DbSet<MarketingStrategyCampaignLink> MarketingStrategyCampaignLinks => Set<MarketingStrategyCampaignLink>();
+    public DbSet<MarketingIntelligenceRecord> MarketingIntelligenceRecords => Set<MarketingIntelligenceRecord>();
+    public DbSet<MarketingIntelligenceReview> MarketingIntelligenceReviews => Set<MarketingIntelligenceReview>();
+    public DbSet<MarketingCustomerSegment> MarketingCustomerSegments => Set<MarketingCustomerSegment>();
+    public DbSet<MarketingCustomerSegmentVersion> MarketingCustomerSegmentVersions => Set<MarketingCustomerSegmentVersion>();
+    public DbSet<MarketingSegmentDimension> MarketingSegmentDimensions => Set<MarketingSegmentDimension>();
+    public DbSet<MarketingSegmentSizeEstimate> MarketingSegmentSizeEstimates => Set<MarketingSegmentSizeEstimate>();
+    public DbSet<MarketingSegmentEconomicEstimate> MarketingSegmentEconomicEstimates => Set<MarketingSegmentEconomicEstimate>();
+    public DbSet<MarketingSegmentScorePolicy> MarketingSegmentScorePolicies => Set<MarketingSegmentScorePolicy>();
+    public DbSet<MarketingSegmentScoreDimension> MarketingSegmentScoreDimensions => Set<MarketingSegmentScoreDimension>();
+    public DbSet<MarketingSegmentTargetDecision> MarketingSegmentTargetDecisions => Set<MarketingSegmentTargetDecision>();
+    public DbSet<MarketingSegmentArtifactMapping> MarketingSegmentArtifactMappings => Set<MarketingSegmentArtifactMapping>();
+    public DbSet<MarketingOperatingRun> MarketingOperatingRuns => Set<MarketingOperatingRun>();
+    public DbSet<MarketingOperatingAction> MarketingOperatingActions => Set<MarketingOperatingAction>();
+    public DbSet<MarketingWorkEvidence> MarketingWorkEvidence => Set<MarketingWorkEvidence>();
+    public DbSet<MarketingCompanySignal> MarketingCompanySignals => Set<MarketingCompanySignal>();
+    public DbSet<MarketingCreativeAsset> MarketingCreativeAssets => Set<MarketingCreativeAsset>();
+    public DbSet<MarketingCreativeAssetScan> MarketingCreativeAssetScans => Set<MarketingCreativeAssetScan>();
+    public DbSet<MarketingChannelConnection> MarketingChannelConnections => Set<MarketingChannelConnection>();
+    public DbSet<MarketingChannelOAuthSession> MarketingChannelOAuthSessions => Set<MarketingChannelOAuthSession>();
+    public DbSet<MarketingChannelDestination> MarketingChannelDestinations => Set<MarketingChannelDestination>();
+    public DbSet<MarketingChannelAction> MarketingChannelActions => Set<MarketingChannelAction>();
+    public DbSet<MarketingLifecycleJourney> MarketingLifecycleJourneys => Set<MarketingLifecycleJourney>();
+    public DbSet<MarketingJourneyEnrollment> MarketingJourneyEnrollments => Set<MarketingJourneyEnrollment>();
+    public DbSet<MarketingJourneyInboundEvent> MarketingJourneyInboundEvents => Set<MarketingJourneyInboundEvent>();
+    public DbSet<MarketingJourneyStepAttempt> MarketingJourneyStepAttempts => Set<MarketingJourneyStepAttempt>();
+    public DbSet<MarketingAttributionResult> MarketingAttributionResults => Set<MarketingAttributionResult>();
+    public DbSet<MarketingAttributionTouch> MarketingAttributionTouches => Set<MarketingAttributionTouch>();
+    public DbSet<MarketingAttributionModelDefinition> MarketingAttributionModels => Set<MarketingAttributionModelDefinition>();
+    public DbSet<MarketingAttributionAllocation> MarketingAttributionAllocations => Set<MarketingAttributionAllocation>();
+    public DbSet<MarketingExperimentExposure> MarketingExperimentExposures => Set<MarketingExperimentExposure>();
+    public DbSet<MarketingExperimentDecisionRecord> MarketingExperimentDecisions => Set<MarketingExperimentDecisionRecord>();
+    public DbSet<MarketingSegmentLearningProposal> MarketingSegmentLearningProposals => Set<MarketingSegmentLearningProposal>();
+    public DbSet<MarketingEventTrigger> MarketingEventTriggers => Set<MarketingEventTrigger>();
     public DbSet<SupportCase> SupportCases => Set<SupportCase>();
     public DbSet<SupportMessage> SupportMessages => Set<SupportMessage>();
     public DbSet<SupportCaseEvent> SupportCaseEvents => Set<SupportCaseEvent>();
@@ -517,6 +568,26 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<Agent>()
             .HasQueryFilter(agent =>
                 CurrentCompanyId != null && agent.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyGoal>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyOperatingConfiguration>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingCycle>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingPlan>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingInitiative>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingPlanDependency>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingDecision>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingValidationResult>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingReview>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<OperatingSnapshot>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupplierApprovalAutomationRule>()
             .HasQueryFilter(rule =>
                 CurrentCompanyId != null && rule.CompanyId == CurrentCompanyId);
@@ -1004,6 +1075,28 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<MarketingQualificationFeedback>()
             .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentSizeEstimate>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentEconomicEstimate>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentScorePolicy>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentScoreDimension>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentTargetDecision>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentArtifactMapping>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingJourneyInboundEvent>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingJourneyStepAttempt>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingAttributionTouch>().HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingAttributionModelDefinition>().HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingAttributionAllocation>().HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingExperimentExposure>().HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingExperimentDecisionRecord>().HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<MarketingSegmentLearningProposal>().HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SupportCase>()
             .HasQueryFilter(supportCase =>
                 CurrentCompanyId != null && supportCase.CompanyId == CurrentCompanyId);

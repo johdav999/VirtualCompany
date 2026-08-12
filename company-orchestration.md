@@ -4,7 +4,38 @@
 
 This document assesses whether Virtual Company currently contains an orchestration layer that can run the company, decide what work is needed, lead its agents, delegate work, coordinate collaboration, and adapt based on results. It also proposes an architecture and delivery path for adding that capability.
 
-The short answer is that the solution contains substantial execution and orchestration infrastructure, but it does not yet contain a company-level executive orchestrator. Existing components can execute assigned work, schedules, conditions, and predefined workflows. They do not form a persistent operating loop that observes company state, evaluates goals, originates work, delegates it, monitors outcomes, and replans.
+The original assessment was that the solution contained substantial execution infrastructure but no company-level executive orchestrator. That core gap is now closed: the solution has a durable company operating loop that observes company state, evaluates active goals, proposes and validates initiatives, coordinates review and internal task creation, dispatches bounded agent work, runs while users are signed out, and records evidence for governed replanning.
+
+## Implementation status
+
+The first production implementation is now present across Domain, Application, Infrastructure, API, Persistence, and Web:
+
+- Durable `CompanyGoal` and `CompanyOperatingConfiguration` records define outcomes, coordinator assignment, cadence, pause state, budgets, limits, and four explicit autonomy levels. The safe default is recommendation-only.
+- Durable operating cycles, snapshots, plans, initiatives, dependencies, decisions, validation results, and reviews preserve lifecycle, correlation, idempotency, evidence, and audit history.
+- A normalized snapshot combines active goals, tasks, agents, approvals, workflows, background failures, recent decisions and reviews, the existing business-signal engine, and bounded Finance, Sales, Marketing, and Support contributors. Contributor failures, data gaps, and truncation are explicit rather than silently treated as healthy zero values.
+- The coordinator uses the existing guarded reasoning gateway with supplied source IDs, a versioned schema, a bounded initiative action type, and no tools. The recommendation stage cannot execute side effects.
+- Deterministic validation checks tenant ownership, goal relevance, duplicates, dependencies, dates, evidence, owner eligibility/capability/capacity, task and monetary limits, action class, risk, approval, and current configuration version before work can move forward.
+- Managers review plans through the shared approval system. Manual and automatic commits use serializable transactions, stable business idempotency keys, and durable task/dispatch links so a failure cannot intentionally leave a partial work graph.
+- The scheduler runs configured daily reviews in the company timezone and consumes material task, workflow, approval, Marketing, and background-execution outcomes. Requests use durable leases, cooldown/coalescing, bounded retry, dead-letter states, tenant execution scopes, and stable idempotency windows.
+- Recommendation mode always waits for a person. Organize may commit eligible low-risk internal work, Operate Internally may dispatch it, and both company- and agent-level authority must agree. Daily task, model, tool, and monetary budgets are enforced. Pause and emergency stop are authoritative kill switches.
+- Work review compares linked task and workflow evidence versions, closes successful initiatives, requests missing evidence, escalates blocked work, and creates a new validated plan version for failed work without bypassing review.
+- Controlled external execution supports one deliberately narrow allowlisted action: a manager-approved company-operation notification. It requires controlled-execution authority, an approved plan and decision approval, current configuration, an active recipient, and durable idempotent outbox delivery. No payment, customer email, accounting write, calendar change, or other external business action is implicitly authorized.
+- The human-facing page is `/company-operation?companyId={companyId}`. It shows the configured coordinator, goals, current plan, validation and approval state, operating controls, daily usage, automatic requests, dispatch health, and snapshot coverage. Its visual reference is `docs/design/references/company-operation-reference.png`.
+
+### Acceptance status and remaining hardening
+
+The production baseline for Prompts 1–12 is implemented. The focused orchestration suite currently verifies domain lifecycles, autonomy boundaries, event suppression/coalescing, all four department contributors, contributor failure/cancellation behavior, snapshot tenant isolation, controlled-action approval and exactly-once outbox queuing, and dispatch lease/retry invariants. The Web surface has focused route and control coverage.
+
+The following work remains before describing every acceptance criterion in the prompt pack as exhaustively verified:
+
+- Add SQL Server concurrency and fault-injection tests that race plan commits and dispatch claims and prove rollback under a forced mid-transaction failure. Current implementation and domain invariants are present; the remaining gap is provider-level concurrency evidence.
+- Add scheduler multi-host/restart integration tests with an expired company lease, missed daily window, duplicate workflow/approval/background events, and dead-letter recovery.
+- Add snapshot integration tests for correlation, truncation, duplicate signal normalization, and representative populated Finance, Sales, Marketing, and Support projections. Contributor failure/cancellation and cross-tenant filtering now have focused coverage.
+- Expand outcome review from task/workflow completion evidence to authoritative before/after business metrics and confirmed goal impact. Current review is intentionally conservative and will not declare success without evidence.
+- Add malformed, contradictory, oversized, and ungrounded coordinator-output tests around the live reasoning gateway, plus end-to-end single-agent and multi-agent dispatch tests.
+- Add provider-dispatch/reconciliation verification for the allowlisted operator notification. The outbox, retry, and idempotency path exists; unsupported external actions remain denied.
+
+The remainder of this document retains the original assessment for architectural context and explains why the new layer is separate from the existing single-agent and manager-worker runtimes.
 
 ## Current implementation
 
@@ -81,9 +112,9 @@ Relevant implementation:
 - `src/VirtualCompany.Infrastructure.Operations/Companies/WorkflowProgressionInfrastructure.cs`
 - `src/VirtualCompany.Infrastructure.Operations/Companies/CompanyOutboxInfrastructure.cs`
 
-## Capability gap
+## Historical capability gap
 
-The missing capability is a persistent company operating loop:
+The capability originally missing was a persistent company operating loop:
 
 1. Observe authoritative company state.
 2. Compare the state with active company goals and constraints.
@@ -95,7 +126,7 @@ The missing capability is a persistent company operating loop:
 8. Review completion evidence and business impact.
 9. Replan, escalate, pause, or close the initiative.
 
-The current solution has much of steps 5 through 7. It lacks a general implementation of steps 1 through 4 and 8 through 9.
+The repository now implements all nine stages as a governed production baseline. The remaining work is the acceptance hardening listed above, especially provider-level concurrency, scheduler recovery, live reasoning failure cases, and authoritative business-metric outcome comparison.
 
 ## Proposed architecture
 

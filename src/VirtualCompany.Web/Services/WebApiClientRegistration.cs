@@ -29,6 +29,7 @@ public static class WebApiClientRegistration
         services.AddScoped(sp => new ActionInsightApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new TodayFocusApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new ActivityFeedApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
+        services.AddScoped<CompanyOperationApiClient>();
         services.AddScoped(sp => new FinanceApiClient(
             sp.GetRequiredService<ICompanyApiTransport>(),
             sp.GetRequiredService<ILogger<FinanceApiClient>>(),
@@ -37,7 +38,7 @@ public static class WebApiClientRegistration
             sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new DashboardSummaryApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
-        services.AddScoped(sp => new MarketingApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
+        services.AddScoped(sp => new MarketingApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesAutomationApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new SupportApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped<FinanceIntegrationApplicationApiClient>();

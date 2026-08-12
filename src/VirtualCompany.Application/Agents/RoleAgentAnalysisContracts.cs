@@ -6,7 +6,8 @@ public sealed record RoleAgentAnalysisRequest(
     int HorizonDays = 30,
     string? Objective = null,
     DateTime? AsOfUtc = null,
-    string Cadence = "on_demand");
+    string Cadence = "on_demand",
+    bool IsBootstrap = false);
 
 public sealed record RoleAgentMetric(
     string Key,
@@ -38,4 +39,5 @@ public sealed record RoleAgentAnalysisResult(
     IReadOnlyList<AgentAiSource> Sources,
     IReadOnlyList<string> MissingEvidence,
     IReadOnlyList<AgentAiNextAction> NextActions,
-    bool RequiresReview);
+    bool RequiresReview,
+    string? FailureCode = null);

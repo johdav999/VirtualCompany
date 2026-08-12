@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Marketing;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Infrastructure.Companies;
@@ -24,6 +25,7 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         var paymentsScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "payments" };
         var financeScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "finance" };
         var salesScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "sales", "prospecting" };
+        var marketingScopes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "marketing", "sales", "knowledge" };
 
         var registrations = new[]
         {
@@ -41,10 +43,12 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                 definition.Version,
                 definition.InputSchema,
                 definition.OutputSchema)))
-          .Concat(SalesToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, salesScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
+          .Concat(SalesToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, salesScopes, definition.Version, definition.InputSchema, definition.OutputSchema)))
+          .Concat(MarketingToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, marketingScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
 
         _tools = registrations.ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
-        _definitions = FinanceToolDefinitions.Concat(SalesToolDefinitions).ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
+        _definitions = FinanceToolDefinitions.Concat(SalesToolDefinitions).Concat(MarketingToolDefinitions)
+            .ToDictionary(x => x.ToolName, StringComparer.OrdinalIgnoreCase);
     }
 
     private static IReadOnlyList<ToolDefinitionManifest> FinanceToolDefinitions { get; } =
@@ -71,6 +75,58 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         SalesDefinition("sales.research_prospect", ToolActionType.Recommend, """{"type":"object","additionalProperties":false,"required":["prospectId"],"properties":{"prospectId":{"type":"string","format":"uuid"}}}""", "prospect"),
         SalesDefinition("sales.recommend_prospect_decision", ToolActionType.Recommend, """{"type":"object","additionalProperties":false,"required":["prospectId"],"properties":{"prospectId":{"type":"string","format":"uuid"}}}""", "recommendation")
     ];
+
+    private static IReadOnlyList<ToolDefinitionManifest> MarketingToolDefinitions { get; } =
+    [
+        MarketingDefinition(MarketingToolIds.ReadWorkspace, ToolActionType.Read, "workspace"),
+        MarketingDefinition(MarketingToolIds.ReadObjectives, ToolActionType.Read, "objectives"),
+        MarketingDefinition(MarketingToolIds.ReadCampaigns, ToolActionType.Read, "campaigns"),
+        MarketingDefinition(MarketingToolIds.ReadContentCalendar, ToolActionType.Read, "contentCalendar"),
+        MarketingDefinition(MarketingToolIds.ReadAudienceEvidence, ToolActionType.Read, "audienceEvidence"),
+        MarketingDefinition(MarketingToolIds.ReadChannelObservations, ToolActionType.Read, "channelObservations"),
+        MarketingDefinition(MarketingToolIds.ReadAttributionSummary, ToolActionType.Read, "attributionSummary"),
+        MarketingDefinition(MarketingToolIds.SearchApprovedKnowledge, ToolActionType.Read, "knowledgeResults"),
+        MarketingDefinition(MarketingToolIds.ReadSegments, ToolActionType.Read, "segments"),
+        MarketingDefinition(MarketingToolIds.ReadSegmentEvidence, ToolActionType.Read, "segmentEvidence"),
+        MarketingDefinition(MarketingToolIds.PreparePlan, ToolActionType.Recommend, "planProposal"),
+        MarketingDefinition(MarketingToolIds.AnalyzeAudience, ToolActionType.Recommend, "audienceAnalysis"),
+        MarketingDefinition(MarketingToolIds.PrepareContentBrief, ToolActionType.Recommend, "contentBrief"),
+        MarketingDefinition(MarketingToolIds.RecommendCampaignChange, ToolActionType.Recommend, "campaignRecommendation"),
+        MarketingDefinition(MarketingToolIds.PreparePerformanceReview, ToolActionType.Recommend, "performanceReview"),
+        MarketingDefinition(MarketingToolIds.PrepareExperiment, ToolActionType.Recommend, "experimentProposal"),
+        MarketingDefinition(MarketingToolIds.PrepareOperatingReview, ToolActionType.Recommend, "operatingReview"),
+        MarketingDefinition(MarketingToolIds.PrepareSegmentation, ToolActionType.Recommend, "segmentationProposal"),
+        MarketingDefinition(MarketingToolIds.RecommendTargetSegments, ToolActionType.Recommend, "targetRecommendation"),
+        MarketingDefinition(MarketingToolIds.AssessSegmentStrategyImpact, ToolActionType.Recommend, "strategyImpact")
+    ];
+
+    private static ToolDefinitionManifest MarketingDefinition(string name, ToolActionType action, string property) =>
+        new(name, "1.0.0", action, ParseSchema(
+            """
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "objective": { "type": "string", "maxLength": 2000 },
+                "asOfUtc": { "type": "string", "format": "date-time" },
+                "horizonDays": { "type": "integer", "minimum": 1, "maximum": 365 },
+                "entityId": { "type": "string", "format": "uuid" },
+                "query": { "type": "string", "maxLength": 500 },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 100 }
+              }
+            }
+            """), new JsonObject
+        {
+            ["type"] = "object",
+            ["required"] = new JsonArray("schemaVersion", "status", "success", "data"),
+            ["properties"] = new JsonObject
+            {
+                ["schemaVersion"] = new JsonObject { ["type"] = "string" },
+                ["status"] = new JsonObject { ["type"] = "string" },
+                ["success"] = new JsonObject { ["type"] = "boolean" },
+                ["data"] = new JsonObject { ["type"] = "object", ["required"] = new JsonArray(property) }
+            }
+        });
 
     private static ToolDefinitionManifest SalesDefinition(string name, ToolActionType action, string input, string property) =>
         new(name, "1.0.0", action, ParseSchema(input), new JsonObject

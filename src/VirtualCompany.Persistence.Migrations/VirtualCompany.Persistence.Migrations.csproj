@@ -16,6 +16,11 @@
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
+    <!-- The generated EF migration set is large enough to trigger a Roslyn
+         shared-compiler AccessViolation on Windows. Keep compilation local to
+         this project so API startup remains reliable without serializing or
+         slowing the rest of the solution build. -->
+    <UseSharedCompilation>false</UseSharedCompilation>
   </PropertyGroup>
 
 </Project>

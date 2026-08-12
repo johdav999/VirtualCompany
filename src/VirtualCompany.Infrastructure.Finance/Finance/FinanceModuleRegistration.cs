@@ -4,6 +4,7 @@ using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Infrastructure.Security;
 
 namespace VirtualCompany.Infrastructure.Finance;
@@ -40,6 +41,7 @@ public static class FinanceModuleRegistration
             });
         services.AddHostedService<CompanySimulationProgressionBackgroundService>();
         services.AddScoped<IDashboardFinanceSnapshotService, CompanyDashboardFinanceSnapshotService>();
+        services.AddScoped<ICompanyOperatingSnapshotContributor, FinanceOperatingSnapshotContributor>();
         services.AddScoped<IBillDuplicateCheckRepository, BillDuplicateCheckRepository>();
         services.AddScoped<IBillExtractionPersistenceRepository, BillExtractionPersistenceRepository>();
         services.AddScoped<IDocumentTextExtractor, PdfDocumentTextExtractor>();

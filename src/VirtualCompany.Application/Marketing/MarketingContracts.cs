@@ -19,13 +19,31 @@ public sealed record MarketingCalendarItemDto(Guid Id, string Kind, string Name,
 
 public sealed record MarketingContentBriefDto(Guid Id, Guid? CampaignId, Guid? PlanId, string Title, string Purpose,
     string Audience, string Channel, string Language, string Tone, string CallToAction, DateTime? DueUtc,
-    string Status, int Version, IReadOnlyList<MarketingContentVariantDto> Variants);
-public sealed record MarketingContentVariantDto(Guid Id, string Name, string Body, string SourceReferences,
-    bool GeneratedByAi, string Status, DateTime CreatedUtc);
+    string Status, int Version, IReadOnlyList<MarketingContentVariantDto> Variants,
+    Guid? SegmentVersionId = null, string MeasurableObjective = "", string FunnelStage = "",
+    string CustomerInsight = "", string KeyMessage = "", string SupportingPointsJson = "[]",
+    string Offer = "", string RequiredClaimsJson = "[]", string ProhibitedClaimsJson = "[]",
+    string SeoRequirementsJson = "{}", string VisualDirection = "", string DesiredFormatsJson = "[]",
+    string VariantRequirementsJson = "{}", string EvidenceRequirementsJson = "{}",
+    string ApprovalPolicyJson = "{}");
+public sealed record MarketingContentVariantDto(Guid Id, Guid VariantFamilyId, int VersionNumber, string Name,
+    string Body, string ContentFormat, string SourceReferences, bool GeneratedByAi, Guid? GenerationRunId,
+    string CapabilityVersion, string PromptVersion, string Status, DateTime CreatedUtc);
 public sealed record CreateMarketingContentBriefRequest(Guid? CampaignId, Guid? PlanId, string Title, string Purpose,
-    string Audience, string Channel, string Language, string Tone, string CallToAction, DateTime? DueUtc);
+    string Audience, string Channel, string Language, string Tone, string CallToAction, DateTime? DueUtc,
+    Guid? SegmentVersionId = null, string MeasurableObjective = "", string FunnelStage = "awareness",
+    string? CustomerInsight = null, string KeyMessage = "", string SupportingPointsJson = "[]",
+    string Offer = "", string RequiredClaimsJson = "[]", string ProhibitedClaimsJson = "[]",
+    string SeoRequirementsJson = "{}", string VisualDirection = "", string DesiredFormatsJson = "[]",
+    string VariantRequirementsJson = "{}", string EvidenceRequirementsJson = "{}",
+    string ApprovalPolicyJson = "{}");
 public sealed record CreateMarketingContentVariantRequest(string Name, string Body, string SourceReferences,
     bool GeneratedByAi = false);
+public sealed record CreateMarketingContentVariantVersionRequest(string Name, string Body, string SourceReferences);
+public sealed record GenerateMarketingContentVariantsRequest(Guid AgentId, string ContentFormat, int VariantCount,
+    string Instructions, string IdempotencyKey);
+public sealed record GenerateMarketingContentVariantsResult(Guid RunId, string Status,
+    IReadOnlyList<MarketingContentVariantDto> Variants, IReadOnlyList<string> MissingEvidence, bool RequiresReview);
 public sealed record ReviewMarketingContentRequest(bool Approved);
 public sealed record CompleteMarketingExperimentRequest(string Decision);
 public sealed record MarketingContentPreflightIssueDto(string Code, string Severity, string Explanation,
@@ -43,10 +61,10 @@ public sealed record DecideMarketingSalesHandoffRequest(bool Accepted, string Re
 
 public sealed record MarketingObservationDto(Guid Id, Guid? CampaignId, Guid? ActivityId, string Provider,
     string MetricCode, decimal Value, string Unit, DateTime PeriodStartUtc, DateTime PeriodEndUtc,
-    string SourceReference, DateTime RetrievedUtc);
+    string SourceReference, DateTime RetrievedUtc, Guid? CorrectionOfObservationId = null, bool IsSuperseded = false);
 public sealed record CreateMarketingObservationRequest(Guid? CampaignId, Guid? ActivityId, string Provider,
     string MetricCode, decimal Value, string Unit, DateTime PeriodStartUtc, DateTime PeriodEndUtc,
-    string SourceReference, string IdempotencyKey);
+    string SourceReference, string IdempotencyKey, Guid? CorrectionOfObservationId = null);
 
 public sealed record MarketingExperimentDto(Guid Id, Guid? CampaignId, string Name, string Hypothesis,
     string PrimaryMetric, string GuardrailMetric, int MinimumSampleSize, DateTime StartsUtc, DateTime EndsUtc,
@@ -93,6 +111,11 @@ public interface IMarketingOperationsService
     Task<IReadOnlyList<MarketingContentBriefDto>> ListContentAsync(Guid companyId, CancellationToken ct);
     Task<MarketingContentBriefDto> CreateContentBriefAsync(Guid companyId, Guid userId, CreateMarketingContentBriefRequest request, CancellationToken ct);
     Task<MarketingContentVariantDto?> AddContentVariantAsync(Guid companyId, Guid briefId, CreateMarketingContentVariantRequest request, CancellationToken ct);
+    Task<MarketingContentVariantDto?> CreateContentVariantVersionAsync(Guid companyId, Guid variantId,
+        CreateMarketingContentVariantVersionRequest request, CancellationToken ct);
+    Task<bool> RetireContentVariantAsync(Guid companyId, Guid variantId, CancellationToken ct);
+    Task<GenerateMarketingContentVariantsResult> GenerateContentVariantsAsync(Guid companyId, Guid userId,
+        Guid briefId, GenerateMarketingContentVariantsRequest request, CancellationToken ct);
     Task<MarketingContentPreflightDto?> PreflightContentAsync(Guid companyId, Guid briefId, CancellationToken ct);
     Task<bool> SubmitContentAsync(Guid companyId, Guid briefId, CancellationToken ct);
     Task<bool> ReviewContentAsync(Guid companyId, Guid briefId, ReviewMarketingContentRequest request, CancellationToken ct);

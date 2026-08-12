@@ -29,19 +29,22 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
     private readonly IAgentAssignmentGuard _agentAssignmentGuard;
     private readonly IExecutiveCockpitDashboardCache _dashboardCache;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+    private readonly ICompanyOperatingEventService _operatingEvents;
 
     public CompanyTaskService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAgentAssignmentGuard agentAssignmentGuard,
         IExecutiveCockpitDashboardCache dashboardCache,
-        ICompanyOutboxEnqueuer outboxEnqueuer)
+        ICompanyOutboxEnqueuer outboxEnqueuer,
+        ICompanyOperatingEventService operatingEvents)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _outboxEnqueuer = outboxEnqueuer;
         _agentAssignmentGuard = agentAssignmentGuard;
         _dashboardCache = dashboardCache;
+        _operatingEvents = operatingEvents;
     }
 
     public async Task<TaskDetailDto> CreateTaskAsync(
@@ -159,6 +162,21 @@ public sealed class CompanyTaskService : ICompanyTaskService, ICompanyTaskQueryS
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
         EnqueueTaskPlatformEvent(task, SupportedPlatformEventTypeRegistry.TaskUpdated, task.UpdatedUtc, task.CorrelationId);
+        if (status is WorkTaskStatus.Completed or WorkTaskStatus.Failed or WorkTaskStatus.Blocked)
+        {
+            var materiality = status == WorkTaskStatus.Completed ? "medium" : "high";
+            var correlationId = task.CorrelationId ?? $"task:{task.Id:N}";
+            await _operatingEvents.RecordAsync(companyId, new RecordOperatingEventCommand(
+                "task_outcome", "work_task", task.Id.ToString("N"), Math.Max(1, task.SourceLifecycleVersion),
+                task.UpdatedUtc, materiality, $"task-outcome:{task.Id:N}:{task.SourceLifecycleVersion}:{status.ToStorageValue()}",
+                correlationId, Payload: new Dictionary<string, JsonNode?>
+                {
+                    ["taskType"] = JsonValue.Create(task.Type),
+                    ["taskStatus"] = JsonValue.Create(status.ToStorageValue()),
+                    ["assignedAgentId"] = JsonValue.Create(task.AssignedAgentId),
+                    ["operatingInitiativeId"] = task.InputPayload.GetValueOrDefault("operatingInitiativeId")?.DeepClone()
+                }), cancellationToken);
+        }
         return await GetByIdAsync(companyId, task.Id, cancellationToken);
     }
 

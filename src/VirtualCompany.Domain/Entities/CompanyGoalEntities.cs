@@ -94,6 +94,7 @@ public sealed class CompanyOperatingConfiguration : ICompanyOwnedEntity
         Timezone = "UTC"; DailyCycleHour = 6; MinimumCycleIntervalMinutes = 60; MaximumCyclesPerDay = 4;
         MaximumInitiativesPerCycle = 5; MaximumTasksPerCycle = 12; MaximumCollaborators = 3;
         MaximumRuntimeSeconds = 120; MaximumModelCallsPerCycle = 4; MaximumToolCallsPerCycle = 20;
+        MaximumTasksPerDay = 48; MaximumModelCallsPerDay = 16; MaximumToolCallsPerDay = 80;
         CreatedUtc = UpdatedUtc = DateTime.UtcNow; Version = 1;
     }
     public Guid Id { get; private set; }
@@ -111,8 +112,15 @@ public sealed class CompanyOperatingConfiguration : ICompanyOwnedEntity
     public int MaximumModelCallsPerCycle { get; private set; }
     public int MaximumToolCallsPerCycle { get; private set; }
     public decimal? MaximumMonetaryBudgetPerCycle { get; private set; }
+    public int MaximumTasksPerDay { get; private set; }
+    public int MaximumModelCallsPerDay { get; private set; }
+    public int MaximumToolCallsPerDay { get; private set; }
+    public decimal? MaximumMonetaryBudgetPerDay { get; private set; }
     public bool IsPaused { get; private set; }
     public string? PauseReason { get; private set; }
+    public bool EmergencyStopped { get; private set; }
+    public string? EmergencyStopReason { get; private set; }
+    public DateTime? EmergencyStoppedUtc { get; private set; }
     public int Version { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
@@ -134,7 +142,18 @@ public sealed class CompanyOperatingConfiguration : ICompanyOwnedEntity
         MaximumRuntimeSeconds = maximumRuntimeSeconds; MaximumModelCallsPerCycle = maximumModelCallsPerCycle; MaximumToolCallsPerCycle = maximumToolCallsPerCycle;
         MaximumMonetaryBudgetPerCycle = maximumMonetaryBudgetPerCycle; Touch();
     }
+    public void UpdateRollingLimits(int maximumTasksPerDay, int maximumModelCallsPerDay,
+        int maximumToolCallsPerDay, decimal? maximumMonetaryBudgetPerDay)
+    {
+        if (maximumTasksPerDay is < 1 or > 2000 || maximumModelCallsPerDay is < 1 or > 500 ||
+            maximumToolCallsPerDay is < 1 or > 5000 || maximumMonetaryBudgetPerDay is < 0)
+            throw new ArgumentOutOfRangeException(nameof(maximumTasksPerDay), "Daily operating limits are outside supported bounds.");
+        MaximumTasksPerDay = maximumTasksPerDay; MaximumModelCallsPerDay = maximumModelCallsPerDay;
+        MaximumToolCallsPerDay = maximumToolCallsPerDay; MaximumMonetaryBudgetPerDay = maximumMonetaryBudgetPerDay; Touch();
+    }
     public void Pause(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new ArgumentException("A pause reason is required.", nameof(reason)); IsPaused = true; PauseReason = reason.Trim().Length <= 500 ? reason.Trim() : reason.Trim()[..500]; Touch(); }
-    public void Resume() { IsPaused = false; PauseReason = null; Touch(); }
+    public void Resume() { if (EmergencyStopped) throw new InvalidOperationException("Clear the emergency stop before resuming company operation."); IsPaused = false; PauseReason = null; Touch(); }
+    public void EmergencyStop(string reason) { if (string.IsNullOrWhiteSpace(reason)) throw new ArgumentException("An emergency-stop reason is required.", nameof(reason)); EmergencyStopped = true; EmergencyStopReason = reason.Trim()[..Math.Min(reason.Trim().Length, 500)]; EmergencyStoppedUtc = DateTime.UtcNow; IsPaused = true; PauseReason = "Emergency stop active."; Touch(); }
+    public void ClearEmergencyStop() { EmergencyStopped = false; EmergencyStopReason = null; EmergencyStoppedUtc = null; Touch(); }
     private void Touch() { Version++; UpdatedUtc = DateTime.UtcNow; }
 }

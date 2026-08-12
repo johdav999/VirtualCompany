@@ -106,6 +106,42 @@ public sealed class MarketingDomainTests
     }
 
     [Fact]
+    public void Event_trigger_links_durable_work_and_has_explicit_resolution_lifecycle()
+    {
+        var trigger = new MarketingEventTrigger(Guid.NewGuid(), Guid.NewGuid(), "provider_failure",
+            "channel_action", Guid.NewGuid().ToString("N"), 2, "warning", "{\"failureCode\":\"quota\"}",
+            "event:provider_failure:channel_action:1:v2:20260812", "marketing-event-test");
+        var taskId = Guid.NewGuid();
+        var runId = Guid.NewGuid();
+
+        trigger.LinkTask(taskId);
+        trigger.LinkRun(runId);
+
+        Assert.Equal(taskId, trigger.RelatedTaskId);
+        Assert.Equal(runId, trigger.OperatingRunId);
+        Assert.Equal("processed", trigger.Status);
+
+        trigger.Resolve();
+        Assert.Equal("resolved", trigger.Status);
+    }
+
+    [Fact]
+    public void Corrected_observation_retains_lineage_and_supersedes_prior_value()
+    {
+        var companyId = Guid.NewGuid();
+        var original = new MarketingChannelObservation(Guid.NewGuid(), companyId, "linkedin", "clicks", 10,
+            "count", Start, End, null, null, "provider:row:1", "observation:1");
+        var correction = new MarketingChannelObservation(Guid.NewGuid(), companyId, "linkedin", "clicks", 12,
+            "count", Start, End, null, null, "provider:row:1:corrected", "observation:2", original.Id);
+
+        original.Supersede();
+
+        Assert.True(original.IsSuperseded);
+        Assert.Equal(original.Id, correction.CorrectionOfObservationId);
+        Assert.False(correction.IsSuperseded);
+    }
+
+    [Fact]
     public async Task Marketing_queries_are_isolated_by_company()
     {
         using var factory = new TestWebApplicationFactory();

@@ -2,6 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Support;
+using VirtualCompany.Application.Orchestration;
 
 namespace VirtualCompany.Infrastructure.Support;
 
@@ -37,6 +38,7 @@ public static class SupportModuleRegistration
         services.AddScoped<ISupportMemoryReviewService, SupportMemoryReviewService>();
         services.AddScoped<ISupportAgentAnalysisService, SupportAgentAnalysisService>();
         services.AddScoped<ISupportAgentDecisionService, SupportAgentDecisionService>();
+        services.AddScoped<ICompanyOperatingSnapshotContributor, SupportOperatingSnapshotContributor>();
         return services;
     }
 }

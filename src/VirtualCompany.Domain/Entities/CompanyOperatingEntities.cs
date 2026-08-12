@@ -88,6 +88,13 @@ public sealed class OperatingPlan : ICompanyOwnedEntity
     public void SubmitForReview() { Require(OperatingPlanStatus.Draft); Status = OperatingPlanStatus.AwaitingReview; ReviewedUtc = DateTime.UtcNow; Touch(); }
     public void Approve() { Require(OperatingPlanStatus.AwaitingReview); Status = OperatingPlanStatus.Approved; Touch(); }
     public void Reject() { Require(OperatingPlanStatus.AwaitingReview); Status = OperatingPlanStatus.Rejected; Touch(); }
+    public void RequestChanges()
+    {
+        if (Status is not (OperatingPlanStatus.AwaitingReview or OperatingPlanStatus.Rejected))
+            throw new InvalidOperationException($"Plan cannot request changes from {Status.ToStorageValue()}.");
+        Status = OperatingPlanStatus.ChangesRequested;
+        Touch();
+    }
     public void BeginCommit() { Require(OperatingPlanStatus.Approved); Status = OperatingPlanStatus.Committing; Touch(); }
     public void MarkCommitted() { Require(OperatingPlanStatus.Committing); Status = OperatingPlanStatus.Committed; CommittedUtc = DateTime.UtcNow; Touch(); }
     public void MarkSuperseded() { if (Status is OperatingPlanStatus.Committed) throw new InvalidOperationException("Committed plans cannot be superseded."); Status = OperatingPlanStatus.Superseded; Touch(); }
@@ -156,7 +163,7 @@ public sealed class OperatingDecision : ICompanyOwnedEntity
     private OperatingDecision() { }
     public OperatingDecision(Guid id, Guid companyId, Guid planId, Guid? initiativeId, OperatingActionClass actionClass,
         string actionType, string targetType, string targetId, Guid? proposedAgentId, string rationaleSummary,
-        decimal confidence, string riskLevel, bool approvalRequired, string idempotencyKey)
+        decimal confidence, string riskLevel, bool approvalRequired, string idempotencyKey, IDictionary<string, JsonNode?>? payload = null)
     {
         CompanyId = OperatingCycle.RequiredId(companyId, nameof(companyId)); PlanId = OperatingCycle.RequiredId(planId, nameof(planId));
         if (initiativeId == Guid.Empty || proposedAgentId == Guid.Empty || confidence is < 0 or > 1) throw new ArgumentException("Decision references or confidence are invalid.");
@@ -164,7 +171,7 @@ public sealed class OperatingDecision : ICompanyOwnedEntity
         TargetType = OperatingCycle.Text(targetType, nameof(targetType), 100); TargetId = OperatingCycle.Text(targetId, nameof(targetId), 200);
         ProposedAgentId = proposedAgentId; RationaleSummary = OperatingCycle.Text(rationaleSummary, nameof(rationaleSummary), 2000); Confidence = confidence;
         RiskLevel = OperatingCycle.Text(riskLevel, nameof(riskLevel), 32); ApprovalRequired = approvalRequired; IdempotencyKey = OperatingCycle.Text(idempotencyKey, nameof(idempotencyKey), 200);
-        CreatedUtc = DateTime.UtcNow;
+        Payload = OperatingPlan.Clone(payload); CreatedUtc = DateTime.UtcNow;
     }
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
@@ -180,6 +187,7 @@ public sealed class OperatingDecision : ICompanyOwnedEntity
     public string RiskLevel { get; private set; } = null!;
     public bool ApprovalRequired { get; private set; }
     public string IdempotencyKey { get; private set; } = null!;
+    public Dictionary<string, JsonNode?> Payload { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public DateTime CreatedUtc { get; private set; }
     public OperatingPlan Plan { get; private set; } = null!;
 }
@@ -216,23 +224,36 @@ public sealed class OperatingValidationResult : ICompanyOwnedEntity
 public sealed class OperatingReview : ICompanyOwnedEntity
 {
     private OperatingReview() { }
-    public OperatingReview(Guid id, Guid companyId, Guid initiativeId, OperatingReviewOutcome outcome, string summary,
-        string evidenceVersion, decimal? confidence, IDictionary<string, JsonNode?>? evidence = null)
+    public OperatingReview(Guid id, Guid companyId, Guid planId, int planVersion, Guid initiativeId,
+        OperatingReviewOutcome outcome, string summary, string expectedEvidence, string? actualEvidence,
+        string nextAction, string evidenceVersion, decimal? confidence, Guid? reviewerRunId = null,
+        IDictionary<string, JsonNode?>? uncertainty = null, IDictionary<string, JsonNode?>? evidence = null)
     {
-        CompanyId = OperatingCycle.RequiredId(companyId, nameof(companyId)); InitiativeId = OperatingCycle.RequiredId(initiativeId, nameof(initiativeId));
+        CompanyId = OperatingCycle.RequiredId(companyId, nameof(companyId)); PlanId = OperatingCycle.RequiredId(planId, nameof(planId));
+        if (planVersion < 1) throw new ArgumentOutOfRangeException(nameof(planVersion)); InitiativeId = OperatingCycle.RequiredId(initiativeId, nameof(initiativeId));
         if (confidence is < 0 or > 1) throw new ArgumentOutOfRangeException(nameof(confidence)); Id = id == Guid.Empty ? Guid.NewGuid() : id;
         Outcome = outcome; Summary = OperatingCycle.Text(summary, nameof(summary), 2000); EvidenceVersion = OperatingCycle.Text(evidenceVersion, nameof(evidenceVersion), 100);
-        Confidence = confidence; Evidence = OperatingPlan.Clone(evidence); CreatedUtc = DateTime.UtcNow;
+        PlanVersion = planVersion; ExpectedEvidence = OperatingCycle.Text(expectedEvidence, nameof(expectedEvidence), 2000);
+        ActualEvidence = OperatingCycle.Optional(actualEvidence, 4000); NextAction = OperatingCycle.Text(nextAction, nameof(nextAction), 1000);
+        ReviewerRunId = reviewerRunId; Confidence = confidence; Uncertainty = OperatingPlan.Clone(uncertainty); Evidence = OperatingPlan.Clone(evidence); CreatedUtc = DateTime.UtcNow;
     }
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
+    public Guid PlanId { get; private set; }
+    public int PlanVersion { get; private set; }
     public Guid InitiativeId { get; private set; }
     public OperatingReviewOutcome Outcome { get; private set; }
     public string Summary { get; private set; } = null!;
+    public string ExpectedEvidence { get; private set; } = null!;
+    public string? ActualEvidence { get; private set; }
+    public string NextAction { get; private set; } = null!;
     public string EvidenceVersion { get; private set; } = null!;
     public decimal? Confidence { get; private set; }
+    public Guid? ReviewerRunId { get; private set; }
+    public Dictionary<string, JsonNode?> Uncertainty { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, JsonNode?> Evidence { get; private set; } = new(StringComparer.OrdinalIgnoreCase);
     public DateTime CreatedUtc { get; private set; }
+    public OperatingPlan Plan { get; private set; } = null!;
 }
 
 public sealed class OperatingSnapshot : ICompanyOwnedEntity

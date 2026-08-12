@@ -1,6 +1,7 @@
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Marketing;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Documents;
 
@@ -124,18 +125,27 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
         RoleCapability(AgentCapabilityIds.SupportRootCauseAnalysis, "Support root-cause analysis", "Explain recurring issue clusters and reviewable root-cause hypotheses.", "Support"),
         RoleCapability(AgentCapabilityIds.SupportKnowledgeCoverage, "Support knowledge coverage", "Identify repeated gaps, stale evidence, and documentation priorities.", "Support"),
         RoleCapability(AgentCapabilityIds.SupportOperatingCadence, "Support operating cadence", "Prepare continuous, daily, and weekly Support management priorities.", "Support"),
-        RoleCapability(AgentCapabilityIds.MarketingPlanning, "Marketing planning", "Turn company goals into reviewable marketing objectives, plans, budgets, and calendars.", "Marketing"),
-        RoleCapability(AgentCapabilityIds.MarketingAudienceIntelligence, "Audience intelligence", "Explain audience fit, qualification evidence, exclusions, consent, and freshness.", "Marketing"),
-        RoleCapability(AgentCapabilityIds.MarketingContentAdvice, "Content advice", "Prepare grounded content briefs and variants for human review without publishing.", "Marketing"),
-        RoleCapability(AgentCapabilityIds.MarketingCampaignCoordination, "Campaign coordination", "Coordinate approved campaign activities and bounded handoffs to Sales.", "Marketing"),
-        RoleCapability(AgentCapabilityIds.MarketingPerformanceAnalysis, "Marketing performance analysis", "Explain observed campaign outcomes, costs, attribution limits, and evidence gaps.", "Marketing"),
-        RoleCapability(AgentCapabilityIds.MarketingExperimentAdvice, "Marketing experiment advice", "Recommend bounded experiments with explicit hypotheses, metrics, and guardrails.", "Marketing"),
-        RoleCapability(AgentCapabilityIds.MarketingOperatingCadence, "Marketing operating cadence", "Prepare continuous, daily, weekly, and monthly Marketing management priorities.", "Marketing")
+        MarketingCapability(AgentCapabilityIds.MarketingPlanning, "Marketing planning", "Turn company goals into reviewable marketing objectives, plans, budgets, and calendars.", MarketingToolIds.PreparePlan, ["marketing"]),
+        MarketingCapability(AgentCapabilityIds.MarketingAudienceIntelligence, "Audience intelligence", "Explain audience fit, qualification evidence, exclusions, consent, and freshness.", MarketingToolIds.AnalyzeAudience, ["marketing", "sales"]),
+        MarketingCapability(AgentCapabilityIds.MarketingContentAdvice, "Content advice", "Prepare grounded content briefs and variants for human review without publishing.", MarketingToolIds.PrepareContentBrief, ["marketing", "knowledge"]),
+        MarketingCapability(AgentCapabilityIds.MarketingCampaignCoordination, "Campaign coordination", "Coordinate approved campaign activities and bounded handoffs to Sales.", MarketingToolIds.RecommendCampaignChange, ["marketing", "sales"]),
+        MarketingCapability(AgentCapabilityIds.MarketingPerformanceAnalysis, "Marketing performance analysis", "Explain observed campaign outcomes, costs, attribution limits, and evidence gaps.", MarketingToolIds.PreparePerformanceReview, ["marketing"]),
+        MarketingCapability(AgentCapabilityIds.MarketingExperimentAdvice, "Marketing experiment advice", "Recommend bounded experiments with explicit hypotheses, metrics, and guardrails.", MarketingToolIds.PrepareExperiment, ["marketing"]),
+        MarketingCapability(AgentCapabilityIds.MarketingOperatingCadence, "Marketing operating cadence", "Prepare continuous, daily, weekly, and monthly Marketing management priorities.", MarketingToolIds.PrepareOperatingReview, ["marketing", "sales", "knowledge"])
     ];
 
     private static AgentCapabilityManifest RoleCapability(string id, string name, string description, string category) =>
         new(id, "1.0.0", name, description, category, ToolActionType.Recommend, [], [], [SharedAiProviderSignal],
             AgentAutonomyLevel.Level0, "none", true);
+
+    private static AgentCapabilityManifest MarketingCapability(
+        string id,
+        string name,
+        string description,
+        string tool,
+        IReadOnlyList<string> scopes) =>
+        new(id, "1.0.0", name, description, "Marketing", ToolActionType.Recommend, [tool], scopes,
+            [SharedAiProviderSignal], AgentAutonomyLevel.Level0, "none", true);
 
     private readonly ICompanyAgentService _agentService;
     private readonly ICompanyToolRegistry _toolRegistry;

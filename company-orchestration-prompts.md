@@ -1,5 +1,26 @@
 # Company Orchestration Implementation Prompts
 
+> Implementation status (2026-08-12): The production baseline for Prompts 1–12 is implemented. This pack remains the acceptance and maintenance specification; “implemented” does not mean that every fault-injection, provider-level concurrency, multi-host recovery, or live-model failure criterion has been exhaustively verified. See the status matrix below and `company-orchestration.md`.
+
+## Current status matrix
+
+| Prompt | Status | Repository evidence | Remaining acceptance work |
+|---|---|---|---|
+| 1. Goals and configuration | Implemented | Durable goals/configuration, coordinator, cadence, autonomy, budgets, pause and emergency stop APIs/UI | Broader authorization and SQL migration-path regression coverage |
+| 2. Durable operating model | Implemented | Cycles, snapshots, plans, initiatives, dependencies, decisions, reviews, events, requests, leases, dispatches and migration | Persistence index/cascade and pagination matrix tests |
+| 3. State snapshot and signals | Implemented | Core snapshot plus Finance, Sales, Marketing and Support contributors; explicit gaps/truncation/failures; focused failure, cancellation and tenant-isolation tests | Correlation, truncation, duplicate normalization and representative populated department integration tests |
+| 4. Deterministic validation | Implemented | Tenant, goal, duplicate, dependency, owner, capability, capacity, date, evidence, budget, action and autonomy checks | Full rule-by-rule integration matrix and stale-config race tests |
+| 5. Recommendation cycle | Implemented | Bounded guarded reasoning, immutable proposal, source snapshot, validation and safe failure lifecycle | Malformed/oversized/contradictory/ungrounded live-gateway tests |
+| 6. Review workspace | Implemented | Professional company-operation workspace, review/commit state, controls, usage, automatic activity, dispatch and snapshot visibility | Runtime visual/accessibility regression after restarting the user-owned host |
+| 7. Approval and atomic commit | Implemented | Shared authoritative approval, request changes, serializable transaction, idempotent tasks and dispatch links | SQL Server raced-commit and forced mid-transaction rollback tests |
+| 8. Agent dispatch and collaboration | Implemented | Durable leased dispatcher, autonomy recheck, single-agent/multi-agent paths, retries, block/dead-letter states | End-to-end orchestration and concurrent worker integration tests |
+| 9. Recurring/event cycles | Implemented | Daily timezone scheduler, task/workflow/approval/Marketing/background events, coalescing, per-company lease and retries | Multi-host restart, missed-window and expired-lease recovery integration tests |
+| 10. Evidence review and replan | Implemented baseline | Evidence-version review, missing-evidence handling, escalation, validated immutable revisions | Authoritative before/after KPI and confirmed goal-impact comparison |
+| 11. Governed autonomy and budgets | Implemented | Company plus agent authority, current validation/config checks, daily task/model/tool/money limits and kill switches | Boundary-race and accumulated-usage stress tests |
+| 12. Controlled actions | Implemented narrow allowlist | `operator_notification` readiness registry, decision approval, active-recipient check and idempotent outbox | Provider-dispatch/reconciliation integration test; additional actions require their own complete readiness contracts |
+
+Focused verification on 2026-08-12: 23 orchestration API/domain tests and 2 Web surface tests pass. Affected Operations, Finance, Sales, Support, API dependency graph, and Web projects build from isolated artifact paths. Existing unrelated compiler/analyzer warnings remain outside this prompt pack.
+
 ## How to use this prompt pack
 
 Execute these prompts in order. Each prompt delivers one production-capable outcome and states its prerequisites. Do not stop the overall implementation sequence at intermediate build or test checkpoints; continue through the requested prompt or ordered prompt set until complete or genuinely blocked.

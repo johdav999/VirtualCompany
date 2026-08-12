@@ -1,0 +1,486 @@
+@page "/company-operation"
+@rendermode InteractiveServer
+@inject CompanyOperationApiClient OperationApi
+@inject MarketingApiClient MarketingApi
+@inject AgentApiClient AgentApi
+@inject OnboardingApiClient OnboardingApi
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+
+<PageTitle>Company operation</PageTitle>
+
+<main class="operation-page">
+    <header class="operation-header">
+        <div>
+            <div class="eyebrow">Company operation</div>
+            <h1>@(showSetup ? "Set up company operation" : "Run the company with your agent team")</h1>
+            <p>@(showSetup ? "Establish who coordinates the team, the operating guardrails, and the first outcome to pursue." : "Your coordinator reviews company signals, recommends goal-aligned priorities, and keeps work behind your approval boundaries.")</p>
+        </div>
+        <div class="header-actions">
+            <button class="button-secondary" disabled="@(busy || companyId is null)" @onclick="ToggleSetup">@(showSetup ? "Exit setup" : "Manage setup")</button>
+            <button class="button-primary" disabled="@(busy || companyId is null || SetupIncomplete)" title="@(SetupIncomplete ? "Complete setup before reviewing priorities." : null)" @onclick="RunReviewAsync">@(busy ? "Reviewing…" : "Review priorities")</button>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(error))
+    {
+        <div class="page-alert" role="alert"><span aria-hidden="true">!</span><p>@error</p></div>
+    }
+    @if (loading)
+    {
+        <section class="operation-card empty"><span class="spinner-border spinner-border-sm"></span><p>Loading company operation…</p></section>
+    }
+    else if (companyId is null)
+    {
+        <section class="operation-card empty"><h2>Select a company</h2><p>Choose a company to review goals and coordinated work.</p></section>
+    }
+    else if (showSetup)
+    {
+        <section class="setup-workspace" aria-label="Company operation setup">
+            <ol class="setup-progress" aria-label="Setup progress">
+                <li class="@(CoordinatorSaved ? "complete" : "current")"><span class="step-marker">@(CoordinatorSaved ? "✓" : "1")</span><span><strong>Set up operation</strong><small>@(CoordinatorSaved ? "Coordinator saved" : "In progress")</small></span></li>
+                <li class="@(HasActiveGoal ? "complete" : CoordinatorSaved ? "current" : null)"><span class="step-marker">@(HasActiveGoal ? "✓" : "2")</span><span><strong>Confirm priorities</strong><small>@(HasActiveGoal ? "Active goal ready" : "Add a company goal")</small></span></li>
+                <li class="@(!SetupIncomplete ? "complete current" : null)"><span class="step-marker">@(!SetupIncomplete ? "✓" : "3")</span><span><strong>Review and launch</strong><small>@(!SetupIncomplete ? "Ready" : "Unlocks next")</small></span></li>
+            </ol>
+
+            <div class="setup-primary-grid">
+                <article class="operation-card setup-card coordinator-card">
+                    <div class="section-heading">
+                        <div><span class="section-number">1</span><div><h2>Appoint a coordinator</h2><p>Select the active agent who should align work across the company.</p></div></div>
+                        <span class="requirement-badge">Required</span>
+                    </div>
+                    @if (activeAgents.Count == 0)
+                    {
+                        <div class="inline-empty"><span class="empty-symbol">◎</span><strong>No active agents found</strong><p>Activate an agent in Staff before assigning a coordinator.</p><a class="button-secondary button-small" href="@($"/agents/staff?companyId={companyId:D}")">Open Staff</a></div>
+                    }
+                    else
+                    {
+                        <div class="agent-options" role="radiogroup" aria-label="Active coordinator agent">
+                            @foreach (var agent in activeAgents)
+                            {
+                                var isSelected = settings.CoordinatorAgentId == agent.Id;
+                                <button type="button" class="agent-option @(isSelected ? "selected" : null)" role="radio" aria-checked="@BoolText(isSelected)" @onclick="() => SelectCoordinator(agent.Id)">
+                                    <span class="radio-mark" aria-hidden="true"></span>
+                                    <span class="agent-avatar @DepartmentTone(agent.Department)">@AgentInitials(agent.DisplayName)</span>
+                                    <span class="agent-identity"><strong>@agent.DisplayName</strong><small>@agent.RoleName · @agent.Department</small></span>
+                                    <span class="active-badge">Active</span>
+                                    <span class="agent-fit">@CoordinatorFit(agent.Department)</span>
+                                </button>
+                            }
+                        </div>
+                    }
+                </article>
+
+                <article class="operation-card setup-card guardrails-card">
+                    <div class="section-heading compact">
+                        <div><span class="section-icon" aria-hidden="true">◇</span><div><h2>Operating guardrails</h2><p>Choose how the coordinator prepares and organizes work.</p></div></div>
+                    </div>
+                    <form class="settings-form" @onsubmit="SaveSettingsAsync" @onsubmit:preventDefault>
+                        <fieldset class="mode-fieldset">
+                            <legend>Operating mode</legend>
+                            <div class="mode-grid">
+                                <button type="button" class="mode-option @(settings.AutonomyLevel == "recommend" ? "selected" : null)" aria-pressed="@BoolText(settings.AutonomyLevel == "recommend")" @onclick="SetRecommendMode"><span class="mode-radio"></span><strong>Review first</strong><small>Recommends priorities for your approval</small></button>
+                                <button type="button" class="mode-option @(settings.AutonomyLevel == "organize" ? "selected" : null)" aria-pressed="@BoolText(settings.AutonomyLevel == "organize")" @onclick="SetOrganizeMode"><span class="mode-radio"></span><strong>Organize</strong><small>Structures internal work after approval</small></button>
+                                <button type="button" class="mode-option @(settings.AutonomyLevel == "operate_internally" ? "selected" : null)" aria-pressed="@BoolText(settings.AutonomyLevel == "operate_internally")" @onclick="SetInternalMode"><span class="mode-radio"></span><strong>Run internal work</strong><small>Completes approved internal tasks</small></button>
+                                <button type="button" class="mode-option @(settings.AutonomyLevel == "controlled_execution" ? "selected" : null)" aria-pressed="@BoolText(settings.AutonomyLevel == "controlled_execution")" @onclick="SetControlledMode"><span class="mode-radio"></span><strong>Controlled execution</strong><small>Uses configured limits and approvals</small></button>
+                            </div>
+                        </fieldset>
+                        <div class="form-pair">
+                            <label>Daily priorities review
+                                <select class="form-select" @bind="settings.DailyCycleHour">
+                                    @for (var hour = 0; hour < 24; hour++) { <option value="@hour">@($"{hour:00}:00")</option> }
+                                </select>
+                            </label>
+                            <label>Timezone
+                                <select class="form-select" @bind="settings.Timezone">
+                                    @foreach (var zone in TimezoneOptions) { <option value="@zone.Value">@zone.Label</option> }
+                                </select>
+                            </label>
+                        </div>
+                        <div class="assurance-panel"><span class="assurance-icon" aria-hidden="true">✓</span><p><strong>Decisions with assurance</strong><small>External actions and work creation remain behind your approval boundaries.</small></p></div>
+                        @if (!string.IsNullOrWhiteSpace(settingsError)) { <p class="form-message error" role="alert">@settingsError</p> }
+                        @if (!string.IsNullOrWhiteSpace(settingsMessage)) { <p class="form-message success" role="status">@settingsMessage</p> }
+                        <div class="settings-action"><button class="button-secondary" disabled="@(savingSettings || !settings.CoordinatorAgentId.HasValue)">@(savingSettings ? "Saving…" : !settings.CoordinatorAgentId.HasValue ? "Select a coordinator" : OperatingSettingsSaved ? "Settings saved" : "Save operating settings")</button></div>
+                    </form>
+                </article>
+            </div>
+
+            <article class="operation-card goal-card">
+                <div class="section-heading">
+                    <div><span class="section-number">2</span><div><h2>Define the first company goal</h2><p>Give the coordinator one concrete outcome to use when prioritizing work.</p></div></div>
+                    <span class="requirement-badge">At least one active goal</span>
+                </div>
+
+                @if (goals.Count > 0)
+                {
+                    <div class="goal-list">
+                        @foreach (var goal in goals.OrderByDescending(x => x.Status == "active").ThenBy(x => x.TargetUtc))
+                        {
+                            <div class="goal-row"><span class="goal-dot"></span><span><strong>@goal.Name</strong><small>@goal.Outcome</small></span><span class="goal-date">Target @goal.TargetUtc.ToString("d MMM yyyy")</span><span class="goal-status @goal.Status">@Friendly(goal.Status)</span></div>
+                        }
+                    </div>
+                }
+                @if (!string.IsNullOrWhiteSpace(goalMessage) && !goalFormOpen) { <p class="form-message success goal-success" role="status">@goalMessage</p> }
+
+                @if (goalFormOpen || !HasActiveGoal)
+                {
+                    <form id="goal-setup-form" class="goal-form" @onsubmit="CreateAndActivateGoalAsync" @onsubmit:preventDefault>
+                        <div class="goal-main-fields">
+                            <label class="goal-name">Goal name<input class="form-control" maxlength="180" placeholder="e.g. Increase qualified sales pipeline" @bind="goalForm.Name" /></label>
+                            <label>Priority<select class="form-select" @bind="goalForm.Priority"><option value="low">Low</option><option value="normal">Normal</option><option value="high">High</option><option value="critical">Critical</option></select></label>
+                            <label class="goal-outcome">Desired outcome<textarea class="form-control" rows="4" maxlength="2000" placeholder="Describe the business outcome you want the company to achieve." @bind="goalForm.Outcome"></textarea></label>
+                            <div class="date-fields"><label>Start date<input type="date" class="form-control" @bind="goalForm.StartUtc" @bind:format="yyyy-MM-dd" /></label><label>Target date<input type="date" class="form-control" @bind="goalForm.TargetUtc" @bind:format="yyyy-MM-dd" /></label></div>
+                        </div>
+                        <fieldset class="measurement-panel">
+                            <legend>How will you measure success? <span>Optional</span></legend>
+                            <label>Success measure<input class="form-control" maxlength="100" placeholder="e.g. Qualified pipeline" @bind="goalForm.MetricKey" /></label>
+                            <div class="form-pair"><label>Target value<input type="number" step="any" class="form-control" placeholder="250000" @bind="goalForm.TargetValue" /></label><label>Unit<input class="form-control" maxlength="40" placeholder="SEK" @bind="goalForm.MetricUnit" /></label></div>
+                            <p>Use a measure only when there is a reliable value the coordinator can track.</p>
+                        </fieldset>
+                    </form>
+                    @if (!string.IsNullOrWhiteSpace(goalError)) { <p class="form-message error goal-form-message" role="alert">@goalError</p> }
+                    @if (!CoordinatorSaved) { <p class="goal-hint">Save the coordinator and operating settings before creating the goal.</p> }
+                }
+                else
+                {
+                    <button class="button-secondary" @onclick="OpenGoalForm">Add another goal</button>
+                }
+            </article>
+
+            <div class="readiness-bar">
+                <div class="readiness-item @(CoordinatorSaved ? "complete" : null)"><span>@(CoordinatorSaved ? "✓" : "1")</span><p><strong>Coordinator</strong><small>@(CoordinatorSaved ? CoordinatorName : "Selection required")</small></p></div>
+                <div class="readiness-item @(HasActiveGoal ? "complete" : null)"><span>@(HasActiveGoal ? "✓" : "2")</span><p><strong>Active goal</strong><small>@(HasActiveGoal ? "Company priority ready" : "Define the first company goal")</small></p></div>
+                <div class="readiness-item @(!SetupIncomplete ? "complete" : null)"><span>@(!SetupIncomplete ? "✓" : "3")</span><p><strong>Ready to review</strong><small>@(!SetupIncomplete ? "Priorities review unlocked" : "Complete the required steps")</small></p></div>
+                @if (goalFormOpen || !HasActiveGoal)
+                {
+                    <button type="submit" form="goal-setup-form" class="button-primary readiness-action" disabled="@(savingGoal || !CoordinatorSaved)">@(savingGoal ? "Creating goal…" : "Create active goal")</button>
+                }
+                else
+                {
+                    <button class="button-primary readiness-action" disabled="@SetupIncomplete" @onclick="RunReviewAsync">Review priorities</button>
+                }
+            </div>
+        </section>
+    }
+    else
+    {
+        <section class="operation-card coordinator">
+            <div class="eva-avatar" aria-hidden="true">@AgentInitials(CoordinatorName)</div><div><h2>@CoordinatorName</h2><p>Coordinator</p><span class="safe-badge">@Friendly(configuration?.AutonomyLevel ?? "recommend")</span></div>
+            <div class="coordinator-meta"><span>Last review</span><strong>@LastReviewText</strong></div>
+            <div class="coordinator-meta"><span>Next scheduled review</span><strong>@NextReviewText</strong></div>
+        </section>
+
+        <section class="kpi-grid">
+            <article class="operation-card kpi"><span>Active goals</span><strong>@goals.Count(x => x.Status == "active")</strong><small>Company priorities</small></article>
+            <article class="operation-card kpi"><span>Active initiatives</span><strong>@CurrentInitiatives.Count(x => x.Status is "active" or "approved")</strong><small>Across company goals</small></article>
+            <article class="operation-card kpi warning"><span>Needs review</span><strong>@AttentionCount</strong><small>Blocked work and decisions</small></article>
+            <article class="operation-card kpi success"><span>Company signals</span><strong>@events.Count(x => x.Status == "pending")</strong><small>Waiting for company review</small></article>
+        </section>
+
+        <section class="lower-grid operation-control-grid">
+            <article class="operation-card">
+                <div class="card-heading"><div><h2>Operating controls</h2><p>Keep automatic company work within the boundaries you set.</p></div><span class="status-pill @(configuration?.EmergencyStopped == true ? "blocked" : configuration?.IsPaused == true ? "waiting" : "active")">@OperationStatus</span></div>
+                @if (configuration?.EmergencyStopped == true) { <div class="page-alert compact"><span>!</span><p><strong>Emergency stop is active.</strong> @configuration.EmergencyStopReason</p></div> }
+                else if (configuration?.IsPaused == true) { <p class="control-note"><strong>Automatic operation is paused.</strong> @configuration.PauseReason</p> }
+                else { <p class="control-note">Scheduled reviews and eligible internal work can continue within the current mode and budgets.</p> }
+                <div class="daily-budget" aria-label="Today's operating usage">
+                    <div><span>Tasks today</span><strong>@TodayTasks <small>of @(configuration?.MaximumTasksPerDay ?? 0)</small></strong></div>
+                    <div><span>Model calls</span><strong>@TodayModelCalls <small>of @(configuration?.MaximumModelCallsPerDay ?? 0)</small></strong></div>
+                    <div><span>Tool calls</span><strong>@TodayToolCalls <small>of @(configuration?.MaximumToolCallsPerDay ?? 0)</small></strong></div>
+                    <div><span>Money used</span><strong>@TodayMoney.ToString("N0") <small>@DailyMoneyLimit</small></strong></div>
+                </div>
+                <div class="operation-actions">
+                    @if (configuration?.EmergencyStopped == true) { <button class="button-secondary" disabled="@busy" @onclick="ClearEmergencyStopAsync">Clear emergency stop</button> }
+                    else if (configuration?.IsPaused == true) { <button class="button-primary" disabled="@busy" @onclick="ResumeOperationAsync">Resume operation</button> }
+                    else { <button class="button-secondary" disabled="@busy" @onclick="PauseOperationAsync">Pause automatic work</button><button class="button-danger" disabled="@busy" @onclick="EmergencyStopAsync">Emergency stop</button> }
+                </div>
+            </article>
+            <article class="operation-card">
+                <div class="card-heading"><div><h2>Automatic review activity</h2><p>Scheduled and event-led company reviews continue while you are signed out.</p></div><span>@cycleRequests.Count pending</span></div>
+                <div class="activity-list">
+                    @if (cycleRequests.Count == 0) { <div class="inline-empty"><strong>No automatic review requests</strong><p>The next scheduled review will appear here.</p></div> }
+                    @foreach (var request in cycleRequests.Take(4)) { <div class="activity-row"><span class="timeline-dot"></span><p><strong>@Friendly(request.TriggerType) review</strong><small>@Friendly(request.Status) · @request.CreatedUtc.ToLocalTime().ToString("g")</small></p>@if (!string.IsNullOrWhiteSpace(request.FailureSummary)) { <span class="activity-warning">Needs attention</span> }</div> }
+                </div>
+            </article>
+        </section>
+
+        @if (CurrentPlan is null)
+        {
+            <section class="operation-card empty"><div class="empty-icon">◎</div><h2>@(SetupIncomplete ? "Complete company setup" : "No company plan yet")</h2><p>@(SetupIncomplete ? "Choose an active coordinator and add an active goal above." : $"Ask {CoordinatorName} to review active goals and recommend the next coordinated priorities.")</p><button class="btn btn-primary" disabled="@SetupIncomplete" @onclick="RunReviewAsync">Review priorities</button></section>
+        }
+        else
+        {
+            <section class="plan-grid">
+                <article class="operation-card"><div class="card-heading"><h2>Current company plan</h2><span>@Friendly(CurrentPlan.Status)</span></div>
+                    <div class="initiative-list">
+                    @foreach (var item in CurrentInitiatives)
+                    { <button class="initiative-row @(selected?.Id == item.Id ? "selected" : null)" @onclick="() => selected = item"><span class="priority-dot @item.Status"></span><span><strong>@item.Title</strong><small>@item.DesiredOutcome</small></span><span class="owner">@InitiativeOwner(item)</span><span>@(item.TargetUtc?.ToString("d MMM") ?? "No date")</span><span class="status-pill @item.Status">@Friendly(item.Status)</span></button> }
+                    </div>
+                </article>
+                <aside class="operation-card decision-card"><div class="card-heading"><h2>Initiative details</h2>@if (selected is not null) { <span class="status-pill @selected.Status">@Friendly(selected.Status)</span> }</div>
+                    @if (selected is not null) { <h3>@selected.Title</h3><p>@selected.DesiredOutcome</p><dl><dt>Owner</dt><dd>@InitiativeOwner(selected)</dd><dt>Instruction versions</dt><dd>@InstructionVersions</dd><dt>Due date</dt><dd>@(selected.TargetUtc?.ToString("d MMMM yyyy") ?? "No date set")</dd><dt>Budget</dt><dd>@BudgetText</dd><dt>Effective authority</dt><dd>@Friendly(SelectedRun?.EffectiveAuthority ?? configuration?.AutonomyLevel ?? "recommend")</dd><dt>Completion evidence</dt><dd>@selected.CompletionEvidence</dd><dt>Dependencies</dt><dd>@DependenciesText</dd><dt>Correlation</dt><dd>@CorrelationText</dd></dl><a class="button-secondary button-small" href="@($"/marketing?companyId={companyId:D}")">Open Marketing operations</a> }
+                    @if (CurrentPlan.Status == "awaiting_review") { <div class="decision-actions"><button class="btn btn-primary" @onclick="ApproveAsync">Approve plan</button><button class="btn btn-outline-secondary" @onclick="AskChangesAsync">Ask for changes</button><button class="btn btn-outline-danger" @onclick="RejectAsync">Reject</button></div> }
+                    else if (CurrentPlan.Status == "approved") { <button class="btn btn-primary w-100" @onclick="CommitAsync">Create approved work</button> }
+                </aside>
+            </section>
+            @if (selected is not null)
+            {
+                <section class="initiative-evidence-grid" aria-label="Marketing initiative progress and outcomes">
+                    <article class="operation-card evidence-card"><div class="evidence-heading"><h2>Progress</h2><span>@SelectedProgress.Count update(s)</span></div>
+                        @if (SelectedProgress.Count == 0) { <div class="evidence-empty"><strong>No progress reported</strong><p>Maya's source-linked updates will appear here.</p></div> }
+                        @foreach (var item in SelectedProgress.Take(3)) { <div class="evidence-item"><span class="evidence-dot progress"></span><div><strong>Evidence @item.EvidenceVersion</strong><p>@item.Lessons</p><small>@item.CreatedUtc.ToLocalTime().ToString("g") · Confidence @ConfidenceText(item.Confidence)</small></div></div> }
+                    </article>
+                    <article class="operation-card evidence-card"><div class="evidence-heading"><h2>Outcome</h2><span>@SelectedOutcomes.Count completed</span></div>
+                        @if (SelectedOutcomes.Count == 0) { <div class="evidence-empty"><strong>Completion evidence pending</strong><p>The initiative stays open until required artifacts and results are linked.</p></div> }
+                        @foreach (var item in SelectedOutcomes.Take(3)) { <div class="evidence-item"><span class="evidence-dot outcome">✓</span><div><strong>Completed with evidence</strong><p>@item.Lessons</p><small>Next: @item.RequestedNextAction</small></div></div> }
+                    </article>
+                    <article class="operation-card evidence-card signal-card"><div class="evidence-heading"><h2>Next-cycle signal</h2><span>Proposal</span></div>
+                        @if (SelectedSignals.Count == 0) { <div class="evidence-empty"><strong>No company signal raised</strong><p>Material opportunities or risks can be proposed for a later planning cycle.</p></div> }
+                        @foreach (var item in SelectedSignals.Take(3)) { <div class="evidence-item"><span class="evidence-dot signal">◇</span><div><strong>@Friendly(item.SignalType)</strong><p>@item.Summary</p><small>@(item.CycleEvaluationRequested ? "Waiting for the next planning review" : "Reviewed by company operation")</small></div></div> }
+                    </article>
+                </section>
+            }
+        }
+
+        <section class="lower-grid"><article class="operation-card"><h2>What the coordinator observed</h2><div class="observations"><div><strong>Goals</strong><span>@goals.Count active and historical priorities</span></div><div><strong>Operating boundary</strong><span>@Friendly(configuration?.AutonomyLevel ?? "recommend")</span></div><div><strong>Validation</strong><span>@(CurrentPlan?.ValidationResults.Count(x => x.Outcome == "allowed") ?? 0) checks passed</span></div></div></article>
+            <article class="operation-card"><h2>Recent operating activity</h2><div class="timeline">@foreach (var cycle in cycles.Take(4)) { <div><span class="timeline-dot"></span><p><strong>@CoordinatorName @Friendly(cycle.Status)</strong><small>@cycle.RequestedUtc.ToLocalTime().ToString("g")</small></p></div> }</div></article></section>
+
+        <section class="lower-grid">
+            <article class="operation-card"><div class="card-heading"><div><h2>Agent work delivery</h2><p>See whether approved internal work is waiting, running, or needs help.</p></div><span>@dispatches.Count recent</span></div><div class="activity-list">@if (dispatches.Count == 0) { <div class="inline-empty"><strong>No work waiting for delivery</strong><p>Approved agent work will appear here.</p></div> } @foreach (var dispatch in dispatches.Take(5)) { <div class="activity-row"><span class="status-dot @dispatch.Status"></span><p><strong>@Friendly(dispatch.Kind) work</strong><small>@Friendly(dispatch.Status) · attempt @dispatch.AttemptCount of @dispatch.MaxAttempts</small></p>@if (!string.IsNullOrWhiteSpace(dispatch.FailureSummary)) { <span class="activity-warning">Review issue</span> }</div> }</div></article>
+            <article class="operation-card"><div class="card-heading"><div><h2>Company observations</h2><p>Signals, gaps, and source coverage used for planning.</p></div><span>@(snapshots.FirstOrDefault()?.SourceCount ?? 0) sources</span></div><div class="observations"><div><strong>Latest snapshot</strong><span>@(snapshots.FirstOrDefault()?.CreatedUtc.ToLocalTime().ToString("g") ?? "Not captured yet")</span></div><div><strong>Data gaps</strong><span>@(snapshots.FirstOrDefault()?.DataGapCount ?? 0) need attention</span></div><div><strong>Recent events</strong><span>@events.Count observed</span></div></div></article>
+        </section>
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    private Guid? companyId;
+    private bool loading = true, busy, showSetup, setupInitialized, savingSettings, savingGoal, goalFormOpen;
+    private string? error, settingsError, settingsMessage, goalError, goalMessage;
+    private List<CompanyGoalViewModel> goals = [];
+    private List<OperatingCycleViewModel> cycles = [];
+    private List<AgentRosterItemViewModel> activeAgents = [];
+    private List<MarketingOperatingRunViewModel> marketingRuns = [];
+    private List<MarketingWorkEvidenceViewModel> marketingEvidence = [];
+    private List<MarketingCompanySignalViewModel> marketingSignals = [];
+    private List<OperatingDispatchViewModel> dispatches = [];
+    private List<OperatingEventViewModel> events = [];
+    private List<OperatingCycleRequestViewModel> cycleRequests = [];
+    private List<OperatingSnapshotViewModel> snapshots = [];
+    private CompanyOperatingConfigurationViewModel? configuration;
+    private UpdateCompanyOperatingConfigurationRequest settings = new();
+    private CreateCompanyGoalRequest goalForm = NewGoalForm();
+    private OperatingInitiativeViewModel? selected;
+    private OperatingPlanViewModel? CurrentPlan => cycles.SelectMany(x => x.Plans).OrderByDescending(x => x.Status == "awaiting_review").FirstOrDefault();
+    private List<OperatingInitiativeViewModel> CurrentInitiatives => CurrentPlan?.Initiatives ?? [];
+    private MarketingOperatingRunViewModel? SelectedRun => selected is null ? null : marketingRuns.FirstOrDefault(x => x.OperatingInitiativeId == selected.Id);
+    private List<MarketingWorkEvidenceViewModel> SelectedProgress => selected is null ? [] : marketingEvidence.Where(x => x.OperatingInitiativeId == selected.Id && x.RecordType == "progress").OrderByDescending(x => x.Version).ToList();
+    private List<MarketingWorkEvidenceViewModel> SelectedOutcomes => selected is null ? [] : marketingEvidence.Where(x => x.OperatingInitiativeId == selected.Id && x.RecordType == "outcome").OrderByDescending(x => x.Version).ToList();
+    private List<MarketingCompanySignalViewModel> SelectedSignals => SelectedRun is null ? [] : marketingSignals.Where(x => x.MarketingOperatingRunId == SelectedRun.Id).OrderByDescending(x => x.CreatedUtc).ToList();
+    private string InstructionVersions => SelectedRun is null ? $"Plan v{CurrentPlan?.Version ?? 0} · Initiative v{selected?.Version ?? 0}" : $"Goal v{AssignmentNumber("goalVersion")} · Plan v{AssignmentNumber("planVersion")} · Initiative v{AssignmentNumber("initiativeVersion")}";
+    private string BudgetText => SelectedRun is null ? selected?.Budget is decimal budget ? $"{budget:N0} limit" : "No monetary budget" : SelectedRun.BudgetLimit.HasValue ? $"{SelectedRun.BudgetUsed:N0} used of {SelectedRun.BudgetLimit:N0}" : "No monetary budget";
+    private string DependenciesText => AssignmentArrayCount("dependencies") is var count && count > 0 ? $"{count} required initiative(s) satisfied" : "No blocking dependencies";
+    private string CorrelationText => AssignmentString("correlationId") ?? "Linked through the company plan";
+    private bool HasActiveGoal => goals.Any(x => x.Status == "active");
+    private bool CoordinatorSaved => configuration?.CoordinatorAgentId.HasValue == true && configuration.CoordinatorAgentId == settings.CoordinatorAgentId;
+    private bool OperatingSettingsSaved => configuration is not null
+        && configuration.CoordinatorAgentId == settings.CoordinatorAgentId
+        && configuration.AutonomyLevel == settings.AutonomyLevel
+        && configuration.DailyCycleHour == settings.DailyCycleHour
+        && configuration.Timezone == settings.Timezone;
+    private bool SetupIncomplete => configuration?.CoordinatorAgentId is null || !HasActiveGoal;
+    private AgentRosterItemViewModel? Coordinator => activeAgents.FirstOrDefault(x => x.Id == configuration?.CoordinatorAgentId);
+    private string CoordinatorName => Coordinator?.DisplayName ?? "Not assigned";
+    private string LastReviewText => cycles.FirstOrDefault()?.RequestedUtc.ToLocalTime().ToString("g") ?? "Not reviewed yet";
+    private string NextReviewText => configuration is null ? "Not scheduled" : $"Daily at {configuration.DailyCycleHour:00}:00 ({TimezoneLabel(configuration.Timezone)})";
+    private string OperationStatus => configuration?.EmergencyStopped == true ? "Stopped" : configuration?.IsPaused == true ? "Paused" : "Running safely";
+    private IEnumerable<OperatingCycleViewModel> TodayCycles => cycles.Where(x => x.RequestedUtc.ToUniversalTime().Date == DateTime.UtcNow.Date);
+    private int TodayTasks => TodayCycles.Sum(x => x.TasksCreated);
+    private int TodayModelCalls => TodayCycles.Sum(x => x.ModelCallsUsed);
+    private int TodayToolCalls => TodayCycles.Sum(x => x.ToolCallsUsed);
+    private decimal TodayMoney => TodayCycles.Sum(x => x.MonetaryBudgetUsed);
+    private string DailyMoneyLimit => configuration?.MaximumMonetaryBudgetPerDay is decimal limit ? $"of {limit:N0}" : "no daily limit";
+    private int AttentionCount => CurrentInitiatives.Count(x => x.Status == "blocked") + dispatches.Count(x => x.Status is "blocked" or "dead_lettered" or "awaiting_approval") + cycleRequests.Count(x => x.Status is "failed" or "dead_lettered");
+    private IReadOnlyList<(string Value, string Label)> TimezoneOptions
+    {
+        get
+        {
+            var options = new List<(string, string)> { ("UTC", "UTC"), ("W. Europe Standard Time", "Stockholm / Central Europe"), ("GMT Standard Time", "London"), ("Eastern Standard Time", "New York"), ("Pacific Standard Time", "Los Angeles") };
+            if (!string.IsNullOrWhiteSpace(settings.Timezone) && options.All(x => x.Item1 != settings.Timezone)) options.Insert(0, (settings.Timezone, settings.Timezone));
+            return options;
+        }
+    }
+
+    protected override async Task OnInitializedAsync()
+    {
+        try
+        {
+            var context = await OnboardingApi.GetCurrentUserContextAsync();
+            companyId = CompanyId ?? context?.ActiveCompany?.CompanyId;
+            if (CompanyId is null && companyId.HasValue) Navigation.NavigateTo($"/company-operation?companyId={companyId:D}", true);
+            await LoadAsync();
+        }
+        catch (Exception ex) { error = ex.Message; }
+        finally { loading = false; }
+    }
+
+    private async Task LoadAsync()
+    {
+        if (!companyId.HasValue) return;
+        var id = companyId.Value;
+        var goalsTask = OperationApi.ListGoalsAsync(id);
+        var configTask = OperationApi.GetConfigurationAsync(id);
+        var cyclesTask = OperationApi.ListCyclesAsync(id);
+        var agentsTask = AgentApi.GetRosterViewAsync(id, status: "active");
+        var runsTask = MarketingApi.GetOperatingRunsAsync(id);
+        var evidenceTask = MarketingApi.GetWorkEvidenceAsync(id);
+        var signalsTask = MarketingApi.GetCompanySignalsAsync(id);
+        var dispatchesTask = OperationApi.ListDispatchesAsync(id);
+        var eventsTask = OperationApi.ListEventsAsync(id);
+        var requestsTask = OperationApi.ListCycleRequestsAsync(id);
+        var snapshotsTask = OperationApi.ListSnapshotsAsync(id);
+        await Task.WhenAll(goalsTask, configTask, cyclesTask, agentsTask, runsTask, evidenceTask, signalsTask, dispatchesTask, eventsTask, requestsTask, snapshotsTask);
+        goals = await goalsTask;
+        configuration = await configTask;
+        cycles = await cyclesTask;
+        activeAgents = (await agentsTask).Items.Where(x => string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.DisplayName).ToList();
+        marketingRuns = (await runsTask).ToList();
+        marketingEvidence = (await evidenceTask).ToList();
+        marketingSignals = (await signalsTask).ToList();
+        dispatches = await dispatchesTask;
+        events = await eventsTask;
+        cycleRequests = await requestsTask;
+        snapshots = await snapshotsTask;
+        settings = MapSettings(configuration);
+        selected = CurrentInitiatives.FirstOrDefault();
+        if (!setupInitialized)
+        {
+            showSetup = SetupIncomplete;
+            goalFormOpen = !HasActiveGoal;
+            setupInitialized = true;
+        }
+    }
+
+    private void ToggleSetup() { showSetup = !showSetup; if (showSetup && !HasActiveGoal) goalFormOpen = true; }
+    private void SelectCoordinator(Guid id) { settings.CoordinatorAgentId = id; settingsError = null; settingsMessage = null; goalForm.OwnerAgentId = id; }
+    private void SetAutonomy(string value) { settings.AutonomyLevel = value; settingsError = null; settingsMessage = null; }
+    private void SetRecommendMode() => SetAutonomy("recommend");
+    private void SetOrganizeMode() => SetAutonomy("organize");
+    private void SetInternalMode() => SetAutonomy("operate_internally");
+    private void SetControlledMode() => SetAutonomy("controlled_execution");
+    private void OpenGoalForm() { goalForm = NewGoalForm(); goalForm.OwnerAgentId = settings.CoordinatorAgentId; goalFormOpen = true; goalMessage = null; goalError = null; }
+
+    private async Task SaveSettingsAsync()
+    {
+        settingsError = settingsMessage = null;
+        if (!settings.CoordinatorAgentId.HasValue) { settingsError = "Choose an active coordinator before saving."; return; }
+        if (activeAgents.All(x => x.Id != settings.CoordinatorAgentId.Value)) { settingsError = "The selected coordinator is no longer active. Choose another agent."; return; }
+        if (!companyId.HasValue) return;
+        savingSettings = true;
+        try
+        {
+            configuration = await OperationApi.UpdateConfigurationAsync(companyId.Value, settings);
+            settings = MapSettings(configuration);
+            goalForm.OwnerAgentId = configuration.CoordinatorAgentId;
+            settingsMessage = "Operating settings saved.";
+        }
+        catch (Exception ex) { settingsError = ex.Message; }
+        finally { savingSettings = false; }
+    }
+
+    private async Task CreateAndActivateGoalAsync()
+    {
+        goalError = goalMessage = null;
+        if (!companyId.HasValue) return;
+        var coordinatorId = configuration?.CoordinatorAgentId;
+        if (!coordinatorId.HasValue) { goalError = "Save a coordinator before adding a goal."; return; }
+        if (string.IsNullOrWhiteSpace(goalForm.Name)) { goalError = "Enter a goal name."; return; }
+        if (string.IsNullOrWhiteSpace(goalForm.Outcome)) { goalError = "Describe the outcome this goal should achieve."; return; }
+        if (goalForm.TargetUtc.Date <= goalForm.StartUtc.Date) { goalError = "The target date must be after the start date."; return; }
+        if (goalForm.TargetValue.HasValue && string.IsNullOrWhiteSpace(goalForm.MetricKey)) { goalError = "Name the measure used for the target value."; return; }
+        savingGoal = true;
+        try
+        {
+            goalForm.Name = goalForm.Name.Trim();
+            goalForm.Outcome = goalForm.Outcome.Trim();
+            goalForm.OwnerAgentId = coordinatorId;
+            var created = await OperationApi.CreateGoalAsync(companyId.Value, goalForm);
+            await OperationApi.ActivateGoalAsync(companyId.Value, created.Id, created.Version);
+            await LoadAsync();
+            goalForm = NewGoalForm();
+            goalForm.OwnerAgentId = coordinatorId;
+            goalFormOpen = false;
+            goalMessage = "Goal added and activated. The company is ready for a priorities review.";
+        }
+        catch (Exception ex) { goalError = ex.Message; }
+        finally { savingGoal = false; }
+    }
+
+    private async Task ActAsync(Func<Guid, Task<OperatingCycleViewModel>> action)
+    {
+        if (!companyId.HasValue || SetupIncomplete) { showSetup = true; return; }
+        busy = true; error = null;
+        try { await action(companyId.Value); await LoadAsync(); }
+        catch (Exception ex) { error = ex.Message; }
+        finally { busy = false; }
+    }
+
+    private Task RunReviewAsync() => ActAsync(id => OperationApi.RunAsync(id));
+    private Task ApproveAsync() => ActAsync(id => OperationApi.ReviewAsync(id, CurrentPlan!.Id, "approve", null));
+    private Task AskChangesAsync() => ActAsync(id => OperationApi.ReviewAsync(id, CurrentPlan!.Id, "request_changes", "Please revise this plan with the requested changes."));
+    private Task RejectAsync() => ActAsync(id => OperationApi.ReviewAsync(id, CurrentPlan!.Id, "reject", "The plan was rejected."));
+    private Task CommitAsync() => ActAsync(id => OperationApi.CommitAsync(id, CurrentPlan!.Id));
+    private async Task PauseOperationAsync()
+    {
+        if (!companyId.HasValue || configuration is null) return;
+        busy = true; error = null;
+        try { configuration = await OperationApi.PauseAsync(companyId.Value, configuration.Version, "Paused by a company manager from the operation workspace."); await LoadAsync(); }
+        catch (Exception ex) { error = ex.Message; } finally { busy = false; }
+    }
+    private async Task ResumeOperationAsync()
+    {
+        if (!companyId.HasValue || configuration is null) return;
+        busy = true; error = null;
+        try { configuration = await OperationApi.ResumeAsync(companyId.Value, configuration.Version); await LoadAsync(); }
+        catch (Exception ex) { error = ex.Message; } finally { busy = false; }
+    }
+    private async Task EmergencyStopAsync()
+    {
+        if (!companyId.HasValue || configuration is null || !await JS.InvokeAsync<bool>("confirm", "Stop all automatic company reviews and agent work now? You will need to clear the stop and resume operation manually.")) return;
+        busy = true; error = null;
+        try { configuration = await OperationApi.EmergencyStopAsync(companyId.Value, configuration.Version, "Emergency stop activated by a company manager from the operation workspace."); await LoadAsync(); }
+        catch (Exception ex) { error = ex.Message; } finally { busy = false; }
+    }
+    private async Task ClearEmergencyStopAsync()
+    {
+        if (!companyId.HasValue || configuration is null) return;
+        busy = true; error = null;
+        try { configuration = await OperationApi.ClearEmergencyStopAsync(companyId.Value, configuration.Version); await LoadAsync(); }
+        catch (Exception ex) { error = ex.Message; } finally { busy = false; }
+    }
+    private static CreateCompanyGoalRequest NewGoalForm() => new() { StartUtc = DateTime.UtcNow.Date, TargetUtc = DateTime.UtcNow.Date.AddMonths(3) };
+    private static UpdateCompanyOperatingConfigurationRequest MapSettings(CompanyOperatingConfigurationViewModel value) => new() { CoordinatorAgentId = value.CoordinatorAgentId, AutonomyLevel = value.AutonomyLevel, Timezone = value.Timezone, DailyCycleHour = value.DailyCycleHour, MinimumCycleIntervalMinutes = value.MinimumCycleIntervalMinutes, MaximumCyclesPerDay = value.MaximumCyclesPerDay, MaximumInitiativesPerCycle = value.MaximumInitiativesPerCycle, MaximumTasksPerCycle = value.MaximumTasksPerCycle, MaximumCollaborators = value.MaximumCollaborators, MaximumRuntimeSeconds = value.MaximumRuntimeSeconds, MaximumModelCallsPerCycle = value.MaximumModelCallsPerCycle, MaximumToolCallsPerCycle = value.MaximumToolCallsPerCycle, MaximumMonetaryBudgetPerCycle = value.MaximumMonetaryBudgetPerCycle, MaximumTasksPerDay = value.MaximumTasksPerDay, MaximumModelCallsPerDay = value.MaximumModelCallsPerDay, MaximumToolCallsPerDay = value.MaximumToolCallsPerDay, MaximumMonetaryBudgetPerDay = value.MaximumMonetaryBudgetPerDay, ExpectedVersion = value.Version };
+    private static string AgentInitials(string? name) => string.IsNullOrWhiteSpace(name) ? "?" : string.Concat(name.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(x => char.ToUpperInvariant(x[0])));
+    private static string BoolText(bool value) => value ? "true" : "false";
+    private static string DepartmentTone(string? department) => department?.Trim().ToLowerInvariant() switch { "sales" => "sales", "finance" => "finance", "support" => "support", "marketing" => "marketing", "operations" => "operations", _ => "neutral" };
+    private static string CoordinatorFit(string? department) => department?.Trim().ToLowerInvariant() switch { "sales" => "Commercial focus and customer growth", "finance" => "Strong controls and financial discipline", "support" => "Customer-first service coordination", "marketing" => "Market insight and cross-team planning", "operations" => "Company-wide execution and delivery", _ => "Coordinates priorities across the company" };
+    private static string TimezoneLabel(string value) => value switch { "W. Europe Standard Time" => "Stockholm", "GMT Standard Time" => "London", "Eastern Standard Time" => "New York", "Pacific Standard Time" => "Los Angeles", _ => value };
+    private static string Friendly(string value) => string.Join(' ', value.Split('_')).ToLowerInvariant() switch { "awaiting review" => "Waiting for review", "recommend" => "Recommends only", "operate internally" => "Runs approved internal work", "controlled execution" => "Controlled execution", "committed" => "Work created", var text => string.IsNullOrEmpty(text) ? "Unknown" : char.ToUpperInvariant(text[0]) + text[1..] };
+    private string InitiativeOwner(OperatingInitiativeViewModel item) => activeAgents.FirstOrDefault(x => x.Id == item.OwnerAgentId)?.DisplayName ?? CoordinatorName;
+    private string? AssignmentString(string property)
+    {
+        if (string.IsNullOrWhiteSpace(SelectedRun?.AssignmentContextJson)) return null;
+        try { using var document = System.Text.Json.JsonDocument.Parse(SelectedRun.AssignmentContextJson); return document.RootElement.TryGetProperty(property, out var value) ? value.GetString() : null; } catch { return null; }
+    }
+    private int AssignmentNumber(string property)
+    {
+        if (string.IsNullOrWhiteSpace(SelectedRun?.AssignmentContextJson)) return 0;
+        try { using var document = System.Text.Json.JsonDocument.Parse(SelectedRun.AssignmentContextJson); return document.RootElement.TryGetProperty(property, out var value) && value.TryGetInt32(out var number) ? number : 0; } catch { return 0; }
+    }
+    private int AssignmentArrayCount(string property)
+    {
+        if (string.IsNullOrWhiteSpace(SelectedRun?.AssignmentContextJson)) return 0;
+        try { using var document = System.Text.Json.JsonDocument.Parse(SelectedRun.AssignmentContextJson); return document.RootElement.TryGetProperty(property, out var value) && value.ValueKind == System.Text.Json.JsonValueKind.Array ? value.GetArrayLength() : 0; } catch { return 0; }
+    }
+    private static string ConfidenceText(decimal? value) => value.HasValue ? $"{value:P0}" : "not assessed";
+}

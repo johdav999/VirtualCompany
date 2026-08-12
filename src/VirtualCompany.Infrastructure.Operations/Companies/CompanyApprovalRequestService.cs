@@ -441,6 +441,26 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
             }
         }
+        else if (targetType == ApprovalTargetEntityType.OperatingPlan)
+        {
+            var plan = await _dbContext.OperatingPlans.SingleAsync(
+                x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId,
+                cancellationToken);
+            var previousStatus = plan.Status.ToStorageValue();
+            if (approval.Status == ApprovalRequestStatus.Approved)
+            {
+                if (plan.Status == OperatingPlanStatus.AwaitingReview)
+                    plan.Approve();
+                return LinkedEntityStateTransition.ForOperatingPlan(plan.Id, previousStatus, plan.Status.ToStorageValue());
+            }
+
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            {
+                if (plan.Status == OperatingPlanStatus.AwaitingReview)
+                    plan.Reject();
+                return LinkedEntityStateTransition.ForOperatingPlan(plan.Id, previousStatus, plan.Status.ToStorageValue());
+            }
+        }
         else if (targetType == ApprovalTargetEntityType.SalesMeetingInvitation)
         {
             var invitation = await _dbContext.SalesMeetingInvitations.SingleAsync(
@@ -721,6 +741,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.SalesMeetingChangeRequest => await _dbContext.SalesMeetingChangeRequests
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.OperatingPlan => await _dbContext.OperatingPlans
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.OperatingDecision => await _dbContext.OperatingDecisions
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
@@ -1018,6 +1044,11 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             .Select(x => x.TargetEntityId)
             .Distinct()
             .ToList();
+        var operatingPlanIds = approvals
+            .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityType.OperatingPlan.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.TargetEntityId)
+            .Distinct()
+            .ToList();
 
         var tasks = taskIds.Count == 0
             ? new Dictionary<Guid, WorkTask>()
@@ -1054,6 +1085,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .Include(x => x.Invitation)
                 .Where(x => x.CompanyId == companyId && meetingChangeIds.Contains(x.Id))
                 .ToDictionaryAsync(x => x.Id, cancellationToken);
+        var operatingPlans = operatingPlanIds.Count == 0
+            ? new Dictionary<Guid, OperatingPlan>()
+            : await _dbContext.OperatingPlans
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && operatingPlanIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
 
         return approvals.ToDictionary(
             approval => approval.Id,
@@ -1084,6 +1121,15 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                         TryReadString(action.PolicyDecision, "explanation", "summary", "message"),
                         $"Action: {actionLabel}",
                         [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.Action.ToStorageValue(), action.Id, actionLabel)]);
+                }
+
+                if (operatingPlans.TryGetValue(approval.TargetEntityId, out var operatingPlan))
+                {
+                    var label = $"Company operating plan v{operatingPlan.Version}: {operatingPlan.Objective}";
+                    return new ApprovalSummaryContext(
+                        operatingPlan.RationaleSummary,
+                        label,
+                        [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.OperatingPlan.ToStorageValue(), operatingPlan.Id, label)]);
                 }
 
                 if (meetings.TryGetValue(approval.TargetEntityId, out var meeting))
@@ -1423,6 +1469,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             var value when string.Equals(value, ApprovalTargetEntityType.FinanceIntegrationWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingInvitation.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting invitation",
             var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting change",
+            var value when string.Equals(value, ApprovalTargetEntityType.OperatingPlan.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Company operating plan",
+            var value when string.Equals(value, ApprovalTargetEntityType.OperatingDecision.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Controlled company action",
             var value when string.Equals(value, "fortnox_write", StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             _ => entityType
         };
@@ -1541,5 +1589,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             new("sales_meeting_invitation", id.ToString("N"), previousState, currentState, "sales_meeting_invitations");
         public static LinkedEntityStateTransition ForSalesMeetingChangeRequest(Guid id, string previousState, string currentState) =>
             new("sales_meeting_change_request", id.ToString("N"), previousState, currentState, "sales_meeting_change_requests");
+        public static LinkedEntityStateTransition ForOperatingPlan(Guid id, string previousState, string currentState) =>
+            new("operating_plan", id.ToString("N"), previousState, currentState, "operating_plans");
     }
 }

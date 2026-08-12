@@ -58,5 +58,6 @@ for ($attempt = 1; $attempt -le $maxAttempts; $attempt++)
 }
 
 $connectionString = "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=$sqlPassword;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=True"
+Write-Host "Development startup applies pending EF Core migrations before hosted workers start."
 & (Join-Path $PSScriptRoot "run-api.ps1") -ConnectionString $connectionString
 exit $LASTEXITCODE

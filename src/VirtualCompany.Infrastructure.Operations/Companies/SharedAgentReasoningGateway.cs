@@ -92,6 +92,11 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
                     request.CapabilityId);
                 parsed.NextActions.Clear();
             }
+            if (parsed is not null)
+            {
+                foreach (var claim in parsed.Claims)
+                    claim.Type = NormalizeClaimType(claim.Type);
+            }
             if (!TryValidate(parsed, request, out var error)) return await FailAsync(run, "failed", "invalid_reasoning_result", error!, timer, cancellationToken);
 
             var claims = parsed!.Claims.Select(x => new AgentAiClaim(x.Text.Trim(), x.Type, x.Confidence, x.SourceIds.Distinct().ToArray())).ToArray();
@@ -148,12 +153,22 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
         {
             await _audit.WriteAsync(new AuditEventWriteRequest(run.CompanyId, "agent", run.AgentId,
                 "agent_ai_reasoning", "agent_orchestration_run", run.Id.ToString("N"), outcome,
-                summary, sources, new Dictionary<string, string?> { ["capabilityId"] = run.CapabilityId, ["schemaVersion"] = run.SchemaVersion }, run.CorrelationId), ct);
+                NormalizeAuditSummary(summary), sources, new Dictionary<string, string?> { ["capabilityId"] = run.CapabilityId, ["schemaVersion"] = run.SchemaVersion }, run.CorrelationId), ct);
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Could not write business audit evidence for AI run {RunId}.", run.Id);
         }
+    }
+
+    internal static string NormalizeAuditSummary(string? value)
+    {
+        const int maximumLength = 512;
+        const string suffix = "...";
+        var normalized = string.IsNullOrWhiteSpace(value) ? "AI reasoning completed without a summary." : value.Trim();
+        return normalized.Length <= maximumLength
+            ? normalized
+            : string.Concat(normalized.AsSpan(0, maximumLength - suffix.Length), suffix);
     }
 
     private static void ValidateRequest(AgentReasoningRequest request)
@@ -179,6 +194,14 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
         }
         return true;
     }
+
+    internal static string NormalizeClaimType(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "confirmed_fact" or "observed" => "confirmed_fact",
+        "inference" or "inferred" or "estimated" => "inference",
+        "unknown" or "assumption" => "unknown",
+        var unsupported => unsupported ?? string.Empty
+    };
 
     internal static string BuildUserMessage(AgentReasoningRequest request) => JsonSerializer.Serialize(new
     {

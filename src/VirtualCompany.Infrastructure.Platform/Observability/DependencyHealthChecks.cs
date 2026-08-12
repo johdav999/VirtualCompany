@@ -1,6 +1,7 @@
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Diagnostics.HealthChecks;
 using Microsoft.Extensions.Options;
@@ -33,13 +34,43 @@ public sealed class DatabaseHealthCheck : IHealthCheck
             }
 
             var canConnect = await _dbContext.Database.CanConnectAsync(cancellationToken);
-            return canConnect
-                ? HealthCheckResult.Healthy("Database connection succeeded.")
-                : HealthCheckResult.Unhealthy("Database connection failed.");
+            if (!canConnect)
+            {
+                return HealthCheckResult.Unhealthy("Database connection failed.", data: new Dictionary<string, object>
+                {
+                    ["readinessCode"] = "database_unreachable"
+                });
+            }
+
+            var pendingMigrations = (await _dbContext.Database.GetPendingMigrationsAsync(cancellationToken)).ToArray();
+            if (pendingMigrations.Length > 0)
+            {
+                return HealthCheckResult.Unhealthy(
+                    "The database is reachable but EF Core migrations are pending.",
+                    data: new Dictionary<string, object>
+                    {
+                        ["readinessCode"] = "pending_migrations",
+                        ["pendingMigrationCount"] = pendingMigrations.Length,
+                        ["pendingMigrations"] = string.Join(", ", pendingMigrations)
+                    });
+            }
+
+            return HealthCheckResult.Healthy("Database connection and migration state are ready.",
+                new Dictionary<string, object> { ["readinessCode"] = "ready" });
+        }
+        catch (SqlException ex)
+        {
+            return HealthCheckResult.Unhealthy("SQL Server readiness validation failed.", ex,
+                new Dictionary<string, object>
+                {
+                    ["readinessCode"] = ex.Number == 208 ? "schema_object_missing" : "database_unreachable",
+                    ["sqlErrorNumber"] = ex.Number
+                });
         }
         catch (Exception ex)
         {
-            return HealthCheckResult.Unhealthy("Database health check failed.", ex);
+            return HealthCheckResult.Unhealthy("Database migration readiness validation failed.", ex,
+                new Dictionary<string, object> { ["readinessCode"] = "migration_validation_failed" });
         }
     }
 }

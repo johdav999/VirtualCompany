@@ -103,6 +103,21 @@ internal sealed class MarketingContentBriefConfiguration : MarketingEntityConfig
         b.Property(x => x.DueUtc).HasColumnName("due_at");
         b.Property(x => x.OwnerUserId).HasColumnName("owner_user_id");
         b.Property(x => x.OwnerAgentId).HasColumnName("owner_agent_id");
+        b.Property(x => x.MarketingCustomerSegmentVersionId).HasColumnName("marketing_customer_segment_version_id");
+        b.Property(x => x.MeasurableObjective).HasColumnName("measurable_objective").HasMaxLength(1000).IsRequired();
+        b.Property(x => x.FunnelStage).HasColumnName("funnel_stage").HasMaxLength(40).IsRequired();
+        b.Property(x => x.CustomerInsight).HasColumnName("customer_insight").HasMaxLength(4000).IsRequired();
+        b.Property(x => x.KeyMessage).HasColumnName("key_message").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.SupportingPointsJson).HasColumnName("supporting_points_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.Offer).HasColumnName("offer").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.RequiredClaimsJson).HasColumnName("required_claims_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.ProhibitedClaimsJson).HasColumnName("prohibited_claims_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.SeoRequirementsJson).HasColumnName("seo_requirements_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.VisualDirection).HasColumnName("visual_direction").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.DesiredFormatsJson).HasColumnName("desired_formats_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.VariantRequirementsJson).HasColumnName("variant_requirements_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.EvidenceRequirementsJson).HasColumnName("evidence_requirements_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.ApprovalPolicyJson).HasColumnName("approval_policy_json").HasColumnType("nvarchar(max)").IsRequired();
         b.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         b.Property(x => x.Version).HasColumnName("version").IsConcurrencyToken();
         b.Property(x => x.CreatedUtc).HasColumnName("created_at");
@@ -121,9 +136,20 @@ internal sealed class MarketingContentVariantConfiguration : MarketingEntityConf
         b.Property(x => x.Body).HasColumnName("body").HasColumnType("nvarchar(max)").IsRequired();
         b.Property(x => x.SourceReferences).HasColumnName("source_references").HasColumnType("nvarchar(max)").IsRequired();
         b.Property(x => x.GeneratedByAi).HasColumnName("generated_by_ai");
+        b.Property(x => x.VariantFamilyId).HasColumnName("variant_family_id");
+        b.Property(x => x.VersionNumber).HasColumnName("version_number");
+        b.Property(x => x.ContentFormat).HasColumnName("content_format").HasMaxLength(60).IsRequired();
+        b.Property(x => x.GenerationRunId).HasColumnName("generation_run_id");
+        b.Property(x => x.CapabilityVersion).HasColumnName("capability_version").HasMaxLength(64).IsRequired();
+        b.Property(x => x.PromptVersion).HasColumnName("prompt_version").HasMaxLength(128).IsRequired();
+        b.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(160);
+        b.Property(x => x.BatchIndex).HasColumnName("batch_index");
         b.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         b.Property(x => x.CreatedUtc).HasColumnName("created_at");
         b.HasIndex(x => new { x.CompanyId, x.MarketingContentBriefId, x.Status });
+        b.HasIndex(x => new { x.CompanyId, x.IdempotencyKey, x.BatchIndex }).IsUnique()
+            .HasFilter("[idempotency_key] IS NOT NULL");
+        b.HasIndex(x => new { x.CompanyId, x.VariantFamilyId, x.VersionNumber }).IsUnique();
         b.HasOne<MarketingContentBrief>().WithMany()
             .HasForeignKey(x => new { x.CompanyId, x.MarketingContentBriefId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id })
@@ -171,9 +197,12 @@ internal sealed class MarketingChannelObservationConfiguration : MarketingEntity
         b.Property(x => x.PeriodEndUtc).HasColumnName("period_end_at");
         b.Property(x => x.SourceReference).HasColumnName("source_reference").HasMaxLength(1000).IsRequired();
         b.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(160).IsRequired();
+        b.Property(x => x.CorrectionOfObservationId).HasColumnName("correction_of_observation_id");
+        b.Property(x => x.IsSuperseded).HasColumnName("is_superseded");
         b.Property(x => x.RetrievedUtc).HasColumnName("retrieved_at");
         b.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
         b.HasIndex(x => new { x.CompanyId, x.SalesCampaignId, x.MetricCode, x.PeriodEndUtc });
+        b.HasIndex(x => new { x.CompanyId, x.CorrectionOfObservationId });
     }
 }
 
