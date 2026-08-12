@@ -21,6 +21,8 @@ public sealed class SalesController : ControllerBase
     private readonly IRevenueForecastService _revenueForecastService;
     private readonly IConversionAnalyticsService _conversionAnalyticsService;
     private readonly IDealIntelligenceSignalRepository _dealIntelligenceSignals;
+    private readonly ISalesLeadEmailEvidenceService _leadEmailEvidence;
+    private readonly ISalesMeetingSchedulingService _meetingScheduling;
 
     public SalesController(
         ICompanyContextAccessor companyContextAccessor,
@@ -28,7 +30,9 @@ public sealed class SalesController : ControllerBase
         ICustomerMemoryService customerMemory,
         IRevenueForecastService revenueForecastService,
         IConversionAnalyticsService conversionAnalyticsService,
-        IDealIntelligenceSignalRepository dealIntelligenceSignals)
+        IDealIntelligenceSignalRepository dealIntelligenceSignals,
+        ISalesLeadEmailEvidenceService leadEmailEvidence,
+        ISalesMeetingSchedulingService meetingScheduling)
     {
         _companyContextAccessor = companyContextAccessor;
         _salesOperations = salesOperations;
@@ -36,6 +40,8 @@ public sealed class SalesController : ControllerBase
         _revenueForecastService = revenueForecastService;
         _conversionAnalyticsService = conversionAnalyticsService;
         _dealIntelligenceSignals = dealIntelligenceSignals;
+        _leadEmailEvidence = leadEmailEvidence;
+        _meetingScheduling = meetingScheduling;
     }
 
     [HttpGet("dashboard")]
@@ -53,6 +59,110 @@ public sealed class SalesController : ControllerBase
         return result is null ? NotFound() : Ok(result);
     }
 
+    [HttpGet("leads/{id:guid}/source-emails")]
+    public Task<IReadOnlyList<SalesLeadSourceEmailResponse>> ListLeadSourceEmailsAsync(Guid id, CancellationToken cancellationToken) =>
+        _leadEmailEvidence.ListAsync(CompanyId(), id, cancellationToken);
+    [HttpGet("calendar-connections")]
+    public Task<IReadOnlyList<SalesCalendarConnectionResponse>> ListCalendarConnectionsAsync(CancellationToken cancellationToken) =>
+        _meetingScheduling.ListCalendarConnectionsAsync(CompanyId(), cancellationToken);
+
+    [HttpPost("calendar-availability")]
+    public async Task<ActionResult<SalesMeetingAvailabilityResponse>> GetCalendarAvailabilityAsync(
+        [FromBody] SalesMeetingAvailabilityRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _meetingScheduling.GetAvailabilityAsync(CompanyId(), request, cancellationToken));
+        }
+        catch (SalesValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or CalendarProviderException)
+        {
+            return Problem(title: "Calendar availability is unavailable.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    [HttpGet("leads/{id:guid}/meeting-invitations")]
+    public Task<IReadOnlyList<SalesMeetingInvitationResponse>> ListMeetingInvitationsAsync(
+        Guid id, CancellationToken cancellationToken) =>
+        _meetingScheduling.ListForLeadAsync(CompanyId(), id, cancellationToken);
+
+    [HttpPost("leads/{id:guid}/meeting-invitations")]
+    public async Task<ActionResult<SalesMeetingInvitationResponse>> CreateMeetingInvitationAsync(
+        Guid id,
+        [FromBody] CreateSalesMeetingInvitationRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var result = await _meetingScheduling.CreateForLeadAsync(
+                CompanyId(), UserId(), id, request, cancellationToken);
+            return CreatedAtAction(nameof(GetMeetingInvitationAsync), new { invitationId = result.Id }, result);
+        }
+        catch (SalesValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException or CalendarProviderException)
+        {
+            return Problem(title: "Meeting invitation could not be prepared.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    [HttpGet("meeting-invitations/{invitationId:guid}")]
+    public async Task<ActionResult<SalesMeetingInvitationResponse>> GetMeetingInvitationAsync(
+        Guid invitationId, CancellationToken cancellationToken)
+    {
+        var result = await _meetingScheduling.GetAsync(CompanyId(), invitationId, cancellationToken);
+        return result is null ? NotFound() : Ok(result);
+    }
+    [HttpGet("meeting-invitations/{invitationId:guid}/changes")]
+    public Task<IReadOnlyList<SalesMeetingChangeRequestResponse>> ListMeetingChangesAsync(
+        Guid invitationId, CancellationToken cancellationToken) =>
+        _meetingScheduling.ListChangesAsync(CompanyId(), invitationId, cancellationToken);
+
+    [HttpPost("meeting-invitations/{invitationId:guid}/reschedule")]
+    public async Task<ActionResult<SalesMeetingChangeRequestResponse>> RequestMeetingRescheduleAsync(
+        Guid invitationId,
+        [FromBody] CreateSalesMeetingRescheduleRequest request,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _meetingScheduling.RequestRescheduleAsync(
+                CompanyId(), UserId(), invitationId, request, cancellationToken));
+        }
+        catch (SalesValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException)
+        {
+            return Problem(title: "Meeting reschedule could not be prepared.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
+
+    [HttpPost("meeting-invitations/{invitationId:guid}/cancel")]
+    public async Task<ActionResult<SalesMeetingChangeRequestResponse>> RequestMeetingCancellationAsync(
+        Guid invitationId, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return Ok(await _meetingScheduling.RequestCancellationAsync(
+                CompanyId(), UserId(), invitationId, cancellationToken));
+        }
+        catch (SalesValidationException ex)
+        {
+            return ValidationProblem(ex.Errors);
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or KeyNotFoundException)
+        {
+            return Problem(title: "Meeting cancellation could not be prepared.", detail: ex.Message, statusCode: StatusCodes.Status400BadRequest);
+        }
+    }
     [HttpPost("leads/{id:guid}/qualify")]
     public async Task<ActionResult<SalesLeadDetailResponse>> QualifyLeadAsync(Guid id, [FromBody] SalesActionRequest request, CancellationToken cancellationToken)
     {

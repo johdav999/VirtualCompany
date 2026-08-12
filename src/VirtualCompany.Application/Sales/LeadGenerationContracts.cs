@@ -37,6 +37,14 @@ public interface ILeadGenerationService
     Task<CrmSyncResultDto> SyncLeadAsync(Guid companyId, Guid userId, Guid accountId, string providerKey, CancellationToken ct);
 }
 
+public interface IIcpSuggestionService
+{
+    Task<IcpSuggestionDto> SuggestAsync(
+        Guid companyId,
+        Guid userId,
+        SuggestIcpRequest request,
+        CancellationToken cancellationToken);
+}
 public interface IProspectDataProvider
 {
     string Key { get; }
@@ -68,6 +76,18 @@ public sealed record ProspectProviderDescriptor(string Key, string Label, Prospe
 public sealed record ProspectProviderSearch(Guid ProfileId, int Limit, string? Cursor, string Countries, string Industries);
 public sealed record ProspectProviderPage(IReadOnlyList<ProspectAccountInput> Accounts, string? NextCursor, decimal Cost, bool Complete);
 
+public sealed record SuggestIcpRequest(Guid AgentId, string? Focus = null);
+public sealed record IcpSuggestionEvidenceDto(string SourceId, string Type, string Title);
+public sealed record IcpSuggestionDto(
+    Guid RunId,
+    Guid AgentId,
+    string AgentName,
+    SaveIcpProfileRequest Profile,
+    string Rationale,
+    decimal Confidence,
+    IReadOnlyList<IcpSuggestionEvidenceDto> Evidence,
+    IReadOnlyList<string> MissingEvidence,
+    bool RequiresReview);
 public sealed record SaveIcpProfileRequest(string Name, string Countries, string Industries, int? EmployeeMin, int? EmployeeMax, decimal? RevenueMin, decimal? RevenueMax, string BuyerRoles, string Technologies, string PainHypotheses, string PositiveCriteria, string Disqualifiers);
 public sealed record IcpProfileDto(Guid Id, string Name, int Version, string Status, string Countries, string Industries, int? EmployeeMin, int? EmployeeMax, decimal? RevenueMin, decimal? RevenueMax, string BuyerRoles, string Technologies, string PainHypotheses, string PositiveCriteria, string Disqualifiers, DateTime UpdatedUtc, DateTime? ActivatedUtc);
 public sealed record IcpCriterionDto(string Criterion, string Outcome, string Explanation);

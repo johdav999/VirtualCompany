@@ -113,17 +113,18 @@ public sealed class StandardMailboxConnectionService : IStandardMailboxConnectio
             return testResult;
         }
 
-        var otherConnections = await _dbContext.MailboxConnections
+        var otherPrimaryConnections = await _dbContext.MailboxConnections
             .Where(item => item.CompanyId == command.CompanyId &&
                 item.Purpose == command.Purpose &&
                 item.Id != connection.Id &&
-                item.Status == MailboxConnectionStatus.Active)
+                item.IsPrimaryInbound)
             .ToArrayAsync(cancellationToken);
-        foreach (var otherConnection in otherConnections)
+        foreach (var otherConnection in otherPrimaryConnections)
         {
-            otherConnection.SetStatus(MailboxConnectionStatus.Disconnected);
+            otherConnection.SetPrimaryInbound(false);
         }
 
+        connection.SetPrimaryInbound(true);
         connection.ConfigureStandardConnection(
             prepared.Profile.ProfileKey,
             prepared.Input.AuthenticationType,

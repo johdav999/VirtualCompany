@@ -38,6 +38,7 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         UserId = userId;
         Provider = provider;
         Purpose = purpose;
+        IsPrimaryInbound = true;
         Status = MailboxConnectionStatus.Pending;
         EmailAddress = NormalizeEmail(emailAddress);
         DisplayName = NormalizeOptional(displayName, nameof(displayName), 200);
@@ -50,8 +51,10 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
     public Guid Id { get; private set; }
     public Guid CompanyId { get; private set; }
     public Guid UserId { get; private set; }
+    public Guid? ExternalAccountConnectionId { get; private set; }
     public MailboxProvider Provider { get; private set; }
     public MailboxPurpose Purpose { get; private set; }
+    public bool IsPrimaryInbound { get; private set; }
     public MailboxConnectionStatus Status { get; private set; }
     public string EmailAddress { get; private set; } = null!;
     public string? DisplayName { get; private set; }
@@ -80,6 +83,7 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
+    public ExternalAccountConnection? ExternalAccountConnection { get; private set; }
     public ICollection<EmailMessageSnapshot> MessageSnapshots { get; } = new List<EmailMessageSnapshot>();
     public User User { get; private set; } = null!;
     public ICollection<EmailIngestionRun> IngestionRuns { get; } = new List<EmailIngestionRun>();
@@ -93,6 +97,19 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         UpdatedUtc = DateTime.UtcNow;
     }
 
+    public void LinkExternalAccount(Guid externalAccountConnectionId)
+    {
+        ExternalAccountConnectionId = externalAccountConnectionId == Guid.Empty
+            ? throw new ArgumentException("ExternalAccountConnectionId is required.", nameof(externalAccountConnectionId))
+            : externalAccountConnectionId;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void SetPrimaryInbound(bool isPrimary)
+    {
+        IsPrimaryInbound = isPrimary;
+        UpdatedUtc = DateTime.UtcNow;
+    }
     public void StoreEncryptedCredentials(
         string? encryptedAccessToken,
         string? encryptedRefreshToken,
@@ -120,6 +137,11 @@ public sealed class MailboxConnection : ICompanyOwnedEntity
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(erasedUtc, nameof(erasedUtc));
     }
 
+    public void SetCapabilities(MailboxCapability capabilities)
+    {
+        CapabilityFlags = capabilities;
+        UpdatedUtc = DateTime.UtcNow;
+    }
     public void ConfigureStandardConnection(
         string profileKey,
         MailboxAuthenticationType authenticationType,

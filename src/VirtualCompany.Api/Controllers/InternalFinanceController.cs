@@ -45,6 +45,8 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IFinanceCustomerInvoiceFortnoxActionService _customerInvoiceFortnoxActionService;
     private readonly IFinanceSupplierInvoiceCorrectionService _supplierInvoiceCorrectionService;
     private readonly IFinanceSupplierInvoiceEnrichmentService _supplierInvoiceEnrichmentService;
+    private readonly ISupplierSubscriptionService _supplierSubscriptionService;
+    private readonly ISupplierSubscriptionIntakeProposalService _supplierSubscriptionIntakeProposalService;
     private readonly IAuditQueryService _auditQueryService;
     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
@@ -77,6 +79,8 @@ public sealed partial class InternalFinanceController : ControllerBase
         IFinanceCustomerInvoiceFortnoxActionService customerInvoiceFortnoxActionService,
         IFinanceSupplierInvoiceCorrectionService supplierInvoiceCorrectionService,
         IFinanceSupplierInvoiceEnrichmentService supplierInvoiceEnrichmentService,
+        ISupplierSubscriptionService supplierSubscriptionService,
+        ISupplierSubscriptionIntakeProposalService supplierSubscriptionIntakeProposalService,
         IAuditQueryService auditQueryService,
         IFinancePolicyConfigurationService financePolicyConfigurationService,
         IFinanceEntryService financeEntryService,
@@ -108,6 +112,8 @@ public sealed partial class InternalFinanceController : ControllerBase
         _customerInvoiceFortnoxActionService = customerInvoiceFortnoxActionService;
         _supplierInvoiceCorrectionService = supplierInvoiceCorrectionService;
         _supplierInvoiceEnrichmentService = supplierInvoiceEnrichmentService;
+        _supplierSubscriptionService = supplierSubscriptionService;
+        _supplierSubscriptionIntakeProposalService = supplierSubscriptionIntakeProposalService;
         _financeToolProvider = financeToolProvider;
         _financeCommandService = financeCommandService;
         _auditQueryService = auditQueryService;
@@ -2449,3 +2455,5 @@ internal static partial class InternalFinanceControllerMappings
             SupportedModes = result.SupportedModes
         };
 }
+
+

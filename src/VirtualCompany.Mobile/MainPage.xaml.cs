@@ -214,7 +214,7 @@ public partial class MainPage : ContentPage
 
     private async void OnApproveClicked(object? sender, EventArgs e)
     {
-        if (sender is Button { CommandParameter: ApprovalInboxItemDto approval })
+        if (sender is Button { CommandParameter: MobileApprovalListItemDto approval })
         {
             await DecideApprovalAsync(approval, "approve");
         }
@@ -222,7 +222,7 @@ public partial class MainPage : ContentPage
 
     private async void OnRejectClicked(object? sender, EventArgs e)
     {
-        if (sender is Button { CommandParameter: ApprovalInboxItemDto approval })
+        if (sender is Button { CommandParameter: MobileApprovalListItemDto approval })
         {
             await DecideApprovalAsync(approval, "reject");
         }

@@ -39,6 +39,7 @@ public sealed class StandardMailboxProviderClient : IMailboxProviderClient
     }
 
     public MailboxProvider Provider => MailboxProvider.StandardEmail;
+    public MailboxReplyThreadingMode ReplyThreadingMode => MailboxReplyThreadingMode.HeaderBased;
     public IReadOnlyCollection<string> DefaultScopes => [];
 
     public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request)

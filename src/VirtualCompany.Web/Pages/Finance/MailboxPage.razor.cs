@@ -146,6 +146,9 @@ public partial class MailboxPage : FinancePageBase
     private string BuildBillReviewHref(Guid billId) =>
         FinanceRoutes.BuildBillInboxDetailPath(billId, AccessState.CompanyId);
 
+    private string BuildSubscriptionProposalHref(Guid proposalId) =>
+        FinanceRoutes.BuildSupplierSubscriptionProposalPath(proposalId, AccessState.CompanyId);
+
     private string BuildAgentMailboxSettingsHref() =>
         AccessState.CompanyId is Guid companyId
             ? $"/agents/manage?companyId={companyId}#agent-access-configuration"

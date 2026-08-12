@@ -34,6 +34,25 @@ public sealed partial class SalesApiClient
     public Task<SalesLeadDetailResponse?> GetLeadAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken = default) =>
         GetAsync<SalesLeadDetailResponse>(companyId, $"api/sales/leads/{leadId:D}", allowNotFound: true, cancellationToken);
 
+    public async Task<IReadOnlyList<SalesLeadSourceEmailResponse>> ListLeadSourceEmailsAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken = default) =>
+        await GetAsync<List<SalesLeadSourceEmailResponse>>(companyId, $"api/sales/leads/{leadId:D}/source-emails", allowNotFound: false, cancellationToken) ?? [];
+    public async Task<IReadOnlyList<SalesCalendarConnectionResponse>> ListCalendarConnectionsAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        await GetAsync<List<SalesCalendarConnectionResponse>>(companyId, "api/sales/calendar-connections", allowNotFound: false, cancellationToken) ?? [];
+
+    public Task<SalesMeetingAvailabilityResponse> GetCalendarAvailabilityAsync(Guid companyId, SalesMeetingAvailabilityRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<SalesMeetingAvailabilityRequest, SalesMeetingAvailabilityResponse>(companyId, HttpMethod.Post, "api/sales/calendar-availability", request, cancellationToken);
+
+    public async Task<IReadOnlyList<SalesMeetingInvitationResponse>> ListMeetingInvitationsAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken = default) =>
+        await GetAsync<List<SalesMeetingInvitationResponse>>(companyId, $"api/sales/leads/{leadId:D}/meeting-invitations", allowNotFound: false, cancellationToken) ?? [];
+
+    public Task<SalesMeetingInvitationResponse> CreateMeetingInvitationAsync(Guid companyId, Guid leadId, CreateSalesMeetingInvitationRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CreateSalesMeetingInvitationRequest, SalesMeetingInvitationResponse>(companyId, HttpMethod.Post, $"api/sales/leads/{leadId:D}/meeting-invitations", request, cancellationToken);
+    public async Task<IReadOnlyList<SalesMeetingChangeRequestResponse>> ListMeetingChangesAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken = default) =>
+        await GetAsync<List<SalesMeetingChangeRequestResponse>>(companyId, $"api/sales/meeting-invitations/{invitationId:D}/changes", allowNotFound: false, cancellationToken) ?? [];
+    public Task<SalesMeetingChangeRequestResponse> RequestMeetingRescheduleAsync(Guid companyId, Guid invitationId, CreateSalesMeetingRescheduleRequest request, CancellationToken cancellationToken = default) =>
+        SendAsync<CreateSalesMeetingRescheduleRequest, SalesMeetingChangeRequestResponse>(companyId, HttpMethod.Post, $"api/sales/meeting-invitations/{invitationId:D}/reschedule", request, cancellationToken);
+    public Task<SalesMeetingChangeRequestResponse> RequestMeetingCancellationAsync(Guid companyId, Guid invitationId, CancellationToken cancellationToken = default) =>
+        SendAsync<object, SalesMeetingChangeRequestResponse>(companyId, HttpMethod.Post, $"api/sales/meeting-invitations/{invitationId:D}/cancel", new { }, cancellationToken);
     public Task<SalesLeadDetailResponse> UpdateLeadQualificationAsync(Guid companyId, Guid leadId, UpdateLeadQualificationRequest request, CancellationToken cancellationToken = default) =>
         SendAsync<UpdateLeadQualificationRequest, SalesLeadDetailResponse>(companyId, HttpMethod.Put, $"api/sales/leads/{leadId:D}/qualification", request, cancellationToken);
 
@@ -136,6 +155,7 @@ public sealed partial class SalesApiClient
         SendAsync<SaveSequenceDraftRequest, SequenceExecutionStepResponse>(companyId, HttpMethod.Put, $"api/sales/campaigns/{campaignId:D}/steps/{stepId:D}/draft", request, cancellationToken);
 
     public async Task<IReadOnlyList<IcpProfileResponse>> ListIcpProfilesAsync(Guid companyId, CancellationToken cancellationToken = default) => await GetAsync<List<IcpProfileResponse>>(companyId, "api/sales/prospecting/icp", false, cancellationToken) ?? [];
+    public Task<IcpSuggestionResponse> SuggestIcpAsync(Guid companyId, SuggestIcpRequest request, CancellationToken cancellationToken = default) => SendAsync<SuggestIcpRequest, IcpSuggestionResponse>(companyId, HttpMethod.Post, "api/sales/prospecting/icp/suggest", request, cancellationToken);
     public Task<IcpProfileResponse> CreateIcpProfileAsync(Guid companyId, SaveIcpProfileRequest request, CancellationToken cancellationToken = default) => SendAsync<SaveIcpProfileRequest, IcpProfileResponse>(companyId, HttpMethod.Post, "api/sales/prospecting/icp", request, cancellationToken);
     public Task<IcpProfileResponse> UpdateIcpProfileAsync(Guid companyId, Guid id, SaveIcpProfileRequest request, CancellationToken cancellationToken = default) => SendAsync<SaveIcpProfileRequest, IcpProfileResponse>(companyId, HttpMethod.Put, $"api/sales/prospecting/icp/{id:D}", request, cancellationToken);
     public Task<IcpProfileResponse> ActivateIcpProfileAsync(Guid companyId, Guid id, CancellationToken cancellationToken = default) => SendAsync<object, IcpProfileResponse>(companyId, HttpMethod.Post, $"api/sales/prospecting/icp/{id:D}/activate", new { }, cancellationToken);
@@ -318,8 +338,49 @@ public sealed record SalesLeadDetailResponse(
     IReadOnlyList<SalesActivityResponse> Activities,
     IReadOnlyList<SalesRecommendationResponse> Recommendations);
 
+public sealed record SalesCalendarConnectionResponse(Guid Id, string Provider, string EmailAddress, string? DisplayName, string Status, bool HasCalendarPermission, bool RequiresReconnect);
+public sealed record CreateSalesMeetingInvitationRequest(Guid CalendarConnectionId, DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true);
+public sealed record SalesMeetingAvailabilityRequest(Guid CalendarConnectionId, DateTime FromUtc, DateTime ToUtc, string TimeZoneId, int DurationMinutes = 30);
+public sealed record CalendarBusyWindow(DateTime StartsUtc, DateTime EndsUtc);
+public sealed record CalendarAvailableSlot(DateTime StartsUtc, DateTime EndsUtc);
+public sealed record SalesMeetingAvailabilityResponse(Guid CalendarConnectionId, string Provider, IReadOnlyList<CalendarBusyWindow> BusyWindows, IReadOnlyList<CalendarAvailableSlot> SuggestedSlots);
+public sealed record CreateSalesMeetingRescheduleRequest(DateTime StartsUtc, DateTime EndsUtc, string TimeZoneId, string Title, string Description, string? Location, bool CreateOnlineMeeting = true);
+public sealed record SalesMeetingChangeRequestResponse(
+    Guid Id, Guid InvitationId, string Operation, string Status,
+    DateTime? StartsUtc, DateTime? EndsUtc, string? TimeZoneId,
+    string? Title, string? Description, string? Location, bool? CreateOnlineMeeting,
+    Guid? ApprovalRequestId, int ExecutionAttemptCount,
+    string? LastErrorCode, string? LastErrorSummary,
+    DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? CompletedUtc);
+public sealed record SalesMeetingInvitationResponse(
+    Guid Id, Guid LeadId, Guid? DealId, Guid? ContactId, Guid CalendarConnectionId,
+    string Provider, string OrganizerEmail, string AttendeeEmail, string? AttendeeName,
+    string Title, string Description, DateTime StartsUtc, DateTime EndsUtc,
+    string TimeZoneId, string? Location, bool CreateOnlineMeeting, string Status,
+    Guid? ApprovalRequestId, string? ExternalEventId, string? ProviderWebUrl,
+    string? OnlineMeetingUrl, int ExecutionAttemptCount, string? LastErrorCode,
+    string? LastErrorSummary, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? ScheduledUtc,
+    string ConfirmationStatus, Guid? ConfirmationMailboxConnectionId,
+    string? ConfirmationProviderMessageId, string? ConfirmationProviderThreadId,
+    string ConfirmationThreadingMode, int ConfirmationAttemptCount, string? ConfirmationErrorCode,
+    string? ConfirmationErrorSummary, DateTime? ConfirmationSentUtc);
+public sealed record SalesLeadSourceEmailResponse(
+    Guid LinkId,
+    string ProviderMessageId,
+    string? InternetMessageId,
+    string? Subject,
+    string? SenderName,
+    string? SenderEmail,
+    IReadOnlyList<string> Recipients,
+    DateTime? ReceivedUtc,
+    string? PlainTextBody,
+    string? DetectedIntent,
+    string? ProductOrServiceInterest,
+    decimal? Confidence,
+    string? ClassificationEvidence,
+    string? SafeFailureMessage);
 public sealed record SalesDealSummaryResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string? CustomerCompanyName, string? ContactName, DateTime? ExpectedCloseUtc, DateTime UpdatedUtc);
-public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff, CustomerMemoryContext? CustomerMemory = null);
+public sealed record SalesDealDetailResponse(Guid Id, string Title, Guid StageId, string StageName, string Status, decimal Amount, string Currency, string Summary, string? ContactName, string? ContactEmail, string? CustomerCompanyName, string AgentAnalysis, string SuggestedReply, IReadOnlyList<SalesActivityResponse> Activities, IReadOnlyList<SalesRecommendationResponse> Recommendations, IReadOnlyList<string> AvailableActions, SalesFinanceHandoffResponse? FinanceHandoff, CustomerMemoryContext? CustomerMemory = null, Guid? SourceLeadId = null);
 public sealed record SalesFinanceHandoffResponse(
     Guid Id,
     Guid DealId,
@@ -416,6 +477,9 @@ public sealed record SequenceExecutionStepResponse(Guid Id, int StepOrder, strin
 public sealed record OutboundAudienceOptionsResponse(IReadOnlyList<OutboundAudienceContactResponse> Contacts, IReadOnlyList<OutboundAudienceSourceResponse> Sources);
 public sealed record OutboundAudienceContactResponse(Guid ContactId, string ContactName, string Email, string? CustomerCompanyName, IReadOnlyList<string> SourceTypes);
 public sealed record OutboundAudienceSourceResponse(string SourceType, string Label, int ContactCount);
+public sealed record SuggestIcpRequest(Guid AgentId, string? Focus = null);
+public sealed record IcpSuggestionEvidenceResponse(string SourceId, string Type, string Title);
+public sealed record IcpSuggestionResponse(Guid RunId, Guid AgentId, string AgentName, SaveIcpProfileRequest Profile, string Rationale, decimal Confidence, IReadOnlyList<IcpSuggestionEvidenceResponse> Evidence, IReadOnlyList<string> MissingEvidence, bool RequiresReview);
 public sealed class SaveIcpProfileRequest(string name, string countries, string industries, int? employeeMin, int? employeeMax, decimal? revenueMin, decimal? revenueMax, string buyerRoles, string technologies, string painHypotheses, string positiveCriteria, string disqualifiers) { public string Name { get; set; } = name; public string Countries { get; set; } = countries; public string Industries { get; set; } = industries; public int? EmployeeMin { get; set; } = employeeMin; public int? EmployeeMax { get; set; } = employeeMax; public decimal? RevenueMin { get; set; } = revenueMin; public decimal? RevenueMax { get; set; } = revenueMax; public string BuyerRoles { get; set; } = buyerRoles; public string Technologies { get; set; } = technologies; public string PainHypotheses { get; set; } = painHypotheses; public string PositiveCriteria { get; set; } = positiveCriteria; public string Disqualifiers { get; set; } = disqualifiers; }
 public sealed record IcpProfileResponse(Guid Id, string Name, int Version, string Status, string Countries, string Industries, int? EmployeeMin, int? EmployeeMax, decimal? RevenueMin, decimal? RevenueMax, string BuyerRoles, string Technologies, string PainHypotheses, string PositiveCriteria, string Disqualifiers, DateTime UpdatedUtc, DateTime? ActivatedUtc);
 public sealed record ProspectProviderCapabilitiesResponse(bool AccountSearch, bool ContactSearch, bool Enrichment, bool Signals, bool IsPaid);

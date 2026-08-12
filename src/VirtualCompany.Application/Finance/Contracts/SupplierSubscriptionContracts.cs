@@ -56,6 +56,7 @@ public sealed record ChangeSupplierSubscriptionStatusCommand(
 
 public sealed record EvaluateSupplierSubscriptionBillCommand(Guid CompanyId, Guid BillId, Guid? ActorUserId, string ActorDisplayName);
 public sealed record DecideSupplierSubscriptionMatchCommand(Guid CompanyId, Guid MatchId, bool Confirm, Guid? ActorUserId, string ActorDisplayName);
+public sealed record LinkSupplierSubscriptionReceiptEvidenceCommand(Guid CompanyId, Guid SubscriptionId, Guid BillId, string EvidenceSummary, Guid? ActorUserId, string ActorDisplayName);
 
 public sealed record SupplierSubscriptionSummaryDto(
     Guid Id,
@@ -94,6 +95,16 @@ public sealed record SupplierSubscriptionMatchDto(
     DateTime? DecidedUtc,
     DateTime CreatedUtc);
 
+public sealed record SupplierSubscriptionSourceEvidenceDto(
+    Guid ProposalId,
+    string Status,
+    string? SourceSubject,
+    string? SourceAttachmentName,
+    string EvidenceSummary,
+    string? DecisionReason,
+    Guid? DecidedByUserId,
+    DateTime? DecidedUtc,
+    DateTime CreatedUtc);
 public sealed record SupplierSubscriptionDetailDto(
     Guid Id,
     Guid CounterpartyId,
@@ -118,6 +129,7 @@ public sealed record SupplierSubscriptionDetailDto(
     Guid? ContractDocumentId,
     DateTime CreatedUtc,
     DateTime UpdatedUtc,
+    SupplierSubscriptionSourceEvidenceDto? SourceEvidence,
     IReadOnlyList<SupplierSubscriptionMatchDto> Matches);
 
 public sealed record SupplierBillSubscriptionContextDto(
@@ -139,4 +151,130 @@ public interface ISupplierSubscriptionService
     Task<SupplierSubscriptionDetailDto> ChangeStatusAsync(ChangeSupplierSubscriptionStatusCommand command, CancellationToken cancellationToken);
     Task<SupplierBillSubscriptionContextDto> EvaluateBillAsync(EvaluateSupplierSubscriptionBillCommand command, CancellationToken cancellationToken);
     Task<SupplierBillSubscriptionContextDto> DecideMatchAsync(DecideSupplierSubscriptionMatchCommand command, CancellationToken cancellationToken);
+    Task<SupplierBillSubscriptionContextDto> LinkReceiptEvidenceAsync(LinkSupplierSubscriptionReceiptEvidenceCommand command, CancellationToken cancellationToken);
+}
+
+public sealed record GetSupplierSubscriptionIntakeProposalsQuery(Guid CompanyId, string? Status = null, string? Search = null);
+public sealed record GetSupplierSubscriptionIntakeProposalQuery(Guid CompanyId, Guid ProposalId);
+
+public sealed record SupplierSubscriptionProposalTermsDto(
+    Guid? CounterpartyId,
+    string? Name,
+    string? Currency,
+    decimal? ExpectedAmount,
+    string? Cadence,
+    int? BillingDay,
+    DateTime? StartDateUtc,
+    DateTime? NextExpectedBillDateUtc,
+    decimal? AmountTolerance,
+    int? DateToleranceDays,
+    DateTime? EndDateUtc,
+    string? ContractReference,
+    string? Description,
+    int? NoticePeriodDays,
+    bool? AutoRenews,
+    Guid? ContractDocumentId);
+
+public sealed record RecordSupplierSubscriptionIntakeProposalCommand(
+    Guid CompanyId,
+    Guid SourceEmailMessageSnapshotId,
+    Guid? SourceEmailAttachmentSnapshotId,
+    Guid? SourceDocumentId,
+    string SourceFingerprint,
+    string Classification,
+    string Status,
+    int ConfidenceScore,
+    string EvidenceSummary,
+    string? SupplierName,
+    string? SupplierOrgNumber,
+    SupplierSubscriptionProposalTermsDto Terms,
+    string? SafeFailureSummary,
+    Guid? ActorUserId,
+    string ActorDisplayName);
+
+public sealed record AcceptSupplierSubscriptionIntakeProposalCommand(
+    Guid CompanyId,
+    Guid ProposalId,
+    SupplierSubscriptionProposalTermsDto Terms,
+    Guid? ActorUserId,
+    string ActorDisplayName,
+    string? DecisionReason = null);
+
+public sealed record RejectSupplierSubscriptionIntakeProposalCommand(
+    Guid CompanyId,
+    Guid ProposalId,
+    string Reason,
+    Guid? ActorUserId,
+    string ActorDisplayName);
+
+public sealed record RetrySupplierSubscriptionIntakeProposalCommand(
+    Guid CompanyId,
+    Guid ProposalId,
+    Guid? ActorUserId,
+    string ActorDisplayName);
+
+public sealed record SupplierSubscriptionIntakeProposalSummaryDto(
+    Guid Id,
+    string Status,
+    string Classification,
+    string SupplierName,
+    string AgreementName,
+    string? Currency,
+    decimal? ExpectedAmount,
+    string? Cadence,
+    int ConfidenceScore,
+    string EvidenceSummary,
+    Guid? AcceptedSubscriptionId,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public sealed record SupplierSubscriptionIntakeProposalDetailDto(
+    Guid Id,
+    string Status,
+    string Classification,
+    Guid SourceEmailMessageSnapshotId,
+    Guid? SourceEmailAttachmentSnapshotId,
+    Guid? SourceDocumentId,
+    string SourceFingerprint,
+    string? SourceSubject,
+    string? SourceAttachmentName,
+    string SupplierName,
+    string? SupplierOrgNumber,
+    SupplierSubscriptionProposalTermsDto Terms,
+    int ConfidenceScore,
+    string EvidenceSummary,
+    string? SafeFailureSummary,
+    Guid? AcceptedSubscriptionId,
+    Guid? DecidedByUserId,
+    string? DecisionReason,
+    DateTime? DecidedUtc,
+    DateTime CreatedUtc,
+    DateTime UpdatedUtc);
+
+public interface ISupplierSubscriptionIntakeProposalService
+{
+    Task<IReadOnlyList<SupplierSubscriptionIntakeProposalSummaryDto>> GetAsync(GetSupplierSubscriptionIntakeProposalsQuery query, CancellationToken cancellationToken);
+    Task<SupplierSubscriptionIntakeProposalDetailDto?> GetAsync(GetSupplierSubscriptionIntakeProposalQuery query, CancellationToken cancellationToken);
+    Task<SupplierSubscriptionIntakeProposalDetailDto> RecordAsync(RecordSupplierSubscriptionIntakeProposalCommand command, CancellationToken cancellationToken);
+    Task<SupplierSubscriptionDetailDto> AcceptAsync(AcceptSupplierSubscriptionIntakeProposalCommand command, CancellationToken cancellationToken);
+    Task<SupplierSubscriptionIntakeProposalDetailDto> RejectAsync(RejectSupplierSubscriptionIntakeProposalCommand command, CancellationToken cancellationToken);
+    Task<SupplierSubscriptionIntakeProposalDetailDto> RetryAsync(RetrySupplierSubscriptionIntakeProposalCommand command, CancellationToken cancellationToken);
+}
+
+public sealed record ClassifySupplierSubscriptionSourceCommand(
+    Guid CompanyId,
+    Guid SourceEmailMessageSnapshotId,
+    Guid? ActorUserId,
+    string ActorDisplayName);
+
+public sealed record SupplierSubscriptionSourceClassificationResultDto(
+    Guid CompanyId,
+    Guid SourceEmailMessageSnapshotId,
+    int ProposalCount,
+    int ReceiptEvidenceCount,
+    IReadOnlyList<SupplierSubscriptionIntakeProposalSummaryDto> Proposals);
+
+public interface ISupplierSubscriptionDocumentClassifier
+{
+    Task<SupplierSubscriptionSourceClassificationResultDto> ClassifyAsync(ClassifySupplierSubscriptionSourceCommand command, CancellationToken cancellationToken);
 }

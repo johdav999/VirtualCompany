@@ -126,6 +126,26 @@ public sealed record SalesLeadDetailResponse(
     IReadOnlyList<SalesActivityResponse> Activities,
     IReadOnlyList<SalesRecommendationResponse> Recommendations);
 
+public sealed record SalesLeadSourceEmailResponse(
+    Guid LinkId,
+    string ProviderMessageId,
+    string? InternetMessageId,
+    string? Subject,
+    string? SenderName,
+    string? SenderEmail,
+    IReadOnlyList<string> Recipients,
+    DateTime? ReceivedUtc,
+    string? PlainTextBody,
+    string? DetectedIntent,
+    string? ProductOrServiceInterest,
+    decimal? Confidence,
+    string? ClassificationEvidence,
+    string? SafeFailureMessage);
+
+public interface ISalesLeadEmailEvidenceService
+{
+    Task<IReadOnlyList<SalesLeadSourceEmailResponse>> ListAsync(Guid companyId, Guid leadId, CancellationToken cancellationToken);
+}
 public sealed record SalesDealSummaryResponse(
     Guid Id,
     string Title,
@@ -157,7 +177,8 @@ public sealed record SalesDealDetailResponse(
     IReadOnlyList<SalesRecommendationResponse> Recommendations,
     IReadOnlyList<string> AvailableActions,
     SalesFinanceHandoffResponse? FinanceHandoff,
-    CustomerMemoryContext? CustomerMemory = null);
+    CustomerMemoryContext? CustomerMemory = null,
+    Guid? SourceLeadId = null);
 
 public sealed record SalesPipelineResponse(IReadOnlyList<SalesPipelineStageResponse> Stages);
 public sealed record SalesPipelineStageResponse(Guid StageId, string Name, int DisplayOrder, decimal TotalValue, int DealCount, IReadOnlyList<SalesDealSummaryResponse> Deals);

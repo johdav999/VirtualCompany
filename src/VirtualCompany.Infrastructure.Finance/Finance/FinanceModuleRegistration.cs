@@ -210,6 +210,9 @@ public static class FinanceModuleRegistration
         services.AddSingleton<IFinanceWorkflowTriggerRegistry, StaticFinanceWorkflowTriggerRegistry>();
         services.AddScoped<IFinanceWorkflowTriggerService, FinanceWorkflowTriggerService>();
         services.AddScoped<IFinanceBillInboxService, CompanyFinanceBillInboxService>();
+        services.AddScoped<ISupplierSubscriptionService, SupplierSubscriptionService>();
+        services.AddScoped<ISupplierSubscriptionIntakeProposalService, SupplierSubscriptionIntakeProposalService>();
+        services.AddScoped<ISupplierSubscriptionDocumentClassifier, SupplierSubscriptionDocumentClassifier>();
         services.AddScoped<ISupplierInvoicePaymentExportProvider, FortnoxSupplierInvoicePaymentExportProvider>();
         services.AddScoped<IFinanceSupplierPaymentProposalService, SupplierInvoicePaymentProposalService>();
         services.AddScoped<ISupplierInvoiceSourceDocumentAttachmentProvider, FortnoxSupplierInvoiceSourceDocumentAttachmentProvider>();
@@ -252,3 +255,6 @@ public static class FinanceModuleRegistration
         return services;
     }
 }
+
+
+

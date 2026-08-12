@@ -98,6 +98,7 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
     }
 
     public MailboxProvider Provider => MailboxProvider.Gmail;
+    public MailboxReplyThreadingMode ReplyThreadingMode => MailboxReplyThreadingMode.Native;
 
     // Gmail readonly supports message and attachment retrieval without send/modify/delete permissions.
     public IReadOnlyCollection<string> DefaultScopes { get; } =
@@ -107,6 +108,17 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         "profile",
         "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.compose",
+        "https://www.googleapis.com/auth/gmail.send",
+    ];
+
+    public IReadOnlyCollection<string> ReadRequiredScopes { get; } =
+    [
+        "https://www.googleapis.com/auth/gmail.readonly"
+    ];
+
+    public IReadOnlyCollection<string> ReplyRequiredScopes { get; } =
+    [
+        "https://www.googleapis.com/auth/gmail.readonly",
         "https://www.googleapis.com/auth/gmail.send"
     ];
 
@@ -119,10 +131,11 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
             ["client_id"] = options.ClientId,
             ["redirect_uri"] = request.CallbackUri.ToString(),
             ["response_type"] = "code",
-            ["scope"] = string.Join(' ', DefaultScopes),
+            ["scope"] = string.Join(' ', request.RequestedScopes ?? DefaultScopes),
             ["state"] = request.State,
             ["access_type"] = "offline",
-            ["prompt"] = "consent"
+            ["prompt"] = "consent",
+            ["include_granted_scopes"] = "true"
         };
 
         return new Uri(QueryHelpers.AddQueryString(options.AuthorizationEndpoint, query));
@@ -193,7 +206,31 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
         return new MailboxAccountProfile(email, email, id ?? email);
     }
 
+    public async Task<MailboxAccountProfile> GetExternalAccountProfileAsync(
+        string accessToken,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            "https://openidconnect.googleapis.com/v1/userinfo");
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
+        using var response = await _httpClientFactory.CreateClient(ClientName)
+            .SendAsync(request, cancellationToken);
+        response.EnsureSuccessStatusCode();
+        using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        using var json = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+        var root = json.RootElement;
+        var email = root.TryGetProperty("email", out var emailElement)
+            ? emailElement.GetString()
+            : null;
+        var name = root.TryGetProperty("name", out var nameElement) ? nameElement.GetString() : email;
+        var id = root.TryGetProperty("sub", out var idElement) ? idElement.GetString() : email;
+        return new MailboxAccountProfile(
+            email ?? throw new InvalidOperationException("Google account profile did not include an email address."),
+            name, id ?? email!);
+    }
     public async Task<IReadOnlyList<MailboxMessageSummary>> ListMessagesAsync(string accessToken, MailboxMessageQuery query, CancellationToken cancellationToken)
+
     {
         var result = new List<MailboxMessageSummary>();
         var seenMessageIds = new HashSet<string>(StringComparer.Ordinal);
@@ -783,9 +820,12 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
     }
 
     public MailboxProvider Provider => MailboxProvider.Microsoft365;
+    public MailboxReplyThreadingMode ReplyThreadingMode => MailboxReplyThreadingMode.Native;
 
     // Mail.Read reads message and attachment metadata; User.Read binds the signed-in mailbox; offline_access enables refresh tokens.
     public IReadOnlyCollection<string> DefaultScopes { get; } = ["offline_access", "User.Read", "Mail.Read", "Mail.ReadWrite", "Mail.Send"];
+    public IReadOnlyCollection<string> ReplyRequiredScopes { get; } = ["Mail.Read", "Mail.Send"];
+    public IReadOnlyCollection<string> ReadRequiredScopes { get; } = ["Mail.Read"];
 
     public Uri BuildAuthorizationUrl(MailboxAuthorizationRequest request)
     {
@@ -797,7 +837,7 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
             ["redirect_uri"] = request.CallbackUri.ToString(),
             ["response_type"] = "code",
             ["response_mode"] = "query",
-            ["scope"] = string.Join(' ', DefaultScopes),
+            ["scope"] = string.Join(' ', request.RequestedScopes ?? DefaultScopes),
             ["state"] = request.State
         };
 
@@ -815,7 +855,7 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
             ["code"] = request.Code,
             ["grant_type"] = "authorization_code",
             ["redirect_uri"] = request.CallbackUri.ToString(),
-            ["scope"] = string.Join(' ', DefaultScopes)
+            ["scope"] = string.Join(' ', request.RequestedScopes ?? DefaultScopes)
         };
 
         return await SendTokenRequestAsync(form, cancellationToken);
@@ -831,7 +871,7 @@ public sealed class Microsoft365MailboxProviderClient : IMailboxProviderClient
             ["client_secret"] = options.ClientSecret,
             ["refresh_token"] = request.RefreshToken,
             ["grant_type"] = "refresh_token",
-            ["scope"] = string.Join(' ', DefaultScopes)
+            ["scope"] = string.Join(' ', request.RequestedScopes ?? DefaultScopes)
         };
 
         return await SendTokenRequestAsync(form, cancellationToken);

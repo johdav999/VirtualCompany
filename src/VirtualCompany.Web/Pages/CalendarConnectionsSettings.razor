@@ -1,0 +1,180 @@
+@page "/settings/calendar-connections"
+@rendermode InteractiveServer
+@inject SalesApiClient SalesApiClient
+@inject OnboardingApiClient OnboardingApiClient
+@inject NavigationManager Navigation
+
+<PageTitle>Calendar connections</PageTitle>
+
+<section class="vc-page calendar-settings">
+    <header class="vc-page-header calendar-settings__header">
+        <div>
+            <span class="vc-kicker">Connections</span>
+            <h1>Calendar connections</h1>
+            <p>Choose the calendars used to check availability and send approved sales meeting invitations.</p>
+        </div>
+        <a class="btn btn-outline-secondary" href="@SettingsPath"><span class="bi bi-arrow-left" aria-hidden="true"></span> Settings</a>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(message))
+    {
+        <div class="alert @(isError ? "alert-danger" : "alert-success")" role="status">@message</div>
+    }
+
+    <div class="calendar-settings__layout">
+        <main class="calendar-settings__main">
+            <section class="calendar-settings__connect" aria-labelledby="connect-calendar-heading">
+                <div>
+                    <h2 id="connect-calendar-heading">Add a meeting calendar</h2>
+                    <p>Calendar access is authorized separately from email. Connecting one does not replace your sales inbox.</p>
+                </div>
+                <div class="calendar-settings__provider-actions">
+                    <button class="btn btn-primary" type="button" disabled="@isBusy" @onclick='() => ConnectAsync("google")'>
+                        <span class="bi bi-google" aria-hidden="true"></span> Connect Google Calendar
+                    </button>
+                    <button class="btn btn-outline-secondary" type="button" disabled="@isBusy" @onclick='() => ConnectAsync("microsoft365")'>
+                        <span class="bi bi-microsoft" aria-hidden="true"></span> Connect Microsoft 365
+                    </button>
+                </div>
+            </section>
+
+            <section class="calendar-settings__connections" aria-labelledby="connected-calendars-heading">
+                <div class="calendar-settings__section-heading">
+                    <div><h2 id="connected-calendars-heading">Connected calendars</h2><p>Meeting hosts available to the sales team.</p></div>
+                    <button class="calendar-settings__icon-button bi bi-arrow-clockwise" type="button" title="Refresh connections" aria-label="Refresh connections" disabled="@isBusy" @onclick="LoadAsync"></button>
+                </div>
+
+                @if (isLoading)
+                {
+                    <div class="calendar-settings__empty"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span><strong>Loading calendar connections</strong></div>
+                }
+                else if (connections.Count == 0)
+                {
+                    <div class="calendar-settings__empty">
+                        <span class="bi bi-calendar2-plus" aria-hidden="true"></span>
+                        <strong>No calendar connected</strong>
+                        <p>Connect Google Calendar or Microsoft 365 to schedule sales calls and demos.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="calendar-settings__list">
+                        @foreach (var connection in connections)
+                        {
+                            <article class="calendar-connection">
+                                <div class="calendar-connection__provider @ProviderClass(connection.Provider)"><span class="bi @ProviderIcon(connection.Provider)" aria-hidden="true"></span></div>
+                                <div class="calendar-connection__identity">
+                                    <div class="calendar-connection__title"><h3>@(connection.DisplayName ?? connection.AccountEmail)</h3><span class="calendar-status @StatusClass(connection)">@StatusLabel(connection)</span></div>
+                                    <p>@connection.AccountEmail</p>
+                                    <div class="calendar-connection__meta">
+                                        <span><span class="bi bi-calendar3" aria-hidden="true"></span> @CalendarLabel(connection.CalendarId)</span>
+                                        <span><span class="bi bi-shield-check" aria-hidden="true"></span> Availability and events</span>
+                                    </div>
+                                    @if (!string.IsNullOrWhiteSpace(connection.LastErrorSummary))
+                                    {
+                                        <div class="calendar-connection__error">@connection.LastErrorSummary</div>
+                                    }
+                                </div>
+                                <div class="calendar-connection__actions">
+                                    @if (connection.RequiresReconnect)
+                                    {
+                                        <button class="btn btn-outline-primary btn-sm" type="button" disabled="@isBusy" @onclick="() => ConnectAsync(connection.Provider)">Reconnect</button>
+                                    }
+                                    <button class="calendar-settings__icon-button bi bi-trash" type="button" title="Disconnect calendar" aria-label="Disconnect calendar" disabled="@isBusy" @onclick="() => DisconnectAsync(connection)"></button>
+                                </div>
+                            </article>
+                        }
+                    </div>
+                }
+            </section>
+        </main>
+
+        <aside class="calendar-settings__aside" aria-labelledby="how-calendar-works-heading">
+            <span class="calendar-settings__aside-icon bi bi-calendar2-check" aria-hidden="true"></span>
+            <h2 id="how-calendar-works-heading">Independent by design</h2>
+            <p>Your inbox and meeting calendar can use different providers.</p>
+            <dl>
+                <div><dt>Sales conversations</dt><dd>Stay in the connected sales mailbox, including Zoho or another hosted provider.</dd></div>
+                <div><dt>Availability and invites</dt><dd>Use the calendar selected as the meeting host.</dd></div>
+                <div><dt>Thread confirmation</dt><dd>Replies in the original email thread after the calendar event is created.</dd></div>
+            </dl>
+            <div class="calendar-settings__privacy"><span class="bi bi-lock" aria-hidden="true"></span><p><strong>Calendar-only authorization</strong>Google and Microsoft are asked for calendar access, not mailbox access.</p></div>
+        </aside>
+    </div>
+</section>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "calendarConnection")] public string? ConnectionResult { get; set; }
+
+    private IReadOnlyList<CalendarConnectionSummaryResponse> connections = [];
+    private bool isLoading = true;
+    private bool isBusy;
+    private bool isError;
+    private string? message;
+    private string SettingsPath => CompanyId is Guid id ? $"/settings?companyId={id:D}" : "/settings";
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is null)
+        {
+            var context = await OnboardingApiClient.GetCurrentUserContextAsync();
+            if (context?.ActiveCompany is { } company)
+                Navigation.NavigateTo($"/settings/calendar-connections?companyId={company.CompanyId:D}", replace: true);
+            return;
+        }
+
+        message = ConnectionResult?.ToLowerInvariant() switch
+        {
+            "connected" => "Calendar connected and ready for meeting scheduling.",
+            "denied" => "Calendar access was not approved. No connection was changed.",
+            "failed" => "The calendar connection could not be completed.",
+            _ => message
+        };
+        isError = ConnectionResult is "denied" or "failed";
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (CompanyId is not Guid companyId) return;
+        isLoading = true;
+        try { connections = await SalesApiClient.ListManagedCalendarConnectionsAsync(companyId); }
+        catch (SalesApiException ex) { message = ex.Message; isError = true; }
+        finally { isLoading = false; }
+    }
+
+    private async Task ConnectAsync(string provider)
+    {
+        if (CompanyId is not Guid companyId) return;
+        isBusy = true; message = null;
+        try
+        {
+            var returnUri = Navigation.ToAbsoluteUri($"/settings/calendar-connections?companyId={companyId:D}").ToString();
+            var result = await SalesApiClient.StartCalendarConnectionAsync(companyId, provider, returnUri);
+            Navigation.NavigateTo(result.AuthorizationUrl, forceLoad: true);
+        }
+        catch (SalesApiException ex) { message = ex.Message; isError = true; isBusy = false; }
+    }
+
+    private async Task DisconnectAsync(CalendarConnectionSummaryResponse connection)
+    {
+        if (CompanyId is not Guid companyId) return;
+        isBusy = true; message = null;
+        try
+        {
+            await SalesApiClient.DisconnectCalendarConnectionAsync(companyId, connection.Id);
+            message = $"{connection.AccountEmail} was disconnected from calendar scheduling.";
+            isError = false;
+            await LoadAsync();
+        }
+        catch (SalesApiException ex) { message = ex.Message; isError = true; }
+        finally { isBusy = false; }
+    }
+
+    private static string ProviderIcon(string provider) => provider == "google" ? "bi-google" : "bi-microsoft";
+    private static string ProviderClass(string provider) => provider == "google" ? "is-google" : "is-microsoft";
+    private static string CalendarLabel(string calendarId) => calendarId == "primary" ? "Primary calendar" : calendarId;
+    private static string StatusLabel(CalendarConnectionSummaryResponse connection) => connection.RequiresReconnect ? "Reconnect required" : connection.Status == "active" ? "Connected" : connection.Status.Replace('_', ' ');
+    private static string StatusClass(CalendarConnectionSummaryResponse connection) => connection.RequiresReconnect ? "needs-attention" : connection.Status == "active" ? "is-active" : "is-muted";
+}

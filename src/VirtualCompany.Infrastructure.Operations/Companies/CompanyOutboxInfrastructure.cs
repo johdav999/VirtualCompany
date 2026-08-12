@@ -195,6 +195,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
     private readonly ISupportMemoryUpdateService? _supportMemory;
     private readonly ISupportReplyDeliveryDispatcher? _supportReplyDelivery;
+    private readonly ISalesMeetingInvitationDeliveryDispatcher? _salesMeetingInvitationDelivery;
+    private readonly ISalesMeetingChangeDeliveryDispatcher? _salesMeetingChangeDelivery;
+    private readonly ISalesMeetingConfirmationDeliveryDispatcher? _salesMeetingConfirmationDelivery;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -214,7 +217,10 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         IBriefingUpdateJobProducer briefingUpdateJobProducer,
         ILogger<CompanyOutboxProcessor> logger,
         ISupportMemoryUpdateService? supportMemory = null,
-        ISupportReplyDeliveryDispatcher? supportReplyDelivery = null)
+        ISupportReplyDeliveryDispatcher? supportReplyDelivery = null,
+        ISalesMeetingInvitationDeliveryDispatcher? salesMeetingInvitationDelivery = null,
+        ISalesMeetingChangeDeliveryDispatcher? salesMeetingChangeDelivery = null,
+        ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -234,6 +240,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _logger = logger;
         _supportMemory = supportMemory;
         _supportReplyDelivery = supportReplyDelivery;
+        _salesMeetingInvitationDelivery = salesMeetingInvitationDelivery;
+        _salesMeetingChangeDelivery = salesMeetingChangeDelivery;
+        _salesMeetingConfirmationDelivery = salesMeetingConfirmationDelivery;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -522,6 +531,42 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 }
 
                 await _supportReplyDelivery.DispatchAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
+                    cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SalesMeetingInvitationDeliveryRequested:
+            {
+                var payload = Deserialize<SalesMeetingInvitationDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                    throw new CompanyOutboxPermanentException("Sales meeting invitation payload tenant does not match the outbox message tenant.");
+                if (_salesMeetingInvitationDelivery is null)
+                    throw new InvalidOperationException("Sales meeting invitation delivery is not configured.");
+                await _salesMeetingInvitationDelivery.DispatchAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
+                    cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SalesMeetingChangeDeliveryRequested:
+            {
+                var payload = Deserialize<SalesMeetingChangeDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                    throw new CompanyOutboxPermanentException("Sales meeting change payload tenant does not match the outbox message tenant.");
+                if (_salesMeetingChangeDelivery is null)
+                    throw new InvalidOperationException("Sales meeting change delivery is not configured.");
+                await _salesMeetingChangeDelivery.DispatchAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
+                    cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.SalesMeetingConfirmationDeliveryRequested:
+            {
+                var payload = Deserialize<SalesMeetingConfirmationDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                    throw new CompanyOutboxPermanentException("Sales meeting confirmation payload tenant does not match the outbox message tenant.");
+                if (_salesMeetingConfirmationDelivery is null)
+                    throw new InvalidOperationException("Sales meeting confirmation delivery is not configured.");
+                await _salesMeetingConfirmationDelivery.DispatchAsync(
                     payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
                     cancellationToken);
                 break;

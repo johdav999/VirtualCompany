@@ -70,8 +70,10 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
     private readonly IMailboxProviderRegistry _providerRegistry;
     private readonly IBillDetectionService _billDetectionService;
     private readonly IDocumentExtractionService? _documentExtractionService;
+    private readonly ISupplierSubscriptionDocumentClassifier? _subscriptionDocumentClassifier;
+    private readonly IEmailClassificationService? _emailClassifier;
     private readonly IReadOnlyList<IDocumentTextExtractor> _documentTextExtractors;
-    private readonly IFieldEncryptionService _fieldEncryption;
+    private readonly IMailboxOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyManualInboxBillScanOrchestrator> _logger;
 
@@ -81,11 +83,13 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
         IMailboxProviderRegistry providerRegistry,
         IBillDetectionService billDetectionService,
         IDocumentExtractionService documentExtractionService,
-        IFieldEncryptionService fieldEncryption,
+        IMailboxOAuthAccessTokenLeaseService tokenLeaseService,
         TimeProvider timeProvider,
         ILogger<CompanyManualInboxBillScanOrchestrator> logger,
-        IEnumerable<IDocumentTextExtractor>? documentTextExtractors = null)
-        : this(dbContext, providerRegistry, billDetectionService, documentExtractionService, fieldEncryption, timeProvider, logger, documentTextExtractors)
+        IEnumerable<IDocumentTextExtractor>? documentTextExtractors = null,
+        ISupplierSubscriptionDocumentClassifier? subscriptionDocumentClassifier = null,
+        IEmailClassificationService? emailClassifier = null)
+        : this(dbContext, providerRegistry, billDetectionService, documentExtractionService, tokenLeaseService, timeProvider, logger, documentTextExtractors, subscriptionDocumentClassifier, emailClassifier)
     {
         _scopeFactory = scopeFactory;
     }
@@ -95,17 +99,21 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
         IMailboxProviderRegistry providerRegistry,
         IBillDetectionService billDetectionService,
         IDocumentExtractionService documentExtractionService,
-        IFieldEncryptionService fieldEncryption,
+        IMailboxOAuthAccessTokenLeaseService tokenLeaseService,
         TimeProvider timeProvider,
         ILogger<CompanyManualInboxBillScanOrchestrator> logger,
-        IEnumerable<IDocumentTextExtractor>? documentTextExtractors = null)
+        IEnumerable<IDocumentTextExtractor>? documentTextExtractors = null,
+        ISupplierSubscriptionDocumentClassifier? subscriptionDocumentClassifier = null,
+        IEmailClassificationService? emailClassifier = null)
     {
         _dbContext = dbContext;
         _providerRegistry = providerRegistry;
         _billDetectionService = billDetectionService;
         _documentExtractionService = documentExtractionService;
+        _subscriptionDocumentClassifier = subscriptionDocumentClassifier;
+        _emailClassifier = emailClassifier;
         _documentTextExtractors = documentTextExtractors?.ToArray() ?? [];
-        _fieldEncryption = fieldEncryption;
+        _tokenLeaseService = tokenLeaseService;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -135,14 +143,10 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                 throw new InvalidOperationException("Mailbox connection is not active.");
             }
 
-            var accessToken = connection.Provider == MailboxProvider.StandardEmail
-                ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
-                : _fieldEncryption.Decrypt(
-                    job.CompanyId,
-                    MailboxConnectionDefaults.TokenPurpose(connection.Provider, "access_token"),
-                    connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
-
             var provider = _providerRegistry.Resolve(connection.Provider);
+            var accessToken = (await _tokenLeaseService.AcquireAsync(
+                job.CompanyId, connection.Id, provider.ReadRequiredScopes, cancellationToken)).AccessToken;
+
             var messages = await provider.ListMessagesAsync(
                 accessToken,
                 new MailboxMessageQuery(
@@ -177,7 +181,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
 
             foreach (var message in messages)
             {
-                var detection = _billDetectionService.Detect(message);
+                var detection = await ClassifyFinanceMessageAsync(job, connection, message, cancellationToken);
                 var evaluationMessage = message;
                 if (ShouldHydratePossibleBodyOnlyCandidate(message, detection))
                 {
@@ -197,7 +201,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                     evaluationMessage = await HydratePossibleBodyOnlyCandidateAsync(provider, accessToken, message, cancellationToken);
                     if (!ReferenceEquals(evaluationMessage, message))
                     {
-                        detection = _billDetectionService.Detect(evaluationMessage);
+                        detection = await ClassifyFinanceMessageAsync(job, connection, evaluationMessage, cancellationToken);
                         _logger.LogInformation(
                             "Manual mailbox bill scan re-evaluated a hydrated body-only message. CompanyId: {CompanyId}. Provider: {Provider}. ConnectionId: {ConnectionId}. RunId: {RunId}. MessageId: {MessageId}. Candidate: {Candidate}. SourceTypes: {SourceTypes}. BodyLength: {BodyLength}. Reason: {Reason}.",
                             job.CompanyId,
@@ -240,6 +244,8 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                                 attachmentSnapshots += rejectedSnapshot.Attachments.Count;
                                 deduplicatedAttachments += rejectedSnapshot.Attachments.Count(x => x.IsDuplicateByHash);
                             }
+
+                            await ClassifySubscriptionSourceAsync(job.CompanyId, job.UserId, rejectedPersistenceResult.Snapshot, cancellationToken);
                         }
                     }
 
@@ -259,6 +265,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
                 {
                     await EnsureBillExtractionAsync(job.CompanyId, existingSnapshot, extractionMessage.BodyPreview, cancellationToken);
                     await EnsureAttachmentBillExtractionAsync(provider, accessToken, job.CompanyId, existingSnapshot, cancellationToken);
+                    await ClassifySubscriptionSourceAsync(job.CompanyId, job.UserId, existingSnapshot, cancellationToken);
                     continue;
                 }
 
@@ -279,6 +286,7 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
 
                 await EnsureBillExtractionAsync(job.CompanyId, persistenceResult.Snapshot, extractionMessage.BodyPreview, cancellationToken);
                 await EnsureAttachmentBillExtractionAsync(provider, accessToken, job.CompanyId, persistenceResult.Snapshot, cancellationToken);
+                await ClassifySubscriptionSourceAsync(job.CompanyId, job.UserId, persistenceResult.Snapshot, cancellationToken);
             }
 
             var completedUtc = _timeProvider.GetUtcNow().UtcDateTime;
@@ -770,6 +778,66 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
             ? message.PlainTextBody
             : message.HtmlBody;
 
+    private async Task<BillDetectionResult> ClassifyFinanceMessageAsync(ManualInboxBillScanJob job, MailboxConnection connection, MailboxMessageSummary message, CancellationToken cancellationToken)
+    {
+        var detection = _billDetectionService.Detect(message);
+        if (_emailClassifier is null)
+        {
+            return detection;
+        }
+
+        try
+        {
+            var classification = await _emailClassifier.ClassifyAsync(
+                new EmailClassificationRequest(
+                    job.CompanyId,
+                    MailboxPurpose.Finance,
+                    connection.Provider.ToStorageValue(),
+                    connection.Id,
+                    message,
+                    [],
+                    AllowAi: false),
+                cancellationToken);
+            _logger.LogInformation(
+                "Finance mailbox message classified. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. MessageId: {MessageId}. Domain: {Domain}. Intent: {Intent}. Confidence: {Confidence}. Action: {Action}. UsedAi: {UsedAi}.",
+                job.CompanyId,
+                connection.Id,
+                message.ProviderMessageId,
+                classification.Domain,
+                classification.Intent,
+                classification.Confidence,
+                classification.RecommendedAction,
+                classification.UsedAi);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Finance mailbox message classification failed safely. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. MessageId: {MessageId}.", job.CompanyId, connection.Id, message.ProviderMessageId);
+        }
+
+        return detection;
+    }
+    private async Task ClassifySubscriptionSourceAsync(Guid companyId, Guid? actorUserId, EmailMessageSnapshot snapshot, CancellationToken cancellationToken)
+    {
+        if (_subscriptionDocumentClassifier is null)
+        {
+            return;
+        }
+
+        try
+        {
+            await _subscriptionDocumentClassifier.ClassifyAsync(
+                new ClassifySupplierSubscriptionSourceCommand(companyId, snapshot.Id, actorUserId, "Laura"),
+                cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Supplier subscription source classification failed after mailbox snapshot persisted. CompanyId: {CompanyId}. MessageSnapshotId: {MessageSnapshotId}.",
+                companyId,
+                snapshot.Id);
+        }
+    }
     private async Task EnsureBillExtractionAsync(
         Guid companyId,
         EmailMessageSnapshot snapshot,
@@ -1022,3 +1090,6 @@ public sealed class CompanyManualInboxBillScanOrchestrator : IManualInboxBillSca
     private static bool CanRunManualScan(MailboxConnectionStatus status) =>
         status is MailboxConnectionStatus.Active or MailboxConnectionStatus.Failed;
 }
+
+
+

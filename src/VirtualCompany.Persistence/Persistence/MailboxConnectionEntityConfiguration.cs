@@ -31,6 +31,7 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
         builder.Property(x => x.UserId).HasColumnName("user_id").IsRequired();
+        builder.Property(x => x.ExternalAccountConnectionId).HasColumnName("external_account_connection_id");
         builder.Property(x => x.Provider)
             .HasColumnName("provider")
             .HasConversion(provider => provider.ToStorageValue(), value => MailboxProviderValues.Parse(value))
@@ -43,6 +44,7 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
             .HasSentinel((MailboxPurpose)0)
             .HasDefaultValue(MailboxPurpose.Finance)
             .IsRequired();
+        builder.Property(x => x.IsPrimaryInbound).HasColumnName("is_primary_inbound").HasDefaultValue(true).IsRequired();
         builder.Property(x => x.Status)
             .HasColumnName("status")
             .HasConversion(status => status.ToStorageValue(), value => MailboxConnectionStatusValues.Parse(value))
@@ -104,6 +106,9 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
         builder.HasIndex(x => x.CompanyId);
         builder.HasIndex(x => new { x.CompanyId, x.UserId });
         builder.HasIndex(x => new { x.CompanyId, x.UserId, x.Purpose, x.UpdatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Purpose, x.IsPrimaryInbound })
+            .IsUnique()
+            .HasFilter("[is_primary_inbound] = CAST(1 AS bit)");
         builder.HasIndex(x => new { x.CompanyId, x.Provider, x.EmailAddress });
         builder.HasIndex(x => new { x.CompanyId, x.Status });
         builder.HasIndex(x => new { x.CompanyId, x.ProfileKey });
@@ -115,6 +120,11 @@ internal sealed class MailboxConnectionEntityConfiguration : IEntityTypeConfigur
         builder.HasOne(x => x.User)
             .WithMany()
             .HasForeignKey(x => x.UserId)
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.ExternalAccountConnection)
+            .WithMany(x => x.MailboxConnections)
+            .HasForeignKey(x => new { x.CompanyId, x.ExternalAccountConnectionId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
             .OnDelete(DeleteBehavior.Restrict);
     }
 

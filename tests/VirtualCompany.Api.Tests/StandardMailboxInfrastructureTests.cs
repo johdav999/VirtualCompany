@@ -277,6 +277,10 @@ public sealed class StandardMailboxInfrastructureTests
         Assert.Equal("sent", result.Status);
         Assert.Equal(1, transport.SendCalls);
         Assert.Equal(1, transport.ReconciliationCalls);
+        Assert.Equal("<original@example.com>", transport.LastMessage!.InReplyTo);
+        Assert.Equal(["<original@example.com>"], transport.LastMessage.References);
+        Assert.StartsWith("<", transport.LastMessage.MessageId);
+        Assert.EndsWith("@example.com>", transport.LastMessage.MessageId);
     }
 
     [Fact]
@@ -468,9 +472,11 @@ public sealed class StandardMailboxInfrastructureTests
         public string TransportKey => MailKitMailboxTransport.Key;
         public int SendCalls { get; private set; }
         public int ReconciliationCalls { get; private set; }
+        public MailboxOutboundMessage? LastMessage { get; private set; }
         public Task<MailboxSubmissionResult> SendAsync(MailboxTransportContext context, MailboxOutboundMessage message, CancellationToken cancellationToken)
         {
             SendCalls++;
+            LastMessage = message;
             return Task.FromResult(new MailboxSubmissionResult(
                 MailboxSubmissionOutcome.Ambiguous,
                 message.MessageId,

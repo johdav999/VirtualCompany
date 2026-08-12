@@ -12,7 +12,6 @@ using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
-using VirtualCompany.Infrastructure.Security;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
@@ -20,7 +19,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IMailboxProviderRegistry _mailboxProviderRegistry;
-    private readonly IFieldEncryptionService _fieldEncryption;
+    private readonly IMailboxOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICompanyOutboxEnqueuer _outbox;
     private readonly IFinanceIntegrationWriteCommandService _financeWriteCommands;
     private readonly IApprovalRequestService _approvalRequestService;
@@ -29,11 +28,11 @@ public sealed class SalesOperationsService : ISalesOperationsService
     private readonly TimeProvider _timeProvider;
     private readonly ICustomerMemoryService _customerMemory;
 
-    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IFieldEncryptionService fieldEncryption, ICompanyOutboxEnqueuer outbox, IFinanceIntegrationWriteCommandService financeWriteCommands, IApprovalRequestService approvalRequestService, IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider, ICustomerMemoryService customerMemory)
+    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IMailboxOAuthAccessTokenLeaseService tokenLeaseService, ICompanyOutboxEnqueuer outbox, IFinanceIntegrationWriteCommandService financeWriteCommands, IApprovalRequestService approvalRequestService, IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider, ICustomerMemoryService customerMemory)
     {
         _dbContext = dbContext;
         _mailboxProviderRegistry = mailboxProviderRegistry;
-        _fieldEncryption = fieldEncryption;
+        _tokenLeaseService = tokenLeaseService;
         _outbox = outbox;
         _financeWriteCommands = financeWriteCommands;
         _approvalRequestService = approvalRequestService;
@@ -391,13 +390,9 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
         try
         {
-            var accessToken = context.MailboxConnection.Provider == MailboxProvider.StandardEmail
-                ? StandardMailboxSessionCodec.Create(context.MailboxConnection, _fieldEncryption)
-                : _fieldEncryption.Decrypt(
-                    companyId,
-                    MailboxConnectionDefaults.TokenPurpose(context.MailboxConnection.Provider, "access_token"),
-                    context.MailboxConnection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
             var provider = _mailboxProviderRegistry.Resolve(context.MailboxConnection.Provider);
+            var accessToken = (await _tokenLeaseService.AcquireAsync(
+                companyId, context.MailboxConnection.Id, provider.ReplyRequiredScopes, cancellationToken)).AccessToken;
             var request = new MailboxReplyExecutionRequest(
                 companyId,
                 context.MailboxConnection.Id,
@@ -701,7 +696,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
         new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, deal.CustomerCompany?.Name, deal.PrimaryContact?.FullName, deal.ExpectedCloseUtc, deal.UpdatedUtc);
 
     private static SalesDealDetailResponse MapDealDetail(Deal deal, CustomerMemoryContext? customerMemory = null) =>
-        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal), null, customerMemory);
+        new(deal.Id, deal.Title, deal.PipelineStageId, deal.PipelineStage?.Name ?? "Pipeline", StatusLabel(deal.Status), deal.Amount, deal.Currency, $"{deal.Title} is worth {deal.Amount:0.##} {deal.Currency}.", deal.PrimaryContact?.FullName, deal.PrimaryContact?.Email, deal.CustomerCompany?.Name, DealAnalysis(deal), SuggestedReply(deal), deal.Activities.OrderByDescending(x => x.OccurredUtc).Select(MapActivity).ToList(), deal.Recommendations.OrderByDescending(x => x.CreatedUtc).Select(MapRecommendation).ToList(), DealActions(deal), null, customerMemory, deal.SourceLeadId);
 
     private static SalesActivityResponse MapActivity(SalesActivity activity) =>
         new(activity.Id, StatusLabel(activity.ActivityType), activity.Summary, StatusLabel(activity.Status), activity.OccurredUtc, activity.LeadId, activity.DealId);

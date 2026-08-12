@@ -25,6 +25,7 @@ public static class FinanceRoutes
     public const string PaymentDetail = "/finance/payments/{PaymentId:guid}";
     public const string SupplierBills = "/finance/supplier-bills";
     public const string SupplierBillsReview = "/finance/supplier-bills/review";
+    public const string SupplierSubscriptions = "/finance/supplier-subscriptions";
     public const string SupplierBillDetail = "/finance/supplier-bills/{BillId:guid}";
     public const string SupplierBillsReviewDetail = "/finance/supplier-bills/review/{BillId:guid}";
     public const string Bills = "/finance/bills";
@@ -74,6 +75,7 @@ public static class FinanceRoutes
             new("Cash", CashPosition, "Track cash, liquidity, balances, and monthly results.", ActivePathPrefixes: [CashPosition, Balances, MonthlySummary]),
             new("Customer invoices", Invoices, "Track invoice review and collection workflows.", ActivePathPrefixes: [Invoices, Reviews]),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
+            new("Subscriptions", SupplierSubscriptions, "Track recurring supplier agreements and bill matching."),
             new("Payments", Payments, "Track money coming in and going out."),
             new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity]),
             new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies])
@@ -103,6 +105,12 @@ public static class FinanceRoutes
 
     public static string BuildBillDetailPath(Guid billId, Guid? companyId) =>
         WithCompanyContext($"/finance/supplier-bills/{billId:D}", companyId);
+
+    public static string BuildSupplierSubscriptionPath(Guid? companyId) =>
+        WithCompanyContext(SupplierSubscriptions, companyId);
+
+    public static string BuildSupplierSubscriptionProposalPath(Guid proposalId, Guid? companyId) =>
+        WithCompanyContext($"{SupplierSubscriptions}?proposalId={proposalId:D}", companyId);
 
     public static string BuildBillInboxDetailPath(Guid billId, Guid? companyId) =>
         WithCompanyContext($"/finance/supplier-bills/review/{billId:D}", companyId);
@@ -139,3 +147,4 @@ public static class FinanceRoutes
         return $"{path}{separator}{CompanyIdQueryKey}={resolvedCompanyId}";
     }
 }
+

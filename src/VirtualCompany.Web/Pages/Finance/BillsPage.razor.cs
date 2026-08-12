@@ -25,6 +25,8 @@ public partial class BillsPage : FinancePageBase
     private bool IsDraftUpdateSubmitting { get; set; }
     private bool IsDraftBookkeepingSubmitting { get; set; }
     private bool IsPaidExpensePostingSubmitting { get; set; }
+    private bool IsSubscriptionContextLoading { get; set; }
+    private bool IsSubscriptionMatchSubmitting { get; set; }
     private bool IsCancellationSubmitting { get; set; }
     private bool IsCreditNoteSubmitting { get; set; }
     private bool IsEnrichmentSubmitting { get; set; }
@@ -38,7 +40,9 @@ public partial class BillsPage : FinancePageBase
     private string? DraftActionMessage { get; set; }
     private string? CorrectionActionMessage { get; set; }
     private string? EnrichmentMessage { get; set; }
+    private string? SubscriptionContextMessage { get; set; }
     private string ActiveBillFilter { get; set; } = BillLifecycleFilters.All;
+    private SupplierBillSubscriptionContextResponse? BillSubscriptionContext { get; set; }
 
     private IReadOnlyList<FinanceBillResponse> FilteredBills =>
         Bills.Where(BillMatchesActiveFilter).ToList();
@@ -117,6 +121,13 @@ public partial class BillsPage : FinancePageBase
         try
         {
             SelectedBill = await FinanceApiClient.GetBillDetailAsync(companyId, billId);
+            BillSubscriptionContext = null;
+            SubscriptionContextMessage = null;
+            if (SelectedBill is not null)
+            {
+                await LoadSubscriptionContextAsync(companyId, billId);
+            }
+
             if (SelectedBill is null)
             {
                 DetailErrorMessage = "The selected bill could not be found for this company.";
@@ -133,6 +144,54 @@ public partial class BillsPage : FinancePageBase
         }
     }
 
+    private async Task LoadSubscriptionContextAsync(Guid companyId, Guid billId)
+    {
+        IsSubscriptionContextLoading = true;
+        SubscriptionContextMessage = null;
+        try
+        {
+            BillSubscriptionContext = await FinanceApiClient.GetSupplierBillSubscriptionContextAsync(companyId, billId);
+        }
+        catch (FinanceApiException ex)
+        {
+            BillSubscriptionContext = null;
+            SubscriptionContextMessage = ex.Message;
+            Logger.LogWarning(ex, "Supplier bill subscription context failed to load in UI. CompanyId: {CompanyId}. BillId: {BillId}.", companyId, billId);
+        }
+        finally
+        {
+            IsSubscriptionContextLoading = false;
+        }
+    }
+
+    private async Task DecideSubscriptionMatchAsync(Guid matchId, bool confirm)
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null)
+        {
+            return;
+        }
+
+        IsSubscriptionMatchSubmitting = true;
+        SubscriptionContextMessage = null;
+        try
+        {
+            BillSubscriptionContext = confirm
+                ? await FinanceApiClient.ConfirmSupplierSubscriptionMatchAsync(companyId, matchId)
+                : await FinanceApiClient.RejectSupplierSubscriptionMatchAsync(companyId, matchId);
+            await LoadDetailAsync(companyId, SelectedBill.Id);
+        }
+        catch (FinanceApiException ex)
+        {
+            SubscriptionContextMessage = ex.Message;
+        }
+        finally
+        {
+            IsSubscriptionMatchSubmitting = false;
+        }
+    }
+
+    private string BuildSupplierSubscriptionHref(Guid subscriptionId) =>
+        FinanceRoutes.WithCompanyContext(FinanceRoutes.SupplierSubscriptions, AccessState.CompanyId);
     private string BuildBillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
     private string BuildDocumentHref(Guid documentId) => $"/api/companies/{AccessState.CompanyId}/documents/{documentId}";
     private string BuildTransactionHref(Guid transactionId) =>
@@ -2102,3 +2161,4 @@ public partial class BillsPage : FinancePageBase
         string TypeLabel,
         string TypeTone);
 }
+

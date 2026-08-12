@@ -195,7 +195,7 @@
                         <div class="sales-overview-activity">
                             @foreach (var item in dashboard.RecentActivity.Take(6))
                             {
-                                <a href="@(item.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/prospects"))">
+                                <a href="@ActivityPath(item)">
                                     <span class="sales-overview-activity__marker"></span>
                                     <div>
                                         <strong>@item.Summary</strong>
@@ -249,7 +249,7 @@
                         <div class="sales-overview-prospects">
                             @foreach (var lead in OpenProspects)
                             {
-                                <a href="@BuildPath("/app/sales/prospects")">
+                                <a href="@BuildPath($"/app/sales/leads/{lead.Id:D}")">
                                     <div>
                                         <strong>@lead.Title</strong>
                                         <span>@(lead.SourceEmail ?? SalesText["NoEmailLinked"])</span>
@@ -349,7 +349,18 @@
     private decimal PrimaryForecastValue => ForecastValue(30) > 0m ? ForecastValue(30) : dashboard?.ForecastRevenue ?? 0m;
     private string PrimaryForecastCurrency => forecast?.Currency ?? dashboard?.Currency ?? "USD";
     private decimal ForecastValue(int days) => forecast?.Windows.FirstOrDefault(x => x.Days == days)?.ExpectedRevenue ?? 0m;
-    private string RecommendationPath(SalesRecommendationResponse recommendation) => recommendation.DealId is Guid dealId ? BuildPath($"/app/sales/deals/{dealId:D}") : BuildPath("/app/sales/prospects");
+    private string RecommendationPath(SalesRecommendationResponse recommendation) =>
+        recommendation.DealId is Guid dealId
+            ? BuildPath($"/app/sales/deals/{dealId:D}")
+            : recommendation.LeadId is Guid leadId
+                ? BuildPath($"/app/sales/leads/{leadId:D}")
+                : BuildPath("/app/sales/prospects");
+    private string ActivityPath(SalesActivityResponse activity) =>
+        activity.DealId is Guid dealId
+            ? BuildPath($"/app/sales/deals/{dealId:D}")
+            : activity.LeadId is Guid leadId
+                ? BuildPath($"/app/sales/leads/{leadId:D}")
+                : BuildPath("/app/sales/prospects");
     private IReadOnlyList<SalesDealSummaryResponse> ActionDeals => dashboard?.DealsRequiringAction ?? [];
     private IReadOnlyList<SalesLeadSummaryResponse> OpenProspects =>
         leads

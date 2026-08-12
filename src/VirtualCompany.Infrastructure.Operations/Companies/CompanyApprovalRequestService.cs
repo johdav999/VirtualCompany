@@ -8,6 +8,7 @@ using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
@@ -440,6 +441,71 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
             }
         }
+        else if (targetType == ApprovalTargetEntityType.SalesMeetingInvitation)
+        {
+            var invitation = await _dbContext.SalesMeetingInvitations.SingleAsync(
+                x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId,
+                cancellationToken);
+            var previousStatus = invitation.Status.ToStorageValue();
+            if (approval.Status == ApprovalRequestStatus.Approved)
+            {
+                var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
+                invitation.MarkApproved(approver, DateTime.UtcNow);
+                _outboxEnqueuer.Enqueue(
+                    approval.CompanyId,
+                    CompanyOutboxTopics.SalesMeetingInvitationDeliveryRequested,
+                    new SalesMeetingInvitationDeliveryRequestedMessage(
+                        approval.CompanyId,
+                        invitation.Id,
+                        invitation.IdempotencyKey,
+                        approval.Id.ToString("N")),
+                    correlationId: approval.Id.ToString("N"),
+                    idempotencyKey: $"sales-meeting-delivery:{approval.CompanyId:N}:{invitation.Id:N}:v1",
+                    causationId: approval.Id.ToString("N"));
+                return LinkedEntityStateTransition.ForSalesMeetingInvitation(
+                    invitation.Id,
+                    previousStatus,
+                    invitation.Status.ToStorageValue());
+            }
+
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            {
+                invitation.MarkRejected(DateTime.UtcNow);
+                return LinkedEntityStateTransition.ForSalesMeetingInvitation(
+                    invitation.Id,
+                    previousStatus,
+                    invitation.Status.ToStorageValue());
+            }
+        }
+        else if (targetType == ApprovalTargetEntityType.SalesMeetingChangeRequest)
+        {
+            var change = await _dbContext.SalesMeetingChangeRequests.SingleAsync(
+                x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId,
+                cancellationToken);
+            var previousStatus = change.Status.ToStorageValue();
+            if (approval.Status == ApprovalRequestStatus.Approved)
+            {
+                var approver = approval.Steps.FirstOrDefault(x => x.DecidedByUserId.HasValue)?.DecidedByUserId;
+                change.MarkApproved(approver, DateTime.UtcNow);
+                _outboxEnqueuer.Enqueue(
+                    approval.CompanyId,
+                    CompanyOutboxTopics.SalesMeetingChangeDeliveryRequested,
+                    new SalesMeetingChangeDeliveryRequestedMessage(
+                        approval.CompanyId, change.Id, change.IdempotencyKey, approval.Id.ToString("N")),
+                    correlationId: approval.Id.ToString("N"),
+                    idempotencyKey: $"sales-meeting-change-delivery:{approval.CompanyId:N}:{change.Id:N}:v1",
+                    causationId: approval.Id.ToString("N"));
+                return LinkedEntityStateTransition.ForSalesMeetingChangeRequest(
+                    change.Id, previousStatus, change.Status.ToStorageValue());
+            }
+
+            if (approval.Status is ApprovalRequestStatus.Rejected or ApprovalRequestStatus.Expired or ApprovalRequestStatus.Cancelled)
+            {
+                change.MarkRejected(DateTime.UtcNow);
+                return LinkedEntityStateTransition.ForSalesMeetingChangeRequest(
+                    change.Id, previousStatus, change.Status.ToStorageValue());
+            }
+        }
         else if (targetType == ApprovalTargetEntityType.FinanceIntegrationWrite)
         {
             var command = await _dbContext.FinanceIntegrationWriteCommands.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
@@ -649,6 +715,12 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.FinanceIntegrationWrite => await _dbContext.FinanceIntegrationWriteCommands
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.SalesMeetingInvitation => await _dbContext.SalesMeetingInvitations
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.SalesMeetingChangeRequest => await _dbContext.SalesMeetingChangeRequests
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
@@ -936,6 +1008,16 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             .Select(x => x.TargetEntityId)
             .Distinct()
             .ToList();
+        var meetingIds = approvals
+            .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityType.SalesMeetingInvitation.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.TargetEntityId)
+            .Distinct()
+            .ToList();
+        var meetingChangeIds = approvals
+            .Where(x => string.Equals(x.TargetEntityType, ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
+            .Select(x => x.TargetEntityId)
+            .Distinct()
+            .ToList();
 
         var tasks = taskIds.Count == 0
             ? new Dictionary<Guid, WorkTask>()
@@ -957,6 +1039,20 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             : await _dbContext.ToolExecutionAttempts
                 .AsNoTracking()
                 .Where(x => x.CompanyId == companyId && actionIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
+
+        var meetings = meetingIds.Count == 0
+            ? new Dictionary<Guid, SalesMeetingInvitation>()
+            : await _dbContext.SalesMeetingInvitations
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && meetingIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
+        var meetingChanges = meetingChangeIds.Count == 0
+            ? new Dictionary<Guid, SalesMeetingChangeRequest>()
+            : await _dbContext.SalesMeetingChangeRequests
+                .AsNoTracking()
+                .Include(x => x.Invitation)
+                .Where(x => x.CompanyId == companyId && meetingChangeIds.Contains(x.Id))
                 .ToDictionaryAsync(x => x.Id, cancellationToken);
 
         return approvals.ToDictionary(
@@ -990,6 +1086,32 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                         [new ApprovalAffectedEntityDto(ApprovalTargetEntityType.Action.ToStorageValue(), action.Id, actionLabel)]);
                 }
 
+                if (meetings.TryGetValue(approval.TargetEntityId, out var meeting))
+                {
+                    var label = $"{meeting.Title} with {meeting.AttendeeEmail}";
+                    return new ApprovalSummaryContext(
+                        "Review the recipient, time, agenda, and connected calendar before sending this invitation.",
+                        $"Meeting invitation: {label}; {meeting.StartsUtc:u} to {meeting.EndsUtc:u}",
+                        [new ApprovalAffectedEntityDto(
+                            ApprovalTargetEntityType.SalesMeetingInvitation.ToStorageValue(),
+                            meeting.Id,
+                            label)]);
+                }
+                if (meetingChanges.TryGetValue(approval.TargetEntityId, out var meetingChange))
+                {
+                    var operation = meetingChange.Operation == SalesMeetingChangeOperation.Reschedule ? "Reschedule" : "Cancel";
+                    var label = $"{operation} {meetingChange.Invitation.Title} with {meetingChange.Invitation.AttendeeEmail}";
+                    var timing = meetingChange.Operation == SalesMeetingChangeOperation.Reschedule
+                        ? $" from {meetingChange.Invitation.StartsUtc:u} to {meetingChange.StartsUtc:u}"
+                        : $" at {meetingChange.Invitation.StartsUtc:u}";
+                    return new ApprovalSummaryContext(
+                        "Review the recipient, provider event, and requested meeting change before applying it.",
+                        $"Meeting change: {label}{timing}",
+                        [new ApprovalAffectedEntityDto(
+                            ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(),
+                            meetingChange.Id,
+                            label)]);
+                }
                 return new ApprovalSummaryContext(
                     null,
                     $"{ToDisplayName(approval.TargetEntityType)}: {approval.TargetEntityId:N}",
@@ -1299,6 +1421,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             var value when string.Equals(value, ApprovalTargetEntityType.Workflow.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Workflow",
             var value when string.Equals(value, ApprovalTargetEntityType.Action.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Action",
             var value when string.Equals(value, ApprovalTargetEntityType.FinanceIntegrationWrite.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting system action",
+            var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingInvitation.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting invitation",
+            var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting change",
             var value when string.Equals(value, "fortnox_write", StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             _ => entityType
         };
@@ -1413,5 +1537,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             new(AuditTargetTypes.AgentToolExecution, id.ToString("N"), previousState, currentState, "agent_tool_executions");
         public static LinkedEntityStateTransition ForFinanceIntegrationWrite(Guid id, string previousState, string currentState) =>
             new(AuditTargetTypes.IntegrationConnection, id.ToString("N"), previousState, currentState, "fortnox_write_commands");
+        public static LinkedEntityStateTransition ForSalesMeetingInvitation(Guid id, string previousState, string currentState) =>
+            new("sales_meeting_invitation", id.ToString("N"), previousState, currentState, "sales_meeting_invitations");
+        public static LinkedEntityStateTransition ForSalesMeetingChangeRequest(Guid id, string previousState, string currentState) =>
+            new("sales_meeting_change_request", id.ToString("N"), previousState, currentState, "sales_meeting_change_requests");
     }
 }

@@ -1,0 +1,404 @@
+@page "/finance/supplier-subscriptions"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+
+<PageTitle>Supplier subscriptions</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="Supplier subscriptions"
+    Description="Track recurring supplier agreements, expected bills, and matching evidence."
+    LoadingMessage="Loading supplier subscriptions"
+    ShowShellHeader="false"
+    ShowShellNavigation="false">
+    <section class="supplier-subscriptions" aria-labelledby="supplier-subscriptions-heading">
+        <div class="finance-overview-header">
+            <div>
+                <span class="finance-overview-kicker">FINANCE</span>
+                <h1 id="supplier-subscriptions-heading" class="finance-overview-title">Supplier subscriptions</h1>
+                <p class="finance-overview-subtitle">Laura is tracking recurring supplier bills and the evidence that links them to agreements.</p>
+            </div>
+            <div class="finance-overview-header__actions">
+                <button type="button" class="btn finance-overview-button finance-overview-button--primary" @onclick="StartCreate">Add subscription</button>
+            </div>
+        </div>
+
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+        <section class="subscription-discovery-panel" aria-labelledby="subscription-discovery-heading">
+            <div class="subscription-discovery-panel__header">
+                <div>
+                    <span class="dashboard-kicker">Inbox discovery</span>
+                    <h2 id="subscription-discovery-heading">Discovered agreements</h2>
+                    <p>Laura flags possible subscription agreements from finance inbox evidence for human review.</p>
+                </div>
+                <span class="subscription-badge subscription-badge--warning">@ReviewProposals.Count need review</span>
+            </div>
+            @if (!string.IsNullOrWhiteSpace(ProposalErrorMessage))
+            {
+                <p class="subscription-message subscription-message--danger">@ProposalErrorMessage</p>
+            }
+            else if (IsProposalLoading && ReviewProposals.Count == 0)
+            {
+                <p class="subscription-muted">Scanning discovered agreement proposals.</p>
+            }
+            else if (ReviewProposals.Count == 0)
+            {
+                <p class="subscription-muted">No inbox-discovered subscription agreements need review.</p>
+            }
+            else
+            {
+                <div class="subscription-discovery-grid">
+                    <div class="subscription-proposal-list" role="list">
+                        @foreach (var proposal in ReviewProposals.Take(6))
+                        {
+                            <button type="button" class="subscription-proposal-row @(SelectedProposal?.Id == proposal.Id ? "is-selected" : string.Empty)" @onclick="() => SelectProposalAsync(proposal.Id)">
+                                <span class="subscription-row__icon" aria-hidden="true">@Initials(proposal.SupplierName)</span>
+                                <span>
+                                    <strong>@proposal.AgreementName</strong>
+                                    <small>@proposal.SupplierName · @FormatOptionalMoney(proposal.ExpectedAmount, proposal.Currency) · @Label(proposal.Cadence ?? "cadence needs review")</small>
+                                </span>
+                                <span class="subscription-badge subscription-badge--@Tone(proposal.Status)">@Label(proposal.Status)</span>
+                            </button>
+                        }
+                    </div>
+                    <aside class="subscription-proposal-detail">
+                        @if (SelectedProposal is null)
+                        {
+                            <p class="subscription-muted">Select a discovered agreement to review its evidence.</p>
+                        }
+                        else
+                        {
+                            <div class="subscription-detail-header">
+                                <div>
+                                    <span class="subscription-badge subscription-badge--@Tone(SelectedProposal.Status)">@Label(SelectedProposal.Status)</span>
+                                    <h3>@(SelectedProposal.Terms.Name ?? "Subscription proposal")</h3>
+                                    <p>@SelectedProposal.SupplierName</p>
+                                </div>
+                                <strong>@SelectedProposal.ConfidenceScore%</strong>
+                            </div>
+                            <p class="subscription-muted">@SelectedProposal.EvidenceSummary</p>
+                            <div class="subscription-proposal-form" aria-label="Review proposal terms">
+                                <div class="subscription-proposal-source">
+                                    <span>Source</span>
+                                    <strong>@(SelectedProposal.SourceAttachmentName ?? SelectedProposal.SourceSubject ?? "Email evidence")</strong>
+                                </div>
+                                <div class="subscription-supplier-picker">
+                                    <label for="proposal-supplier-search">Supplier</label>
+                                    <div class="subscription-supplier-picker__control">
+                                        <input id="proposal-supplier-search" class="form-control" placeholder="Search suppliers" autocomplete="off" @bind="ProposalSupplierSearchText" @bind:event="oninput" @onfocus="ShowProposalSupplierPicker" disabled="@IsSuppliersLoading" />
+                                        @if (ProposalForm.CounterpartyId is Guid)
+                                        {
+                                            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="ClearProposalSupplier">Clear</button>
+                                        }
+                                    </div>
+                                    @if (SelectedProposalSupplier is not null)
+                                    {
+                                        <div class="subscription-supplier-picker__selected">
+                                            <span class="subscription-row__icon" aria-hidden="true">@Initials(SelectedProposalSupplier.Name)</span>
+                                            <div>
+                                                <strong>@SelectedProposalSupplier.Name</strong>
+                                                <small>@SupplierMeta(SelectedProposalSupplier)</small>
+                                            </div>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <p class="subscription-muted">Supplier needs review.</p>
+                                    }
+                                    @if (IsProposalSupplierPickerOpen)
+                                    {
+                                        <div class="subscription-supplier-picker__menu" role="listbox" aria-label="Supplier results">
+                                            @if (FilteredProposalSupplierOptions.Count == 0)
+                                            {
+                                                <p class="subscription-muted">No suppliers match your search.</p>
+                                            }
+                                            else
+                                            {
+                                                @foreach (var supplier in FilteredProposalSupplierOptions)
+                                                {
+                                                    <button type="button" class="subscription-supplier-option" role="option" aria-selected="@(supplier.Id == ProposalForm.CounterpartyId)" @onclick="() => SelectProposalSupplier(supplier)">
+                                                        <span class="subscription-row__icon" aria-hidden="true">@Initials(supplier.Name)</span>
+                                                        <span>
+                                                            <strong>@supplier.Name</strong>
+                                                            <small>@SupplierMeta(supplier)</small>
+                                                        </span>
+                                                    </button>
+                                                }
+                                            }
+                                        </div>
+                                    }
+                                </div>
+                                <label>Name<input class="form-control" @bind="ProposalForm.Name" /></label>
+                                <label>Currency<input class="form-control" @bind="ProposalForm.Currency" /></label>
+                                <label>Expected amount<input class="form-control" type="number" step="0.01" @bind="ProposalForm.ExpectedAmount" /></label>
+                                <label>Cadence<select class="form-select" @bind="ProposalForm.Cadence"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select></label>
+                                <label>Billing day<input class="form-control" type="number" min="1" max="31" @bind="ProposalForm.BillingDay" /></label>
+                                <label>Start date<input class="form-control" type="date" @bind="ProposalForm.StartDateUtc" /></label>
+                                <label>Next expected bill<input class="form-control" type="date" @bind="ProposalForm.NextExpectedBillDateUtc" /></label>
+                                <label>Notice period days<input class="form-control" type="number" min="0" @bind="ProposalForm.NoticePeriodDays" /></label>
+                                <label>Contract reference<input class="form-control" @bind="ProposalForm.ContractReference" /></label>
+                            </div>
+                            @if (!CanAcceptSelectedProposal)
+                            {
+                                <p class="subscription-message subscription-message--warning">Choose a supplier and confirm amount, cadence, billing day, start date, and next expected bill before accepting.</p>
+                            }
+                            <div class="subscription-actions">
+                                <button type="button" class="btn btn-primary btn-sm" disabled="@(IsProposalSubmitting || !CanAcceptSelectedProposal)" @onclick="() => AcceptProposalAsync(SelectedProposal.Id)">Accept as draft</button>
+                                <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@IsProposalSubmitting" @onclick="() => RetryProposalAsync(SelectedProposal.Id)">Retry extraction</button>
+                                <button type="button" class="btn btn-outline-danger btn-sm" disabled="@IsProposalSubmitting" @onclick="() => RejectProposalAsync(SelectedProposal.Id)">Reject</button>
+                            </div>
+                        }
+                    </aside>
+                </div>
+            }
+        </section>
+        <div class="subscription-workspace">
+            <article class="subscription-list-panel">
+                <div class="subscription-filter-card" aria-label="Supplier subscription filters">
+                    <input class="form-control" placeholder="Search agreements or suppliers" @bind="SearchText" @bind:event="oninput" />
+                    <select class="form-select" @bind="StatusFilter">
+                        <option value="">All statuses</option>
+                        <option value="active">Active</option>
+                        <option value="draft">Draft</option>
+                        <option value="paused">Paused</option>
+                        <option value="cancelled">Cancelled</option>
+                    </select>
+                    <button type="button" class="btn btn-outline-secondary" @onclick="ReloadAsync">Refresh</button>
+                </div>
+
+                <div class="subscription-list-panel__summary">
+                    <div><strong>@FilteredSubscriptions.Count</strong><span>agreements</span></div>
+                    <div><strong>@Subscriptions.Count(x => x.Health == "needs_review")</strong><span>need review</span></div>
+                    <div><strong>@Subscriptions.Count(x => x.Health == "missing_bill")</strong><span>missing bill</span></div>
+                </div>
+
+                <FinanceDataState
+                    IsLoading="@IsListLoading"
+                    IsEmpty="@(!IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && FilteredSubscriptions.Count == 0)"
+                    ErrorMessage="@ListErrorMessage"
+                    LoadingTitle="Loading subscriptions"
+                    LoadingMessage="Laura is checking recurring supplier agreements."
+                    EmptyTitle="No supplier subscriptions yet"
+                    EmptyMessage="Add a supplier subscription to track expected recurring bills without changing bill approvals."
+                    OnRetry="@ReloadAsync">
+                    <div class="subscription-list" role="list">
+                        @foreach (var subscription in FilteredSubscriptions)
+                        {
+                            <button type="button" class="subscription-row @(SelectedSubscription?.Id == subscription.Id ? "is-selected" : string.Empty)" @onclick="() => SelectSubscriptionAsync(subscription.Id)">
+                                <span class="subscription-row__icon" aria-hidden="true">@Initials(subscription.SupplierName)</span>
+                                <span class="subscription-row__main">
+                                    <strong>@subscription.Name</strong>
+                                    <span>@subscription.SupplierName</span>
+                                    <small>@subscription.HealthMessage</small>
+                                </span>
+                                <span class="subscription-row__meta">
+                                    <span class="subscription-badge subscription-badge--@Tone(subscription.Health)">@Label(subscription.Health)</span>
+                                    <strong>@FormatMoney(subscription.ExpectedAmount, subscription.Currency)</strong>
+                                    <small>@Label(subscription.Cadence) · next @FormatDate(subscription.NextExpectedBillDateUtc)</small>
+                                </span>
+                            </button>
+                        }
+                    </div>
+                </FinanceDataState>
+            </article>
+
+            <aside class="subscription-detail-panel">
+                @if (IsDetailLoading)
+                {
+                    <FinanceLoadingState Title="Opening subscription" Message="Loading agreement terms and match history." />
+                }
+                else if (!string.IsNullOrWhiteSpace(DetailErrorMessage))
+                {
+                    <FinanceErrorState Title="Subscription unavailable" Message="@DetailErrorMessage" RetryText="Retry" OnRetry="@ReloadAsync" />
+                }
+                else if (IsEditing)
+                {
+                    <EditForm Model="Form" OnValidSubmit="SaveAsync" class="subscription-form">
+                        <DataAnnotationsValidator />
+                        <div class="subscription-detail-header">
+                            <div>
+                                <span class="dashboard-kicker">Agreement</span>
+                                <h2>@(EditingSubscriptionId.HasValue ? "Edit subscription" : "Add subscription")</h2>
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="CancelEdit">Cancel</button>
+                        </div>
+
+                        <ValidationSummary />
+                        @if (!string.IsNullOrWhiteSpace(FormErrorMessage))
+                        {
+                            <p class="subscription-message subscription-message--danger">@FormErrorMessage</p>
+                        }
+
+                        <div class="subscription-form-grid">
+                            <label>Name<input class="form-control" @bind="Form.Name" /></label>
+                            <div class="subscription-supplier-picker">
+                                <label for="subscription-supplier-search">Supplier</label>
+                                <div class="subscription-supplier-picker__control">
+                                    <input id="subscription-supplier-search" class="form-control" placeholder="Search suppliers" autocomplete="off" @bind="SupplierSearchText" @bind:event="oninput" @onfocus="ShowSupplierPicker" disabled="@IsSuppliersLoading" />
+                                    @if (Form.CounterpartyId != Guid.Empty)
+                                    {
+                                        <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="ClearSupplier">Clear</button>
+                                    }
+                                </div>
+                                @if (SelectedSupplier is not null)
+                                {
+                                    <div class="subscription-supplier-picker__selected">
+                                        <span class="subscription-row__icon" aria-hidden="true">@Initials(SelectedSupplier.Name)</span>
+                                        <div>
+                                            <strong>@SelectedSupplier.Name</strong>
+                                            <small>@SupplierMeta(SelectedSupplier)</small>
+                                        </div>
+                                    </div>
+                                }
+                                @if (!string.IsNullOrWhiteSpace(SuppliersErrorMessage))
+                                {
+                                    <p class="subscription-message subscription-message--danger">@SuppliersErrorMessage</p>
+                                }
+                                else if (IsSupplierPickerOpen)
+                                {
+                                    <div class="subscription-supplier-picker__menu" role="listbox" aria-label="Supplier results">
+                                        @if (IsSuppliersLoading)
+                                        {
+                                            <p class="subscription-muted">Loading suppliers.</p>
+                                        }
+                                        else if (FilteredSupplierOptions.Count == 0)
+                                        {
+                                            <p class="subscription-muted">No suppliers match your search.</p>
+                                        }
+                                        else
+                                        {
+                                            @foreach (var supplier in FilteredSupplierOptions)
+                                            {
+                                                <button type="button" class="subscription-supplier-option" role="option" aria-selected="@(supplier.Id == Form.CounterpartyId)" @onclick="() => SelectSupplier(supplier)">
+                                                    <span class="subscription-row__icon" aria-hidden="true">@Initials(supplier.Name)</span>
+                                                    <span>
+                                                        <strong>@supplier.Name</strong>
+                                                        <small>@SupplierMeta(supplier)</small>
+                                                    </span>
+                                                </button>
+                                            }
+                                        }
+                                    </div>
+                                }
+                            </div>
+                            <label>Currency<input class="form-control" @bind="Form.Currency" /></label>
+                            <label>Expected amount<input class="form-control" type="number" step="0.01" @bind="Form.ExpectedAmount" /></label>
+                            <label>Cadence<select class="form-select" @bind="Form.Cadence"><option value="monthly">Monthly</option><option value="quarterly">Quarterly</option><option value="yearly">Yearly</option></select></label>
+                            <label>Billing day<input class="form-control" type="number" min="1" max="31" @bind="Form.BillingDay" /></label>
+                            <label>Start date<input class="form-control" type="date" @bind="Form.StartDate" /></label>
+                            <label>Next expected bill<input class="form-control" type="date" @bind="Form.NextExpectedBillDate" /></label>
+                            <label>Amount tolerance<input class="form-control" type="number" step="0.01" @bind="Form.AmountTolerance" /></label>
+                            <label>Date tolerance days<input class="form-control" type="number" min="0" @bind="Form.DateToleranceDays" /></label>
+                            <label>Notice period days<input class="form-control" type="number" min="0" @bind="Form.NoticePeriodDays" /></label>
+                            <label>Contract reference<input class="form-control" @bind="Form.ContractReference" /></label>
+                        </div>
+                        <label>Description<textarea class="form-control" rows="3" @bind="Form.Description"></textarea></label>
+                        <label class="subscription-check"><input type="checkbox" @bind="Form.AutoRenews" /> Auto-renews</label>
+                        <button type="submit" class="btn btn-primary" disabled="@IsSaving">@(IsSaving ? "Saving" : "Save subscription")</button>
+                    </EditForm>
+                }
+                else if (SelectedSubscription is null)
+                {
+                    <div class="subscription-empty-detail">
+                        <div aria-hidden="true">Laura</div>
+                        <h2>Select a subscription</h2>
+                        <p>Choose an agreement to review terms, bill matches, and next actions.</p>
+                    </div>
+                }
+                else
+                {
+                    <div class="subscription-detail">
+                        <div class="subscription-detail-header">
+                            <div>
+                                <span class="subscription-badge subscription-badge--@Tone(SelectedSubscription.Health)">@Label(SelectedSubscription.Health)</span>
+                                <h2>@SelectedSubscription.Name</h2>
+                                <p>@SelectedSubscription.SupplierName</p>
+                            </div>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="StartEdit">Edit</button>
+                        </div>
+
+                        <dl class="subscription-terms">
+                            <div><dt>Expected amount</dt><dd>@FormatMoney(SelectedSubscription.ExpectedAmount, SelectedSubscription.Currency)</dd></div>
+                            <div><dt>Cadence</dt><dd>@Label(SelectedSubscription.Cadence)</dd></div>
+                            <div><dt>Next expected bill</dt><dd>@FormatDate(SelectedSubscription.NextExpectedBillDateUtc)</dd></div>
+                            <div><dt>Amount tolerance</dt><dd>@FormatMoney(SelectedSubscription.AmountTolerance, SelectedSubscription.Currency)</dd></div>
+                            <div><dt>Date tolerance</dt><dd>@SelectedSubscription.DateToleranceDays days</dd></div>
+                            <div><dt>Status</dt><dd>@Label(SelectedSubscription.Status)</dd></div>
+                        </dl>
+
+                        @if (SelectedSubscription.SourceEvidence is not null)
+                        {
+                            <section class="subscription-source-evidence" aria-label="Source agreement evidence">
+                                <div>
+                                    <span class="dashboard-kicker">Source agreement</span>
+                                    <h3>@(SelectedSubscription.SourceEvidence.SourceAttachmentName ?? SelectedSubscription.SourceEvidence.SourceSubject ?? "Inbox agreement evidence")</h3>
+                                    <p>@SelectedSubscription.SourceEvidence.EvidenceSummary</p>
+                                </div>
+                                <dl class="subscription-terms subscription-terms--compact">
+                                    <div><dt>Review status</dt><dd>@Label(SelectedSubscription.SourceEvidence.Status)</dd></div>
+                                    <div><dt>Reviewed</dt><dd>@FormatOptionalDate(SelectedSubscription.SourceEvidence.DecidedUtc)</dd></div>
+                                    <div><dt>Decision</dt><dd>@(SelectedSubscription.SourceEvidence.DecisionReason ?? "Accepted into draft subscription")</dd></div>
+                                    <div><dt>Created</dt><dd>@FormatDate(SelectedSubscription.SourceEvidence.CreatedUtc)</dd></div>
+                                </dl>
+                            </section>
+                        }
+
+                        <div class="subscription-actions">
+                            @foreach (var action in AvailableLifecycleActions)
+                            {
+                                <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@IsLifecycleSubmitting" @onclick="() => ChangeStatusAsync(action.Value)">@action.Label</button>
+                            }
+                        </div>
+
+                        <section class="subscription-match-section">
+                            <h3>Suggested bill matches</h3>
+                            @if (ReviewMatches.Count == 0)
+                            {
+                                <p class="subscription-muted">No suggested matches need review.</p>
+                            }
+                            else
+                            {
+                                @foreach (var match in ReviewMatches)
+                                {
+                                    <div class="subscription-match-card">
+                                        <div>
+                                            <strong>@(string.IsNullOrWhiteSpace(match.BillNumber) ? "Supplier bill" : match.BillNumber)</strong>
+                                            <p>@match.EvidenceSummary</p>
+                                            <small>@FormatMoney(match.ActualAmount, match.Currency) for @FormatDate(match.ExpectedBillDateUtc)</small>
+                                        </div>
+                                        <div class="subscription-match-actions">
+                                            <button type="button" class="btn btn-primary btn-sm" disabled="@IsMatchSubmitting" @onclick="() => DecideMatchAsync(match.Id, true)">Confirm match</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@IsMatchSubmitting" @onclick="() => DecideMatchAsync(match.Id, false)">Reject</button>
+                                        </div>
+                                    </div>
+                                }
+                            }
+                        </section>
+
+                        <section class="subscription-match-section">
+                            <h3>Bill history</h3>
+                            @if (SelectedSubscription.Matches.Count == 0)
+                            {
+                                <p class="subscription-muted">No bill evidence has been linked yet.</p>
+                            }
+                            else
+                            {
+                                <div class="subscription-history-list">
+                                    @foreach (var match in SelectedSubscription.Matches.Take(8))
+                                    {
+                                        <div><span class="subscription-badge subscription-badge--@Tone(match.Status)">@Label(match.Status)</span><strong>@(string.IsNullOrWhiteSpace(match.BillNumber) ? "Supplier bill" : match.BillNumber)</strong><small>@FormatDate(match.PeriodStartUtc) to @FormatDate(match.PeriodEndUtc)</small></div>
+                                    }
+                                </div>
+                            }
+                        </section>
+                    </div>
+                }
+            </aside>
+        </div>
+    </section>
+</FinancePageLayout>
+
+

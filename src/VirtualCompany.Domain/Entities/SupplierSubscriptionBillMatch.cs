@@ -13,7 +13,8 @@ public static class SupplierSubscriptionMatchMethods
 {
     public const string Automatic = "automatic";
     public const string Manual = "manual";
-    public static bool IsSupported(string? value) => value is Automatic or Manual;
+    public const string ReceiptEvidence = "receipt_evidence";
+    public static bool IsSupported(string? value) => value is Automatic or Manual or ReceiptEvidence;
 }
 
 public sealed class SupplierSubscriptionBillMatch : ICompanyOwnedEntity

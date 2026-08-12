@@ -9,7 +9,6 @@ using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Domain.Events;
 using VirtualCompany.Infrastructure.Persistence;
-using VirtualCompany.Infrastructure.Security;
 
 namespace VirtualCompany.Infrastructure.Sales;
 
@@ -19,7 +18,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
     private const decimal MinimumLeadConfidence = 0.65m;
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IMailboxProviderRegistry _providerRegistry;
-    private readonly IFieldEncryptionService _fieldEncryption;
+    private readonly IMailboxOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICompanyOutboxEnqueuer _outbox;
     private readonly ISalesEmailIntentExtractionService _intentExtraction;
     private readonly IReplySignalDetectionPipeline _replySignalDetection;
@@ -29,7 +28,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
     public SalesEmailIngestionService(
         VirtualCompanyDbContext dbContext,
         IMailboxProviderRegistry providerRegistry,
-        IFieldEncryptionService fieldEncryption,
+        IMailboxOAuthAccessTokenLeaseService tokenLeaseService,
         ICompanyOutboxEnqueuer outbox,
         ISalesEmailIntentExtractionService intentExtraction,
         IReplySignalDetectionPipeline replySignalDetection,
@@ -38,7 +37,7 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
     {
         _dbContext = dbContext;
         _providerRegistry = providerRegistry;
-        _fieldEncryption = fieldEncryption;
+        _tokenLeaseService = tokenLeaseService;
         _outbox = outbox;
         _intentExtraction = intentExtraction;
         _replySignalDetection = replySignalDetection;
@@ -58,7 +57,10 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
             return ToAlreadyProcessedResult(existing, connection);
         }
 
-        var accessToken = DecryptAccessToken(connection);
+        var accessToken = (await _tokenLeaseService.AcquireAsync(
+            connection.CompanyId, connection.Id,
+            _providerRegistry.Resolve(connection.Provider).ReadRequiredScopes,
+            cancellationToken)).AccessToken;
         var message = await _providerRegistry.Resolve(connection.Provider).GetMessageAsync(
             accessToken,
             new MailboxMessageFetchRequest(command.ProviderMessageId),
@@ -79,7 +81,10 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
             return ToAlreadyProcessedResult(existingThreadLink, connection);
         }
 
-        var accessToken = DecryptAccessToken(connection);
+        var accessToken = (await _tokenLeaseService.AcquireAsync(
+            connection.CompanyId, connection.Id,
+            _providerRegistry.Resolve(connection.Provider).ReadRequiredScopes,
+            cancellationToken)).AccessToken;
         var thread = await _providerRegistry.Resolve(connection.Provider).GetThreadAsync(
             accessToken,
             new MailboxThreadFetchRequest(command.ProviderThreadId),
@@ -109,130 +114,139 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
         var primaryMessage = messages.Last();
         var detection = await DetectSalesSignalAsync(companyId, connection, messages, cancellationToken);
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
-
-        if (detection.IgnoreReason is not null)
+        var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+        var result = await executionStrategy.ExecuteAsync(async () =>
         {
-            var ignored = CreateIgnoredLink(companyId, connection, providerMessageId, primaryMessage.InternetMessageId, primaryMessage.ProviderThreadId, threadIdentity, detection.IgnoreReason, detection.Rationale, SalesEmailLinkKinds.Message);
-            _dbContext.SalesEmailLinks.Add(ignored);
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+
+            if (detection.IgnoreReason is not null)
+            {
+                var ignored = CreateIgnoredLink(companyId, connection, providerMessageId, primaryMessage.InternetMessageId, primaryMessage.ProviderThreadId, threadIdentity, detection.IgnoreReason, detection.Rationale, SalesEmailLinkKinds.Message);
+                _dbContext.SalesEmailLinks.Add(ignored);
+                if (!string.IsNullOrWhiteSpace(threadIdentity) &&
+                    !await HasThreadLinkAsync(companyId, connection, threadIdentity, cancellationToken))
+                {
+                    _dbContext.SalesEmailLinks.Add(CreateIgnoredLink(companyId, connection, threadIdentity, null, null, threadIdentity, detection.IgnoreReason, detection.Rationale, SalesEmailLinkKinds.Thread));
+                }
+
+                EnqueueEmailReceived(companyId, connection, primaryMessage, null, null, detection, threadIdentity);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                await transaction.CommitAsync(cancellationToken);
+                return ToIgnoredResult(ignored, connection);
+            }
+
+            var signal = detection.Signal ?? throw new InvalidOperationException("Sales detection did not return a signal.");
+            var customerCompany = await UpsertCustomerCompanyAsync(companyId, signal, cancellationToken);
+            var contact = await UpsertContactAsync(companyId, signal, customerCompany?.Id, cancellationToken);
+            var lead = existingLeadLink?.LeadId is { } existingLeadId
+                ? await _dbContext.Leads.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId && x.Id == existingLeadId && !x.IsDeleted, cancellationToken)
+                : await FindExistingLeadForSignalAsync(companyId, contact?.Id, customerCompany?.Id, signal, cancellationToken)
+                    ?? await CreateLeadAsync(companyId, signal, contact?.Id, customerCompany?.Id, cancellationToken);
+
+            lead.ApplyEmailSignal(BuildLeadTitle(signal), contact?.Id, customerCompany?.Id, signal.Confidence, "sales email");
+            await _sources.StageAsync(companyId, new RecordSalesSourceTouchRequest("lead", lead.Id,
+                SalesSourceCategories.Email, connection.Provider.ToStorageValue(), "email", "inquiry",
+                providerMessageId, _timeProvider.GetUtcNow().UtcDateTime, "visitor", signal.SenderEmail,
+                Evidence: $"Inbound sales email classified as {signal.Intent} with confidence {signal.Confidence:0.00}.",
+                MetadataJson: System.Text.Json.JsonSerializer.Serialize(new { signal.Intent, signal.Confidence, threadIdentity }),
+                IsConversion: true), cancellationToken);
+
+            var existingActivityId = await FindDetectionActivityIdAsync(companyId, lead.Id, providerMessageId, cancellationToken);
+            Guid? activityId = existingActivityId;
+
+            if (existingActivityId is null)
+            {
+                activityId = Guid.NewGuid();
+                _dbContext.SalesActivities.Add(new SalesActivity(
+                    activityId.Value,
+                    companyId,
+                    "email",
+                    $"Inbound sales email {providerMessageId} from {signal.SenderEmail}: {signal.Intent}",
+                    primaryMessage.ReceivedUtc ?? _timeProvider.GetUtcNow().UtcDateTime,
+                    lead.Id,
+                    contactId: contact?.Id,
+                    customerCompanyId: customerCompany?.Id));
+            }
+
+            if (!await HasMessageLinkAsync(companyId, connection, providerMessageId, cancellationToken))
+            {
+                _dbContext.SalesEmailLinks.Add(new SalesEmailLink(
+                    Guid.NewGuid(),
+                    companyId,
+                    providerMessageId,
+                    lead.Id,
+                    contactId: contact?.Id,
+                    customerCompanyId: customerCompany?.Id,
+                    provider: connection.Provider.ToStorageValue(),
+                    mailboxConnectionId: connection.Id,
+                    externalThreadId: threadIdentity,
+                    internetMessageId: primaryMessage.InternetMessageId,
+                    linkKind: SalesEmailLinkKinds.Message,
+                    rationale: detection.Rationale,
+                    detectedIntent: signal.Intent,
+                    productOrServiceInterest: signal.ProductOrServiceInterest,
+                    confidence: signal.Confidence));
+            }
+
             if (!string.IsNullOrWhiteSpace(threadIdentity) &&
                 !await HasThreadLinkAsync(companyId, connection, threadIdentity, cancellationToken))
             {
-                _dbContext.SalesEmailLinks.Add(CreateIgnoredLink(companyId, connection, threadIdentity, null, null, threadIdentity, detection.IgnoreReason, detection.Rationale, SalesEmailLinkKinds.Thread));
+                _dbContext.SalesEmailLinks.Add(new SalesEmailLink(
+                    Guid.NewGuid(),
+                    companyId,
+                    threadIdentity,
+                    lead.Id,
+                    contactId: contact?.Id,
+                    customerCompanyId: customerCompany?.Id,
+                    provider: connection.Provider.ToStorageValue(),
+                    mailboxConnectionId: connection.Id,
+                    externalThreadId: threadIdentity,
+                    linkKind: SalesEmailLinkKinds.Thread,
+                    rationale: detection.Rationale,
+                    detectedIntent: signal.Intent,
+                    productOrServiceInterest: signal.ProductOrServiceInterest,
+                    confidence: signal.Confidence));
             }
 
-            EnqueueEmailReceived(companyId, connection, primaryMessage, null, null, detection, threadIdentity);
+            EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, contact?.Id, detection, threadIdentity);
+            EnqueueLeadDetected(companyId, connection, primaryMessage, lead.Id, signal, threadIdentity);
             await _dbContext.SaveChangesAsync(cancellationToken);
             await transaction.CommitAsync(cancellationToken);
-            return ToIgnoredResult(ignored, connection);
-        }
 
-        var signal = detection.Signal ?? throw new InvalidOperationException("Sales detection did not return a signal.");
-        var customerCompany = await UpsertCustomerCompanyAsync(companyId, signal, cancellationToken);
-        var contact = await UpsertContactAsync(companyId, signal, customerCompany?.Id, cancellationToken);
-        var lead = existingLeadLink?.LeadId is { } existingLeadId
-            ? await _dbContext.Leads.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId && x.Id == existingLeadId && !x.IsDeleted, cancellationToken)
-            : await FindExistingLeadForSignalAsync(companyId, contact?.Id, customerCompany?.Id, signal, cancellationToken)
-                ?? await CreateLeadAsync(companyId, signal, contact?.Id, customerCompany?.Id, cancellationToken);
-
-        lead.ApplyEmailSignal(BuildLeadTitle(signal), contact?.Id, customerCompany?.Id, signal.Confidence, "sales email");
-        await _sources.StageAsync(companyId, new RecordSalesSourceTouchRequest("lead", lead.Id,
-            SalesSourceCategories.Email, connection.Provider.ToStorageValue(), "email", "inquiry",
-            providerMessageId, _timeProvider.GetUtcNow().UtcDateTime, "visitor", signal.SenderEmail,
-            Evidence: $"Inbound sales email classified as {signal.Intent} with confidence {signal.Confidence:0.00}.",
-            MetadataJson: System.Text.Json.JsonSerializer.Serialize(new { signal.Intent, signal.Confidence, threadIdentity }),
-            IsConversion: true), cancellationToken);
-
-        var existingActivityId = await FindDetectionActivityIdAsync(companyId, lead.Id, providerMessageId, cancellationToken);
-        Guid? activityId = existingActivityId;
-
-        if (existingActivityId is null)
-        {
-            activityId = Guid.NewGuid();
-            _dbContext.SalesActivities.Add(new SalesActivity(
-                activityId.Value,
-                companyId,
-                "email",
-                $"Inbound sales email {providerMessageId} from {signal.SenderEmail}: {signal.Intent}",
-                primaryMessage.ReceivedUtc ?? _timeProvider.GetUtcNow().UtcDateTime,
+            return new SalesEmailIngestionResult(
+                SalesEmailIngestionStatuses.Processed,
+                false,
                 lead.Id,
-                contactId: contact?.Id,
-                customerCompanyId: customerCompany?.Id));
-        }
-
-        if (!await HasMessageLinkAsync(companyId, connection, providerMessageId, cancellationToken))
-        {
-            _dbContext.SalesEmailLinks.Add(new SalesEmailLink(
-                Guid.NewGuid(),
-                companyId,
-                providerMessageId,
-                lead.Id,
-                contactId: contact?.Id,
-                customerCompanyId: customerCompany?.Id,
-                provider: connection.Provider.ToStorageValue(),
-                mailboxConnectionId: connection.Id,
-                externalThreadId: threadIdentity,
-                internetMessageId: primaryMessage.InternetMessageId,
-                linkKind: SalesEmailLinkKinds.Message,
-                rationale: detection.Rationale,
-                detectedIntent: signal.Intent,
-                productOrServiceInterest: signal.ProductOrServiceInterest,
-                confidence: signal.Confidence));
-        }
-
-        if (!string.IsNullOrWhiteSpace(threadIdentity) &&
-            !await HasThreadLinkAsync(companyId, connection, threadIdentity, cancellationToken))
-        {
-            _dbContext.SalesEmailLinks.Add(new SalesEmailLink(
-                Guid.NewGuid(),
-                companyId,
-                threadIdentity,
-                lead.Id,
-                contactId: contact?.Id,
-                customerCompanyId: customerCompany?.Id,
-                provider: connection.Provider.ToStorageValue(),
-                mailboxConnectionId: connection.Id,
-                externalThreadId: threadIdentity,
-                linkKind: SalesEmailLinkKinds.Thread,
-                rationale: detection.Rationale,
-                detectedIntent: signal.Intent,
-                productOrServiceInterest: signal.ProductOrServiceInterest,
-                confidence: signal.Confidence));
-        }
-
-        EnqueueEmailReceived(companyId, connection, primaryMessage, lead.Id, contact?.Id, detection, threadIdentity);
-        EnqueueLeadDetected(companyId, connection, primaryMessage, lead.Id, signal, threadIdentity);
-        await _dbContext.SaveChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
-
-        await _replySignalDetection.AnalyzeInboundReplyAsync(
-            new AnalyzeInboundReplySignalsCommand(
-                companyId,
+                contact?.Id,
+                activityId,
+                customerCompany?.Id,
+                connection.Id,
                 connection.Provider.ToStorageValue(),
                 providerMessageId,
                 threadIdentity,
                 primaryMessage.InternetMessageId,
-                primaryMessage.Subject,
-                FirstNonEmpty(primaryMessage.PlainTextBody, primaryMessage.HtmlBody),
-                signal.SenderEmail,
-                primaryMessage.ReceivedUtc),
-            cancellationToken);
+                null,
+                detection.Rationale,
+                signal);
+        });
 
-        return new SalesEmailIngestionResult(
-            SalesEmailIngestionStatuses.Processed,
-            false,
-            lead.Id,
-            contact?.Id,
-            activityId,
-            customerCompany?.Id,
-            connection.Id,
-            connection.Provider.ToStorageValue(),
-            providerMessageId,
-            threadIdentity,
-            primaryMessage.InternetMessageId,
-            null,
-            detection.Rationale,
-            signal);
+        if (result.Signal is { } persistedSignal)
+        {
+            await _replySignalDetection.AnalyzeInboundReplyAsync(
+                new AnalyzeInboundReplySignalsCommand(
+                    companyId,
+                    connection.Provider.ToStorageValue(),
+                    providerMessageId,
+                    threadIdentity,
+                    primaryMessage.InternetMessageId,
+                    primaryMessage.Subject,
+                    FirstNonEmpty(primaryMessage.PlainTextBody, primaryMessage.HtmlBody),
+                    persistedSignal.SenderEmail,
+                    primaryMessage.ReceivedUtc),
+                cancellationToken);
+        }
+
+        return result;
     }
 
     private async Task<MailboxConnection> LoadConnectionAsync(Guid companyId, Guid userId, Guid mailboxConnectionId, CancellationToken cancellationToken)
@@ -258,14 +272,6 @@ public sealed class SalesEmailIngestionService : ISalesEmailIngestionService
 
         return connection;
     }
-
-    private string DecryptAccessToken(MailboxConnection connection) =>
-        connection.Provider == MailboxProvider.StandardEmail
-            ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
-            : _fieldEncryption.Decrypt(
-                connection.CompanyId,
-                MailboxConnectionDefaults.TokenPurpose(connection.Provider, "access_token"),
-                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox access token is missing."));
 
     private async Task<DetectionOutcome> DetectSalesSignalAsync(
         Guid companyId,

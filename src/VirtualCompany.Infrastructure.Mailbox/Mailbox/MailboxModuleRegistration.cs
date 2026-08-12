@@ -20,6 +20,7 @@ public static class MailboxModuleRegistration
         services.AddHttpClient(GmailMailboxProviderClient.ClientName);
         services.AddHttpClient(Microsoft365MailboxProviderClient.ClientName);
         services.AddSingleton<IMailboxOAuthStateProtector, DataProtectionMailboxOAuthStateProtector>();
+        services.AddSingleton<ICalendarOAuthStateProtector, DataProtectionCalendarOAuthStateProtector>();
         services.AddScoped<IMailboxOAuthReplayGuard, MailboxOAuthReplayGuard>();
         services.AddScoped<GmailMailboxProviderClient>();
         services.AddScoped<Microsoft365MailboxProviderClient>();
@@ -40,10 +41,14 @@ public static class MailboxModuleRegistration
         services.AddScoped<IMailboxAuthenticationStrategy>(provider => provider.GetRequiredService<OAuthMailboxAuthenticationStrategy>());
         services.AddScoped<IStandardMailboxConnectionService, StandardMailboxConnectionService>();
         services.AddScoped<IMailboxConnectionService, CompanyMailboxConnectionService>();
+        services.AddScoped<ICalendarConnectionService, CalendarConnectionService>();
+        services.AddScoped<IMailboxOAuthAccessTokenLeaseService, MailboxOAuthAccessTokenLeaseService>();
+        services.AddScoped<ICalendarOAuthAccessTokenLeaseService, CalendarOAuthAccessTokenLeaseService>();
         services.AddScoped<MailboxConnectionCredentialRefresher>();
         services.AddHostedService<MailboxConnectionStartupRefreshBackgroundService>();
         services.AddHostedService<StandardMailboxInboundSyncBackgroundService>();
         services.AddScoped<IBillDetectionService, BillDetectionService>();
+        services.AddScoped<IEmailClassificationService, HybridEmailClassificationService>();
         services.AddScoped<IManualInboxBillScanOrchestrator, CompanyManualInboxBillScanOrchestrator>();
         services.AddScoped<IConnectedMailboxInboxScanOrchestrator, CompanyConnectedMailboxInboxScanOrchestrator>();
         services.AddScoped<IConnectedMailboxInboxScanJobScheduler, ScopedConnectedMailboxInboxScanJobScheduler>();

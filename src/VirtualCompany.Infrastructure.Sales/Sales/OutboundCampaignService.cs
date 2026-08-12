@@ -908,13 +908,13 @@ public sealed class MailboxOutboundEmailSender : IOutboundEmailSender
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IMailboxProviderRegistry _providerRegistry;
-    private readonly IFieldEncryptionService _fieldEncryption;
+    private readonly IMailboxOAuthAccessTokenLeaseService _tokenLeaseService;
 
-    public MailboxOutboundEmailSender(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry providerRegistry, IFieldEncryptionService fieldEncryption)
+    public MailboxOutboundEmailSender(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry providerRegistry, IMailboxOAuthAccessTokenLeaseService tokenLeaseService)
     {
         _dbContext = dbContext;
         _providerRegistry = providerRegistry;
-        _fieldEncryption = fieldEncryption;
+        _tokenLeaseService = tokenLeaseService;
     }
 
     public async Task<OutboundEmailSendResult> SendSequenceEmailAsync(OutboundEmailSendRequest request, CancellationToken cancellationToken)
@@ -923,18 +923,14 @@ public sealed class MailboxOutboundEmailSender : IOutboundEmailSender
             .Where(x => x.CompanyId == request.CompanyId &&
                 x.Purpose == Domain.Enums.MailboxPurpose.Sales &&
                 x.Status == Domain.Enums.MailboxConnectionStatus.Active &&
-                (x.EncryptedAccessToken != null || x.EncryptedCredentialEnvelope != null))
+                x.CapabilityFlags.HasFlag(MailboxCapability.SendMessages))
             .OrderByDescending(x => x.UpdatedUtc)
             .FirstOrDefaultAsync(cancellationToken)
             ?? throw new InvalidOperationException("A connected mailbox is required before campaign emails can be sent.");
 
-        var accessToken = connection.Provider == Domain.Enums.MailboxProvider.StandardEmail
-            ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
-            : _fieldEncryption.Decrypt(
-                request.CompanyId,
-                MailboxConnectionDefaults.TokenPurpose(connection.Provider, "access_token"),
-                connection.EncryptedAccessToken!);
         var provider = _providerRegistry.Resolve(connection.Provider);
+        var accessToken = (await _tokenLeaseService.AcquireAsync(
+            request.CompanyId, connection.Id, provider.ReplyRequiredScopes, cancellationToken)).AccessToken;
         var result = await provider.SendReplyAsync(accessToken, new MailboxReplyExecutionRequest(
             request.CompanyId,
             connection.Id,

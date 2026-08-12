@@ -171,7 +171,7 @@ public sealed class SupplierSubscription : ICompanyOwnedEntity
 
         var start = NormalizeDate(startDateUtc);
         var next = NormalizeDate(nextExpectedBillDateUtc);
-        var end = endDateUtc.HasValue ? NormalizeDate(endDateUtc.Value) : null;
+        DateTime? end = endDateUtc.HasValue ? NormalizeDate(endDateUtc.Value) : null;
         if (end.HasValue && end.Value < start) throw new ArgumentException("End date cannot be before start date.", nameof(endDateUtc));
         if (next < start) throw new ArgumentException("Next expected bill date cannot be before start date.", nameof(nextExpectedBillDateUtc));
 

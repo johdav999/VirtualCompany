@@ -5,7 +5,9 @@ public enum ApprovalTargetEntityType
     Task = 1,
     Workflow = 2,
     Action = 3,
-    FinanceIntegrationWrite = 4
+    FinanceIntegrationWrite = 4,
+    SalesMeetingInvitation = 5,
+    SalesMeetingChangeRequest = 6
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -15,7 +17,9 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.Task] = "task",
         [ApprovalTargetEntityType.Workflow] = "workflow",
         [ApprovalTargetEntityType.Action] = "action",
-        [ApprovalTargetEntityType.FinanceIntegrationWrite] = "finance_integration_write"
+        [ApprovalTargetEntityType.FinanceIntegrationWrite] = "finance_integration_write",
+        [ApprovalTargetEntityType.SalesMeetingInvitation] = "sales_meeting_invitation",
+        [ApprovalTargetEntityType.SalesMeetingChangeRequest] = "sales_meeting_change_request"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

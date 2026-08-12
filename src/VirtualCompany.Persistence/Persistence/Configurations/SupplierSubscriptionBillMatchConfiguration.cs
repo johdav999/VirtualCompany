@@ -21,9 +21,12 @@ public sealed class SupplierSubscriptionBillMatchConfiguration : IEntityTypeConf
         builder.Property(x => x.EvidenceSummary).HasMaxLength(600).IsRequired();
         builder.Property(x => x.CreatedUtc).HasPrecision(3);
         builder.Property(x => x.UpdatedUtc).HasPrecision(3);
-        builder.HasIndex(x => new { x.CompanyId, x.BillId }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.BillId })
+            .IsUnique()
+            .HasFilter("[Status] = 'confirmed'");
         builder.HasIndex(x => new { x.CompanyId, x.SubscriptionId, x.ExpectedBillDateUtc, x.Status });
         builder.HasOne(x => x.Subscription).WithMany(x => x.BillMatches).HasForeignKey(x => x.SubscriptionId).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.Bill).WithMany().HasForeignKey(x => x.BillId).OnDelete(DeleteBehavior.Restrict);
     }
 }
+

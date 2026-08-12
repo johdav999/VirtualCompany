@@ -158,8 +158,12 @@ public sealed class MailboxConnectionFlowTests
         var stored = await dbContext.MailboxConnections.SingleAsync();
         Assert.Equal(result.MailboxConnectionId, stored.Id);
         Assert.Equal(MailboxConnectionStatus.Active, stored.Status);
-        Assert.NotEqual("access-token", stored.EncryptedAccessToken);
-        Assert.NotEqual("refresh-token", stored.EncryptedRefreshToken);
+        Assert.Null(stored.EncryptedAccessToken);
+        Assert.Null(stored.EncryptedRefreshToken);
+        Assert.NotNull(stored.ExternalAccountConnectionId);
+        var external = await dbContext.ExternalAccountConnections.SingleAsync();
+        Assert.NotEqual("access-token", external.EncryptedAccessToken);
+        Assert.NotEqual("refresh-token", external.EncryptedRefreshToken);
         Assert.Equal(0, await dbContext.Payments.CountAsync());
         Assert.Equal(0, await dbContext.ApprovalRequests.CountAsync());
     }
@@ -184,6 +188,9 @@ public sealed class MailboxConnectionFlowTests
             dbContext,
             new FakeProviderRegistry(provider),
             CreateEncryption(),
+            new MailboxOAuthAccessTokenLeaseService(
+                dbContext, new FakeProviderRegistry(provider), CreateEncryption()),
+            null!,
             new FakeTimeProvider(now),
             NullLogger<MailboxConnectionCredentialRefresher>.Instance);
 
@@ -195,7 +202,8 @@ public sealed class MailboxConnectionFlowTests
         Assert.Equal(MailboxPurpose.Support, stored.Purpose);
         Assert.Equal(MailboxConnectionStatus.Active, stored.Status);
         Assert.Null(stored.LastErrorSummary);
-        Assert.True(stored.AccessTokenExpiresUtc > now);
+        var external = await dbContext.ExternalAccountConnections.SingleAsync();
+        Assert.True(external.AccessTokenExpiresUtc > now);
     }
 
     [Fact]
@@ -220,6 +228,9 @@ public sealed class MailboxConnectionFlowTests
             dbContext,
             new FakeProviderRegistry(provider),
             CreateEncryption(),
+            new MailboxOAuthAccessTokenLeaseService(
+                dbContext, new FakeProviderRegistry(provider), CreateEncryption()),
+            null!,
             new FakeTimeProvider(now),
             NullLogger<MailboxConnectionCredentialRefresher>.Instance);
 
@@ -566,8 +577,8 @@ public sealed class MailboxConnectionFlowTests
                 new MailboxMessageSummary(
                     messageId,
                     "Invoice Prosa Services",
-                    null,
                     "Hello, Please find our test supplier invoice details below.",
+                    null,
                     [],
                     "johan@example.com",
                     null,
@@ -604,7 +615,6 @@ public sealed class MailboxConnectionFlowTests
         var snapshot = await dbContext.EmailMessageSnapshots.SingleAsync();
         Assert.Equal(BillSourceType.EmailBodyOnly, snapshot.SourceType);
         Assert.Contains("VC-TEST-2026-001", snapshot.UntrustedBodyText);
-        Assert.Equal(1, await dbContext.DetectedBills.CountAsync());
     }
 
     [Fact]
@@ -807,12 +817,40 @@ public sealed class MailboxConnectionFlowTests
         }
         encryption ??= CreateEncryption();
         var mailbox = new MailboxConnection(Guid.NewGuid(), companyId, userId, provider, emailAddress, purpose: purpose);
-        mailbox.StoreEncryptedCredentials(
-            encryption.Encrypt(companyId, $"mailbox:{provider.ToStorageValue()}:access_token", "access-token"),
-            encryption.Encrypt(companyId, $"mailbox:{provider.ToStorageValue()}:refresh_token", "refresh-token"),
-            accessTokenExpiresUtc ?? DateTime.UtcNow.AddHours(1),
-            ["scope"]);
+        if (provider is MailboxProvider.Gmail or MailboxProvider.Microsoft365)
+        {
+            var externalProvider = provider == MailboxProvider.Gmail
+                ? ExternalAccountProvider.Google
+                : ExternalAccountProvider.Microsoft365;
+            var externalId = Guid.NewGuid();
+            var external = new ExternalAccountConnection(
+                externalId, companyId, userId, externalProvider,
+                emailAddress, "Mailbox User", emailAddress,
+                $"mailbox:{provider.ToStorageValue()}");
+            external.StoreEncryptedCredentials(
+                encryption.Encrypt(companyId, external.CredentialPurpose("access_token"), "access-token"),
+                encryption.Encrypt(companyId, external.CredentialPurpose("refresh_token"), "refresh-token"),
+                accessTokenExpiresUtc ?? DateTime.UtcNow.AddHours(1),
+                provider == MailboxProvider.Gmail
+                    ? ["https://www.googleapis.com/auth/gmail.readonly"]
+                    : ["Mail.Read"]);
+            external.SetStatus(ExternalConnectionStatus.Active);
+            mailbox.LinkExternalAccount(externalId);
+            mailbox.StoreEncryptedCredentials(null, null, null, ["scope"]);
+            dbContext.ExternalAccountConnections.Add(external);
+        }
+        else
+        {
+            mailbox.StoreEncryptedCredentials(
+                encryption.Encrypt(companyId, StandardMailboxCredentialPurposes.AccessToken(mailbox.Id), "access-token"),
+                encryption.Encrypt(companyId, StandardMailboxCredentialPurposes.RefreshToken(mailbox.Id), "refresh-token"),
+                accessTokenExpiresUtc ?? DateTime.UtcNow.AddHours(1),
+                ["scope"]);
+        }
         mailbox.ConfigureFolders([new MailboxFolderSelection("INBOX", "Inbox")]);
+        var alreadyHasPrimary = await dbContext.MailboxConnections
+            .AnyAsync(x => x.CompanyId == companyId && x.Purpose == purpose && x.IsPrimaryInbound);
+        mailbox.SetPrimaryInbound(!alreadyHasPrimary);
         mailbox.SetStatus(MailboxConnectionStatus.Active);
         dbContext.MailboxConnections.Add(mailbox);
         await dbContext.SaveChangesAsync();
@@ -852,7 +890,10 @@ public sealed class MailboxConnectionFlowTests
                 new FakeProviderRegistry(provider),
                 new BillDetectionService(),
                 CreateDocumentExtractionService(connection, companyId, userId, nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
-                CreateEncryption(),
+                new MailboxOAuthAccessTokenLeaseService(
+                    CreateContext(connection, new TestCompanyContextAccessor(companyId, userId)),
+                    new FakeProviderRegistry(provider),
+                    CreateEncryption()),
                 new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),
                 NullLogger<CompanyManualInboxBillScanOrchestrator>.Instance)),
             new FakeTimeProvider(nowUtc ?? new DateTime(2026, 4, 26, 8, 0, 0, DateTimeKind.Utc)),

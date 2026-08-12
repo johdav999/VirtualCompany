@@ -55,12 +55,12 @@
             </section>
 
             <nav class="prospecting-view-tabs" aria-label="@SalesText["ProspectingViews"]">
-                @foreach (var view in new[] { "Accounts", "Leads", "ICP", "Runs", "Data sources", "Suppressions" })
+                @foreach (var view in new[] { "Leads", "Accounts", "ICP", "Runs", "Data sources", "Suppressions" })
                 { <button class="@(activeView == view ? "active" : null)" @onclick="() => SelectView(view)">@ProspectingViewLabel(view)</button> }
             </nav>
 
             @if (activeView == "Accounts") { @AccountsView() }
-            else if (activeView == "Leads") { <SalesLeads CompanyId="@ResolvedCompanyId" Embedded="true" /> }
+            else if (activeView == "Leads") { <SalesLeads Embedded="true" /> }
             else if (activeView == "ICP") { @IcpView() }
             else if (activeView == "Runs") { @RunsView() }
             else if (activeView == "Data sources") { @SourcesView() }
@@ -71,9 +71,9 @@
 </div>
 
 @code {
-    private bool isLoading = true, isBusy;
+    private bool isLoading = true, isBusy, isSuggestingIcp;
     private string? errorMessage, actionMessage, search, statusFilter, rejectionReason;
-    private string activeView = "Accounts";
+    private string activeView = "Leads";
     private ProspectPageResponse prospects = new([], 0, 1, 50);
     private ProspectAccountResponse? selected;
     private LeadGenerationMetricsResponse metrics = new(0, 0, 0, 0, 0, 0, 0, new Dictionary<string, int>());
@@ -83,6 +83,7 @@
     private SourcePolicyResponse? sourcePolicy;
     private SaveIcpProfileRequest icpForm = new("", "", "", null, null, null, null, "", "", "", "", "");
     private Guid? editingIcpId;
+    private IcpSuggestionResponse? icpSuggestion;
     private CreateProspectingRunRequest runForm = new(Guid.Empty, "", 100, 300, "first_party", "", 30, 0, null);
     private SaveSourcePolicyRequest sourceForm = new("first_party,csv", "", "company,domain,industry,country,name,title,email,phone", 0, 0, 0, 365, 30);
     private SaveSuppressionRequest suppressionForm = new("domain", "", "", "manual", null);
@@ -92,16 +93,31 @@
 
     protected override async Task OnParametersSetAsync()
     {
-        activeView = string.Equals(RequestedView, "leads", StringComparison.OrdinalIgnoreCase)
-            ? "Leads"
-            : activeView;
+        activeView = RequestedView?.Trim().ToLowerInvariant() switch
+        {
+            "accounts" => "Accounts",
+            "leads" => "Leads",
+            "icp" => "ICP",
+            "runs" => "Runs",
+            "data-sources" => "Data sources",
+            "suppressions" => "Suppressions",
+            _ => "Leads"
+        };
         await LoadAsync();
     }
 
     private void SelectView(string view)
     {
         activeView = view;
-        var viewToken = view == "Leads" ? "leads" : null;
+        var viewToken = view switch
+        {
+            "Accounts" => "accounts",
+            "ICP" => "icp",
+            "Runs" => "runs",
+            "Data sources" => "data-sources",
+            "Suppressions" => "suppressions",
+            _ => null
+        };
         Navigation.NavigateTo(Navigation.GetUriWithQueryParameter("view", viewToken), replace: true);
     }
     private async Task LoadAsync()
@@ -113,7 +129,7 @@
         finally { isLoading = false; }
     }
 
-    private RenderFragment AccountsView() => @<>
+    private RenderFragment AccountsView() => @<text>
         <section class="sales-card sales-filter-card prospecting-filter">
 <label>
 <span>@SalesText["SearchAccounts"]</span>
@@ -228,7 +244,7 @@
                 }
             </div>
         </section>@ActionMessage()
-    </>;
+    </text>;
 
     private bool showContactForm, showSignalForm;
     private RenderFragment IcpView() => @<section class="settings-grid">
@@ -242,7 +258,49 @@
 <button class="sales-button sales-button--small" @onclick="() => EditIcp(p)">@SalesText["Edit"]</button>@if (p.Status == "Draft") { <button class="sales-button sales-button--small sales-button--primary" @onclick="() => ActivateIcp(p.Id)">@SalesText["Activate"]</button> }<button class="sales-button sales-button--small" @onclick="() => CloneIcp(p.Id)">@SalesText["NewVersion"]</button>
 </div> }</div>
 <div class="sales-card settings-form">
+<div class="icp-form-heading">
 <h2>@(editingIcpId.HasValue ? SalesText["EditIcpDraft"] : SalesText["NewIcp"])</h2>
+<button class="sales-button sales-button--small" disabled="@isSuggestingIcp" @onclick="SuggestIcp">
+    @(isSuggestingIcp ? SalesText["IcpSuggestionWorking"] : SalesText["AskAlexForIcp"])
+</button>
+</div>
+@if (icpSuggestion is not null)
+{
+<section class="icp-suggestion" aria-label="@SalesText["AlexIcpSuggestion"]">
+<div class="icp-suggestion__heading">
+<div>
+<span>@SalesText["AlexIcpSuggestion"]</span>
+<strong>@icpSuggestion.Profile.Name</strong>
+</div>
+<span class="sales-badge">@SalesText["ConfidenceLabel", LocalNumber.Percentage(icpSuggestion.Confidence)]</span>
+</div>
+<p>@icpSuggestion.Rationale</p>
+<div>
+<strong class="icp-suggestion__label">@SalesText["BasedOn"]</strong>
+<div class="icp-suggestion__sources">
+@foreach (var source in icpSuggestion.Evidence)
+{
+<div>
+<strong>@source.Title</strong>
+<span>@source.Type.Replace('_', ' ')</span>
+</div>
+}
+</div>
+</div>
+@if (icpSuggestion.MissingEvidence.Count > 0)
+{
+<div class="icp-suggestion__missing">
+<strong>@SalesText["MissingInformation"]</strong>
+<span>@string.Join(" · ", icpSuggestion.MissingEvidence)</span>
+</div>
+}
+<p class="form-help">@SalesText["IcpSuggestionReviewHelp"]</p>
+<div class="icp-suggestion__actions">
+<button class="sales-button sales-button--primary" @onclick="ApplyIcpSuggestion">@SalesText["UseSuggestion"]</button>
+<button class="sales-button" @onclick="DismissIcpSuggestion">@SalesText["Dismiss"]</button>
+</div>
+</section>
+}
 <label>@SalesText["Name"]<input class="sales-input" @bind="icpForm.Name" />
 </label>
 <label>@SalesText["Countries"]<input class="sales-input" placeholder="@SalesText["CountriesPlaceholder"]" @bind="icpForm.Countries" />
@@ -362,7 +420,7 @@
 </label>
 <button class="sales-button sales-button--primary" @onclick="AddSuppression">@SalesText["Suppress"]</button>
 </div>@ActionMessage()</section>;
-    private RenderFragment ActionMessage() => @<>{@if (!string.IsNullOrWhiteSpace(actionMessage)) { <div class="sales-toast">@actionMessage</div> }}</>;
+    private RenderFragment ActionMessage() => @<text>@if (!string.IsNullOrWhiteSpace(actionMessage)) { <div class="sales-toast">@actionMessage</div> }</text>;
 
     private async Task ApplyFilters() => await LoadAsync();
     private async Task RunAction(Func<Guid, Task> action) { if (ResolvedCompanyId is not Guid companyId) return; isBusy = true; actionMessage = null; try { await action(companyId); await LoadAsync(); } catch (SalesApiException ex) { actionMessage = ex.Message; } finally { isBusy = false; } }
@@ -373,6 +431,58 @@
     private async Task ConvertSelected() { if (selected is null) return; await RunAction(async c => { var result = await SalesApiClient.ConvertProspectAsync(c, selected.Id, selected.Contacts.FirstOrDefault(x => x.Status == "Accepted")?.Id); Navigation.NavigateTo(BuildPath($"/app/sales/leads")); }); }
     private async Task AddContact() { if (selected is null) return; contactForm.SourceReference = Guid.NewGuid().ToString("N"); await RunAction(async c => { await SalesApiClient.AddProspectContactAsync(c, selected.Id, contactForm); selected = await SalesApiClient.GetProspectAsync(c, selected.Id); showContactForm = false; }); }
     private async Task AddSignal() { if (selected is null) return; signalForm.SourceReference = Guid.NewGuid().ToString("N"); signalForm.EventUtc = DateTime.UtcNow; await RunAction(async c => { await SalesApiClient.AddProspectSignalAsync(c, selected.Id, signalForm); selected = await SalesApiClient.RefreshProspectAsync(c, selected.Id); showSignalForm = false; }); }
+    private async Task SuggestIcp()
+    {
+        if (ResolvedCompanyId is not Guid companyId) return;
+        isSuggestingIcp = true;
+        actionMessage = null;
+        try
+        {
+            var agentId = await ResolveSalesAgentIdAsync(companyId);
+            if (agentId is null)
+            {
+                actionMessage = SalesText["ActiveSalesAgentRequired"];
+                return;
+            }
+
+            icpSuggestion = await SalesApiClient.SuggestIcpAsync(companyId, new SuggestIcpRequest(agentId.Value));
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        catch (OnboardingApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isSuggestingIcp = false;
+        }
+    }
+
+    private void ApplyIcpSuggestion()
+    {
+        if (icpSuggestion is null) return;
+        var profile = icpSuggestion.Profile;
+        editingIcpId = null;
+        icpForm = new(
+            profile.Name,
+            profile.Countries,
+            profile.Industries,
+            profile.EmployeeMin,
+            profile.EmployeeMax,
+            profile.RevenueMin,
+            profile.RevenueMax,
+            profile.BuyerRoles,
+            profile.Technologies,
+            profile.PainHypotheses,
+            profile.PositiveCriteria,
+            profile.Disqualifiers);
+        actionMessage = SalesText["IcpSuggestionApplied"];
+    }
+
+    private void DismissIcpSuggestion() => icpSuggestion = null;
     private void EditIcp(IcpProfileResponse p) { editingIcpId = p.Status == "Draft" ? p.Id : null; icpForm = new(p.Name, p.Countries, p.Industries, p.EmployeeMin, p.EmployeeMax, p.RevenueMin, p.RevenueMax, p.BuyerRoles, p.Technologies, p.PainHypotheses, p.PositiveCriteria, p.Disqualifiers); }
     private async Task SaveIcp() => await RunAction(async c => { if (editingIcpId.HasValue) await SalesApiClient.UpdateIcpProfileAsync(c, editingIcpId.Value, icpForm); else await SalesApiClient.CreateIcpProfileAsync(c, icpForm); editingIcpId = null; });
     private async Task ActivateIcp(Guid id) => await RunAction(c => SalesApiClient.ActivateIcpProfileAsync(c, id));

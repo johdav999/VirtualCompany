@@ -83,7 +83,7 @@
                             <tbody>
                                 @foreach (var lead in FilteredLeads)
                                 {
-                                    <tr @key="lead.Id">
+                                    <tr @key="lead.Id" class="sales-clickable-row" @onclick="() => OpenLead(lead.Id)">
                                         <td>
                                             <strong>@lead.Title</strong>
                                             <span>@MoneyOrDash(lead.EstimatedValue, lead.Currency)</span>
@@ -97,9 +97,19 @@
                                         <td>@lead.SuggestedNextAction</td>
                                         <td>
                                             <div class="sales-row-actions">
-                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => QualifyAsync(lead.Id)">@SalesText["Qualify"]</button>
-                                                <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick="() => RejectAsync(lead.Id)">@SalesText["Reject"]</button>
-                                                <button class="sales-button sales-button--small sales-button--primary" disabled="@IsBusy(lead.Id)" @onclick="() => BeginConvert(lead)">@SalesText["Convert"]</button>
+                                                @if (string.Equals(lead.QualificationStatus, "Qualified", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    <button class="sales-button sales-button--small sales-button--primary" disabled="@IsBusy(lead.Id)" @onclick:stopPropagation="true" @onclick="() => BeginConvert(lead)">@SalesText["CreateDeal"]</button>
+                                                }
+                                                else if (string.Equals(lead.QualificationStatus, "Open", StringComparison.OrdinalIgnoreCase))
+                                                {
+                                                    <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick:stopPropagation="true" @onclick="() => QualifyAsync(lead.Id)">@SalesText["Qualify"]</button>
+                                                    <button class="sales-button sales-button--small" disabled="@IsBusy(lead.Id)" @onclick:stopPropagation="true" @onclick="() => RejectAsync(lead.Id)">@SalesText["Reject"]</button>
+                                                }
+                                                else
+                                                {
+                                                    <span class="sales-row-actions__complete">@SalesStatusPresenter.Present(lead.QualificationStatus, SalesText)</span>
+                                                }
                                             </div>
                                         </td>
                                     </tr>
@@ -125,6 +135,10 @@
                     <label>
                         <span>@SalesText["Currency"]</span>
                         <input class="sales-input" maxlength="3" @bind="convertCurrency" />
+                    </label>
+                    <label>
+                        <span>@SalesText["ExpectedCloseDate"]</span>
+                        <input class="sales-input" type="date" @bind="convertExpectedCloseDate" @bind:format="yyyy-MM-dd" />
                     </label>
                     <label>
                         <span>@SalesText["Note"]</span>
@@ -188,6 +202,7 @@
     private string qualificationNextAction = "Send a personal follow-up";
     private decimal convertAmount = 1000;
     private string convertCurrency = "USD";
+    private DateTime? convertExpectedCloseDate;
 
     protected override async Task OnParametersSetAsync()
     {
@@ -299,6 +314,7 @@
         leadToConvert = lead;
         convertAmount = lead.EstimatedValue ?? 1000;
         convertCurrency = string.IsNullOrWhiteSpace(lead.Currency) ? "USD" : lead.Currency;
+        convertExpectedCloseDate = DateTime.Today.AddDays(30);
     }
 
     private void CancelConvert() => leadToConvert = null;
@@ -313,7 +329,14 @@
         busyId = leadToConvert.Id;
         try
         {
-            var deal = await SalesApiClient.ConvertLeadAsync(companyId, leadToConvert.Id, new ConvertLeadRequest(convertAmount, convertCurrency, null, actionNote));
+            if (convertExpectedCloseDate is null)
+            {
+                actionMessage = SalesText["ExpectedCloseDateRequired"];
+                return;
+            }
+
+            var expectedCloseUtc = DateTime.SpecifyKind(convertExpectedCloseDate.Value.Date, DateTimeKind.Utc);
+            var deal = await SalesApiClient.ConvertLeadAsync(companyId, leadToConvert.Id, new ConvertLeadRequest(convertAmount, convertCurrency, expectedCloseUtc, actionNote));
             Navigation.NavigateTo(BuildPath($"/app/sales/deals/{deal.Id:D}"));
         }
         catch (SalesApiException ex)
@@ -327,6 +350,7 @@
     }
 
     private bool IsBusy(Guid id) => busyId == id;
+    private void OpenLead(Guid leadId) => Navigation.NavigateTo(BuildPath($"/app/sales/leads/{leadId:D}"));
     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
     private string Confidence(decimal? confidence) => confidence.HasValue ? LocalNumber.Percentage(confidence.Value) : SalesText["NotScored"];
     private string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? LocalMoney.Format(value.Value, currency ?? "USD") : SalesText["NoValueYet"];

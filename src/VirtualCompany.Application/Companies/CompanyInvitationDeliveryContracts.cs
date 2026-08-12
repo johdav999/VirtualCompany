@@ -14,6 +14,9 @@ public static class CompanyOutboxTopics
     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
     public const string SupportMemoryUpdateRequested = "support.memory.update_requested";
     public const string SupportReplyDeliveryRequested = "support.reply.delivery_requested";
+    public const string SalesMeetingInvitationDeliveryRequested = "sales.meeting_invitation.delivery_requested";
+    public const string SalesMeetingChangeDeliveryRequested = "sales.meeting_change.delivery_requested";
+    public const string SalesMeetingConfirmationDeliveryRequested = "sales.meeting_confirmation.delivery_requested";
     public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
     public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;

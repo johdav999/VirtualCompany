@@ -97,6 +97,11 @@ public sealed class Lead : ICompanyOwnedEntity
 
     public void ConvertToDeal(Guid dealId)
     {
+        if (Status != SalesStatuses.Qualified)
+        {
+            throw new InvalidOperationException("Only qualified leads can be converted to a deal.");
+        }
+
         ConvertedDealId = dealId == Guid.Empty ? throw new ArgumentException("DealId is required.", nameof(dealId)) : dealId;
         Status = SalesStatuses.Converted;
         UpdatedUtc = DateTime.UtcNow;

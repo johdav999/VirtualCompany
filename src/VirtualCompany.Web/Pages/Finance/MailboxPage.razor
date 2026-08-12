@@ -206,6 +206,29 @@
                                     }
                                 </div>
                             </div>
+                            <div class="border rounded-3 p-3 mb-3">
+                                <div class="d-flex flex-wrap justify-content-between gap-3 align-items-start">
+                                    <div>
+                                        <div class="fw-semibold">Subscription discovery</div>
+                                        @if (SelectedMessage.DetectedSubscriptionProposalId is Guid)
+                                        {
+                                            <div class="small text-body-secondary">Agreement evidence was found and needs finance review.</div>
+                                        }
+                                        else
+                                        {
+                                            <div class="small text-body-secondary">No subscription agreement proposal was created from this message.</div>
+                                        }
+                                    </div>
+                                    @if (SelectedMessage.DetectedSubscriptionProposalId is Guid proposalId)
+                                    {
+                                        <NavLink class="btn btn-outline-primary" href="@BuildSubscriptionProposalHref(proposalId)">Review agreement</NavLink>
+                                    }
+                                </div>
+                                @if (!string.IsNullOrWhiteSpace(SelectedMessage.DetectedSubscriptionProposalStatus))
+                                {
+                                    <div class="small text-body-secondary mt-2">Status: @FormatMailboxCode(SelectedMessage.DetectedSubscriptionProposalStatus)</div>
+                                }
+                            </div>
                             <div class="small text-uppercase text-body-secondary fw-semibold mb-1">@FinanceText["ExtractedEmailText"]</div>
                             @if (string.IsNullOrWhiteSpace(SelectedMessage.BodyPreview))
                             {

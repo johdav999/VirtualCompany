@@ -85,6 +85,28 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
         EnsureCurrentTenantUser(command.CompanyId, command.UserId);
         MailboxPurposeValues.EnsureSupported(command.Purpose, nameof(command.Purpose));
         var provider = _providerRegistry.Resolve(command.Provider);
+        var requestedScopes = provider.DefaultScopes;
+        if (command.Provider is MailboxProvider.Gmail or MailboxProvider.Microsoft365)
+        {
+            var externalProvider = command.Provider == MailboxProvider.Gmail
+                ? ExternalAccountProvider.Google
+                : ExternalAccountProvider.Microsoft365;
+            var existingScopeSets = await _dbContext.ExternalAccountConnections
+                .Where(x => x.CompanyId == command.CompanyId &&
+                    x.UserId == command.UserId &&
+                    x.Provider == externalProvider &&
+                    x.Status != ExternalConnectionStatus.Disconnected)
+                .Select(x => x.GrantedScopes)
+                .Take(2)
+                .ToArrayAsync(cancellationToken);
+            if (existingScopeSets.Length == 1)
+            {
+                requestedScopes = provider.DefaultScopes
+                    .Concat(existingScopeSets[0])
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToArray();
+            }
+        }
         var now = UtcNow();
         var configuredFolders = NormalizeFolders(command.ConfiguredFolders, command.Provider);
         var nonce = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
@@ -110,7 +132,8 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             Username: command.Username,
             Imap: command.Imap,
             Smtp: command.Smtp,
-            Nonce: nonce));
+            Nonce: nonce,
+            RequestedScopes: requestedScopes));
         if (_replayGuard is not null)
         {
             await _replayGuard.RegisterAsync(
@@ -128,7 +151,8 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             command.UserId,
             command.CallbackUri,
             state,
-            command.ProfileKey));
+            command.ProfileKey,
+            requestedScopes));
 
         _logger.LogInformation(
             "Mailbox OAuth start built. CompanyId: {CompanyId}. UserId: {UserId}. Purpose: {Purpose}. Provider: {Provider}.",
@@ -230,7 +254,8 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             .Take(limit)
             .ToArrayAsync(cancellationToken);
 
-        var snapshotSourceIds = snapshots.Select(snapshot => snapshot.Id.ToString("D")).ToArray();
+        var snapshotIds = snapshots.Select(snapshot => snapshot.Id).ToArray();
+        var snapshotSourceIds = snapshotIds.Select(snapshotId => snapshotId.ToString("D")).ToArray();
         var detectedBillIdsBySourceEmailId = await _dbContext.DetectedBills
             .IgnoreQueryFilters()
             .AsNoTracking()
@@ -240,6 +265,21 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             .GroupBy(x => x.SourceEmailId!)
             .Select(x => new { SourceEmailId = x.Key, BillId = x.OrderByDescending(bill => bill.UpdatedUtc).Select(bill => bill.Id).First() })
             .ToDictionaryAsync(x => x.SourceEmailId, x => x.BillId, StringComparer.OrdinalIgnoreCase, cancellationToken);
+        var subscriptionProposalsBySourceMessageId = await _dbContext.SupplierSubscriptionIntakeProposals
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && snapshotIds.Contains(x.SourceEmailMessageSnapshotId))
+            .GroupBy(x => x.SourceEmailMessageSnapshotId)
+            .Select(x => new
+            {
+                SourceEmailMessageSnapshotId = x.Key,
+                Proposal = x
+                    .OrderByDescending(proposal => proposal.UpdatedUtc)
+                    .ThenByDescending(proposal => proposal.CreatedUtc)
+                    .Select(proposal => new { proposal.Id, proposal.Status })
+                    .First()
+            })
+            .ToDictionaryAsync(x => x.SourceEmailMessageSnapshotId, x => x.Proposal, cancellationToken);
 
         return snapshots
             .Select(snapshot => new MailboxScannedMessageSummary(
@@ -267,6 +307,8 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
                         attachment.IsDuplicateByHash))
                     .ToArray(),
                 detectedBillIdsBySourceEmailId.TryGetValue(snapshot.Id.ToString("D"), out var detectedBillId) ? detectedBillId : null,
+                subscriptionProposalsBySourceMessageId.TryGetValue(snapshot.Id, out var subscriptionProposal) ? subscriptionProposal.Id : null,
+                subscriptionProposal?.Status,
                 snapshot.CreatedUtc))
             .ToArray();
     }
@@ -311,7 +353,8 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
         ResolveCompletionTenantUserFromState(state);
         var provider = _providerRegistry.Resolve(state.Provider);
         var tokenResult = await provider.ExchangeCodeAsync(
-            new MailboxTokenExchangeRequest(command.Code, command.CallbackUri, state.ProfileKey),
+            new MailboxTokenExchangeRequest(
+                command.Code, command.CallbackUri, state.ProfileKey, state.RequestedScopes),
             cancellationToken);
         var profile = state.Provider == MailboxProvider.StandardEmail
             ? new MailboxAccountProfile(
@@ -360,18 +403,71 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             now,
             purpose: state.Purpose);
 
-        var otherActiveConnections = await _dbContext.MailboxConnections
+        var otherPrimaryConnections = await _dbContext.MailboxConnections
             .Where(x => x.CompanyId == state.CompanyId &&
                 x.Purpose == state.Purpose &&
                 x.Id != connection.Id &&
-                x.Status == MailboxConnectionStatus.Active)
+                x.IsPrimaryInbound)
             .ToArrayAsync(cancellationToken);
-        foreach (var otherConnection in otherActiveConnections)
+        foreach (var otherConnection in otherPrimaryConnections)
         {
-            otherConnection.SetStatus(MailboxConnectionStatus.Disconnected);
+            otherConnection.SetPrimaryInbound(false);
         }
 
+        connection.SetPrimaryInbound(true);
         connection.UpdateMailboxProfile(normalizedEmail, profile.DisplayName, profile.ProviderAccountId);
+        if (state.Provider is MailboxProvider.Gmail or MailboxProvider.Microsoft365)
+        {
+            connection.SetCapabilities(
+                MailboxCapability.ReadMessages |
+                MailboxCapability.ReadAttachments |
+                MailboxCapability.ListFolders |
+                MailboxCapability.ThreadCorrelation |
+                MailboxCapability.CreateDrafts |
+                MailboxCapability.SendMessages);
+        }
+        if (state.Provider is MailboxProvider.Gmail or MailboxProvider.Microsoft365)
+        {
+            var externalProvider = state.Provider == MailboxProvider.Gmail
+                ? ExternalAccountProvider.Google
+                : ExternalAccountProvider.Microsoft365;
+            var externalAccount = await _dbContext.ExternalAccountConnections
+                .SingleOrDefaultAsync(x => x.CompanyId == state.CompanyId &&
+                    x.Provider == externalProvider &&
+                    x.AccountEmail == normalizedEmail, cancellationToken);
+            if (externalAccount is null)
+            {
+                var externalAccountId = Guid.NewGuid();
+                externalAccount = new ExternalAccountConnection(
+                    externalAccountId, state.CompanyId, state.UserId,
+                    externalProvider, normalizedEmail, profile.DisplayName,
+                    profile.ProviderAccountId,
+                    $"external-account:{externalAccountId:N}", now);
+                _dbContext.ExternalAccountConnections.Add(externalAccount);
+            }
+
+            externalAccount.UpdateProfile(
+                normalizedEmail, profile.DisplayName, profile.ProviderAccountId);
+            externalAccount.StoreEncryptedCredentials(
+                _fieldEncryption.Encrypt(
+                    state.CompanyId,
+                    externalAccount.CredentialPurpose("access_token"),
+                    tokenResult.AccessToken),
+                string.IsNullOrWhiteSpace(tokenResult.RefreshToken)
+                    ? externalAccount.EncryptedRefreshToken
+                    : _fieldEncryption.Encrypt(
+                        state.CompanyId,
+                        externalAccount.CredentialPurpose("refresh_token"),
+                        tokenResult.RefreshToken),
+                tokenResult.AccessTokenExpiresUtc,
+                tokenResult.GrantedScopes.Count == 0
+                    ? state.RequestedScopes ?? provider.DefaultScopes
+                    : tokenResult.GrantedScopes
+                        .Concat(state.RequestedScopes ?? [])
+                        .Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
+            externalAccount.SetStatus(ExternalConnectionStatus.Active);
+            connection.LinkExternalAccount(externalAccount.Id);
+        }
         if (state.Provider == MailboxProvider.StandardEmail)
         {
             var imap = state.Imap ?? throw new InvalidOperationException("Hosted mailbox OAuth state did not include the incoming endpoint.");
@@ -393,23 +489,30 @@ public sealed class CompanyMailboxConnectionService : IMailboxConnectionService
             : standardHealth?.Folders.Where(folder => folder.IsInbox && folder.CanRead)
                 .Select(folder => new MailboxFolderSelection(folder.FolderId, folder.DisplayName))
                 .ToArray());
-        connection.StoreEncryptedCredentials(
-            _fieldEncryption.Encrypt(
-                state.CompanyId,
-                state.Provider == MailboxProvider.StandardEmail
-                    ? StandardMailboxCredentialPurposes.AccessToken(connection.Id)
-                    : BuildTokenPurpose(state.Provider, "access_token"),
-                tokenResult.AccessToken),
-            string.IsNullOrEmpty(tokenResult.RefreshToken)
-                ? connection.EncryptedRefreshToken
-                : _fieldEncryption.Encrypt(
+        if (state.Provider == MailboxProvider.StandardEmail)
+        {
+            connection.StoreEncryptedCredentials(
+                _fieldEncryption.Encrypt(
                     state.CompanyId,
-                    state.Provider == MailboxProvider.StandardEmail
-                        ? StandardMailboxCredentialPurposes.RefreshToken(connection.Id)
-                        : BuildTokenPurpose(state.Provider, "refresh_token"),
-                    tokenResult.RefreshToken),
-            tokenResult.AccessTokenExpiresUtc,
-            tokenResult.GrantedScopes);
+                    StandardMailboxCredentialPurposes.AccessToken(connection.Id),
+                    tokenResult.AccessToken),
+                string.IsNullOrEmpty(tokenResult.RefreshToken)
+                    ? connection.EncryptedRefreshToken
+                    : _fieldEncryption.Encrypt(
+                        state.CompanyId,
+                        StandardMailboxCredentialPurposes.RefreshToken(connection.Id),
+                        tokenResult.RefreshToken),
+                tokenResult.AccessTokenExpiresUtc,
+                tokenResult.GrantedScopes);
+        }
+        else
+        {
+            connection.StoreEncryptedCredentials(
+                encryptedAccessToken: null,
+                encryptedRefreshToken: null,
+                accessTokenExpiresUtc: null,
+                tokenResult.GrantedScopes);
+        }
         connection.SetStatus(MailboxConnectionStatus.Active);
 
         if (existing is null)

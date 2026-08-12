@@ -102,6 +102,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
     public DbSet<SupplierSubscription> SupplierSubscriptions => Set<SupplierSubscription>();
     public DbSet<SupplierSubscriptionBillMatch> SupplierSubscriptionBillMatches => Set<SupplierSubscriptionBillMatch>();
+    public DbSet<SupplierSubscriptionIntakeProposal> SupplierSubscriptionIntakeProposals => Set<SupplierSubscriptionIntakeProposal>();
     public DbSet<FinanceAsset> FinanceAssets => Set<FinanceAsset>();
     public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
@@ -123,6 +124,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
     public DbSet<MailboxConnection> MailboxConnections => Set<MailboxConnection>();
+    public DbSet<ExternalAccountConnection> ExternalAccountConnections => Set<ExternalAccountConnection>();
+    public DbSet<CalendarConnection> CalendarConnections => Set<CalendarConnection>();
     public DbSet<MailboxFolderSyncCursor> MailboxFolderSyncCursors => Set<MailboxFolderSyncCursor>();
     public DbSet<MailboxOAuthAuthorizationState> MailboxOAuthAuthorizationStates => Set<MailboxOAuthAuthorizationState>();
     public DbSet<FortnoxConnection> FortnoxConnections => Set<FortnoxConnection>();
@@ -164,6 +167,8 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SalesActivity> SalesActivities => Set<SalesActivity>();
     public DbSet<SalesPipelineStage> SalesPipelineStages => Set<SalesPipelineStage>();
     public DbSet<SalesAgentRecommendation> SalesAgentRecommendations => Set<SalesAgentRecommendation>();
+    public DbSet<SalesMeetingInvitation> SalesMeetingInvitations => Set<SalesMeetingInvitation>();
+    public DbSet<SalesMeetingChangeRequest> SalesMeetingChangeRequests => Set<SalesMeetingChangeRequest>();
     public DbSet<SalesActionApproval> SalesActionApprovals => Set<SalesActionApproval>();
     public DbSet<SalesEmailLink> SalesEmailLinks => Set<SalesEmailLink>();
     public DbSet<SalesSequence> SalesSequences => Set<SalesSequence>();
@@ -433,6 +438,8 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is SalesActivity ||
                 entry.Entity is SalesPipelineStage ||
                 entry.Entity is SalesAgentRecommendation ||
+                entry.Entity is SalesMeetingInvitation ||
+                entry.Entity is SalesMeetingChangeRequest ||
                 entry.Entity is SalesAutomationPolicy ||
                 entry.Entity is SalesSequence ||
                 entry.Entity is SalesSequenceStep ||
@@ -519,6 +526,15 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SupplierSubscriptionBillMatch>()
             .HasQueryFilter(match =>
                 CurrentCompanyId != null && match.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupplierSubscriptionIntakeProposal>()
+            .HasQueryFilter(proposal =>
+                CurrentCompanyId != null && proposal.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingInvitation>()
+            .HasQueryFilter(invitation =>
+                CurrentCompanyId != null && invitation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SalesMeetingChangeRequest>()
+            .HasQueryFilter(changeRequest =>
+                CurrentCompanyId != null && changeRequest.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentOrchestrationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentHandoff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AgentMemoryCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -1044,3 +1060,4 @@ public sealed class VirtualCompanyDbContext : DbContext
                 "LENGTH(TRIM(explanation)) > 0"));
     }
 }
+

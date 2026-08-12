@@ -1099,6 +1099,8 @@ public sealed class MailboxScannedMessageResponse
     public string? BodyPreview { get; set; }
     public List<MailboxScannedAttachmentResponse> Attachments { get; set; } = [];
     public Guid? DetectedBillId { get; set; }
+    public Guid? DetectedSubscriptionProposalId { get; set; }
+    public string? DetectedSubscriptionProposalStatus { get; set; }
     public DateTime CreatedUtc { get; set; }
 }
 

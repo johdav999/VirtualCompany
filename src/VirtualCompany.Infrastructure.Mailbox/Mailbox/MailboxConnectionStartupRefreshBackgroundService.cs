@@ -95,6 +95,7 @@ public sealed class MailboxConnectionCredentialRefresher
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IMailboxProviderRegistry _providerRegistry;
     private readonly IFieldEncryptionService _fieldEncryption;
+    private readonly IMailboxOAuthAccessTokenLeaseService? _tokenLeaseService;
     private readonly IMailboxTransportRegistry? _transportRegistry;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<MailboxConnectionCredentialRefresher> _logger;
@@ -103,6 +104,7 @@ public sealed class MailboxConnectionCredentialRefresher
         VirtualCompanyDbContext dbContext,
         IMailboxProviderRegistry providerRegistry,
         IFieldEncryptionService fieldEncryption,
+        IMailboxOAuthAccessTokenLeaseService tokenLeaseService,
         IMailboxTransportRegistry transportRegistry,
         TimeProvider timeProvider,
         ILogger<MailboxConnectionCredentialRefresher> logger)
@@ -110,6 +112,7 @@ public sealed class MailboxConnectionCredentialRefresher
         _dbContext = dbContext;
         _providerRegistry = providerRegistry;
         _fieldEncryption = fieldEncryption;
+        _tokenLeaseService = tokenLeaseService;
         _transportRegistry = transportRegistry;
         _timeProvider = timeProvider;
         _logger = logger;
@@ -121,7 +124,7 @@ public sealed class MailboxConnectionCredentialRefresher
         IFieldEncryptionService fieldEncryption,
         TimeProvider timeProvider,
         ILogger<MailboxConnectionCredentialRefresher> logger)
-        : this(dbContext, providerRegistry, fieldEncryption, null!, timeProvider, logger)
+        : this(dbContext, providerRegistry, fieldEncryption, null!, null!, timeProvider, logger)
     {
     }
 
@@ -177,19 +180,24 @@ public sealed class MailboxConnectionCredentialRefresher
                     continue;
                 }
 
-                if (!RequiresRefresh(connection, now))
+                if (_tokenLeaseService is null)
                 {
-                    ValidateAccessToken(connection);
-                    _logger.LogInformation(
-                        "Mailbox connection restored from persisted credentials. CompanyId: {CompanyId}. Purpose: {Purpose}. Provider: {Provider}. ConnectionId: {ConnectionId}.",
-                        companyId,
-                        connection.Purpose,
-                        connection.Provider,
-                        connection.Id);
-                    continue;
+                    throw new InvalidOperationException("Mailbox OAuth token leasing is unavailable.");
                 }
 
-                await RefreshConnectionAsync(connection, cancellationToken);
+                var provider = _providerRegistry.Resolve(connection.Provider);
+                await _tokenLeaseService.AcquireAsync(
+                    connection.CompanyId,
+                    connection.Id,
+                    provider.ReadRequiredScopes,
+                    cancellationToken);
+                connection.SetStatus(MailboxConnectionStatus.Active);
+                _logger.LogInformation(
+                    "Mailbox connection restored from its external account credentials. CompanyId: {CompanyId}. Purpose: {Purpose}. Provider: {Provider}. ConnectionId: {ConnectionId}.",
+                    companyId,
+                    connection.Purpose,
+                    connection.Provider,
+                    connection.Id);
             }
             catch (CryptographicException)
             {
@@ -225,9 +233,7 @@ public sealed class MailboxConnectionCredentialRefresher
     {
         _fieldEncryption.Decrypt(
             connection.CompanyId,
-            connection.Provider == MailboxProvider.StandardEmail
-                ? StandardMailboxCredentialPurposes.AccessToken(connection.Id)
-                : CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
+            StandardMailboxCredentialPurposes.AccessToken(connection.Id),
             connection.EncryptedAccessToken!);
     }
 
@@ -244,9 +250,7 @@ public sealed class MailboxConnectionCredentialRefresher
             var provider = _providerRegistry.Resolve(connection.Provider);
             var refreshToken = _fieldEncryption.Decrypt(
                 connection.CompanyId,
-                connection.Provider == MailboxProvider.StandardEmail
-                    ? StandardMailboxCredentialPurposes.RefreshToken(connection.Id)
-                    : CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "refresh_token"),
+                StandardMailboxCredentialPurposes.RefreshToken(connection.Id),
                 connection.EncryptedRefreshToken);
             var tokenResult = await provider.RefreshTokenAsync(
                 new MailboxRefreshTokenRequest(refreshToken, connection.ProfileKey),
@@ -255,17 +259,13 @@ public sealed class MailboxConnectionCredentialRefresher
             connection.StoreEncryptedCredentials(
                 _fieldEncryption.Encrypt(
                     connection.CompanyId,
-                    connection.Provider == MailboxProvider.StandardEmail
-                        ? StandardMailboxCredentialPurposes.AccessToken(connection.Id)
-                        : CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "access_token"),
+                    StandardMailboxCredentialPurposes.AccessToken(connection.Id),
                     tokenResult.AccessToken),
                 string.IsNullOrWhiteSpace(tokenResult.RefreshToken)
                     ? connection.EncryptedRefreshToken
                     : _fieldEncryption.Encrypt(
                         connection.CompanyId,
-                        connection.Provider == MailboxProvider.StandardEmail
-                            ? StandardMailboxCredentialPurposes.RefreshToken(connection.Id)
-                            : CompanyMailboxConnectionService.BuildTokenPurpose(connection.Provider, "refresh_token"),
+                        StandardMailboxCredentialPurposes.RefreshToken(connection.Id),
                         tokenResult.RefreshToken),
                 tokenResult.AccessTokenExpiresUtc,
                 tokenResult.GrantedScopes.Count > 0 ? tokenResult.GrantedScopes : connection.GrantedScopes);

@@ -11,9 +11,10 @@ namespace VirtualCompany.Api.Controllers;
 [Route("api/sales/prospecting")]
 [Authorize(Policy = CompanyPolicies.CompanyMember)]
 [RequireCompanyContext]
-public sealed class LeadGenerationController(ICompanyContextAccessor context, ILeadGenerationService service) : ControllerBase
+public sealed class LeadGenerationController(ICompanyContextAccessor context, ILeadGenerationService service, IIcpSuggestionService suggestions) : ControllerBase
 {
     [HttpGet("icp")] public Task<IReadOnlyList<IcpProfileDto>> Profiles(CancellationToken ct) => service.ListProfilesAsync(CompanyId, ct);
+    [HttpPost("icp/suggest")][Authorize(Policy = CompanyPolicies.CompanyManager)] public Task<IcpSuggestionDto> SuggestIcp(SuggestIcpRequest request, CancellationToken ct) => suggestions.SuggestAsync(CompanyId, UserId, request, ct);
     [HttpPost("icp")][Authorize(Policy = CompanyPolicies.CompanyManager)] public Task<IcpProfileDto> CreateProfile(SaveIcpProfileRequest request, CancellationToken ct) => service.CreateProfileAsync(CompanyId, UserId, request, ct);
     [HttpPut("icp/{id:guid}")][Authorize(Policy = CompanyPolicies.CompanyManager)] public Task<IcpProfileDto> UpdateProfile(Guid id, SaveIcpProfileRequest request, CancellationToken ct) => service.UpdateProfileAsync(CompanyId, UserId, id, request, ct);
     [HttpPost("icp/{id:guid}/activate")][Authorize(Policy = CompanyPolicies.CompanyManager)] public Task<IcpProfileDto> Activate(Guid id, CancellationToken ct) => service.ActivateProfileAsync(CompanyId, UserId, id, ct);

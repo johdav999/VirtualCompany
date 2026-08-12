@@ -64,9 +64,10 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IManualInboxBillScanOrchestrator _manualScanOrchestrator;
     private readonly IMailboxProviderRegistry? _providerRegistry;
-    private readonly IFieldEncryptionService? _fieldEncryption;
+    private readonly IMailboxOAuthAccessTokenLeaseService? _tokenLeaseService;
     private readonly ISalesEmailIngestionService? _salesIngestion;
     private readonly ISupportMailboxIngestionService? _supportIngestion;
+    private readonly IEmailClassificationService? _emailClassifier;
     private readonly ICoreCompanyAgentSeeder? _coreAgentSeeder;
     private readonly IDistributedLockProvider? _lockProvider;
     private readonly TimeProvider _timeProvider;
@@ -88,9 +89,10 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
         VirtualCompanyDbContext dbContext,
         IManualInboxBillScanOrchestrator manualScanOrchestrator,
         IMailboxProviderRegistry providerRegistry,
-        IFieldEncryptionService fieldEncryption,
+        IMailboxOAuthAccessTokenLeaseService tokenLeaseService,
         ISalesEmailIngestionService salesIngestion,
         ISupportMailboxIngestionService supportIngestion,
+        IEmailClassificationService emailClassifier,
         ICoreCompanyAgentSeeder coreAgentSeeder,
         IDistributedLockProvider lockProvider,
         TimeProvider timeProvider,
@@ -98,9 +100,10 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
         : this(dbContext, manualScanOrchestrator, timeProvider, logger)
     {
         _providerRegistry = providerRegistry;
-        _fieldEncryption = fieldEncryption;
+        _tokenLeaseService = tokenLeaseService;
         _salesIngestion = salesIngestion;
         _supportIngestion = supportIngestion;
+        _emailClassifier = emailClassifier;
         _coreAgentSeeder = coreAgentSeeder;
         _lockProvider = lockProvider;
     }
@@ -260,19 +263,15 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
         MailboxConnection connection,
         CancellationToken cancellationToken)
     {
-        if (_providerRegistry is null || _fieldEncryption is null || _salesIngestion is null || _supportIngestion is null)
+        if (_providerRegistry is null || _tokenLeaseService is null || _salesIngestion is null || _supportIngestion is null || _emailClassifier is null)
         {
             throw new InvalidOperationException("Business mailbox ingestion services are not configured.");
         }
 
         var now = _timeProvider.GetUtcNow().UtcDateTime;
-        var accessToken = connection.Provider == MailboxProvider.StandardEmail
-            ? StandardMailboxSessionCodec.Create(connection, _fieldEncryption)
-            : _fieldEncryption.Decrypt(
-                connection.CompanyId,
-                MailboxConnectionDefaults.TokenPurpose(connection.Provider, "access_token"),
-                connection.EncryptedAccessToken ?? throw new InvalidOperationException("Mailbox credentials are unavailable."));
         var provider = _providerRegistry.Resolve(connection.Provider);
+        var accessToken = (await _tokenLeaseService.AcquireAsync(
+            connection.CompanyId, connection.Id, provider.ReadRequiredScopes, cancellationToken)).AccessToken;
         var messages = await provider.ListMessagesAsync(
             accessToken,
             new MailboxMessageQuery(
@@ -301,6 +300,27 @@ public sealed class CompanyConnectedMailboxInboxScanOrchestrator : IConnectedMai
                 cancellationToken);
             if (string.IsNullOrWhiteSpace(message.Sender.Email))
             {
+                continue;
+            }
+
+            var classification = await _emailClassifier.ClassifyAsync(
+                new EmailClassificationRequest(
+                    connection.CompanyId,
+                    MailboxPurpose.Support,
+                    connection.Provider.ToStorageValue(),
+                    connection.Id,
+                    summary,
+                    [message]),
+                cancellationToken);
+            if (classification.RecommendedAction == EmailClassificationActions.Ignore && classification.Confidence >= 0.85m)
+            {
+                _logger.LogInformation(
+                    "Connected Support mailbox scan ignored a high-confidence non-support message. CompanyId: {CompanyId}. ConnectionId: {ConnectionId}. MessageId: {MessageId}. Intent: {Intent}. Evidence: {Evidence}.",
+                    connection.CompanyId,
+                    connection.Id,
+                    summary.ProviderMessageId,
+                    classification.Intent,
+                    classification.EvidenceSummary);
                 continue;
             }
 

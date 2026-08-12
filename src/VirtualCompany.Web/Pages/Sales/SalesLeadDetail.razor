@@ -1,0 +1,1024 @@
+@page "/app/sales/leads/{LeadId:guid}"
+@rendermode InteractiveServer
+@inherits SalesPageBase
+@using System.Text.RegularExpressions
+
+<PageTitle>@(lead?.Title ?? "Sales lead")</PageTitle>
+
+<div class="sales-workspace sales-lead-workspace">
+    <main class="sales-main">
+        <header class="sales-page-header sales-lead-detail-header">
+            <a class="sales-lead-back-link" href="@LeadsPath"><span class="bi bi-arrow-left" aria-hidden="true"></span>Back to prospects</a>
+            <div class="sales-lead-title-row">
+                <div>
+                    <span>SALES LEAD</span>
+                    <h1>@(lead?.Title ?? "Lead details")</h1>
+                    <p>Review the buying intent, contact details, and original conversation.</p>
+                </div>
+                @if (lead is not null)
+                {
+                    <span class="sales-badge @BadgeClass(lead.QualificationStatus)">@FriendlyStatus(lead.QualificationStatus)</span>
+                }
+            </div>
+            <nav class="sales-tabs" aria-label="Sales sections">
+                <a href="@BuildPath("/app/sales")">Overview</a>
+                <a class="active" href="@LeadsPath">Prospects</a>
+                <a href="@BuildPath("/app/sales/pipeline")">Pipeline</a>
+                <a href="@BuildPath("/app/sales/campaigns")">Campaigns</a>
+            </nav>
+        </header>
+
+        @if (isLoading)
+        {
+            <section class="sales-card sales-empty">Loading lead details...</section>
+        }
+        else if (!string.IsNullOrWhiteSpace(errorMessage))
+        {
+            <section class="sales-card sales-error">
+                <h2>Lead details unavailable</h2>
+                <p>@errorMessage</p>
+                <button class="sales-button sales-button--primary" @onclick="LoadAsync">Reload</button>
+            </section>
+        }
+        else if (lead is null)
+        {
+            <section class="sales-card sales-empty">
+                <h2>Lead not found</h2>
+                <p>This lead may have been removed or belongs to another company.</p>
+            </section>
+        }
+        else
+        {
+            <section class="sales-card sales-lead-summary" aria-label="Lead summary">
+                <div class="sales-lead-summary__item">
+                    <span class="sales-lead-avatar" aria-hidden="true">@Initials(lead.ContactName)</span>
+                    <div><small>Contact</small><strong>@(lead.ContactName ?? "Not available")</strong><span>@(lead.SourceEmail ?? "No email linked")</span></div>
+                </div>
+                <div class="sales-lead-summary__item">
+                    <span class="sales-lead-summary__icon bi bi-building" aria-hidden="true"></span>
+                    <div><small>Company</small><strong>@(lead.CustomerCompanyName ?? "Not identified")</strong><span>@(lead.Fit ?? "Fit not assessed")</span></div>
+                </div>
+                <div class="sales-lead-summary__item">
+                    <span class="sales-lead-summary__icon bi bi-envelope" aria-hidden="true"></span>
+                    <div><small>Source</small><strong>Sales inbox</strong><span>@ReceivedLabel(PrimaryEmail)</span></div>
+                </div>
+                <div class="sales-actions sales-actions--stacked sales-lead-summary__actions">
+                    @if (IsQualified)
+                    {
+                        <button type="button" class="sales-button sales-button--primary" disabled="@isBusy" @onclick="ShowCreateDealForm"><span class="bi bi-briefcase" aria-hidden="true"></span>Create deal</button>
+                        <button type="button" class="sales-button" disabled="@isBusy" @onclick="ShowMeetingForm"><span class="bi bi-calendar-event" aria-hidden="true"></span>Schedule demo</button>
+                    }
+                    else if (IsOpen)
+                    {
+                        <button type="button" class="sales-button sales-button--primary" disabled="@isBusy" @onclick="QualifyAsync">Qualify lead</button>
+                        <button type="button" class="sales-button sales-button--danger-outline" disabled="@isBusy" @onclick="RejectAsync">Not qualified</button>
+                    }
+                    else
+                    {
+                        @if (IsConverted)
+                        {
+                            <button type="button" class="sales-button sales-button--primary" disabled="@isBusy" @onclick="ShowMeetingForm"><span class="bi bi-calendar-event" aria-hidden="true"></span>Schedule demo</button>
+                        }
+                        else
+                        {
+                            <span class="sales-lead-summary__complete">No further lead action is required.</span>
+                        }
+                    }
+                </div>
+            </section>
+
+            @if (showCreateDealForm && IsQualified)
+            {
+                <section class="sales-card sales-create-deal-panel" aria-labelledby="create-deal-title">
+                    <div class="sales-create-deal-panel__heading">
+                        <div>
+                            <span>NEXT STEP</span>
+                            <h2 id="create-deal-title">Create pipeline deal</h2>
+                            <p>Set the commercial value and expected close date. The deal will start in the Qualified stage.</p>
+                        </div>
+                        <button type="button" class="sales-create-deal-panel__close bi bi-x-lg" title="Close" aria-label="Close create deal form" @onclick="CancelCreateDeal"></button>
+                    </div>
+                    <div class="sales-create-deal-panel__fields">
+                        <label>
+                            <span>Deal value</span>
+                            <input class="sales-input" type="number" min="0.01" step="0.01" @bind="dealAmount" />
+                        </label>
+                        <label>
+                            <span>Currency</span>
+                            <input class="sales-input sales-create-deal-panel__currency" maxlength="3" autocomplete="off" @bind="dealCurrency" />
+                        </label>
+                        <label>
+                            <span>Expected close date</span>
+                            <input class="sales-input" type="date" @bind="dealExpectedCloseDate" @bind:format="yyyy-MM-dd" />
+                        </label>
+                    </div>
+                    <div class="sales-create-deal-panel__footer">
+                        <p><span class="bi bi-info-circle" aria-hidden="true"></span>This creates an auditable deal linked to the original lead and email evidence.</p>
+                        <div class="sales-actions">
+                            <button type="button" class="sales-button" disabled="@isBusy" @onclick="CancelCreateDeal">Cancel</button>
+                            <button type="button" class="sales-button sales-button--primary" disabled="@isBusy" @onclick="CreateDealAsync">@(isBusy ? "Creating deal..." : "Create deal")</button>
+                        </div>
+                    </div>
+                </section>
+            }
+
+            @if (showMeetingForm && CanSchedule)
+            {
+                <section class="sales-card sales-meeting-panel" aria-labelledby="schedule-demo-title">
+                    <div class="sales-create-deal-panel__heading">
+                        <div>
+                            <span>NEXT STEP</span>
+                            <h2 id="schedule-demo-title">Schedule demo</h2>
+                            <p>Prepare a calendar invitation for review. It will not be sent until a person approves it.</p>
+                        </div>
+                        <button type="button" class="sales-create-deal-panel__close bi bi-x-lg" title="Close" aria-label="Close scheduling form" @onclick="CancelMeetingForm"></button>
+                    </div>
+
+                    @if (calendarConnections.Count == 0)
+                    {
+                        <div class="sales-calendar-connection-state">
+                            <span class="bi bi-calendar-x" aria-hidden="true"></span>
+                            <div><strong>No calendar connected</strong><p>Connect Google Workspace or Microsoft 365 before scheduling a demo.</p></div>
+                            <div class="sales-actions">
+                                <a class="sales-button sales-button--primary" href="@ConnectGoogleCalendarPath"><span class="bi bi-google" aria-hidden="true"></span>Google Workspace</a>
+                                <a class="sales-button" href="@ConnectMicrosoftCalendarPath"><span class="bi bi-microsoft" aria-hidden="true"></span>Microsoft 365</a>
+                            </div>
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="sales-meeting-grid">
+                            <label class="sales-meeting-grid__wide">
+                                <span>Meeting host</span>
+                                <select class="sales-input" @bind="selectedCalendarId">
+                                    @foreach (var connection in calendarConnections)
+                                    {
+                                        <option value="@connection.Id">@ProviderName(connection.Provider) · @connection.EmailAddress@(connection.RequiresReconnect ? " · Reconnect required" : "")</option>
+                                    }
+                                </select>
+                            </label>
+                            <label class="sales-meeting-grid__wide">
+                                <span>Attendee</span>
+                                <input class="sales-input" value="@lead.SourceEmail" readonly />
+                            </label>
+                            <label><span>Search from</span><input class="sales-input" type="date" @bind="meetingDate" @bind:format="yyyy-MM-dd" /></label>
+                            <label><span>Start time</span><input class="sales-input" type="time" @bind="meetingTime" /></label>
+                            <label>
+                                <span>Duration</span>
+                                <select class="sales-input" @bind="meetingDurationMinutes">
+                                    <option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>Time zone</span>
+                                <select class="sales-input" @bind="meetingTimeZoneId">
+                                    <option value="Europe/Stockholm">Europe/Stockholm</option><option value="Europe/London">Europe/London</option>
+                                    <option value="America/New_York">America/New York</option><option value="America/Chicago">America/Chicago</option>
+                                    <option value="America/Los_Angeles">America/Los Angeles</option><option value="UTC">UTC</option>
+                                </select>
+                            </label>
+                            <label>
+                                <span>Search window</span>
+                                <select class="sales-input" @bind="availabilityDays">
+                                    <option value="3">3 days</option><option value="5">5 days</option><option value="10">10 days</option>
+                                </select>
+                            </label>
+                            <label class="sales-meeting-grid__title"><span>Title</span><input class="sales-input" maxlength="200" @bind="meetingTitle" /></label>
+                            <label class="sales-meeting-grid__location"><span>Location</span><input class="sales-input" maxlength="500" placeholder="Online meeting" @bind="meetingLocation" /></label>
+                            <label class="sales-meeting-grid__agenda"><span>Agenda</span><textarea class="sales-input" rows="3" maxlength="4000" @bind="meetingDescription"></textarea></label>
+                            <label class="sales-meeting-online">
+                                <input type="checkbox" @bind="createOnlineMeeting" />
+                                <span><strong>Create online meeting</strong><small>@OnlineMeetingLabel</small></span>
+                            </label>
+                        </div>
+
+                        <div class="sales-availability">
+                            <div><strong>Calendar availability</strong><span>@AvailabilitySummary</span></div>
+                            <button type="button" class="sales-button" disabled="@isCheckingAvailability" @onclick="CheckAvailabilityAsync">
+                                <span class="bi bi-calendar-check" aria-hidden="true"></span>@(isCheckingAvailability ? "Finding times..." : "Find available times")
+                            </button>
+                            @if (suggestedSlots.Count > 0)
+                            {
+                                <div class="sales-availability__slots" role="list" aria-label="Suggested meeting times">
+                                    @foreach (var slot in suggestedSlots)
+                                    {
+                                        <button type="button" role="listitem" class="sales-availability__slot" @onclick="() => SelectSuggestedSlot(slot)">
+                                            <strong>@SuggestedSlotDay(slot)</strong><span>@SuggestedSlotTime(slot)</span>
+                                        </button>
+                                    }
+                                </div>
+                            }
+                            else if (busyWindows.Count > 0)
+                            {
+                                <div class="sales-availability__busy">
+                                    @foreach (var window in busyWindows.Take(6)) { <span>@BusyWindowLabel(window)</span> }
+                                </div>
+                            }
+                        </div>
+
+                        <div class="sales-create-deal-panel__footer">
+                            <p><span class="bi bi-shield-check" aria-hidden="true"></span>Submitting creates a review item. The invitation is sent only after approval.</p>
+                            <div class="sales-actions">
+                                <button type="button" class="sales-button" disabled="@isBusy" @onclick="CancelMeetingForm">Cancel</button>
+                                <button type="button" class="sales-button sales-button--primary" disabled="@isBusy" @onclick="SubmitMeetingForApprovalAsync">@(isBusy ? "Submitting..." : "Submit for approval")</button>
+                            </div>
+                        </div>
+                    }
+                </section>
+            }
+
+            @if (meetingInvitations.Count > 0)
+            {
+                <section class="sales-card sales-meeting-status" aria-labelledby="invitation-status-title">
+                    <div class="sales-section-heading"><div><span>CALENDAR</span><h2 id="invitation-status-title">Meeting invitations</h2></div></div>
+                    @foreach (var invitation in meetingInvitations)
+                    {
+                        <article class="sales-meeting-status__row" @key="invitation.Id">
+                            <span class="sales-meeting-status__icon bi @MeetingStatusIcon(invitation.Status)" aria-hidden="true"></span>
+                            <div class="sales-meeting-status__primary"><strong>@FriendlyMeetingStatus(invitation.Status)</strong><span>@invitation.Title</span></div>
+                            <dl>
+                                <div><dt>Organizer</dt><dd>@invitation.OrganizerEmail</dd></div>
+                                <div><dt>Attendee</dt><dd>@invitation.AttendeeEmail</dd></div>
+                                <div><dt>Date and time</dt><dd>@MeetingDateLabel(invitation)</dd></div>
+                                <div><dt>Provider</dt><dd>@ProviderName(invitation.Provider)</dd></div>
+                            </dl>
+                            <div class="sales-meeting-status__actions">
+                                @if (string.Equals(invitation.Status, "waiting_for_approval", StringComparison.OrdinalIgnoreCase) && invitation.ApprovalRequestId is Guid approvalId)
+                                {
+                                    <a class="sales-meeting-status__link" href="@ApprovalPath(approvalId)">Review approval</a>
+                                }
+                                else if (string.Equals(invitation.Status, "scheduled", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    @if (!string.IsNullOrWhiteSpace(invitation.OnlineMeetingUrl))
+                                    {
+                                        <a class="sales-meeting-status__link" href="@invitation.OnlineMeetingUrl" target="_blank" rel="noopener">Join meeting</a>
+                                    }
+                                    <button type="button" class="sales-icon-button bi bi-calendar2-week" title="Reschedule" aria-label="Reschedule meeting" disabled="@isBusy" @onclick="() => ShowRescheduleForm(invitation)"></button>
+                                    <button type="button" class="sales-icon-button sales-icon-button--danger bi bi-calendar-x" title="Cancel meeting" aria-label="Cancel meeting" disabled="@isBusy" @onclick="() => ShowCancellationConfirmation(invitation)"></button>
+                                }
+                                else if (!string.IsNullOrWhiteSpace(invitation.LastErrorSummary))
+                                {
+                                    <span class="sales-meeting-status__error">@invitation.LastErrorSummary</span>
+                                }
+                            </div>
+                            @if (LatestMeetingChange(invitation.Id) is { } change)
+                            {
+                                <div class="sales-meeting-change-state">
+                                    <span class="bi @MeetingChangeStatusIcon(change.Status)" aria-hidden="true"></span>
+                                    <strong>@FriendlyMeetingChange(change)</strong>
+                                    @if (change.ApprovalRequestId is Guid changeApprovalId && string.Equals(change.Status, "waiting_for_approval", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        <a href="@ApprovalPath(changeApprovalId)">Review approval</a>
+                                    }
+                                    else if (!string.IsNullOrWhiteSpace(change.LastErrorSummary))
+                                    {
+                                        <span>@change.LastErrorSummary</span>
+                                    }
+                                </div>
+                            }
+                            @if (!string.Equals(invitation.ConfirmationStatus, "not_queued", StringComparison.OrdinalIgnoreCase))
+                            {
+                                <div class="sales-meeting-change-state sales-meeting-change-state--confirmation">
+                                    <span class="bi @ConfirmationStatusIcon(invitation.ConfirmationStatus)" aria-hidden="true"></span>
+                                    <strong>@FriendlyConfirmationStatus(invitation.ConfirmationStatus)</strong>
+                                    @if (!string.IsNullOrWhiteSpace(invitation.ConfirmationErrorSummary))
+                                    {
+                                        <span>@invitation.ConfirmationErrorSummary</span>
+                                    }
+                                </div>
+                            }
+                        </article>
+                        @if (changingInvitationId == invitation.Id)
+                        {
+                            <div class="sales-meeting-change-panel" @key="changeFormKey">
+                                @if (changeOperation == "cancel")
+                                {
+                                    <div class="sales-meeting-change-panel__confirmation">
+                                        <span class="bi bi-calendar-x" aria-hidden="true"></span>
+                                        <div><strong>Cancel this meeting?</strong><p>A cancellation request will be sent for approval. The attendee's calendar is unchanged until it is approved.</p></div>
+                                    </div>
+                                }
+                                else
+                                {
+                                    <div class="sales-meeting-change-panel__heading">
+                                        <div><span>PROPOSED CHANGE</span><h3>Reschedule meeting</h3><p>The existing calendar event will be updated after approval.</p></div>
+                                        <button type="button" class="sales-icon-button bi bi-x-lg" title="Close" aria-label="Close reschedule form" @onclick="CloseMeetingChangeForm"></button>
+                                    </div>
+                                    <div class="sales-meeting-grid">
+                                        <label><span>Date</span><input class="sales-input" type="date" @bind="changeDate" @bind:format="yyyy-MM-dd" /></label>
+                                        <label><span>Start time</span><input class="sales-input" type="time" @bind="changeTime" /></label>
+                                        <label><span>Duration</span><select class="sales-input" @bind="changeDurationMinutes"><option value="30">30 minutes</option><option value="45">45 minutes</option><option value="60">60 minutes</option><option value="90">90 minutes</option></select></label>
+                                        <label><span>Time zone</span><select class="sales-input" @bind="changeTimeZoneId"><option value="Europe/Stockholm">Europe/Stockholm</option><option value="Europe/London">Europe/London</option><option value="America/New_York">America/New York</option><option value="America/Chicago">America/Chicago</option><option value="America/Los_Angeles">America/Los Angeles</option><option value="UTC">UTC</option></select></label>
+                                        <label class="sales-meeting-grid__title"><span>Title</span><input class="sales-input" maxlength="200" @bind="changeTitle" /></label>
+                                        <label class="sales-meeting-grid__location"><span>Location</span><input class="sales-input" maxlength="500" placeholder="Online meeting" @bind="changeLocation" /></label>
+                                        <label class="sales-meeting-grid__agenda"><span>Agenda</span><textarea class="sales-input" rows="3" maxlength="4000" @bind="changeDescription"></textarea></label>
+                                        <label class="sales-meeting-online"><input type="checkbox" @bind="changeCreateOnlineMeeting" /><span><strong>Keep online meeting</strong><small>@ProviderName(invitation.Provider)</small></span></label>
+                                    </div>
+                                }
+                                <div class="sales-meeting-change-panel__footer">
+                                    <p><span class="bi bi-shield-check" aria-hidden="true"></span>This change requires human approval before the calendar provider is contacted.</p>
+                                    <div class="sales-actions">
+                                        <button type="button" class="sales-button" disabled="@isBusy" @onclick="CloseMeetingChangeForm">Keep meeting</button>
+                                        <button type="button" class="sales-button @(changeOperation == "cancel" ? "sales-button--danger" : "sales-button--primary")" disabled="@isBusy" @onclick="SubmitMeetingChangeAsync">@(isBusy ? "Submitting..." : changeOperation == "cancel" ? "Submit cancellation" : "Submit reschedule")</button>
+                                    </div>
+                                </div>
+                            </div>
+                        }
+                    }
+                </section>
+            }
+            <section class="sales-card sales-email-conversation">
+                <div class="sales-section-heading sales-email-conversation__heading">
+                    <div>
+                        <span>SOURCE EVIDENCE</span>
+                        <h2>Email conversation</h2>
+                        <p>@sourceEmails.Count message@(sourceEmails.Count == 1 ? "" : "s") linked to this lead</p>
+                    </div>
+                    @if (PrimaryEmail is not null)
+                    {
+                        <details class="sales-message-details sales-message-details--top">
+                            <summary>View message details</summary>
+                            @MessageMetadata(PrimaryEmail)
+                        </details>
+                    }
+                </div>
+
+                @if (sourceEmails.Count == 0)
+                {
+                    <div class="sales-empty">No source email is linked to this lead.</div>
+                }
+                else
+                {
+                    var email = PrimaryEmail!;
+                    <article class="sales-email-message" @key="email.LinkId">
+                        <header class="sales-email-message__header">
+                            <span class="sales-lead-avatar sales-lead-avatar--email" aria-hidden="true">@Initials(email.SenderName)</span>
+                            <div>
+                                <strong>@(email.SenderName ?? email.SenderEmail ?? "Sender unavailable")</strong>
+                                <span>@(email.SenderEmail ?? "Email unavailable")</span>
+                            </div>
+                            <time>@ReceivedLabel(email)</time>
+                        </header>
+                        <div class="sales-email-message__subject"><span>Subject</span><strong>@(email.Subject ?? "Subject unavailable")</strong></div>
+
+                        @if (!string.IsNullOrWhiteSpace(email.SafeFailureMessage))
+                        {
+                            <div class="sales-source-email__notice">@email.SafeFailureMessage</div>
+                        }
+                        else
+                        {
+                            <div class="sales-email-message__body">@DisplayBody(email)</div>
+                            @if (HasQuotedHistory(email))
+                            {
+                                <details class="sales-quoted-history">
+                                    <summary><span class="bi bi-chevron-right" aria-hidden="true"></span>Show quoted message</summary>
+                                    <div>@QuotedHistory(email)</div>
+                                </details>
+                            }
+                        }
+                    </article>
+
+                    @if (sourceEmails.Count > 1)
+                    {
+                        <details class="sales-previous-messages">
+                            <summary><span class="bi bi-chevron-right" aria-hidden="true"></span>Previous messages (@(sourceEmails.Count - 1))</summary>
+                            <div class="sales-previous-messages__list">
+                                @foreach (var previous in sourceEmails.Skip(1))
+                                {
+                                    <article class="sales-email-message sales-email-message--previous" @key="previous.LinkId">
+                                        <header class="sales-email-message__header">
+                                            <span class="sales-lead-avatar sales-lead-avatar--email" aria-hidden="true">@Initials(previous.SenderName)</span>
+                                            <div><strong>@(previous.SenderName ?? previous.SenderEmail ?? "Sender unavailable")</strong><span>@(previous.Subject ?? "Subject unavailable")</span></div>
+                                            <time>@ReceivedLabel(previous)</time>
+                                        </header>
+                                        <div class="sales-email-message__body">@DisplayBody(previous)</div>
+                                        <details class="sales-message-details"><summary>Message details</summary>@MessageMetadata(previous)</details>
+                                    </article>
+                                }
+                            </div>
+                        </details>
+                    }
+                }
+            </section>
+
+            @if (lead.Activities.Count > 0)
+            {
+                <details class="sales-card sales-lead-activity">
+                    <summary>Lead activity <span>@lead.Activities.Count event@(lead.Activities.Count == 1 ? "" : "s")</span></summary>
+                    <div class="sales-timeline">
+                        @foreach (var activity in lead.Activities)
+                        {
+                            <div class="sales-timeline-row"><span></span><div><strong>@activity.Summary</strong><small>@activity.ActivityType · @LocalDateTime.DateTime(activity.OccurredUtc)</small></div></div>
+                        }
+                    </div>
+                </details>
+            }
+
+            @if (!string.IsNullOrWhiteSpace(actionMessage))
+            {
+                <div class="sales-toast">@actionMessage</div>
+            }
+        }
+    </main>
+
+    @if (lead is not null)
+    {
+        <aside class="sales-lead-assessment" aria-label="Alex's lead assessment">
+            <div class="sales-lead-assessment__identity">
+                <div class="sales-agent-panel__avatar">A</div>
+                <div><strong>Alex's assessment</strong><span>Sales Manager</span></div>
+            </div>
+
+            <section class="sales-lead-assessment__confidence">
+                <strong>@Confidence(PrimaryEmail?.Confidence)</strong>
+                <div><span>Classification confidence</span><p>@AssessmentSummary</p></div>
+            </section>
+
+            <section class="sales-lead-assessment__section">
+                <h2>Buying signals</h2>
+                <ul class="sales-buying-signals">
+                    <li><span class="bi bi-check-lg" aria-hidden="true"></span><div><strong>@Plain(PrimaryEmail?.DetectedIntent, "Buying interest")</strong><small>Detected intent</small></div></li>
+                    <li><span class="bi bi-check-lg" aria-hidden="true"></span><div><strong>@Plain(PrimaryEmail?.ProductOrServiceInterest, "Interest not specified")</strong><small>Product or service</small></div></li>
+                    <li><span class="bi bi-check-lg" aria-hidden="true"></span><div><strong>@lead.Temperature lead</strong><small>@(lead.Priority ?? "Priority not set") priority</small></div></li>
+                </ul>
+            </section>
+
+            <section class="sales-lead-assessment__section">
+                <h2>Why Alex flagged this</h2>
+                <p>@Plain(PrimaryEmail?.ClassificationEvidence, "No classification explanation was recorded.")</p>
+            </section>
+
+            <section class="sales-lead-assessment__section">
+                <h2>Contact and company</h2>
+                <dl class="sales-contact-facts">
+                    <div><dt>Contact</dt><dd>@(lead.ContactName ?? "Not available")</dd></div>
+                    <div><dt>Email</dt><dd>@(lead.SourceEmail ?? "Not available")</dd></div>
+                    <div><dt>Company</dt><dd>@(lead.CustomerCompanyName ?? "Not identified")</dd></div>
+                    <div><dt>Potential value</dt><dd>@MoneyOrDash(lead.EstimatedValue, lead.Currency)</dd></div>
+                </dl>
+            </section>
+
+            <section class="sales-lead-assessment__section sales-lead-assessment__next-step">
+                <span>RECOMMENDED NEXT STEP</span>
+                @if (IsQualified)
+                {
+                    <h2>Create a pipeline deal</h2>
+                    <p>Add the expected value and close date, then move this qualified opportunity into the pipeline.</p>
+                }
+                else if (IsOpen)
+                {
+                    <h2>@lead.SuggestedNextAction</h2>
+                    <p>Review the evidence, then qualify the lead or close it as not qualified.</p>
+                }
+                else
+                {
+                    <h2>@lead.SuggestedNextAction</h2>
+                    <p>This lead has completed its review workflow.</p>
+                }
+            </section>
+        </aside>
+    }
+    else
+    {
+        <SalesAgentPanel CompanyId="@ResolvedCompanyId" Dashboard="@AgentPanelDashboard" ErrorMessage="@AgentPanelErrorMessage" />
+    }
+</div>
+
+@code {
+    [Parameter] public Guid LeadId { get; set; }
+    [SupplyParameterFromQuery(Name = "schedule")] public bool OpenMeetingScheduler { get; set; }
+    private SalesLeadDetailResponse? lead;
+    private IReadOnlyList<SalesLeadSourceEmailResponse> sourceEmails = [];
+    private IReadOnlyList<SalesCalendarConnectionResponse> calendarConnections = [];
+    private IReadOnlyList<SalesMeetingInvitationResponse> meetingInvitations = [];
+    private IReadOnlyList<SalesMeetingChangeRequestResponse> meetingChanges = [];
+    private IReadOnlyList<CalendarBusyWindow> busyWindows = [];
+    private IReadOnlyList<CalendarAvailableSlot> suggestedSlots = [];
+    private bool showMeetingForm;
+    private bool isCheckingAvailability;
+    private Guid? selectedCalendarId;
+    private DateTime? meetingDate;
+    private TimeOnly? meetingTime = new TimeOnly(10, 0);
+    private int meetingDurationMinutes = 30;
+    private int availabilityDays = 5;
+    private string meetingTimeZoneId = "Europe/Stockholm";
+    private string meetingTitle = "";
+    private string meetingDescription = "";
+    private string? meetingLocation;
+    private bool createOnlineMeeting = true;
+    private Guid? changingInvitationId;
+    private string? changeOperation;
+    private Guid changeFormKey = Guid.NewGuid();
+    private DateTime? changeDate;
+    private TimeOnly? changeTime;
+    private int changeDurationMinutes = 30;
+    private string changeTimeZoneId = "Europe/Stockholm";
+    private string changeTitle = "";
+    private string changeDescription = "";
+    private string? changeLocation;
+    private bool changeCreateOnlineMeeting = true;
+    private bool isLoading = true;
+    private bool isBusy;
+    private bool showCreateDealForm;
+    private decimal dealAmount;
+    private string dealCurrency = "USD";
+    private DateTime? dealExpectedCloseDate;
+    private string? errorMessage;
+    private string? actionMessage;
+    private SalesLeadSourceEmailResponse? PrimaryEmail => sourceEmails.FirstOrDefault();
+    private bool IsQualified => string.Equals(lead?.Status, "Qualified", StringComparison.OrdinalIgnoreCase);
+    private bool IsOpen => string.Equals(lead?.Status, "Open", StringComparison.OrdinalIgnoreCase);
+    private bool IsConverted => string.Equals(lead?.Status, "Converted", StringComparison.OrdinalIgnoreCase);
+    private bool CanSchedule => IsQualified || IsConverted;
+    private SalesCalendarConnectionResponse? SelectedCalendar => selectedCalendarId is Guid id ? calendarConnections.FirstOrDefault(x => x.Id == id) : null;
+    private string OnlineMeetingLabel => SelectedCalendar?.Provider.ToLowerInvariant() switch
+    {
+        "gmail" => "Google Meet",
+        "microsoft365" => "Microsoft Teams",
+        _ => "Provider meeting link"
+    };
+    private string AvailabilitySummary => suggestedSlots.Count > 0
+        ? $"{suggestedSlots.Count} suitable time{(suggestedSlots.Count == 1 ? "" : "s")} found over the next {availabilityDays} days."
+        : busyWindows.Count == 0
+            ? $"Find suitable times from the host's calendar over the next {availabilityDays} days."
+            : "No suitable business-hour slot was found in the selected range.";
+    private string AssessmentSummary => PrimaryEmail?.Confidence switch
+    {
+        >= 0.8m => "Strong buying intent with clear interest and a concrete next step.",
+        >= 0.6m => "Positive buying signals are present, but the lead still needs review.",
+        _ => "Alex found sales intent that should be reviewed by a person."
+    };
+
+    protected override async Task OnParametersSetAsync() => await LoadAsync();
+
+    private async Task LoadAsync()
+    {
+        isLoading = true;
+        errorMessage = null;
+        try
+        {
+            if (!await ResolveCompanyAsync()) { errorMessage = ShellErrorMessage; return; }
+            var companyId = ResolvedCompanyId!.Value;
+            var leadTask = SalesApiClient.GetLeadAsync(companyId, LeadId);
+            var emailTask = SalesApiClient.ListLeadSourceEmailsAsync(companyId, LeadId);
+            var dashboardTask = SalesApiClient.GetDashboardAsync(companyId);
+            var calendarsTask = SalesApiClient.ListCalendarConnectionsAsync(companyId);
+            var invitationsTask = SalesApiClient.ListMeetingInvitationsAsync(companyId, LeadId);
+            await Task.WhenAll(leadTask, emailTask, dashboardTask, calendarsTask, invitationsTask);
+            lead = await leadTask;
+            sourceEmails = await emailTask;
+            AgentPanelDashboard = await dashboardTask;
+            calendarConnections = await calendarsTask;
+            meetingInvitations = await invitationsTask;
+            meetingChanges = (await Task.WhenAll(meetingInvitations.Select(x => SalesApiClient.ListMeetingChangesAsync(companyId, x.Id))))
+                .SelectMany(x => x).OrderByDescending(x => x.CreatedUtc).ToArray();
+            selectedCalendarId ??= calendarConnections.FirstOrDefault(x => !x.RequiresReconnect)?.Id ?? calendarConnections.FirstOrDefault()?.Id;
+            if (OpenMeetingScheduler && CanSchedule) ShowMeetingForm();
+        }
+        catch (SalesApiException ex) { errorMessage = ex.Message; AgentPanelErrorMessage = ex.Message; }
+        finally { isLoading = false; }
+    }
+
+    private async Task QualifyAsync() => await RunActionAsync((companyId, id) => SalesApiClient.QualifyLeadAsync(companyId, id, "Qualified from the lead detail view."));
+    private async Task RejectAsync() => await RunActionAsync((companyId, id) => SalesApiClient.RejectLeadAsync(companyId, id, "Marked not qualified from the lead detail view."));
+
+    private void ShowCreateDealForm()
+    {
+        if (!IsQualified || lead is null) return;
+        dealAmount = lead.EstimatedValue is > 0 ? lead.EstimatedValue.Value : 1000m;
+        dealCurrency = string.IsNullOrWhiteSpace(lead.Currency) ? "USD" : lead.Currency;
+        dealExpectedCloseDate = DateTime.Today.AddDays(30);
+        actionMessage = null;
+        showCreateDealForm = true;
+    }
+
+    private void CancelCreateDeal()
+    {
+        showCreateDealForm = false;
+        actionMessage = null;
+    }
+
+    private async Task CreateDealAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || !IsQualified) return;
+        if (dealAmount <= 0)
+        {
+            actionMessage = "Enter a deal value greater than zero.";
+            return;
+        }
+
+        var currency = dealCurrency.Trim().ToUpperInvariant();
+        if (currency.Length != 3)
+        {
+            actionMessage = "Enter a three-letter currency code, such as USD or EUR.";
+            return;
+        }
+
+        if (dealExpectedCloseDate is null)
+        {
+            actionMessage = "Choose an expected close date.";
+            return;
+        }
+
+        isBusy = true;
+        actionMessage = null;
+        try
+        {
+            var expectedCloseUtc = DateTime.SpecifyKind(dealExpectedCloseDate.Value.Date, DateTimeKind.Utc);
+            var deal = await SalesApiClient.ConvertLeadAsync(companyId, LeadId, new ConvertLeadRequest(dealAmount, currency, expectedCloseUtc, "Created from the qualified lead detail view."));
+            Navigation.NavigateTo(BuildPath($"/app/sales/deals/{deal.Id:D}"));
+        }
+        catch (SalesApiException ex)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private void ShowMeetingForm()
+    {
+        if (!CanSchedule || lead is null) return;
+        meetingDate ??= DateTime.Today.AddDays(1);
+        meetingTitle = string.IsNullOrWhiteSpace(meetingTitle) ? $"Virtual Company demo · {lead.CustomerCompanyName ?? lead.ContactName ?? "Sales conversation"}" : meetingTitle;
+        meetingDescription = string.IsNullOrWhiteSpace(meetingDescription)
+            ? "Product overview\nQuestions and requirements\nRecommended next steps"
+            : meetingDescription;
+        selectedCalendarId ??= calendarConnections.FirstOrDefault(x => !x.RequiresReconnect)?.Id ?? calendarConnections.FirstOrDefault()?.Id;
+        busyWindows = [];
+        suggestedSlots = [];
+        actionMessage = null;
+        showMeetingForm = true;
+    }
+
+    private void CancelMeetingForm()
+    {
+        showMeetingForm = false;
+        busyWindows = [];
+        suggestedSlots = [];
+        actionMessage = null;
+    }
+
+    private async Task CheckAvailabilityAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || selectedCalendarId is not Guid connectionId || meetingDate is null) return;
+        var connection = SelectedCalendar;
+        if (connection?.RequiresReconnect == true)
+        {
+            actionMessage = "Reconnect this account and grant calendar access before checking availability.";
+            return;
+        }
+
+        isCheckingAvailability = true;
+        actionMessage = null;
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(meetingTimeZoneId);
+            var localStart = DateTime.SpecifyKind(meetingDate.Value.Date, DateTimeKind.Unspecified);
+            var fromUtc = TimeZoneInfo.ConvertTimeToUtc(localStart, zone);
+            var result = await SalesApiClient.GetCalendarAvailabilityAsync(
+                companyId,
+                new SalesMeetingAvailabilityRequest(
+                    connectionId, fromUtc, fromUtc.AddDays(availabilityDays),
+                    meetingTimeZoneId, meetingDurationMinutes));
+            busyWindows = result.BusyWindows;
+            suggestedSlots = result.SuggestedSlots;
+        }
+        catch (Exception ex) when (ex is SalesApiException or TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isCheckingAvailability = false;
+        }
+    }
+
+    private async Task SubmitMeetingForApprovalAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || selectedCalendarId is not Guid connectionId || meetingDate is null) return;
+        if (SelectedCalendar?.RequiresReconnect == true)
+        {
+            actionMessage = "Reconnect this account and grant calendar access before scheduling.";
+            return;
+        }
+
+        isBusy = true;
+        actionMessage = null;
+        try
+        {
+            var (startsUtc, endsUtc) = BuildMeetingTime();
+            var invitation = await SalesApiClient.CreateMeetingInvitationAsync(
+                companyId,
+                LeadId,
+                new CreateSalesMeetingInvitationRequest(
+                    connectionId,
+                    startsUtc,
+                    endsUtc,
+                    meetingTimeZoneId,
+                    meetingTitle,
+                    meetingDescription,
+                    meetingLocation,
+                    createOnlineMeeting));
+            meetingInvitations = [invitation, .. meetingInvitations.Where(x => x.Id != invitation.Id)];
+            showMeetingForm = false;
+            busyWindows = [];
+            actionMessage = "Meeting invitation submitted for approval.";
+        }
+        catch (Exception ex) when (ex is SalesApiException or FormatException or TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            actionMessage = ex.Message;
+        }
+        finally
+        {
+            isBusy = false;
+        }
+    }
+
+    private void ShowRescheduleForm(SalesMeetingInvitationResponse invitation)
+    {
+        if (HasOpenMeetingChange(invitation.Id))
+        {
+            actionMessage = "This meeting already has a change awaiting completion.";
+            return;
+        }
+
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(invitation.TimeZoneId);
+            var localStart = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(invitation.StartsUtc, DateTimeKind.Utc), zone);
+            changeDate = localStart.Date;
+            changeTime = TimeOnly.FromDateTime(localStart);
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            changeDate = invitation.StartsUtc.Date;
+            changeTime = TimeOnly.FromDateTime(invitation.StartsUtc);
+        }
+        changeDurationMinutes = Math.Max(1, (int)(invitation.EndsUtc - invitation.StartsUtc).TotalMinutes);
+        changeTimeZoneId = invitation.TimeZoneId;
+        changeTitle = invitation.Title;
+        changeDescription = invitation.Description;
+        changeLocation = invitation.Location;
+        changeCreateOnlineMeeting = invitation.CreateOnlineMeeting;
+        changingInvitationId = invitation.Id;
+        changeOperation = "reschedule";
+        changeFormKey = Guid.NewGuid();
+        actionMessage = null;
+    }
+
+    private void ShowCancellationConfirmation(SalesMeetingInvitationResponse invitation)
+    {
+        if (HasOpenMeetingChange(invitation.Id))
+        {
+            actionMessage = "This meeting already has a change awaiting completion.";
+            return;
+        }
+        changingInvitationId = invitation.Id;
+        changeOperation = "cancel";
+        changeFormKey = Guid.NewGuid();
+        actionMessage = null;
+    }
+
+    private void CloseMeetingChangeForm()
+    {
+        changingInvitationId = null;
+        changeOperation = null;
+    }
+
+    private async Task SubmitMeetingChangeAsync()
+    {
+        if (ResolvedCompanyId is not Guid companyId || changingInvitationId is not Guid invitationId || string.IsNullOrWhiteSpace(changeOperation)) return;
+        isBusy = true;
+        actionMessage = null;
+        try
+        {
+            SalesMeetingChangeRequestResponse change;
+            if (changeOperation == "cancel")
+            {
+                change = await SalesApiClient.RequestMeetingCancellationAsync(companyId, invitationId);
+            }
+            else
+            {
+                var (startsUtc, endsUtc) = BuildChangeMeetingTime();
+                change = await SalesApiClient.RequestMeetingRescheduleAsync(companyId, invitationId,
+                    new CreateSalesMeetingRescheduleRequest(startsUtc, endsUtc, changeTimeZoneId, changeTitle, changeDescription, changeLocation, changeCreateOnlineMeeting));
+            }
+            meetingChanges = [change, .. meetingChanges.Where(x => x.Id != change.Id)];
+            CloseMeetingChangeForm();
+            actionMessage = change.Operation.Equals("cancel", StringComparison.OrdinalIgnoreCase)
+                ? "Meeting cancellation submitted for approval."
+                : "Meeting reschedule submitted for approval.";
+        }
+        catch (Exception ex) when (ex is SalesApiException or FormatException or TimeZoneNotFoundException or InvalidTimeZoneException)
+        {
+            actionMessage = ex.Message;
+        }
+        finally { isBusy = false; }
+    }
+
+    private (DateTime StartsUtc, DateTime EndsUtc) BuildChangeMeetingTime()
+    {
+        if (changeDate is null || changeTime is null) throw new FormatException("Choose a valid meeting date and start time.");
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(changeTimeZoneId);
+        var local = DateTime.SpecifyKind(changeDate.Value.Date.Add(changeTime.Value.ToTimeSpan()), DateTimeKind.Unspecified);
+        if (zone.IsInvalidTime(local)) throw new FormatException("This time does not exist because of a daylight-saving change.");
+        var startsUtc = TimeZoneInfo.ConvertTimeToUtc(local, zone);
+        return (startsUtc, startsUtc.AddMinutes(changeDurationMinutes));
+    }
+
+    private SalesMeetingChangeRequestResponse? LatestMeetingChange(Guid invitationId) =>
+        meetingChanges.Where(x => x.InvitationId == invitationId).OrderByDescending(x => x.CreatedUtc).FirstOrDefault();
+
+    private bool HasOpenMeetingChange(Guid invitationId) => meetingChanges.Any(x => x.InvitationId == invitationId &&
+        x.Status is not ("completed" or "rejected"));
+
+    private static string FriendlyMeetingChange(SalesMeetingChangeRequestResponse change)
+    {
+        var operation = change.Operation.Equals("cancel", StringComparison.OrdinalIgnoreCase) ? "Cancellation" : "Reschedule";
+        return change.Status.ToLowerInvariant() switch
+        {
+            "waiting_for_approval" => $"{operation} awaiting approval",
+            "queued" => $"{operation} approved",
+            "executing" => $"{operation} in progress",
+            "completed" => $"{operation} completed",
+            "reconciliation_required" => $"{operation} needs review",
+            "failed" => $"{operation} failed",
+            "rejected" => $"{operation} not approved",
+            _ => operation
+        };
+    }
+
+    private static string FriendlyConfirmationStatus(string status) => status.ToLowerInvariant() switch
+    {
+        "queued" => "Email confirmation queued",
+        "sending" => "Sending email confirmation",
+        "sent" => "Email confirmation sent in the sales thread",
+        "failed" => "Email confirmation failed",
+        "reconciliation_required" => "Check the sales thread before retrying",
+        "unavailable" => "No originating sales thread available",
+        _ => "Email confirmation not queued"
+    };
+
+    private static string ConfirmationStatusIcon(string status) => status.ToLowerInvariant() switch
+    {
+        "sent" => "bi-envelope-check",
+        "failed" or "reconciliation_required" => "bi-exclamation-triangle",
+        "unavailable" => "bi-envelope-slash",
+        _ => "bi-envelope"
+    };
+    private static string MeetingChangeStatusIcon(string status) => status.ToLowerInvariant() switch
+    {
+        "completed" => "bi-check-circle",
+        "failed" or "reconciliation_required" => "bi-exclamation-triangle",
+        "rejected" => "bi-x-circle",
+        "cancelled" => "bi-calendar-x",
+        _ => "bi-clock"
+    };
+    private (DateTime StartsUtc, DateTime EndsUtc) BuildMeetingTime()
+    {
+        if (meetingDate is null || meetingTime is null)
+            throw new FormatException("Choose a valid meeting date and start time.");
+        var time = meetingTime.Value.ToTimeSpan();
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(meetingTimeZoneId);
+        var local = DateTime.SpecifyKind(meetingDate.Value.Date.Add(time), DateTimeKind.Unspecified);
+        if (zone.IsInvalidTime(local)) throw new FormatException("This time does not exist because of a daylight-saving change.");
+        var startsUtc = TimeZoneInfo.ConvertTimeToUtc(local, zone);
+        return (startsUtc, startsUtc.AddMinutes(meetingDurationMinutes));
+    }
+
+    private void SelectSuggestedSlot(CalendarAvailableSlot slot)
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(meetingTimeZoneId);
+        var localStart = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(slot.StartsUtc, DateTimeKind.Utc), zone);
+        meetingDate = localStart.Date;
+        meetingTime = TimeOnly.FromDateTime(localStart);
+        meetingDurationMinutes = Math.Max(15, (int)(slot.EndsUtc - slot.StartsUtc).TotalMinutes);
+        actionMessage = $"Selected {localStart:dddd, MMMM d} at {localStart:HH:mm}.";
+    }
+
+    private string SuggestedSlotDay(CalendarAvailableSlot slot)
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(meetingTimeZoneId);
+        return TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(slot.StartsUtc, DateTimeKind.Utc), zone).ToString("ddd, MMM d");
+    }
+
+    private string SuggestedSlotTime(CalendarAvailableSlot slot)
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(meetingTimeZoneId);
+        var start = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(slot.StartsUtc, DateTimeKind.Utc), zone);
+        var end = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(slot.EndsUtc, DateTimeKind.Utc), zone);
+        return $"{start:HH:mm}–{end:HH:mm}";
+    }
+    private string BusyWindowLabel(CalendarBusyWindow window)
+    {
+        var zone = TimeZoneInfo.FindSystemTimeZoneById(meetingTimeZoneId);
+        var start = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(window.StartsUtc, DateTimeKind.Utc), zone);
+        var end = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(window.EndsUtc, DateTimeKind.Utc), zone);
+        return $"{start:HH:mm}–{end:HH:mm} busy";
+    }
+
+    private string MeetingDateLabel(SalesMeetingInvitationResponse invitation)
+    {
+        try
+        {
+            var zone = TimeZoneInfo.FindSystemTimeZoneById(invitation.TimeZoneId);
+            var start = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(invitation.StartsUtc, DateTimeKind.Utc), zone);
+            var end = TimeZoneInfo.ConvertTimeFromUtc(DateTime.SpecifyKind(invitation.EndsUtc, DateTimeKind.Utc), zone);
+            return $"{start:ddd, MMM d · HH:mm}–{end:HH:mm}";
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return LocalDateTime.DateTime(invitation.StartsUtc);
+        }
+    }
+
+    private static string ProviderName(string provider) => provider.ToLowerInvariant() switch
+    {
+        "gmail" => "Google Calendar",
+        "microsoft365" => "Microsoft 365",
+        _ => provider
+    };
+
+    private static string FriendlyMeetingStatus(string status) => status.ToLowerInvariant() switch
+    {
+        "waiting_for_approval" => "Waiting for approval",
+        "queued" => "Approved · preparing invitation",
+        "scheduling" => "Sending invitation",
+        "scheduled" => "Invitation sent",
+        "reconciliation_required" => "Needs review",
+        "failed" => "Delivery failed",
+        "rejected" => "Not approved",
+        "cancelled" => "Meeting cancelled",
+        _ => Plain(status, "Draft")
+    };
+
+    private static string MeetingStatusIcon(string status) => status.ToLowerInvariant() switch
+    {
+        "scheduled" => "bi-check-circle",
+        "failed" or "reconciliation_required" => "bi-exclamation-triangle",
+        "rejected" => "bi-x-circle",
+        "cancelled" => "bi-calendar-x",
+        _ => "bi-clock"
+    };
+
+    private string ApprovalPath(Guid approvalId) => $"/work?companyId={ResolvedCompanyId:D}&tab=approvals&itemId={approvalId:D}";
+    private string ConnectGoogleCalendarPath => ResolvedCompanyId is Guid companyId
+        ? $"/settings/calendar-connections?companyId={companyId:D}"
+        : "/settings/calendar-connections";
+    private string ConnectMicrosoftCalendarPath => ConnectGoogleCalendarPath;
+    private async Task RunActionAsync(Func<Guid, Guid, Task<SalesLeadDetailResponse>> action)
+    {
+        if (ResolvedCompanyId is not Guid companyId) return;
+        isBusy = true;
+        actionMessage = null;
+        try { lead = await action(companyId, LeadId); actionMessage = "Lead updated."; await RefreshAgentPanelAsync(); }
+        catch (SalesApiException ex) { actionMessage = ex.Message; }
+        finally { isBusy = false; }
+    }
+
+    private RenderFragment MessageMetadata(SalesLeadSourceEmailResponse email) => @<dl class="sales-message-metadata">
+        <div><dt>From</dt><dd>@Sender(email)</dd></div>
+        <div><dt>To</dt><dd>@(email.Recipients.Count == 0 ? "Not available" : string.Join(", ", email.Recipients))</dd></div>
+        <div><dt>Received</dt><dd>@ReceivedLabel(email)</dd></div>
+        <div><dt>Message ID</dt><dd>@(email.InternetMessageId ?? email.ProviderMessageId)</dd></div>
+    </dl>;
+
+    private string LeadsPath => ResolvedCompanyId is Guid companyId ? $"/app/sales/prospects?companyId={companyId:D}" : "/app/sales/prospects";
+    private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
+    private string Confidence(decimal? confidence) => confidence.HasValue ? LocalNumber.Percentage(confidence.Value) : "Not scored";
+    private string MoneyOrDash(decimal? value, string? currency) => value.HasValue ? LocalMoney.Format(value.Value, currency ?? "USD") : "Not estimated";
+    private string ReceivedLabel(SalesLeadSourceEmailResponse? email) => email?.ReceivedUtc is DateTime received ? LocalDateTime.DateTime(received) : "Time unavailable";
+    private static string Plain(string? value, string fallback) => string.IsNullOrWhiteSpace(value) ? fallback : value.Replace('_', ' ');
+    private static string Sender(SalesLeadSourceEmailResponse email) => string.IsNullOrWhiteSpace(email.SenderName) ? email.SenderEmail ?? "Sender unavailable" : $"{email.SenderName} <{email.SenderEmail}>";
+    private static string BadgeClass(string status) => $"sales-badge--{status.Replace(" ", "-", StringComparison.Ordinal).ToLowerInvariant()}";
+    private static string FriendlyStatus(string status) => string.Equals(status, "NotQualified", StringComparison.OrdinalIgnoreCase) ? "Not qualified" : Plain(status, "Open");
+    private static string Initials(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return "?";
+        var parts = name.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return string.Concat(parts.Take(2).Select(x => char.ToUpperInvariant(x[0])));
+    }
+
+    private static string DisplayBody(SalesLeadSourceEmailResponse email)
+    {
+        var body = email.PlainTextBody?.Trim();
+        if (string.IsNullOrWhiteSpace(body)) return "This email has no readable plain-text content.";
+        var match = QuotedReplyPattern().Match(body);
+        return (match.Success ? body[..match.Index] : body).Trim();
+    }
+
+    private static bool HasQuotedHistory(SalesLeadSourceEmailResponse email) =>
+        !string.IsNullOrWhiteSpace(email.PlainTextBody) && QuotedReplyPattern().IsMatch(email.PlainTextBody);
+
+    private static string QuotedHistory(SalesLeadSourceEmailResponse email)
+    {
+        var body = email.PlainTextBody ?? string.Empty;
+        var match = QuotedReplyPattern().Match(body);
+        return match.Success ? body[match.Index..].Trim() : string.Empty;
+    }
+
+    private static Regex QuotedReplyPattern() => new(@"(?:\r?\n|\s)On\s+(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)[^\r\n]{0,180}?wrote:\s*", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+}

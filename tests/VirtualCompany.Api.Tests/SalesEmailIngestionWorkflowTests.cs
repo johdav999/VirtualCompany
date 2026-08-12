@@ -1,5 +1,6 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Mailbox;
 using VirtualCompany.Application.Sales;
@@ -81,6 +82,49 @@ public sealed class SalesEmailIngestionWorkflowTests
         Assert.Equal(2, fixture.Outbox.Messages.Count);
     }
 
+    [Fact]
+    public async Task Lead_email_evidence_returns_original_message_content_for_owning_company()
+    {
+        await using var fixture = await SalesEmailFixture.CreateAsync();
+        fixture.Provider.AddMessage(new MailboxInboundMessage(
+            "evidence-message-1",
+            "evidence-thread-1",
+            "<evidence-message-1@example.com>",
+            "Subscription pricing",
+            "Please send pricing and arrange a demo for our finance team.",
+            null,
+            new MailboxAddress("finance@acme.example", "Sarah Chen"),
+            [new MailboxAddress("sales@example.com", "Sales")],
+            DateTime.UtcNow,
+            new Dictionary<string, string>()));
+        var ingestion = await fixture.Service.ProcessMessageAsync(
+            new ProcessSalesEmailMessageCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "evidence-message-1"),
+            CancellationToken.None);
+
+        var evidence = Assert.Single(await fixture.EvidenceService.ListAsync(fixture.CompanyId, ingestion.LeadId!.Value, CancellationToken.None));
+
+        Assert.Equal("Subscription pricing", evidence.Subject);
+        Assert.Equal("Sarah Chen", evidence.SenderName);
+        Assert.Equal("finance@acme.example", evidence.SenderEmail);
+        Assert.Contains("arrange a demo", evidence.PlainTextBody);
+        Assert.Null(evidence.SafeFailureMessage);
+    }
+
+    [Fact]
+    public async Task Lead_email_evidence_is_tenant_isolated()
+    {
+        await using var fixture = await SalesEmailFixture.CreateAsync();
+        fixture.Provider.AddMessage(new MailboxInboundMessage(
+            "tenant-message-1", "tenant-thread-1", null, "Demo", "Please arrange a demo.", null,
+            new MailboxAddress("buyer@example.com", "Buyer"), [], DateTime.UtcNow, new Dictionary<string, string>()));
+        var ingestion = await fixture.Service.ProcessMessageAsync(
+            new ProcessSalesEmailMessageCommand(fixture.CompanyId, fixture.UserId, fixture.ConnectionId, "tenant-message-1"),
+            CancellationToken.None);
+
+        var evidence = await fixture.EvidenceService.ListAsync(Guid.NewGuid(), ingestion.LeadId!.Value, CancellationToken.None);
+
+        Assert.Empty(evidence);
+    }
     [Theory]
     [InlineData("newsletter-message", "Weekly newsletter", "View in browser. Unsubscribe from this newsletter.", SalesEmailIgnoreReasons.Newsletter)]
     [InlineData("receipt-message", "Receipt", "Your purchase receipt and order confirmation.", SalesEmailIgnoreReasons.Receipt)]
@@ -152,6 +196,7 @@ public sealed class SalesEmailIngestionWorkflowTests
             SqliteConnection connection,
             VirtualCompanyDbContext dbContext,
             SalesEmailIngestionService service,
+            SalesLeadEmailEvidenceService evidenceService,
             FakeMailboxProviderRegistry provider,
             CapturingOutbox outbox,
             Guid companyId,
@@ -161,6 +206,7 @@ public sealed class SalesEmailIngestionWorkflowTests
             _connection = connection;
             DbContext = dbContext;
             Service = service;
+            EvidenceService = evidenceService;
             Provider = provider;
             Outbox = outbox;
             CompanyId = companyId;
@@ -170,6 +216,7 @@ public sealed class SalesEmailIngestionWorkflowTests
 
         public VirtualCompanyDbContext DbContext { get; }
         public SalesEmailIngestionService Service { get; }
+        public SalesLeadEmailEvidenceService EvidenceService { get; }
         public FakeMailboxProviderRegistry Provider { get; }
         public CapturingOutbox Outbox { get; }
         public Guid CompanyId { get; }
@@ -208,16 +255,18 @@ public sealed class SalesEmailIngestionWorkflowTests
                 dbContext,
                 new DeterministicReplySignalDetectionService(),
                 new DealIntelligenceSignalRepository(dbContext));
+            var tokenLease = new StaticMailboxTokenLease(mailboxConnectionId, companyId, provider);
             var service = new SalesEmailIngestionService(
                 dbContext,
                 registry,
-                new PlaintextFieldEncryption(),
+                tokenLease,
                 outbox,
                 new NullIntentExtractionService(),
                 replyPipeline,
                 TimeProvider.System,
                 new SalesSourceService(dbContext));
-            return new SalesEmailFixture(connection, dbContext, service, registry, outbox, companyId, userId, mailboxConnectionId);
+            var evidenceService = new SalesLeadEmailEvidenceService(dbContext, registry, tokenLease, NullLogger<SalesLeadEmailEvidenceService>.Instance);
+            return new SalesEmailFixture(connection, dbContext, service, evidenceService, registry, outbox, companyId, userId, mailboxConnectionId);
         }
 
         public async ValueTask DisposeAsync()
@@ -241,6 +290,24 @@ public sealed class SalesEmailIngestionWorkflowTests
             Task.FromResult<SalesEmailIntentExtractionResult?>(null);
     }
 
+    private sealed class StaticMailboxTokenLease(
+        Guid connectionId,
+        Guid companyId,
+        MailboxProvider provider) : IMailboxOAuthAccessTokenLeaseService
+    {
+        public Task<MailboxOAuthAccessTokenLease> AcquireAsync(
+            Guid requestedCompanyId,
+            Guid requestedConnectionId,
+            IReadOnlyCollection<string> requiredScopes,
+            CancellationToken cancellationToken)
+        {
+            Assert.Equal(companyId, requestedCompanyId);
+            Assert.Equal(connectionId, requestedConnectionId);
+            return Task.FromResult(new MailboxOAuthAccessTokenLease(
+                connectionId, companyId, provider, "sales@example.com",
+                "access-token", DateTime.UtcNow.AddHours(1), requiredScopes));
+        }
+    }
     private sealed class PlaintextFieldEncryption : IFieldEncryptionService
     {
         public string Encrypt(Guid companyId, string purpose, string plaintext) => plaintext;

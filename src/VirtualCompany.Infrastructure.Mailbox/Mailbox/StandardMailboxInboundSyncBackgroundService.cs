@@ -135,10 +135,10 @@ public sealed class StandardMailboxInboundSyncBackgroundService : BackgroundServ
         return await dbContext.MailboxConnections
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(connection =>
-                connection.Purpose == MailboxPurpose.Finance ||
+            .Where(connection => connection.IsPrimaryInbound &&
+                (connection.Purpose == MailboxPurpose.Finance ||
                 connection.Purpose == MailboxPurpose.Sales ||
-                connection.Purpose == MailboxPurpose.Support)
+                connection.Purpose == MailboxPurpose.Support))
             .OrderBy(connection => connection.CompanyId)
             .ThenBy(connection => connection.Id)
             .Select(connection => new ConnectionWorkItem(

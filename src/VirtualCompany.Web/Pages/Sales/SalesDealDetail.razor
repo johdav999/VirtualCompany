@@ -42,6 +42,10 @@
                 <div class="sales-detail-hero__value">
                     <span>@deal.StageName</span>
                     <strong>@Money(deal.Amount, deal.Currency)</strong>
+                    @if (deal.SourceLeadId is Guid sourceLeadId)
+                    {
+                        <a class="sales-button" href="@BuildMeetingPath(sourceLeadId)"><span class="bi bi-calendar-event" aria-hidden="true"></span>Schedule demo</a>
+                    }
                 </div>
             </section>
 
@@ -537,6 +541,7 @@
 
     private string BuildPath(string path) => ResolvedCompanyId is Guid companyId ? $"{path}?companyId={companyId:D}" : path;
     private string BuildFinanceDocumentPath() => ResolvedCompanyId is Guid companyId ? $"/finance/invoices?companyId={companyId:D}&source=sales&dealId={DealId:D}" : "/finance/invoices";
+    private string BuildMeetingPath(Guid leadId) => ResolvedCompanyId is Guid companyId ? $"/app/sales/leads/{leadId:D}?companyId={companyId:D}&schedule=true" : $"/app/sales/leads/{leadId:D}?schedule=true";
     private string BuildContactProfilePath(Guid contactId) => BuildPath($"/app/sales/contacts/{contactId:D}");
     private static string Score(decimal score) => string.Create(CultureInfo.CurrentCulture, $"{score:0.#}/100");
     private static string EngagementBand(decimal score) => score >= 75m ? "Strong engagement" : score >= 45m ? "Moderate engagement" : "Light engagement";

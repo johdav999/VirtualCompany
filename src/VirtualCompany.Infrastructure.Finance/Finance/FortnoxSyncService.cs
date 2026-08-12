@@ -30,6 +30,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     private readonly IFortnoxApiClient _apiClient;
     private readonly IFortnoxMappingService _mappingService;
     private readonly ILogger<FortnoxSyncService> _logger;
+    private readonly ISupplierSubscriptionService? _supplierSubscriptionService;
     private readonly TimeProvider _timeProvider;
     private readonly IFortnoxIntegrationDiagnostics? _diagnostics;
 
@@ -39,6 +40,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         IFortnoxMappingService mappingService,
         ILogger<FortnoxSyncService> logger,
         TimeProvider timeProvider,
+        ISupplierSubscriptionService? supplierSubscriptionService = null,
         IFortnoxIntegrationDiagnostics? diagnostics = null)
     {
         _dbContext = dbContext;
@@ -46,6 +48,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         _mappingService = mappingService;
         _logger = logger;
         _timeProvider = timeProvider;
+        _supplierSubscriptionService = supplierSubscriptionService;
         _diagnostics = diagnostics;
     }
 
@@ -1247,7 +1250,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
                 paidAmount: model.PaidAmount);
             _dbContext.FinanceBills.Add(bill);
             await AddReferenceAsync(companyId, connectionId, "supplier_invoice", bill.Id, model.ExternalId, model.ExternalNumber, model.ExternalUpdatedUtc, cancellationToken, model.ProviderMetadata);
-            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+            return await CompleteSupplierInvoiceUpsertAsync(companyId, bill.Id, SyncMutationResult.FromCreated(model.ExternalUpdatedUtc), cancellationToken);
         }
 
         bill = await _dbContext.FinanceBills.SingleOrDefaultAsync(x => x.Id == existing.InternalRecordId && x.CompanyId == companyId, cancellationToken);
@@ -1281,7 +1284,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
                 companyId,
                 missingInternalRecordId,
                 bill.Id);
-            return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
+            return await CompleteSupplierInvoiceUpsertAsync(companyId, bill.Id, SyncMutationResult.FromCreated(model.ExternalUpdatedUtc), cancellationToken);
         }
         bill.ApplySyncedSnapshot(
             counterparty.Id,
@@ -1300,7 +1303,28 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
         existing.ReplaceMetadata(model.ProviderMetadata, _timeProvider.GetUtcNow().UtcDateTime);
         AttachSource(bill, "supplier_invoice", model.ExternalId, existing.Id);
-        return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);
+        return await CompleteSupplierInvoiceUpsertAsync(companyId, bill.Id, SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc), cancellationToken);
+    }
+
+    private async Task<SyncMutationResult> CompleteSupplierInvoiceUpsertAsync(Guid companyId, Guid billId, SyncMutationResult result, CancellationToken cancellationToken)
+    {
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        if (_supplierSubscriptionService is null)
+        {
+            return result;
+        }
+
+        try
+        {
+            await _supplierSubscriptionService.EvaluateBillAsync(new EvaluateSupplierSubscriptionBillCommand(companyId, billId, null, "Fortnox sync"), cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Supplier subscription evaluation failed after Fortnox supplier invoice sync. CompanyId: {CompanyId}. BillId: {BillId}.", companyId, billId);
+            _dbContext.ChangeTracker.Clear();
+        }
+
+        return result;
     }
 
     private static bool InvoiceNeedsSyncRefresh(FinanceInvoice invoice, FortnoxInvoiceSyncModel model) =>
@@ -2093,3 +2117,6 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         Guid? BillId,
         decimal Amount);
 }
+
+
+

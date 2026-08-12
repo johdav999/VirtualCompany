@@ -129,6 +129,60 @@
 
                         <div class="bill-detail-panel__amount">@detail.DisplayAmount</div>
 
+                        @if (IsSubscriptionContextLoading)
+                        {
+                            <section class="bill-detail-section bill-subscription-card">
+                                <h3>Subscription context</h3>
+                                <p>Laura is checking recurring supplier evidence.</p>
+                            </section>
+                        }
+                        else if (!string.IsNullOrWhiteSpace(SubscriptionContextMessage))
+                        {
+                            <section class="bill-detail-section bill-subscription-card bill-subscription-card--warning">
+                                <h3>Subscription context unavailable</h3>
+                                <p>@SubscriptionContextMessage</p>
+                            </section>
+                        }
+                        else if (BillSubscriptionContext is { HasContext: true } subscriptionContext)
+                        {
+                            <section class="bill-detail-section bill-subscription-card">
+                                <div class="bill-subscription-card__header">
+                                    <div>
+                                        <h3>Subscription context</h3>
+                                        <p>@subscriptionContext.Message</p>
+                                    </div>
+                                    <span class="bill-status-badge bill-status-badge--info">@FormatStatusLabel(subscriptionContext.Status)</span>
+                                </div>
+                                @if (subscriptionContext.Subscription is not null)
+                                {
+                                    <dl class="bill-detail-list">
+                                        <div><dt>Agreement</dt><dd><a href="@BuildSupplierSubscriptionHref(subscriptionContext.Subscription.Id)">@subscriptionContext.Subscription.Name</a></dd></div>
+                                        <div><dt>Supplier</dt><dd>@subscriptionContext.Subscription.SupplierName</dd></div>
+                                        <div><dt>Expected amount</dt><dd>@FormatCurrency(subscriptionContext.Subscription.ExpectedAmount, subscriptionContext.Subscription.Currency)</dd></div>
+                                        <div><dt>Next expected bill</dt><dd>@FormatFriendlyDate(subscriptionContext.Subscription.NextExpectedBillDateUtc)</dd></div>
+                                    </dl>
+                                }
+                                @if (subscriptionContext.Match is not null)
+                                {
+                                    <p class="bill-subscription-card__evidence">@subscriptionContext.Match.EvidenceSummary</p>
+                                }
+                                @foreach (var suggestion in subscriptionContext.Suggestions)
+                                {
+                                    <div class="bill-subscription-card__suggestion">
+                                        <div>
+                                            <strong>@FormatStatusLabel(suggestion.Status)</strong>
+                                            <p>@suggestion.EvidenceSummary</p>
+                                            <small>@FormatCurrency(suggestion.ActualAmount, suggestion.Currency) · variance @FormatCurrency(suggestion.AmountVariance, suggestion.Currency)</small>
+                                        </div>
+                                        <div class="bill-subscription-card__actions">
+                                            <button type="button" class="btn btn-primary btn-sm" disabled="@IsSubscriptionMatchSubmitting" @onclick="() => DecideSubscriptionMatchAsync(suggestion.Id, true)">Confirm match</button>
+                                            <button type="button" class="btn btn-outline-secondary btn-sm" disabled="@IsSubscriptionMatchSubmitting" @onclick="() => DecideSubscriptionMatchAsync(suggestion.Id, false)">Reject</button>
+                                        </div>
+                                    </div>
+                                }
+                            </section>
+                        }
+
                         <dl class="bill-detail-list">
                             <div><dt>@FinanceText["Supplier"]</dt><dd>@detail.DisplaySupplierName</dd></div>
                             <div><dt>@FinanceText["ReceivedDate"]</dt><dd>@detail.DisplayReceivedDate</dd></div>
@@ -618,3 +672,4 @@
         </div>
     </section>
 </FinancePageLayout>
+

@@ -93,6 +93,48 @@ public sealed class SalesOperationsApiIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Qualified_lead_conversion_creates_a_deal_in_the_qualified_pipeline_stage()
+    {
+        var seed = await SeedAsync();
+        using var client = Client(seed.CompanyAId);
+
+        var qualify = await client.PostAsJsonAsync(
+            $"/api/sales/leads/{seed.LeadAId}/qualify",
+            new SalesActionRequest("Ready for the pipeline"));
+        Assert.Equal(HttpStatusCode.OK, qualify.StatusCode);
+
+        var convert = await client.PostAsJsonAsync(
+            $"/api/sales/leads/{seed.LeadAId}/convert",
+            new ConvertLeadRequest(2500m, "USD", DateTime.UtcNow.AddDays(30), "Create qualified opportunity"));
+        Assert.Equal(HttpStatusCode.OK, convert.StatusCode);
+        var deal = await convert.Content.ReadFromJsonAsync<SalesDealDetailResponse>();
+        Assert.NotNull(deal);
+        Assert.Equal(SalesPipelineStage.QualifiedStageId, deal!.StageId);
+
+        var pipeline = await client.GetFromJsonAsync<SalesPipelineResponse>("/api/sales/pipeline");
+        var qualifiedStage = Assert.Single(pipeline!.Stages, x => x.StageId == SalesPipelineStage.QualifiedStageId);
+        Assert.Contains(qualifiedStage.Deals, x => x.Id == deal.Id);
+    }
+    [Fact]
+    public async Task Convert_requires_a_qualified_lead()
+    {
+        var seed = await SeedAsync();
+        using var client = Client(seed.CompanyAId);
+        var dealCountBefore = await _factory.ExecuteDbContextAsync(dbContext =>
+            dbContext.Deals.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId));
+
+        var response = await client.PostAsJsonAsync(
+            $"/api/sales/leads/{seed.RejectLeadId}/convert",
+            new ConvertLeadRequest(2500m, "USD", DateTime.UtcNow.AddDays(30), "Attempt conversion before qualification"));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        var problem = await response.Content.ReadFromJsonAsync<ProblemDetails>();
+        Assert.Contains("qualified", problem?.Detail, StringComparison.OrdinalIgnoreCase);
+        var dealCountAfter = await _factory.ExecuteDbContextAsync(dbContext =>
+            dbContext.Deals.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyAId));
+        Assert.Equal(dealCountBefore, dealCountAfter);
+    }
+    [Fact]
     public async Task Validation_errors_are_structured_and_field_specific()
     {
         var seed = await SeedAsync();
