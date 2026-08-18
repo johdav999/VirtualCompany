@@ -23,6 +23,11 @@ else
                     <h1>@CommonText["OnboardingPageTitle"]</h1>
                     <p class="text-body-secondary">@CommonText["OnboardingIntro"]</p>
 
+                    <div class="alert alert-light border mt-3 d-flex flex-column flex-md-row align-items-md-center justify-content-between gap-3">
+                        <div><strong>@CommonText["OnboardingWorkshopTitle"]</strong><div class="text-body-secondary">@CommonText["OnboardingWorkshopDescription"]</div></div>
+                        <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="StartWorkshopAsync">@CommonText[showCompletedState ? "OnboardingWorkshopResume" : "OnboardingWorkshopStart"]</button>
+                    </div>
+
                     @if (!string.IsNullOrWhiteSpace(statusMessage))
                     {
                         <div class="alert alert-info mt-3">@statusMessage</div>
@@ -43,18 +48,15 @@ else
 
                     @if (showCompletedState)
                     {
-                        <div class="mt-4">
+                        <div class="alert alert-info mt-4">
                             <h2 class="h5">@CommonText["OnboardingAlreadyCompleted"]</h2>
                             <p class="text-body-secondary">@CommonText["OnboardingCompletedDescription"]</p>
                             <div class="d-flex gap-2 flex-wrap">
-                                <button type="button" class="btn btn-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">@CommonText["OnboardingOpenDashboard"]</button>
-                                <button type="button" class="btn btn-outline-secondary" @onclick="StartAnotherWorkspace">@CommonText["OnboardingStartAnother"]</button>
+                                <button type="button" class="btn btn-outline-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">@CommonText["OnboardingOpenDashboard"]</button>
                             </div>
                         </div>
                     }
-                    else
-                    {
-                        <ol class="wizard-steps mt-4">
+                    <ol class="wizard-steps mt-4">
                             @for (var wizardStep = 1; wizardStep <= StepCount; wizardStep++)
                             {
                                 <li class="wizard-step @GetStepClass(wizardStep)">
@@ -203,11 +205,14 @@ else
                                 <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="GoBack">@CommonText["OnboardingBack"]</button>
                             }
 
-                            <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="SaveAndExitAsync">
-                                @(isSubmitting ? CommonText["OnboardingSaving"] : CommonText["OnboardingSaveExit"])
-                            </button>
+                            @if (!showCompletedState)
+                            {
+                                <button type="button" class="btn btn-outline-secondary" disabled="@isSubmitting" @onclick="SaveAndExitAsync">
+                                    @(isSubmitting ? CommonText["OnboardingSaving"] : CommonText["OnboardingSaveExit"])
+                                </button>
+                            }
 
-                            @if (model.CompanyId.HasValue)
+                            @if (model.CompanyId.HasValue && !showCompletedState)
                             {
                                 <button type="button" class="btn btn-outline-danger" disabled="@isSubmitting" @onclick="DiscardAsync">@CommonText["OnboardingDiscard"]</button>
                             }
@@ -221,11 +226,10 @@ else
                             else
                             {
                                 <button type="button" class="btn btn-primary" disabled="@isSubmitting" @onclick="CompleteAsync">
-                                    @(isSubmitting ? CommonText["OnboardingCompleting"] : CommonText["OnboardingComplete"])
+                                    @(isSubmitting ? CommonText["OnboardingSaving"] : CommonText[showCompletedState ? "OnboardingSaveChanges" : "OnboardingComplete"])
                                 </button>
                             }
                         </div>
-                    }
                 </div>
             </div>
 
@@ -368,6 +372,22 @@ else
             CommonText["OnboardingGuidanceOwner"],
             CommonText["OnboardingGuidanceDocuments"]
         ];
+
+    private async Task StartWorkshopAsync()
+    {
+        validationErrors.Clear();errorMessage=null;statusMessage=null;
+        if(string.IsNullOrWhiteSpace(model.Name)){validationErrors[nameof(model.Name)]=CommonText["OnboardingNameRequiredSave"];errorMessage=CommonText["OnboardingWorkshopNameFirst"];return;}
+        isSubmitting=true;
+        try
+        {
+            var request=new SaveOnboardingRequest{CompanyId=model.CompanyId,Name=model.Name,Industry=model.Industry,BusinessType=model.BusinessType,
+                Timezone=model.Timezone,Currency=model.Currency,Language=model.Language,ComplianceRegion=model.ComplianceRegion,CurrentStep=Math.Max(1,currentStep),SelectedTemplateId=GetEffectiveTemplateId()};
+            var result=await ApiClient.StartWorkshopAsync(request);
+            Navigation.NavigateTo(result.Route, forceLoad: true);
+        }
+        catch(Exception ex){errorMessage=ex.Message;}
+        finally{isSubmitting=false;}
+    }
     private bool showCompletedState => string.Equals(sessionStatus, "completed", StringComparison.OrdinalIgnoreCase);
 
     protected override async Task OnInitializedAsync()
@@ -376,7 +396,9 @@ else
         {
             currentUser = await ApiClient.GetCurrentUserContextAsync();
             templates = (await ApiClient.GetTemplatesAsync()).ToList();
-            var progress = await ApiClient.GetProgressAsync();
+            var progress = currentUser?.ActiveCompany is { } activeCompany
+                ? await ApiClient.GetProgressAsync(activeCompany.CompanyId)
+                : await ApiClient.GetProgressAsync();
 
             if (progress is null)
             {
@@ -455,6 +477,7 @@ else
             return;
         }
 
+        var wasAlreadyCompleted = showCompletedState;
         try
         {
             isSubmitting = true;
@@ -482,8 +505,15 @@ else
             completedDashboardPath = result.DashboardPath;
             sessionStatus = "completed";
             savedGuidance = result.StarterGuidance;
-            Navigation.NavigateTo(result.DashboardPath, replace: true);
-            statusMessage = CommonText["OnboardingCompleteMessage"];
+            if (wasAlreadyCompleted)
+            {
+                statusMessage = CommonText["OnboardingChangesSaved"];
+            }
+            else
+            {
+                Navigation.NavigateTo(result.DashboardPath, replace: true);
+                statusMessage = CommonText["OnboardingCompleteMessage"];
+            }
         }
         catch (OnboardingApiException ex)
         {

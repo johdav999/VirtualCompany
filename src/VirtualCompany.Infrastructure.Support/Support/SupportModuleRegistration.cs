@@ -3,6 +3,7 @@ using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Orchestration;
+using VirtualCompany.Application.GuidedWork;
 
 namespace VirtualCompany.Infrastructure.Support;
 
@@ -32,6 +33,7 @@ public static class SupportModuleRegistration
         services.AddScoped<ISupportRefundFinanceService, SupportRefundFinanceService>();
         services.AddScoped<ISupportSlaMonitor, SupportSlaMonitor>();
         services.AddScoped<ISupportSlaPolicyService, SupportSlaPolicyService>();
+        services.AddScoped<IGuidedArtifactDefinition, SupportSlaGuidedArtifactDefinition>();
         services.AddScoped<ISupportKnowledgeGapService, SupportKnowledgeGapService>();
         services.AddScoped<ISupportAnalyticsService, SupportAnalyticsService>();
         services.AddScoped<ISupportMemoryUpdateService, SupportMemoryUpdateService>();

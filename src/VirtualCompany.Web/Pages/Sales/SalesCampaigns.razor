@@ -126,6 +126,10 @@
                                     {
                                         <p class="campaign-objective campaign-objective--missing">Add an objective, owner, offer, dates, and activity plan before approval.</p>
                                     }
+                                    @if (initiative?.MarketingContext is { } marketingContext && ResolvedCompanyId is Guid salesCompanyId)
+                                    {
+                                        <p class="campaign-objective">Part of <a href="@($"/marketing?companyId={salesCompanyId:D}&section=Plans&planId={marketingContext.PlanId:D}")">@marketingContext.PlanName</a> · plan version @marketingContext.PlanVersion · @marketingContext.SegmentVersionIds.Count audience version@(marketingContext.SegmentVersionIds.Count == 1 ? "" : "s")</p>
+                                    }
                                 </div>
                                 @if (readiness is not null)
                                 {
@@ -137,6 +141,10 @@
                             </div>
 
                             <div class="sales-actions">
+                                @if (ResolvedCompanyId is Guid campaignCompanyId)
+                                {
+                                    <GuidedWorkshopLaunch CompanyId="campaignCompanyId" AgentDepartment="Sales" ArtifactType="sales_campaign_plan" TargetArtifactId="selectedCampaign.Id" CssClass="sales-button" />
+                                }
                                 <button class="sales-button sales-button--primary" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("launch")'>@SalesText["Start"]</button>
                                 <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("pause")'>@SalesText["Pause"]</button>
                                 <button class="sales-button" disabled="@isSubmitting" @onclick='() => ChangeCampaignStateAsync("stop")'>@SalesText["Stop"]</button>

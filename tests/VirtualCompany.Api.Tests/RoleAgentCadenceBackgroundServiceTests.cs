@@ -9,7 +9,7 @@ namespace VirtualCompany.Api.Tests;
 public sealed class RoleAgentCadenceBackgroundServiceTests
 {
     [Fact]
-    public async Task RunDueCadences_enters_agent_company_scope_before_analysis()
+    public async Task Startup_daily_run_enters_agent_company_scope_and_does_not_run_weekly_or_monthly()
     {
         await using var connection = new SqliteConnection("Data Source=:memory:");
         await connection.OpenAsync();
@@ -52,18 +52,19 @@ public sealed class RoleAgentCadenceBackgroundServiceTests
             Options.Create(new RoleAgentCadenceOptions
             {
                 Enabled = true,
-                DailyHourUtc = 0,
-                WeeklyDay = (DayOfWeek)(((int)DateTime.UtcNow.DayOfWeek + 1) % 7),
-                MonthlyDay = DateTime.UtcNow.Day == 1 ? 2 : 1
+                DailyHourUtc = 23,
+                WeeklyDay = DateTime.UtcNow.DayOfWeek,
+                MonthlyDay = DateTime.UtcNow.Day
             }),
             NullLogger<RoleAgentCadenceBackgroundService>.Instance);
 
-        await worker.RunDueCadencesAsync(CancellationToken.None);
+        await worker.RunDueCadencesAsync(CancellationToken.None, ignoreDailyHour: true, dailyOnly: true);
 
         Assert.Equal(1, analysis.InvocationCount);
         Assert.Equal(companyId, analysis.ObservedCompanyId);
         Assert.Equal(companyId, analysis.ObservedContextCompanyId);
         Assert.Equal(agentId, analysis.ObservedAgentId);
+        Assert.Equal("daily", analysis.ObservedCadence);
         Assert.Null(companyContext.CompanyId);
     }
 
@@ -74,6 +75,7 @@ public sealed class RoleAgentCadenceBackgroundServiceTests
         public Guid? ObservedCompanyId { get; private set; }
         public Guid? ObservedAgentId { get; private set; }
         public Guid? ObservedContextCompanyId { get; private set; }
+        public string? ObservedCadence { get; private set; }
 
         public Task<RoleAgentAnalysisResult> AnalyzeAsync(
             Guid companyId,
@@ -86,6 +88,7 @@ public sealed class RoleAgentCadenceBackgroundServiceTests
             ObservedCompanyId = companyId;
             ObservedAgentId = agentId;
             ObservedContextCompanyId = companyContext.CompanyId;
+            ObservedCadence = request.Cadence;
 
             return Task.FromResult(new RoleAgentAnalysisResult(
                 Guid.NewGuid(),

@@ -13,10 +13,27 @@ namespace VirtualCompany.Api.Controllers;
 public sealed class OnboardingController : ControllerBase
 {
     private readonly ICompanyOnboardingService _onboardingService;
+    private readonly ICompanyOnboardingWorkshopService _workshopService;
 
-    public OnboardingController(ICompanyOnboardingService onboardingService)
+    public OnboardingController(ICompanyOnboardingService onboardingService, ICompanyOnboardingWorkshopService workshopService)
     {
         _onboardingService = onboardingService;
+        _workshopService = workshopService;
+    }
+
+    [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
+    [HttpPost("workshop")]
+    public async Task<ActionResult<CompanyOnboardingWorkshopBootstrapDto>> StartWorkshopAsync(
+        [FromBody] CreateCompanyWorkspaceRequest request,
+        CancellationToken cancellationToken)
+    {
+        try { return Ok(await _workshopService.StartOrResumeAsync(request,cancellationToken)); }
+        catch(CompanyOnboardingValidationException ex)
+        {
+            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string,string[]>(ex.Errors))
+            { Title="Validation failed",Status=StatusCodes.Status400BadRequest });
+        }
+        catch(UnauthorizedAccessException) { return Forbid(); }
     }
 
     [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
@@ -61,9 +78,13 @@ public sealed class OnboardingController : ControllerBase
     }
 
     [HttpGet("progress")]
-    public async Task<ActionResult<CompanyOnboardingProgressDto?>> GetProgressAsync(CancellationToken cancellationToken)
+    public async Task<ActionResult<CompanyOnboardingProgressDto?>> GetProgressAsync(
+        [FromQuery] Guid? companyId,
+        CancellationToken cancellationToken)
     {
-        var progress = await _onboardingService.GetProgressAsync(cancellationToken);
+        var progress = companyId.HasValue
+            ? await _onboardingService.GetProgressAsync(companyId.Value, cancellationToken)
+            : await _onboardingService.GetProgressAsync(cancellationToken);
         return Ok(progress);
     }
 

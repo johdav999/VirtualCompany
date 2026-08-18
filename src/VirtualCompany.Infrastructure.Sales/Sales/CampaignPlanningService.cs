@@ -19,7 +19,7 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
     {
         var campaign = await InitiativeQuery(companyId, tracking: false)
             .SingleOrDefaultAsync(x => x.Id == campaignId, cancellationToken);
-        return campaign is null ? null : Map(campaign);
+        return campaign is null ? null : await MapAsync(companyId, campaign, cancellationToken);
     }
 
     public async Task<CampaignInitiativeResponse?> ConfigureInitiativeAsync(
@@ -68,7 +68,7 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
         }
         Audit(companyId, userId, "sales.campaign.initiative_configured", campaign.Id, "Campaign objective, ownership, offer, dates, and budget were updated.");
         await _db.SaveChangesAsync(cancellationToken);
-        return Map(campaign);
+        return await MapAsync(companyId, campaign, cancellationToken);
     }
 
     public async Task<CampaignReadinessResponse?> GetReadinessAsync(Guid companyId, Guid campaignId, CancellationToken cancellationToken)
@@ -93,7 +93,7 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
                 ? "Campaign preparation is complete and human approval is required."
                 : "Campaign preparation is complete and the campaign is scheduled.");
         await _db.SaveChangesAsync(cancellationToken);
-        return Map(campaign);
+        return await MapAsync(companyId, campaign, cancellationToken);
     }
 
     public async Task<IReadOnlyList<CampaignSegmentResponse>> ListSegmentsAsync(Guid companyId, CancellationToken cancellationToken) =>
@@ -429,8 +429,25 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
     private async Task<bool> IsCompanyMember(Guid companyId, Guid userId, CancellationToken cancellationToken) =>
         await _db.CompanyMemberships.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.UserId == userId, cancellationToken);
 
-    private static CampaignInitiativeResponse Map(SalesCampaign campaign) =>
-        new(campaign.Id, campaign.Name, campaign.CampaignType, campaign.LifecycleStatus, campaign.Description,
+    private async Task<CampaignInitiativeResponse> MapAsync(Guid companyId, SalesCampaign campaign, CancellationToken cancellationToken)
+    {
+        var link = await _db.MarketingPlanCampaigns.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.SalesCampaignId == campaign.Id, cancellationToken);
+        CampaignMarketingContextResponse? context = null;
+        if (link is not null)
+        {
+            var plan = await _db.MarketingPlans.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(x => x.CompanyId == companyId && x.Id == link.MarketingPlanId, cancellationToken);
+            var segmentVersions = await _db.MarketingPlanCampaignSegments.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == companyId && x.MarketingPlanCampaignId == link.Id)
+                .Join(_db.MarketingPlanSegments.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId),
+                    campaignSegment => campaignSegment.MarketingPlanSegmentId, planSegment => planSegment.Id,
+                    (_, planSegment) => planSegment.MarketingCustomerSegmentVersionId)
+                .ToArrayAsync(cancellationToken);
+            context = new CampaignMarketingContextResponse(plan.Id, plan.Name, plan.Version, link.MarketingObjectiveId,
+                link.ExpectedContribution, segmentVersions, ParseStringList(plan.EvidenceReferencesJson), plan.ApprovalRequestId);
+        }
+        return new CampaignInitiativeResponse(campaign.Id, campaign.Name, campaign.CampaignType, campaign.LifecycleStatus, campaign.Description,
             campaign.OwnerUserId, campaign.OwnerAgentId,
             campaign.PrimaryObjectiveType is null || campaign.PrimaryObjectiveTarget is null || campaign.PrimaryObjectiveUnit is null || campaign.PrimaryObjectiveTargetUtc is null
                 ? null
@@ -438,7 +455,14 @@ public sealed class CampaignPlanningService : ICampaignPlanningService
                     campaign.PrimaryObjectiveUnit, campaign.PrimaryObjectiveTargetUtc.Value),
             campaign.PlanningStartsUtc, campaign.ScheduledLaunchUtc, campaign.EndsUtc, campaign.ReviewDueUtc,
             campaign.TimeZoneId, campaign.PlannedBudget, campaign.BudgetCurrency, campaign.LegacySetupRequired,
-            campaign.ConcurrencyVersion, campaign.ReadinessGaps());
+            campaign.ConcurrencyVersion, campaign.ReadinessGaps(), context);
+    }
+
+    private static IReadOnlyList<string> ParseStringList(string json)
+    {
+        try { return System.Text.Json.JsonSerializer.Deserialize<string[]>(json) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
+    }
 
     private static CampaignSegmentResponse Map(SalesCampaignAudienceSegment x) =>
         new(x.Id, x.Name, x.SegmentKind, x.Version, x.IsActive, x.Industry, x.Country, x.MinEmployees, x.MaxEmployees,

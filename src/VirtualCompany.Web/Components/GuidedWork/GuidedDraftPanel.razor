@@ -1,0 +1,120 @@
+@using System.Text.Json
+@using System.Text.Json.Nodes
+@inject IStringLocalizer<GuidedWorkResources> Text
+<section class="guided-draft" aria-label="@Text["LiveDraft"]">
+    <header class="guided-draft__header"><div><h2>@Text["LiveDraft"]</h2><p>@Text["FieldsReady", Session.ReadyFieldCount, Session.RequiredFieldCount]</p></div>
+        @if(ReviewableFields.Count>0){<button class="guided-review-proposals" type="button" @onclick="ToggleReviewMode"><span class="bi bi-check2-square" aria-hidden="true"></span>@(reviewMode?Text["CloseProposalReview"]:Text["ReviewProposals",ReviewableFields.Count])</button>}
+    </header>
+    <progress value="@Session.ReadyFieldCount" max="@(Math.Max(1, Session.RequiredFieldCount))">@Session.ReadyFieldCount / @Session.RequiredFieldCount</progress>
+    @if(reviewMode)
+    {
+        <div class="guided-batch-review" role="toolbar" aria-label="@Text["ProposalReviewActions"]">
+            <label><input type="checkbox" checked="@(selectedPaths.Count==ReviewableFields.Count&&ReviewableFields.Count>0)" @onchange="ToggleAll" /> @Text["SelectedCount",selectedPaths.Count]</label>
+            <button type="button" class="btn btn-sm btn-primary" disabled="@(selectedPaths.Count==0||statusBusy)" @onclick="ConfirmSelectedAsync"><span class="bi bi-check2" aria-hidden="true"></span>@Text["ConfirmSelected"]</button>
+        </div>
+    }
+    <div class="guided-fields">
+        @foreach (var field in Session.Fields)
+        {
+            var isExpanded = expandedPaths.Contains(field.Path);
+            var detailsId = $"guided-field-details-{field.Id:N}";
+            @if (IsWorkshopInsights(field))
+            {
+                <div class="guided-insights-heading"><span class="bi bi-lightbulb" aria-hidden="true"></span><div><h3>@Text["WorkshopInsights"]</h3><p>@Text["WorkshopInsightsHelp"]</p></div></div>
+            }
+            <article class="guided-field guided-field--@field.Status @(IsWorkshopInsights(field) ? "guided-field--insight" : null) @(isExpanded ? "guided-field--expanded" : null) @(reviewMode&&IsReviewable(field)?"guided-field--selectable":null)">
+                @if(reviewMode&&IsReviewable(field)){<label class="guided-field__select"><input type="checkbox" checked="@selectedPaths.Contains(field.Path)" @onchange="e=>SetSelected(field.Path,e.Value is true)" /><span class="visually-hidden">@Text["SelectField",field.Label]</span></label>}
+                <button class="guided-field__summary" type="button" @onclick="() => ToggleExpanded(field.Path)"
+                        aria-expanded="@(isExpanded ? "true" : "false")" aria-controls="@detailsId">
+                    <span class="guided-field__icon bi @IconClass(field)" aria-hidden="true"></span>
+                    <span class="guided-field__heading"><span class="guided-field__title">@field.Label @if(field.IsRequired){<span class="visually-hidden">required</span>}</span><span class="guided-field__description">@field.Description</span></span>
+                    <span class="guided-field__content"><span class="guided-field__value">@DisplayValue(field.Value)</span></span>
+                    <span class="guided-status">@StatusLabel(field)</span>
+                    <span class="guided-source">@Text["SourceLabel",SourceLabel(field)]</span>
+                    <span class="guided-field__chevron bi @(isExpanded ? "bi-chevron-up" : "bi-chevron-down")" aria-hidden="true"></span>
+                    <span class="visually-hidden">@(isExpanded ? Text["CollapseDetails"] : Text["ExpandDetails"])</span>
+                </button>
+                @if (editingPath == field.Path)
+                {
+                    <div class="guided-field__editor" id="@detailsId"><textarea rows="7" value="@editValue" @oninput="e => editValue = e.Value?.ToString() ?? string.Empty" aria-label="@field.Label"></textarea>
+                        @if (!string.IsNullOrWhiteSpace(editError)) { <div class="guided-field__error" role="alert">@editError</div> }
+                        <div class="guided-field__actions"><button class="btn btn-sm btn-primary" type="button" @onclick="() => Save(field)">@Text["Save"]</button><button class="btn btn-sm btn-link" type="button" @onclick="StopEditing">@CommonText["Cancel"]</button></div>
+                    </div>
+                }
+                else if (isExpanded)
+                {
+                    <div class="guided-field__details" id="@detailsId">
+                        <span class="guided-field__details-label">@Text["DocumentedDetail"]</span>
+                        <p class="guided-field__full-value">@DisplayValue(field.Value)</p>
+                        @if (!string.IsNullOrWhiteSpace(field.Explanation)) { <small>@field.Explanation</small> }
+                        @if(!IsWorkshopInsights(field))
+                        {
+                            <div class="guided-field__review-actions" aria-label="@Text["FieldReviewActions",field.Label]">
+                                @if(field.Value is not null&&field.Status!="confirmed"){<button class="btn guided-action--confirm" type="button" disabled="@statusBusy" @onclick="()=>ConfirmFieldAsync(field)"><span class="bi bi-check-circle" aria-hidden="true"></span>@Text["Confirm"]</button>}
+                                <button class="btn guided-action--edit" type="button" disabled="@statusBusy" @onclick="() => StartEditing(field)"><span class="bi bi-pencil" aria-hidden="true"></span>@Text["EditAndConfirm"]</button>
+                                @if(field.Status!="needs_work"){<button class="btn guided-action--needs-work" type="button" disabled="@statusBusy" @onclick="()=>MarkNeedsWorkAsync(field)"><span class="bi bi-exclamation-triangle" aria-hidden="true"></span>@Text["NeedsWork"]</button>}
+                                @if(field.Status!="unknown"){<button class="btn guided-action--unknown" type="button" disabled="@statusBusy" @onclick="()=>MarkUnknownAsync(field)"><span class="bi bi-question-circle" aria-hidden="true"></span>@Text["MarkUnknown"]</button>}
+                            </div>
+                        }
+                        else{<button class="guided-field__edit btn btn-sm btn-outline-secondary" type="button" @onclick="() => StartEditing(field)" aria-label="@($"{Text["Edit"]} {field.Label}")"><span class="bi bi-pencil" aria-hidden="true"></span>@Text["Edit"]</button>}
+                    </div>
+                }
+            </article>
+        }
+    </div>
+</section>
+@code {
+    [Parameter, EditorRequired] public GuidedWorkSessionViewModel Session { get; set; } = null!;
+    [Parameter, EditorRequired] public EventCallback<(GuidedDraftFieldViewModel Field, JsonNode? Value)> OnSave { get; set; }
+    [Parameter, EditorRequired] public EventCallback<(IReadOnlyList<string> Paths,string? FromStatus,string Status,string Explanation)> OnStatusChange { get; set; }
+    private readonly HashSet<string> expandedPaths = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> selectedPaths = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly JsonSerializerOptions DisplayJsonOptions = new() { WriteIndented = true };
+    private string? editingPath; private string editValue = string.Empty; private string? editError; private bool reviewMode; private bool statusBusy;
+    private List<GuidedDraftFieldViewModel> ReviewableFields=>Session.Fields.Where(IsReviewable).ToList();
+    private void ToggleExpanded(string path) { if (!expandedPaths.Add(path)) { expandedPaths.Remove(path); if (editingPath == path) StopEditing(); } }
+    private void StartEditing(GuidedDraftFieldViewModel field) { expandedPaths.Add(field.Path); editingPath = field.Path; editError=null; editValue = field.Value is JsonValue v && v.TryGetValue<string>(out var text) ? text : field.Value?.ToJsonString(DisplayJsonOptions) ?? string.Empty; }
+    private void StopEditing() { editingPath = null; editValue = string.Empty; editError=null; }
+    private async Task Save(GuidedDraftFieldViewModel field) { try { await OnSave.InvokeAsync((field, ParseEditedValue(field))); StopEditing(); } catch(Exception ex) { editError=ex.Message; } }
+    private void ToggleReviewMode(){reviewMode=!reviewMode;selectedPaths.Clear();}
+    private void SetSelected(string path,bool selected){if(selected)selectedPaths.Add(path);else selectedPaths.Remove(path);}
+    private void ToggleAll(ChangeEventArgs e){selectedPaths.Clear();if(e.Value is true)foreach(var field in ReviewableFields)selectedPaths.Add(field.Path);}
+    private async Task ConfirmSelectedAsync(){if(selectedPaths.Count==0)return;statusBusy=true;editError=null;try{await OnStatusChange.InvokeAsync((selectedPaths.ToArray(),null,"confirmed",Text["BatchConfirmedByUser"]));selectedPaths.Clear();reviewMode=false;}catch(Exception ex){editError=ex.Message;}finally{statusBusy=false;}}
+    private Task ConfirmFieldAsync(GuidedDraftFieldViewModel field)=>ChangeStatusAsync(field,"confirmed",Text["ConfirmedByUser"]);
+    private Task MarkNeedsWorkAsync(GuidedDraftFieldViewModel field)=>ChangeStatusAsync(field,"needs_work",Text["NeedsWorkExplanation"]);
+    private Task MarkUnknownAsync(GuidedDraftFieldViewModel field)=>ChangeStatusAsync(field,"unknown",Text["MarkedUnknownByUser"]);
+    private async Task ChangeStatusAsync(GuidedDraftFieldViewModel field,string status,string explanation){statusBusy=true;editError=null;try{await OnStatusChange.InvokeAsync((new[]{field.Path},null,status,explanation));}catch(Exception ex){editError=ex.Message;expandedPaths.Add(field.Path);}finally{statusBusy=false;}}
+    private static string IconClass(GuidedDraftFieldViewModel field)
+    {
+        if (IsWorkshopInsights(field)) return "bi-lightbulb";
+        var key = $"{field.Path} {field.Label}".ToLowerInvariant();
+        if (key.Contains("segment") || key.Contains("audience")) return "bi-people";
+        if (key.Contains("position") || key.Contains("rationale")) return "bi-bullseye";
+        if (key.Contains("product") || key.Contains("offer")) return "bi-box-seam";
+        if (key.Contains("price") || key.Contains("economic")) return "bi-tag";
+        if (key.Contains("channel") || key.Contains("place") || key.Contains("presence")) return "bi-globe2";
+        if (key.Contains("promotion") || key.Contains("behavior")) return "bi-megaphone";
+        if (key.Contains("evidence") || key.Contains("confidence")) return "bi-shield-check";
+        if (key.Contains("risk") || key.Contains("assumption")) return "bi-exclamation-triangle";
+        if (key.Contains("metric") || key.Contains("score") || key.Contains("size")) return "bi-bar-chart";
+        return "bi-file-text";
+    }
+    private JsonNode? ParseEditedValue(GuidedDraftFieldViewModel field)
+    {
+        if (string.IsNullOrWhiteSpace(editValue)) return null;
+        return field.ValueType switch
+        {
+            "number" => decimal.TryParse(editValue, out var number) ? JsonValue.Create(number) : throw new InvalidOperationException($"{field.Label} must be a number."),
+            "boolean" => bool.TryParse(editValue, out var flag) ? JsonValue.Create(flag) : throw new InvalidOperationException($"{field.Label} must be true or false."),
+            "text_list" or "object" => JsonNode.Parse(editValue) ?? throw new InvalidOperationException($"{field.Label} must contain valid structured data."),
+            _ => JsonValue.Create(editValue)
+        };
+    }
+    private string StatusLabel(GuidedDraftFieldViewModel field) => IsWorkshopInsights(field)
+        ? field.Value is null ? Text["NoInsightsYet"] : Text["NotYetMapped"]
+        : Text[field.Status=="needs_work"?"NeedsWork":char.ToUpperInvariant(field.Status[0]) + field.Status[1..]];
+    private string SourceLabel(GuidedDraftFieldViewModel field)=>field.SourceType switch{"user"=>Text["SourceUser"],"assumption"=>Text["SourceAssumption"],"observation"=>Text["SourceResearch"],"projection"=>Text["SourceProjection"],"voice_tool"=>Text["SourceAgent"],_=>Text["SourceNotSet"]};
+    private static bool IsReviewable(GuidedDraftFieldViewModel field)=>!IsWorkshopInsights(field)&&field.Value is not null&&field.Status is "proposed" or "needs_work";
+    private static bool IsWorkshopInsights(GuidedDraftFieldViewModel field) => string.Equals(field.Path,"workshop_insights",StringComparison.OrdinalIgnoreCase);
+    private static string DisplayValue(JsonNode? value) => value is null ? "—" : value is JsonValue v && v.TryGetValue<string>(out var text) ? text : value.ToJsonString(DisplayJsonOptions);
+}

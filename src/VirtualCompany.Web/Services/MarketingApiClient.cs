@@ -28,6 +28,26 @@ public sealed class MarketingApiClient
         SendAsync<CreateMarketingPlanViewModel, MarketingPlanViewModel>(companyId, HttpMethod.Post, "api/marketing/plans", request, ct);
     public Task<MarketingPlanViewModel> ActivatePlanAsync(Guid companyId, Guid planId, CancellationToken ct = default) =>
         SendAsync<object, MarketingPlanViewModel>(companyId, HttpMethod.Post, $"api/marketing/plans/{planId:D}/activate", new { }, ct);
+    public Task<IReadOnlyList<MarketingPlanListItemViewModel>> GetPlanPortfolioAsync(Guid companyId, CancellationToken ct = default) =>
+        GetAsync<IReadOnlyList<MarketingPlanListItemViewModel>>(companyId, "api/marketing/plan-portfolio", ct);
+    public Task<MarketingPlanDetailViewModel> GetPlanPortfolioAsync(Guid companyId, Guid planId, CancellationToken ct = default) =>
+        GetAsync<MarketingPlanDetailViewModel>(companyId, $"api/marketing/plans/{planId:D}/portfolio", ct);
+    public Task<MarketingDailyReviewViewModel?> GetDailyReviewAsync(Guid companyId, DateTime dateUtc, CancellationToken ct = default) =>
+        GetAsync<MarketingDailyReviewViewModel?>(companyId, $"api/marketing/daily-review?dateUtc={Uri.EscapeDataString(dateUtc.ToString("O"))}", ct);
+    public Task<MarketingCampaignPortfolioProposalViewModel> PrepareCampaignPortfolioAsync(Guid companyId, Guid planId,
+        PrepareMarketingCampaignPortfolioViewModel request, CancellationToken ct = default) =>
+        SendAsync<PrepareMarketingCampaignPortfolioViewModel, MarketingCampaignPortfolioProposalViewModel>(companyId, HttpMethod.Post,
+            $"api/marketing/plans/{planId:D}/campaign-portfolio/proposal", request, ct);
+    public Task<MarketingCampaignPortfolioResultViewModel> CommitCampaignPortfolioAsync(Guid companyId, Guid planId,
+        PrepareMarketingCampaignPortfolioViewModel request, CancellationToken ct = default) =>
+        SendAsync<object, MarketingCampaignPortfolioResultViewModel>(companyId, HttpMethod.Post,
+            $"api/marketing/plans/{planId:D}/campaign-portfolio/commit", new { portfolio = request }, ct);
+    public Task<MarketingPlanDetailViewModel> SubmitPlanForReviewAsync(Guid companyId, Guid planId, int expectedVersion, CancellationToken ct = default) =>
+        SendAsync<object, MarketingPlanDetailViewModel>(companyId, HttpMethod.Post,
+            $"api/marketing/plans/{planId:D}/submit-grounded?expectedVersion={expectedVersion}", new { }, ct);
+    public Task<MarketingPlanDetailViewModel> ActivateGroundedPlanAsync(Guid companyId, Guid planId, int expectedVersion, CancellationToken ct = default) =>
+        SendAsync<object, MarketingPlanDetailViewModel>(companyId, HttpMethod.Post,
+            $"api/marketing/plans/{planId:D}/activate-grounded?expectedVersion={expectedVersion}", new { }, ct);
 
     public Task<MarketingContentBriefViewModel> CreateContentAsync(Guid companyId, CreateMarketingContentBriefViewModel request, CancellationToken ct = default) =>
         SendAsync<CreateMarketingContentBriefViewModel, MarketingContentBriefViewModel>(companyId, HttpMethod.Post, "api/marketing/content", request, ct);
@@ -412,7 +432,49 @@ public sealed record MarketingObjectiveViewModel(Guid Id, string Name, string Ob
 public sealed record MarketingPlanViewModel(Guid Id, string Name, string Summary, DateTime StartsUtc, DateTime EndsUtc,
     decimal? PlannedBudget, string BudgetCurrency, string Status, int Version);
 public sealed record MarketingCalendarItemViewModel(Guid Id, string Kind, string Name, DateTime StartsUtc, DateTime EndsUtc,
-    string Status, Guid? CampaignId, Guid? OwnerAgentId);
+    string Status, Guid? CampaignId, Guid? OwnerAgentId, bool IsSpan = false, string SourceRecordType = "marketing",
+    Guid? SourceRecordId = null, Guid? PlanId = null, string AttentionState = "none", string? NavigationTarget = null);
+public sealed record MarketingPlanListItemViewModel(Guid Id, string Name, string? StrategyTitle, int? StrategyVersion,
+    DateTime StartsUtc, DateTime EndsUtc, decimal? PlannedBudget, decimal AllocatedBudget, decimal? RemainingBudget,
+    string BudgetCurrency, int ObjectiveCount, int SegmentCount, int CampaignCount, string ReadinessLabel,
+    string StatusLabel, Guid? OwnerAgentId, int Version, string? AttentionReason);
+public sealed record MarketingPlanObjectiveSummaryViewModel(Guid Id, string Name, string Status, DateTime StartsUtc, DateTime EndsUtc);
+public sealed record MarketingPlanSegmentPortfolioViewModel(Guid Id, Guid SegmentVersionId, int SegmentVersionNumber,
+    string SegmentName, string Role, int Priority, string Rationale, string ExpectedContribution, string Status);
+public sealed record MarketingPlanCampaignPortfolioViewModel(Guid Id, Guid CampaignId, string CampaignName, string Purpose,
+    Guid? ObjectiveId, string ObjectiveContribution, IReadOnlyList<Guid> SegmentVersionIds, decimal? AllocatedBudget,
+    string BudgetCurrency, int Priority, string Status, string CampaignLifecycleStatus, DateTime? PlanningStartsUtc,
+    DateTime? LaunchUtc, DateTime? ReviewUtc, DateTime? EndsUtc, Guid? OwnerAgentId, IReadOnlyList<string> ReadinessGaps);
+public sealed record MarketingCoverageFindingViewModel(string Code, string Label, string Explanation, string Severity,
+    Guid? ObjectiveId = null, Guid? SegmentVersionId = null, Guid? CampaignId = null);
+public sealed record MarketingPlanDetailViewModel(MarketingPlanListItemViewModel Summary, string Description, string Rationale,
+    IReadOnlyList<string> EvidenceReferences, IReadOnlyList<string> MissingEvidence,
+    IReadOnlyList<MarketingPlanObjectiveSummaryViewModel> Objectives, IReadOnlyList<MarketingPlanSegmentPortfolioViewModel> Segments,
+    IReadOnlyList<MarketingPlanCampaignPortfolioViewModel> Campaigns, IReadOnlyList<MarketingCoverageFindingViewModel> Coverage,
+    Guid? ApprovalRequestId, IReadOnlyList<string> AllowedActions, bool StrategyGroundingAvailable);
+public sealed record MarketingWorkNeedViewModel(string ReasonCode, string Label, string Urgency, bool Actionable,
+    IReadOnlyList<Guid> AffectedIds, IReadOnlyList<string> EvidenceReferences, string Explanation,
+    string RecommendedTool, bool RequiresApproval, string Fingerprint);
+public sealed record MarketingDailyReviewViewModel(Guid RunId, DateTime RunDateUtc, string OutcomeLabel, string Summary,
+    IReadOnlyList<string> CheckedEvidence, IReadOnlyList<MarketingWorkNeedViewModel> Needs, IReadOnlyList<string> Actions,
+    IReadOnlyList<string> Blockers, string? NextHumanAction);
+public sealed record MarketingCampaignPortfolioItemViewModel(string Name, string Purpose, Guid ObjectiveId,
+    string ObjectiveContribution, IReadOnlyList<Guid> SegmentVersionIds, decimal? AllocatedBudget, string BudgetCurrency,
+    int Priority, string CampaignType, string AudienceType, decimal ObjectiveTarget, string ObjectiveUnit,
+    DateTime ObjectiveTargetUtc, DateTime PlanningStartsUtc, DateTime LaunchUtc, DateTime ReviewUtc, DateTime EndsUtc,
+    string TimeZoneId, string? CommunicationLanguage, IReadOnlyList<string> Channels, string? OfferBasis,
+    IReadOnlyList<string> Activities, IReadOnlyList<string> ContentNeeds, string AudienceApproach,
+    string MeasurementApproach, IReadOnlyList<string> EvidenceReferences, IReadOnlyList<string> MissingEvidence,
+    IReadOnlyList<string>? TaskNeeds = null, IReadOnlyList<string>? Assumptions = null, IReadOnlyList<string>? Risks = null);
+public sealed record PrepareMarketingCampaignPortfolioViewModel(Guid PlanId, int ExpectedPlanVersion,
+    IReadOnlyList<MarketingCampaignPortfolioItemViewModel> Campaigns, string IdempotencyKey, Guid? AgentId = null);
+public sealed record MarketingPolicyDecisionViewModel(bool Allowed, string ReasonCode, string Explanation,
+    bool RequiresApproval, IReadOnlyList<string> EvidenceReferences);
+public sealed record MarketingCampaignPortfolioProposalViewModel(string ProposalKey, Guid PlanId, int PlanVersion,
+    MarketingPolicyDecisionViewModel Decision, IReadOnlyList<MarketingCoverageFindingViewModel> Findings,
+    IReadOnlyList<MarketingCampaignPortfolioItemViewModel> Campaigns);
+public sealed record MarketingCampaignPortfolioResultViewModel(Guid PlanId, int PlanVersion,
+    IReadOnlyList<MarketingPlanCampaignPortfolioViewModel> Campaigns, bool Idempotent, string Outcome);
 public sealed record MarketingContentBriefViewModel(Guid Id, Guid? CampaignId, Guid? PlanId, string Title, string Purpose,
     string Audience, string Channel, string Language, string Tone, string CallToAction, DateTime? DueUtc,
     string Status, int Version, IReadOnlyList<MarketingContentVariantViewModel> Variants,

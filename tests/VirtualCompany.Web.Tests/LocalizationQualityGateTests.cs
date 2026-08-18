@@ -6,6 +6,7 @@ using System.Resources;
 using VirtualCompany.Web.Localization;
 using VirtualCompany.Web.Localization.Agents;
 using VirtualCompany.Web.Localization.Finance;
+using VirtualCompany.Web.Localization.GuidedWork;
 using VirtualCompany.Web.Localization.Sales;
 using VirtualCompany.Web.Localization.Shared;
 using VirtualCompany.Web.Localization.Support;
@@ -20,6 +21,7 @@ public sealed partial class LocalizationQualityGateTests
         typeof(NavigationResources),
         typeof(ValidationResources),
         typeof(AgentsResources),
+        typeof(GuidedWorkResources),
         typeof(FinanceResources),
         typeof(SalesResources),
         typeof(SupportResources)

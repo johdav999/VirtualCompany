@@ -8,8 +8,9 @@
     <base href="/" />
     <link rel="stylesheet" href="lib/bootstrap/dist/css/bootstrap.min.css" />
     <link rel="stylesheet" href="css/app.css" />
+    <link rel="stylesheet" href="css/guided-documents.css?v=20260814-collapsible-documents" />
     <link rel="icon" type="image/png" href="favicon.png" />
-    <link rel="stylesheet" href="@Assets["VirtualCompany.Web.styles.css"]" />
+    <link rel="stylesheet" href="@Assets["VirtualCompany.Web.styles.css"]?v=20260813-workshop-resize" />
     <HeadOutlet />
 </head>
 <body>
@@ -25,6 +26,25 @@
             </LayoutView>
         </NotFound>
     </Router>
+    <div id="components-reconnect-modal" class="components-reconnect-hide" role="status" aria-live="assertive" aria-atomic="true">
+        <section class="vc-reconnect-card" aria-label="@CommonText["ConnectionStatus"]">
+            <span class="vc-reconnect-spinner" aria-hidden="true"></span>
+            <div class="vc-reconnect-copy vc-reconnect-copy--connecting">
+                <strong>@CommonText["Reconnecting"]</strong>
+                <p>@CommonText["ReconnectInProgress"]</p>
+                <small>@CommonText["ReconnectAttempt"] <span id="components-reconnect-current-attempt"></span> @CommonText["Of"] <span id="components-reconnect-max-retries"></span></small>
+            </div>
+            <div class="vc-reconnect-copy vc-reconnect-copy--failed">
+                <strong>@CommonText["ConnectionLost"]</strong>
+                <p>@CommonText["ReconnectFailedHelp"]</p>
+                <button class="btn btn-primary" type="button" onclick="window.location.reload()">@CommonText["ReloadPage"]</button>
+            </div>
+            <div class="vc-reconnect-copy vc-reconnect-copy--paused">
+                <strong>@CommonText["ConnectionPaused"]</strong>
+                <p>@CommonText["ConnectionPausedHelp"]</p>
+            </div>
+        </section>
+    </div>
     <script src="_framework/blazor.web.js"></script>
     <script src="js/localization.js"></script>
     <script src="js/appShell.js"></script>

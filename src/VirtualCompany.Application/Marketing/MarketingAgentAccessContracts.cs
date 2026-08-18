@@ -40,6 +40,10 @@ public static class MarketingToolIds
     public const string SearchApprovedKnowledge = "marketing.search_approved_knowledge";
     public const string ReadSegments = "marketing.read_segments";
     public const string ReadSegmentEvidence = "marketing.read_segment_evidence";
+    public const string ReadStrategies = "marketing.read_strategies";
+    public const string ReadPlans = "marketing.read_plans";
+    public const string ReadPlanCoverage = "marketing.read_plan_coverage";
+    public const string ReadCampaignReadiness = "marketing.read_campaign_readiness";
 
     public const string PreparePlan = "marketing.prepare_plan";
     public const string AnalyzeAudience = "marketing.analyze_audience";
@@ -51,6 +55,14 @@ public static class MarketingToolIds
     public const string PrepareSegmentation = "marketing.prepare_segmentation";
     public const string RecommendTargetSegments = "marketing.recommend_target_segments";
     public const string AssessSegmentStrategyImpact = "marketing.assess_segment_strategy_impact";
+    public const string PrepareCampaignPortfolio = "marketing.prepare_campaign_portfolio";
+    public const string AssessPlanCoverage = "marketing.assess_plan_coverage";
+
+    public const string CreatePlanDraft = "marketing.create_plan_draft";
+    public const string CreateCampaignDrafts = "marketing.create_campaign_drafts";
+    public const string PopulateCampaignDraft = "marketing.populate_campaign_draft";
+    public const string SubmitPlanForReview = "marketing.submit_plan_for_review";
+    public const string SubmitCampaignForReadiness = "marketing.submit_campaign_for_readiness";
 
     public static IReadOnlyList<string> ReadTools { get; } =
     [
@@ -63,7 +75,11 @@ public static class MarketingToolIds
         ReadAttributionSummary,
         SearchApprovedKnowledge,
         ReadSegments,
-        ReadSegmentEvidence
+        ReadSegmentEvidence,
+        ReadStrategies,
+        ReadPlans,
+        ReadPlanCoverage,
+        ReadCampaignReadiness
     ];
 
     public static IReadOnlyList<string> RecommendTools { get; } =
@@ -77,6 +93,17 @@ public static class MarketingToolIds
         PrepareOperatingReview,
         PrepareSegmentation,
         RecommendTargetSegments,
-        AssessSegmentStrategyImpact
+        AssessSegmentStrategyImpact,
+        PrepareCampaignPortfolio,
+        AssessPlanCoverage
+    ];
+
+    public static IReadOnlyList<string> ExecuteTools { get; } =
+    [
+        CreatePlanDraft,
+        CreateCampaignDrafts,
+        PopulateCampaignDraft,
+        SubmitPlanForReview,
+        SubmitCampaignForReadiness
     ];
 }

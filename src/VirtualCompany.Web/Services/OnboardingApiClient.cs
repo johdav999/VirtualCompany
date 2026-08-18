@@ -37,7 +37,12 @@ public sealed class OnboardingApiClient
     public Task<OnboardingProgressViewModel?> GetProgressAsync(CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? Task.FromResult(OfflineStore.GetProgress())
-            : GetProgressCoreAsync(cancellationToken);
+            : GetProgressCoreAsync(null, cancellationToken);
+
+    public Task<OnboardingProgressViewModel?> GetProgressAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(OfflineStore.GetProgress())
+            : GetProgressCoreAsync(companyId, cancellationToken);
 
     public async Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(CancellationToken cancellationToken = default)
     {
@@ -68,6 +73,11 @@ public sealed class OnboardingApiClient
         _useOfflineMode
             ? Task.FromResult(OfflineStore.SaveWorkspace(request.ToCreateRequest()))
             : SendAsync<OnboardingProgressViewModel>(HttpMethod.Post, "api/onboarding/workspace", request.ToCreateRequest(), cancellationToken);
+
+    public Task<OnboardingWorkshopBootstrapViewModel> StartWorkshopAsync(SaveOnboardingRequest request,CancellationToken cancellationToken=default)=>
+        _useOfflineMode
+            ? throw new OnboardingApiException("The guided onboarding workshop requires the backend API.")
+            : SendAsync<OnboardingWorkshopBootstrapViewModel>(HttpMethod.Post,"api/onboarding/workshop",request.ToCreateRequest(),cancellationToken);
 
     public Task<OnboardingProgressViewModel> SaveProgressAsync(SaveOnboardingRequest request, CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -156,11 +166,14 @@ public sealed class OnboardingApiClient
         }
     }
 
-    private async Task<OnboardingProgressViewModel?> GetProgressCoreAsync(CancellationToken cancellationToken)
+    private async Task<OnboardingProgressViewModel?> GetProgressCoreAsync(Guid? companyId, CancellationToken cancellationToken)
     {
         try
         {
-            using var response = await _httpClient.GetAsync("api/onboarding/progress", cancellationToken);
+            var uri = companyId.HasValue
+                ? $"api/onboarding/progress?companyId={companyId.Value:D}"
+                : "api/onboarding/progress";
+            using var response = await _httpClient.GetAsync(uri, cancellationToken);
             if (response.StatusCode == System.Net.HttpStatusCode.NotFound ||
                 response.StatusCode == System.Net.HttpStatusCode.Unauthorized)
             {
@@ -803,17 +816,24 @@ public sealed class OnboardingApiClient
 public sealed class OnboardingApiException : Exception
 {
     public OnboardingApiException(string message)
-        : this(message, null)
+        : this(message, null, null)
     {
     }
 
     public OnboardingApiException(string message, IReadOnlyDictionary<string, string[]>? errors)
+        : this(message, errors, null)
+    {
+    }
+
+    public OnboardingApiException(string message, IReadOnlyDictionary<string, string[]>? errors, int? statusCode)
         : base(message)
     {
         Errors = errors ?? new Dictionary<string, string[]>();
+        StatusCode = statusCode;
     }
 
     public IReadOnlyDictionary<string, string[]> Errors { get; }
+    public int? StatusCode { get; }
 }
 
 public sealed class OnboardingTemplateViewModel
@@ -866,6 +886,15 @@ public sealed class OnboardingProgressViewModel
     public string? DashboardPath { get; set; }
 }
 
+public sealed class OnboardingWorkshopBootstrapViewModel
+{
+    public Guid CompanyId{get;set;}
+    public Guid AgentId{get;set;}
+    public Guid SessionId{get;set;}
+    public string Route{get;set;}=string.Empty;
+    public bool Resumed{get;set;}
+}
+
 public sealed class CreateCompanyRequest
 {
     public string Name { get; set; } = string.Empty;
@@ -894,6 +923,7 @@ public sealed class SaveOnboardingRequest
     public CreateWorkspaceRequest ToCreateRequest() =>
         new()
         {
+            CompanyId = CompanyId,
             Name = Name,
             Industry = Industry,
             BusinessType = BusinessType,
@@ -908,6 +938,7 @@ public sealed class SaveOnboardingRequest
 
 public sealed class CreateWorkspaceRequest
 {
+    public Guid? CompanyId { get; set; }
     public string Name { get; set; } = string.Empty;
     public string Industry { get; set; } = string.Empty;
     public string BusinessType { get; set; } = string.Empty;

@@ -108,6 +108,67 @@ public sealed class MarketingController : ControllerBase
         var result = await _marketing.AddContentVariantAsync(CompanyId(), briefId, request, ct);
         return result is null ? NotFound() : Ok(result);
     }
+
+    [HttpGet("plan-portfolio")]
+    public Task<MarketingPlanListItemDto[]> PlanPortfolioAsync(CancellationToken ct) =>
+        _marketing.ListPlanPortfolioAsync(CompanyId(), ct);
+
+    [HttpGet("plans/{planId:guid}/portfolio")]
+    public async Task<ActionResult<MarketingPlanDetailDto>> PlanPortfolioDetailAsync(Guid planId, CancellationToken ct)
+    {
+        var result = await _marketing.GetPlanPortfolioAsync(CompanyId(), planId, ct);
+        return result is null ? NotFound() : Ok(result);
+    }
+
+    [HttpPost("plans/grounded/readiness")]
+    public Task<MarketingPolicyDecisionDto> PlanReadinessAsync(CreateGroundedMarketingPlanRequest request, CancellationToken ct) =>
+        _marketing.AssessPlanReadinessAsync(CompanyId(), request, ct);
+
+    [HttpPost("plans/grounded")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public Task<MarketingPlanDetailDto> CreateGroundedPlanAsync(CreateGroundedMarketingPlanRequest request, CancellationToken ct) =>
+        _marketing.CreateGroundedPlanAsync(CompanyId(), UserId(), request, ct);
+
+    [HttpPost("plans/{planId:guid}/campaign-portfolio/proposal")]
+    public Task<MarketingCampaignPortfolioProposalDto> PrepareCampaignPortfolioAsync(Guid planId,
+        PrepareMarketingCampaignPortfolioRequest request, CancellationToken ct)
+    {
+        if (planId != request.PlanId) throw new ArgumentException("Plan route and request must match.");
+        return _marketing.PrepareCampaignPortfolioAsync(CompanyId(), request, ct);
+    }
+
+    [HttpPost("plans/{planId:guid}/campaign-portfolio/commit")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public Task<MarketingCampaignPortfolioResultDto> CommitCampaignPortfolioAsync(Guid planId,
+        CommitMarketingCampaignPortfolioRequest request, CancellationToken ct)
+    {
+        if (planId != request.Portfolio.PlanId) throw new ArgumentException("Plan route and request must match.");
+        return _marketing.CommitCampaignPortfolioAsync(CompanyId(), UserId(), request, ct);
+    }
+
+    [HttpGet("daily-review")]
+    public Task<MarketingDailyReviewDto?> DailyReviewAsync([FromQuery] DateTime? dateUtc, CancellationToken ct) =>
+        _marketing.GetDailyReviewAsync(CompanyId(), dateUtc ?? DateTime.UtcNow, ct);
+
+    [HttpPost("plans/{planId:guid}/submit")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<MarketingPlanDetailDto>> SubmitGroundedPlanAsync(Guid planId, [FromQuery] int expectedVersion, CancellationToken ct)
+    { var result = await _marketing.SubmitPlanForReviewAsync(CompanyId(), UserId(), planId, expectedVersion, ct); return result is null ? NotFound() : Ok(result); }
+
+    [HttpPost("plans/{planId:guid}/activate-grounded")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<MarketingPlanDetailDto>> ActivateGroundedPlanAsync(Guid planId, [FromQuery] int expectedVersion, CancellationToken ct)
+    { var result = await _marketing.ActivateGroundedPlanAsync(CompanyId(), UserId(), planId, expectedVersion, ct); return result is null ? NotFound() : Ok(result); }
+
+    [HttpPost("plans/{planId:guid}/complete")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<MarketingPlanDetailDto>> CompleteGroundedPlanAsync(Guid planId, TransitionMarketingPlanRequest request, CancellationToken ct)
+    { var result = await _marketing.CompletePlanAsync(CompanyId(), planId, request, ct); return result is null ? NotFound() : Ok(result); }
+
+    [HttpPost("plans/{planId:guid}/cancel")]
+    [Authorize(Policy = CompanyPolicies.CompanyManager)]
+    public async Task<ActionResult<MarketingPlanDetailDto>> CancelGroundedPlanAsync(Guid planId, TransitionMarketingPlanRequest request, CancellationToken ct)
+    { var result = await _marketing.CancelPlanAsync(CompanyId(), planId, request, ct); return result is null ? NotFound() : Ok(result); }
     [HttpPost("content-variants/{variantId:guid}/versions")]
     [Authorize(Policy = CompanyPolicies.CompanyManager)]
     public async Task<ActionResult<MarketingContentVariantDto>> CreateVariantVersionAsync(Guid variantId,

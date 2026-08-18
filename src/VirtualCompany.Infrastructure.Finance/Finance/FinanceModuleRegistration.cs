@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Orchestration;
+using VirtualCompany.Application.GuidedWork;
 using VirtualCompany.Infrastructure.Security;
 
 namespace VirtualCompany.Infrastructure.Finance;
@@ -15,6 +16,7 @@ public static class FinanceModuleRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.AddScoped<IGuidedArtifactDefinition, FinanceBudgetGuidedArtifactDefinition>();
         services.AddOptions<CompanySimulationOptions>()
             .Bind(configuration.GetSection(CompanySimulationOptions.SectionName))
             .PostConfigure(options =>

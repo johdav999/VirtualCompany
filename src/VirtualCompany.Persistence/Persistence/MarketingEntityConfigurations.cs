@@ -55,6 +55,12 @@ internal sealed class MarketingPlanConfiguration : MarketingEntityConfiguration<
         b.Property(x => x.OwnerUserId).HasColumnName("owner_user_id");
         b.Property(x => x.OwnerAgentId).HasColumnName("owner_agent_id");
         b.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(160);
+        b.Property(x => x.MarketingStrategyId).HasColumnName("marketing_strategy_id");
+        b.Property(x => x.MarketingStrategyVersion).HasColumnName("marketing_strategy_version");
+        b.Property(x => x.Rationale).HasColumnName("rationale").HasMaxLength(4000).IsRequired();
+        b.Property(x => x.EvidenceReferencesJson).HasColumnName("evidence_references_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.MissingEvidenceJson).HasColumnName("missing_evidence_json").HasColumnType("nvarchar(max)").IsRequired();
+        b.Property(x => x.ApprovalRequestId).HasColumnName("approval_request_id");
         b.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired();
         b.Property(x => x.Version).HasColumnName("version").IsConcurrencyToken();
         b.Property(x => x.CreatedUtc).HasColumnName("created_at");
@@ -63,6 +69,58 @@ internal sealed class MarketingPlanConfiguration : MarketingEntityConfiguration<
         b.HasIndex(x => new { x.CompanyId, x.IdempotencyKey })
             .IsUnique()
             .HasFilter("[idempotency_key] IS NOT NULL");
+        b.HasOne<MarketingStrategy>().WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.MarketingStrategyId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class MarketingPlanSegmentConfiguration : MarketingEntityConfiguration<MarketingPlanSegment>
+{
+    public override void Configure(EntityTypeBuilder<MarketingPlanSegment> b)
+    {
+        Identity(b, "marketing_plan_segments");
+        b.Property(x => x.MarketingPlanId).HasColumnName("marketing_plan_id");
+        b.Property(x => x.MarketingCustomerSegmentVersionId).HasColumnName("segment_version_id");
+        b.Property(x => x.Role).HasColumnName("role").HasMaxLength(32).IsRequired(); b.Property(x => x.Priority).HasColumnName("priority");
+        b.Property(x => x.Rationale).HasColumnName("rationale").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.ExpectedContribution).HasColumnName("expected_contribution").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.CreatedUtc).HasColumnName("created_at");
+        b.HasIndex(x => new { x.CompanyId, x.MarketingPlanId, x.MarketingCustomerSegmentVersionId }).IsUnique();
+        b.HasOne<MarketingPlan>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MarketingPlanId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        b.HasOne<MarketingCustomerSegmentVersion>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MarketingCustomerSegmentVersionId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class MarketingPlanCampaignConfiguration : MarketingEntityConfiguration<MarketingPlanCampaign>
+{
+    public override void Configure(EntityTypeBuilder<MarketingPlanCampaign> b)
+    {
+        Identity(b, "marketing_plan_campaigns");
+        b.Property(x => x.MarketingPlanId).HasColumnName("marketing_plan_id"); b.Property(x => x.SalesCampaignId).HasColumnName("sales_campaign_id");
+        b.Property(x => x.MarketingObjectiveId).HasColumnName("marketing_objective_id"); b.Property(x => x.Purpose).HasColumnName("purpose").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.AllocatedBudget).HasColumnName("allocated_budget").HasPrecision(19, 4); b.Property(x => x.BudgetCurrency).HasColumnName("budget_currency").HasMaxLength(3).IsRequired();
+        b.Property(x => x.Priority).HasColumnName("priority"); b.Property(x => x.ExpectedContribution).HasColumnName("expected_contribution").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.Status).HasColumnName("status").HasMaxLength(32).IsRequired(); b.Property(x => x.CreatingAgentId).HasColumnName("creating_agent_id");
+        b.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200).IsRequired(); b.Property(x => x.CreatedUtc).HasColumnName("created_at"); b.Property(x => x.UpdatedUtc).HasColumnName("updated_at");
+        b.HasIndex(x => new { x.CompanyId, x.SalesCampaignId }).IsUnique(); b.HasIndex(x => new { x.CompanyId, x.MarketingPlanId, x.IdempotencyKey }).IsUnique();
+        b.HasOne<MarketingPlan>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MarketingPlanId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        b.HasOne<SalesCampaign>().WithMany().HasForeignKey(x => new { x.CompanyId, x.SalesCampaignId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        b.HasOne<MarketingObjective>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MarketingObjectiveId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+    }
+}
+
+internal sealed class MarketingPlanCampaignSegmentConfiguration : MarketingEntityConfiguration<MarketingPlanCampaignSegment>
+{
+    public override void Configure(EntityTypeBuilder<MarketingPlanCampaignSegment> b)
+    {
+        Identity(b, "marketing_plan_campaign_segments");
+        b.Property(x => x.MarketingPlanCampaignId).HasColumnName("marketing_plan_campaign_id"); b.Property(x => x.MarketingPlanSegmentId).HasColumnName("marketing_plan_segment_id");
+        b.Property(x => x.Rationale).HasColumnName("rationale").HasMaxLength(2000).IsRequired(); b.Property(x => x.ExpectedAudienceContribution).HasColumnName("expected_audience_contribution").HasMaxLength(2000).IsRequired();
+        b.Property(x => x.CreatedUtc).HasColumnName("created_at"); b.HasIndex(x => new { x.CompanyId, x.MarketingPlanCampaignId, x.MarketingPlanSegmentId }).IsUnique();
+        b.HasOne<MarketingPlanCampaign>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MarketingPlanCampaignId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
+        b.HasOne<MarketingPlanSegment>().WithMany().HasForeignKey(x => new { x.CompanyId, x.MarketingPlanSegmentId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }
 }
 

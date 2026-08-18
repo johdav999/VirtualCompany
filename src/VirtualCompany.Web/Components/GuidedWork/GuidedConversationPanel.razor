@@ -1,0 +1,69 @@
+@inject IStringLocalizer<GuidedWorkResources> Text
+<section class="guided-conversation" aria-label="Conversation">
+    <header class="guided-agent">
+        <span class="guided-agent__avatar" aria-hidden="true">@Initials</span>
+        <div class="guided-agent__identity"><strong>@Session.AgentDisplayName — @Session.AgentRoleName</strong><span><i aria-hidden="true"></i>Online</span></div>
+        <span class="guided-agent__voice" aria-hidden="true"><span class="bi bi-soundwave"></span></span>
+    </header>
+    <div id="guided-transcript" class="guided-transcript" aria-live="polite">
+        @if (Session.Messages.Count == 0)
+        {
+            <article class="guided-message guided-message--agent"><div class="guided-message__meta"><strong>@Session.AgentDisplayName</strong></div><p>@Session.NextQuestion</p></article>
+        }
+        @foreach (var message in Session.Messages)
+        {
+            <article class="guided-message @(message.SenderType == "user" ? "guided-message--user" : "guided-message--agent")">
+                <div class="guided-message__meta"><strong>@(message.SenderType == "user" ? "You" : Session.AgentDisplayName)</strong><time>@message.CreatedAt.ToLocalTime().ToString("t")</time></div>
+                <div class="guided-message__bubble"><p>@message.Body</p></div>
+            </article>
+        }
+        @if (ShowLiveUserTranscript)
+        {
+            <article class="guided-message guided-message--user guided-message--live-user" aria-live="polite" aria-busy="true">
+                <div class="guided-message__meta"><strong>You</strong><span>@Text["VoiceState_thinking"]…</span></div>
+                <div class="guided-message__bubble"><p>@LiveUserTranscript</p></div>
+            </article>
+        }
+        @if (ShowVoiceWork || ResearchInProgress)
+        {
+            <article class="guided-message guided-message--agent guided-message--work" role="status" aria-live="polite" aria-busy="true">
+                <span class="guided-work-indicator" aria-hidden="true"><i></i><i></i><i></i></span>
+                <span class="guided-work-copy"><strong>@(ResearchInProgress ? Text["VoiceWorkResearchTitle"] : VoiceWorkTitle)</strong><small>@(ResearchInProgress ? Text["VoiceWorkResearchDetail"] : VoiceWorkDetail)</small></span>
+            </article>
+        }
+        @if (ShowLiveTranscript)
+        {
+            <article class="guided-message guided-message--agent guided-message--live" aria-live="@(LiveAgentTranscriptIsFinal ? "polite" : "off")" aria-busy="@(!LiveAgentTranscriptIsFinal)">
+                <div class="guided-message__meta"><strong>@Session.AgentDisplayName</strong>@if (!LiveAgentTranscriptIsFinal) { <span>@Text["VoiceState_speaking"]…</span> }</div>
+                <div class="guided-message__bubble"><p>@LiveAgentTranscript</p></div>
+            </article>
+        }
+        @if (!ShowVoiceWork && !string.IsNullOrWhiteSpace(Session.NextQuestion) && Session.Messages.Count > 0)
+        {
+            <article class="guided-message guided-message--agent guided-message--question"><div class="guided-message__meta"><strong>@Session.AgentDisplayName</strong><span>Next question</span></div><div class="guided-message__bubble"><p>@Session.NextQuestion</p></div></article>
+        }
+    </div>
+    @if (Changes.Count > 0)
+    {
+        <details class="guided-changes" open>
+            <summary><strong>@Text["ChangedFields"]</strong><span class="guided-changes__count">@Changes.Count</span></summary>
+            <div>@foreach (var change in Changes) { <p><span class="bi @(change.Status == "conflicting" ? "bi-exclamation-triangle" : "bi-check-circle-fill")" aria-hidden="true"></span><span>@change.Label</span><small>@change.Explanation</small></p> }</div>
+        </details>
+    }
+</section>
+@code {
+    [Parameter, EditorRequired] public GuidedWorkSessionViewModel Session { get; set; } = null!;
+    [Parameter] public IReadOnlyList<GuidedFieldChangeViewModel> Changes { get; set; } = [];
+    [Parameter] public string? LiveUserTranscript { get; set; }
+    [Parameter] public string? LiveAgentTranscript { get; set; }
+    [Parameter] public bool LiveAgentTranscriptIsFinal { get; set; }
+    [Parameter] public string? VoiceWorkTitle { get; set; }
+    [Parameter] public string? VoiceWorkDetail { get; set; }
+    [Parameter] public bool ResearchInProgress { get; set; }
+    private string Initials => string.Concat(Session.AgentDisplayName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Take(2).Select(x => char.ToUpperInvariant(x[0])));
+    private bool ShowLiveUserTranscript => !string.IsNullOrWhiteSpace(LiveUserTranscript) &&
+        !Session.Messages.Any(message => message.SenderType == "user" && string.Equals(message.Body.Trim(),LiveUserTranscript.Trim(),StringComparison.Ordinal));
+    private bool ShowLiveTranscript => !string.IsNullOrWhiteSpace(LiveAgentTranscript) &&
+        !Session.Messages.Any(message => message.SenderType != "user" && string.Equals(message.Body.Trim(),LiveAgentTranscript.Trim(),StringComparison.Ordinal));
+    private bool ShowVoiceWork => !string.IsNullOrWhiteSpace(VoiceWorkTitle);
+}

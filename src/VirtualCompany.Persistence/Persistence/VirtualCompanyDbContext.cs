@@ -64,6 +64,10 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<ApprovalTask> ApprovalTasks => Set<ApprovalTask>();
     public DbSet<Message> Messages => Set<Message>();
     public DbSet<ConversationTaskLink> ConversationTaskLinks => Set<ConversationTaskLink>();
+    public DbSet<GuidedWorkSession> GuidedWorkSessions => Set<GuidedWorkSession>();
+    public DbSet<GuidedDraftField> GuidedDraftFields => Set<GuidedDraftField>();
+    public DbSet<GuidedSessionOperation> GuidedSessionOperations => Set<GuidedSessionOperation>();
+    public DbSet<GuidedVoiceBinding> GuidedVoiceBindings => Set<GuidedVoiceBinding>();
     public DbSet<CompanyBriefing> CompanyBriefings => Set<CompanyBriefing>();
     public DbSet<CompanyBriefingSection> CompanyBriefingSections => Set<CompanyBriefingSection>();
     public DbSet<CompanyBriefingContribution> CompanyBriefingContributions => Set<CompanyBriefingContribution>();
@@ -224,6 +228,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<MarketingObjective> MarketingObjectives => Set<MarketingObjective>();
     public DbSet<MarketingPlan> MarketingPlans => Set<MarketingPlan>();
     public DbSet<MarketingPlanObjective> MarketingPlanObjectives => Set<MarketingPlanObjective>();
+    public DbSet<MarketingPlanSegment> MarketingPlanSegments => Set<MarketingPlanSegment>();
+    public DbSet<MarketingPlanCampaign> MarketingPlanCampaigns => Set<MarketingPlanCampaign>();
+    public DbSet<MarketingPlanCampaignSegment> MarketingPlanCampaignSegments => Set<MarketingPlanCampaignSegment>();
     public DbSet<MarketingContentBrief> MarketingContentBriefs => Set<MarketingContentBrief>();
     public DbSet<MarketingContentVariant> MarketingContentVariants => Set<MarketingContentVariant>();
     public DbSet<MarketingSalesHandoff> MarketingSalesHandoffs => Set<MarketingSalesHandoff>();
@@ -518,6 +525,9 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is MarketingObjective ||
                 entry.Entity is MarketingPlan ||
                 entry.Entity is MarketingPlanObjective ||
+                entry.Entity is MarketingPlanSegment ||
+                entry.Entity is MarketingPlanCampaign ||
+                entry.Entity is MarketingPlanCampaignSegment ||
                 entry.Entity is MarketingContentBrief ||
                 entry.Entity is MarketingContentVariant ||
                 entry.Entity is MarketingSalesHandoff ||
@@ -650,6 +660,18 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<ConversationTaskLink>()
             .HasQueryFilter(link =>
                 CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<GuidedWorkSession>()
+            .HasQueryFilter(session =>
+                CurrentCompanyId != null && session.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<GuidedDraftField>()
+            .HasQueryFilter(field =>
+                CurrentCompanyId != null && field.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<GuidedSessionOperation>()
+            .HasQueryFilter(operation =>
+                CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<GuidedVoiceBinding>()
+            .HasQueryFilter(binding =>
+                CurrentCompanyId != null && binding.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanyBriefing>()
             .HasQueryFilter(briefing =>
                 CurrentCompanyId != null && briefing.CompanyId == CurrentCompanyId);

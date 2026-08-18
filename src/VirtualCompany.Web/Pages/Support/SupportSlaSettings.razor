@@ -14,7 +14,13 @@
                     <h1>@SupportText["ResponseTargets"]</h1>
                     <p class="text-body-secondary mb-0">@SupportText["ResponseTargetsDescription"]</p>
                 </div>
-                <a class="btn btn-outline-secondary" href="/support">@SupportText["BackToSupport"]</a>
+                <div class="d-flex flex-wrap gap-2">
+                    @if (ResolvedCompanyId is Guid supportCompanyId)
+                    {
+                        <GuidedWorkshopLaunch CompanyId="supportCompanyId" AgentDepartment="Support" ArtifactType="support_sla_policy" TargetArtifactId="editingId" />
+                    }
+                    <a class="btn btn-outline-secondary" href="@BuildPath("/support")">@SupportText["BackToSupport"]</a>
+                </div>
             </div>
 
             @if (!string.IsNullOrWhiteSpace(errorMessage))

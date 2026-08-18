@@ -15,7 +15,8 @@ public sealed record MarketingPlanProposalDto(string ProposalKey, string Name, s
 public sealed record CommitMarketingPlanRequest(string IdempotencyKey, CreateMarketingPlanRequest Plan);
 
 public sealed record MarketingCalendarItemDto(Guid Id, string Kind, string Name, DateTime StartsUtc, DateTime EndsUtc,
-    string Status, Guid? CampaignId, Guid? OwnerAgentId);
+    string Status, Guid? CampaignId, Guid? OwnerAgentId, bool IsSpan = false, string SourceRecordType = "marketing",
+    Guid? SourceRecordId = null, Guid? PlanId = null, string AttentionState = "none", string? NavigationTarget = null);
 
 public sealed record MarketingContentBriefDto(Guid Id, Guid? CampaignId, Guid? PlanId, string Title, string Purpose,
     string Audience, string Channel, string Language, string Tone, string CallToAction, DateTime? DueUtc,
@@ -97,7 +98,7 @@ public sealed record MarketingDashboardDto(Guid CompanyId, DateTime GeneratedUtc
     IReadOnlyList<MarketingQualificationDefinitionDto> QualificationDefinitions,
     IReadOnlyList<MarketingQualificationEvaluationDto> QualificationEvaluations);
 
-public interface IMarketingOperationsService
+public partial interface IMarketingOperationsService
 {
     Task<MarketingDashboardDto> GetDashboardAsync(Guid companyId, DateTime fromUtc, DateTime toUtc, CancellationToken ct);
     Task<IReadOnlyList<MarketingObjectiveDto>> ListObjectivesAsync(Guid companyId, CancellationToken ct);

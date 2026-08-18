@@ -73,6 +73,26 @@ public sealed class MarketingAgentAnalysisService(
             sources.Add(new AgentAiSource($"marketing-strategy:{item.Id:N}", "marketing_strategy", item.Title,
                 $"Classification observed record; status {item.Status}; valid {item.ValidFromUtc:O} to {item.ValidToUtc:O}; summary {Trim(item.Summary, 1000)}; evidence {Trim(item.EvidenceReferencesJson, 1000)}; missing evidence {Trim(item.MissingEvidenceJson, 700)}.", item.UpdatedUtc));
 
+        var strategyIds = strategies.Select(x => x.Id).ToArray();
+        var strategySegmentLinks = await db.MarketingStrategySegments.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && strategyIds.Contains(x.MarketingStrategyId)).Take(50).ToArrayAsync(ct);
+        foreach (var link in strategySegmentLinks)
+            sources.Add(new AgentAiSource($"marketing-strategy-segment:{link.Id:N}", "marketing_strategy_segment", "Exact strategy audience link",
+                $"Strategy {link.MarketingStrategyId:N} uses segment version {link.MarketingCustomerSegmentVersionId:N}. This exact version must be preserved in plan proposals.", link.CreatedUtc));
+
+        var plans = await db.MarketingPlans.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && x.EndsUtc >= now.AddDays(-30))
+            .OrderByDescending(x => x.UpdatedUtc).Take(20).ToArrayAsync(ct);
+        var planIds = plans.Select(x => x.Id).ToArray();
+        var planSegments = await db.MarketingPlanSegments.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && planIds.Contains(x.MarketingPlanId)).ToArrayAsync(ct);
+        var planCampaigns = await db.MarketingPlanCampaigns.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && planIds.Contains(x.MarketingPlanId)).ToArrayAsync(ct);
+        foreach (var item in plans)
+        {
+            var exactSegments = planSegments.Where(x => x.MarketingPlanId == item.Id).Select(x => $"{x.MarketingCustomerSegmentVersionId:N}:{x.Role}");
+            var ownedCampaigns = planCampaigns.Where(x => x.MarketingPlanId == item.Id).Select(x => x.SalesCampaignId.ToString("N"));
+            sources.Add(new AgentAiSource($"marketing-plan:{item.Id:N}:v{item.Version}", "marketing_plan", item.Name,
+                $"Strategy {item.MarketingStrategyId?.ToString("N") ?? "unlinked"} captured version {item.MarketingStrategyVersion?.ToString() ?? "unknown"}; period {item.StartsUtc:O} to {item.EndsUtc:O}; budget {item.PlannedBudget?.ToString() ?? "unbounded"} {item.BudgetCurrency}; status {item.Status}; exact segments [{string.Join(',', exactSegments)}]; owned campaigns [{string.Join(',', ownedCampaigns)}]; evidence {Trim(item.EvidenceReferencesJson, 900)}; missing evidence {Trim(item.MissingEvidenceJson, 700)}.", item.UpdatedUtc));
+        }
+
         var segments = await db.MarketingCustomerSegmentVersions.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && (x.Status == "active" || x.Status == "approved"))
             .OrderByDescending(x => x.UpdatedUtc).Take(10).ToListAsync(ct);

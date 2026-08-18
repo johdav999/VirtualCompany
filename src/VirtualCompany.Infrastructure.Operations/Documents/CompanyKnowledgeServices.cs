@@ -7,6 +7,10 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Net;
 using System.Text.RegularExpressions;
+using DocumentFormat.OpenXml.Packaging;
+using DocumentFormat.OpenXml.Spreadsheet;
+using A = DocumentFormat.OpenXml.Drawing;
+using W = DocumentFormat.OpenXml.Wordprocessing;
 using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
@@ -22,6 +26,7 @@ using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
+using UglyToad.PdfPig;
 
 namespace VirtualCompany.Infrastructure.Documents;
 
@@ -41,15 +46,114 @@ public sealed class CompanyDocumentTextExtractor : ICompanyDocumentTextExtractor
             return Normalize(extractedText);
         }
 
-        if (document.FileExtension is ".txt" or ".md")
+        await using var stream = await _storage.OpenReadAsync(document.StorageKey, cancellationToken);
+        var extracted = document.FileExtension.ToLowerInvariant() switch
         {
-            await using var stream = await _storage.OpenReadAsync(document.StorageKey, cancellationToken);
-            using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
-            return Normalize(await reader.ReadToEndAsync(cancellationToken));
+            ".txt" or ".md" or ".csv" => await ReadTextAsync(stream, cancellationToken),
+            ".pdf" => ExtractPdf(stream),
+            ".docx" => ExtractWord(stream),
+            ".pptx" => ExtractPresentation(stream),
+            ".xlsx" => ExtractSpreadsheet(stream),
+            _ => null
+        };
+
+        if (extracted is not null)
+        {
+            return Normalize(extracted);
         }
 
         throw new PermanentBackgroundJobException(
             $"No extracted text is available for '{document.OriginalFileName}'. Persist extracted_text metadata or add a document parser for '{document.FileExtension}'.");
+    }
+
+    private static async Task<string> ReadTextAsync(Stream stream, CancellationToken cancellationToken)
+    {
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: true);
+        return await reader.ReadToEndAsync(cancellationToken);
+    }
+
+    private static string ExtractPdf(Stream stream)
+    {
+        using var document = PdfDocument.Open(stream);
+        return string.Join("\n\n", document.GetPages().Select(page => page.Text));
+    }
+
+    private static string ExtractWord(Stream stream)
+    {
+        using var document = WordprocessingDocument.Open(stream, false);
+        var body = document.MainDocumentPart?.Document?.Body;
+        return body is null
+            ? string.Empty
+            : string.Join("\n", body.Descendants<W.Paragraph>().Select(paragraph => paragraph.InnerText));
+    }
+
+    private static string ExtractPresentation(Stream stream)
+    {
+        using var document = PresentationDocument.Open(stream, false);
+        var slides = document.PresentationPart?.SlideParts ?? Enumerable.Empty<SlidePart>();
+        return string.Join(
+            "\n\n",
+            slides.Select((slide, index) =>
+                $"Slide {index + 1}\n{string.Join("\n", slide.Slide?.Descendants<A.Paragraph>().Select(paragraph => paragraph.InnerText) ?? [])}"));
+    }
+
+    private static string ExtractSpreadsheet(Stream stream)
+    {
+        using var document = SpreadsheetDocument.Open(stream, false);
+        var workbookPart = document.WorkbookPart;
+        if (workbookPart?.Workbook?.Sheets is not { } sheets)
+        {
+            return string.Empty;
+        }
+
+        var sharedStrings = workbookPart.SharedStringTablePart?.SharedStringTable?
+            .Elements<SharedStringItem>()
+            .Select(item => item.InnerText)
+            .ToArray() ?? Array.Empty<string>();
+        var output = new StringBuilder();
+
+        foreach (var sheet in sheets.Elements<Sheet>())
+        {
+            if (sheet.Id?.Value is not { Length: > 0 } relationshipId ||
+                workbookPart.GetPartById(relationshipId) is not WorksheetPart worksheetPart)
+            {
+                continue;
+            }
+
+            if (output.Length > 0)
+            {
+                output.AppendLine();
+            }
+
+            output.AppendLine($"Sheet: {sheet.Name?.Value ?? "Untitled"}");
+            foreach (var row in worksheetPart.Worksheet?.Descendants<Row>() ?? [])
+            {
+                var values = row.Elements<Cell>()
+                    .Select(cell => ReadCell(cell, sharedStrings))
+                    .Where(value => !string.IsNullOrWhiteSpace(value));
+                output.AppendLine(string.Join("\t", values));
+            }
+        }
+
+        return output.ToString();
+    }
+
+    private static string ReadCell(Cell cell, IReadOnlyList<string> sharedStrings)
+    {
+        if (cell.DataType?.Value == CellValues.InlineString)
+        {
+            return cell.InlineString?.InnerText ?? string.Empty;
+        }
+
+        var rawValue = cell.CellValue?.InnerText ?? string.Empty;
+        if (cell.DataType?.Value == CellValues.SharedString &&
+            int.TryParse(rawValue, out var index) &&
+            index >= 0 && index < sharedStrings.Count)
+        {
+            return sharedStrings[index];
+        }
+
+        return rawValue;
     }
 
     private static bool TryGetMetadataString(IReadOnlyDictionary<string, JsonNode?> metadata, string key, out string value)
@@ -1190,7 +1294,8 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
             query.CompanyId,
             query.QueryText.Trim(),
             query.TopN,
-            BuildAccessContext(query.CompanyId, membership, query.AccessContext));
+            BuildAccessContext(query.CompanyId, membership, query.AccessContext),
+            query.AllowedDocumentIds?.Where(x=>x!=Guid.Empty).Distinct().Take(100).ToArray());
         var embeddingBatch = await _embeddingGenerator.GenerateAsync([scopedSearch.QueryText], cancellationToken);
         if (embeddingBatch.Embeddings.Count == 0)
         {
@@ -1209,6 +1314,7 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
     private async Task<IReadOnlyDictionary<Guid, AllowedKnowledgeDocumentDescriptor>> LoadAllowedDocumentsAsync(
         Guid companyId,
         CompanyKnowledgeAccessContext accessContext,
+        IReadOnlyList<Guid>? requestedDocumentIds,
         CancellationToken cancellationToken)
     {
         var documents = await _dbContext.CompanyKnowledgeDocuments
@@ -1218,7 +1324,8 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
                 document.CompanyId == companyId &&
                 document.IngestionStatus == CompanyKnowledgeDocumentIngestionStatus.Processed &&
                 document.IndexingStatus == CompanyKnowledgeDocumentIndexingStatus.Indexed &&
-                document.ActiveChunkCount > 0)
+                document.ActiveChunkCount > 0 &&
+                (requestedDocumentIds == null || requestedDocumentIds.Contains(document.Id)))
             .ToListAsync(cancellationToken);
 
         return documents
@@ -1263,6 +1370,11 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
             """);
 
         AppendPostgreSqlAccessPolicyPredicate(sql, command, request.AccessContext);
+        if(request.AllowedDocumentIds is { Count: > 0 })
+        {
+            sql.Append(" AND d.\"Id\" = ANY(@allowedDocumentIds)");
+            AddParameter(command,"@allowedDocumentIds",request.AllowedDocumentIds.ToArray());
+        }
         sql.Append(
             """
             )
@@ -1506,14 +1618,15 @@ public sealed class CompanyKnowledgeSearchService : ICompanyKnowledgeSearchServi
         Guid CompanyId,
         string QueryText,
         int TopN,
-        CompanyKnowledgeAccessContext AccessContext);
+        CompanyKnowledgeAccessContext AccessContext,
+        IReadOnlyList<Guid>? AllowedDocumentIds);
 
     private async Task<IReadOnlyList<CompanyKnowledgeSearchResultDto>> SearchFallbackAsync(
         ScopedKnowledgeSearchRequest request,
         IReadOnlyList<float> queryEmbedding,
         CancellationToken cancellationToken)
     {
-        var allowedDocuments = await LoadAllowedDocumentsAsync(request.CompanyId, request.AccessContext, cancellationToken);
+        var allowedDocuments = await LoadAllowedDocumentsAsync(request.CompanyId, request.AccessContext, request.AllowedDocumentIds, cancellationToken);
         var allowedDocumentIds = allowedDocuments.Keys.ToArray();
         if (allowedDocumentIds.Length == 0)
         {

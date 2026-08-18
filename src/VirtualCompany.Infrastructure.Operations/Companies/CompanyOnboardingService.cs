@@ -156,6 +156,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         return company is null ? null : MapProgress(company);
     }
 
+    public async Task<CompanyOnboardingProgressDto?> GetProgressAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var userId = await ResolveCurrentUserIdAsync(cancellationToken);
+        if (userId is not Guid resolvedUserId)
+        {
+            return null;
+        }
+
+        var company = await GetOwnedCompanyAsync(resolvedUserId, companyId, cancellationToken);
+        return company is null ? null : MapProgress(company);
+    }
+
     public async Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(
         CreateCompanyWorkspaceRequest request,
         CancellationToken cancellationToken)
@@ -254,7 +266,11 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             throw new UnauthorizedAccessException("The current user cannot update this company onboarding flow.");
         }
 
-        EnsureSessionIsMutable(company);
+        var isCompleted = company.OnboardingStatus == CompanyOnboardingStatus.Completed;
+        if (!isCompleted)
+        {
+            EnsureSessionIsMutable(company);
+        }
 
         ValidateDraft(
             request.Name,
@@ -282,9 +298,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             request.Language,
             request.ComplianceRegion,
             resolvedTemplate);
+        var savedStep = isCompleted ? CompletedWizardStep : NormalizeDraftStep(request.CurrentStep);
         company.UpdateBrandingAndSettings(
             MergeBranding(company.Branding, request.Branding),
-            BuildSettings(company.Settings, request.Settings, selectedTemplateId, resolvedTemplate, merged, NormalizeDraftStep(request.CurrentStep), false, guidance));
+            BuildSettings(company.Settings, request.Settings, selectedTemplateId, resolvedTemplate, merged, savedStep, isCompleted, guidance));
 
 
         company.UpdateWorkspaceProfile(
@@ -296,15 +313,15 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             merged.Language,
             merged.ComplianceRegion);
 
-        company.SaveOnboardingProgress(
-            NormalizeDraftStep(request.CurrentStep),
-            selectedTemplateId,
-            SerializeState(
-                merged,
-                selectedTemplateId,
-                NormalizeDraftStep(request.CurrentStep),
-                false,
-                guidance));
+        var onboardingState = SerializeState(merged, selectedTemplateId, savedStep, isCompleted, guidance);
+        if (isCompleted)
+        {
+            company.CompleteOnboarding(savedStep, selectedTemplateId, onboardingState);
+        }
+        else
+        {
+            company.SaveOnboardingProgress(savedStep, selectedTemplateId, onboardingState);
+        }
 
         await _dbContext.SaveChangesAsync(cancellationToken);
         return MapProgress(company);
@@ -367,12 +384,11 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             throw new UnauthorizedAccessException("The current user cannot complete this company onboarding flow.");
         }
 
-        if (company.OnboardingStatus == CompanyOnboardingStatus.Completed)
+        var wasCompleted = company.OnboardingStatus == CompanyOnboardingStatus.Completed;
+        if (!wasCompleted)
         {
-            return new CompleteCompanyOnboardingResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), ResolveGuidance(company.OnboardingTemplateId));
+            EnsureSessionIsMutable(company);
         }
-
-        EnsureSessionIsMutable(company);
 
         var selectedTemplateId = NormalizeOptional(request.SelectedTemplateId) ?? company.OnboardingTemplateId;
         var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);

@@ -49,6 +49,34 @@ public sealed class MarketingWorkspaceSurfaceTests
         Assert.Contains("overflow", css, StringComparison.OrdinalIgnoreCase);
     }
 
+    [Fact]
+    public void Strategy_workshop_action_uses_the_responsive_section_header()
+    {
+        var source = Read("src", "VirtualCompany.Web", "Pages", "Marketing", "MarketingDashboard.razor");
+
+        Assert.Contains("<div class=\"marketing-section__header\">", source, StringComparison.Ordinal);
+        Assert.Contains("GuidedWorkApi.ListAsync(companyId, artifactType: \"marketing_strategy\")", source, StringComparison.Ordinal);
+        Assert.Contains("UNSAVED WORKSHOP DRAFT", source, StringComparison.Ordinal);
+        Assert.Contains("Resume workshop", source, StringComparison.Ordinal);
+        Assert.Contains("Resume and finish", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Plan 4P &amp; STP strategy with Maya", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Plan_workspace_is_plan_first_policy_driven_and_exposes_daily_review_and_calendar_semantics()
+    {
+        var source = Read("src", "VirtualCompany.Web", "Pages", "Marketing", "MarketingDashboard.razor");
+        var client = Read("src", "VirtualCompany.Web", "Services", "MarketingApiClient.cs");
+
+        Assert.Contains("Ask Maya to populate plan", source, StringComparison.Ordinal);
+        Assert.Contains("selectedPlan.AllowedActions.Contains(\"Submit for review\")", source, StringComparison.Ordinal);
+        Assert.Contains("MAYA DAILY REVIEW", source, StringComparison.Ordinal);
+        Assert.Contains("item.IsSpan", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Decompose into campaign work", source, StringComparison.Ordinal);
+        Assert.Contains("SubmitPlanForReviewAsync", client, StringComparison.Ordinal);
+        Assert.Contains("ActivateGroundedPlanAsync", client, StringComparison.Ordinal);
+    }
+
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), .. parts]));
     private static string RepositoryRoot()
     {

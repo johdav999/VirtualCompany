@@ -1,0 +1,98 @@
+@inject AgentApiClient Agents
+@inject GuidedWorkApiClient GuidedWork
+@inject IStringLocalizer<GuidedWorkResources> Text
+
+@if (AgentId is Guid suppliedAgentId)
+{
+    <a class="@CssClass" href="@(href ?? BuildHref(suppliedAgentId, existingSessionId))">@(existingSessionId is null ? StartLabel : ResumeLabel)</a>
+}
+else if (!loading && agentId is not null)
+{
+    <a class="@CssClass" href="@href">@(existingSessionId is null ? StartLabel : ResumeLabel)</a>
+}
+else if (!loading && !string.IsNullOrWhiteSpace(error))
+{
+    <span class="text-body-secondary small" role="status" title="@error">@Text["WorkshopUnavailable"]</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter] public Guid? AgentId { get; set; }
+    [Parameter, EditorRequired] public string AgentDepartment { get; set; } = string.Empty;
+    [Parameter, EditorRequired] public string ArtifactType { get; set; } = string.Empty;
+    [Parameter] public Guid? TargetArtifactId { get; set; }
+    [Parameter] public string CssClass { get; set; } = "btn btn-outline-primary";
+
+    private Guid? agentId;
+    private Guid? existingSessionId;
+    private string? href;
+    private string? error;
+    private bool loading = true;
+
+    private string StartLabel => Text[$"Start_{ArtifactType}"];
+    private string ResumeLabel => Text[$"Resume_{ArtifactType}"];
+
+    protected override async Task OnParametersSetAsync()
+    {
+        loading = true;
+        error = null;
+        agentId = null;
+        existingSessionId = null;
+        href = null;
+        try
+        {
+            if (CompanyId == Guid.Empty || string.IsNullOrWhiteSpace(ArtifactType))
+                return;
+
+            agentId = AgentId;
+            if (agentId is null)
+            {
+                var roster = await Agents.GetRosterAsync(CompanyId);
+                agentId = roster.FirstOrDefault(x =>
+                    string.Equals(x.Department, AgentDepartment, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.Status, "active", StringComparison.OrdinalIgnoreCase))?.Id;
+            }
+            if (agentId is null)
+            {
+                error = Text["WorkshopAgentUnavailable"];
+                return;
+            }
+
+            href = BuildHref(agentId.Value, null);
+            loading = false;
+            await InvokeAsync(StateHasChanged);
+
+            using var resumeLookupTimeout = new CancellationTokenSource(TimeSpan.FromSeconds(2));
+            var sessions = await GuidedWork.ListAsync(CompanyId, artifactType: ArtifactType, ct: resumeLookupTimeout.Token);
+            existingSessionId = sessions.Items
+                .Where(x => x.AgentId == agentId &&
+                            (x.Status == "active" || x.Status == "review_ready") &&
+                            x.TargetArtifactId == TargetArtifactId)
+                .OrderByDescending(x => x.UpdatedAt)
+                .Select(x => (Guid?)x.Id)
+                .FirstOrDefault();
+
+            href = BuildHref(agentId.Value, existingSessionId);
+        }
+        catch (OperationCanceledException) when (href is not null)
+        {
+            // Keep the safe start link visible when the optional resume lookup is slow.
+        }
+        catch (Exception ex)
+        {
+            error = ex.Message;
+        }
+        finally
+        {
+            loading = false;
+        }
+    }
+
+    private string BuildHref(Guid resolvedAgentId, Guid? sessionId)
+    {
+        var query = $"companyId={CompanyId:D}";
+        if (sessionId is Guid existingId) query += $"&sessionId={existingId:D}";
+        else if (TargetArtifactId is Guid targetId) query += $"&targetId={targetId:D}";
+        return $"/agents/{resolvedAgentId:D}/workshops/{Uri.EscapeDataString(ArtifactType)}?{query}";
+    }
+}

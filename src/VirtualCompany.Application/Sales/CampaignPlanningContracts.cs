@@ -67,7 +67,12 @@ public sealed record CampaignInitiativeResponse(
     string? BudgetCurrency,
     bool LegacySetupRequired,
     long Version,
-    IReadOnlyList<string> MissingRequirements);
+    IReadOnlyList<string> MissingRequirements,
+    CampaignMarketingContextResponse? MarketingContext = null);
+
+public sealed record CampaignMarketingContextResponse(Guid PlanId, string PlanName, int PlanVersion,
+    Guid? ObjectiveId, string ObjectiveContribution, IReadOnlyList<Guid> SegmentVersionIds,
+    IReadOnlyList<string> EvidenceReferences, Guid? PlanApprovalRequestId);
 
 public sealed record CampaignObjectiveResponse(string Type, decimal Target, string Unit, DateTime TargetUtc);
 public sealed record CampaignReadinessResponse(Guid CampaignId, string LifecycleStatus, bool IsReady, long Version, IReadOnlyList<string> MissingRequirements);

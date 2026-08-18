@@ -4,6 +4,8 @@ using VirtualCompany.Application.CustomerMemory;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Application.Orchestration;
+using VirtualCompany.Application.GuidedWork;
+using VirtualCompany.Infrastructure.Marketing;
 using VirtualCompany.Infrastructure.CustomerMemory;
 
 namespace VirtualCompany.Infrastructure.Sales;
@@ -30,6 +32,8 @@ public static class SalesModuleRegistration
         services.AddScoped<ICustomerMemoryService, CustomerMemoryService>();
         services.AddScoped<IOutboundCampaignService, OutboundCampaignService>();
         services.AddScoped<ICampaignPlanningService, CampaignPlanningService>();
+        services.AddScoped<ISalesCampaignDraftService, SalesCampaignDraftService>();
+        services.AddScoped<IGuidedArtifactDefinition, SalesCampaignGuidedArtifactDefinition>();
         services.AddScoped<ICampaignSchedulingCoordinator, CampaignSchedulingCoordinator>();
         services.AddScoped<ISequenceExecutionService, SequenceExecutionService>();
         services.AddScoped<IOutboundAutomationPolicyService, OutboundAutomationPolicyService>();
@@ -71,7 +75,10 @@ public static class SalesModuleRegistration
         services.AddScoped<ISalesAgentDecisionService, SalesAgentDecisionService>();
         services.AddScoped<IMarketingOperationsService, MarketingOperationsService>();
         services.AddScoped<IMarketingStrategyService, MarketingStrategyService>();
+        services.AddScoped<IGuidedArtifactDefinition, MarketingStrategyGuidedArtifactDefinition>();
+        services.AddScoped<IGuidedArtifactDefinition, MarketingSegmentGuidedArtifactDefinition>();
         services.AddScoped<IMarketingOperatingLoopService, MarketingOperatingLoopService>();
+        services.AddScoped<IMarketingWorkNeedAssessment, MarketingWorkNeedAssessment>();
         services.AddScoped<IMarketingDeliveryService, MarketingDeliveryService>();
         services.AddScoped<IMarketingPolicyService, MarketingPolicyService>();
         services.AddSingleton<IMarketingChannelOAuthStateProtector, DataProtectionMarketingChannelOAuthStateProtector>();

@@ -13,6 +13,7 @@ public static class DashboardRoutes
         "/agents",
         "/queue",
         "/finance",
+        "/marketing",
         "/activity-feed",
         "/briefing-preferences"
     ];

@@ -461,6 +461,88 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task Completed_workspace_information_can_be_updated_without_reopening_onboarding()
+    {
+        using var client = CreateAuthenticatedClient("completed-editor", "completed-editor@example.com", "Completed Editor");
+        var createResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
+        {
+            Name = "Original Company",
+            Industry = "Technology",
+            BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            CurrentStep = 3,
+            SelectedTemplateId = "saas-operations"
+        });
+        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
+        Assert.NotNull(created);
+
+        var completeResponse = await client.PostAsJsonAsync("/api/onboarding/complete", new
+        {
+            CompanyId = created!.CompanyId,
+            Name = "Original Company",
+            Industry = "Technology",
+            BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            SelectedTemplateId = "saas-operations"
+        });
+        Assert.Equal(HttpStatusCode.OK, completeResponse.StatusCode);
+
+        var beforeUpdate = await client.GetFromJsonAsync<ProgressResponse>("/api/onboarding/progress");
+        var updateResponse = await client.PutAsJsonAsync("/api/onboarding/progress", new
+        {
+            CompanyId = created.CompanyId,
+            Name = "Updated Company",
+            Industry = "Consulting",
+            BusinessType = "Consultancy",
+            Timezone = "Europe/Stockholm",
+            Currency = "EUR",
+            Language = "en-GB",
+            ComplianceRegion = "EU",
+            CurrentStep = 3,
+            SelectedTemplateId = (string?)null
+        });
+
+        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+        var updated = await updateResponse.Content.ReadFromJsonAsync<ProgressResponse>();
+        Assert.NotNull(updated);
+        Assert.Equal("Updated Company", updated!.Name);
+        Assert.Equal("completed", updated.Status);
+        Assert.False(updated.CanResume);
+        Assert.Equal(beforeUpdate!.CompletedUtc, updated.CompletedUtc);
+
+        var workshopResponse = await client.PostAsJsonAsync("/api/onboarding/workshop", new
+        {
+            CompanyId = created.CompanyId,
+            Name = "Updated Company",
+            Industry = "Consulting",
+            BusinessType = "Consultancy",
+            Timezone = "Europe/Stockholm",
+            Currency = "EUR",
+            Language = "en-GB",
+            ComplianceRegion = "EU",
+            CurrentStep = 3,
+            SelectedTemplateId = (string?)null
+        });
+        var workshopBody = await workshopResponse.Content.ReadAsStringAsync();
+        Assert.True(workshopResponse.IsSuccessStatusCode, $"Expected the completed onboarding workshop to open, but received {workshopResponse.StatusCode}: {workshopBody}");
+        using var workshop = JsonDocument.Parse(workshopBody);
+        Assert.Contains("/workshops/company_onboarding", workshop.RootElement.GetProperty("route").GetString());
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var company = await dbContext.Companies.SingleAsync(x => x.Id == created.CompanyId);
+        Assert.Equal("Updated Company", company.Name);
+        Assert.Equal("EUR", company.Currency);
+        Assert.Equal(CompanyOnboardingStatus.Completed, company.OnboardingStatus);
+    }
+
+    [Fact]
     public async Task DashboardEntry_returns_starter_guidance_for_newly_completed_workspace()
     {
         using var client = CreateAuthenticatedClient("dashboard-entry-user", "dashboard-entry@example.com", "Dashboard Entry User");
@@ -552,8 +634,12 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
 
         Assert.Equal(HttpStatusCode.OK, createResponse.StatusCode);
 
-        var bobsProgress = await bobClient.GetFromJsonAsync<ProgressResponse?>("/api/onboarding/progress");
-        Assert.Null(bobsProgress);
+        var created = await createResponse.Content.ReadFromJsonAsync<ProgressResponse>();
+        Assert.NotNull(created);
+        var bobsProgress = await bobClient.GetAsync("/api/onboarding/progress");
+        var bobsCompanyProgress = await bobClient.GetAsync($"/api/onboarding/progress?companyId={created!.CompanyId}");
+        Assert.Equal(HttpStatusCode.NoContent, bobsProgress.StatusCode);
+        Assert.Equal(HttpStatusCode.NoContent, bobsCompanyProgress.StatusCode);
     }
 
     [Fact]

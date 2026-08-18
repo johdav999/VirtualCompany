@@ -47,6 +47,9 @@ else
                 </div>
                 <div class="dashboard-actions">
                     <a class="btn btn-outline-secondary" href="@($"/agents/{AgentId}?companyId={CompanyId}")">@AgentText["Profile"]</a>
+                    <a class="btn btn-outline-primary" href="@($"/agents/{AgentId}/workshops?companyId={CompanyId}")">
+                        <span class="bi bi-chat-square-text" aria-hidden="true"></span> @AgentText["StartGuidedWorkshop"]
+                    </a>
                     <button class="btn btn-outline-primary" type="button" @onclick="CreateTaskAsync" disabled="@(isCreatingTask || conversation is null)">@AgentText["ChatCreateTask"]</button>
                 </div>
             </div>
@@ -118,6 +121,7 @@ else
     private string? errorMessage;
     private string? successMessage;
     private Guid? selectedTaskSourceMessageId;
+
 
     private CompanyMembershipViewModel? ActiveMembership =>
         CompanyId is Guid companyId

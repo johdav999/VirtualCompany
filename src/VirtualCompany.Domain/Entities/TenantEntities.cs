@@ -163,11 +163,12 @@ public sealed class Company
 
     public void CompleteOnboarding(int currentStep, string? templateId, string onboardingStateJson)
     {
+        var completedUtc = OnboardingCompletedUtc ?? DateTime.UtcNow;
         SaveOnboardingProgress(currentStep, templateId, onboardingStateJson);
-        OnboardingCompletedUtc ??= DateTime.UtcNow;
+        OnboardingCompletedUtc = completedUtc;
         OnboardingStatus = CompanyOnboardingStatus.Completed;
         OnboardingAbandonedUtc = null;
-        UpdatedUtc = OnboardingCompletedUtc.Value;
+        UpdatedUtc = OnboardingLastSavedUtc ?? completedUtc;
     }
 
     public void AbandonOnboarding()

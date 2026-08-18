@@ -12,6 +12,8 @@ public static class MarketingStatuses
     public const string Accepted = "accepted";
     public const string Declined = "declined";
     public const string Expired = "expired";
+    public const string InReview = "in_review";
+    public const string Cancelled = "cancelled";
 }
 
 public sealed class MarketingObjective : ICompanyOwnedEntity
@@ -78,7 +80,9 @@ public sealed class MarketingPlan : ICompanyOwnedEntity
 
     public MarketingPlan(Guid id, Guid companyId, string name, string summary, DateTime startsUtc, DateTime endsUtc,
         decimal? plannedBudget, string budgetCurrency, Guid? ownerUserId = null, Guid? ownerAgentId = null,
-        string? idempotencyKey = null)
+        string? idempotencyKey = null, Guid? strategyId = null, int? strategyVersion = null,
+        string rationale = "Legacy plan", string evidenceReferencesJson = "[]",
+        string missingEvidenceJson = "[]", Guid? approvalRequestId = null)
     {
         SalesEntityText.EnsureCompany(companyId);
         startsUtc = SalesEntityText.NormalizeUtc(startsUtc, nameof(startsUtc));
@@ -96,6 +100,12 @@ public sealed class MarketingPlan : ICompanyOwnedEntity
         OwnerUserId = ownerUserId;
         OwnerAgentId = ownerAgentId;
         IdempotencyKey = SalesEntityText.NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 160);
+        MarketingStrategyId = strategyId;
+        MarketingStrategyVersion = strategyVersion;
+        Rationale = SalesEntityText.NormalizeRequired(rationale, nameof(rationale), 4000);
+        EvidenceReferencesJson = SalesEntityText.NormalizeRequired(evidenceReferencesJson, nameof(evidenceReferencesJson), 16000);
+        MissingEvidenceJson = SalesEntityText.NormalizeRequired(missingEvidenceJson, nameof(missingEvidenceJson), 16000);
+        ApprovalRequestId = approvalRequestId;
         Status = MarketingStatuses.Draft;
         CreatedUtc = UpdatedUtc = DateTime.UtcNow;
     }
@@ -111,6 +121,12 @@ public sealed class MarketingPlan : ICompanyOwnedEntity
     public Guid? OwnerUserId { get; private set; }
     public Guid? OwnerAgentId { get; private set; }
     public string? IdempotencyKey { get; private set; }
+    public Guid? MarketingStrategyId { get; private set; }
+    public int? MarketingStrategyVersion { get; private set; }
+    public string Rationale { get; private set; } = null!;
+    public string EvidenceReferencesJson { get; private set; } = "[]";
+    public string MissingEvidenceJson { get; private set; } = "[]";
+    public Guid? ApprovalRequestId { get; private set; }
     public string Status { get; private set; } = null!;
     public int Version { get; private set; } = 1;
     public DateTime CreatedUtc { get; private set; }
@@ -118,11 +134,24 @@ public sealed class MarketingPlan : ICompanyOwnedEntity
 
     public void Activate()
     {
-        if (Status != MarketingStatuses.Draft) throw new InvalidOperationException("Only draft plans can be activated.");
+        if (MarketingStrategyId.HasValue && Status != MarketingStatuses.Approved) throw new InvalidOperationException("A grounded plan must be approved before activation.");
+        if (!MarketingStrategyId.HasValue && Status != MarketingStatuses.Draft) throw new InvalidOperationException("Only a draft legacy plan can be activated.");
         Status = MarketingStatuses.Active;
-        Version++;
-        UpdatedUtc = DateTime.UtcNow;
+        Touch();
     }
+
+    public void SubmitForReview(Guid approvalRequestId)
+    {
+        if (Status != MarketingStatuses.Draft) throw new InvalidOperationException("Only draft plans can be submitted for review.");
+        ApprovalRequestId = approvalRequestId == Guid.Empty ? throw new ArgumentException("Approval request is required.") : approvalRequestId;
+        Status = MarketingStatuses.InReview;
+        Touch();
+    }
+
+    public void MarkApproved() { if (Status != MarketingStatuses.InReview) throw new InvalidOperationException("Only plans in review can be approved."); Status = MarketingStatuses.Approved; Touch(); }
+    public void Complete() { if (Status != MarketingStatuses.Active) throw new InvalidOperationException("Only active plans can be completed."); Status = MarketingStatuses.Completed; Touch(); }
+    public void Cancel() { if (Status is MarketingStatuses.Completed or MarketingStatuses.Cancelled) throw new InvalidOperationException("The plan is already closed."); Status = MarketingStatuses.Cancelled; Touch(); }
+    private void Touch() { Version++; UpdatedUtc = DateTime.UtcNow; }
 }
 
 public sealed class MarketingPlanObjective : ICompanyOwnedEntity

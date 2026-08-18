@@ -1,9 +1,11 @@
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Documents;
+using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -131,7 +133,14 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
         MarketingCapability(AgentCapabilityIds.MarketingCampaignCoordination, "Campaign coordination", "Coordinate approved campaign activities and bounded handoffs to Sales.", MarketingToolIds.RecommendCampaignChange, ["marketing", "sales"]),
         MarketingCapability(AgentCapabilityIds.MarketingPerformanceAnalysis, "Marketing performance analysis", "Explain observed campaign outcomes, costs, attribution limits, and evidence gaps.", MarketingToolIds.PreparePerformanceReview, ["marketing"]),
         MarketingCapability(AgentCapabilityIds.MarketingExperimentAdvice, "Marketing experiment advice", "Recommend bounded experiments with explicit hypotheses, metrics, and guardrails.", MarketingToolIds.PrepareExperiment, ["marketing"]),
-        MarketingCapability(AgentCapabilityIds.MarketingOperatingCadence, "Marketing operating cadence", "Prepare continuous, daily, weekly, and monthly Marketing management priorities.", MarketingToolIds.PrepareOperatingReview, ["marketing", "sales", "knowledge"])
+        MarketingCapability(AgentCapabilityIds.MarketingOperatingCadence, "Marketing operating cadence", "Prepare continuous, daily, weekly, and monthly Marketing management priorities.", MarketingToolIds.PrepareOperatingReview, ["marketing", "sales", "knowledge"]),
+        new AgentCapabilityManifest(AgentCapabilityIds.MarketingPlanDraftExecution, "1.0.0", "Create Marketing plan drafts",
+            "Create grounded internal plan drafts after deterministic policy checks.", "Marketing", ToolActionType.Execute,
+            [MarketingToolIds.CreatePlanDraft], ["marketing"], [], AgentAutonomyLevel.Level3, "policy_dependent", true),
+        new AgentCapabilityManifest(AgentCapabilityIds.MarketingCampaignDraftExecution, "1.0.0", "Create campaign portfolio drafts",
+            "Create incomplete internal Sales campaign drafts without launch or contact.", "Marketing", ToolActionType.Execute,
+            [MarketingToolIds.CreateCampaignDrafts, MarketingToolIds.PopulateCampaignDraft], ["marketing", "sales"], [],
+            AgentAutonomyLevel.Level3, "policy_dependent", true)
     ];
 
     private static AgentCapabilityManifest RoleCapability(string id, string name, string description, string category) =>
@@ -147,20 +156,20 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
         new(id, "1.0.0", name, description, "Marketing", ToolActionType.Recommend, [tool], scopes,
             [SharedAiProviderSignal], AgentAutonomyLevel.Level0, "none", true);
 
-    private readonly ICompanyAgentService _agentService;
+    private readonly VirtualCompanyDbContext _dbContext;
     private readonly ICompanyToolRegistry _toolRegistry;
     private readonly KnowledgeIndexingOptions _knowledgeIndexingOptions;
     private readonly BriefingSchedulerOptions _briefingSchedulerOptions;
     private readonly SharedAgentAiOptions _sharedAiOptions;
 
     public AgentCapabilityCatalog(
-        ICompanyAgentService agentService,
+        VirtualCompanyDbContext dbContext,
         ICompanyToolRegistry toolRegistry,
         IOptions<KnowledgeIndexingOptions> knowledgeIndexingOptions,
         IOptions<BriefingSchedulerOptions> briefingSchedulerOptions,
         IOptions<SharedAgentAiOptions> sharedAiOptions)
     {
-        _agentService = agentService;
+        _dbContext = dbContext;
         _toolRegistry = toolRegistry;
         _knowledgeIndexingOptions = knowledgeIndexingOptions.Value;
         _briefingSchedulerOptions = briefingSchedulerOptions.Value;
@@ -184,8 +193,29 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             throw new ArgumentException("AgentId is required.", nameof(agentId));
         }
 
-        var profile = await _agentService.GetOperatingProfileAsync(companyId, agentId, cancellationToken);
-        var autonomy = AgentAutonomyLevelValues.Parse(profile.AutonomyLevel);
+        // Capability evaluation is used by both authorized HTTP requests and trusted
+        // background execution such as a persisted Realtime voice binding. Do not route
+        // this internal, company-scoped read through the human operating-profile editor,
+        // which requires an ambient HTTP identity and makes background tools fail closed
+        // before their already-established binding authorization can be evaluated.
+        var agent = await _dbContext.Agents
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
+        if (agent is null)
+        {
+            throw new KeyNotFoundException("Agent not found.");
+        }
+
+        var profile = new CapabilityProfile(
+            agent.DisplayName,
+            agent.Department,
+            agent.Status.ToStorageValue(),
+            agent.CanReceiveAssignments,
+            agent.AutonomyLevel,
+            agent.Tools,
+            agent.Scopes);
+        var autonomy = profile.AutonomyLevel;
         var capabilities = Manifests
             .Select(manifest => Resolve(manifest, profile, autonomy))
             .ToArray();
@@ -195,14 +225,14 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             agentId,
             profile.DisplayName,
             profile.Status,
-            profile.AutonomyLevel,
+            profile.AutonomyLevel.ToStorageValue(),
             capabilities,
             DateTime.UtcNow);
     }
 
     private AgentCapabilityDto Resolve(
         AgentCapabilityManifest manifest,
-        AgentOperatingProfileDto profile,
+        CapabilityProfile profile,
         AgentAutonomyLevel autonomy)
     {
         var missing = new List<string>();
@@ -390,4 +420,13 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             .Select(text => text!)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
+
+    private sealed record CapabilityProfile(
+        string DisplayName,
+        string Department,
+        string Status,
+        bool CanReceiveAssignments,
+        AgentAutonomyLevel AutonomyLevel,
+        IReadOnlyDictionary<string, JsonNode?> ToolPermissions,
+        IReadOnlyDictionary<string, JsonNode?> DataScopes);
 }

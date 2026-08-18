@@ -10420,6 +10420,82 @@ body.vc-nav-open {
     background: #f8fbff;
 }
 
+/* Blazor circuit recovery. Interactive server pages must never look usable when their
+   server connection is gone; otherwise actions such as workshop Send fail silently. */
+#components-reconnect-modal {
+    align-items: flex-start;
+    background: rgba(15, 23, 42, 0.38);
+    box-sizing: border-box;
+    display: flex;
+    inset: 0;
+    justify-content: center;
+    opacity: 0;
+    padding: 24px;
+    pointer-events: none;
+    position: fixed;
+    transition: opacity 150ms ease, visibility 0s linear 500ms;
+    visibility: hidden;
+    z-index: 1200;
+}
+
+#components-reconnect-modal.components-reconnect-show,
+#components-reconnect-modal.components-reconnect-retrying,
+#components-reconnect-modal.components-reconnect-failed,
+#components-reconnect-modal.components-reconnect-rejected,
+#components-reconnect-modal.components-reconnect-paused {
+    opacity: 1;
+    pointer-events: auto;
+    transition-delay: 0s;
+    visibility: visible;
+}
+
+.vc-reconnect-card {
+    align-items: flex-start;
+    background: #fff;
+    border: 1px solid var(--vc-border, #dfe5ec);
+    border-radius: 8px;
+    box-shadow: 0 14px 36px rgba(15, 23, 42, 0.18);
+    display: flex;
+    gap: 14px;
+    margin-top: 44px;
+    max-width: 520px;
+    padding: 20px 22px;
+    width: 100%;
+}
+
+.vc-reconnect-spinner {
+    animation: vc-reconnect-spin 800ms linear infinite;
+    border: 3px solid #dbe7f7;
+    border-radius: 50%;
+    border-top-color: var(--vc-primary, #1f66d1);
+    flex: 0 0 auto;
+    height: 22px;
+    margin-top: 2px;
+    width: 22px;
+}
+
+.vc-reconnect-copy { display: none; min-width: 0; }
+.vc-reconnect-copy strong { color: #0f2342; display: block; font-size: 1rem; }
+.vc-reconnect-copy p { color: var(--vc-text-muted, #607086); line-height: 1.45; margin: 4px 0 0; }
+.vc-reconnect-copy small { color: var(--vc-text-muted, #607086); display: block; margin-top: 8px; }
+.vc-reconnect-copy .btn { margin-top: 14px; }
+
+#components-reconnect-modal.components-reconnect-show .vc-reconnect-copy--connecting,
+#components-reconnect-modal.components-reconnect-retrying .vc-reconnect-copy--connecting,
+#components-reconnect-modal.components-reconnect-failed .vc-reconnect-copy--failed,
+#components-reconnect-modal.components-reconnect-rejected .vc-reconnect-copy--failed,
+#components-reconnect-modal.components-reconnect-paused .vc-reconnect-copy--paused { display: block; }
+
+#components-reconnect-modal.components-reconnect-failed .vc-reconnect-spinner,
+#components-reconnect-modal.components-reconnect-rejected .vc-reconnect-spinner,
+#components-reconnect-modal.components-reconnect-paused .vc-reconnect-spinner { display: none; }
+
+@keyframes vc-reconnect-spin { to { transform: rotate(360deg); } }
+
+@media (prefers-reduced-motion: reduce) {
+    .vc-reconnect-spinner { animation: none; }
+}
+
 .bill-subscription-card--warning {
     border-color: #fde68a;
     background: #fffbeb;
@@ -11649,3 +11725,5 @@ body.vc-nav-open {
         flex-direction: column;
     }
 }
+.guided-voice-controls { align-items:center; display:flex; flex-wrap:wrap; gap:8px; }
+.guided-voice-state { color:var(--vc-text-muted,#607086); font-size:.82rem; font-weight:650; padding-inline:4px; }

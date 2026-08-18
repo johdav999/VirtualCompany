@@ -17,6 +17,8 @@ $buildDirectory = Join-Path $buildOutputRoot "net9.0"
 $runId = [DateTime]::UtcNow.ToString("yyyyMMddHHmmssfff")
 $runDirectory = Join-Path $stateDirectory "api-runs\$runId"
 $apiDll = Join-Path $runDirectory "VirtualCompany.Api.dll"
+$standardOutputLog = Join-Path $runDirectory "api.stdout.log"
+$standardErrorLog = Join-Path $runDirectory "api.stderr.log"
 
 function Stop-TrackedApiProcess
 {
@@ -142,17 +144,44 @@ $env:ASPNETCORE_ENVIRONMENT = "Development"
 $env:ASPNETCORE_URLS = "http://localhost:$Port"
 $env:ConnectionStrings__VirtualCompanyDb = $ConnectionString
 
+# PowerShell terminals keep the environment they inherited when they were opened.
+# Refresh the guided-dialogue development switches from the user's persisted
+# environment so restarting this launcher does not silently revert voice to the
+# disabled appsettings defaults.
+foreach ($variableName in @(
+    "GuidedDialogue__Enabled",
+    "GuidedDialogue__RealtimeEnabled",
+    "GuidedDialogue__RealtimeModel"
+))
+{
+    $persistedValue = [Environment]::GetEnvironmentVariable($variableName, "User")
+    if (-not [string]::IsNullOrWhiteSpace($persistedValue))
+    {
+        [Environment]::SetEnvironmentVariable($variableName, $persistedValue, "Process")
+    }
+}
+
 $startInfo = [System.Diagnostics.ProcessStartInfo]::new()
 $startInfo.FileName = "dotnet"
 $startInfo.Arguments = "`"$apiDll`""
 $startInfo.WorkingDirectory = $projectDirectory
 $startInfo.UseShellExecute = $false
+$startInfo.RedirectStandardOutput = $true
+$startInfo.RedirectStandardError = $true
 $apiProcess = [System.Diagnostics.Process]::new()
 $apiProcess.StartInfo = $startInfo
 if (-not $apiProcess.Start())
 {
     throw "The Virtual Company API process could not be started."
 }
+
+# Keep detached development hosts diagnosable without routing their output
+# through nested shell redirection. The launcher owns both streams for the
+# complete lifetime of the tracked API process.
+$standardOutputStream = [System.IO.FileStream]::new($standardOutputLog, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+$standardErrorStream = [System.IO.FileStream]::new($standardErrorLog, [System.IO.FileMode]::Create, [System.IO.FileAccess]::Write, [System.IO.FileShare]::ReadWrite)
+$standardOutputCopy = $apiProcess.StandardOutput.BaseStream.CopyToAsync($standardOutputStream)
+$standardErrorCopy = $apiProcess.StandardError.BaseStream.CopyToAsync($standardErrorStream)
 
 Remove-VcOldRunSnapshots `
     -RunsDirectory (Join-Path $stateDirectory "api-runs") `
@@ -162,6 +191,11 @@ Remove-VcOldRunSnapshots `
     ProcessId = $apiProcess.Id
     StartedUtc = $apiProcess.StartTime.ToUniversalTime().ToString("O")
 } | ConvertTo-Json | Set-Content -LiteralPath $stateFile
+
+Write-Host "Virtual Company API process $($apiProcess.Id) started."
+Write-Host "Runtime output: $standardOutputLog"
+Write-Host "Runtime errors: $standardErrorLog"
+Write-Host "The launcher remains attached while the API is running."
 
 try
 {
@@ -185,4 +219,9 @@ finally
             Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
         }
     }
+
+    try { $standardOutputCopy.GetAwaiter().GetResult() } catch { }
+    try { $standardErrorCopy.GetAwaiter().GetResult() } catch { }
+    $standardOutputStream.Dispose()
+    $standardErrorStream.Dispose()
 }

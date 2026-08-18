@@ -17,6 +17,7 @@ using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Briefings;
 using VirtualCompany.Application.Context;
 using VirtualCompany.Application.Chat;
+using VirtualCompany.Application.GuidedWork;
 using StackExchange.Redis;
 using VirtualCompany.Application.Focus;
 using VirtualCompany.Application.ExecutionExceptions;
@@ -111,6 +112,30 @@ public static class OperationsModuleRegistration
                 }
             });
         services.AddHttpClient(OpenAiAgentBriefDraftService.ClientName);
+        services.AddOptions<GuidedDialogueOptions>()
+            .Bind(configuration.GetSection(GuidedDialogueOptions.SectionName))
+            .Validate(options => Uri.TryCreate(options.BaseUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps,
+                "GuidedDialogue:BaseUrl must be an absolute HTTPS URL.")
+            .Validate(options => !options.Enabled || (!string.IsNullOrWhiteSpace(options.Model) && options.TimeoutSeconds is >= 5 and <= 120 &&
+                options.MaxOutputTokens is >= 128 and <= 16_384 && options.ReviewTokenMinutes is >= 5 and <= 60 &&
+                options.RetentionDays is >= 1 and <= 3_650 && options.MaxTurnCharacters is >= 100 and <= 16_000 &&
+                options.MaxActiveSessionsPerUser is >= 1 and <= 100 && options.MaxFieldsPerArtifact is >= 1 and <= 200),
+                "Enabled GuidedDialogue text limits or model configuration are invalid.")
+            .Validate(options => !options.RealtimeEnabled || (!string.IsNullOrWhiteSpace(options.RealtimeModel) &&
+                !string.IsNullOrWhiteSpace(options.RealtimeVoice) && !string.IsNullOrWhiteSpace(options.RealtimeTranscriptionModel) &&
+                options.MaxVoiceMinutes is >= 1 and <= 120 && options.MaxVoiceReconnects is >= 0 and <= 5 &&
+                options.MaxActiveVoiceCallsPerUser is >= 1 and <= 5),
+                "GuidedDialogue Realtime limits or model configuration are invalid.")
+            .Validate(options => !options.ResearchEnabled || (!string.IsNullOrWhiteSpace(options.ResearchModel) &&
+                options.ResearchMaxOutputTokens is >= 300 and <= 3000),
+                "GuidedDialogue research limits or model configuration are invalid.")
+            .ValidateOnStart();
+        services.AddHttpClient(OpenAiGuidedCheckpointProvider.ClientName);
+        services.AddHttpClient(GuidedRealtimeCallService.ClientName, client => client.BaseAddress = new Uri("https://api.openai.com/v1/"));
+        services.AddHttpClient(OpenAiGuidedEvidenceResearchService.ClientName);
+        services.AddHealthChecks().AddCheck<GuidedDialogueHealthCheck>("guided-dialogue", tags: ["ready"]);
+        services.AddSingleton<GuidedRealtimeSidebandRegistry>();
+        services.AddHostedService<GuidedRealtimeRecoveryWorker>();
         services.AddOptions<SharedAgentAiOptions>()
             .Bind(configuration.GetSection(SharedAgentAiOptions.SectionName))
             .PostConfigure(options =>
@@ -180,6 +205,8 @@ public static class OperationsModuleRegistration
         services.AddScoped<AgentTemplateCatalogSeeder>();
         services.AddScoped<ICoreCompanyAgentSeeder, CoreCompanyAgentSeeder>();
         services.AddScoped<ICompanyOnboardingService, CompanyOnboardingService>();
+        services.AddScoped<ICompanyOnboardingWorkshopService, CompanyOnboardingWorkshopService>();
+        services.AddScoped<ICompanyOnboardingDocumentGenerationService, CompanyOnboardingDocumentGenerationService>();
         services.AddScoped<ICompanyDocumentService, CompanyDocumentService>();
         services.AddScoped<ICompanyDocumentIngestionStatusService, CompanyDocumentIngestionStatusService>();
         services.AddScoped<IDocumentIngestionOrchestrator, InlineCompanyDocumentIngestionOrchestrator>();
@@ -193,6 +220,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IKnowledgeAccessPolicyEvaluator, KnowledgeAccessPolicyEvaluator>();
         services.AddScoped<ICompanyKnowledgeIndexingProcessor, CompanyKnowledgeIndexingProcessor>();
         services.AddScoped<ICompanyKnowledgeSearchService, CompanyKnowledgeSearchService>();
+        services.AddScoped<IGuidedWorkshopDocumentService, GuidedWorkshopDocumentService>();
         services.AddScoped<IRetrievalScopeEvaluator, RetrievalScopeEvaluator>();
         services.AddScoped<IGroundedContextPromptBuilder, GroundedContextPromptBuilder>();
         services.AddScoped<IGroundedPromptContextService, GroundedPromptContextService>();
@@ -271,6 +299,15 @@ public static class OperationsModuleRegistration
         // Direct chat uses this facade for compatibility, but execution routes through ISingleAgentOrchestrationService.
         services.AddScoped<IDirectAgentChatOrchestrator, DirectAgentChatOrchestrator>();
         services.AddScoped<ICompanyDirectChatService, CompanyDirectChatService>();
+        services.AddScoped<IGuidedCheckpointProvider, OpenAiGuidedCheckpointProvider>();
+        services.AddScoped<IGuidedArtifactDefinition, AgentOperatingBriefGuidedArtifactDefinition>();
+        services.AddScoped<IGuidedArtifactDefinition, CompanyOnboardingGuidedArtifactDefinition>();
+        services.AddScoped<IGuidedWorkSessionService, GuidedWorkSessionService>();
+        services.AddScoped<IGuidedResearchContinuationService>(provider => (GuidedWorkSessionService)provider.GetRequiredService<IGuidedWorkSessionService>());
+        services.AddScoped<IGuidedRealtimeCallService, GuidedRealtimeCallService>();
+        services.AddScoped<IGuidedVoiceToolService, GuidedVoiceToolService>();
+        services.AddScoped<IGuidedEvidenceResearchService, OpenAiGuidedEvidenceResearchService>();
+        services.AddHostedService<GuidedWorkRetentionWorker>();
         services.AddScoped<IPromptBuilder, StructuredPromptBuilder>();
         services.AddSingleton<ICommunicationStyleRuleChecker, CommunicationStyleRuleChecker>();
         services.AddScoped<IToolExecutor, AgentToolOrchestrationExecutor>();

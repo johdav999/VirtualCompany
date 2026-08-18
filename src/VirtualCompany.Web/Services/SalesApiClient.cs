@@ -444,7 +444,11 @@ public sealed record OutboundCampaignDetailResponse(Guid Id, string Name, string
 public sealed record CampaignInitiativeResponse(Guid Id, string Name, string CampaignType, string LifecycleStatus, string? Description,
     Guid? OwnerUserId, Guid? OwnerAgentId, CampaignObjectiveResponse? PrimaryObjective, DateTime? PlanningStartsUtc,
     DateTime? ScheduledLaunchUtc, DateTime? EndsUtc, DateTime? ReviewDueUtc, string? TimeZoneId, decimal? PlannedBudget,
-    string? BudgetCurrency, bool LegacySetupRequired, long Version, IReadOnlyList<string> MissingRequirements);
+    string? BudgetCurrency, bool LegacySetupRequired, long Version, IReadOnlyList<string> MissingRequirements,
+    CampaignMarketingContextResponse? MarketingContext = null);
+public sealed record CampaignMarketingContextResponse(Guid PlanId, string PlanName, int PlanVersion, Guid? ObjectiveId,
+    string ObjectiveContribution, IReadOnlyList<Guid> SegmentVersionIds, IReadOnlyList<string> EvidenceReferences,
+    Guid? PlanApprovalRequestId);
 public sealed record CampaignObjectiveResponse(string Type, decimal Target, string Unit, DateTime TargetUtc);
 public sealed record CampaignReadinessResponse(Guid CampaignId, string LifecycleStatus, bool IsReady, long Version, IReadOnlyList<string> MissingRequirements);
 public sealed record CampaignActivityResponse(Guid Id, string Name, string ActivityType, string Channel, string ExecutionMode, string Status,

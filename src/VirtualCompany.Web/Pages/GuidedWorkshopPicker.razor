@@ -1,0 +1,13 @@
+@page "/agents/{AgentId:guid}/workshops"
+@rendermode InteractiveServer
+@inject GuidedWorkApiClient Api
+@inject IStringLocalizer<GuidedWorkResources> Text
+<PageTitle>@Text["PickerPageTitle"]</PageTitle>
+<main class="guided-picker">
+    <header><span class="dashboard-kicker">@Text["PickerKicker"]</span><h1>@Text["PickerTitle"]</h1><p>@Text["PickerIntro"]</p></header>
+    @if(loading){<p aria-live="polite">@Text["Loading"]</p>}
+    else if(error is not null){<div class="alert alert-danger">@error</div>}
+    else if(options.Count==0){<div class="alert alert-info">@Text["PickerNone"]</div>}
+    else{<div class="guided-picker__grid">@foreach(var option in options){<article><span class="bi bi-chat-square-text" aria-hidden="true"></span><h2>@option.DisplayName</h2><p>@Text["PickerDescription",option.DisplayName.ToLowerInvariant()]</p>@if(option.RequiresTargetArtifact){<p class="text-body-secondary small">@Text["PickerTargetRequired"]</p>}else{<a class="btn btn-primary" href="@($"/agents/{AgentId}/workshops/{option.ArtifactType}?companyId={CompanyId}")">@Text["StartWorkshop"]</a>}</article>}</div>}
+</main>
+@code{[Parameter]public Guid AgentId{get;set;}[SupplyParameterFromQuery(Name="companyId")]public Guid? CompanyId{get;set;}private List<GuidedArtifactOptionViewModel> options=[];private bool loading=true;private string? error;protected override async Task OnParametersSetAsync(){loading=true;try{if(CompanyId is not Guid company)throw new InvalidOperationException(Text["SelectCompanyFirst"]);options=await Api.OptionsAsync(company,AgentId);}catch(Exception ex){error=ex.Message;}finally{loading=false;}}}

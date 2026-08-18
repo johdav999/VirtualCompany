@@ -18,6 +18,7 @@ public sealed class RoleAgentCadenceOptions
 {
     public const string SectionName = "RoleAgentCadence";
     public bool Enabled { get; set; } = true;
+    public bool RunDailyOnStartup { get; set; } = true;
     public int PollMinutes { get; set; } = 15;
     public int DailyHourUtc { get; set; } = 6;
     public DayOfWeek WeeklyDay { get; set; } = DayOfWeek.Monday;
@@ -36,6 +37,21 @@ public sealed class RoleAgentCadenceBackgroundService(
     {
         if (!_options.Enabled) return;
         await Task.Yield();
+
+        if (_options.RunDailyOnStartup)
+        {
+            try
+            {
+                logger.LogInformation("Running daily role-agent cadence during solution startup.");
+                await RunDueCadencesAsync(stoppingToken, ignoreDailyHour: true, dailyOnly: true);
+            }
+            catch (OperationCanceledException) when (stoppingToken.IsCancellationRequested) { return; }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Startup role-agent cadence failed safely; the scheduled cadence will retry.");
+            }
+        }
+
         while (!stoppingToken.IsCancellationRequested)
         {
             try { await RunDueCadencesAsync(stoppingToken); }
@@ -45,10 +61,11 @@ public sealed class RoleAgentCadenceBackgroundService(
         }
     }
 
-    internal async Task RunDueCadencesAsync(CancellationToken cancellationToken)
+    internal async Task RunDueCadencesAsync(CancellationToken cancellationToken, bool ignoreDailyHour = false,
+        bool dailyOnly = false)
     {
         var now = DateTime.UtcNow;
-        if (now.Hour < Math.Clamp(_options.DailyHourUtc, 0, 23)) return;
+        if (!ignoreDailyHour && now.Hour < Math.Clamp(_options.DailyHourUtc, 0, 23)) return;
         await using var scope = scopes.CreateAsyncScope();
         var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var agents = await db.Agents.IgnoreQueryFilters().AsNoTracking().Where(x => x.Status == AgentStatus.Active &&
@@ -58,9 +75,9 @@ public sealed class RoleAgentCadenceBackgroundService(
         foreach (var agent in agents)
         {
             await RunIfDueAsync(scope.ServiceProvider, db, agent, "daily", now.Date, 30, cancellationToken);
-            if (now.DayOfWeek == _options.WeeklyDay)
+            if (!dailyOnly && now.DayOfWeek == _options.WeeklyDay)
                 await RunIfDueAsync(scope.ServiceProvider, db, agent, "weekly", now.Date, 90, cancellationToken);
-            if ((agent.Department.Equals("Finance", StringComparison.OrdinalIgnoreCase) ||
+            if (!dailyOnly && (agent.Department.Equals("Finance", StringComparison.OrdinalIgnoreCase) ||
                  agent.Department.Equals("Marketing", StringComparison.OrdinalIgnoreCase)) &&
                 now.Day == Math.Clamp(_options.MonthlyDay, 1, DateTime.DaysInMonth(now.Year, now.Month)))
                 await RunIfDueAsync(scope.ServiceProvider, db, agent, "monthly",

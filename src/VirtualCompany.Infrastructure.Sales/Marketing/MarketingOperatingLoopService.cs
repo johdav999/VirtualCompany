@@ -2,7 +2,9 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Marketing;
+using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Orchestration;
 using VirtualCompany.Application.Tasks;
 using VirtualCompany.Domain.Entities;
@@ -18,6 +20,9 @@ public sealed class MarketingOperatingLoopService(
     IMarketingCompanyOrchestrationService companyOrchestration,
     IMarketingOperationsService marketingOperations,
     IMarketingStrategyService marketingStrategy,
+    IMarketingWorkNeedAssessment workNeedAssessment,
+    ISalesCampaignDraftService salesCampaignDrafts,
+    ICampaignPlanningService campaignPlanning,
     ICompanyTaskCommandService tasks,
     ICompanyOperatingSnapshotService snapshots) : IMarketingOperatingLoopService
 {
@@ -92,9 +97,25 @@ public sealed class MarketingOperatingLoopService(
         run.Claim(TimeSpan.FromMinutes(5)); await db.SaveChangesAsync(ct);
         try
         {
+            MarketingWorkNeedAssessmentDto? dailyAssessment = null;
+            if (string.Equals(request.Cadence, "daily", StringComparison.OrdinalIgnoreCase))
+            {
+                dailyAssessment = await workNeedAssessment.AssessAsync(companyId, DateTime.UtcNow, ct);
+                if (!dailyAssessment.HasActionableWork)
+                {
+                    run.Complete(JsonSerializer.Serialize(dailyAssessment.Needs), JsonSerializer.Serialize(dailyAssessment.CheckedEvidence), "[]",
+                        "no_work_required: Maya checked the Marketing workspace and found no actionable planning or campaign gaps.");
+                    db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.Agent, marketingAgentId,
+                        "marketing.daily_work_assessed", "marketing_operating_run", run.Id.ToString("D"), AuditEventOutcomes.Succeeded,
+                        "No actionable Marketing plan or campaign work was required.", dailyAssessment.CheckedEvidence,
+                        new Dictionary<string, string?> { ["outcome"] = "no_work_required", ["needCount"] = dailyAssessment.Needs.Count.ToString() }));
+                    await db.SaveChangesAsync(ct);
+                    return Map(run);
+                }
+            }
             var objective = request.OperatingInitiativeId.HasValue
                 ? $"Deliver the assigned company initiative '{assignment!.DesiredOutcome}' within its exact scope. Required completion evidence: {assignment.CompletionEvidence}. Company snapshot {companySnapshot!.SchemaVersion} has {companySnapshot.SourceCount} sources, {companySnapshot.DataGapCount} data gaps, and truncation={companySnapshot.IsTruncated}."
-                : $"Run the governed Marketing {request.Cadence} review from company goals, product, customer, segment, commercial, and Marketing evidence. Use authoritative company snapshot {companySnapshot!.SchemaVersion} ({companySnapshot.Id:N}), containing {companySnapshot.SourceCount} sources and {companySnapshot.DataGapCount} declared data gaps; truncation={companySnapshot.IsTruncated}.";
+                : $"Run the governed Marketing {request.Cadence} review from company goals, product, customer, segment, commercial, and Marketing evidence. Use authoritative company snapshot {companySnapshot!.SchemaVersion} ({companySnapshot.Id:N}), containing {companySnapshot.SourceCount} sources and {companySnapshot.DataGapCount} declared data gaps; truncation={companySnapshot.IsTruncated}. Deterministic work needs: {JsonSerializer.Serialize(dailyAssessment?.Needs.Where(x => x.Actionable).Take(10) ?? [])}";
             var result = await analysis.AnalyzeAsync(companyId, marketingAgentId, null,
                 new RoleAgentAnalysisRequest(MarketingAgentAnalysisTypes.OperatingCadence, null, 90, objective, DateTime.UtcNow, request.Cadence), ct);
             var workerId = $"marketing-operating-loop:{Environment.ProcessId}";
@@ -103,8 +124,48 @@ public sealed class MarketingOperatingLoopService(
             var canOperateInternally = authority >= CompanyAutonomyLevel.OperateInternally && !result.RequiresReview;
             var taskLimit = Math.Clamp(config?.MaximumTasksPerCycle ?? 12, 0, 50);
             var remainingModelCalls = Math.Clamp((config?.MaximumModelCallsPerCycle ?? 3) - 1, 0, 10);
-            var plannedActions = result.NextActions.Take(taskLimit).Select((action, index) =>
+            var selectedNeeds = dailyAssessment?.Needs.Where(x => x.Actionable)
+                .GroupBy(x => x.RecommendedTool == MarketingToolIds.PreparePlan
+                    ? "plan-draft"
+                    : x.RecommendedTool == MarketingToolIds.PrepareCampaignPortfolio && x.AffectedIds.Count > 0
+                        ? $"campaign-portfolio:{x.AffectedIds[0]:N}"
+                        : x.Fingerprint)
+                .Select(x => x.First()).Take(taskLimit).ToArray() ?? [];
+            var selectedActions = dailyAssessment is null
+                ? result.NextActions
+                : selectedNeeds.Select(need =>
+                {
+                    var tool = authority >= CompanyAutonomyLevel.OperateInternally
+                        ? need.ReasonCode switch
+                        {
+                            "objective_without_plan" or "plan_missing_for_horizon" => MarketingToolIds.CreatePlanDraft,
+                            "plan_has_no_campaigns" or "objective_without_campaign_coverage" or "target_segment_without_campaign" => MarketingToolIds.CreateCampaignDrafts,
+                            _ => need.RecommendedTool
+                        }
+                        : need.ReasonCode is "objective_without_plan" or "plan_missing_for_horizon"
+                            ? MarketingToolIds.PreparePlan
+                            : need.ReasonCode is "plan_has_no_campaigns" or "objective_without_campaign_coverage" or "target_segment_without_campaign"
+                                ? MarketingToolIds.PrepareCampaignPortfolio
+                                : need.RecommendedTool;
+                    return new AgentAiNextAction(need.Label, authority >= CompanyAutonomyLevel.OperateInternally ? "execute" : "recommend", tool, need.RequiresApproval);
+                }).ToArray();
+            var proposedActions = selectedActions.Take(taskLimit).Select((action, index) => new
             {
+                Action = action,
+                Index = index,
+                Need = dailyAssessment is null ? null : selectedNeeds[index],
+                IdempotencyKey = dailyAssessment is null
+                    ? $"{run.Id:N}:action:{index + 1}"
+                    : $"marketing-need:{selectedNeeds[index].Fingerprint}:{action.ToolName}"
+            }).ToArray();
+            var proposedKeys = proposedActions.Select(x => x.IdempotencyKey).ToArray();
+            var completedNeedKeys = dailyAssessment is null ? [] : await db.MarketingOperatingActions.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == companyId && proposedKeys.Contains(x.IdempotencyKey) && (x.Status == "completed" || x.Status == "blocked"))
+                .Select(x => x.IdempotencyKey).ToArrayAsync(ct);
+            var plannedActions = proposedActions.Where(x => !completedNeedKeys.Contains(x.IdempotencyKey)).Select(candidate =>
+            {
+                var action = candidate.Action;
+                var index = candidate.Index;
                 var decision = MarketingAuthorityPolicy.Evaluate(new MarketingAuthorityContext(
                     config?.AutonomyLevel ?? CompanyAutonomyLevel.Recommend,
                     AgentAutonomyLevelValues.Parse(agent.AutonomyLevel), CompanyAutonomyLevel.OperateInternally,
@@ -114,11 +175,11 @@ public sealed class MarketingOperatingLoopService(
                     BudgetAvailable: !run.BudgetLimit.HasValue || run.BudgetUsed < run.BudgetLimit.Value));
                 return new MarketingOperatingAction(Guid.NewGuid(), companyId, run.Id, index + 1,
                     action.ActionType, action.Title, InternalAnalysisType(action.ToolName), action.ToolName,
-                    JsonSerializer.Serialize(new { assignment?.OperatingInitiativeId, assignment?.WorkTaskId }),
+                    JsonSerializer.Serialize(new { assignment?.OperatingInitiativeId, assignment?.WorkTaskId, needFingerprint = candidate.Need?.Fingerprint, affectedIds = candidate.Need?.AffectedIds }),
                     run.EvidenceVersion, assignment?.DesiredOutcome ?? objective,
                     JsonSerializer.Serialize(assignment?.Dependencies ?? []),
                     assignment?.CompletionEvidence ?? "A source-grounded draft artifact and its deterministic preflight result.",
-                    decision.ReasonCode, action.RequiresApproval, $"{run.Id:N}:action:{index + 1}",
+                    decision.ReasonCode, action.RequiresApproval, candidate.IdempotencyKey,
                     InternalAnalysisType(action.ToolName) is null ? 0m : 0.01m, maximumAttempts: 3);
             }).ToList();
             db.MarketingOperatingActions.AddRange(plannedActions);
@@ -196,6 +257,13 @@ public sealed class MarketingOperatingLoopService(
                         artifact.Value.EvidenceJson, plannedAction.EstimatedCost);
                     await db.SaveChangesAsync(ct);
                 }
+                catch (Exception actionException) when (actionException is InvalidOperationException or ArgumentException or KeyNotFoundException)
+                {
+                    plannedAction.Block(workerId, "policy_or_prerequisite_blocked",
+                        $"The guarded command was blocked by a prerequisite or policy check ({actionException.GetType().Name}). Refresh the evidence before retrying.",
+                        retryable: false);
+                    await db.SaveChangesAsync(ct);
+                }
                 catch (Exception actionException) when (actionException is not OperationCanceledException)
                 {
                     plannedAction.Block(workerId, "internal_action_failed",
@@ -208,8 +276,16 @@ public sealed class MarketingOperatingLoopService(
                 x.RequiresApproval, x.Status, x.ArtifactType, x.ArtifactId, x.RecoveryCode }).ToArray();
             var evidence = result.Sources.Concat(executedAnalyses.SelectMany(x => x.Sources))
                 .DistinctBy(x => x.Id).Select(x => new { sourceId = x.Id, sourceType = x.Type, x.Title, observedUtc = x.UpdatedUtc }).ToArray();
-            run.Complete(JsonSerializer.Serialize(work), JsonSerializer.Serialize(evidence),
+            var evidencePayload = dailyAssessment is null
+                ? JsonSerializer.Serialize(evidence)
+                : JsonSerializer.Serialize(new { sources = evidence, checkedEvidence = dailyAssessment.CheckedEvidence, workNeeds = dailyAssessment.Needs });
+            run.Complete(JsonSerializer.Serialize(work), evidencePayload,
                 JsonSerializer.Serialize(result.MissingEvidence), result.Summary);
+            if (dailyAssessment is not null)
+                db.AuditEvents.Add(new AuditEvent(Guid.NewGuid(), companyId, AuditActorTypes.Agent, marketingAgentId,
+                    "marketing.daily_work_assessed", "marketing_operating_run", run.Id.ToString("D"), AuditEventOutcomes.Succeeded,
+                    "Maya completed the governed daily Marketing work assessment.", dailyAssessment.CheckedEvidence,
+                    new Dictionary<string, string?> { ["outcome"] = "work_assessed", ["actionableNeedCount"] = dailyAssessment.Needs.Count(x => x.Actionable).ToString(), ["plannedActionCount"] = plannedActions.Count.ToString() }));
             await db.SaveChangesAsync(ct); return Map(run);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -266,9 +342,67 @@ public sealed class MarketingOperatingLoopService(
                 var request = new CreateMarketingPlanRequest(action.Title, actionResult?.Summary ?? operatingResult.Summary,
                     starts, starts.AddDays(90), run.BudgetLimit, "SEK");
                 var proposal = await marketingOperations.PreparePlanProposalAsync(companyId, request, ct);
-                var artifact = await marketingOperations.CommitPlanAsync(companyId, agentId,
-                    new CommitMarketingPlanRequest(action.IdempotencyKey, request), ct);
-                return ("marketing_plan", artifact.Id, JsonSerializer.Serialize(new { proposal.ProposalKey, artifact.Version }));
+                return ("marketing_plan_proposal", null, JsonSerializer.Serialize(new { proposal.ProposalKey, disposition = "recommendation_only" }));
+            }
+            case MarketingToolIds.CreatePlanDraft:
+            {
+                var strategy = await db.MarketingStrategies.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId &&
+                    (x.Status == MarketingStrategicStatuses.Active || x.Status == MarketingStrategicStatuses.Approved) && x.ValidFromUtc <= starts && x.ValidToUtc >= starts.AddDays(90))
+                    .OrderByDescending(x => x.Version).FirstOrDefaultAsync(ct) ?? throw new InvalidOperationException("strategy_missing: No approved strategy covers the plan horizon.");
+                var segmentIds = await db.MarketingStrategySegments.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && x.MarketingStrategyId == strategy.Id)
+                    .Select(x => x.MarketingCustomerSegmentVersionId).ToArrayAsync(ct);
+                var segments = await db.MarketingCustomerSegmentVersions.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && segmentIds.Contains(x.Id) &&
+                    (x.Status == MarketingStrategicStatuses.Active || x.Status == MarketingStrategicStatuses.Approved)).ToArrayAsync(ct);
+                var objectives = await db.MarketingObjectives.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId && x.Status == MarketingStatuses.Active && x.PeriodStartUtc < starts.AddDays(90) && x.PeriodEndUtc > starts).ToArrayAsync(ct);
+                if (segments.Length == 0 || objectives.Length == 0) throw new InvalidOperationException("evidence_missing: Approved audiences and active objectives are required.");
+                var evidence = new[] { $"marketing-strategy:{strategy.Id:N}:v{strategy.Version}" }.Concat(segments.Select(x => $"marketing-segment-version:{x.Id:N}:v{x.VersionNumber}")).ToArray();
+                var request = new CreateGroundedMarketingPlanRequest(action.Title, actionResult?.Summary ?? operatingResult.Summary,
+                    strategy.Id, strategy.Version, starts, starts.AddDays(90), run.BudgetLimit, "SEK", objectives.Select(x => x.Id).ToArray(),
+                    segments.Select((x, i) => new MarketingPlanSegmentSelection(x.Id, i == 0 ? MarketingPlanSegmentRoles.Primary : MarketingPlanSegmentRoles.Secondary,
+                        i + 1, "Selected from the approved strategy.", "Contribute to the active Marketing objectives.")).ToArray(),
+                    operatingResult.Summary, evidence, [], [], [], action.IdempotencyKey, agentId);
+                var artifact = await marketingOperations.CreateGroundedPlanAsync(companyId, agentId, request, ct);
+                return ("marketing_plan", artifact.Summary.Id, JsonSerializer.Serialize(new { artifact.Summary.Version, evidence }));
+            }
+            case MarketingToolIds.CreateCampaignDrafts:
+            {
+                var planId = await db.MarketingPlans.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId &&
+                    (x.Status == MarketingStatuses.Draft || x.Status == MarketingStatuses.Active) &&
+                    !db.MarketingPlanCampaigns.IgnoreQueryFilters().Any(c => c.CompanyId == companyId && c.MarketingPlanId == x.Id))
+                    .OrderBy(x => x.EndsUtc).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(ct)
+                    ?? throw new InvalidOperationException("plan_missing: No plan needs a campaign portfolio.");
+                var plan = await marketingOperations.GetPlanPortfolioAsync(companyId, planId, ct) ?? throw new InvalidOperationException("plan_missing: The plan is unavailable.");
+                var objective = plan.Objectives.FirstOrDefault() ?? throw new InvalidOperationException("objective_missing: The plan has no objective.");
+                if (plan.Segments.Count == 0) throw new InvalidOperationException("segment_missing: The plan has no approved target segment.");
+                var launch = starts.AddDays(14); if (launch >= plan.Summary.EndsUtc) launch = starts.AddDays(1);
+                var item = new MarketingCampaignPortfolioItemRequest($"{plan.Summary.Name} · {objective.Name}", actionResult?.Summary ?? action.Title,
+                    objective.Id, $"Contribute to {objective.Name}.", plan.Segments.Select(x => x.SegmentVersionId).ToArray(), plan.Summary.RemainingBudget,
+                    plan.Summary.BudgetCurrency, plan.Campaigns.Count + 1, CampaignTypes.LeadGeneration, "marketing_segment", 1, "result",
+                    plan.Summary.EndsUtc, starts, launch, plan.Summary.EndsUtc.AddDays(-1), plan.Summary.EndsUtc, "UTC", "en", ["internal"],
+                    "Grounded in the approved plan evidence", ["Prepare campaign assets", "Review campaign readiness"], ["Campaign message brief"],
+                    string.Join("; ", plan.Segments.Select(x => x.SegmentName)), "Measure the linked objective before and after launch.", plan.EvidenceReferences, plan.MissingEvidence);
+                var request = new PrepareMarketingCampaignPortfolioRequest(planId, plan.Summary.Version, [item], action.IdempotencyKey, agentId);
+                var result = await marketingOperations.CommitCampaignPortfolioAsync(companyId, agentId, new CommitMarketingCampaignPortfolioRequest(request), ct);
+                return ("marketing_campaign_portfolio", planId, JsonSerializer.Serialize(new { result.Outcome, campaignIds = result.Campaigns.Select(x => x.CampaignId) }));
+            }
+            case MarketingToolIds.PopulateCampaignDraft:
+            {
+                var campaignId = AffectedId(action) ?? throw new InvalidOperationException("campaign_missing: The work need has no campaign reference.");
+                var summary = actionResult?.Summary ?? operatingResult.Summary;
+                var steps = Enumerable.Range(1, 4).Select(index => new SalesCampaignDraftStepCommand(index, index == 1 ? 0 : (index - 1) * 3,
+                    $"Draft touch {index}", $"Internal draft for review — {summary}")).ToArray();
+                var result = await salesCampaignDrafts.PopulateDraftAsync(new PopulateSalesCampaignDraftCommand(companyId,
+                    campaignId, agentId, agentId, steps, action.IdempotencyKey), ct);
+                return ("sales_campaign", result.CampaignId, JsonSerializer.Serialize(new { result.SequenceId, stepCount = steps.Length, disposition = "draft_only" }));
+            }
+            case MarketingToolIds.SubmitCampaignForReadiness:
+            {
+                var campaignId = AffectedId(action) ?? throw new InvalidOperationException("campaign_missing: The work need has no campaign reference.");
+                var readiness = await campaignPlanning.GetReadinessAsync(companyId, campaignId, ct)
+                    ?? throw new InvalidOperationException("campaign_missing: The campaign is unavailable.");
+                var result = await campaignPlanning.RequestReadinessAsync(companyId, agentId, campaignId, readiness.Version, ct)
+                    ?? throw new InvalidOperationException("campaign_missing: The campaign is unavailable.");
+                return ("sales_campaign_readiness", result.Id, JsonSerializer.Serialize(new { result.LifecycleStatus, result.Version, result.MissingRequirements }));
             }
             case MarketingToolIds.PrepareContentBrief:
             {
@@ -318,6 +452,16 @@ public sealed class MarketingOperatingLoopService(
     private static bool IsInternalRecommendation(string? tool, bool requiresApproval) =>
         !requiresApproval && (tool is null || MarketingToolIds.ReadTools.Contains(tool) ||
             MarketingToolIds.RecommendTools.Contains(tool));
+    private static Guid? AffectedId(MarketingOperatingAction action)
+    {
+        try
+        {
+            using var document = JsonDocument.Parse(action.TargetJson);
+            if (!document.RootElement.TryGetProperty("affectedIds", out var ids) || ids.ValueKind != JsonValueKind.Array) return null;
+            return ids.EnumerateArray().Select(x => x.GetGuid()).FirstOrDefault() is var id && id != Guid.Empty ? id : null;
+        }
+        catch (JsonException) { return null; }
+    }
     private static string? InternalAnalysisType(string? toolName) => toolName switch
     {
         MarketingToolIds.AnalyzeAudience or MarketingToolIds.PrepareSegmentation or MarketingToolIds.RecommendTargetSegments

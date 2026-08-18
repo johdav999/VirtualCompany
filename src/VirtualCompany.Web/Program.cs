@@ -50,7 +50,10 @@ builder.Services.AddScoped(sp =>
 
     var httpClient = new HttpClient
     {
-        BaseAddress = ResolveApiBaseAddress(configuredApiBaseUrl, useOfflineMode, httpContext)
+        BaseAddress = ResolveApiBaseAddress(configuredApiBaseUrl, useOfflineMode, httpContext),
+        // A text workshop can perform checkpoint -> permitted research -> checkpoint.
+        // Keep the client timeout above the bounded aggregate provider timeout.
+        Timeout = TimeSpan.FromMinutes(3)
     };
 
     httpClient.ApplyRequestHeaders(httpContext);
@@ -75,6 +78,8 @@ if (Directory.Exists(sharedImagesPath))
     });
 }
 app.UseAntiforgery();
+
+app.MapGuidedRealtimeProxyEndpoints();
 
 app.MapPost("/localization/apply", async (HttpContext context, IAntiforgery antiforgery) =>
 {

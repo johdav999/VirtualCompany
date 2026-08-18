@@ -31,6 +31,8 @@ public static class AgentCapabilityIds
     public const string SupportKnowledgeCoverage = "support_knowledge_coverage";
     public const string SupportOperatingCadence = "support_operating_cadence";
     public const string MarketingPlanning = "marketing_planning";
+    public const string MarketingPlanDraftExecution = "marketing_plan_draft_execution";
+    public const string MarketingCampaignDraftExecution = "marketing_campaign_draft_execution";
     public const string MarketingAudienceIntelligence = "marketing_audience_intelligence";
     public const string MarketingContentAdvice = "marketing_content_advice";
     public const string MarketingCampaignCoordination = "marketing_campaign_coordination";

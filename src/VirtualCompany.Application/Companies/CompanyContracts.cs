@@ -173,7 +173,8 @@ public sealed record CreateCompanyWorkspaceRequest(
     string? Language,
     string? ComplianceRegion,
     int CurrentStep,
-    string? SelectedTemplateId);
+    string? SelectedTemplateId,
+    Guid? CompanyId = null);
 
 public sealed record SaveCompanyOnboardingProgressRequest(
     Guid? CompanyId,
@@ -210,6 +211,13 @@ public sealed record CompleteCompanyOnboardingResultDto(
     string DashboardPath,
     IReadOnlyList<string> StarterGuidance);
 
+public sealed record CompanyOnboardingWorkshopBootstrapDto(
+    Guid CompanyId,
+    Guid AgentId,
+    Guid SessionId,
+    string Route,
+    bool Resumed);
+
 public sealed class CompanyOnboardingValidationException : Exception
 {
     public CompanyOnboardingValidationException(IDictionary<string, string[]> errors)
@@ -243,8 +251,16 @@ public interface ICompanyOnboardingService
     Task<OnboardingTemplateRecommendationDto?> GetRecommendedDefaultsAsync(GetOnboardingTemplateRecommendationRequest request, CancellationToken cancellationToken);
     Task<IReadOnlyList<OnboardingTemplateDto>> GetTemplatesAsync(CancellationToken cancellationToken);
     Task<CompanyOnboardingProgressDto?> GetProgressAsync(CancellationToken cancellationToken);
+    Task<CompanyOnboardingProgressDto?> GetProgressAsync(Guid companyId, CancellationToken cancellationToken);
     Task<CompanyOnboardingProgressDto> CreateWorkspaceAsync(CreateCompanyWorkspaceRequest request, CancellationToken cancellationToken);
     Task<CompanyOnboardingProgressDto> SaveProgressAsync(SaveCompanyOnboardingProgressRequest request, CancellationToken cancellationToken);
     Task<CompanyOnboardingProgressDto> AbandonOnboardingAsync(AbandonCompanyOnboardingRequest request, CancellationToken cancellationToken);
     Task<CompleteCompanyOnboardingResultDto> CompleteOnboardingAsync(CompleteCompanyOnboardingRequest request, CancellationToken cancellationToken);
+}
+
+public interface ICompanyOnboardingWorkshopService
+{
+    Task<CompanyOnboardingWorkshopBootstrapDto> StartOrResumeAsync(
+        CreateCompanyWorkspaceRequest request,
+        CancellationToken cancellationToken);
 }

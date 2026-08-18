@@ -1,0 +1,185 @@
+@page "/agents/{AgentId:guid}/workshops/{ArtifactType}"
+@implements IAsyncDisposable
+@rendermode InteractiveServer
+@using System.Text.Json.Nodes
+@using System.Security.Cryptography
+@using System.Text
+@using VirtualCompany.Web.Components.GuidedWork
+@inject GuidedWorkApiClient Api
+@inject NavigationManager Navigation
+@inject IJSRuntime JS
+@inject IStringLocalizer<GuidedWorkResources> Text
+
+<PageTitle>@(session is null ? Text["Loading"] : $"{session.ArtifactLabel} {Text["Workshop"]}")</PageTitle>
+
+@if (loading)
+{
+    <section class="guided-state" aria-live="polite"><span class="spinner-border spinner-border-sm"></span><p>@Text["Loading"]</p></section>
+}
+else if (!string.IsNullOrWhiteSpace(error) || session is null)
+{
+    <section class="guided-state guided-state--error" role="alert"><h1>@Text["Unavailable"]</h1><p>@error</p><button class="btn btn-outline-primary" @onclick="LoadAsync">@CommonText["Retry"]</button></section>
+}
+else
+{
+    <main class="guided-workspace">
+        <header class="guided-workspace__header">
+            <div class="guided-workspace__title">
+                <span class="guided-kicker">@Text["Workshop"]</span>
+                <h1>@session.ArtifactLabel @Text["Workshop"]</h1>
+            </div>
+            <div class="guided-header-actions">
+                <a class="guided-header-action" href="@($"/agents/{AgentId}/chat?companyId={CompanyId}")"><span class="bi bi-chat-left-text" aria-hidden="true"></span>@Text["BackChat"]</a>
+                <button class="guided-header-action guided-header-action--danger" type="button" disabled="@busy" @onclick="CancelAsync"><span class="bi bi-x-circle" aria-hidden="true"></span>@Text["Cancel"]</button>
+            </div>
+        </header>
+        @if (!string.IsNullOrWhiteSpace(notice)) { <div class="guided-notice guided-notice--success" role="status"><span class="bi bi-check-circle" aria-hidden="true"></span>@notice</div> }
+        @if (!string.IsNullOrWhiteSpace(actionError)) { <div class="guided-notice guided-notice--danger" role="alert"><span class="bi bi-exclamation-circle" aria-hidden="true"></span>@actionError</div> }
+        <div id="guided-workspace-columns" class="guided-workspace__columns">
+            <div class="guided-workspace__conversation">
+                <GuidedConversationPanel Session="session" Changes="changes" LiveUserTranscript="@liveUserTranscript" LiveAgentTranscript="@liveAgentTranscript" LiveAgentTranscriptIsFinal="@liveAgentTranscriptIsFinal" VoiceWorkTitle="@voiceWorkTitle" VoiceWorkDetail="@voiceWorkDetail" ResearchInProgress="@ResearchInProgress" />
+                @if (session.Capabilities.SupportsDocumentAttachments)
+                {
+                    <section class="guided-documents" aria-labelledby="guided-documents-title">
+                        <header>
+                            <div><h2 id="guided-documents-title"><span class="bi bi-paperclip" aria-hidden="true"></span>@Text["WorkshopDocuments"]</h2><p>@Text["WorkshopDocumentsHelp"]</p></div>
+                            <div class="guided-documents__header-actions">
+                                @if (!documentsCollapsed)
+                                {
+                                    <button class="guided-documents__refresh" type="button" disabled="@documentsBusy" @onclick="LoadDocumentsAsync" aria-label="@Text["RefreshDocuments"]"><span aria-hidden="true">↻</span></button>
+                                }
+                                <button class="guided-documents__toggle" type="button" @onclick="() => documentsCollapsed = !documentsCollapsed" aria-expanded="@(!documentsCollapsed)" aria-controls="guided-documents-content">
+                                    <span class="bi @(documentsCollapsed ? "bi-chevron-down" : "bi-chevron-up")" aria-hidden="true"></span>
+                                    <span>@Text[documentsCollapsed ? "ExpandDocuments" : "CollapseDocuments"]</span>
+                                </button>
+                            </div>
+                        </header>
+                        @if (!documentsCollapsed)
+                        {
+                            <div id="guided-documents-content" class="guided-documents__content">
+                                <label class="guided-documents__upload @(documentsBusy ? "guided-documents__upload--disabled" : null)"><span class="bi bi-cloud-arrow-up" aria-hidden="true"></span><strong>@Text["UploadDocuments"]</strong><small>@Text["UploadDocumentsFormats"]</small><InputFile class="visually-hidden" disabled="@documentsBusy" OnChange="UploadDocumentAsync" accept=".pdf,.docx,.txt,.md,.csv,.xlsx,.pptx" /></label>
+                                @if (workshopDocuments.Count > 0)
+                                {
+                                    <div class="guided-documents__list">@foreach (var document in workshopDocuments){<article><span class="guided-documents__icon bi bi-file-earmark-text" aria-hidden="true"></span><div><strong title="@document.OriginalFileName">@document.Title</strong><small>@FormatFileSize(document.FileSizeBytes)</small>@if(!string.IsNullOrWhiteSpace(document.FailureMessage)){<small class="guided-documents__failure">@document.FailureMessage</small>}</div><span class="guided-documents__status guided-documents__status--@document.Status">@document.StatusLabel</span></article>}</div>
+                                }
+                                <div class="guided-documents__guidance"><span><i class="guided-documents__dot guided-documents__dot--ready"></i>@Text["DocumentsReadyHelp"]</span><span><i class="guided-documents__dot guided-documents__dot--processing"></i>@Text["DocumentsProcessingHelp"]</span></div>
+                            </div>
+                        }
+                    </section>
+                }
+                @if (session.Status is not "completed" and not "cancelled")
+                {
+                    <form class="guided-composer" @onsubmit="SendAsync" @onsubmit:preventDefault>
+                        <label class="visually-hidden" for="guided-message">@Text["Message"]</label>
+                        <div class="guided-composer__message">
+                            <textarea id="guided-message" rows="1" placeholder="@Text["Message"]" @bind="message" @bind:event="oninput" disabled="@busy"></textarea>
+                            <button class="guided-send" type="submit" disabled="@(busy || string.IsNullOrWhiteSpace(message))"><span class="bi bi-send-fill" aria-hidden="true"></span><span>@Text["Send"]</span></button>
+                        </div>
+                        <div class="guided-voice-controls">
+                            <button class="guided-voice-primary @(voiceActive ? "guided-voice-primary--active" : null)" type="button" disabled="@busy" @onclick="ToggleVoiceAsync"><span class="bi @(voiceActive ? "bi-stop-circle" : "bi-mic")" aria-hidden="true"></span> @(voiceActive ? Text["StopVoice"] : Text["ContinueVoice"])</button>
+                            @if (voiceActive)
+                            {
+                                <button class="guided-voice-secondary" type="button" disabled="@busy" @onclick="ToggleMuteAsync"><span class="bi @(voiceMuted ? "bi-mic" : "bi-mic-mute")"></span> @(voiceMuted ? Text["UnmuteVoice"] : Text["MuteVoice"])</button>
+                                <button class="guided-voice-secondary" type="button" disabled="@(busy || voiceState != "speaking")" @onclick="InterruptVoiceAsync"><span class="bi bi-pause-circle"></span> @Text["InterruptVoice"]</button>
+                                <span class="guided-voice-state" role="status" aria-live="polite">@VoiceStateLabel()</span>
+                            }
+                        </div>
+                        <small class="guided-voice-privacy">@Text["VoicePrivacy"]</small>
+                    </form>
+                }
+            </div>
+            <div class="guided-workspace__resizer" role="separator" aria-orientation="vertical" aria-label="@Text["ResizeWorkshopPanels"]" title="@Text["ResizeWorkshopPanelsHint"]" tabindex="0">
+                <span aria-hidden="true"></span>
+            </div>
+            <div class="guided-workspace__draft-column">
+                <GuidedDraftPanel Session="session" OnSave="CorrectFieldAsync" OnStatusChange="ChangeFieldStatusesAsync" />
+                <footer class="guided-workspace__footer">
+                    @if (session.Status == "completed")
+                    {
+                        <strong class="guided-complete"><span class="bi bi-check-circle-fill" aria-hidden="true"></span>@Text["Completed"]</strong>
+                        @if (ArtifactDestination() is { } destination) { <a class="btn btn-sm btn-primary" href="@destination">Open saved result</a> }
+                    }
+                    else
+                    {
+                        <button class="guided-review-button" type="button" disabled="@(busy || session.ReadyFieldCount < session.RequiredFieldCount)" @onclick="PrepareReviewAsync">@Text["ReviewChanges"]</button>
+                        <div><strong>@DraftChangeCount() @Text["ChangedFields"]</strong><span>@Text["FieldsReady", session.ReadyFieldCount, session.RequiredFieldCount]</span></div>
+                    }
+                </footer>
+            </div>
+        </div>
+    </main>
+}
+
+@if (review is not null && session is not null)
+{
+    <div class="guided-review-backdrop" role="presentation"><section class="guided-review" role="dialog" aria-modal="true" aria-labelledby="review-title">
+        <header><div><h2 id="review-title">@Text["ReviewChanges"]</h2><p>@Text["ReviewExpiry", review.ExpiresAt.ToLocalTime().ToString("t")]</p></div><button class="btn-close" aria-label="@CommonText["Close"]" @onclick="() => review = null"></button></header>
+        @if (review.Insights.Count > 0) { <section class="guided-review__insights" aria-label="@Text["ReviewMeaning"]"><h3>@Text["ReviewMeaning"]</h3>@foreach (var insight in review.Insights) { <article><strong>@insight.Label</strong><span>@insight.Value</span><small>@insight.Meaning</small></article> }</section> }
+        <div class="guided-review__changes">@foreach(var item in review.ProposedChanges){<article><strong>@item.Label</strong>@if(item.PreviousValue is not null){<small>@Text["Before"]</small><p class="guided-review__before">@Display(item.PreviousValue)</p>}<small>@Text["After"]</small><p>@Display(item.Value)</p><small>@item.Explanation</small></article>}</div>
+        <footer><button class="btn btn-outline-secondary" @onclick="() => review = null">@CommonText["Cancel"]</button><button class="btn btn-primary" disabled="@busy" @onclick="CommitAsync">@Text["ConfirmChanges"]</button></footer>
+    </section></div>
+}
+
+@code {
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter] public string ArtifactType { get; set; } = "agent_operating_brief";
+    [SupplyParameterFromQuery(Name="companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name="sessionId")] public Guid? SessionId { get; set; }
+    [SupplyParameterFromQuery(Name="targetId")] public Guid? TargetArtifactId { get; set; }
+    private GuidedWorkSessionViewModel? session; private GuidedWorkReviewViewModel? review; private List<GuidedWorkshopDocumentViewModel> workshopDocuments=[];
+    private List<GuidedFieldChangeViewModel> changes = []; private readonly HashSet<string> voiceEvents = new(StringComparer.Ordinal); private readonly HashSet<string> persistedAgentVoiceResponses=new(StringComparer.Ordinal); private readonly SemaphoreSlim voiceTurnLock=new(1,1); private readonly CancellationTokenSource refreshCancellation=new(); private Task? refreshTask; private string message = ""; private string liveUserTranscript = ""; private string liveAgentTranscript = ""; private string? liveAgentTranscriptResponseId; private string? voiceWorkTitle; private string? voiceWorkDetail; private string? error; private string? actionError; private string? notice; private string voiceState="ended"; private bool liveAgentTranscriptIsFinal; private bool scrollLiveTranscript; private bool resizeInitialized; private bool loading = true; private bool busy; private bool documentsBusy; private bool documentsCollapsed; private bool voiceActive; private bool voiceMuted; private IJSObjectReference? voiceModule; private IJSObjectReference? resizeModule; private DotNetObjectReference<GuidedWorkSession>? selfReference;
+    protected override Task OnParametersSetAsync() => LoadAsync();
+    private async Task LoadAsync() { loading = true; error = null; try { if (CompanyId is not Guid companyId) throw new InvalidOperationException(Text["SelectCompanyFirst"]); if(SessionId is Guid id){session=await Api.GetAsync(companyId,id);if(!session.ArtifactType.Equals(ArtifactType,StringComparison.OrdinalIgnoreCase)){session=await Api.StartAsync(companyId,AgentId,ArtifactType,TargetArtifactId);Navigation.NavigateTo($"/agents/{AgentId}/workshops/{ArtifactType}?companyId={companyId}&sessionId={session.Id}",true);return;}}else{session=await Api.StartAsync(companyId,AgentId,ArtifactType,TargetArtifactId);Navigation.NavigateTo($"/agents/{AgentId}/workshops/{ArtifactType}?companyId={companyId}&sessionId={session.Id}",true);return;}if(session.Capabilities.SupportsDocumentAttachments)await LoadDocumentsAsync(); } catch(Exception ex){error=ex.Message;} finally{loading=false;} }
+    private async Task LoadDocumentsAsync(){if(session is null||CompanyId is not Guid companyId)return;documentsBusy=true;actionError=null;try{workshopDocuments=await Api.DocumentsAsync(companyId,session.Id);}catch(Exception ex){actionError=ex.Message;}finally{documentsBusy=false;}}
+    private async Task UploadDocumentAsync(InputFileChangeEventArgs args){if(session is null||CompanyId is not Guid companyId)return;documentsBusy=true;actionError=null;try{var file=args.File;await using var stream=file.OpenReadStream(10*1024*1024);await Api.UploadDocumentAsync(companyId,session.Id,stream,file.Name,file.ContentType);workshopDocuments=await Api.DocumentsAsync(companyId,session.Id);notice=voiceActive?Text["DocumentUploadedVoiceHint"]:Text["DocumentUploaded"];}catch(Exception ex){actionError=ex.Message;}finally{documentsBusy=false;}}
+    private static string FormatFileSize(long bytes)=>bytes>=1024*1024?$"{bytes/(1024d*1024d):0.0} MB":$"{Math.Max(1,bytes/1024d):0} KB";
+    private async Task SendAsync() { if(session is null || CompanyId is not Guid companyId || string.IsNullOrWhiteSpace(message)) return;var clientRequestId=Guid.NewGuid();voiceWorkTitle=Text["TextWorkTitle"];voiceWorkDetail=Text["TextWorkDetail"];scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);try{await RunAsync(async () => { var result=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.TurnAsync(companyId,session.Id,message,version,clientRequestId:clientRequestId));session=result.Session;changes=result.Changes;message=""; });}finally{ClearVoiceWork();} }
+    private async Task CorrectFieldAsync((GuidedDraftFieldViewModel Field, JsonNode? Value) update){if(session is null||CompanyId is not Guid companyId)return;var clientRequestId=Guid.NewGuid();busy=true;actionError=null;notice=null;try{session=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.CorrectAsync(companyId,session.Id,update.Field.Path,update.Value,"confirmed",version,clientRequestId));changes=[];}catch(Exception ex){actionError=ex.Message;throw;}finally{busy=false;}}
+    private async Task ChangeFieldStatusesAsync((IReadOnlyList<string> Paths,string? FromStatus,string Status,string Explanation) update){if(session is null||CompanyId is not Guid companyId)return;var clientRequestId=Guid.NewGuid();busy=true;actionError=null;notice=null;try{session=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.ChangeStatusesAsync(companyId,session.Id,update.Paths,update.FromStatus,update.Status,update.Explanation,version,clientRequestId));changes=[];}catch(Exception ex){actionError=ex.Message;throw;}finally{busy=false;}}
+    private Task PrepareReviewAsync() => RunAsync(async () => { if(session is null || CompanyId is not Guid companyId)return;var clientRequestId=Guid.NewGuid();review=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.ReviewAsync(companyId,session.Id,version,clientRequestId));session=review.Session; });
+    private Task CommitAsync() => RunAsync(async () => { if(session is null || review is null || CompanyId is not Guid companyId)return; var result=await Api.CommitAsync(companyId,session.Id,review.ReviewToken,session.Version); session=result.Session; notice=result.Summary; review=null; await StopVoiceAsync(); });
+    private Task CancelAsync() => RunAsync(async () => { if(session is null || CompanyId is not Guid companyId)return;var clientRequestId=Guid.NewGuid();session=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.CancelAsync(companyId,session.Id,version,clientRequestId));await StopVoiceAsync(); });
+    private async Task ToggleVoiceAsync() { if(session is null || CompanyId is null)return; try{voiceModule??=await JS.InvokeAsync<IJSObjectReference>("import","./js/guided-realtime.js?v=20260814-final-response-persistence");if(voiceActive){await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());voiceActive=false;ClearVoiceWork();return;}selfReference??=DotNetObjectReference.Create(this);await voiceModule.InvokeAsync<object>("start",selfReference,CompanyId.Value.ToString(),session.Id.ToString());voiceActive=true;notice=Text["VoiceConnected"];}catch(Exception ex){voiceActive=false;ClearVoiceWork();actionError=ex.Message;} }
+    private async Task ToggleMuteAsync(){if(voiceModule is null||session is null)return;voiceMuted=await voiceModule.InvokeAsync<bool>("setMuted",session.Id.ToString(),!voiceMuted);}
+    private async Task InterruptVoiceAsync(){if(voiceModule is null||session is null)return;await voiceModule.InvokeVoidAsync("interrupt",session.Id.ToString());}
+    private async Task StopVoiceAsync(){ClearVoiceWork();if(!voiceActive||voiceModule is null||session is null)return;await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());voiceActive=false;}
+    [JSInvokable] public async Task OnVoiceTranscript(string eventId,string transcript,bool interrupted,int durationMs){if(string.IsNullOrWhiteSpace(transcript))return;await voiceTurnLock.WaitAsync();try{if(!voiceEvents.Add(eventId)||session is null||CompanyId is not Guid companyId)return;var clientRequestId=VoiceRequestId(eventId);liveUserTranscript=transcript.Trim();scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);await RunAsync(async()=>{var result=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.TurnAsync(companyId,session.Id,liveUserTranscript,version,clientRequestId:clientRequestId,modality:"voice",providerEventId:eventId,interrupted:interrupted,durationMs:durationMs,transportVersion:"realtime-webrtc-v1"));session=result.Session;changes=result.Changes;liveUserTranscript="";scrollLiveTranscript=true;});await InvokeAsync(StateHasChanged);}finally{voiceTurnLock.Release();}}
+    [JSInvokable] public async Task OnAgentVoiceTranscript(string responseId,string transcript,bool isFinal){if(string.IsNullOrWhiteSpace(responseId)||string.IsNullOrWhiteSpace(transcript))return;if(!string.Equals(liveAgentTranscriptResponseId,responseId,StringComparison.Ordinal)){liveAgentTranscriptResponseId=responseId;liveAgentTranscript="";}liveAgentTranscript=transcript;liveAgentTranscriptIsFinal=isFinal;scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);if(!isFinal||!persistedAgentVoiceResponses.Add(responseId)||session is null||CompanyId is not Guid companyId)return;try{var saved=await Api.RecordVoiceAgentMessageAsync(companyId,session.Id,responseId,transcript.Trim());if(!session.Messages.Any(x=>x.Id==saved.Id))session.Messages.Add(saved);liveAgentTranscript="";scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);}catch(Exception ex){persistedAgentVoiceResponses.Remove(responseId);actionError=ex.Message;await InvokeAsync(StateHasChanged);}}
+    [JSInvokable] public Task OnVoiceWorkState(string? toolName,string? phase,bool active){if(!active){ClearVoiceWork();}else if(string.Equals(phase,"preparing",StringComparison.Ordinal)){voiceWorkTitle=Text["VoiceWorkPreparingTitle"];voiceWorkDetail=Text["VoiceWorkPreparingDetail"];}else{(voiceWorkTitle,voiceWorkDetail)=toolName switch{"lookup_permitted_evidence"=>(Text["VoiceWorkResearchTitle"].Value,Text["VoiceWorkResearchDetail"].Value),"search_workshop_documents"=>(Text["VoiceWorkDocumentsTitle"].Value,Text["VoiceWorkDocumentsDetail"].Value),"get_current_safe_draft"=>(Text["VoiceWorkDraftTitle"].Value,Text["VoiceWorkDraftDetail"].Value),"propose_draft_patch" or "mark_field_unknown" or "set_draft_field_status"=>(Text["VoiceWorkUpdateTitle"].Value,Text["VoiceWorkUpdateDetail"].Value),_=>(Text["VoiceWorkDefaultTitle"].Value,Text["VoiceWorkDefaultDetail"].Value)};}liveAgentTranscript="";liveAgentTranscriptResponseId=null;scrollLiveTranscript=true;return InvokeAsync(StateHasChanged);}
+    [JSInvokable] public Task OnVoiceState(string state,string? detail){voiceState=state;voiceActive=state is "active" or "connected" or "connecting" or "listening" or "thinking" or "speaking" or "muted" or "reconnecting";voiceMuted=state=="muted";if(state is "failed" or "disconnected" or "error" or "unavailable" or "permission_denied" or "ended")ClearVoiceWork();if(state is "failed" or "disconnected" or "error" or "unavailable" or "permission_denied")actionError=detail??Text["VoiceEnded"];return InvokeAsync(StateHasChanged);}
+    protected override async Task OnAfterRenderAsync(bool firstRender){if(firstRender)refreshTask=RefreshSessionAsync(refreshCancellation.Token);if(!resizeInitialized&&session is not null){try{resizeModule??=await JS.InvokeAsync<IJSObjectReference>("import","./js/guided-workspace-resize.js?v=20260813");await resizeModule.InvokeVoidAsync("initialize","guided-workspace-columns",$"guided-workshop-width:{ArtifactType}");resizeInitialized=true;}catch(JSDisconnectedException){}}if(!scrollLiveTranscript||voiceModule is null)return;scrollLiveTranscript=false;try{await voiceModule.InvokeVoidAsync("scrollTranscriptToEnd");}catch(JSDisconnectedException){}}
+    private async Task RefreshSessionAsync(CancellationToken cancellationToken){using var timer=new PeriodicTimer(TimeSpan.FromSeconds(5));try{while(await timer.WaitForNextTickAsync(cancellationToken)){if(busy||session is null||CompanyId is not Guid companyId||session.Status is "completed" or "cancelled")continue;var latest=await Api.GetAsync(companyId,session.Id);if(latest.Version==session.Version)continue;session=latest;changes=[];scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);}}catch(OperationCanceledException)when(cancellationToken.IsCancellationRequested){}catch(Exception){} }
+    private string VoiceStateLabel()=>Text[$"VoiceState_{voiceState}"];
+    private bool ResearchInProgress => session?.SafeSummary.StartsWith("Public research is being checked",StringComparison.OrdinalIgnoreCase)==true;
+    private void ClearVoiceWork(){voiceWorkTitle=null;voiceWorkDetail=null;}
+    private async Task RunAsync(Func<Task> action) { busy=true; actionError=null; notice=null; try{await action();}catch(Exception ex){actionError=ex.Message;}finally{busy=false;} }
+    private async Task<T> ExecuteWithVersionReconciliationAsync<T>(Guid companyId,Func<int,Task<T>> action)
+    {
+        if(session is null)throw new InvalidOperationException(Text["Unavailable"]);
+        try{return await action(session.Version);}
+        catch(OnboardingApiException ex)when(ex.StatusCode==StatusCodes.Status409Conflict)
+        {
+            session=await Api.GetAsync(companyId,session.Id);
+            changes=[];
+            await InvokeAsync(StateHasChanged);
+            return await action(session.Version);
+        }
+    }
+    private static string Display(JsonNode? value) => value is JsonValue v && v.TryGetValue<string>(out var text) ? text : value?.ToJsonString() ?? "—";
+    private static Guid VoiceRequestId(string eventId){var bytes=SHA256.HashData(Encoding.UTF8.GetBytes("guided-voice:"+eventId));return new Guid(bytes.AsSpan(0,16));}
+    private int DraftChangeCount() => session?.Fields.Count(HasDraftChanged) ?? 0;
+    private static bool HasDraftChanged(GuidedDraftFieldViewModel field)
+    {
+        if (field.Path.Equals("workshop_insights", StringComparison.OrdinalIgnoreCase) || field.Value is null) return false;
+        if (!field.SourceMetadata.TryGetValue("original_value_json", out var originalMetadata) || originalMetadata is not JsonValue originalScalar || !originalScalar.TryGetValue<string>(out var originalJson)) return true;
+        try { return !JsonNode.DeepEquals(string.IsNullOrWhiteSpace(originalJson) ? null : JsonNode.Parse(originalJson), field.Value); }
+        catch (System.Text.Json.JsonException) { return true; }
+    }
+    private string? ArtifactDestination() => session?.ArtifactType switch
+    {
+        "marketing_segment" when CompanyId is Guid companyId => $"/marketing?companyId={companyId:D}&section=Segments",
+        "marketing_strategy" when CompanyId is Guid companyId => $"/marketing?companyId={companyId:D}&section=Strategy",
+        _ => null
+    };
+    public async ValueTask DisposeAsync(){await refreshCancellation.CancelAsync();if(refreshTask is not null)try{await refreshTask;}catch{}refreshCancellation.Dispose();if(voiceModule is not null&&session is not null)try{await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());}catch{}if(resizeModule is not null)try{await resizeModule.InvokeVoidAsync("dispose","guided-workspace-columns");}catch{}if(voiceModule is not null)try{await voiceModule.DisposeAsync();}catch(JSDisconnectedException){}if(resizeModule is not null)try{await resizeModule.DisposeAsync();}catch(JSDisconnectedException){}selfReference?.Dispose();voiceTurnLock.Dispose();}
+}

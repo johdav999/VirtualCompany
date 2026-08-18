@@ -18,6 +18,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Sales;
 using VirtualCompany.Application.Support;
 using VirtualCompany.Application.Workflows;
+using VirtualCompany.Application.GuidedWork;
 using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Domain.Entities;
@@ -198,6 +199,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ISalesMeetingInvitationDeliveryDispatcher? _salesMeetingInvitationDelivery;
     private readonly ISalesMeetingChangeDeliveryDispatcher? _salesMeetingChangeDelivery;
     private readonly ISalesMeetingConfirmationDeliveryDispatcher? _salesMeetingConfirmationDelivery;
+    private readonly IGuidedResearchContinuationService? _guidedResearch;
+    private readonly ICompanyOnboardingDocumentGenerationService? _onboardingDocuments;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -220,7 +223,9 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ISupportReplyDeliveryDispatcher? supportReplyDelivery = null,
         ISalesMeetingInvitationDeliveryDispatcher? salesMeetingInvitationDelivery = null,
         ISalesMeetingChangeDeliveryDispatcher? salesMeetingChangeDelivery = null,
-        ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null)
+        ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null,
+        IGuidedResearchContinuationService? guidedResearch = null,
+        ICompanyOnboardingDocumentGenerationService? onboardingDocuments = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -243,6 +248,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _salesMeetingInvitationDelivery = salesMeetingInvitationDelivery;
         _salesMeetingChangeDelivery = salesMeetingChangeDelivery;
         _salesMeetingConfirmationDelivery = salesMeetingConfirmationDelivery;
+        _guidedResearch = guidedResearch;
+        _onboardingDocuments = onboardingDocuments;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -646,6 +653,23 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                     payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId ?? payload.IdempotencyKey : payload.CorrelationId },
                     MaxAttempts,
                     cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.GuidedResearchContinuationRequested:
+            {
+                var payload = Deserialize<GuidedResearchContinuationRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId)
+                    throw new CompanyOutboxPermanentException("Guided research outbox payload tenant does not match the outbox message tenant.");
+                if(_guidedResearch is null)throw new CompanyOutboxPermanentException("Guided research continuation is not configured.");
+                await _guidedResearch.ProcessAsync(payload with { CorrelationId = string.IsNullOrWhiteSpace(payload.CorrelationId) ? message.CorrelationId : payload.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.OnboardingDocumentGenerationRequested:
+            {
+                var payload=Deserialize<OnboardingDocumentGenerationRequestedMessage>(message);
+                if(payload.CompanyId!=message.CompanyId)throw new CompanyOutboxPermanentException("Onboarding document payload tenant does not match the outbox message tenant.");
+                if(_onboardingDocuments is null)throw new CompanyOutboxPermanentException("Onboarding document generation is not configured.");
+                await _onboardingDocuments.ProcessAsync(payload with { CorrelationId=string.IsNullOrWhiteSpace(payload.CorrelationId)?message.CorrelationId:payload.CorrelationId },cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.InvitationCreated:

@@ -18,6 +18,8 @@ public static class CompanyOutboxTopics
     public const string SalesMeetingChangeDeliveryRequested = "sales.meeting_change.delivery_requested";
     public const string SalesMeetingConfirmationDeliveryRequested = "sales.meeting_confirmation.delivery_requested";
     public const string AgentScheduledTriggerExecutionRequested = "company.agent_scheduled_trigger.execution_requested";
+    public const string GuidedResearchContinuationRequested = "guided_work.research_continuation_requested";
+    public const string OnboardingDocumentGenerationRequested = "company.onboarding_document_generation_requested";
     public const string TaskCreated = SupportedPlatformEventTypeRegistry.TaskCreated;
     public const string TaskUpdated = SupportedPlatformEventTypeRegistry.TaskUpdated;
     public const string DocumentUploaded = SupportedPlatformEventTypeRegistry.DocumentUploaded;
@@ -65,6 +67,19 @@ public sealed record NotificationDeliveryRequestedMessage(
     string? CorrelationId);
 
 public sealed record SupportMemoryUpdateRequestedMessage(Guid CompanyId, Guid SupportCaseId, Guid JobId, string EventKey, string? CorrelationId);
+
+public sealed record GuidedResearchContinuationRequestedMessage(
+    Guid CompanyId, Guid SessionId, Guid AgentId, Guid UserMessageId, Guid ClientRequestId,
+    string ArtifactType, string SchemaVersion, string Query, string IdempotencyKey, string? CorrelationId);
+
+public sealed record OnboardingDocumentGenerationRequestedMessage(
+    Guid CompanyId,Guid SessionId,Guid RequestedByUserId,string DocumentKey,string Title,string FileName,
+    string Markdown,string ContentHash,string SchemaVersion,string? CorrelationId);
+
+public interface ICompanyOnboardingDocumentGenerationService
+{
+    Task ProcessAsync(OnboardingDocumentGenerationRequestedMessage request,CancellationToken cancellationToken);
+}
 
 public sealed record SupportReplyDeliveryRequestedMessage(
     Guid CompanyId,

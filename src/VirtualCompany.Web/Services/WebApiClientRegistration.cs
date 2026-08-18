@@ -39,6 +39,7 @@ public static class WebApiClientRegistration
         services.AddScoped(sp => new DashboardSummaryApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new MarketingApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
+        services.AddScoped(sp => new GuidedWorkApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesAutomationApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new SupportApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped<FinanceIntegrationApplicationApiClient>();

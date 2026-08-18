@@ -1,8 +1,13 @@
 using Microsoft.EntityFrameworkCore;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Marketing;
+using VirtualCompany.Application.Sales;
+using VirtualCompany.Application.Approvals;
+using VirtualCompany.Application.Tasks;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -14,9 +19,13 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
     private readonly VirtualCompanyDbContext _db;
     private readonly IMarketingAgentAnalysisService? _analysis;
     private readonly IMarketingEventPublisher? _events;
+    private readonly ISalesCampaignDraftService? _campaignDrafts;
+    private readonly IApprovalRequestService? _approvals;
+    private readonly ICompanyTaskService? _tasks;
     public MarketingOperationsService(VirtualCompanyDbContext db, IMarketingAgentAnalysisService? analysis = null,
-        IMarketingEventPublisher? events = null)
-    { _db = db; _analysis = analysis; _events = events; }
+        IMarketingEventPublisher? events = null, ISalesCampaignDraftService? campaignDrafts = null,
+        IApprovalRequestService? approvals = null, ICompanyTaskService? tasks = null)
+    { _db = db; _analysis = analysis; _events = events; _campaignDrafts = campaignDrafts; _approvals = approvals; _tasks = tasks; }
 
     public async Task<MarketingDashboardDto> GetDashboardAsync(Guid companyId, DateTime fromUtc, DateTime toUtc, CancellationToken ct)
     {
@@ -35,18 +44,39 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         var observations = await ListObservationsAsync(companyId, fromUtc, toUtc, ct);
         var campaigns = await _db.SalesCampaigns.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.CreatedUtc < toUtc)
-            .Select(x => new { x.Id, x.Name, x.Status, x.CreatedUtc, x.ScheduledLaunchUtc, x.OwnerAgentId })
+            .Select(x => new { x.Id, x.Name, x.Status, x.CreatedUtc, x.PlanningStartsUtc, x.ScheduledLaunchUtc, x.ReviewDueUtc, x.EndsUtc, x.OwnerAgentId })
             .ToListAsync(ct);
+        var planSpans = plans.Where(x => x.EndsUtc >= fromUtc && x.StartsUtc < toUtc)
+            .Select(x => new MarketingCalendarItemDto(x.Id, "plan_span", x.Name, x.StartsUtc, x.EndsUtc,
+                x.Status, null, null, true, "marketing_plan", x.Id, x.Id, "none", $"/marketing?section=Plans&planId={x.Id:D}"));
         var activities = await _db.SalesCampaignActivities.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.DueUtc >= fromUtc && x.PlannedStartUtc < toUtc)
             .Select(x => new MarketingCalendarItemDto(x.Id, "activity", x.Name, x.PlannedStartUtc, x.DueUtc,
-                x.Status, x.SalesCampaignId, x.OwnerAgentId))
+                x.Status, x.SalesCampaignId, x.OwnerAgentId, true, "campaign_activity", x.Id, null, "none", $"/sales/campaigns/{x.SalesCampaignId:D}"))
             .ToListAsync(ct);
+        var campaignLinks = await _db.MarketingPlanCampaigns.IgnoreQueryFilters().AsNoTracking().Where(x => x.CompanyId == companyId)
+            .ToDictionaryAsync(x => x.SalesCampaignId, x => x.MarketingPlanId, ct);
+        var campaignMilestones = campaigns.SelectMany(x => new[]
+            {
+                (Kind: "campaign_planning", Date: x.PlanningStartsUtc ?? x.CreatedUtc),
+                (Kind: "campaign_launch", Date: x.ScheduledLaunchUtc ?? DateTime.MinValue),
+                (Kind: "campaign_review", Date: x.ReviewDueUtc ?? DateTime.MinValue),
+                (Kind: "campaign_end", Date: x.EndsUtc ?? DateTime.MinValue)
+            }.Where(m => m.Date >= fromUtc && m.Date < toUtc)
+            .Select(m => new MarketingCalendarItemDto(StableCalendarItemId(x.Id, m.Kind), m.Kind, x.Name, m.Date, m.Date, x.Status, x.Id, x.OwnerAgentId,
+                false, "sales_campaign", x.Id, campaignLinks.GetValueOrDefault(x.Id), "none", $"/sales/campaigns/{x.Id:D}")));
+        var contentMilestones = content.Where(x => x.DueUtc >= fromUtc && x.DueUtc < toUtc).Select(x =>
+            new MarketingCalendarItemDto(x.Id, "content_due", x.Title, x.DueUtc!.Value, x.DueUtc.Value, x.Status, x.CampaignId, null,
+                false, "marketing_content_brief", x.Id, x.PlanId, x.Status == MarketingStatuses.Draft ? "attention" : "none", $"/marketing?section=Content"));
         var calendar = campaigns
             .Where(x => x.ScheduledLaunchUtc.HasValue && x.ScheduledLaunchUtc >= fromUtc && x.ScheduledLaunchUtc < toUtc)
-            .Select(x => new MarketingCalendarItemDto(x.Id, "campaign", x.Name, x.ScheduledLaunchUtc!.Value,
-                x.ScheduledLaunchUtc.Value, x.Status, x.Id, x.OwnerAgentId))
+            .Select(x => new MarketingCalendarItemDto(x.Id, "campaign_launch", x.Name, x.ScheduledLaunchUtc!.Value,
+                x.ScheduledLaunchUtc.Value, x.Status, x.Id, x.OwnerAgentId, false, "sales_campaign", x.Id,
+                campaignLinks.GetValueOrDefault(x.Id), "none", $"/sales/campaigns/{x.Id:D}"))
             .Concat(activities)
+            .Concat(planSpans)
+            .Concat(campaignMilestones.Where(x => x.Kind != "campaign_launch"))
+            .Concat(contentMilestones)
             .OrderBy(x => x.StartsUtc)
             .ToArray();
 
@@ -65,6 +95,12 @@ public sealed partial class MarketingOperationsService : IMarketingOperationsSer
         };
         return new MarketingDashboardDto(companyId, DateTime.UtcNow, metrics, objectives, plans, calendar,
             content, handoffs, experiments, qualificationDefinitions, qualificationEvaluations);
+    }
+
+    private static Guid StableCalendarItemId(Guid sourceId, string kind)
+    {
+        var hash = SHA256.HashData(Encoding.UTF8.GetBytes($"marketing-calendar:{sourceId:D}:{kind}"));
+        return new Guid(hash.AsSpan(0, 16));
     }
 
     public async Task<IReadOnlyList<MarketingObjectiveDto>> ListObjectivesAsync(Guid companyId, CancellationToken ct) =>

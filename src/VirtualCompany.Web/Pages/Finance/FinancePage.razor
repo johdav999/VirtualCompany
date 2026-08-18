@@ -13,6 +13,12 @@
     LoadingMessage="@FinanceText["LoadingFinanceOverview"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
+    @if (AccessState.IsAllowed && AccessState.CompanyId is Guid financeCompanyId)
+    {
+        <div class="d-flex justify-content-end mb-3">
+            <GuidedWorkshopLaunch CompanyId="financeCompanyId" AgentDepartment="Finance" ArtifactType="finance_budget" />
+        </div>
+    }
     <FinanceDataState
         IsLoading="@IsOverviewLoading"
         IsEmpty="@IsOverviewEmpty"

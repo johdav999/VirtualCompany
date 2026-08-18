@@ -3,6 +3,7 @@
 @using System.Globalization
 @using VirtualCompany.Web.Components.Marketing
 @inject MarketingApiClient MarketingApi
+@inject GuidedWorkApiClient GuidedWorkApi
 @inject OnboardingApiClient OnboardingApi
 @inject AgentApiClient AgentApi
 @inject SalesApiClient SalesApi
@@ -157,19 +158,41 @@
         }
         else if (activeTab == "Plans")
         {
-            <section class="marketing-two-column">
-                <div class="vc-panel marketing-section">
-                    <h2>Marketing plans</h2>
-                    @if (dashboard.Plans.Count == 0) { <MarketingEmpty Title="No active plans" Message="Create a bounded plan with a period, summary, and optional budget." /> }
-                    <div class="marketing-list">@foreach (var item in dashboard.Plans) { <article><div><strong>@item.Name</strong><span>@item.Summary / @item.Status</span></div><div class="marketing-inline-actions"><strong>@(item.PlannedBudget?.ToString("N0") ?? "No budget") @item.BudgetCurrency</strong>@if (item.Status.Equals("draft", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" @onclick="() => ActivatePlanAsync(item.Id)">Activate</button> }</div></article> }</div>
+            <section class="marketing-plan-workspace">
+                <div class="vc-panel marketing-section marketing-plan-list">
+                    <div class="marketing-section__header"><div><span class="vc-kicker">PLANS</span><h2>Marketing plans</h2></div></div>
+                    @if (planPortfolio.Count == 0) { <MarketingEmpty Title="No grounded plans" Message="Create a plan from an approved strategy, active objectives, and exact audience segments." /> }
+                    @foreach (var item in planPortfolio)
+                    {
+                        <button type="button" class="marketing-plan-row @(selectedPlan?.Summary.Id == item.Id ? "selected" : null)" @onclick="() => SelectPlanAsync(item.Id)">
+                            <span><strong>@item.Name</strong><small>@(item.StrategyTitle ?? "Strategy grounding unavailable")@(item.StrategyVersion is null ? "" : $" · version {item.StrategyVersion}")</small><small>@item.StartsUtc.ToLocalTime().ToString("d") – @item.EndsUtc.ToLocalTime().ToString("d")</small></span>
+                            <span><strong>@(item.PlannedBudget?.ToString("N0") ?? "No budget") @item.BudgetCurrency</strong><small>@item.CampaignCount campaign@(item.CampaignCount == 1 ? "" : "s")</small><span class="marketing-status @(item.AttentionReason is null ? null : "warning")">@item.ReadinessLabel</span></span>
+                        </button>
+                    }
                 </div>
-                <EditForm Model="planForm" OnValidSubmit="CreatePlanAsync" class="vc-panel marketing-form">
-                    <h2>Create plan</h2>
-                    <label>Name<InputText @bind-Value="planForm.Name" /></label>
-                    <label>Summary<InputTextArea @bind-Value="planForm.Summary" /></label>
-                    <div class="marketing-form__row"><label>Budget<InputNumber @bind-Value="planForm.Budget" /></label><label>Currency<InputText @bind-Value="planForm.Currency" /></label></div>
-                    <button class="btn btn-primary" disabled="@isSaving">Create plan</button>
-                </EditForm>
+                <article class="vc-panel marketing-section marketing-plan-detail">
+                    @if (selectedPlan is null) { <MarketingEmpty Title="Select a plan" Message="Choose a plan to review its strategy, coverage, campaign portfolio, and next action." /> }
+                    else
+                    {
+                        <div class="marketing-section__header"><div><span class="vc-kicker">@selectedPlan.Summary.StatusLabel</span><h2>@selectedPlan.Summary.Name</h2><p>@selectedPlan.Description</p></div><div class="marketing-inline-actions">@if (marketingAgentId is Guid planAgentId && (resolvedCompanyId ?? CompanyId) is Guid planCompanyId) { <a class="btn btn-outline-primary" href="@($"/agents/{planAgentId:D}/chat?companyId={planCompanyId:D}")">Message Maya</a> }<button class="btn btn-primary" disabled="@(isSaving || selectedPlan.Objectives.Count == 0 || selectedPlan.Segments.Count == 0)" @onclick="PrepareSelectedPlanPortfolioAsync">Ask Maya to populate plan</button></div></div>
+                        <div class="marketing-inline-actions" aria-label="Available plan actions">@if (selectedPlan.AllowedActions.Contains("Submit for review")) { <button class="btn btn-outline-primary" disabled="@isSaving" @onclick="SubmitSelectedPlanAsync">Submit for review</button> }@if (selectedPlan.AllowedActions.Contains("Activate plan")) { <button class="btn btn-outline-primary" disabled="@isSaving" @onclick="ActivateSelectedPlanAsync">Activate plan</button> }</div>
+                        @if (selectedPlan.Summary.AttentionReason is not null) { <div class="marketing-plan-attention" role="status"><strong>Needs attention</strong><span>@selectedPlan.Summary.AttentionReason</span></div> }
+                        <div class="marketing-plan-facts">
+                            <div><span>Strategy</span><strong>@(selectedPlan.Summary.StrategyTitle ?? "Grounding unavailable")</strong><small>@(selectedPlan.Summary.StrategyVersion is null ? "Legacy plan" : $"Version {selectedPlan.Summary.StrategyVersion}")</small></div>
+                            <div><span>Budget</span><strong>@(selectedPlan.Summary.AllocatedBudget.ToString("N0")) of @(selectedPlan.Summary.PlannedBudget?.ToString("N0") ?? "unbounded") @selectedPlan.Summary.BudgetCurrency</strong><small>@(selectedPlan.Summary.RemainingBudget?.ToString("N0") ?? "No limit") remaining</small></div>
+                            <div><span>Objectives</span><strong>@selectedPlan.Objectives.Count</strong><small>@string.Join(" · ", selectedPlan.Objectives.Select(x => x.Name))</small></div>
+                            <div><span>Audience segments</span><strong>@selectedPlan.Segments.Count</strong><small>@string.Join(" · ", selectedPlan.Segments.Select(x => $"{x.SegmentName} v{x.SegmentVersionNumber}"))</small></div>
+                        </div>
+                        <section class="marketing-plan-section"><h3>Coverage</h3>@if (selectedPlan.Coverage.Count == 0) { <p class="marketing-success">Objectives and target segments are covered by the current portfolio.</p> } else { @foreach (var finding in selectedPlan.Coverage) { <div class="marketing-coverage-row"><strong>@finding.Label</strong><span>@finding.Explanation</span></div> } }</section>
+                        <section class="marketing-plan-section"><div class="marketing-section__header"><div><h3>Campaign portfolio</h3><p>Draft campaigns remain subject to Sales readiness and launch controls.</p></div></div>
+                            @if (selectedPlan.Campaigns.Count == 0) { <MarketingEmpty Title="No campaign drafts" Message="Ask Maya to prepare a reviewable portfolio for this plan." /> }
+                            <div class="marketing-portfolio-grid">@foreach (var campaign in selectedPlan.Campaigns) { <article><div><strong>@campaign.CampaignName</strong><span class="marketing-status">@Friendly(campaign.CampaignLifecycleStatus)</span></div><p>@campaign.Purpose</p><small>@campaign.SegmentVersionIds.Count target segment@(campaign.SegmentVersionIds.Count == 1 ? "" : "s") · @(campaign.AllocatedBudget?.ToString("N0") ?? "No allocation") @campaign.BudgetCurrency</small><small>@campaign.PlanningStartsUtc?.ToLocalTime().ToString("d") → @campaign.EndsUtc?.ToLocalTime().ToString("d")</small><a href="@WithCompany($"/app/sales/campaigns/{campaign.CampaignId:D}")">Open campaign</a></article> }</div>
+                        </section>
+                        <section class="marketing-plan-section"><h3>Evidence</h3><p>@(selectedPlan.EvidenceReferences.Count == 0 ? "No evidence references recorded." : string.Join(" · ", selectedPlan.EvidenceReferences))</p>@if (selectedPlan.MissingEvidence.Count > 0) { <p class="marketing-warning">Needs evidence: @string.Join(" · ", selectedPlan.MissingEvidence)</p> }</section>
+                        @if (portfolioProposal is not null) { <section class="marketing-plan-proposal" aria-live="polite"><div><span class="vc-kicker">MAYA'S REVIEWABLE PROPOSAL</span><h3>@(portfolioProposal.Decision.Allowed ? "Campaign portfolio ready" : "Changes needed before drafts can be created")</h3><p>@portfolioProposal.Decision.Explanation</p></div>@foreach (var finding in portfolioProposal.Findings) { <p><strong>@finding.Label:</strong> @finding.Explanation</p> }@if (portfolioProposal.Decision.Allowed) { <button class="btn btn-primary" disabled="@isSaving" @onclick="CommitSelectedPlanPortfolioAsync">Create campaign drafts</button> }</section> }
+                    }
+                </article>
+                <aside class="vc-panel marketing-section marketing-daily-review"><span class="vc-kicker">MAYA DAILY REVIEW</span><h2>@(dailyReview?.OutcomeLabel ?? "No daily review yet")</h2><p>@(dailyReview?.Summary ?? "Maya will check strategy, plans, campaign coverage, readiness, budgets, dates, and approvals in the next daily run.")</p>@if (dailyReview is not null) { <h3>What Maya checked</h3><ul>@foreach (var item in dailyReview.CheckedEvidence) { <li>@item</li> }</ul>@if (dailyReview.Needs.Count > 0) { <h3>Needs found</h3><ul>@foreach (var need in dailyReview.Needs) { <li><strong>@need.Label:</strong> @need.Explanation</li> }</ul> }@if (dailyReview.Actions.Count > 0) { <h3>Actions and recommendations</h3><ul>@foreach (var action in dailyReview.Actions) { <li>@action</li> }</ul> }@if (dailyReview.Blockers.Count > 0) { <h3>Needs attention</h3><ul>@foreach (var blocker in dailyReview.Blockers) { <li>@Friendly(blocker)</li> }</ul> }@if (dailyReview.NextHumanAction is not null) { <strong>@dailyReview.NextHumanAction</strong> } }</aside>
             </section>
         }
         else if (activeTab == "Calendar")
@@ -177,7 +200,7 @@
             <section class="vc-panel marketing-section">
                 <div class="marketing-section__header"><div><span class="vc-kicker">SCHEDULE</span><h2>Marketing calendar</h2></div><a href="@WithCompany("/app/sales/campaigns")">Manage campaigns</a></div>
                 @if (dashboard.Calendar.Count == 0) { <MarketingEmpty Title="Calendar is empty" Message="Dated plans, campaigns, and campaign activities are combined here." /> }
-                <div class="marketing-calendar marketing-calendar--wide">@foreach (var item in dashboard.Calendar.OrderBy(x => x.StartsUtc)) { <article><time>@item.StartsUtc.ToLocalTime().ToString("dd MMM yyyy")</time><div><strong>@item.Name</strong><span>@item.Kind · @item.Status · ends @item.EndsUtc.ToLocalTime().ToString("dd MMM")</span></div></article> }</div>
+                <div class="marketing-calendar marketing-calendar--wide">@foreach (var item in dashboard.Calendar.OrderBy(x => x.StartsUtc)) { <article class="marketing-calendar__@item.Kind"><time>@item.StartsUtc.ToLocalTime().ToString("dd MMM yyyy")</time><div><strong>@item.Name</strong><span>@CalendarKind(item.Kind) · @Friendly(item.Status)@(item.IsSpan ? $" · through {item.EndsUtc.ToLocalTime():dd MMM}" : "")</span></div>@if (!string.IsNullOrWhiteSpace(item.NavigationTarget)) { <a href="@WithCompany(item.NavigationTarget)">Open</a> }</article> }</div>
             </section>
         }
         else if (activeTab == "Content")
@@ -319,8 +342,37 @@
         {
             <section class="marketing-workspace-grid">
                 <article class="vc-panel marketing-section marketing-workspace-hero">
-                    <span class="vc-kicker">ACTIVE DIRECTION</span>
-                    @if (strategies.Count == 0) { <MarketingEmpty Title="No Marketing strategy yet" Message="Create a versioned 4P and STP strategy grounded in approved customer segments and evidence." /> }
+                    <div class="marketing-section__header">
+                        <div><span class="vc-kicker">ACTIVE DIRECTION</span></div>
+                        @if ((resolvedCompanyId ?? CompanyId) is Guid strategyCompanyId && marketingAgentId is Guid strategyAgentId)
+                        {
+                            var strategyTargetId = strategies.FirstOrDefault(x => x.Status is "draft" or "rejected")?.Id;
+                            var strategyWorkshopUrl = strategyWorkshopDraft is null
+                                ? $"/agents/{strategyAgentId:D}/workshops/marketing_strategy?companyId={strategyCompanyId:D}{(strategyTargetId is Guid targetId ? $"&targetId={targetId:D}" : string.Empty)}"
+                                : StrategyWorkshopUrl(strategyWorkshopDraft);
+                            <a class="btn btn-outline-primary" href="@strategyWorkshopUrl">@(strategyWorkshopDraft is null ? "Define Market Strategy" : "Resume workshop")</a>
+                        }
+                    </div>
+                    @if (strategyWorkshopDraft is not null)
+                    {
+                        <section class="marketing-workshop-draft" aria-labelledby="strategy-workshop-draft-title">
+                            <header>
+                                <div><span class="vc-kicker">UNSAVED WORKSHOP DRAFT</span><h3 id="strategy-workshop-draft-title">@(StrategyDraftField("title") is { } title ? DisplayDraftValue(title.Value) : "Market strategy workshop")</h3><p>The discussion is preserved, but it has not yet been saved as a Marketing strategy. Confirm the required sections, then review and save the workshop.</p></div>
+                                <div class="marketing-workshop-draft__actions"><span class="marketing-status warning">@strategyWorkshopDraft.ReadyFieldCount of @strategyWorkshopDraft.RequiredFieldCount required fields confirmed</span><a class="btn btn-sm btn-primary" href="@StrategyWorkshopUrl(strategyWorkshopDraft)">Resume and finish</a></div>
+                            </header>
+                            <progress max="@strategyWorkshopDraft.RequiredFieldCount" value="@strategyWorkshopDraft.ReadyFieldCount" aria-label="Confirmed required workshop fields"></progress>
+                            <div class="marketing-workshop-draft__fields">
+                                @foreach (var field in strategyWorkshopDraft.Fields.Where(ShowDraftField))
+                                {
+                                    <details>
+                                        <summary><span><strong>@field.Label</strong><small>@Friendly(field.Status)</small></span><span>@DraftSummary(field.Value)</span></summary>
+                                        <p>@DisplayDraftValue(field.Value)</p>
+                                    </details>
+                                }
+                            </div>
+                        </section>
+                    }
+                    @if (strategies.Count == 0) { <MarketingEmpty Title="No saved Marketing strategy" Message="Finish the workshop above to save its confirmed conclusions as a reviewable Marketing strategy." /> }
                     else
                     {
                         var item = strategies.First();
@@ -352,29 +404,32 @@
                     </aside>
                 </section>
             }
-            @if (strategies.Any(x => x.Status is "approved" or "active") && salesCampaigns.Count > 0 && dashboard.Objectives.Count > 0)
-            {
-                <section class="marketing-two-column">
-                    <EditForm Model="decompositionForm" OnValidSubmit="PreviewDecompositionAsync" class="vc-panel marketing-form">
-                        <span class="vc-kicker">STRATEGY TO WORK</span><h2>Decompose into campaign work</h2>
-                        <label>Approved strategy<InputSelect @bind-Value="decompositionForm.StrategyId">@foreach (var item in strategies.Where(x => x.Status is "approved" or "active")) { <option value="@item.Id">@item.Title</option> }</InputSelect></label>
-                        <label>Existing Sales campaign<InputSelect @bind-Value="decompositionForm.CampaignId">@foreach (var item in salesCampaigns) { <option value="@item.Id">@item.Name · @Friendly(item.Status)</option> }</InputSelect></label>
-                        <label>Objective<InputSelect @bind-Value="decompositionForm.ObjectiveId">@foreach (var item in dashboard.Objectives) { <option value="@item.Id">@item.Name</option> }</InputSelect></label>
-                        <label>Plan name<InputText @bind-Value="decompositionForm.PlanName" /></label>
-                        <button class="btn btn-outline-primary" disabled="@isSaving">Preview tree</button>
-                    </EditForm>
-                    <aside class="vc-panel marketing-section" aria-live="polite"><span class="vc-kicker">TREE AND READINESS</span><h2>@(decompositionProposal?.PlanName ?? "No decomposition preview")</h2>
-                        @if (decompositionProposal is not null) { <div class="marketing-list">@foreach (var item in decompositionProposal.Activities) { <article><div><strong>@item.Name</strong><span>@Friendly(item.ActivityType) · @item.Channel · @item.StartsUtc.ToString("d")–@item.DueUtc.ToString("d")</span><small>@(item.DependsOnName is null ? "No dependency" : $"After {item.DependsOnName}") · @(item.ContentRequired ? "Content brief required" : "No content brief")</small></div></article> }</div><div class="marketing-evidence"><strong>Readiness</strong><span>@(decompositionProposal.ReadinessGaps.Count == 0 ? "Ready to commit as drafts" : string.Join("; ", decompositionProposal.ReadinessGaps))</span></div><button class="btn btn-primary" disabled="@(isSaving || !decompositionProposal.ReadyToCommit)" @onclick="CommitDecompositionAsync">Commit drafts</button> }
-                    </aside>
-                </section>
-            }
         }
         else if (activeTab == "Segments")
         {
             <section class="vc-panel marketing-section">
-                <div class="marketing-section__header"><div><span class="vc-kicker">TARGET SELECTION</span><h2>Strategic customer segments</h2></div><button class="btn btn-sm btn-outline-primary" disabled="@(marketingAgentId is null || isSaving)" @onclick="PrepareSegmentProposalAsync">Ask Maya</button></div>
+                <div class="marketing-section__header"><div><span class="vc-kicker">TARGET SELECTION</span><h2>Strategic customer segments</h2></div><div class="marketing-inline-actions">@if ((resolvedCompanyId ?? CompanyId) is Guid segmentCompanyId && marketingAgentId is Guid segmentAgentId) { <a class="btn btn-sm btn-outline-primary" href="@($"/agents/{segmentAgentId:D}/workshops/marketing_segment?companyId={segmentCompanyId:D}")">Discover segment with Maya</a> }<button class="btn btn-sm btn-outline-primary" disabled="@(marketingAgentId is null || isSaving)" @onclick="PrepareSegmentProposalAsync">Ask Maya</button></div></div>
                 <div class="marketing-form__row"><label>Proposed segment name<InputText @bind-Value="segmentProposalForm.Name" /></label><label>Analysis objective<InputText @bind-Value="segmentProposalForm.Objective" /></label></div>
-                @if (segments.Count == 0) { <MarketingEmpty Title="No strategic segments" Message="Define needs, behaviours, channel presence, price sensitivity, size, economics, evidence, and target rationale." /> }
+                @if (segmentWorkshopDraft is not null)
+                {
+                    <section class="marketing-workshop-draft" aria-labelledby="segment-workshop-draft-title">
+                        <header>
+                            <div><span class="vc-kicker">UNSAVED WORKSHOP DRAFT</span><h3 id="segment-workshop-draft-title">@(DraftField("name") is { } name ? DisplayDraftValue(name.Value) : "Segment workshop")</h3><p>The discussion is preserved, but it has not yet been saved as a Marketing segment. Confirm the required fields, then review and save the workshop.</p></div>
+                            <div class="marketing-workshop-draft__actions"><span class="marketing-status warning">@segmentWorkshopDraft.ReadyFieldCount of @segmentWorkshopDraft.RequiredFieldCount required fields confirmed</span><a class="btn btn-sm btn-primary" href="@SegmentWorkshopUrl(segmentWorkshopDraft)">Resume and finish</a></div>
+                        </header>
+                        <progress max="@segmentWorkshopDraft.RequiredFieldCount" value="@segmentWorkshopDraft.ReadyFieldCount" aria-label="Confirmed required workshop fields"></progress>
+                        <div class="marketing-workshop-draft__fields">
+                            @foreach (var field in segmentWorkshopDraft.Fields.Where(ShowDraftField))
+                            {
+                                <details>
+                                    <summary><span><strong>@field.Label</strong><small>@Friendly(field.Status)</small></span><span>@DraftSummary(field.Value)</span></summary>
+                                    <p>@DisplayDraftValue(field.Value)</p>
+                                </details>
+                            }
+                        </div>
+                    </section>
+                }
+                @if (segments.Count == 0) { <MarketingEmpty Title="No saved strategic segments" Message="Finish the workshop above to save its confirmed conclusions as a reusable Marketing segment." /> }
                 <div class="marketing-segment-grid">
                     @foreach (var segment in segments)
                     {
@@ -586,6 +641,8 @@
 
 @code {
     [SupplyParameterFromQuery(Name = "companyId")] public Guid? CompanyId { get; set; }
+    [SupplyParameterFromQuery(Name = "section")] public string? Section { get; set; }
+    [SupplyParameterFromQuery(Name = "planId")] public Guid? RequestedPlanId { get; set; }
     private readonly string[] tabs = ["Overview", "Strategy", "Segments", "Intelligence", "Objectives", "Plans", "Calendar", "Content", "Audiences", "Handoffs", "Experiments", "Channels", "Journeys", "Performance", "Operations"];
     private string activeTab = "Overview";
     private bool isLoading = true;
@@ -594,6 +651,11 @@
     private Guid? resolvedCompanyId;
     private Guid? marketingAgentId;
     private MarketingDashboardViewModel? dashboard;
+    private IReadOnlyList<MarketingPlanListItemViewModel> planPortfolio = [];
+    private MarketingPlanDetailViewModel? selectedPlan;
+    private MarketingDailyReviewViewModel? dailyReview;
+    private MarketingCampaignPortfolioProposalViewModel? portfolioProposal;
+    private PrepareMarketingCampaignPortfolioViewModel? pendingPortfolio;
     private RoleAgentAnalysisViewModel? analysis;
     private MarketingContentPreflightViewModel? contentPreflight;
     private GenerateMarketingContentVariantsResultViewModel? contentGenerationResult;
@@ -602,6 +664,8 @@
     private MarketingDecompositionProposalViewModel? decompositionProposal;
     private IReadOnlyList<OutboundCampaignSummaryResponse> salesCampaigns = [];
     private IReadOnlyList<MarketingSegmentViewModel> segments = [];
+    private GuidedWorkSessionViewModel? strategyWorkshopDraft;
+    private GuidedWorkSessionViewModel? segmentWorkshopDraft;
     private MarketingSegmentImpactViewModel? segmentImpact;
     private MarketingSegmentDecisionDataViewModel? segmentDecisionData;
     private MarketingSegmentProposalViewModel? segmentProposal;
@@ -648,12 +712,24 @@
             resolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
             if (resolvedCompanyId is not Guid companyId) throw new MarketingApiException("Choose a company before opening Marketing.");
             if (CompanyId is null) Navigation.NavigateTo($"/marketing?companyId={companyId:D}", true);
+            if (!string.IsNullOrWhiteSpace(Section) && tabs.FirstOrDefault(x => x.Equals(Section, StringComparison.OrdinalIgnoreCase)) is { } requestedTab) activeTab = requestedTab;
             var to = DateTime.UtcNow.AddDays(1);
             dashboard = await MarketingApi.GetDashboardAsync(companyId, to.AddDays(-30), to);
+            planPortfolio = await MarketingApi.GetPlanPortfolioAsync(companyId);
+            var requestedPlan = RequestedPlanId.HasValue && planPortfolio.Any(x => x.Id == RequestedPlanId.Value)
+                ? RequestedPlanId.Value
+                : planPortfolio.FirstOrDefault()?.Id;
+            if (selectedPlan is null || !planPortfolio.Any(x => x.Id == selectedPlan.Summary.Id) || RequestedPlanId.HasValue)
+                selectedPlan = requestedPlan.HasValue ? await MarketingApi.GetPlanPortfolioAsync(companyId, requestedPlan.Value) : null;
+            dailyReview = await MarketingApi.GetDailyReviewAsync(companyId, DateTime.UtcNow);
             if (contentGenerationForm.BriefId == Guid.Empty) contentGenerationForm.BriefId = dashboard.Content.FirstOrDefault(x => x.Status.Equals("draft", StringComparison.OrdinalIgnoreCase))?.Id ?? Guid.Empty;
             if (creativeForm.BriefId == Guid.Empty) creativeForm.BriefId = dashboard.Content.FirstOrDefault(x => x.Status is "submitted" or "approved")?.Id ?? Guid.Empty;
             strategies = await MarketingApi.GetStrategiesAsync(companyId);
             segments = await MarketingApi.GetSegmentsAsync(companyId);
+            var strategyWorkshops = await GuidedWorkApi.ListAsync(companyId, artifactType: "marketing_strategy");
+            strategyWorkshopDraft = strategyWorkshops.Items.FirstOrDefault(x => x.Status is "active" or "review_ready");
+            var segmentWorkshops = await GuidedWorkApi.ListAsync(companyId, artifactType: "marketing_segment");
+            segmentWorkshopDraft = segmentWorkshops.Items.FirstOrDefault(x => x.Status is "active" or "review_ready");
             if (strategyProposalForm.SegmentVersionId == Guid.Empty) strategyProposalForm.SegmentVersionId = segments.SelectMany(x => x.Versions).FirstOrDefault(x => x.Status is "approved" or "active")?.Id ?? Guid.Empty;
             salesCampaigns = await SalesApi.ListCampaignsAsync(companyId);
             decompositionForm.StrategyId = decompositionForm.StrategyId == Guid.Empty ? strategies.FirstOrDefault(x => x.Status is "approved" or "active")?.Id ?? Guid.Empty : decompositionForm.StrategyId;
@@ -834,6 +910,89 @@
             qualificationForm.FreshnessDays, qualificationForm.RequiresCustomerCompany, DateTime.UtcNow)));
     private Task ActivateObjectiveAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivateObjectiveAsync(companyId, id));
     private Task ActivatePlanAsync(Guid id) => ExecuteAndReloadAsync(async companyId => await MarketingApi.ActivatePlanAsync(companyId, id));
+
+    private async Task SelectPlanAsync(Guid planId)
+    {
+        if (resolvedCompanyId is not Guid companyId) return;
+        portfolioProposal = null; pendingPortfolio = null;
+        selectedPlan = await MarketingApi.GetPlanPortfolioAsync(companyId, planId);
+    }
+
+    private async Task SubmitSelectedPlanAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || selectedPlan is null) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            selectedPlan = await MarketingApi.SubmitPlanForReviewAsync(companyId, selectedPlan.Summary.Id, selectedPlan.Summary.Version);
+            await LoadAsync();
+        }
+        catch (Exception ex) { errorMessage = SafeMessage(ex); }
+        finally { isSaving = false; }
+    }
+
+    private async Task ActivateSelectedPlanAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || selectedPlan is null) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            selectedPlan = await MarketingApi.ActivateGroundedPlanAsync(companyId, selectedPlan.Summary.Id, selectedPlan.Summary.Version);
+            await LoadAsync();
+        }
+        catch (Exception ex) { errorMessage = SafeMessage(ex); }
+        finally { isSaving = false; }
+    }
+
+    private async Task PrepareSelectedPlanPortfolioAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || selectedPlan is null || selectedPlan.Objectives.FirstOrDefault() is not { } objective || selectedPlan.Segments.Count == 0) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            var objectiveSource = dashboard?.Objectives.FirstOrDefault(x => x.Id == objective.Id);
+            var starts = selectedPlan.Summary.StartsUtc > DateTime.UtcNow ? selectedPlan.Summary.StartsUtc : DateTime.UtcNow.Date.AddDays(7);
+            var launch = starts.AddDays(14); var ends = selectedPlan.Summary.EndsUtc;
+            if (launch >= ends) launch = starts.AddDays(Math.Max(1, (ends - starts).Days / 2));
+            var allocation = selectedPlan.Summary.RemainingBudget is > 0 ? selectedPlan.Summary.RemainingBudget : null;
+            var item = new MarketingCampaignPortfolioItemViewModel(
+                $"{selectedPlan.Summary.Name} · {objective.Name}", $"Advance {objective.Name} for the selected plan audiences.", objective.Id,
+                $"Contribute to {objective.Name}.", selectedPlan.Segments.Select(x => x.SegmentVersionId).ToArray(), allocation,
+                selectedPlan.Summary.BudgetCurrency, selectedPlan.Campaigns.Count + 1, "lead_generation", "marketing_segment",
+                objectiveSource?.TargetValue ?? 1m, objectiveSource?.Unit ?? "result", ends, starts, launch, ends.AddDays(-1), ends,
+                "UTC", CultureInfo.CurrentUICulture.TwoLetterISOLanguageName, ["internal"], "Grounded in the approved plan evidence",
+                ["Prepare campaign assets", "Review campaign readiness"], ["Campaign message and channel brief"],
+                string.Join("; ", selectedPlan.Segments.Select(x => x.SegmentName)), "Measure the linked plan objective before and after launch.",
+                selectedPlan.EvidenceReferences, selectedPlan.MissingEvidence);
+            pendingPortfolio = new(selectedPlan.Summary.Id, selectedPlan.Summary.Version, [item],
+                $"maya-plan-portfolio:{selectedPlan.Summary.Id:N}:v{selectedPlan.Summary.Version}", marketingAgentId);
+            portfolioProposal = await MarketingApi.PrepareCampaignPortfolioAsync(companyId, selectedPlan.Summary.Id, pendingPortfolio);
+        }
+        catch (Exception ex) { errorMessage = SafeMessage(ex); }
+        finally { isSaving = false; }
+    }
+
+    private async Task CommitSelectedPlanPortfolioAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || selectedPlan is null || pendingPortfolio is null) return;
+        isSaving = true; errorMessage = null;
+        try
+        {
+            await MarketingApi.CommitCampaignPortfolioAsync(companyId, selectedPlan.Summary.Id, pendingPortfolio);
+            portfolioProposal = null; pendingPortfolio = null;
+            await LoadAsync();
+        }
+        catch (Exception ex) { errorMessage = SafeMessage(ex); }
+        finally { isSaving = false; }
+    }
+
+    private static string CalendarKind(string kind) => kind switch
+    {
+        "plan_span" => "Plan period", "campaign_planning" => "Campaign planning", "campaign_launch" => "Campaign launch",
+        "campaign_review" => "Campaign review", "campaign_end" => "Campaign end", "activity" => "Campaign activity",
+        "content_due" => "Content due", _ => Friendly(kind)
+    };
+    private static string SafeMessage(Exception ex) => ex is MarketingApiException ? ex.Message : "Marketing could not complete that request. Refresh and try again.";
     private Task SubmitContentAsync(Guid id) => ExecuteAndReloadAsync(companyId => MarketingApi.SubmitContentAsync(companyId, id));
     private async Task PreflightContentAsync(Guid id)
     {
@@ -934,7 +1093,20 @@
     private MarketingCreativeAssetScanViewModel? LatestScan(Guid assetId) => creativeScans.GetValueOrDefault(assetId);
     private Task RetireCreativeAsync(Guid assetId) => ExecuteAndReloadAsync(async companyId => await MarketingApi.RetireCreativeAssetAsync(companyId, assetId));
 
-    private string WithCompany(string path) => resolvedCompanyId is Guid id ? $"{path}?companyId={id:D}" : path;
+    private string WithCompany(string path) => resolvedCompanyId is Guid id
+        ? $"{path}{(path.Contains("?", StringComparison.Ordinal) ? '&' : '?')}companyId={id:D}"
+        : path;
+    private static string StrategyWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_strategy?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";
+    private string SegmentWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_segment?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";
+    private GuidedDraftFieldViewModel? StrategyDraftField(string path) => strategyWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+    private GuidedDraftFieldViewModel? DraftField(string path) => segmentWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+    private static bool ShowDraftField(GuidedDraftFieldViewModel field) => field.Value is not null && !field.Path.Equals("workshop_insights", StringComparison.OrdinalIgnoreCase);
+    private static string DisplayDraftValue(System.Text.Json.Nodes.JsonNode? value) => value is System.Text.Json.Nodes.JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : value?.ToJsonString() ?? "Not yet recorded";
+    private static string DraftSummary(System.Text.Json.Nodes.JsonNode? value)
+    {
+        var text = DisplayDraftValue(value).ReplaceLineEndings(" ");
+        return text.Length > 120 ? text[..120] + "…" : text;
+    }
     private void ShowObjectives() => activeTab = "Objectives";
     private static string FriendlyMetric(string value) => value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal);
     private static string MetricValue(MarketingMetricViewModel metric) => metric.Value is decimal value ? $"{value:N1} {metric.Unit}".Trim() : "No data";

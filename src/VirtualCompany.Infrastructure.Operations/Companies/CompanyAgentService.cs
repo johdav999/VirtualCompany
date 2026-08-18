@@ -397,19 +397,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
 
         communicationProfile["briefing"] = briefing;
         var tools = CloneNodes(agent.Tools);
-        AddJsonArrayValue(tools, "allowed", "knowledge.search");
-        RemoveJsonArrayValue(tools, "denied", "knowledge.search");
-        AddJsonArrayValue(tools, "actions", ToolActionType.Read.ToStorageValue());
-        AddJsonArrayValue(tools, "actions", ToolActionType.Recommend.ToStorageValue());
-
         var scopes = CloneNodes(agent.Scopes);
-        AddJsonArrayValue(scopes, "read", "knowledge");
-        AddJsonArrayValue(scopes, "recommend", "knowledge");
-        foreach (var category in AgentBriefingCategories.All)
-        {
-            AddJsonArrayValue(scopes, "read", category);
-        }
-
         var changed = agent.UpdateOperatingProfile(
             agent.RoleBrief,
             agent.Status,

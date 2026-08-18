@@ -88,6 +88,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         MarketingDefinition(MarketingToolIds.SearchApprovedKnowledge, ToolActionType.Read, "knowledgeResults"),
         MarketingDefinition(MarketingToolIds.ReadSegments, ToolActionType.Read, "segments"),
         MarketingDefinition(MarketingToolIds.ReadSegmentEvidence, ToolActionType.Read, "segmentEvidence"),
+        MarketingDefinition(MarketingToolIds.ReadStrategies, ToolActionType.Read, "strategies"),
+        MarketingDefinition(MarketingToolIds.ReadPlans, ToolActionType.Read, "plans"),
+        MarketingDefinition(MarketingToolIds.ReadPlanCoverage, ToolActionType.Read, "planCoverage"),
+        MarketingDefinition(MarketingToolIds.ReadCampaignReadiness, ToolActionType.Read, "campaignReadiness"),
         MarketingDefinition(MarketingToolIds.PreparePlan, ToolActionType.Recommend, "planProposal"),
         MarketingDefinition(MarketingToolIds.AnalyzeAudience, ToolActionType.Recommend, "audienceAnalysis"),
         MarketingDefinition(MarketingToolIds.PrepareContentBrief, ToolActionType.Recommend, "contentBrief"),
@@ -97,7 +101,14 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         MarketingDefinition(MarketingToolIds.PrepareOperatingReview, ToolActionType.Recommend, "operatingReview"),
         MarketingDefinition(MarketingToolIds.PrepareSegmentation, ToolActionType.Recommend, "segmentationProposal"),
         MarketingDefinition(MarketingToolIds.RecommendTargetSegments, ToolActionType.Recommend, "targetRecommendation"),
-        MarketingDefinition(MarketingToolIds.AssessSegmentStrategyImpact, ToolActionType.Recommend, "strategyImpact")
+        MarketingDefinition(MarketingToolIds.AssessSegmentStrategyImpact, ToolActionType.Recommend, "strategyImpact"),
+        MarketingDefinition(MarketingToolIds.PrepareCampaignPortfolio, ToolActionType.Recommend, "campaignPortfolio"),
+        MarketingDefinition(MarketingToolIds.AssessPlanCoverage, ToolActionType.Recommend, "planCoverage"),
+        MarketingDefinition(MarketingToolIds.CreatePlanDraft, ToolActionType.Execute, "plan"),
+        MarketingDefinition(MarketingToolIds.CreateCampaignDrafts, ToolActionType.Execute, "campaigns"),
+        MarketingDefinition(MarketingToolIds.PopulateCampaignDraft, ToolActionType.Execute, "campaign"),
+        MarketingDefinition(MarketingToolIds.SubmitPlanForReview, ToolActionType.Execute, "plan"),
+        MarketingDefinition(MarketingToolIds.SubmitCampaignForReadiness, ToolActionType.Execute, "campaign")
     ];
 
     private static ToolDefinitionManifest MarketingDefinition(string name, ToolActionType action, string property) =>

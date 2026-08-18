@@ -100,7 +100,7 @@ public sealed class MarketingStrategyAndOperatingLoopTests
     }
 
     [Fact]
-    public void MarketingToolRegistry_ContainsReadAndRecommendToolsButNoExecuteTools()
+    public void MarketingToolRegistry_Separates_read_recommend_and_governed_execute_tools()
     {
         var registry = new StaticCompanyToolRegistry();
         foreach (var tool in MarketingToolIds.ReadTools.Concat(MarketingToolIds.RecommendTools))
@@ -108,7 +108,10 @@ public sealed class MarketingStrategyAndOperatingLoopTests
 
         var definitions = registry.ListToolDefinitions().Where(x => x.ToolName.StartsWith("marketing.")).ToArray();
         Assert.NotEmpty(definitions);
-        Assert.DoesNotContain(definitions, x => x.ActionType == ToolActionType.Execute);
+        Assert.Contains(definitions, x => x.ToolName == MarketingToolIds.CreatePlanDraft && x.ActionType == ToolActionType.Execute);
+        Assert.Contains(definitions, x => x.ToolName == MarketingToolIds.CreateCampaignDrafts && x.ActionType == ToolActionType.Execute);
+        Assert.DoesNotContain(definitions, x => MarketingToolIds.ReadTools.Contains(x.ToolName) && x.ActionType != ToolActionType.Read);
+        Assert.DoesNotContain(definitions, x => MarketingToolIds.RecommendTools.Contains(x.ToolName) && x.ActionType != ToolActionType.Recommend);
     }
 
     [Fact]

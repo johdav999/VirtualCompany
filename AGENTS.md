@@ -79,6 +79,19 @@ When creating implementation prompts, prompt packs, phased delivery prompts, or 
 - For external side effects, explicitly require approval boundaries where applicable, outbox/background execution, idempotency, retries, reconciliation, and safe operator-visible failures.
 - Do not combine unrelated outcomes merely to reduce the number of prompts. Do not create prompts that only produce scaffolding, analysis, or a plan when implementation is requested.
 
+## Sandbox efficiency
+
+For repository-local reads and searches, use the normal workspace sandbox.
+Do not request escalated permissions for `rg`, `Get-Content`, `git status`,
+`git diff`, or `git log`.
+
+For repository-local builds and focused tests, try the normal workspace
+sandbox first. Escalate only after a concrete sandbox failure and state the
+specific boundary requiring it.
+
+Reserve escalation for process lifecycle, databases, network or external
+services, writes outside the workspace, or a verified sandbox limitation.
+
 <!-- design-addin-instructions:start -->
 # Design Add-in Workspace Instructions
 

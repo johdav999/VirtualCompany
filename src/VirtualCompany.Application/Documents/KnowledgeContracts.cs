@@ -33,7 +33,8 @@ public sealed record CompanyKnowledgeSemanticSearchQuery(
     Guid CompanyId,
     string QueryText,
     int TopN = 5,
-    CompanyKnowledgeAccessContext? AccessContext = null);
+    CompanyKnowledgeAccessContext? AccessContext = null,
+    IReadOnlyList<Guid>? AllowedDocumentIds = null);
 
 public sealed record CompanyKnowledgeSourceDocumentDto(
     Guid DocumentId,
