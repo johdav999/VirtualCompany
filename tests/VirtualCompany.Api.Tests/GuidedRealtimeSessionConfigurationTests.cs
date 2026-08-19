@@ -7,15 +7,30 @@ namespace VirtualCompany.Api.Tests;
 public sealed class GuidedRealtimeSessionConfigurationTests
 {
     [Fact]
-    public void Audio_input_uses_fast_semantic_turn_detection_without_automatic_barge_in()
+    public void Audio_input_uses_sensitive_server_turn_detection_without_automatic_barge_in()
     {
         var input = GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions());
 
-        Assert.Equal("far_field", input["noise_reduction"]!["type"]!.GetValue<string>());
-        Assert.Equal("semantic_vad", input["turn_detection"]!["type"]!.GetValue<string>());
-        Assert.Equal("high", input["turn_detection"]!["eagerness"]!.GetValue<string>());
+        Assert.Equal("near_field", input["noise_reduction"]!["type"]!.GetValue<string>());
+        Assert.Equal("server_vad", input["turn_detection"]!["type"]!.GetValue<string>());
+        Assert.Equal(0.15, input["turn_detection"]!["threshold"]!.GetValue<double>());
+        Assert.Equal(300, input["turn_detection"]!["prefix_padding_ms"]!.GetValue<int>());
+        Assert.Equal(650, input["turn_detection"]!["silence_duration_ms"]!.GetValue<int>());
         Assert.True(input["turn_detection"]!["create_response"]!.GetValue<bool>());
         Assert.False(input["turn_detection"]!["interrupt_response"]!.GetValue<bool>());
+    }
+
+    [Fact]
+    public void Semantic_turn_detection_remains_an_explicit_supported_option()
+    {
+        var input = GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions
+        {
+            RealtimeTurnDetection = "semantic_vad",
+            RealtimeTurnEagerness = "medium"
+        });
+
+        Assert.Equal("semantic_vad", input["turn_detection"]!["type"]!.GetValue<string>());
+        Assert.Equal("medium", input["turn_detection"]!["eagerness"]!.GetValue<string>());
     }
 
     [Fact]
@@ -24,11 +39,23 @@ public sealed class GuidedRealtimeSessionConfigurationTests
         var input = GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions
         {
             RealtimeTurnEagerness = "unexpected",
+            RealtimeTurnDetection = "unexpected",
             RealtimeNoiseReduction = "unexpected"
         });
 
-        Assert.Equal("high", input["turn_detection"]!["eagerness"]!.GetValue<string>());
-        Assert.Equal("far_field", input["noise_reduction"]!["type"]!.GetValue<string>());
+        Assert.Equal("server_vad", input["turn_detection"]!["type"]!.GetValue<string>());
+        Assert.Equal("near_field", input["noise_reduction"]!["type"]!.GetValue<string>());
+    }
+
+    [Theory]
+    [InlineData(0.01, 0.05)]
+    [InlineData(0.2, 0.2)]
+    [InlineData(2, 1)]
+    public void Server_vad_threshold_is_configurable_and_bounded(double configured,double expected)
+    {
+        var input=GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions { RealtimeVadThreshold=configured });
+
+        Assert.Equal(expected,input["turn_detection"]!["threshold"]!.GetValue<double>());
     }
 
     [Fact]

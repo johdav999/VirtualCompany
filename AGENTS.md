@@ -100,3 +100,36 @@ services, writes outside the workspace, or a verified sandbox limitation.
 - Always include and follow `production-implementation.md` in every prompt.
 - Treat these generated instruction files as project context. If they conflict with explicit user instructions, follow the user and note the conflict.
 <!-- design-addin-instructions:end -->
+
+## Execution Discipline
+
+For large implementation tasks, use the following default workflow:
+
+1. Perform one broad repository inspection.
+2. Identify the relevant files and implementation boundaries.
+3. Implement the requested change in one coherent pass.
+4. Run focused tests for the affected area.
+5. Run one full build or broader validation when appropriate.
+
+Do not repeat repository-wide searches, unchanged test runs, or full builds unless:
+
+- new evidence changes the working diagnosis
+- implementation changes invalidate earlier results
+- a test or build failure requires another investigation
+- final verification requires rerunning the command
+
+Quality and correctness remain the stopping criteria. These limits prevent redundant work; they must not be used to leave required implementation or verification incomplete.
+
+## Repository Inspection
+
+Use `rg` or `rg --files` for the initial repository scan.
+
+Batch related searches and file reads whenever practical:
+
+- gather relevant paths with one targeted search
+- search for related symbols or patterns together
+- read related files in the same inspection step
+- avoid reopening unchanged files
+- avoid many small searches when one bounded query can provide the same evidence
+
+Prefer targeted follow-up searches after the initial scan. Repeat broad inspection only when new evidence shows that the original scope was incomplete.

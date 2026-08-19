@@ -130,7 +130,7 @@ public sealed partial class MarketingOperationsService
         if (existingId.HasValue) return (await GetPlanPortfolioAsync(companyId, existingId.Value, ct))!;
         var decision = await AssessPlanReadinessAsync(companyId, r, ct);
         if (!decision.Allowed) throw new InvalidOperationException($"{decision.ReasonCode}: {decision.Explanation}");
-        await using var tx = await _db.Database.BeginTransactionAsync(ct);
+        await using var tx = _db.Database.CurrentTransaction is null ? await _db.Database.BeginTransactionAsync(ct) : null;
         var plan = new MarketingPlan(Guid.NewGuid(), companyId, r.Name, r.Summary, r.StartsUtc, r.EndsUtc, r.PlannedBudget,
             r.BudgetCurrency, userId, r.OwnerAgentId, r.IdempotencyKey, r.StrategyId, r.ExpectedStrategyVersion, r.Rationale,
             JsonSerializer.Serialize(r.EvidenceReferences), JsonSerializer.Serialize(r.MissingEvidence));
@@ -140,7 +140,8 @@ public sealed partial class MarketingOperationsService
         AddPlanAudit(companyId, userId, "marketing.plan.created", plan.Id, "A strategy-grounded Marketing plan draft was created.", r.EvidenceReferences,
             new Dictionary<string, string?> { ["strategyId"] = r.StrategyId.ToString("D"), ["strategyVersion"] = r.ExpectedStrategyVersion.ToString(), ["planVersion"] = plan.Version.ToString(), ["idempotencyKey"] = r.IdempotencyKey },
             JsonSerializer.Serialize(new { objectives = r.ObjectiveIds, segments = r.Segments.Select(x => new { x.SegmentVersionId, x.Role, x.Priority }), r.PlannedBudget, r.BudgetCurrency }), r.OwnerAgentId == userId);
-        await _db.SaveChangesAsync(ct); await tx.CommitAsync(ct);
+        await _db.SaveChangesAsync(ct);
+        if (tx is not null) await tx.CommitAsync(ct);
         return (await GetPlanPortfolioAsync(companyId, plan.Id, ct))!;
     }
 

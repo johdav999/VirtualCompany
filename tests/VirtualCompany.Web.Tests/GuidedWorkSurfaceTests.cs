@@ -57,6 +57,25 @@ public sealed class GuidedWorkSurfaceTests
         Assert.Contains("remote_audio_playing", script, StringComparison.Ordinal);
         Assert.Contains("response_audio_started", script, StringComparison.Ordinal);
         Assert.Contains("provider_error", script, StringComparison.Ordinal);
+        Assert.Contains("microphone_track_ready", script, StringComparison.Ordinal);
+        Assert.Contains("microphone_transport", script, StringComparison.Ordinal);
+        Assert.Contains("bytesSent", script, StringComparison.Ordinal);
+        Assert.Contains("packetsSent", script, StringComparison.Ordinal);
+        Assert.Contains("totalAudioEnergy", script, StringComparison.Ordinal);
+        Assert.Contains("OnVoiceDiagnostics", script, StringComparison.Ordinal);
+        Assert.Contains("signalState", script, StringComparison.Ordinal);
+        Assert.Contains("enumerateDevices", script, StringComparison.Ordinal);
+        Assert.Contains("export async function changeMicrophone", script, StringComparison.Ordinal);
+        Assert.Contains("sender.replaceTrack(replacementTrack)", script, StringComparison.Ordinal);
+        Assert.Contains("previous.getTracks().forEach(track => track.stop())", script, StringComparison.Ordinal);
+        Assert.Contains("guided-microphone-picker", page, StringComparison.Ordinal);
+        Assert.Contains("ChangeMicrophoneAsync", page, StringComparison.Ordinal);
+        Assert.Contains("NoMicrophoneSignal", page, StringComparison.Ordinal);
+        Assert.Contains("guided-microphone-warning", css, StringComparison.Ordinal);
+        Assert.Contains("noiseSuppression: false", script, StringComparison.Ordinal);
+        Assert.Contains("waitForIceGatheringComplete", script, StringComparison.Ordinal);
+        Assert.Contains("pc.localDescription?.sdp ?? offer.sdp", script, StringComparison.Ordinal);
+        Assert.Contains("window.clearInterval(current.inputDiagnosticsTimer)", script, StringComparison.Ordinal);
         Assert.Contains("outputAudioActive", script, StringComparison.Ordinal);
         Assert.Contains("ensureRemoteAudioPlayback", script, StringComparison.Ordinal);
         Assert.Contains("response_interrupt_ignored", script, StringComparison.Ordinal);
@@ -107,6 +126,7 @@ public sealed class GuidedWorkSurfaceTests
     [Theory]
     [InlineData("Marketing/MarketingDashboard.razor", "marketing_strategy")]
     [InlineData("Marketing/MarketingDashboard.razor", "marketing_segment")]
+    [InlineData("Marketing/MarketingDashboard.razor", "marketing_plan")]
     [InlineData("Finance/FinancePage.razor", "finance_budget")]
     [InlineData("Sales/SalesCampaigns.razor", "sales_campaign_plan")]
     [InlineData("Support/SupportSlaSettings.razor", "support_sla_policy")]
@@ -198,6 +218,29 @@ public sealed class GuidedWorkSurfaceTests
     }
 
     [Fact]
+    public void Cancelled_workshop_explains_the_terminal_state_and_can_start_a_fresh_voice_capable_session()
+    {
+        var source = Read("src", "VirtualCompany.Web", "Pages", "GuidedWorkSession.razor");
+
+        Assert.Contains("session.Status is not \"completed\" and not \"cancelled\"", source, StringComparison.Ordinal);
+        Assert.Contains("else if (session.Status == \"cancelled\")", source, StringComparison.Ordinal);
+        Assert.Contains("Text[\"CancelledHelp\"]", source, StringComparison.Ordinal);
+        Assert.Contains("@onclick=\"RestartAsync\"", source, StringComparison.Ordinal);
+        Assert.Contains("Api.StartAsync(companyId,AgentId,ArtifactType,session.TargetArtifactId)", source, StringComparison.Ordinal);
+        Assert.Contains("forceLoad:true", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Workshop_does_not_restart_itself_while_navigating_to_another_page()
+    {
+        var source = Read("src", "VirtualCompany.Web", "Pages", "GuidedWorkSession.razor");
+
+        Assert.Contains("IsCurrentWorkshopRoute() ? LoadAsync() : Task.CompletedTask", source, StringComparison.Ordinal);
+        Assert.Contains("Navigation.ToBaseRelativePath(Navigation.Uri)", source, StringComparison.Ordinal);
+        Assert.Contains("agents/{AgentId:D}/workshops/{Uri.EscapeDataString(ArtifactType)}", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Interactive_pages_expose_connection_loss_and_a_browser_side_reload_action()
     {
         var app = Read("src", "VirtualCompany.Web", "App.razor");
@@ -247,6 +290,9 @@ public sealed class GuidedWorkSurfaceTests
         Assert.Contains("setInputSuspended(state, true, \"response.created\")",script,StringComparison.Ordinal);
         Assert.Contains("setInputSuspended(state, false, \"response.done\")",script,StringComparison.Ordinal);
         Assert.Contains("setInputSuspended(current, false, \"explicit_interrupt\")",script,StringComparison.Ordinal);
+        Assert.Contains("setInputSuspended(state, false, \"provider_error\")",script,StringComparison.Ordinal);
+        Assert.Contains("track.enabled = !state.muted",script,StringComparison.Ordinal);
+        Assert.DoesNotContain("track.enabled = !state.muted && !state.inputSuspended",script,StringComparison.Ordinal);
         Assert.Contains("item?.type === \"function_call\"",script,StringComparison.Ordinal);
         Assert.Contains("if (!state.toolContinuationPending)",script,StringComparison.Ordinal);
         Assert.Contains("await flushAgentTranscript(state, false)",script,StringComparison.Ordinal);

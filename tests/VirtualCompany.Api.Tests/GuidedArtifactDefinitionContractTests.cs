@@ -36,7 +36,7 @@ public sealed class GuidedArtifactDefinitionContractTests
     [Fact]
     public void Supported_artifact_catalog_is_complete()
     {
-        Assert.Equal(new[]{GuidedArtifactTypes.AgentOperatingBrief,GuidedArtifactTypes.CompanyOnboarding,GuidedArtifactTypes.FinanceBudget,GuidedArtifactTypes.MarketingSegment,GuidedArtifactTypes.MarketingStrategy,GuidedArtifactTypes.SalesCampaignPlan,GuidedArtifactTypes.SupportSlaPolicy},Definitions().Select(x=>x.ArtifactType).Order(StringComparer.Ordinal).ToArray());
+        Assert.Equal(new[]{GuidedArtifactTypes.AgentOperatingBrief,GuidedArtifactTypes.CompanyOnboarding,GuidedArtifactTypes.FinanceBudget,GuidedArtifactTypes.MarketingPlan,GuidedArtifactTypes.MarketingSegment,GuidedArtifactTypes.MarketingStrategy,GuidedArtifactTypes.SalesCampaignPlan,GuidedArtifactTypes.SupportSlaPolicy},Definitions().Select(x=>x.ArtifactType).Order(StringComparer.Ordinal).ToArray());
     }
 
     [Fact]
@@ -56,6 +56,23 @@ public sealed class GuidedArtifactDefinitionContractTests
         Assert.Contains("implementation_roadmap", paths);
         Assert.Contains("success_metrics", paths);
         Assert.Contains("governance", paths);
+    }
+
+    [Fact]
+    public void Marketing_plan_workshop_covers_grounding_audiences_budget_evidence_and_governed_commit()
+    {
+        var definition = new MarketingPlanGuidedArtifactDefinition(null!, null!, null!);
+        var paths = definition.Fields.Select(x => x.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal("1.0", definition.SchemaVersion);
+        Assert.True(definition.Capabilities.SupportsDocumentAttachments);
+        Assert.Contains("strategy_id", paths);
+        Assert.Contains("strategy_version", paths);
+        Assert.Contains("objective_ids", paths);
+        Assert.Contains("primary_segment_version_id", paths);
+        Assert.Contains("planned_budget", paths);
+        Assert.Contains("evidence_references", paths);
+        Assert.Contains("missing_evidence", paths);
     }
 
     [Fact]
@@ -92,6 +109,7 @@ public sealed class GuidedArtifactDefinitionContractTests
         new CompanyOnboardingGuidedArtifactDefinition(null!,null!,null!),
         new MarketingStrategyGuidedArtifactDefinition(null!,null!),
         new MarketingSegmentGuidedArtifactDefinition(null!,null!),
+        new MarketingPlanGuidedArtifactDefinition(null!,null!,null!),
         new FinanceBudgetGuidedArtifactDefinition(null!,null!,null!),
         new SalesCampaignGuidedArtifactDefinition(null!,null!,null!),
         new SupportSlaGuidedArtifactDefinition(null!,null!)

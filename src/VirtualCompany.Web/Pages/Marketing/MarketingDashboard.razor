@@ -160,7 +160,56 @@
         {
             <section class="marketing-plan-workspace">
                 <div class="vc-panel marketing-section marketing-plan-list">
-                    <div class="marketing-section__header"><div><span class="vc-kicker">PLANS</span><h2>Marketing plans</h2></div></div>
+                    <div class="marketing-section__header">
+                        <div><span class="vc-kicker">PLANS</span><h2>Marketing plans</h2></div>
+                        <div class="marketing-inline-actions">
+                            @if ((resolvedCompanyId ?? CompanyId) is Guid workshopCompanyId && marketingAgentId is Guid workshopAgentId)
+                            {
+                                var planWorkshopUrl = planWorkshopDraft is null
+                                    ? $"/agents/{workshopAgentId:D}/workshops/marketing_plan?companyId={workshopCompanyId:D}"
+                                    : PlanWorkshopUrl(planWorkshopDraft);
+                                <a class="btn btn-sm btn-primary" href="@planWorkshopUrl">@(planWorkshopDraft is null ? "Create plan with Maya" : "Resume workshop")</a>
+                            }
+                            <button class="btn btn-sm btn-outline-primary" @onclick="OpenPlanForm">Create directly</button>
+                        </div>
+                    </div>
+                    @if (planWorkshopDraft is not null)
+                    {
+                        <section class="marketing-workshop-draft" aria-labelledby="plan-workshop-draft-title">
+                            <header>
+                                <div><span class="vc-kicker">UNSAVED WORKSHOP DRAFT</span><h3 id="plan-workshop-draft-title">@(PlanDraftField("name") is { } name ? DisplayDraftValue(name.Value) : "Marketing plan workshop")</h3><p>The discussion is preserved, but it has not yet been saved as a Marketing plan. Confirm the required fields, then review and save the workshop.</p></div>
+                                <div class="marketing-workshop-draft__actions"><span class="marketing-status warning">@planWorkshopDraft.ReadyFieldCount of @planWorkshopDraft.RequiredFieldCount required fields confirmed</span><a class="btn btn-sm btn-primary" href="@PlanWorkshopUrl(planWorkshopDraft)">Resume and finish</a></div>
+                            </header>
+                            <progress max="@planWorkshopDraft.RequiredFieldCount" value="@planWorkshopDraft.ReadyFieldCount" aria-label="Confirmed required workshop fields"></progress>
+                            <div class="marketing-workshop-draft__fields">
+                                @foreach (var field in planWorkshopDraft.Fields.Where(ShowDraftField))
+                                {
+                                    <details>
+                                        <summary><span><strong>@field.Label</strong><small>@Friendly(field.Status)</small></span><span>@DraftSummary(field.Value)</span></summary>
+                                        <p>@DisplayDraftValue(field.Value)</p>
+                                    </details>
+                                }
+                            </div>
+                        </section>
+                    }
+                    @if (showPlanForm)
+                    {
+                        <EditForm Model="planForm" OnValidSubmit="CreateGroundedPlanAsync" class="marketing-plan-create-form">
+                            <h3>Create marketing plan</h3>
+                            <label>Name<InputText @bind-Value="planForm.Name" placeholder="Quarterly growth plan" /></label>
+                            <label>Summary<InputTextArea @bind-Value="planForm.Summary" placeholder="What this plan should achieve" /></label>
+                            <label>Approved strategy<InputSelect @bind-Value="planForm.StrategyId"><option value="@Guid.Empty">Choose a strategy</option>@foreach (var strategy in AvailablePlanStrategies) { <option value="@strategy.Id">@strategy.Title · version @strategy.Version</option> }</InputSelect></label>
+                            <label>Active objective<InputSelect @bind-Value="planForm.ObjectiveId"><option value="@Guid.Empty">Choose an objective</option>@foreach (var objective in AvailablePlanObjectives) { <option value="@objective.Id">@objective.Name</option> }</InputSelect></label>
+                            <label>Primary audience<InputSelect @bind-Value="planForm.SegmentVersionId"><option value="@Guid.Empty">Choose an audience</option>@foreach (var option in AvailablePlanSegments) { <option value="@option.Version.Id">@option.Name · version @option.Version.VersionNumber</option> }</InputSelect></label>
+                            <div class="marketing-form__row"><label>Starts<InputDate @bind-Value="planForm.StartsUtc" /></label><label>Ends<InputDate @bind-Value="planForm.EndsUtc" /></label></div>
+                            <div class="marketing-form__row"><label>Budget<InputNumber @bind-Value="planForm.Budget" /></label><label>Currency<InputText @bind-Value="planForm.Currency" maxlength="3" /></label></div>
+                            @if (!CanCreateGroundedPlan)
+                            {
+                                <p class="marketing-plan-guidance">An approved strategy, an active objective, and an approved audience linked to that strategy are required. You can create missing prerequisites in Strategy, Objectives, or Segments.</p>
+                            }
+                            <div class="marketing-inline-actions"><button type="button" class="btn btn-outline-primary" @onclick="ClosePlanForm">Cancel</button><button class="btn btn-primary" disabled="@(isSaving || !CanCreateGroundedPlan)">Create plan</button></div>
+                        </EditForm>
+                    }
                     @if (planPortfolio.Count == 0) { <MarketingEmpty Title="No grounded plans" Message="Create a plan from an approved strategy, active objectives, and exact audience segments." /> }
                     @foreach (var item in planPortfolio)
                     {
@@ -174,7 +223,8 @@
                     @if (selectedPlan is null) { <MarketingEmpty Title="Select a plan" Message="Choose a plan to review its strategy, coverage, campaign portfolio, and next action." /> }
                     else
                     {
-                        <div class="marketing-section__header"><div><span class="vc-kicker">@selectedPlan.Summary.StatusLabel</span><h2>@selectedPlan.Summary.Name</h2><p>@selectedPlan.Description</p></div><div class="marketing-inline-actions">@if (marketingAgentId is Guid planAgentId && (resolvedCompanyId ?? CompanyId) is Guid planCompanyId) { <a class="btn btn-outline-primary" href="@($"/agents/{planAgentId:D}/chat?companyId={planCompanyId:D}")">Message Maya</a> }<button class="btn btn-primary" disabled="@(isSaving || selectedPlan.Objectives.Count == 0 || selectedPlan.Segments.Count == 0)" @onclick="PrepareSelectedPlanPortfolioAsync">Ask Maya to populate plan</button></div></div>
+                        <div class="marketing-section__header"><div><span class="vc-kicker">@selectedPlan.Summary.StatusLabel</span><h2>@selectedPlan.Summary.Name</h2><p>@selectedPlan.Description</p></div><div class="marketing-inline-actions">@if (marketingAgentId is Guid planAgentId && (resolvedCompanyId ?? CompanyId) is Guid planCompanyId) { <a class="btn btn-outline-primary" href="@($"/agents/{planAgentId:D}/chat?companyId={planCompanyId:D}")">Message Maya</a> }<button class="btn btn-primary" disabled="@isSaving" @onclick="PrepareSelectedPlanPortfolioAsync">Ask Maya to populate plan</button></div></div>
+                        @if (!string.IsNullOrWhiteSpace(planActionMessage)) { <div class="marketing-plan-attention" role="status"><strong>Plan needs preparation</strong><span>@planActionMessage</span></div> }
                         <div class="marketing-inline-actions" aria-label="Available plan actions">@if (selectedPlan.AllowedActions.Contains("Submit for review")) { <button class="btn btn-outline-primary" disabled="@isSaving" @onclick="SubmitSelectedPlanAsync">Submit for review</button> }@if (selectedPlan.AllowedActions.Contains("Activate plan")) { <button class="btn btn-outline-primary" disabled="@isSaving" @onclick="ActivateSelectedPlanAsync">Activate plan</button> }</div>
                         @if (selectedPlan.Summary.AttentionReason is not null) { <div class="marketing-plan-attention" role="status"><strong>Needs attention</strong><span>@selectedPlan.Summary.AttentionReason</span></div> }
                         <div class="marketing-plan-facts">
@@ -656,6 +706,8 @@
     private MarketingDailyReviewViewModel? dailyReview;
     private MarketingCampaignPortfolioProposalViewModel? portfolioProposal;
     private PrepareMarketingCampaignPortfolioViewModel? pendingPortfolio;
+    private string? planActionMessage;
+    private bool showPlanForm;
     private RoleAgentAnalysisViewModel? analysis;
     private MarketingContentPreflightViewModel? contentPreflight;
     private GenerateMarketingContentVariantsResultViewModel? contentGenerationResult;
@@ -666,6 +718,7 @@
     private IReadOnlyList<MarketingSegmentViewModel> segments = [];
     private GuidedWorkSessionViewModel? strategyWorkshopDraft;
     private GuidedWorkSessionViewModel? segmentWorkshopDraft;
+    private GuidedWorkSessionViewModel? planWorkshopDraft;
     private MarketingSegmentImpactViewModel? segmentImpact;
     private MarketingSegmentDecisionDataViewModel? segmentDecisionData;
     private MarketingSegmentProposalViewModel? segmentProposal;
@@ -726,10 +779,13 @@
             if (creativeForm.BriefId == Guid.Empty) creativeForm.BriefId = dashboard.Content.FirstOrDefault(x => x.Status is "submitted" or "approved")?.Id ?? Guid.Empty;
             strategies = await MarketingApi.GetStrategiesAsync(companyId);
             segments = await MarketingApi.GetSegmentsAsync(companyId);
+            InitializePlanFormSelections();
             var strategyWorkshops = await GuidedWorkApi.ListAsync(companyId, artifactType: "marketing_strategy");
             strategyWorkshopDraft = strategyWorkshops.Items.FirstOrDefault(x => x.Status is "active" or "review_ready");
             var segmentWorkshops = await GuidedWorkApi.ListAsync(companyId, artifactType: "marketing_segment");
             segmentWorkshopDraft = segmentWorkshops.Items.FirstOrDefault(x => x.Status is "active" or "review_ready");
+            var planWorkshops = await GuidedWorkApi.ListAsync(companyId, artifactType: "marketing_plan");
+            planWorkshopDraft = planWorkshops.Items.FirstOrDefault(x => x.Status is "active" or "review_ready");
             if (strategyProposalForm.SegmentVersionId == Guid.Empty) strategyProposalForm.SegmentVersionId = segments.SelectMany(x => x.Versions).FirstOrDefault(x => x.Status is "approved" or "active")?.Id ?? Guid.Empty;
             salesCampaigns = await SalesApi.ListCampaignsAsync(companyId);
             decompositionForm.StrategyId = decompositionForm.StrategyId == Guid.Empty ? strategies.FirstOrDefault(x => x.Status is "approved" or "active")?.Id ?? Guid.Empty : decompositionForm.StrategyId;
@@ -896,8 +952,30 @@
         await MarketingApi.CommitDecompositionAsync(companyId, new(decompositionProposal.ProposalKey, request));
         decompositionProposal = null;
     });
-    private Task CreatePlanAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreatePlanAsync(id,
-        new(planForm.Name, planForm.Summary, DateTime.UtcNow.Date, DateTime.UtcNow.Date.AddMonths(3), planForm.Budget, planForm.Currency)));
+    private async Task CreateGroundedPlanAsync()
+    {
+        if (resolvedCompanyId is not Guid companyId || !CanCreateGroundedPlan) return;
+        var strategy = strategies.Single(x => x.Id == planForm.StrategyId);
+        isSaving = true; planActionMessage = null;
+        try
+        {
+            var evidence = ParseStringList(strategy.EvidenceReferencesJson);
+            var missingEvidence = ParseStringList(strategy.MissingEvidenceJson);
+            var request = new CreateGroundedMarketingPlanViewModel(planForm.Name.Trim(), planForm.Summary.Trim(),
+                strategy.Id, strategy.Version, DateTime.SpecifyKind(planForm.StartsUtc.Date, DateTimeKind.Utc),
+                DateTime.SpecifyKind(planForm.EndsUtc.Date, DateTimeKind.Utc), planForm.Budget,
+                planForm.Currency.Trim().ToUpperInvariant(), [planForm.ObjectiveId],
+                [new(planForm.SegmentVersionId, "primary", 1, "Approved target audience for this strategy.", "Contribute to the selected plan objective.")],
+                "Created from the approved strategy, active objective, and approved target audience.", evidence, [], [], missingEvidence,
+                $"marketing-plan:{companyId:N}:{Guid.NewGuid():N}", marketingAgentId);
+            var created = await MarketingApi.CreateGroundedPlanAsync(companyId, request);
+            showPlanForm = false;
+            await LoadAsync();
+            await SelectPlanAsync(created.Summary.Id);
+        }
+        catch (Exception ex) { planActionMessage = SafeMessage(ex); }
+        finally { isSaving = false; }
+    }
     private Task CreateContentAsync() => ExecuteAndReloadAsync(async id => await MarketingApi.CreateContentAsync(id,
         new(null, null, contentForm.Title, contentForm.Purpose, contentForm.Audience, contentForm.Channel, contentForm.Language, "Clear and helpful", contentForm.CallToAction, DateTime.UtcNow.AddDays(7),
             null, contentForm.MeasurableObjective, contentForm.FunnelStage, null, contentForm.KeyMessage,
@@ -914,7 +992,7 @@
     private async Task SelectPlanAsync(Guid planId)
     {
         if (resolvedCompanyId is not Guid companyId) return;
-        portfolioProposal = null; pendingPortfolio = null;
+        portfolioProposal = null; pendingPortfolio = null; planActionMessage = null;
         selectedPlan = await MarketingApi.GetPlanPortfolioAsync(companyId, planId);
     }
 
@@ -946,8 +1024,14 @@
 
     private async Task PrepareSelectedPlanPortfolioAsync()
     {
-        if (resolvedCompanyId is not Guid companyId || selectedPlan is null || selectedPlan.Objectives.FirstOrDefault() is not { } objective || selectedPlan.Segments.Count == 0) return;
+        if (resolvedCompanyId is not Guid companyId || selectedPlan is null) return;
+        if (selectedPlan.Objectives.FirstOrDefault() is not { } objective || selectedPlan.Segments.Count == 0)
+        {
+            planActionMessage = "This older plan has no linked objective or approved audience, so Maya cannot create a governed campaign portfolio. Create a grounded plan and select both prerequisites.";
+            return;
+        }
         isSaving = true; errorMessage = null;
+        planActionMessage = null;
         try
         {
             var objectiveSource = dashboard?.Objectives.FirstOrDefault(x => x.Id == objective.Id);
@@ -968,7 +1052,7 @@
                 $"maya-plan-portfolio:{selectedPlan.Summary.Id:N}:v{selectedPlan.Summary.Version}", marketingAgentId);
             portfolioProposal = await MarketingApi.PrepareCampaignPortfolioAsync(companyId, selectedPlan.Summary.Id, pendingPortfolio);
         }
-        catch (Exception ex) { errorMessage = SafeMessage(ex); }
+        catch (Exception ex) { planActionMessage = SafeMessage(ex); }
         finally { isSaving = false; }
     }
 
@@ -1098,8 +1182,10 @@
         : path;
     private static string StrategyWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_strategy?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";
     private string SegmentWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_segment?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";
+    private static string PlanWorkshopUrl(GuidedWorkSessionViewModel draft) => $"/agents/{draft.AgentId:D}/workshops/marketing_plan?companyId={draft.CompanyId:D}&sessionId={draft.Id:D}";
     private GuidedDraftFieldViewModel? StrategyDraftField(string path) => strategyWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
     private GuidedDraftFieldViewModel? DraftField(string path) => segmentWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
+    private GuidedDraftFieldViewModel? PlanDraftField(string path) => planWorkshopDraft?.Fields.FirstOrDefault(x => x.Path.Equals(path, StringComparison.OrdinalIgnoreCase));
     private static bool ShowDraftField(GuidedDraftFieldViewModel field) => field.Value is not null && !field.Path.Equals("workshop_insights", StringComparison.OrdinalIgnoreCase);
     private static string DisplayDraftValue(System.Text.Json.Nodes.JsonNode? value) => value is System.Text.Json.Nodes.JsonValue scalar && scalar.TryGetValue<string>(out var text) ? text : value?.ToJsonString() ?? "Not yet recorded";
     private static string DraftSummary(System.Text.Json.Nodes.JsonNode? value)
@@ -1108,6 +1194,43 @@
         return text.Length > 120 ? text[..120] + "…" : text;
     }
     private void ShowObjectives() => activeTab = "Objectives";
+    private IEnumerable<MarketingStrategyViewModel> AvailablePlanStrategies => strategies.Where(x => x.Status is "approved" or "active");
+    private IEnumerable<MarketingObjectiveViewModel> AvailablePlanObjectives => dashboard?.Objectives.Where(x => x.Status.Equals("active", StringComparison.OrdinalIgnoreCase)) ?? [];
+    private IEnumerable<(string Name, MarketingSegmentVersionViewModel Version)> AvailablePlanSegments
+    {
+        get
+        {
+            var linked = strategies.FirstOrDefault(x => x.Id == planForm.StrategyId)?.SegmentVersionIds ?? [];
+            return segments.SelectMany(segment => segment.Versions
+                .Where(version => linked.Contains(version.Id) && version.Status is "approved" or "active")
+                .Select(version => (segment.Name, version)));
+        }
+    }
+    private bool CanCreateGroundedPlan => !string.IsNullOrWhiteSpace(planForm.Name) && !string.IsNullOrWhiteSpace(planForm.Summary)
+        && AvailablePlanStrategies.Any(x => x.Id == planForm.StrategyId)
+        && AvailablePlanObjectives.Any(x => x.Id == planForm.ObjectiveId)
+        && AvailablePlanSegments.Any(x => x.Version.Id == planForm.SegmentVersionId)
+        && planForm.EndsUtc > planForm.StartsUtc && planForm.Budget is not < 0 && planForm.Currency.Trim().Length == 3;
+    private void OpenPlanForm() { showPlanForm = true; InitializePlanFormSelections(); }
+    private void ClosePlanForm() => showPlanForm = false;
+    private void InitializePlanFormSelections()
+    {
+        if (planForm.StrategyId == Guid.Empty || !AvailablePlanStrategies.Any(x => x.Id == planForm.StrategyId))
+            planForm.StrategyId = AvailablePlanStrategies.FirstOrDefault()?.Id ?? Guid.Empty;
+        if (planForm.ObjectiveId == Guid.Empty || !AvailablePlanObjectives.Any(x => x.Id == planForm.ObjectiveId))
+            planForm.ObjectiveId = AvailablePlanObjectives.FirstOrDefault()?.Id ?? Guid.Empty;
+        if (planForm.SegmentVersionId == Guid.Empty || !AvailablePlanSegments.Any(x => x.Version.Id == planForm.SegmentVersionId))
+            planForm.SegmentVersionId = AvailablePlanSegments.FirstOrDefault().Version?.Id ?? Guid.Empty;
+        var strategy = strategies.FirstOrDefault(x => x.Id == planForm.StrategyId);
+        if (strategy is not null && planForm.StartsUtc < strategy.ValidFromUtc) planForm.StartsUtc = strategy.ValidFromUtc.Date;
+        if (strategy is not null && planForm.EndsUtc > strategy.ValidToUtc) planForm.EndsUtc = strategy.ValidToUtc.Date;
+    }
+    private static IReadOnlyList<string> ParseStringList(string json)
+    {
+        if (string.IsNullOrWhiteSpace(json)) return [];
+        try { return System.Text.Json.JsonSerializer.Deserialize<string[]>(json) ?? []; }
+        catch (System.Text.Json.JsonException) { return []; }
+    }
     private static string FriendlyMetric(string value) => value.Replace("_", " ", StringComparison.Ordinal).Replace("-", " ", StringComparison.Ordinal);
     private static string MetricValue(MarketingMetricViewModel metric) => metric.Value is decimal value ? $"{value:N1} {metric.Unit}".Trim() : "No data";
     private static string Friendly(string value) => value.Replace("_", " ", StringComparison.Ordinal).Replace('-', ' ');
@@ -1119,7 +1242,7 @@
     private sealed class StrategyProposalForm { public string Title { get; set; } = "Growth strategy"; public string Objective { get; set; } = "Create an evidence-grounded 4P and STP strategy aligned to company goals, product facts, customer needs, price sensitivity, channel presence, and competitive evidence."; public Guid SegmentVersionId { get; set; } }
     private sealed class SegmentProposalForm { public string Name { get; set; } = "Evidence-grounded target segment"; public string Objective { get; set; } = "Propose a lawful strategic segment using customer needs, behaviours, channel presence, price sensitivity, size and economics evidence. Classify every claim and identify missing evidence."; }
     private sealed class DecompositionForm { public Guid StrategyId { get; set; } public Guid CampaignId { get; set; } public Guid ObjectiveId { get; set; } public string PlanName { get; set; } = "Strategy execution plan"; }
-    private sealed class PlanForm { public string Name { get; set; } = ""; public string Summary { get; set; } = ""; public decimal? Budget { get; set; } public string Currency { get; set; } = "SEK"; }
+    private sealed class PlanForm { public string Name { get; set; } = ""; public string Summary { get; set; } = ""; public Guid StrategyId { get; set; } public Guid ObjectiveId { get; set; } public Guid SegmentVersionId { get; set; } public DateTime StartsUtc { get; set; } = DateTime.UtcNow.Date; public DateTime EndsUtc { get; set; } = DateTime.UtcNow.Date.AddMonths(3); public decimal? Budget { get; set; } public string Currency { get; set; } = "SEK"; }
     private sealed class ContentForm { public string Title { get; set; } = ""; public string Purpose { get; set; } = ""; public string Audience { get; set; } = ""; public string Channel { get; set; } = "email"; public string Language { get; set; } = "English"; public string MeasurableObjective { get; set; } = "Increase qualified engagement"; public string FunnelStage { get; set; } = "awareness"; public string KeyMessage { get; set; } = ""; public string Offer { get; set; } = "Not specified"; public string CallToAction { get; set; } = ""; }
     private sealed class ContentGenerationForm { public Guid BriefId { get; set; } public string ContentFormat { get; set; } = "social_post"; public int VariantCount { get; set; } = 3; public string Instructions { get; set; } = "Create distinct angles while preserving the brief's language, tone, evidence, and call to action."; }
     private sealed class ExperimentForm { public string Name { get; set; } = ""; public string Hypothesis { get; set; } = ""; public string PrimaryMetric { get; set; } = "conversion_rate"; public string GuardrailMetric { get; set; } = "unsubscribe_rate"; public int MinimumSampleSize { get; set; } = 100; }

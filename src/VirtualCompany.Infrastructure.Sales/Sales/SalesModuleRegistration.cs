@@ -77,6 +77,7 @@ public static class SalesModuleRegistration
         services.AddScoped<IMarketingStrategyService, MarketingStrategyService>();
         services.AddScoped<IGuidedArtifactDefinition, MarketingStrategyGuidedArtifactDefinition>();
         services.AddScoped<IGuidedArtifactDefinition, MarketingSegmentGuidedArtifactDefinition>();
+        services.AddScoped<IGuidedArtifactDefinition, MarketingPlanGuidedArtifactDefinition>();
         services.AddScoped<IMarketingOperatingLoopService, MarketingOperatingLoopService>();
         services.AddScoped<IMarketingWorkNeedAssessment, MarketingWorkNeedAssessment>();
         services.AddScoped<IMarketingDeliveryService, MarketingDeliveryService>();

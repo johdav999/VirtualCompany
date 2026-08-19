@@ -26,6 +26,9 @@ Configure the `GuidedDialogue` section through normal secret/configuration provi
     "RealtimeModel": "gpt-realtime-2.1-mini",
     "RealtimeVoice": "marin",
     "RealtimeTranscriptionModel": "gpt-4o-mini-transcribe",
+    "RealtimeTurnDetection": "server_vad",
+    "RealtimeVadThreshold": 0.15,
+    "RealtimeNoiseReduction": "near_field",
     "MaxVoiceMinutes": 30,
     "MaxVoiceReconnects": 2
   }

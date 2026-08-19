@@ -26,6 +26,8 @@ public sealed class MarketingApiClient
 
     public Task<MarketingPlanViewModel> CreatePlanAsync(Guid companyId, CreateMarketingPlanViewModel request, CancellationToken ct = default) =>
         SendAsync<CreateMarketingPlanViewModel, MarketingPlanViewModel>(companyId, HttpMethod.Post, "api/marketing/plans", request, ct);
+    public Task<MarketingPlanDetailViewModel> CreateGroundedPlanAsync(Guid companyId, CreateGroundedMarketingPlanViewModel request, CancellationToken ct = default) =>
+        SendAsync<CreateGroundedMarketingPlanViewModel, MarketingPlanDetailViewModel>(companyId, HttpMethod.Post, "api/marketing/plans/grounded", request, ct);
     public Task<MarketingPlanViewModel> ActivatePlanAsync(Guid companyId, Guid planId, CancellationToken ct = default) =>
         SendAsync<object, MarketingPlanViewModel>(companyId, HttpMethod.Post, $"api/marketing/plans/{planId:D}/activate", new { }, ct);
     public Task<IReadOnlyList<MarketingPlanListItemViewModel>> GetPlanPortfolioAsync(Guid companyId, CancellationToken ct = default) =>
@@ -511,6 +513,14 @@ public sealed record CreateMarketingObjectiveViewModel(string Name, string Objec
     DateTime PeriodStartUtc, DateTime PeriodEndUtc, decimal? BaselineValue = null);
 public sealed record CreateMarketingPlanViewModel(string Name, string Summary, DateTime StartsUtc, DateTime EndsUtc,
     decimal? PlannedBudget, string BudgetCurrency, IReadOnlyList<Guid>? ObjectiveIds = null);
+public sealed record MarketingPlanSegmentSelectionViewModel(Guid SegmentVersionId, string Role, int Priority,
+    string Rationale, string ExpectedContribution);
+public sealed record CreateGroundedMarketingPlanViewModel(string Name, string Summary, Guid StrategyId,
+    int ExpectedStrategyVersion, DateTime StartsUtc, DateTime EndsUtc, decimal? PlannedBudget,
+    string BudgetCurrency, IReadOnlyList<Guid> ObjectiveIds, IReadOnlyList<MarketingPlanSegmentSelectionViewModel> Segments,
+    string Rationale, IReadOnlyList<string> EvidenceReferences, IReadOnlyList<string> Assumptions,
+    IReadOnlyList<string> Risks, IReadOnlyList<string> MissingEvidence, string IdempotencyKey,
+    Guid? OwnerAgentId = null);
 public sealed record CreateMarketingContentBriefViewModel(Guid? CampaignId, Guid? PlanId, string Title, string Purpose,
     string Audience, string Channel, string Language, string Tone, string CallToAction, DateTime? DueUtc,
     Guid? SegmentVersionId = null, string MeasurableObjective = "", string FunnelStage = "awareness",

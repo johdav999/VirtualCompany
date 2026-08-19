@@ -10,6 +10,7 @@ public static class GuidedArtifactTypes
     public const string CompanyOnboarding = "company_onboarding";
     public const string MarketingStrategy = "marketing_strategy";
     public const string MarketingSegment = "marketing_segment";
+    public const string MarketingPlan = "marketing_plan";
     public const string FinanceBudget = "finance_budget";
     public const string SalesCampaignPlan = "sales_campaign_plan";
     public const string SupportSlaPolicy = "support_sla_policy";

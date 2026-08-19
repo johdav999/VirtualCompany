@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.GuidedWork;
 using VirtualCompany.Application.Marketing;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Infrastructure.Sales;
 
 namespace VirtualCompany.Infrastructure.Marketing;
@@ -130,4 +131,213 @@ public sealed class MarketingSegmentGuidedArtifactDefinition(IMarketingStrategyS
         :string.Empty;
     private static JsonObject ParseObject(string json){try{return JsonNode.Parse(json) as JsonObject??new JsonObject();}catch(JsonException){return new JsonObject();}}
     private static string AsJson(string s){if(string.IsNullOrWhiteSpace(s))return "{}";try{JsonNode.Parse(s);return s;}catch{return new JsonObject{{"summary",s}}.ToJsonString();}}
+}
+
+public sealed class MarketingPlanGuidedArtifactDefinition(
+    IMarketingOperationsService marketing,
+    IMarketingStrategyService strategyService,
+    IAgentCapabilityCatalog capabilities) : IGuidedArtifactDefinition
+{
+    public string ArtifactType => GuidedArtifactTypes.MarketingPlan;
+    public string SchemaVersion => "1.0";
+    public string DisplayName => "Marketing plan";
+    public GuidedArtifactCapabilities Capabilities { get; } = new(true, [".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".csv"], ["knowledge", "marketing"], true, true);
+    public IReadOnlyList<string> QuestionPriorities =>
+    [
+        "summary", "strategy_id", "objective_ids", "primary_segment_version_id", "targeting_rationale",
+        "expected_contribution", "starts_on", "ends_on", "planned_budget", "evidence_references", "missing_evidence"
+    ];
+    public IReadOnlyList<GuidedFieldDefinition> Fields { get; } =
+    [
+        Text("name", "Plan name", true, 200, "Name this bounded Marketing plan."),
+        Text("summary", "Plan outcome", true, 4000, "Describe the measurable business outcome, intended customer change, and scope of this plan."),
+        Identifier("strategy_id", "Approved strategy", true, "Select the exact approved or active Marketing strategy that governs this plan."),
+        Number("strategy_version", "Strategy version", true, 1, "Use the current version of the selected strategy."),
+        Date("starts_on", "Starts on", true),
+        Date("ends_on", "Ends on", true),
+        Number("planned_budget", "Planned budget", false, 0, "Set the maximum planned budget, or leave it unknown if no limit has been approved."),
+        Text("budget_currency", "Budget currency", true, 3, "Use the three-letter currency code for the plan budget."),
+        List("objective_ids", "Active objectives", true, "Select one or more active Marketing objectives that overlap the plan period."),
+        Identifier("primary_segment_version_id", "Primary audience", true, "Select the exact approved or active audience version linked to the strategy."),
+        List("secondary_segment_version_ids", "Secondary audiences", false, "Optionally select additional approved or active audience versions linked to the strategy."),
+        Text("targeting_rationale", "Audience rationale", true, 4000, "Explain why the selected audiences are prioritized and the relevant trade-offs."),
+        Text("expected_contribution", "Expected audience contribution", true, 4000, "Describe how the selected audiences are expected to contribute to the plan outcome."),
+        Text("rationale", "Plan rationale", true, 4000, "Explain how the strategy, objectives, audiences, timing, and budget form a coherent plan."),
+        List("evidence_references", "Evidence references", true, "List the sources that support this plan."),
+        List("missing_evidence", "Missing evidence", true, "Keep unresolved evidence gaps explicit. This list must be empty before the plan draft can be saved.")
+    ];
+
+    public Task EnsureEligibleAsync(Guid companyId, Guid agentId, CancellationToken ct) =>
+        MarketingStrategyGuidedArtifactDefinition.EnsureCapability(capabilities, companyId, agentId, AgentCapabilityIds.MarketingPlanning, ct);
+
+    public async Task<GuidedArtifactInitialization> InitializeAsync(Guid companyId, Guid agentId, Guid? targetId, CancellationToken ct)
+    {
+        if (targetId.HasValue)
+            throw new GuidedWorkValidationException(new Dictionary<string, string[]> { [nameof(targetId)] = ["Marketing plan workshops create new reviewable drafts. Start a new workshop without an existing plan."] });
+
+        var today = DateTime.UtcNow.Date;
+        var strategies = (await strategyService.ListStrategiesAsync(companyId, ct))
+            .Where(x => (x.Status is MarketingStrategicStatuses.Approved or MarketingStrategicStatuses.Active) && x.ValidToUtc.Date > today)
+            .OrderByDescending(x => x.UpdatedUtc)
+            .ToArray();
+        var selectedStrategy = strategies.FirstOrDefault();
+        var starts = selectedStrategy is null ? today : MaxDate(today, selectedStrategy.ValidFromUtc.Date);
+        var ends = selectedStrategy is null ? today.AddMonths(3) : MinDate(starts.AddMonths(3), selectedStrategy.ValidToUtc.Date);
+        if (ends <= starts) ends = starts.AddDays(1);
+
+        var objectives = (await marketing.ListObjectivesAsync(companyId, ct))
+            .Where(x => x.Status == MarketingStatuses.Active && x.PeriodStartUtc < ends && x.PeriodEndUtc > starts)
+            .OrderBy(x => x.PeriodEndUtc)
+            .ToArray();
+        var segments = await strategyService.ListSegmentsAsync(companyId, ct);
+        var linkedIds = selectedStrategy?.SegmentVersionIds.ToHashSet() ?? [];
+        var eligibleSegments = segments.SelectMany(segment => segment.Versions
+                .Where(version => linkedIds.Contains(version.Id) && (version.Status is MarketingStrategicStatuses.Approved or MarketingStrategicStatuses.Active))
+                .Select(version => new { segment.Name, Version = version }))
+            .OrderByDescending(x => x.Version.AttractivenessScore)
+            .ToArray();
+
+        var values = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["starts_on"] = starts.ToString("yyyy-MM-dd"),
+            ["ends_on"] = ends.ToString("yyyy-MM-dd"),
+            ["budget_currency"] = "SEK",
+            ["objective_ids"] = new JsonArray(objectives.Take(1).Select(x => JsonValue.Create(x.Id.ToString())).ToArray()),
+            ["secondary_segment_version_ids"] = new JsonArray(),
+            ["missing_evidence"] = selectedStrategy is null ? new JsonArray() : ParseStringArray(selectedStrategy.MissingEvidenceJson)
+        };
+        if (selectedStrategy is not null)
+        {
+            values["name"] = Bound($"{selectedStrategy.Title} plan", 200);
+            values["summary"] = selectedStrategy.Summary;
+            values["strategy_id"] = selectedStrategy.Id.ToString();
+            values["strategy_version"] = selectedStrategy.Version;
+            values["rationale"] = $"Execute {selectedStrategy.Title} through a bounded, measurable Marketing plan.";
+            values["evidence_references"] = ParseStringArray(selectedStrategy.EvidenceReferencesJson);
+        }
+        if (eligibleSegments.FirstOrDefault() is { } primary)
+        {
+            values["primary_segment_version_id"] = primary.Version.Id.ToString();
+            values["targeting_rationale"] = $"Use {primary.Name} version {primary.Version.VersionNumber} as the primary audience because it is linked to the selected strategy.";
+            values["expected_contribution"] = $"Contribute to the selected Marketing objective through the needs and behaviors documented for {primary.Name}.";
+        }
+
+        var statuses = values.Keys.ToDictionary(x => x, _ => "proposed", StringComparer.OrdinalIgnoreCase);
+        var context = BuildOpeningContext(strategies, objectives, eligibleSegments.Select(x => (x.Name, x.Version)).ToArray());
+        return new(DisplayName, null, null, values, statuses,
+            OpeningSummary: $"Build a strategy-grounded Marketing plan as a reviewable draft. {context}",
+            OpeningQuestion: "What measurable outcome should this plan deliver, and which active objective should show that it succeeded?");
+    }
+
+    public async Task<IReadOnlyList<string>> ValidateAsync(Guid companyId, Guid agentId, Guid? targetId, IReadOnlyDictionary<string, JsonNode?> values, CancellationToken ct)
+    {
+        var gaps = MarketingStrategyGuidedArtifactDefinition.RequiredGaps(Fields, values);
+        if (targetId.HasValue) gaps.Add("Marketing plan workshops cannot replace an existing plan");
+        if (!TryGuid(values, "strategy_id", out var strategyId)) gaps.Add("Approved strategy must be selected");
+        if (!TryInt(values, "strategy_version", out var strategyVersion) || strategyVersion < 1) gaps.Add("Strategy version must be valid");
+        if (!MarketingStrategyGuidedArtifactDefinition.TryDate(values, "starts_on", out var starts)) gaps.Add("Starts on must be valid");
+        if (!MarketingStrategyGuidedArtifactDefinition.TryDate(values, "ends_on", out var ends)) gaps.Add("Ends on must be valid");
+        if (starts != default && ends != default && ends <= starts) gaps.Add("Ends on must be after starts on");
+        if (!TryGuid(values, "primary_segment_version_id", out var primarySegmentId)) gaps.Add("Primary audience must be selected");
+        var objectiveEntries = ReadStringList(values, "objective_ids");
+        var objectiveIds = ReadGuidList(values, "objective_ids");
+        if (objectiveIds.Count == 0) gaps.Add("At least one active objective must be selected");
+        if (objectiveIds.Count != objectiveEntries.Count || objectiveIds.Count != objectiveIds.Distinct().Count()) gaps.Add("Every objective must be a unique valid identifier");
+        var secondaryEntries = ReadStringList(values, "secondary_segment_version_ids");
+        var secondaryIds = ReadGuidList(values, "secondary_segment_version_ids");
+        if (secondaryIds.Count != secondaryEntries.Count || secondaryIds.Count != secondaryIds.Distinct().Count() || secondaryIds.Contains(primarySegmentId)) gaps.Add("Each audience version must be a unique valid identifier");
+        var evidence = ReadStringList(values, "evidence_references");
+        if (evidence.Count == 0) gaps.Add("At least one evidence reference is required");
+        var missingEvidence = ReadStringList(values, "missing_evidence");
+        if (missingEvidence.Count > 0) gaps.Add("Resolve or remove every missing evidence item before saving the plan draft");
+        if (gaps.Count > 0) return gaps;
+
+        var request = BuildRequest(values, strategyId, strategyVersion, starts, ends, objectiveIds, primarySegmentId, secondaryIds, evidence, missingEvidence, agentId, "guided-validation");
+        var decision = await marketing.AssessPlanReadinessAsync(companyId, request, ct);
+        if (!decision.Allowed) gaps.Add(decision.Explanation);
+        return gaps;
+    }
+
+    public Task<IReadOnlyList<GuidedReviewInsightDto>> BuildReviewInsightsAsync(Guid companyId, Guid agentId, Guid? targetId, IReadOnlyDictionary<string, JsonNode?> values, CancellationToken ct) =>
+        Task.FromResult<IReadOnlyList<GuidedReviewInsightDto>>
+        ([
+            new("Strategy grounding", $"Version {ReadInt(values, "strategy_version")}", "The exact approved strategy version is rechecked before the draft is created."),
+            new("Plan coverage", $"{ReadGuidList(values, "objective_ids").Count} objective(s) and {1 + ReadGuidList(values, "secondary_segment_version_ids").Count} audience(s)", "Objectives, audiences, dates, evidence, and budget are validated by the Marketing plan readiness policy."),
+            new("Confirmation effect", "Create plan draft only", "Confirmation does not submit, approve, activate, create campaigns, publish content, or spend budget.")
+        ]);
+
+    public async Task<GuidedArtifactCommitResult> CommitAsync(GuidedArtifactCommitContext context, CancellationToken ct)
+    {
+        var strategyId = Guid.Parse(Get(context.Values, "strategy_id"));
+        var strategyVersion = ReadInt(context.Values, "strategy_version");
+        var starts = MarketingStrategyGuidedArtifactDefinition.GetDate(context.Values, "starts_on");
+        var ends = MarketingStrategyGuidedArtifactDefinition.GetDate(context.Values, "ends_on");
+        var primarySegmentId = Guid.Parse(Get(context.Values, "primary_segment_version_id"));
+        var request = BuildRequest(context.Values, strategyId, strategyVersion, starts, ends,
+            ReadGuidList(context.Values, "objective_ids"), primarySegmentId, ReadGuidList(context.Values, "secondary_segment_version_ids"),
+            ReadStringList(context.Values, "evidence_references"), ReadStringList(context.Values, "missing_evidence"), context.AgentId, $"guided:{context.SessionId:N}");
+        var result = await marketing.CreateGroundedPlanAsync(context.CompanyId, context.UserId, request, ct);
+        return new(result.Summary.Id, result.Summary.Version.ToString(), $"Saved marketing plan {result.Summary.Name} as a reviewable draft.");
+    }
+
+    private static CreateGroundedMarketingPlanRequest BuildRequest(IReadOnlyDictionary<string, JsonNode?> values, Guid strategyId, int strategyVersion,
+        DateTime starts, DateTime ends, IReadOnlyList<Guid> objectiveIds, Guid primarySegmentId, IReadOnlyList<Guid> secondarySegmentIds,
+        IReadOnlyList<string> evidence, IReadOnlyList<string> missingEvidence, Guid agentId, string idempotencyKey)
+    {
+        var rationale = Get(values, "targeting_rationale");
+        var contribution = Get(values, "expected_contribution");
+        var segments = new List<MarketingPlanSegmentSelection> { new(primarySegmentId, "primary", 1, rationale, contribution) };
+        segments.AddRange(secondarySegmentIds.Select((id, index) => new MarketingPlanSegmentSelection(id, "secondary", index + 2, rationale, contribution)));
+        return new(Get(values, "name"), Get(values, "summary"), strategyId, strategyVersion,
+            DateTime.SpecifyKind(starts.Date, DateTimeKind.Utc), DateTime.SpecifyKind(ends.Date, DateTimeKind.Utc),
+            ReadDecimal(values, "planned_budget"), Get(values, "budget_currency").ToUpperInvariant(), objectiveIds, segments,
+            Get(values, "rationale"), evidence, [], [], missingEvidence, idempotencyKey, agentId);
+    }
+
+    private static string BuildOpeningContext(IReadOnlyList<MarketingStrategyDto> strategies, IReadOnlyList<MarketingObjectiveDto> objectives,
+        IReadOnlyList<(string Name, MarketingSegmentVersionDto Version)> segments)
+    {
+        var strategyText = strategies.Count == 0 ? "No currently valid approved strategy is available."
+            : "Eligible strategies: " + string.Join("; ", strategies.Take(5).Select(x => $"{x.Title} v{x.Version} ({x.Id:D})")) + ".";
+        var objectiveText = objectives.Count == 0 ? " No overlapping active objective is available."
+            : " Active objectives: " + string.Join("; ", objectives.Take(8).Select(x => $"{x.Name} ({x.Id:D})")) + ".";
+        var segmentText = segments.Count == 0 ? " No eligible audience is linked to the selected strategy."
+            : " Eligible audiences: " + string.Join("; ", segments.Take(8).Select(x => $"{x.Name} v{x.Version.VersionNumber} ({x.Version.Id:D})")) + ".";
+        return Bound(strategyText + objectiveText + segmentText, 1800);
+    }
+
+    private static GuidedFieldDefinition Text(string path, string label, bool required, int max, string description) =>
+        new(path, label, description, GuidedFieldValueTypes.Text, required, MaxLength: max, AllowsEvidence: true);
+    private static GuidedFieldDefinition Date(string path, string label, bool required) =>
+        new(path, label, $"Set {label.ToLowerInvariant()} within the governing strategy period.", GuidedFieldValueTypes.Date, required);
+    private static GuidedFieldDefinition Number(string path, string label, bool required, decimal minimum, string description) =>
+        new(path, label, description, GuidedFieldValueTypes.Number, required, Minimum: minimum);
+    private static GuidedFieldDefinition Identifier(string path, string label, bool required, string description) =>
+        new(path, label, description, GuidedFieldValueTypes.Identifier, required);
+    private static GuidedFieldDefinition List(string path, string label, bool required, string description) =>
+        new(path, label, description, GuidedFieldValueTypes.TextList, required, AllowsEvidence: true);
+    private static string Get(IReadOnlyDictionary<string, JsonNode?> values, string key) => MarketingStrategyGuidedArtifactDefinition.GetString(values, key);
+    private static bool TryGuid(IReadOnlyDictionary<string, JsonNode?> values, string key, out Guid id) => Guid.TryParse(Get(values, key), out id);
+    private static bool TryInt(IReadOnlyDictionary<string, JsonNode?> values, string key, out int number) => int.TryParse(values.GetValueOrDefault(key)?.ToString(), out number);
+    private static int ReadInt(IReadOnlyDictionary<string, JsonNode?> values, string key) => TryInt(values, key, out var number) ? number : 0;
+    private static decimal? ReadDecimal(IReadOnlyDictionary<string, JsonNode?> values, string key) => decimal.TryParse(values.GetValueOrDefault(key)?.ToString(), out var value) ? value : null;
+    private static IReadOnlyList<Guid> ReadGuidList(IReadOnlyDictionary<string, JsonNode?> values, string key) =>
+        ReadStringList(values, key).Select(x => Guid.TryParse(x, out var id) ? id : Guid.Empty).Where(x => x != Guid.Empty).ToArray();
+    private static IReadOnlyList<string> ReadStringList(IReadOnlyDictionary<string, JsonNode?> values, string key) =>
+        values.TryGetValue(key, out var node) && node is JsonArray array
+            ? array.Select(x => x?.GetValue<string>()?.Trim()).Where(x => !string.IsNullOrWhiteSpace(x)).Cast<string>().ToArray()
+            : [];
+    private static JsonArray ParseStringArray(string json)
+    {
+        try
+        {
+            return JsonNode.Parse(json) is JsonArray array
+                ? new JsonArray(array.Take(100).Select(x => x?.DeepClone()).ToArray())
+                : new JsonArray();
+        }
+        catch (JsonException) { return new JsonArray(); }
+    }
+    private static DateTime MinDate(DateTime left, DateTime right) => left <= right ? left : right;
+    private static DateTime MaxDate(DateTime left, DateTime right) => left >= right ? left : right;
+    private static string Bound(string value, int max) => value.Length <= max ? value : value[..max];
 }

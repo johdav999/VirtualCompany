@@ -69,12 +69,31 @@ public sealed class MarketingWorkspaceSurfaceTests
         var client = Read("src", "VirtualCompany.Web", "Services", "MarketingApiClient.cs");
 
         Assert.Contains("Ask Maya to populate plan", source, StringComparison.Ordinal);
+        Assert.Contains("Create marketing plan", source, StringComparison.Ordinal);
+        Assert.Contains("CreateGroundedPlanAsync", source, StringComparison.Ordinal);
+        Assert.Contains("This older plan has no linked objective or approved audience", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("selectedPlan.Objectives.Count == 0 || selectedPlan.Segments.Count == 0", source, StringComparison.Ordinal);
         Assert.Contains("selectedPlan.AllowedActions.Contains(\"Submit for review\")", source, StringComparison.Ordinal);
         Assert.Contains("MAYA DAILY REVIEW", source, StringComparison.Ordinal);
         Assert.Contains("item.IsSpan", source, StringComparison.Ordinal);
         Assert.DoesNotContain("Decompose into campaign work", source, StringComparison.Ordinal);
         Assert.Contains("SubmitPlanForReviewAsync", client, StringComparison.Ordinal);
         Assert.Contains("ActivateGroundedPlanAsync", client, StringComparison.Ordinal);
+        Assert.Contains("api/marketing/plans/grounded", client, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Plan_workspace_starts_and_resumes_the_shared_marketing_plan_workshop()
+    {
+        var source = Read("src", "VirtualCompany.Web", "Pages", "Marketing", "MarketingDashboard.razor");
+        var workshop = Read("src", "VirtualCompany.Web", "Pages", "GuidedWorkSession.razor");
+
+        Assert.Contains("/workshops/marketing_plan", source, StringComparison.Ordinal);
+        Assert.Contains("GuidedWorkApi.ListAsync(companyId, artifactType: \"marketing_plan\")", source, StringComparison.Ordinal);
+        Assert.Contains("Create plan with Maya", source, StringComparison.Ordinal);
+        Assert.Contains("planWorkshopDraft", source, StringComparison.Ordinal);
+        Assert.Contains("UNSAVED WORKSHOP DRAFT", source, StringComparison.Ordinal);
+        Assert.Contains("section=Plans", workshop, StringComparison.Ordinal);
     }
 
     private static string Read(params string[] parts) => File.ReadAllText(Path.Combine([RepositoryRoot(), .. parts]));

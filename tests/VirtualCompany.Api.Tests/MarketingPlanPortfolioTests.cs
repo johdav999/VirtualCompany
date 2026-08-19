@@ -135,8 +135,14 @@ public sealed class MarketingPlanPortfolioTests
             Start, Start.AddMonths(3), 50_000, "SEK", [objective.Id],
             [new MarketingPlanSegmentSelection(segmentVersion.Id, MarketingPlanSegmentRoles.Primary, 1, "Approved target", "Create qualified demand")],
             "Use the approved strategy and audience.", ["strategy-source", "segment-source"], [], [], [], "plan:autumn", null);
-        var created = await service.CreateGroundedPlanAsync(companyId, userId, planRequest, default);
-        var repeated = await service.CreateGroundedPlanAsync(companyId, userId, planRequest, default);
+        MarketingPlanDetailDto created;
+        MarketingPlanDetailDto repeated;
+        await using (var guidedCommitTransaction = await db.Database.BeginTransactionAsync())
+        {
+            created = await service.CreateGroundedPlanAsync(companyId, userId, planRequest, default);
+            repeated = await service.CreateGroundedPlanAsync(companyId, userId, planRequest, default);
+            await guidedCommitTransaction.CommitAsync();
+        }
 
         Assert.Equal(created.Summary.Id, repeated.Summary.Id);
         Assert.Null(await service.GetPlanPortfolioAsync(otherCompanyId, created.Summary.Id, default));

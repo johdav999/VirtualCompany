@@ -8,6 +8,7 @@
 @inject GuidedWorkApiClient Api
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
+@inject ILogger<GuidedWorkSession> Logger
 @inject IStringLocalizer<GuidedWorkResources> Text
 
 <PageTitle>@(session is null ? Text["Loading"] : $"{session.ArtifactLabel} {Text["Workshop"]}")</PageTitle>
@@ -30,7 +31,10 @@ else
             </div>
             <div class="guided-header-actions">
                 <a class="guided-header-action" href="@($"/agents/{AgentId}/chat?companyId={CompanyId}")"><span class="bi bi-chat-left-text" aria-hidden="true"></span>@Text["BackChat"]</a>
-                <button class="guided-header-action guided-header-action--danger" type="button" disabled="@busy" @onclick="CancelAsync"><span class="bi bi-x-circle" aria-hidden="true"></span>@Text["Cancel"]</button>
+                @if (session.Status is not "completed" and not "cancelled")
+                {
+                    <button class="guided-header-action guided-header-action--danger" type="button" disabled="@busy" @onclick="CancelAsync"><span class="bi bi-x-circle" aria-hidden="true"></span>@Text["Cancel"]</button>
+                }
             </div>
         </header>
         @if (!string.IsNullOrWhiteSpace(notice)) { <div class="guided-notice guided-notice--success" role="status"><span class="bi bi-check-circle" aria-hidden="true"></span>@notice</div> }
@@ -81,11 +85,34 @@ else
                             {
                                 <button class="guided-voice-secondary" type="button" disabled="@busy" @onclick="ToggleMuteAsync"><span class="bi @(voiceMuted ? "bi-mic" : "bi-mic-mute")"></span> @(voiceMuted ? Text["UnmuteVoice"] : Text["MuteVoice"])</button>
                                 <button class="guided-voice-secondary" type="button" disabled="@(busy || voiceState != "speaking")" @onclick="InterruptVoiceAsync"><span class="bi bi-pause-circle"></span> @Text["InterruptVoice"]</button>
+                                @if (voiceMicrophones.Count > 0)
+                                {
+                                    <label class="guided-microphone-picker">
+                                        <span>@Text["Microphone"]</span>
+                                        <select value="@selectedVoiceMicrophoneId" disabled="@busy" @onchange="ChangeMicrophoneAsync">
+                                            @foreach (var microphone in voiceMicrophones)
+                                            {
+                                                <option value="@microphone.DeviceId">@microphone.Label</option>
+                                            }
+                                        </select>
+                                    </label>
+                                }
                                 <span class="guided-voice-state" role="status" aria-live="polite">@VoiceStateLabel()</span>
+                                @if (voiceSignalState == "silent")
+                                {
+                                    <span class="guided-microphone-warning" role="alert"><span class="bi bi-exclamation-circle" aria-hidden="true"></span>@Text["NoMicrophoneSignal"]</span>
+                                }
                             }
                         </div>
                         <small class="guided-voice-privacy">@Text["VoicePrivacy"]</small>
                     </form>
+                }
+                else if (session.Status == "cancelled")
+                {
+                    <section class="guided-terminal" role="status" aria-labelledby="guided-cancelled-title">
+                        <div><h2 id="guided-cancelled-title">@Text["CancelledTitle"]</h2><p>@Text["CancelledHelp"]</p></div>
+                        <button class="btn btn-primary" type="button" disabled="@busy" @onclick="RestartAsync"><span class="bi bi-arrow-clockwise" aria-hidden="true"></span>@Text["StartNewWorkshop"]</button>
+                    </section>
                 }
             </div>
             <div class="guided-workspace__resizer" role="separator" aria-orientation="vertical" aria-label="@Text["ResizeWorkshopPanels"]" title="@Text["ResizeWorkshopPanelsHint"]" tabindex="0">
@@ -98,6 +125,10 @@ else
                     {
                         <strong class="guided-complete"><span class="bi bi-check-circle-fill" aria-hidden="true"></span>@Text["Completed"]</strong>
                         @if (ArtifactDestination() is { } destination) { <a class="btn btn-sm btn-primary" href="@destination">Open saved result</a> }
+                    }
+                    else if (session.Status == "cancelled")
+                    {
+                        <strong class="guided-cancelled"><span class="bi bi-x-circle-fill" aria-hidden="true"></span>@Text["CancelledTitle"]</strong>
                     }
                     else
                     {
@@ -126,9 +157,17 @@ else
     [SupplyParameterFromQuery(Name="companyId")] public Guid? CompanyId { get; set; }
     [SupplyParameterFromQuery(Name="sessionId")] public Guid? SessionId { get; set; }
     [SupplyParameterFromQuery(Name="targetId")] public Guid? TargetArtifactId { get; set; }
-    private GuidedWorkSessionViewModel? session; private GuidedWorkReviewViewModel? review; private List<GuidedWorkshopDocumentViewModel> workshopDocuments=[];
-    private List<GuidedFieldChangeViewModel> changes = []; private readonly HashSet<string> voiceEvents = new(StringComparer.Ordinal); private readonly HashSet<string> persistedAgentVoiceResponses=new(StringComparer.Ordinal); private readonly SemaphoreSlim voiceTurnLock=new(1,1); private readonly CancellationTokenSource refreshCancellation=new(); private Task? refreshTask; private string message = ""; private string liveUserTranscript = ""; private string liveAgentTranscript = ""; private string? liveAgentTranscriptResponseId; private string? voiceWorkTitle; private string? voiceWorkDetail; private string? error; private string? actionError; private string? notice; private string voiceState="ended"; private bool liveAgentTranscriptIsFinal; private bool scrollLiveTranscript; private bool resizeInitialized; private bool loading = true; private bool busy; private bool documentsBusy; private bool documentsCollapsed; private bool voiceActive; private bool voiceMuted; private IJSObjectReference? voiceModule; private IJSObjectReference? resizeModule; private DotNetObjectReference<GuidedWorkSession>? selfReference;
-    protected override Task OnParametersSetAsync() => LoadAsync();
+    private GuidedWorkSessionViewModel? session; private GuidedWorkReviewViewModel? review; private List<GuidedWorkshopDocumentViewModel> workshopDocuments=[]; private List<VoiceMicrophoneOption> voiceMicrophones=[];
+    private List<GuidedFieldChangeViewModel> changes = []; private readonly HashSet<string> voiceEvents = new(StringComparer.Ordinal); private readonly HashSet<string> persistedAgentVoiceResponses=new(StringComparer.Ordinal); private readonly SemaphoreSlim voiceTurnLock=new(1,1); private readonly CancellationTokenSource refreshCancellation=new(); private Task? refreshTask; private string message = ""; private string liveUserTranscript = ""; private string liveAgentTranscript = ""; private string? liveAgentTranscriptResponseId; private string? voiceWorkTitle; private string? voiceWorkDetail; private string? error; private string? actionError; private string? notice; private string voiceState="ended"; private string voiceSignalState="waiting"; private string selectedVoiceMicrophoneId=""; private bool liveAgentTranscriptIsFinal; private bool scrollLiveTranscript; private bool resizeInitialized; private bool loading = true; private bool busy; private bool documentsBusy; private bool documentsCollapsed; private bool voiceActive; private bool voiceMuted; private IJSObjectReference? voiceModule; private IJSObjectReference? resizeModule; private DotNetObjectReference<GuidedWorkSession>? selfReference;
+    protected override Task OnParametersSetAsync() => IsCurrentWorkshopRoute() ? LoadAsync() : Task.CompletedTask;
+    private bool IsCurrentWorkshopRoute()
+    {
+        var relativePath = Navigation.ToBaseRelativePath(Navigation.Uri);
+        var suffixIndex = relativePath.IndexOfAny(['?', '#']);
+        var path = (suffixIndex >= 0 ? relativePath[..suffixIndex] : relativePath).Trim('/');
+        var expectedPath = $"agents/{AgentId:D}/workshops/{Uri.EscapeDataString(ArtifactType)}";
+        return string.Equals(Uri.UnescapeDataString(path), Uri.UnescapeDataString(expectedPath), StringComparison.OrdinalIgnoreCase);
+    }
     private async Task LoadAsync() { loading = true; error = null; try { if (CompanyId is not Guid companyId) throw new InvalidOperationException(Text["SelectCompanyFirst"]); if(SessionId is Guid id){session=await Api.GetAsync(companyId,id);if(!session.ArtifactType.Equals(ArtifactType,StringComparison.OrdinalIgnoreCase)){session=await Api.StartAsync(companyId,AgentId,ArtifactType,TargetArtifactId);Navigation.NavigateTo($"/agents/{AgentId}/workshops/{ArtifactType}?companyId={companyId}&sessionId={session.Id}",true);return;}}else{session=await Api.StartAsync(companyId,AgentId,ArtifactType,TargetArtifactId);Navigation.NavigateTo($"/agents/{AgentId}/workshops/{ArtifactType}?companyId={companyId}&sessionId={session.Id}",true);return;}if(session.Capabilities.SupportsDocumentAttachments)await LoadDocumentsAsync(); } catch(Exception ex){error=ex.Message;} finally{loading=false;} }
     private async Task LoadDocumentsAsync(){if(session is null||CompanyId is not Guid companyId)return;documentsBusy=true;actionError=null;try{workshopDocuments=await Api.DocumentsAsync(companyId,session.Id);}catch(Exception ex){actionError=ex.Message;}finally{documentsBusy=false;}}
     private async Task UploadDocumentAsync(InputFileChangeEventArgs args){if(session is null||CompanyId is not Guid companyId)return;documentsBusy=true;actionError=null;try{var file=args.File;await using var stream=file.OpenReadStream(10*1024*1024);await Api.UploadDocumentAsync(companyId,session.Id,stream,file.Name,file.ContentType);workshopDocuments=await Api.DocumentsAsync(companyId,session.Id);notice=voiceActive?Text["DocumentUploadedVoiceHint"]:Text["DocumentUploaded"];}catch(Exception ex){actionError=ex.Message;}finally{documentsBusy=false;}}
@@ -139,13 +178,17 @@ else
     private Task PrepareReviewAsync() => RunAsync(async () => { if(session is null || CompanyId is not Guid companyId)return;var clientRequestId=Guid.NewGuid();review=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.ReviewAsync(companyId,session.Id,version,clientRequestId));session=review.Session; });
     private Task CommitAsync() => RunAsync(async () => { if(session is null || review is null || CompanyId is not Guid companyId)return; var result=await Api.CommitAsync(companyId,session.Id,review.ReviewToken,session.Version); session=result.Session; notice=result.Summary; review=null; await StopVoiceAsync(); });
     private Task CancelAsync() => RunAsync(async () => { if(session is null || CompanyId is not Guid companyId)return;var clientRequestId=Guid.NewGuid();session=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.CancelAsync(companyId,session.Id,version,clientRequestId));await StopVoiceAsync(); });
-    private async Task ToggleVoiceAsync() { if(session is null || CompanyId is null)return; try{voiceModule??=await JS.InvokeAsync<IJSObjectReference>("import","./js/guided-realtime.js?v=20260814-final-response-persistence");if(voiceActive){await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());voiceActive=false;ClearVoiceWork();return;}selfReference??=DotNetObjectReference.Create(this);await voiceModule.InvokeAsync<object>("start",selfReference,CompanyId.Value.ToString(),session.Id.ToString());voiceActive=true;notice=Text["VoiceConnected"];}catch(Exception ex){voiceActive=false;ClearVoiceWork();actionError=ex.Message;} }
+    private Task RestartAsync() => RunAsync(async () => { if(session is null || CompanyId is not Guid companyId)return;var restarted=await Api.StartAsync(companyId,AgentId,ArtifactType,session.TargetArtifactId);Navigation.NavigateTo($"/agents/{AgentId}/workshops/{ArtifactType}?companyId={companyId}&sessionId={restarted.Id}",forceLoad:true); });
+    private async Task ToggleVoiceAsync() { if(session is null || CompanyId is null)return; try{voiceModule??=await JS.InvokeAsync<IJSObjectReference>("import","./js/guided-realtime.js?v=20260819-microphone-picker-v4");if(voiceActive){await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());voiceActive=false;voiceMicrophones=[];voiceSignalState="waiting";ClearVoiceWork();return;}selfReference??=DotNetObjectReference.Create(this);var started=await voiceModule.InvokeAsync<VoiceStartResult>("start",selfReference,CompanyId.Value.ToString(),session.Id.ToString());voiceMicrophones=started.Microphones;selectedVoiceMicrophoneId=started.SelectedDeviceId;voiceSignalState="waiting";voiceActive=true;notice=Text["VoiceConnected"];}catch(Exception ex){voiceActive=false;voiceMicrophones=[];voiceSignalState="waiting";ClearVoiceWork();actionError=ex.Message;} }
+    private async Task ChangeMicrophoneAsync(ChangeEventArgs args){if(voiceModule is null||session is null||string.IsNullOrWhiteSpace(args.Value?.ToString()))return;try{var changed=await voiceModule.InvokeAsync<VoiceMicrophoneChangeResult>("changeMicrophone",session.Id.ToString(),args.Value!.ToString());voiceMicrophones=changed.Microphones;selectedVoiceMicrophoneId=changed.SelectedDeviceId;voiceSignalState="waiting";actionError=null;}catch(Exception ex){actionError=ex.Message;}await InvokeAsync(StateHasChanged);}
     private async Task ToggleMuteAsync(){if(voiceModule is null||session is null)return;voiceMuted=await voiceModule.InvokeAsync<bool>("setMuted",session.Id.ToString(),!voiceMuted);}
     private async Task InterruptVoiceAsync(){if(voiceModule is null||session is null)return;await voiceModule.InvokeVoidAsync("interrupt",session.Id.ToString());}
-    private async Task StopVoiceAsync(){ClearVoiceWork();if(!voiceActive||voiceModule is null||session is null)return;await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());voiceActive=false;}
+    private async Task StopVoiceAsync(){ClearVoiceWork();if(!voiceActive||voiceModule is null||session is null)return;await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());voiceActive=false;voiceMicrophones=[];voiceSignalState="waiting";}
     [JSInvokable] public async Task OnVoiceTranscript(string eventId,string transcript,bool interrupted,int durationMs){if(string.IsNullOrWhiteSpace(transcript))return;await voiceTurnLock.WaitAsync();try{if(!voiceEvents.Add(eventId)||session is null||CompanyId is not Guid companyId)return;var clientRequestId=VoiceRequestId(eventId);liveUserTranscript=transcript.Trim();scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);await RunAsync(async()=>{var result=await ExecuteWithVersionReconciliationAsync(companyId,version=>Api.TurnAsync(companyId,session.Id,liveUserTranscript,version,clientRequestId:clientRequestId,modality:"voice",providerEventId:eventId,interrupted:interrupted,durationMs:durationMs,transportVersion:"realtime-webrtc-v1"));session=result.Session;changes=result.Changes;liveUserTranscript="";scrollLiveTranscript=true;});await InvokeAsync(StateHasChanged);}finally{voiceTurnLock.Release();}}
     [JSInvokable] public async Task OnAgentVoiceTranscript(string responseId,string transcript,bool isFinal){if(string.IsNullOrWhiteSpace(responseId)||string.IsNullOrWhiteSpace(transcript))return;if(!string.Equals(liveAgentTranscriptResponseId,responseId,StringComparison.Ordinal)){liveAgentTranscriptResponseId=responseId;liveAgentTranscript="";}liveAgentTranscript=transcript;liveAgentTranscriptIsFinal=isFinal;scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);if(!isFinal||!persistedAgentVoiceResponses.Add(responseId)||session is null||CompanyId is not Guid companyId)return;try{var saved=await Api.RecordVoiceAgentMessageAsync(companyId,session.Id,responseId,transcript.Trim());if(!session.Messages.Any(x=>x.Id==saved.Id))session.Messages.Add(saved);liveAgentTranscript="";scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);}catch(Exception ex){persistedAgentVoiceResponses.Remove(responseId);actionError=ex.Message;await InvokeAsync(StateHasChanged);}}
     [JSInvokable] public Task OnVoiceWorkState(string? toolName,string? phase,bool active){if(!active){ClearVoiceWork();}else if(string.Equals(phase,"preparing",StringComparison.Ordinal)){voiceWorkTitle=Text["VoiceWorkPreparingTitle"];voiceWorkDetail=Text["VoiceWorkPreparingDetail"];}else{(voiceWorkTitle,voiceWorkDetail)=toolName switch{"lookup_permitted_evidence"=>(Text["VoiceWorkResearchTitle"].Value,Text["VoiceWorkResearchDetail"].Value),"search_workshop_documents"=>(Text["VoiceWorkDocumentsTitle"].Value,Text["VoiceWorkDocumentsDetail"].Value),"get_current_safe_draft"=>(Text["VoiceWorkDraftTitle"].Value,Text["VoiceWorkDraftDetail"].Value),"propose_draft_patch" or "mark_field_unknown" or "set_draft_field_status"=>(Text["VoiceWorkUpdateTitle"].Value,Text["VoiceWorkUpdateDetail"].Value),_=>(Text["VoiceWorkDefaultTitle"].Value,Text["VoiceWorkDefaultDetail"].Value)};}liveAgentTranscript="";liveAgentTranscriptResponseId=null;scrollLiveTranscript=true;return InvokeAsync(StateHasChanged);}
+    [JSInvokable] public Task OnVoiceDiagnostics(bool trackEnabled,bool trackMuted,string trackState,string connectionState,long? bytesSent,long? packetsSent,double? audioLevel,double? totalAudioEnergy,bool bytesIncreasing,string signalState){Logger.LogInformation("Guided workshop microphone transport. SessionId: {SessionId}, TrackEnabled: {TrackEnabled}, TrackMuted: {TrackMuted}, TrackState: {TrackState}, ConnectionState: {ConnectionState}, BytesSent: {BytesSent}, PacketsSent: {PacketsSent}, AudioLevel: {AudioLevel}, TotalAudioEnergy: {TotalAudioEnergy}, BytesIncreasing: {BytesIncreasing}, SignalState: {SignalState}.",session?.Id,trackEnabled,trackMuted,trackState,connectionState,bytesSent,packetsSent,audioLevel,totalAudioEnergy,bytesIncreasing,signalState);return OnVoiceSignalState(signalState);}
+    [JSInvokable] public Task OnVoiceSignalState(string state){if(string.Equals(voiceSignalState,state,StringComparison.Ordinal))return Task.CompletedTask;voiceSignalState=state;return InvokeAsync(StateHasChanged);}
     [JSInvokable] public Task OnVoiceState(string state,string? detail){voiceState=state;voiceActive=state is "active" or "connected" or "connecting" or "listening" or "thinking" or "speaking" or "muted" or "reconnecting";voiceMuted=state=="muted";if(state is "failed" or "disconnected" or "error" or "unavailable" or "permission_denied" or "ended")ClearVoiceWork();if(state is "failed" or "disconnected" or "error" or "unavailable" or "permission_denied")actionError=detail??Text["VoiceEnded"];return InvokeAsync(StateHasChanged);}
     protected override async Task OnAfterRenderAsync(bool firstRender){if(firstRender)refreshTask=RefreshSessionAsync(refreshCancellation.Token);if(!resizeInitialized&&session is not null){try{resizeModule??=await JS.InvokeAsync<IJSObjectReference>("import","./js/guided-workspace-resize.js?v=20260813");await resizeModule.InvokeVoidAsync("initialize","guided-workspace-columns",$"guided-workshop-width:{ArtifactType}");resizeInitialized=true;}catch(JSDisconnectedException){}}if(!scrollLiveTranscript||voiceModule is null)return;scrollLiveTranscript=false;try{await voiceModule.InvokeVoidAsync("scrollTranscriptToEnd");}catch(JSDisconnectedException){}}
     private async Task RefreshSessionAsync(CancellationToken cancellationToken){using var timer=new PeriodicTimer(TimeSpan.FromSeconds(5));try{while(await timer.WaitForNextTickAsync(cancellationToken)){if(busy||session is null||CompanyId is not Guid companyId||session.Status is "completed" or "cancelled")continue;var latest=await Api.GetAsync(companyId,session.Id);if(latest.Version==session.Version)continue;session=latest;changes=[];scrollLiveTranscript=true;await InvokeAsync(StateHasChanged);}}catch(OperationCanceledException)when(cancellationToken.IsCancellationRequested){}catch(Exception){} }
@@ -179,7 +222,11 @@ else
     {
         "marketing_segment" when CompanyId is Guid companyId => $"/marketing?companyId={companyId:D}&section=Segments",
         "marketing_strategy" when CompanyId is Guid companyId => $"/marketing?companyId={companyId:D}&section=Strategy",
+        "marketing_plan" when CompanyId is Guid companyId => $"/marketing?companyId={companyId:D}&section=Plans",
         _ => null
     };
+    public sealed record VoiceMicrophoneOption(string DeviceId,string Label);
+    public sealed record VoiceStartResult(string BindingId,string State,string SelectedDeviceId,List<VoiceMicrophoneOption> Microphones);
+    public sealed record VoiceMicrophoneChangeResult(string SelectedDeviceId,List<VoiceMicrophoneOption> Microphones);
     public async ValueTask DisposeAsync(){await refreshCancellation.CancelAsync();if(refreshTask is not null)try{await refreshTask;}catch{}refreshCancellation.Dispose();if(voiceModule is not null&&session is not null)try{await voiceModule.InvokeVoidAsync("stop",session.Id.ToString());}catch{}if(resizeModule is not null)try{await resizeModule.InvokeVoidAsync("dispose","guided-workspace-columns");}catch{}if(voiceModule is not null)try{await voiceModule.DisposeAsync();}catch(JSDisconnectedException){}if(resizeModule is not null)try{await resizeModule.DisposeAsync();}catch(JSDisconnectedException){}selfReference?.Dispose();voiceTurnLock.Dispose();}
 }

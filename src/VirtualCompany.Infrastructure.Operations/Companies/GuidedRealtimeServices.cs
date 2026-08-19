@@ -25,8 +25,10 @@ public sealed partial class GuidedDialogueOptions
     public string RealtimeModel { get; set; } = "gpt-realtime-2.1-mini";
     public string RealtimeVoice { get; set; } = "marin";
     public string RealtimeTranscriptionModel { get; set; } = "gpt-4o-mini-transcribe";
+    public string RealtimeTurnDetection { get; set; } = "server_vad";
+    public double RealtimeVadThreshold { get; set; } = 0.15;
     public string RealtimeTurnEagerness { get; set; } = "high";
-    public string RealtimeNoiseReduction { get; set; } = "far_field";
+    public string RealtimeNoiseReduction { get; set; } = "near_field";
     public bool RealtimeAutomaticInterruption { get; set; }
     public int MaxVoiceMinutes { get; set; } = 30;
     public int MaxVoiceReconnects { get; set; } = 2;
@@ -160,7 +162,7 @@ public sealed class GuidedRealtimeSidebandRegistry(IServiceScopeFactory scopes,I
     private async Task ConnectAsync(GuidedSidebandStart start,ISet<string> handledToolCalls,CancellationToken ct)
     {
         using var ws=new ClientWebSocket();ws.Options.SetRequestHeader("Authorization",$"Bearer {start.ApiKey}");await ws.ConnectAsync(new Uri($"wss://api.openai.com/v1/realtime?call_id={Uri.EscapeDataString(start.CallId)}"),ct);await MarkConnectedAsync(start.BindingId,ct);await SendAsync(ws,BuildSessionUpdate(configured.Value,start.SupportsDocumentSearch,start.SupportsResearch),ct);
-        logger.LogInformation("Guided Realtime session configured. BindingId: {BindingId}, SessionId: {SessionId}, TurnDetection: semantic_vad, Eagerness: {Eagerness}, NoiseReduction: {NoiseReduction}, AutomaticInterruption: {AutomaticInterruption}.",start.BindingId,start.SessionId,GuidedRealtimeSessionConfiguration.NormalizeEagerness(configured.Value.RealtimeTurnEagerness),GuidedRealtimeSessionConfiguration.NormalizeNoiseReduction(configured.Value.RealtimeNoiseReduction),configured.Value.RealtimeAutomaticInterruption);
+        logger.LogInformation("Guided Realtime session configured. BindingId: {BindingId}, SessionId: {SessionId}, TurnDetection: {TurnDetection}, VadThreshold: {VadThreshold}, Eagerness: {Eagerness}, NoiseReduction: {NoiseReduction}, AutomaticInterruption: {AutomaticInterruption}.",start.BindingId,start.SessionId,GuidedRealtimeSessionConfiguration.NormalizeTurnDetection(configured.Value.RealtimeTurnDetection),GuidedRealtimeSessionConfiguration.NormalizeVadThreshold(configured.Value.RealtimeVadThreshold),GuidedRealtimeSessionConfiguration.NormalizeEagerness(configured.Value.RealtimeTurnEagerness),GuidedRealtimeSessionConfiguration.NormalizeNoiseReduction(configured.Value.RealtimeNoiseReduction),configured.Value.RealtimeAutomaticInterruption);
         var buffer=new byte[8192];using var message=new MemoryStream();while(ws.State==WebSocketState.Open&&!ct.IsCancellationRequested){var result=await ws.ReceiveAsync(buffer,ct);if(result.MessageType==WebSocketMessageType.Close)break;message.Write(buffer,0,result.Count);if(!result.EndOfMessage)continue;if(message.Length>64*1024)throw new InvalidOperationException("Realtime event exceeded the safe size limit.");var json=Encoding.UTF8.GetString(message.ToArray());message.SetLength(0);await HandleEventAsync(ws,start,handledToolCalls,json,ct);}
     }
     private async Task HandleEventAsync(ClientWebSocket ws,GuidedSidebandStart start,ISet<string> handledToolCalls,string json,CancellationToken ct)
@@ -193,7 +195,10 @@ public sealed class GuidedRealtimeSidebandRegistry(IServiceScopeFactory scopes,I
             logger.LogWarning("Guided Realtime provider error. BindingId: {BindingId}, SessionId: {SessionId}, EventId: {EventId}, ErrorType: {ErrorType}, ErrorCode: {ErrorCode}.",start.BindingId,start.SessionId,eventId,errorType,errorCode);
             return;
         }
-        logger.LogDebug("Guided Realtime speaking lifecycle event {EventType}. BindingId: {BindingId}, SessionId: {SessionId}, EventId: {EventId}, ResponseId: {ResponseId}, Status: {Status}, StatusReason: {StatusReason}.",type,start.BindingId,start.SessionId,eventId,responseId,status,statusReason);
+        if(type is "input_audio_buffer.speech_started" or "input_audio_buffer.speech_stopped" or "conversation.item.input_audio_transcription.completed")
+            logger.LogInformation("Guided Realtime input lifecycle event {EventType}. BindingId: {BindingId}, SessionId: {SessionId}, EventId: {EventId}.",type,start.BindingId,start.SessionId,eventId);
+        else
+            logger.LogDebug("Guided Realtime speaking lifecycle event {EventType}. BindingId: {BindingId}, SessionId: {SessionId}, EventId: {EventId}, ResponseId: {ResponseId}, Status: {Status}, StatusReason: {StatusReason}.",type,start.BindingId,start.SessionId,eventId,responseId,status,statusReason);
     }
     internal static string BuildSessionUpdate(GuidedDialogueOptions o,bool supportsDocumentSearch=true,bool supportsResearch=true)
     {
