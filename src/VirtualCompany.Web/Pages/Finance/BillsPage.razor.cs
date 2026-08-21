@@ -32,6 +32,8 @@ public partial class BillsPage : FinancePageBase
     private bool IsEnrichmentSubmitting { get; set; }
     private bool IsEnrichmentSyncSubmitting { get; set; }
     private bool IsReconciliationSubmitting { get; set; }
+    private bool IsNativeAccountingLoading { get; set; }
+    private bool IsNativeAccountingSubmitting { get; set; }
     private string? ListErrorMessage { get; set; }
     private string? DetailErrorMessage { get; set; }
     private string? PaymentProposalMessage { get; set; }
@@ -41,8 +43,20 @@ public partial class BillsPage : FinancePageBase
     private string? CorrectionActionMessage { get; set; }
     private string? EnrichmentMessage { get; set; }
     private string? SubscriptionContextMessage { get; set; }
+    private string? NativeAccountingMessage { get; set; }
     private string ActiveBillFilter { get; set; } = BillLifecycleFilters.All;
     private SupplierBillSubscriptionContextResponse? BillSubscriptionContext { get; set; }
+    private SupplierBillAccountingReferenceDataResponse? NativeAccountingReferenceData { get; set; }
+    private SupplierBillAccountingPreviewResponse? NativeAccountingPreview { get; set; }
+    private SupplierBillAccountingStateResponse? NativeAccountingState { get; set; }
+    private Guid NativeAccountingPeriodId { get; set; }
+    private string NativeAccountingSeriesCode { get; set; } = "G";
+    private Guid NativeAccountingCostAccountId { get; set; }
+    private string NativeAccountingTaxRuleKey { get; set; } = string.Empty;
+    private decimal NativeAccountingLineAmount { get; set; }
+    private decimal? NativeAccountingExchangeRate { get; set; }
+    private string NativeCreditNoteNumber { get; set; } = string.Empty;
+    private string NativeCreditNoteReason { get; set; } = string.Empty;
 
     private IReadOnlyList<FinanceBillResponse> FilteredBills =>
         Bills.Where(BillMatchesActiveFilter).ToList();
@@ -125,7 +139,10 @@ public partial class BillsPage : FinancePageBase
             SubscriptionContextMessage = null;
             if (SelectedBill is not null)
             {
-                await LoadSubscriptionContextAsync(companyId, billId);
+                NativeAccountingState = SelectedBill.Accounting;
+                await Task.WhenAll(
+                    LoadSubscriptionContextAsync(companyId, billId),
+                    LoadNativeAccountingAsync(companyId, billId));
             }
 
             if (SelectedBill is null)
@@ -163,6 +180,150 @@ public partial class BillsPage : FinancePageBase
             IsSubscriptionContextLoading = false;
         }
     }
+
+    private async Task LoadNativeAccountingAsync(Guid companyId, Guid billId)
+    {
+        IsNativeAccountingLoading = true;
+        NativeAccountingMessage = null;
+        NativeAccountingPreview = null;
+        try
+        {
+            NativeAccountingReferenceData = await FinanceApiClient.GetSupplierBillAccountingReferenceDataAsync(companyId, billId);
+            NativeAccountingState = SelectedBill?.Accounting ?? await FinanceApiClient.GetSupplierBillAccountingAsync(companyId, billId);
+            NativeAccountingPeriodId = NativeAccountingReferenceData.DefaultPeriodId ?? NativeAccountingReferenceData.OpenPeriods.FirstOrDefault()?.Id ?? Guid.Empty;
+            NativeAccountingSeriesCode = NativeAccountingReferenceData.DefaultVoucherSeriesCode ?? NativeAccountingReferenceData.VoucherSeries.FirstOrDefault()?.Code ?? "G";
+            NativeAccountingCostAccountId = NativeAccountingReferenceData.SuggestedCostAccountId ?? Guid.Empty;
+            NativeAccountingTaxRuleKey = NativeAccountingReferenceData.DefaultTaxRuleKey ?? NativeAccountingReferenceData.TaxRules.FirstOrDefault()?.Key ?? string.Empty;
+            NativeAccountingLineAmount = NativeAccountingReferenceData.GrossAmount;
+            NativeAccountingExchangeRate = string.Equals(NativeAccountingReferenceData.DocumentCurrency, NativeAccountingReferenceData.BaseCurrency, StringComparison.OrdinalIgnoreCase)
+                ? 1m
+                : null;
+            if (NativeAccountingState?.Status == "posted" && string.IsNullOrWhiteSpace(NativeCreditNoteNumber) && SelectedBill is not null)
+                NativeCreditNoteNumber = $"CN-{SelectedBill.BillNumber}";
+        }
+        catch (FinanceApiException ex)
+        {
+            NativeAccountingReferenceData = null;
+            NativeAccountingMessage = ex.Message;
+        }
+        finally
+        {
+            IsNativeAccountingLoading = false;
+        }
+    }
+
+    private SupplierBillAccountingApiRequest BuildNativeAccountingRequest() => new()
+    {
+        FiscalPeriodId = NativeAccountingPeriodId,
+        VoucherSeriesCode = NativeAccountingSeriesCode,
+        ExchangeRate = NativeAccountingExchangeRate,
+        Lines =
+        [
+            new SupplierBillAccountingLineApiRequest
+            {
+                Description = SelectedBill is null ? "Supplier bill" : $"Supplier bill {SelectedBill.BillNumber}",
+                Amount = NativeAccountingLineAmount,
+                CostAccountId = NativeAccountingCostAccountId,
+                TaxRuleKey = NativeAccountingTaxRuleKey
+            }
+        ]
+    };
+
+    private async Task PreviewNativeAccountingAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null) return;
+        IsNativeAccountingSubmitting = true;
+        NativeAccountingMessage = null;
+        try
+        {
+            NativeAccountingPreview = await FinanceApiClient.PreviewSupplierBillAccountingAsync(
+                companyId, SelectedBill.Id, BuildNativeAccountingRequest());
+            NativeAccountingMessage = NativeAccountingPreview.IsReady
+                ? "The entry is balanced and ready to submit for approval."
+                : NativeAccountingPreview.Issues.FirstOrDefault(x => x.IsBlocking)?.Explanation;
+        }
+        catch (FinanceApiException ex) { NativeAccountingMessage = ex.Message; }
+        finally { IsNativeAccountingSubmitting = false; }
+    }
+
+    private async Task SubmitNativeAccountingAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null) return;
+        IsNativeAccountingSubmitting = true;
+        NativeAccountingMessage = null;
+        try
+        {
+            var input = BuildNativeAccountingRequest();
+            var result = await FinanceApiClient.SubmitSupplierBillAccountingAsync(companyId, SelectedBill.Id, new()
+            {
+                FiscalPeriodId = input.FiscalPeriodId,
+                VoucherSeriesCode = input.VoucherSeriesCode,
+                ExchangeRate = input.ExchangeRate,
+                Lines = input.Lines,
+                ExpectedVersion = NativeAccountingState?.SourceVersion,
+                IdempotencyKey = $"supplier-bill-accounting-submit:{SelectedBill.Id:N}:{Guid.NewGuid():N}"
+            });
+            NativeAccountingState = result.State;
+            SelectedBill.Accounting = result.State;
+            NativeAccountingMessage = result.IsIdempotentReplay
+                ? "The existing approval request is still active."
+                : "Approval was requested for this exact bill version and source document.";
+        }
+        catch (FinanceApiException ex) { NativeAccountingMessage = ex.Message; }
+        finally { IsNativeAccountingSubmitting = false; }
+    }
+
+    private async Task PostNativeAccountingAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null || NativeAccountingState?.SourceVersion is not long version) return;
+        IsNativeAccountingSubmitting = true;
+        NativeAccountingMessage = null;
+        try
+        {
+            var result = await FinanceApiClient.PostSupplierBillAccountingAsync(companyId, SelectedBill.Id, new()
+            {
+                ExpectedVersion = version,
+                IdempotencyKey = $"supplier-bill-accounting-post:{SelectedBill.Id:N}:v{version}"
+            });
+            NativeAccountingState = result.State;
+            SelectedBill.Accounting = result.State;
+            NativeAccountingPreview = null;
+            NativeAccountingMessage = result.IsIdempotentReplay
+                ? "This bill was already posted. The existing voucher is shown below."
+                : "Posted in Virtual Company. Fortnox export remains a separate optional action.";
+        }
+        catch (FinanceApiException ex) { NativeAccountingMessage = ex.Message; }
+        finally { IsNativeAccountingSubmitting = false; }
+    }
+
+    private async Task CreateNativeCreditNoteAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedBill is null ||
+            string.IsNullOrWhiteSpace(NativeCreditNoteNumber) || string.IsNullOrWhiteSpace(NativeCreditNoteReason)) return;
+        IsNativeAccountingSubmitting = true;
+        NativeAccountingMessage = null;
+        try
+        {
+            var input = BuildNativeAccountingRequest();
+            var result = await FinanceApiClient.CreateNativeSupplierCreditNoteAsync(companyId, SelectedBill.Id, new()
+            {
+                CreditNoteNumber = NativeCreditNoteNumber,
+                BillDate = DateOnly.FromDateTime(DateTime.Today),
+                DueDate = DateOnly.FromDateTime(DateTime.Today),
+                Reason = NativeCreditNoteReason,
+                IdempotencyKey = $"supplier-credit:{SelectedBill.Id:N}:{NativeCreditNoteNumber.Trim().ToLowerInvariant()}",
+                Accounting = input
+            });
+            NativeAccountingMessage = $"Credit note {NativeCreditNoteNumber} was created and sent for approval.";
+            NativeCreditNoteReason = string.Empty;
+            await LoadBillsAsync(companyId);
+        }
+        catch (FinanceApiException ex) { NativeAccountingMessage = ex.Message; }
+        finally { IsNativeAccountingSubmitting = false; }
+    }
+
+    private string BuildNativeJournalHref(Guid journalId) =>
+        FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingJournal}?journalId={journalId:D}", AccessState.CompanyId);
 
     private async Task DecideSubscriptionMatchAsync(Guid matchId, bool confirm)
     {

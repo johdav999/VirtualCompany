@@ -1,0 +1,13 @@
+# Customer Invoice Native Accounting Reference Prompt
+
+Use case: ui-mockup
+Asset type: desktop SaaS reference screenshot for the Virtual Company Finance customer-invoices page
+Primary request: Show a production customer-invoice list/detail workspace where native accounting status is clearly separate from payment, delivery, approval, and optional Fortnox export status. The selected approved invoice is ready to post to the internal ledger and has a visible accounting preview.
+Scene/backdrop: Virtual Company desktop app with a 240px white left sidebar, light `#F7F9FC` workspace, Finance page header, and compact Finance secondary navigation.
+Subject: A two-column operational page. Left card uses roughly 62% width and lists customer invoices with invoice number, customer, issue/due dates, amount, payment status, and a separate plain-English accounting badge. Right detail card uses roughly 38% width and shows selected invoice INV-1042 for Northstar Studio, amount USD 1,250.00, document and payment facts, then a prominent "Accounting" card.
+Accounting card content: status badge "Ready to post"; balanced preview rows "Accounts receivable 1,250.00", "Sales revenue 1,000.00", and "Tax payable 250.00"; policy label "Country-neutral · 1.0.0"; evidence label "Invoice document attached"; primary action "Post to ledger". Below it show optional provider state "Fortnox · Not exported" as a separate subdued row. Also show empty/error-safe structure through concise helper text, not extra modal overlays.
+Style/medium: high-fidelity clean modern SaaS UI, existing Virtual Company design system, Inter typography, white rounded 14–16px cards, subtle borders and shadows, restrained blue primary accent, green success, amber warning, dense but readable rows, calm executive control-room tone.
+Composition/framing: 16:10 desktop screenshot, full application frame, strong hierarchy, 24–32px page padding, responsive-friendly card structure, no decorative illustration.
+Text (verbatim): "Customer invoices", "Ready to post", "Accounting", "Post to ledger", "Accounts receivable", "Sales revenue", "Tax payable", "Invoice document attached", "Fortnox · Not exported".
+Constraints: Make native accounting visibly independent from the provider. Preserve separate operational, payment, approval, accounting, and export concepts. Use plain English. Match the existing product rather than inventing a new visual language.
+Avoid: dark mode, gradients, futuristic visuals, chart-heavy layout, raw enums, technical identifiers, oversized typography, generic admin-console styling, static-image-in-UI treatment, watermarks.

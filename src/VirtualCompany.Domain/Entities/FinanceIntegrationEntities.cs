@@ -418,7 +418,10 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
         string payloadHash,
         string sanitizedPayloadJson,
         string? correlationId,
-        DateTime createdUtc)
+        DateTime createdUtc,
+        DateOnly? accountingDate = null,
+        string? authorityOperation = null,
+        Guid? authorityPeriodId = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
@@ -432,6 +435,7 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
         PayloadHash = NormalizeRequired(payloadHash, nameof(payloadHash), 128).ToLowerInvariant();
         SanitizedPayloadJson = NormalizeRequired(sanitizedPayloadJson, nameof(sanitizedPayloadJson), 8000);
         CorrelationId = NormalizeOptional(correlationId, nameof(correlationId), 128);
+        SetAuthorityContext(accountingDate, authorityOperation, authorityPeriodId);
         Status = FinanceIntegrationWriteCommandRecordStatuses.AwaitingApproval;
         RetryPolicy = FinanceIntegrationWriteRetryPolicies.ForCommandType(CommandType);
         RetrySupported = RetryPolicy != FinanceIntegrationWriteRetryPolicyValues.None;
@@ -462,6 +466,9 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
     public string RetryPolicy { get; private set; } = FinanceIntegrationWriteRetryPolicyValues.None;
     public int ExecutionAttemptCount { get; private set; }
     public string? CorrelationId { get; private set; }
+    public DateOnly? AccountingDate { get; private set; }
+    public string? AuthorityOperation { get; private set; }
+    public Guid? AuthorityPeriodId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? ApprovedUtc { get; private set; }
@@ -470,6 +477,20 @@ public sealed class FinanceIntegrationWriteCommandRecord : ICompanyOwnedEntity
     public DateTime? FailedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceIntegrationConnection? Connection { get; private set; }
+
+    public void SetAuthorityContext(DateOnly? accountingDate, string? authorityOperation, Guid? authorityPeriodId)
+    {
+        if (accountingDate.HasValue != !string.IsNullOrWhiteSpace(authorityOperation))
+        {
+            throw new ArgumentException("AccountingDate and AuthorityOperation must be provided together.");
+        }
+
+        AccountingDate = accountingDate;
+        AuthorityOperation = string.IsNullOrWhiteSpace(authorityOperation)
+            ? null
+            : AccountingAuthorityOperationValues.Normalize(authorityOperation);
+        AuthorityPeriodId = authorityPeriodId == Guid.Empty ? null : authorityPeriodId;
+    }
 
     public void AttachApproval(Guid approvalId, DateTime updatedUtc)
     {

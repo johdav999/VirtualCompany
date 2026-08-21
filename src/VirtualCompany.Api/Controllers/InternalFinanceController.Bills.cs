@@ -43,9 +43,15 @@ public sealed partial class InternalFinanceController
         Guid billId,
         CancellationToken cancellationToken) =>
         await ExecuteReadOptionalAsync(
-            () => _financeReadService.GetBillDetailAsync(
-                new GetFinanceBillDetailQuery(companyId, billId),
-                cancellationToken),
+            async () =>
+            {
+                var detail = await _financeReadService.GetBillDetailAsync(
+                    new GetFinanceBillDetailQuery(companyId, billId), cancellationToken);
+                if (detail is null) return null;
+                var accounting = await _supplierBillAccountingService.GetAsync(
+                    new GetSupplierBillAccountingQuery(companyId, billId), cancellationToken);
+                return detail with { Accounting = accounting };
+            },
             "Finance bill was not found.");
 
     [HttpPost("bills/{billId:guid}/payment-proposal")]

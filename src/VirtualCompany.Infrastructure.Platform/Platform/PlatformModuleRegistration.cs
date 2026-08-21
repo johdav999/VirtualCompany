@@ -5,6 +5,8 @@ using Microsoft.Extensions.Caching.StackExchangeRedis;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.FileProviders;
+using Microsoft.Extensions.Hosting;
 using StackExchange.Redis;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
@@ -32,6 +34,7 @@ public static class PlatformModuleRegistration
             configuration.GetConnectionString("VirtualCompanyDb")
             ?? "Server=localhost,1433;Database=virtualcompany;User Id=sa;Password=YourStrong!Passw0rd;TrustServerCertificate=True;Encrypt=False;MultipleActiveResultSets=False";
 
+        services.TryAddSingleton<IHostEnvironment, ProductionInfrastructureHostEnvironment>();
         services.TryAddSingleton<TimeProvider>(TimeProvider.System);
         services.AddDataProtection();
         services.TryAddSingleton<IFieldEncryptionService, DataProtectionFieldEncryptionService>();
@@ -156,4 +159,12 @@ public static class PlatformModuleRegistration
         PostgreSql,
         Sqlite
     }
+}
+
+internal sealed class ProductionInfrastructureHostEnvironment : IHostEnvironment
+{
+    public string EnvironmentName { get; set; } = Environments.Production;
+    public string ApplicationName { get; set; } = "VirtualCompany";
+    public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+    public IFileProvider ContentRootFileProvider { get; set; } = new NullFileProvider();
 }

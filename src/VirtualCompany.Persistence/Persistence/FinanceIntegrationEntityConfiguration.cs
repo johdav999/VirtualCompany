@@ -252,6 +252,9 @@ internal sealed class FinanceIntegrationWriteCommandRecordEntityConfiguration : 
         builder.Property(x => x.SafeFailureSummary).HasColumnName("safe_failure_summary").HasMaxLength(1000);
         builder.Property(x => x.ExternalId).HasColumnName("external_id").HasMaxLength(256);
         builder.Property(x => x.CorrelationId).HasColumnName("correlation_id").HasMaxLength(128);
+        builder.Property(x => x.AccountingDate).HasColumnName("accounting_date");
+        builder.Property(x => x.AuthorityOperation).HasColumnName("authority_operation").HasMaxLength(64);
+        builder.Property(x => x.AuthorityPeriodId).HasColumnName("authority_period_id");
         builder.Property(x => x.ResponseStatusCode).HasColumnName("response_status_code");
         builder.Property(x => x.SafeResponseSummary).HasColumnName("safe_response_summary").HasMaxLength(1000);
         builder.Property(x => x.RetrySupported).HasColumnName("retry_supported").HasDefaultValue(false).IsRequired();
@@ -267,6 +270,7 @@ internal sealed class FinanceIntegrationWriteCommandRecordEntityConfiguration : 
         builder.HasIndex(x => new { x.CompanyId, x.PayloadHash, x.HttpMethod, x.Path, x.Status });
         builder.HasIndex(x => new { x.CompanyId, x.ApprovalId }).IsUnique().HasFilter("approval_id IS NOT NULL");
         builder.HasIndex(x => new { x.CompanyId, x.ConnectionId, x.CreatedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.AuthorityPeriodId, x.AccountingDate });
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.Connection)

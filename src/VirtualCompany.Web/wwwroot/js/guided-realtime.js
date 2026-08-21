@@ -1,3 +1,5 @@
+import { createConversationTurnController, parseTurnIntentResponse } from "./conversation-turn-controller.mjs?v=20260820-turn-control-v2";
+
 const sessions = new Map();
 const starts = new Map();
 const maxReconnects = 2;
@@ -54,7 +56,8 @@ async function startCore(dotnet, companyId, sessionId, reconnectAttempt) {
     audio.setAttribute("aria-hidden", "true");
     document.body.appendChild(audio);
     for (const track of media.getTracks()) pc.addTrack(track, media);
-    const state = { pc, media, audio, companyId, sessionId, dotnet, reconnectAttempt, bindingId: null, channel: null, muted: false, inputSuspended: false, toolContinuationPending: false, toolWorkActive: false, toolName: null, interrupted: false, speechStartedAt: null, speechStoppedAt: null, responseCreatedAt: null, audioStartedAt: null, lastSpeechDurationMs: 0, ending: false, responseId: null, responseInProgress: false, outputAudioActive: false, speakingLogged: false, agentTranscript: "", agentTranscriptResponseId: null, agentTranscriptUpdateTimer: null, reconnectScheduled: false, reconnectTimer: null, pageHideHandler: null, inputDiagnosticsTimer: null, lastOutboundBytes: null, lastInputEnergy: null, inputSignalDetected: false, silentDiagnosticsCount: 0 };
+    const state = { pc, media, audio, companyId, sessionId, dotnet, reconnectAttempt, bindingId: null, channel: null, muted: false, inputSuspended: false, toolContinuationPending: false, toolWorkActive: false, toolName: null, interrupted: false, speechStartedAt: null, speechStoppedAt: null, responseCreatedAt: null, audioStartedAt: null, lastSpeechDurationMs: 0, ending: false, responseId: null, responseInProgress: false, outputAudioActive: false, speakingLogged: false, agentTranscript: "", agentTranscriptResponseId: null, agentTranscriptUpdateTimer: null, reconnectScheduled: false, reconnectTimer: null, pageHideHandler: null, inputDiagnosticsTimer: null, lastOutboundBytes: null, lastInputEnergy: null, inputSignalDetected: false, silentDiagnosticsCount: 0, turnController: null, classificationRequests: new Map(), classificationResponseIds: new Map(), ignoredResponseIds: new Set() };
+    state.turnController = createConversationTurnController(createTurnAdapter(state));
     sessions.set(sessionId, state);
 
     const microphoneTrack = media.getAudioTracks()[0];
@@ -233,6 +236,150 @@ function describeMicrophoneFailure(error) {
     };
 }
 
+function createTurnAdapter(state) {
+    return {
+        onStateChanged: (phase, details) => {
+            debug(state, "turn_control_state", { phase, reason: details.reason, turnEpoch: details.epoch });
+            const voiceState = phase === "user_thinking"
+                ? "paused"
+                : phase === "agent_thinking"
+                    ? "thinking"
+                    : phase === "agent_speaking"
+                        ? "speaking"
+                        : state.muted ? "muted" : "listening";
+            state.dotnet.invokeMethodAsync("OnVoiceState", voiceState, null).catch(error => warn(state, "turn_state_update_failed", error));
+        },
+        onDiagnostic: (event, details) => debug(state, event, details),
+        interruptActive: request => interruptActiveState(state, request.automatic, request.reason),
+        classifyTurn: request => requestTurnClassification(state, request),
+        acceptTurn: accepted => {
+            state.interrupted = false;
+            state.dotnet.invokeMethodAsync("OnVoiceTranscript", accepted.eventId, accepted.transcript, accepted.interrupted, accepted.durationMs)
+                .catch(error => warn(state, "accepted_voice_turn_failed", error, { turnEpoch: accepted.epoch }));
+        },
+        requestResponse: request => {
+            sendRealtimeEvent(state, {
+                type: "response.create",
+                response: { metadata: { purpose: "conversation_reply", turn_epoch: String(request.epoch) } }
+            });
+            debug(state, "response_requested", { turnEpoch: request.epoch });
+        }
+    };
+}
+
+async function interruptActiveState(state, automatic, reason) {
+    if (!state.channel || state.channel.readyState !== "open") return;
+    const responseIds = new Set();
+    if (state.responseId) responseIds.add(state.responseId);
+    for (const responseId of state.classificationResponseIds.keys()) responseIds.add(responseId);
+    for (const responseId of responseIds) {
+        ignoreResponse(state, responseId);
+        sendRealtimeEvent(state, { type: "response.cancel", response_id: responseId });
+    }
+    if (state.outputAudioActive) sendRealtimeEvent(state, { type: "output_audio_buffer.clear" });
+    for (const pending of state.classificationRequests.values()) {
+        window.clearTimeout(pending.timer);
+        pending.resolve({ intent: "incomplete_turn", confidence: 0 });
+    }
+    state.classificationRequests.clear();
+    state.classificationResponseIds.clear();
+    state.interrupted = true;
+    state.outputAudioActive = false;
+    state.responseInProgress = false;
+    state.responseId = null;
+    state.toolContinuationPending = false;
+    resetAgentTranscript(state);
+    await setToolWorkState(state, null, null, false);
+    setInputSuspended(state, false, reason);
+    debug(state, automatic ? "automatic_barge_in" : "response_interrupt", { reason, cancelledResponseCount: responseIds.size });
+    await state.dotnet.invokeMethodAsync("OnVoiceState", state.muted ? "muted" : "listening", automatic ? null : "The agent was interrupted.");
+}
+
+function requestTurnClassification(state, request) {
+    if (!state.channel || state.channel.readyState !== "open") return Promise.resolve({ intent: "incomplete_turn", confidence: 0 });
+    const key = `${request.epoch}:${request.classificationId}`;
+    return new Promise(resolve => {
+        const timer = window.setTimeout(() => {
+            if (!state.classificationRequests.delete(key)) return;
+            for (const [responseId, currentKey] of state.classificationResponseIds) {
+                if (currentKey === key) state.classificationResponseIds.delete(responseId);
+            }
+            debug(state, "classification_timeout", { turnEpoch: request.epoch });
+            resolve({ intent: "incomplete_turn", confidence: 0 });
+        }, 4500);
+        state.classificationRequests.set(key, { resolve, timer, epoch: request.epoch });
+        sendRealtimeEvent(state, {
+            type: "response.create",
+            response: {
+                conversation: "none",
+                metadata: { purpose: "turn_intent", turn_key: key, turn_epoch: String(request.epoch) },
+                output_modalities: ["text"],
+                tools: [],
+                tool_choice: "none",
+                max_output_tokens: 80,
+                instructions: "Classify whether the user has finished speaking. Evaluate the grammar and meaning in the transcript's own language. Return one JSON object only: {\"intent\":\"pause|stop|continue|incomplete_turn|complete_turn\",\"confidence\":0.0}. Use pause when the user asks for silence or time to think; stop when they ask the agent to stop; continue when they invite the agent to resume; incomplete_turn only for a clearly unfinished fragment, self-correction, trailing conjunction, or unfinished grammar. A brief but coherent statement, answer, request, or question is complete_turn even without punctuation. When uncertain between incomplete_turn and complete_turn, favor complete_turn because Realtime turn detection has already observed the end of speech. Do not answer the user or call tools.",
+                input: [{ type: "message", role: "user", content: [{ type: "input_text", text: request.transcript }] }]
+            }
+        });
+        debug(state, "turn_classification_requested", { turnEpoch: request.epoch, characterCount: request.transcript.length });
+    });
+}
+
+function registerClassificationResponse(state, response) {
+    if (response?.metadata?.purpose !== "turn_intent") return false;
+    const key = response.metadata.turn_key;
+    if (typeof response.id === "string" && typeof key === "string" && state.classificationRequests.has(key)) state.classificationResponseIds.set(response.id, key);
+    else if (typeof response.id === "string") {
+        ignoreResponse(state, response.id);
+        sendRealtimeEvent(state, { type: "response.cancel", response_id: response.id });
+    }
+    return true;
+}
+
+function completeClassificationResponse(state, response) {
+    const responseId = response?.id;
+    const key = response?.metadata?.turn_key ?? (typeof responseId === "string" ? state.classificationResponseIds.get(responseId) : null);
+    if (response?.metadata?.purpose !== "turn_intent" && !key) return false;
+    if (typeof responseId === "string") state.classificationResponseIds.delete(responseId);
+    const pending = typeof key === "string" ? state.classificationRequests.get(key) : null;
+    if (!pending) return true;
+    window.clearTimeout(pending.timer);
+    state.classificationRequests.delete(key);
+    const text = extractResponseText(response);
+    const decision = parseTurnIntentResponse(text);
+    debug(state, "turn_classification_completed", { turnEpoch: pending.epoch, intent: decision.intent, confidence: decision.confidence });
+    pending.resolve(decision);
+    return true;
+}
+
+function extractResponseText(response) {
+    if (!Array.isArray(response?.output)) return "";
+    return response.output.flatMap(item => Array.isArray(item?.content) ? item.content : [])
+        .map(content => typeof content?.text === "string" ? content.text : typeof content?.transcript === "string" ? content.transcript : "")
+        .filter(Boolean)
+        .join(" ");
+}
+
+function sendRealtimeEvent(state, payload) {
+    if (!state.channel || state.channel.readyState !== "open") throw new Error("The voice data channel is not open.");
+    state.channel.send(JSON.stringify(payload));
+}
+
+function ignoreResponse(state, responseId) {
+    if (!responseId) return;
+    state.ignoredResponseIds.add(responseId);
+    while (state.ignoredResponseIds.size > 32) state.ignoredResponseIds.delete(state.ignoredResponseIds.values().next().value);
+}
+
+function responseIdFrom(payload) {
+    return payload?.response_id ?? payload?.response?.id ?? null;
+}
+
+function isIgnoredResponse(state, payload) {
+    const responseId = responseIdFrom(payload);
+    return !!responseId && state.ignoredResponseIds.has(responseId);
+}
+
 async function handleProviderEvent(state, raw) {
     try {
         const payload = JSON.parse(raw);
@@ -244,9 +391,9 @@ async function handleProviderEvent(state, raw) {
                 outputAudioActive: state.outputAudioActive,
                 audioPlaybackMs: state.audioStartedAt == null ? null : elapsedMs(state.audioStartedAt)
             });
-            // Automatic VAD interruption is disabled server-side to avoid false barge-in
-            // from speaker echo or room noise. The explicit Interrupt control remains available.
-            await state.dotnet.invokeMethodAsync("OnVoiceState", state.outputAudioActive ? "speaking" : state.muted ? "muted" : "listening", null);
+            await state.turnController.speechStarted({
+                agentActive: state.responseInProgress || state.outputAudioActive || state.toolWorkActive || state.classificationRequests.size > 0
+            });
         } else if (payload.type === "input_audio_buffer.speech_stopped") {
             state.speechStoppedAt = performance.now();
             state.lastSpeechDurationMs = state.speechStartedAt == null ? 0 : elapsedMs(state.speechStartedAt);
@@ -255,7 +402,15 @@ async function handleProviderEvent(state, raw) {
                 responseId: state.responseId,
                 outputAudioActive: state.outputAudioActive
             });
+            state.turnController.speechStopped();
         } else if (payload.type === "response.function_call_arguments.done") {
+            if (!state.turnController.toolStarted()) {
+                const staleResponseId = responseIdFrom(payload) ?? state.responseId;
+                ignoreResponse(state, staleResponseId);
+                if (staleResponseId) sendRealtimeEvent(state, { type: "response.cancel", response_id: staleResponseId });
+                debug(state, "stale_tool_continuation_ignored", { responseId: staleResponseId, toolName: payload.name ?? null });
+                return;
+            }
             state.toolContinuationPending = true;
             setInputSuspended(state, true, "tool_started");
             if (state.outputAudioActive && state.channel?.readyState === "open") {
@@ -267,8 +422,20 @@ async function handleProviderEvent(state, raw) {
             debug(state, "tool_work_started", { toolName: state.toolName, callId: payload.call_id ?? null });
             await state.dotnet.invokeMethodAsync("OnVoiceState", "thinking", null);
         } else if (payload.type === "response.created") {
+            if (registerClassificationResponse(state, payload.response)) {
+                debug(state, "classification_response_created", { responseId: payload.response?.id ?? null });
+                return;
+            }
+            const createdResponseId = payload.response?.id ?? null;
+            if (!state.turnController.responseCreated(createdResponseId)) {
+                ignoreResponse(state, createdResponseId);
+                if (createdResponseId) sendRealtimeEvent(state, { type: "response.cancel", response_id: createdResponseId });
+                if (state.outputAudioActive) sendRealtimeEvent(state, { type: "output_audio_buffer.clear" });
+                resetAgentTranscript(state);
+                return;
+            }
             const continuingFromTool = state.toolContinuationPending || state.toolWorkActive;
-            state.responseId = payload.response?.id ?? null;
+            state.responseId = createdResponseId;
             state.responseInProgress = true;
             state.toolContinuationPending = false;
             setInputSuspended(state, true, "response.created");
@@ -283,6 +450,10 @@ async function handleProviderEvent(state, raw) {
             if (continuingFromTool) await setToolWorkState(state, state.toolName, "preparing", true);
             await state.dotnet.invokeMethodAsync("OnVoiceState", "thinking", null);
         } else if (payload.type === "response.audio.delta" || payload.type === "response.output_audio.delta") {
+            if (isIgnoredResponse(state, payload) || !state.turnController.outputStarted(payload.response_id ?? state.responseId)) {
+                if (state.outputAudioActive) sendRealtimeEvent(state, { type: "output_audio_buffer.clear" });
+                return;
+            }
             if (state.toolWorkActive) await setToolWorkState(state, null, null, false);
             if (!state.speakingLogged) {
                 state.speakingLogged = true;
@@ -290,14 +461,17 @@ async function handleProviderEvent(state, raw) {
             }
             await state.dotnet.invokeMethodAsync("OnVoiceState", "speaking", null);
         } else if (payload.type === "response.audio.done" || payload.type === "response.output_audio.done") {
+            if (isIgnoredResponse(state, payload)) return;
             debug(state, "response_audio_done", { responseId: payload.response_id ?? state.responseId, eventType: payload.type });
         } else if (payload.type === "response.output_audio_transcript.delta" || payload.type === "response.audio_transcript.delta") {
             const responseId = payload.response_id ?? state.responseId ?? payload.item_id ?? crypto.randomUUID();
+            if (state.ignoredResponseIds.has(responseId)) return;
             beginAgentTranscript(state, responseId);
             if (typeof payload.delta === "string") state.agentTranscript += payload.delta;
             queueAgentTranscriptUpdate(state);
         } else if (payload.type === "response.output_audio_transcript.done" || payload.type === "response.audio_transcript.done") {
             const responseId = payload.response_id ?? state.responseId ?? payload.item_id ?? state.agentTranscriptResponseId ?? crypto.randomUUID();
+            if (state.ignoredResponseIds.has(responseId)) return;
             beginAgentTranscript(state, responseId);
             if (typeof payload.transcript === "string" && payload.transcript.trim()) state.agentTranscript = payload.transcript;
             // Keep the completed caption visible, but do not persist it until response.done
@@ -305,6 +479,11 @@ async function handleProviderEvent(state, raw) {
             // spoken filler before a function call; that must not become a durable reply.
             await flushAgentTranscript(state, false);
         } else if (payload.type === "output_audio_buffer.started") {
+            if (isIgnoredResponse(state, payload) || !state.turnController.outputStarted(payload.response_id ?? state.responseId)) {
+                sendRealtimeEvent(state, { type: "output_audio_buffer.clear" });
+                debug(state, "stale_audio_buffer_cleared", { responseId: payload.response_id ?? null });
+                return;
+            }
             if (state.toolWorkActive) await setToolWorkState(state, null, null, false);
             state.outputAudioActive = true;
             state.speakingLogged = true;
@@ -325,8 +504,17 @@ async function handleProviderEvent(state, raw) {
                 interrupted: payload.type === "output_audio_buffer.cleared"
             });
             state.audioStartedAt = null;
-            await state.dotnet.invokeMethodAsync("OnVoiceState", state.muted ? "muted" : "listening", null);
+            const turnPhase = state.turnController.getSnapshot().phase;
+            if (turnPhase !== "user_thinking" && turnPhase !== "user_speaking" && turnPhase !== "classifying_turn")
+                await state.dotnet.invokeMethodAsync("OnVoiceState", state.muted ? "muted" : "listening", null);
         } else if (payload.type === "response.done") {
+            if (completeClassificationResponse(state, payload.response)) return;
+            const completedResponseId = payload.response?.id ?? state.responseId;
+            if (completedResponseId && state.ignoredResponseIds.has(completedResponseId)) {
+                state.ignoredResponseIds.delete(completedResponseId);
+                debug(state, "ignored_response_completed", { responseId: completedResponseId, status: payload.response?.status ?? null });
+                return;
+            }
             const hasFunctionCall = Array.isArray(payload.response?.output) && payload.response.output.some(item => item?.type === "function_call");
             debug(state, "response_done", {
                 responseId: payload.response?.id ?? state.responseId,
@@ -343,6 +531,7 @@ async function handleProviderEvent(state, raw) {
             state.responseCreatedAt = null;
             state.responseInProgress = false;
             state.toolContinuationPending = hasFunctionCall;
+            state.turnController.responseDone({ hasFunctionCall });
             if (!state.toolContinuationPending) setInputSuspended(state, false, "response.done");
             if (!hasFunctionCall && state.toolWorkActive && !state.outputAudioActive) await setToolWorkState(state, null, null, false);
             if (!state.outputAudioActive) {
@@ -350,22 +539,26 @@ async function handleProviderEvent(state, raw) {
                 await state.dotnet.invokeMethodAsync("OnVoiceState", state.muted ? "muted" : "listening", null);
             }
         } else if (payload.type === "error") {
+            const providerErrorCode = payload.error?.code ?? null;
             console.error(logPrefix, "provider_error", {
                 sessionId: state.sessionId,
                 bindingId: state.bindingId,
                 errorType: payload.error?.type ?? null,
-                errorCode: payload.error?.code ?? null,
+                errorCode: providerErrorCode,
                 eventId: payload.event_id ?? null
             });
-            // A failed response or tool continuation must never strand the local
-            // microphone in a suspended state. Realtime reports provider errors on
-            // the data channel without necessarily following them with response.done.
-            state.responseId = null;
-            state.responseCreatedAt = null;
-            state.responseInProgress = false;
-            state.toolContinuationPending = false;
-            await setToolWorkState(state, null, null, false);
-            setInputSuspended(state, false, "provider_error");
+            // Realtime can reject a competing response.create without completing
+            // the response that already owns the default conversation. Forgetting
+            // only the local response ID leaves that provider response alive and
+            // makes every later turn look like lost microphone input. Cancel and
+            // quarantine all known in-flight responses before returning to listen.
+            await interruptActiveState(
+                state,
+                true,
+                providerErrorCode === "conversation_already_has_active_response"
+                    ? "active_response_conflict"
+                    : "provider_error");
+            state.turnController.responseDone();
             await state.dotnet.invokeMethodAsync("OnVoiceState", state.muted ? "muted" : "listening", null);
         }
         else if (payload.type === "conversation.item.input_audio_transcription.completed" && payload.transcript?.trim()) {
@@ -374,8 +567,11 @@ async function handleProviderEvent(state, raw) {
                 speechDurationMs: durationMs,
                 transcriptionDelayMs: state.speechStoppedAt == null ? null : elapsedMs(state.speechStoppedAt)
             });
-            await state.dotnet.invokeMethodAsync("OnVoiceTranscript", payload.event_id || payload.item_id || crypto.randomUUID(), payload.transcript.trim(), state.interrupted, durationMs);
-            state.interrupted = false;
+            await state.turnController.transcriptionCompleted({
+                eventId: payload.event_id || payload.item_id || crypto.randomUUID(),
+                transcript: payload.transcript.trim(),
+                durationMs
+            });
             state.speechStartedAt = null;
         }
     } catch (error) {
@@ -540,20 +736,12 @@ export async function setMuted(sessionId, muted) {
 export async function interrupt(sessionId, automatic = false) {
     const current = sessions.get(sessionId);
     if (!current?.channel || current.channel.readyState !== "open") return;
-    if (!current.responseId && !current.outputAudioActive && !current.toolWorkActive) {
+    if (!current.responseId && !current.responseInProgress && !current.outputAudioActive && !current.toolWorkActive && current.classificationRequests.size === 0) {
         debug(current, "response_interrupt_ignored", { automatic, reason: "no_active_response" });
         return;
     }
-    current.interrupted = true;
-    debug(current, "response_interrupt", { automatic, responseId: current.responseId });
-    if (current.responseId) current.channel.send(JSON.stringify({ type: "response.cancel", response_id: current.responseId }));
-    if (current.outputAudioActive) current.channel.send(JSON.stringify({ type: "output_audio_buffer.clear" }));
-    current.outputAudioActive = false;
-    current.responseInProgress = false;
-    current.toolContinuationPending = false;
-    await setToolWorkState(current, null, null, false);
-    setInputSuspended(current, false, "explicit_interrupt");
-    await current.dotnet.invokeMethodAsync("OnVoiceState", current.muted ? "muted" : "listening", automatic ? null : "The agent was interrupted.");
+    if (automatic) await interruptActiveState(current, true, "automatic_interrupt");
+    else await current.turnController.manualInterrupt();
 }
 
 function setInputSuspended(state, suspended, reason) {
@@ -562,8 +750,8 @@ function setInputSuspended(state, suspended, reason) {
     // track live so server-side VAD can continue detecting speech. Physically
     // disabling the track here made a connected call send silence, and an error
     // before response.done could leave it disabled for the rest of the workshop.
-    // Automatic barge-in is already controlled by interrupt_response in the
-    // authoritative Realtime session configuration.
+    // The shared turn controller handles barge-in from speech-start events;
+    // inputSuspended must never become a second physical microphone gate.
     state.media.getAudioTracks().forEach(track => { track.enabled = !state.muted; });
     debug(state, state.inputSuspended ? "microphone_suspended" : "microphone_resumed", { reason, responseId: state.responseId });
 }
@@ -596,9 +784,16 @@ export async function stop(sessionId, reconnecting = false) {
 
 async function cleanup(current, notifyServer) {
     current.ending = true;
+    current.turnController?.dispose();
     current.audio.muted = false;
     debug(current, "voice_cleanup", { notifyServer, connectionState: current.pc?.connectionState ?? null });
     if (current.agentTranscriptUpdateTimer != null) window.clearTimeout(current.agentTranscriptUpdateTimer);
+    for (const pending of current.classificationRequests.values()) {
+        window.clearTimeout(pending.timer);
+        pending.resolve({ intent: "incomplete_turn", confidence: 0 });
+    }
+    current.classificationRequests.clear();
+    current.classificationResponseIds.clear();
     if (current.reconnectTimer != null) window.clearTimeout(current.reconnectTimer);
     if (current.inputDiagnosticsTimer != null) window.clearInterval(current.inputDiagnosticsTimer);
     if (current.pageHideHandler) window.removeEventListener("pagehide", current.pageHideHandler);

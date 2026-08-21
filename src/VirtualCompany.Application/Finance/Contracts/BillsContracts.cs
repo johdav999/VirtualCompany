@@ -127,7 +127,8 @@ public sealed record FinanceBillDetailDto(
     SupplierInvoiceDraftActionDto? DraftAction = null,
     IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
     SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null,
-    PaidSupplierBillExpenseAvailabilityDto? PaidExpensePostingAvailability = null);
+    PaidSupplierBillExpenseAvailabilityDto? PaidExpensePostingAvailability = null,
+    SupplierBillAccountingStateDto? Accounting = null);
 
 public sealed record PaidSupplierBillExpenseAvailabilityDto(
     bool CanPost,
@@ -201,7 +202,7 @@ public sealed record PostPaidSupplierBillExpenseCommand(
     Guid BillId,
     Guid? ActorUserId,
     string ActorDisplayName,
-    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+    string? ProviderKey = null);
 
 public sealed record PaidSupplierBillExpensePostingDto(
     Guid BillId,

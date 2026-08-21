@@ -191,7 +191,9 @@ public sealed record FinanceIntegrationWriteCommand(
     FinanceIntegrationWritePayload Payload,
     Guid WriteRequestId,
     string? CorrelationId = null,
-    Guid? ApprovedApprovalId = null);
+    Guid? ApprovedApprovalId = null,
+    DateOnly? AccountingDate = null,
+    string? AuthorityOperation = null);
 
 public sealed record FinanceIntegrationWritePayload(
     string SanitizedJson,
@@ -232,7 +234,9 @@ public sealed record FinanceIntegrationWriteApprovalCheck(
     string PayloadSummary,
     string PayloadHash,
     FinanceIntegrationWritePayload Payload,
-    Guid WriteRequestId);
+    Guid WriteRequestId,
+    DateOnly? AccountingDate = null,
+    string? AuthorityOperation = null);
 
 public static class FinanceIntegrationWriteCommandTypes
 {

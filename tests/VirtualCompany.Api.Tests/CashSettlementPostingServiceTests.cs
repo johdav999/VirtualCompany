@@ -58,7 +58,7 @@ public sealed class CashSettlementPostingServiceTests
         Assert.Equal(postedAtUtc, entry.PostedAtUtc);
         Assert.Equal(LedgerEntryStatuses.Posted, entry.Status);
         Assert.Equal(companyId, sourceMapping.CompanyId);
-        Assert.Equal(entry.Id, sourceMapping.Id);
+        Assert.NotEqual(Guid.Empty, sourceMapping.Id);
         Assert.Equal(entry.Id, sourceMapping.LedgerEntryId);
         Assert.Equal(FinanceCashPostingSourceTypes.PaymentAllocation, sourceMapping.SourceType);
         Assert.Equal("allocation-incoming-001", sourceMapping.SourceId);
@@ -249,6 +249,31 @@ public sealed class CashSettlementPostingServiceTests
         Assert.Equal(2, sourceMappings.Count);
         Assert.Equal(firstPostedAtUtc, sourceMappings[0].PostedAtUtc);
         Assert.Equal(secondPostedAtUtc, sourceMappings[1].PostedAtUtc);
+    }
+
+    [Fact]
+    public async Task Progressive_cash_settlements_cannot_exceed_the_payment_and_leave_no_partial_journal()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = await OpenConnectionAsync();
+        var accessor = new TestCompanyContextAccessor(companyId);
+        await using var dbContext = CreateContext(connection, accessor);
+        await dbContext.Database.EnsureCreatedAsync();
+        var seed = await SeedPostingScenarioAsync(dbContext, companyId);
+        var service = new CompanyCashSettlementPostingService(dbContext, accessor);
+
+        await service.PostCashSettlementAsync(new PostCashSettlementCommand(
+            companyId, FinanceCashPostingSourceTypes.PaymentSettlement, "progressive-1",
+            seed.IncomingPaymentId, 70m, new DateTime(2026, 4, 22, 8, 0, 0, DateTimeKind.Utc)), CancellationToken.None);
+
+        await Assert.ThrowsAsync<FinanceValidationException>(() => service.PostCashSettlementAsync(new PostCashSettlementCommand(
+            companyId, FinanceCashPostingSourceTypes.PaymentSettlement, "progressive-2",
+            seed.IncomingPaymentId, 31m, new DateTime(2026, 4, 23, 8, 0, 0, DateTimeKind.Utc)), CancellationToken.None));
+
+        Assert.Equal(1, await dbContext.PaymentCashLedgerLinks.IgnoreQueryFilters()
+            .CountAsync(x => x.CompanyId == companyId && x.PaymentId == seed.IncomingPaymentId));
+        Assert.Equal(1, await dbContext.LedgerEntries.IgnoreQueryFilters()
+            .CountAsync(x => x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentSettlement));
     }
 
     [Fact]
@@ -472,10 +497,12 @@ public sealed class CashSettlementPostingServiceTests
         var bankAccountId = Guid.NewGuid();
         var incomingPaymentId = Guid.NewGuid();
         var outgoingPaymentId = Guid.NewGuid();
+        var accountingConfigurationId = Guid.NewGuid();
+        var accountingActorId = Guid.NewGuid();
+        var configuredAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
 
         dbContext.Companies.Add(new Company(companyId, "Cash Settlement Company"));
-        dbContext.FinanceAccounts.AddRange(
-            new FinanceAccount(
+        var cashAccount = new FinanceAccount(
                 cashAccountId,
                 companyId,
                 "1000",
@@ -483,8 +510,13 @@ public sealed class CashSettlementPostingServiceTests
                 "asset",
                 "USD",
                 0m,
-                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
-            new FinanceAccount(
+                configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Asset,
+                normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1),
+                isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.Bank);
+        var receivablesAccount = new FinanceAccount(
                 receivablesAccountId,
                 companyId,
                 "1100",
@@ -492,8 +524,13 @@ public sealed class CashSettlementPostingServiceTests
                 "asset",
                 "USD",
                 0m,
-                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
-            new FinanceAccount(
+                configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Asset,
+                normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1),
+                isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.AccountsReceivable);
+        var payablesAccount = new FinanceAccount(
                 payablesAccountId,
                 companyId,
                 "2000",
@@ -501,7 +538,34 @@ public sealed class CashSettlementPostingServiceTests
                 "liability",
                 "USD",
                 0m,
-                new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+                configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Liability,
+                normalBalance: FinanceNormalBalanceValues.Credit,
+                effectiveFrom: new DateOnly(2026, 1, 1),
+                isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.AccountsPayable);
+        dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount, payablesAccount);
+
+        var accountingConfiguration = new AccountingConfiguration(
+            accountingConfigurationId,
+            companyId,
+            "USD",
+            1,
+            1,
+            AccountingPolicyPackDefaults.CountryNeutralPackKey,
+            AccountingPolicyPackDefaults.CountryNeutralBankingVersion,
+            new DateOnly(2026, 1, 1),
+            2,
+            AccountingRoundingModeValues.AwayFromZero,
+            accountingActorId,
+            configuredAtUtc);
+        accountingConfiguration.SetSetupState(AccountingSetupStateValues.Ready, accountingActorId, configuredAtUtc);
+        dbContext.AccountingConfigurations.Add(accountingConfiguration);
+        dbContext.AccountingConfigurationAccountRoles.AddRange(
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.Bank, cashAccountId, configuredAtUtc),
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.AccountsReceivable, receivablesAccountId, configuredAtUtc),
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.AccountsPayable, payablesAccountId, configuredAtUtc));
+        dbContext.VoucherSeries.Add(new VoucherSeries(Guid.NewGuid(), companyId, "B", "Bank", "B", true, configuredAtUtc));
 
         dbContext.FiscalPeriods.Add(new FiscalPeriod(
             fiscalPeriodId,

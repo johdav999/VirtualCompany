@@ -12,6 +12,7 @@ public sealed class GuidedWorkSurfaceTests
         var page = Read("src", "VirtualCompany.Web", "Pages", "GuidedWorkSession.razor");
         var css = Read("src", "VirtualCompany.Web", "Pages", "GuidedWorkSession.razor.css");
         var script = Read("src", "VirtualCompany.Web", "wwwroot", "js", "guided-realtime.js");
+        var turnController = Read("src", "VirtualCompany.Web", "wwwroot", "js", "conversation-turn-controller.mjs");
         var draft = Read("src", "VirtualCompany.Web", "Components", "GuidedWork", "GuidedDraftPanel.razor");
         var draftCss = Read("src", "VirtualCompany.Web", "Components", "GuidedWork", "GuidedDraftPanel.razor.css");
 
@@ -79,8 +80,18 @@ public sealed class GuidedWorkSurfaceTests
         Assert.Contains("outputAudioActive", script, StringComparison.Ordinal);
         Assert.Contains("ensureRemoteAudioPlayback", script, StringComparison.Ordinal);
         Assert.Contains("response_interrupt_ignored", script, StringComparison.Ordinal);
-        Assert.Contains("response_id: current.responseId", script, StringComparison.Ordinal);
+        Assert.Contains("response_id: responseId", script, StringComparison.Ordinal);
         Assert.Contains("speech_detected_during_agent_audio", script, StringComparison.Ordinal);
+        Assert.Contains("createConversationTurnController", script, StringComparison.Ordinal);
+        Assert.Contains("conversation: \"none\"", script, StringComparison.Ordinal);
+        Assert.Contains("output_modalities: [\"text\"]", script, StringComparison.Ordinal);
+        Assert.Contains("tools: []", script, StringComparison.Ordinal);
+        Assert.Contains("tool_choice: \"none\"", script, StringComparison.Ordinal);
+        Assert.Contains("max_output_tokens: 80", script, StringComparison.Ordinal);
+        Assert.Contains("active_response_conflict", script, StringComparison.Ordinal);
+        Assert.Contains("user_thinking", turnController, StringComparison.Ordinal);
+        Assert.Contains("incomplete_turn", turnController, StringComparison.Ordinal);
+        Assert.Contains("minimumClassificationConfidence", turnController, StringComparison.Ordinal);
         Assert.Contains("turnEndToResponseCreatedMs", script, StringComparison.Ordinal);
         Assert.Contains("turnEndToAudioMs", script, StringComparison.Ordinal);
         Assert.Contains("transcriptionDelayMs", script, StringComparison.Ordinal);
@@ -169,6 +180,11 @@ public sealed class GuidedWorkSurfaceTests
         Assert.Contains("OnboardingWorkshopResume",page,StringComparison.Ordinal);
         Assert.Contains("OnboardingSaveChanges",page,StringComparison.Ordinal);
         Assert.Contains("Navigation.NavigateTo(result.Route, forceLoad: true)",page,StringComparison.Ordinal);
+        Assert.Contains("onboarding-stepper",page,StringComparison.Ordinal);
+        Assert.Contains("onboarding-task-card",page,StringComparison.Ordinal);
+        Assert.Contains("onboarding-eva-card",page,StringComparison.Ordinal);
+        Assert.DoesNotContain("OnboardingDraftCompanyId",page,StringComparison.Ordinal);
+        Assert.DoesNotContain("model.CompanyId?.ToString",page,StringComparison.Ordinal);
         Assert.DoesNotContain("@if (!showCompletedState)\r\n                    {\r\n                        <div class=\"alert alert-light",page,StringComparison.Ordinal);
         Assert.Contains("api/onboarding/workshop",client,StringComparison.Ordinal);
     }
@@ -289,8 +305,10 @@ public sealed class GuidedWorkSurfaceTests
         Assert.Contains("RecordVoiceAgentMessageAsync",page,StringComparison.Ordinal);
         Assert.Contains("setInputSuspended(state, true, \"response.created\")",script,StringComparison.Ordinal);
         Assert.Contains("setInputSuspended(state, false, \"response.done\")",script,StringComparison.Ordinal);
-        Assert.Contains("setInputSuspended(current, false, \"explicit_interrupt\")",script,StringComparison.Ordinal);
-        Assert.Contains("setInputSuspended(state, false, \"provider_error\")",script,StringComparison.Ordinal);
+        Assert.Contains("current.turnController.manualInterrupt()",script,StringComparison.Ordinal);
+        Assert.Contains("setInputSuspended(state, false, reason)",script,StringComparison.Ordinal);
+        Assert.Contains("await interruptActiveState(",script,StringComparison.Ordinal);
+        Assert.Contains(": \"provider_error\"",script,StringComparison.Ordinal);
         Assert.Contains("track.enabled = !state.muted",script,StringComparison.Ordinal);
         Assert.DoesNotContain("track.enabled = !state.muted && !state.inputSuspended",script,StringComparison.Ordinal);
         Assert.Contains("item?.type === \"function_call\"",script,StringComparison.Ordinal);

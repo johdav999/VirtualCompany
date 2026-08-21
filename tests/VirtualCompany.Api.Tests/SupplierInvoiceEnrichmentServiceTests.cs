@@ -56,7 +56,7 @@ public sealed class SupplierInvoiceEnrichmentServiceTests
         Assert.Equal("4010", provider.LastRequest?.AccountCode);
         Assert.Equal("KST-10", provider.LastRequest?.CostCenter);
         Assert.Equal("P-20", provider.LastRequest?.Project);
-        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.Id));
+        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.BillId));
     }
 
     [Fact]

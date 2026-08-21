@@ -248,6 +248,7 @@ public sealed class GuidedWorkSessionIntegrationTests : IDisposable
         secondResponse.EnsureSuccessStatusCode();
 
         var request = Assert.IsType<GuidedCheckpointRequest>(_provider.LastRequest);
+        Assert.Equal("No additional company material is available for this workshop.", request.CompanyReferenceContext);
         Assert.Contains(request.RecentConversation, x => x.SenderType == ChatSenderTypes.User && x.Body == earlierDetail);
         Assert.Contains(request.RecentConversation, x => x.SenderType == ChatSenderTypes.Agent);
         Assert.DoesNotContain(request.RecentConversation, x => x.Body == currentTurn);
@@ -408,6 +409,7 @@ public sealed class GuidedWorkSessionIntegrationTests : IDisposable
             var tools = scope.ServiceProvider.GetRequiredService<IGuidedVoiceToolService>();
             var safeDraft = await tools.ExecuteAsync(providerCallId, "tool-safe-draft", "get_current_safe_draft", "{}", default);
             Assert.Contains("\"committed\":false", safeDraft, StringComparison.Ordinal);
+            Assert.Contains("\"company_reference_context\"", safeDraft, StringComparison.Ordinal);
 
             var documentSearch = await tools.ExecuteAsync(providerCallId, "tool-document-search", "search_workshop_documents", "{\"query\":\"What does the attached document say?\"}", default);
             Assert.Contains("\"available\":false", documentSearch, StringComparison.Ordinal);

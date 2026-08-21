@@ -12,6 +12,7 @@ internal sealed class CompanyBankAccountEntityConfiguration : IEntityTypeConfigu
         builder.ToTable("company_bank_accounts");
 
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
         builder.Property(x => x.FinanceAccountId).HasColumnName("finance_account_id").IsRequired();
@@ -30,7 +31,10 @@ internal sealed class CompanyBankAccountEntityConfiguration : IEntityTypeConfigu
         builder.HasIndex(x => new { x.CompanyId, x.ExternalCode }).IsUnique().HasFilter("\"external_code\" IS NOT NULL");
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.FinanceAccount).WithMany().HasForeignKey(x => x.FinanceAccountId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.FinanceAccount).WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.FinanceAccountId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -46,6 +50,7 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
         });
 
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
         builder.Property(x => x.BankAccountId).HasColumnName("bank_account_id").IsRequired();
@@ -59,6 +64,9 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
         builder.Property(x => x.ReconciledAmount).HasColumnName("reconciled_amount").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(x => x.ExternalReference).HasColumnName("external_reference").HasMaxLength(128);
         builder.Property(x => x.ImportSource).HasColumnName("import_source").HasMaxLength(64);
+        builder.Property(x => x.RowIdentity).HasColumnName("row_identity").HasMaxLength(128);
+        builder.Property(x => x.RowContentHash).HasColumnName("row_content_hash").HasMaxLength(64);
+        builder.Property(x => x.SourceVersion).HasColumnName("source_version").HasDefaultValue(1L).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
@@ -68,14 +76,27 @@ internal sealed class BankTransactionEntityConfiguration : IEntityTypeConfigurat
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.BookingDate });
         builder.HasIndex(x => new { x.CompanyId, x.Amount });
         builder.HasIndex(x => new { x.CompanyId, x.ExternalReference }).IsUnique().HasFilter("\"external_reference\" IS NOT NULL");
+        builder.HasIndex(x => new { x.CompanyId, x.BankAccountId, x.ImportSource, x.RowIdentity })
+            .IsUnique()
+            .HasFilter("import_source IS NOT NULL AND row_identity IS NOT NULL");
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.BankAccount).WithMany(x => x.Transactions).HasForeignKey(x => x.BankAccountId).OnDelete(DeleteBehavior.Restrict);
-        builder.HasMany(x => x.PaymentLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.NoAction);
-        builder.HasMany(x => x.CashLedgerLinks).WithOne(x => x.BankTransaction).HasForeignKey(x => x.BankTransactionId).OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.BankAccount).WithMany(x => x.Transactions)
+            .HasForeignKey(x => new { x.CompanyId, x.BankAccountId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
+        builder.HasMany(x => x.PaymentLinks).WithOne(x => x.BankTransaction)
+            .HasForeignKey(x => new { x.CompanyId, x.BankTransactionId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasMany(x => x.CashLedgerLinks).WithOne(x => x.BankTransaction)
+            .HasForeignKey(x => new { x.CompanyId, x.BankTransactionId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
         builder.HasOne(x => x.PostingStateRecord)
             .WithOne(x => x.BankTransaction)
-            .HasForeignKey<BankTransactionPostingStateRecord>(x => x.BankTransactionId)
+            .HasForeignKey<BankTransactionPostingStateRecord>(x => new { x.CompanyId, x.BankTransactionId })
+            .HasPrincipalKey<BankTransaction>(x => new { x.CompanyId, x.Id })
             .OnDelete(DeleteBehavior.NoAction);
     }
 }
@@ -104,7 +125,14 @@ internal sealed class BankTransactionPaymentLinkEntityConfiguration : IEntityTyp
         builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId, x.PaymentId }).IsUnique();
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.Payment).WithMany().HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.BankTransaction).WithMany(x => x.PaymentLinks)
+            .HasForeignKey(x => new { x.CompanyId, x.BankTransactionId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.Payment).WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.PaymentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 
@@ -122,10 +150,18 @@ internal sealed class BankTransactionCashLedgerLinkEntityConfiguration : IEntity
         builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(160).IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
 
-        builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId }).IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId });
+        builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId, x.LedgerEntryId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => x.LedgerEntryId).OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.BankTransaction).WithMany(x => x.CashLedgerLinks)
+            .HasForeignKey(x => new { x.CompanyId, x.BankTransactionId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.LedgerEntry).WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }

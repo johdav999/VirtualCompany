@@ -184,10 +184,11 @@ public sealed class GuidedWorkSessionService : IGuidedWorkSessionService, IGuide
         var attachedDocumentContext=definition.Capabilities.SupportsDocumentAttachments
             ?await _workshopDocuments.SearchAsync(companyId,sessionId,session.AgentId,normalizedBody,cancellationToken)
             :"No workshop documents are attached for this artifact.";
+        var companyReferenceContext=await definition.BuildCompanyReferenceContextAsync(companyId,session.AgentId,cancellationToken);
         var checkpointRequest=new GuidedCheckpointRequest(companyId, sessionId, session.AgentId,
             session.ArtifactType, session.SchemaVersion, command.ExpectedVersion, normalizedBody, session.SafeSummary,
             recentConversation, BuildCheckpointFields(session, definition), definition.QuestionPriorities,attachedDocumentContext,
-            command.Modality=="voice"?"Public research is handled by the active Realtime tool path for voice turns; do not request research in this checkpoint.":"Public research has not been performed for this turn.");
+            command.Modality=="voice"?"Public research is handled by the active Realtime tool path for voice turns; do not request research in this checkpoint.":"Public research has not been performed for this turn.",companyReferenceContext);
         var checkpointStarted=System.Diagnostics.Stopwatch.GetTimestamp();
         GuidedCheckpointResult checkpoint;
         GuidedResearchContinuationRequestedMessage? researchContinuation = null;
@@ -507,7 +508,8 @@ public sealed class GuidedWorkSessionService : IGuidedWorkSessionService, IGuide
         var research=await _evidenceResearch.ResearchAsync(request.CompanyId,session.AgentId,request.Query,cancellationToken);
         GuidedWorkTelemetry.ResearchDuration.Record(System.Diagnostics.Stopwatch.GetElapsedTime(started).TotalMilliseconds,new KeyValuePair<string,object?>("artifact.type",session.ArtifactType));
         var recent=await _db.Messages.AsNoTracking().Where(x=>x.CompanyId==request.CompanyId&&x.ConversationId==session.ConversationId&&x.Id!=user.Id).OrderByDescending(x=>x.CreatedUtc).Take(20).ToListAsync(cancellationToken);
-        var checkpointRequest=new GuidedCheckpointRequest(request.CompanyId,session.Id,session.AgentId,session.ArtifactType,session.SchemaVersion,session.Version,user.Body,session.SafeSummary,BuildRecentConversation(recent),BuildCheckpointFields(session,definition),definition.QuestionPriorities,"No workshop documents are attached for this research continuation.",BuildPublicResearchContext(request.Query,research));
+        var companyReferenceContext=await definition.BuildCompanyReferenceContextAsync(request.CompanyId,session.AgentId,cancellationToken);
+        var checkpointRequest=new GuidedCheckpointRequest(request.CompanyId,session.Id,session.AgentId,session.ArtifactType,session.SchemaVersion,session.Version,user.Body,session.SafeSummary,BuildRecentConversation(recent),BuildCheckpointFields(session,definition),definition.QuestionPriorities,"No workshop documents are attached for this research continuation.",BuildPublicResearchContext(request.Query,research),companyReferenceContext);
         var checkpoint=NormalizeCheckpoint(definition,await _checkpoint.CreateCheckpointAsync(checkpointRequest,cancellationToken));ValidateCheckpoint(definition,checkpoint);
         await using var transaction=await _db.Database.BeginTransactionAsync(cancellationToken);
         foreach(var patch in checkpoint.Patches)

@@ -129,7 +129,10 @@ public sealed class BankTransaction : ICompanyOwnedEntity
         decimal reconciledAmount = 0m,
         DateTime? createdUtc = null,
         DateTime? updatedUtc = null,
-        Guid? sourceSimulationEventRecordId = null)
+        Guid? sourceSimulationEventRecordId = null,
+        string? rowIdentity = null,
+        string? rowContentHash = null,
+        long sourceVersion = 1)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
@@ -150,6 +153,9 @@ public sealed class BankTransaction : ICompanyOwnedEntity
         }
 
         SourceSimulationEventRecordId = sourceSimulationEventRecordId;
+        RowIdentity = NormalizeOptional(rowIdentity, nameof(rowIdentity), 128);
+        RowContentHash = NormalizeOptional(rowContentHash, nameof(rowContentHash), 64)?.ToLowerInvariant();
+        SourceVersion = sourceVersion <= 0 ? throw new ArgumentOutOfRangeException(nameof(sourceVersion)) : sourceVersion;
         ApplyReconciliation(reconciledAmount, UpdatedUtc);
     }
 
@@ -169,6 +175,9 @@ public sealed class BankTransaction : ICompanyOwnedEntity
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Guid? SourceSimulationEventRecordId { get; private set; }
+    public string? RowIdentity { get; private set; }
+    public string? RowContentHash { get; private set; }
+    public long SourceVersion { get; private set; }
     public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;
     public CompanyBankAccount BankAccount { get; private set; } = null!;
@@ -177,6 +186,14 @@ public sealed class BankTransaction : ICompanyOwnedEntity
     public BankTransactionPostingStateRecord? PostingStateRecord { get; private set; }
 
     public decimal AbsoluteAmount => Math.Abs(Amount);
+
+    public void EnsureSourceVersion(long expectedVersion)
+    {
+        if (expectedVersion != SourceVersion)
+        {
+            throw new InvalidOperationException("The bank transaction changed after it was reviewed. Reload it before continuing.");
+        }
+    }
 
     public void ApplyReconciliation(decimal reconciledAmount, DateTime? updatedUtc = null)
     {
@@ -334,7 +351,14 @@ public sealed class BankTransactionPostingStateRecord : ICompanyOwnedEntity
         string? conflictCode = null,
         string? conflictDetails = null,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        string? handlingMode = null,
+        long sourceVersion = 1,
+        Guid? reviewedByUserId = null,
+        DateTime? reviewedUtc = null,
+        string? reviewReason = null,
+        Guid? suspenseLedgerEntryId = null,
+        Guid? reclassifiedLedgerEntryId = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
@@ -348,6 +372,13 @@ public sealed class BankTransactionPostingStateRecord : ICompanyOwnedEntity
         ConflictDetails = NormalizeOptional(conflictDetails, nameof(conflictDetails), 512);
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? LastEvaluatedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        HandlingMode = NormalizeOptional(handlingMode, nameof(handlingMode), 32);
+        SourceVersion = sourceVersion <= 0 ? throw new ArgumentOutOfRangeException(nameof(sourceVersion)) : sourceVersion;
+        ReviewedByUserId = reviewedByUserId == Guid.Empty ? throw new ArgumentException("ReviewedByUserId cannot be empty.", nameof(reviewedByUserId)) : reviewedByUserId;
+        ReviewedUtc = reviewedUtc.HasValue ? EntityTimestampNormalizer.NormalizeUtc(reviewedUtc.Value, nameof(reviewedUtc)) : null;
+        ReviewReason = NormalizeOptional(reviewReason, nameof(reviewReason), 512);
+        SuspenseLedgerEntryId = suspenseLedgerEntryId == Guid.Empty ? throw new ArgumentException("SuspenseLedgerEntryId cannot be empty.", nameof(suspenseLedgerEntryId)) : suspenseLedgerEntryId;
+        ReclassifiedLedgerEntryId = reclassifiedLedgerEntryId == Guid.Empty ? throw new ArgumentException("ReclassifiedLedgerEntryId cannot be empty.", nameof(reclassifiedLedgerEntryId)) : reclassifiedLedgerEntryId;
     }
 
     public Guid Id { get; private set; }
@@ -362,6 +393,13 @@ public sealed class BankTransactionPostingStateRecord : ICompanyOwnedEntity
     public string? ConflictDetails { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public string? HandlingMode { get; private set; }
+    public long SourceVersion { get; private set; }
+    public Guid? ReviewedByUserId { get; private set; }
+    public DateTime? ReviewedUtc { get; private set; }
+    public string? ReviewReason { get; private set; }
+    public Guid? SuspenseLedgerEntryId { get; private set; }
+    public Guid? ReclassifiedLedgerEntryId { get; private set; }
     public Company Company { get; private set; } = null!;
     public BankTransaction BankTransaction { get; private set; } = null!;
 
@@ -382,6 +420,30 @@ public sealed class BankTransactionPostingStateRecord : ICompanyOwnedEntity
         ConflictCode = NormalizeOptional(conflictCode, nameof(conflictCode), 64);
         ConflictDetails = NormalizeOptional(conflictDetails, nameof(conflictDetails), 512);
         UpdatedUtc = LastEvaluatedUtc;
+    }
+
+    public void RecordReviewedHandling(
+        string handlingMode,
+        long sourceVersion,
+        Guid actorUserId,
+        string reviewReason,
+        string postingState,
+        DateTime reviewedUtc,
+        Guid? suspenseLedgerEntryId = null,
+        Guid? reclassifiedLedgerEntryId = null)
+    {
+        HandlingMode = NormalizeOptional(handlingMode, nameof(handlingMode), 32)
+            ?? throw new ArgumentException("Handling mode is required.", nameof(handlingMode));
+        SourceVersion = sourceVersion <= 0 ? throw new ArgumentOutOfRangeException(nameof(sourceVersion)) : sourceVersion;
+        ReviewedByUserId = actorUserId == Guid.Empty ? throw new ArgumentException("Actor user id is required.", nameof(actorUserId)) : actorUserId;
+        ReviewReason = NormalizeOptional(reviewReason, nameof(reviewReason), 512)
+            ?? throw new ArgumentException("A review reason is required.", nameof(reviewReason));
+        PostingState = NormalizePostingState(postingState);
+        ReviewedUtc = EntityTimestampNormalizer.NormalizeUtc(reviewedUtc, nameof(reviewedUtc));
+        LastEvaluatedUtc = ReviewedUtc.Value;
+        UpdatedUtc = ReviewedUtc.Value;
+        SuspenseLedgerEntryId = suspenseLedgerEntryId ?? SuspenseLedgerEntryId;
+        ReclassifiedLedgerEntryId = reclassifiedLedgerEntryId ?? ReclassifiedLedgerEntryId;
     }
 
     private static string NormalizeMatchingStatus(string value)

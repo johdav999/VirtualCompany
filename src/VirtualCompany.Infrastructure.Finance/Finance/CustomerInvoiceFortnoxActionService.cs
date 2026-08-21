@@ -75,7 +75,9 @@ public sealed class CustomerInvoiceFortnoxActionService : IFinanceCustomerInvoic
                 FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
                 new FinanceIntegrationWritePayload(FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload), "CustomerInvoiceCreate"),
                 writeRequestId,
-                $"customer-invoice:{invoice.Id:N}:fortnox-create"),
+                $"customer-invoice:{invoice.Id:N}:fortnox-create",
+                AccountingDate: command.AccountingDate,
+                AuthorityOperation: command.AuthorityOperation),
             cancellationToken);
 
         _logger?.LogInformation(

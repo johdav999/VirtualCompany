@@ -104,13 +104,17 @@ public static class BankTransactionPostingStates
     public const string Posted = "posted";
     public const string SkippedUnmatched = "skipped_unmatched";
     public const string Conflict = "conflict";
+    public const string Suspense = "suspense";
+    public const string Corrected = "corrected";
 
     private static readonly string[] AllowedValuesInternal =
     [
         Pending,
         Posted,
         SkippedUnmatched,
-        Conflict
+        Conflict,
+        Suspense,
+        Corrected
     ];
 
     private static readonly HashSet<string> AllowedValueSet = new(AllowedValuesInternal, StringComparer.OrdinalIgnoreCase);
@@ -133,7 +137,7 @@ public static class BankTransactionPostingStates
             throw new ArgumentException("Column name is required.", nameof(columnName));
         }
 
-        return $"{columnName} IN ('{Pending}', '{Posted}', '{SkippedUnmatched}', '{Conflict}')";
+        return $"{columnName} IN ('{Pending}', '{Posted}', '{SkippedUnmatched}', '{Conflict}', '{Suspense}', '{Corrected}')";
     }
 
     public static string Resolve(string matchingStatus, bool hasLedgerEntry, bool hasConflict) =>
@@ -150,4 +154,19 @@ public static class BankTransactionPostingStates
             hasPaymentLinks ? BankTransactionMatchingStatuses.Matched : BankTransactionMatchingStatuses.Unmatched,
             hasLedgerEntry,
             hasConflict);
+}
+
+public static class BankReconciliationFollowUpStatuses
+{
+    public const string Open = "open";
+    public const string Resolved = "resolved";
+
+    public static string Normalize(string value) => value?.Trim().ToLowerInvariant() switch
+    {
+        Open => Open,
+        Resolved => Resolved,
+        _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported bank reconciliation follow-up status.")
+    };
+
+    public static string BuildCheckConstraintSql(string columnName) => $"{columnName} IN ('{Open}', '{Resolved}')";
 }

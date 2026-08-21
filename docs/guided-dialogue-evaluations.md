@@ -31,6 +31,8 @@ For each artifact definition, cover:
 6. Same-company second user, cross-company session/agent/artifact/field references, inactive membership, and capability loss.
 7. Provider disabled, timeout, non-JSON output, unknown paths, too many patches, hidden-reasoning keys, and transient retry.
 8. WebRTC permission denial, no-device behavior, SDP failure, call expiry, interruption, reconnect exhaustion, repeated transcription event, repeated tool call, oversized arguments, and stop cleanup.
+9. Listening-first turn control: speech during agent audio, semantic pause variants, latched thinking silence, incomplete multi-fragment turns, low-confidence classification, malformed classifier output, explicit resume, and no spoken pause acknowledgement.
+10. Stale generation safety: late response creation, audio, transcript, response completion, and tool continuation after a newer speech epoch are ignored or cancelled and never persisted.
 
 Marketing strategy fixtures must cover current segment-version eligibility, validity dates, STP, positioning, the four Ps, evidence, success metrics, risks, and optimistic versioning. Marketing segment fixtures must cover criteria, needs, behaviors, channels, pricing, size bounds/method, economics, evidence, score dimensions, confidence, risk, and target rationale. Finance fixtures must use real finance-account IDs and the existing budget uniqueness rules. Sales fixtures must target an existing campaign and cover objective, dates, audience segment, offer, budget, activity structure, readiness, and campaign version. Support fixtures must cover the exact SLA upsert fields and first-response/resolution/risk relationships.
 
@@ -61,6 +63,7 @@ Roll out text first with Realtime disabled, then enable voice for an internal te
 5. Verify the selected brief changed and tools, scopes, autonomy, status, objectives, and unrelated settings did not.
 6. Repeat a Marketing strategy session with valid segment-version IDs.
 7. Start voice, deny microphone once, allow it, interrupt the agent, produce one finalized transcript, stop voice, and confirm tracks/call binding end.
+8. Start agent audio, speak over it, request time to think, wait without speaking, resume through two incomplete fragments, and confirm one combined durable user turn and no stale agent reply.
 8. Replay the transcription event/tool call and confirm no duplicate field/message/commit.
 9. Attempt each session from a second company and confirm no existence disclosure.
 

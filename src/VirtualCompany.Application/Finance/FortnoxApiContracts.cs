@@ -182,20 +182,29 @@ public static class FortnoxWritePayloadSanitizer
     {
         if (node is JsonObject obj)
         {
+            var redacted = new JsonObject();
             foreach (var property in obj.ToList())
             {
-                obj[property.Key] = IsSensitive(property.Key) ? "*** redacted ***" : Redact(property.Value);
+                redacted[property.Key] = IsSensitive(property.Key)
+                    ? JsonValue.Create("*** redacted ***")
+                    : Redact(property.Value);
             }
-        }
-        else if (node is JsonArray array)
-        {
-            for (var index = 0; index < array.Count; index++)
-            {
-                array[index] = Redact(array[index]);
-            }
+
+            return redacted;
         }
 
-        return node;
+        if (node is JsonArray array)
+        {
+            var redacted = new JsonArray();
+            for (var index = 0; index < array.Count; index++)
+            {
+                redacted.Add(Redact(array[index]));
+            }
+
+            return redacted;
+        }
+
+        return node?.DeepClone();
     }
 
     private static bool IsSensitive(string name) =>

@@ -16,6 +16,51 @@ public static class FinanceModuleRegistration
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.AddSingleton<IAccountingPolicyPack, CountryNeutralAccountingPolicyPack>();
+        services.AddSingleton<IAccountingPolicyPack, CountryNeutralBankingAccountingPolicyPack>();
+        services.AddSingleton<IAccountingPolicyPackResolver, AccountingPolicyPackResolver>();
+        services.AddHostedService<AccountingPolicyPackCatalogStartupValidator>();
+        services.AddScoped<IAccountingConfigurationService, AccountingConfigurationService>();
+        services.AddOptions<AccountingMigrationWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingMigrationWorkerOptions.SectionName));
+        services.PostConfigure<AccountingMigrationWorkerOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.BatchSize = Math.Clamp(options.BatchSize, 1, 500);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 50);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+        });
+        services.AddSingleton<AccountingOperationsTelemetry>();
+        services.AddScoped<AccountingHistoricalMigrationService>();
+        services.AddScoped<IAccountingMigrationService>(provider => provider.GetRequiredService<AccountingHistoricalMigrationService>());
+        services.AddScoped<IAccountingMigrationJobRunner>(provider => provider.GetRequiredService<AccountingHistoricalMigrationService>());
+        services.AddScoped<IAccountingReadinessService, AccountingReadinessService>();
+        services.AddScoped<IAccountingOperationsReadService, AccountingOperationsReadService>();
+        services.AddScoped<IAccountingRecoveryVerificationService, AccountingRecoveryVerificationService>();
+        services.AddScoped<AccountingAuthorityPolicy>();
+        services.AddScoped<IAccountingAuthorityPolicy>(provider => provider.GetRequiredService<AccountingAuthorityPolicy>());
+        services.AddScoped<AccountingAuthorityService>();
+        services.AddScoped<IAccountingAuthorityService>(provider => provider.GetRequiredService<AccountingAuthorityService>());
+        services.AddScoped<IAccountingProviderExportAdapter, FortnoxAccountingProviderExportAdapter>();
+        services.AddScoped<AccountingProviderExportService>();
+        services.AddScoped<IAccountingProviderExportService>(provider => provider.GetRequiredService<AccountingProviderExportService>());
+        services.AddScoped<IAccountingProviderExportExecutionTracker>(provider => provider.GetRequiredService<AccountingProviderExportService>());
+        services.AddScoped<IFinanceDocumentActionProviderAdapter, FortnoxFinanceDocumentActionAdapter>();
+        services.AddScoped<IFinanceCustomerDocumentProviderAdapter, FortnoxFinanceCustomerDocumentAdapter>();
+        services.AddScoped<IFinanceAccountingActionService, FinanceAccountingActionService>();
+        services.AddScoped<IAccountingAccountRoleResolver, AccountingAccountRoleResolver>();
+        services.AddScoped<IAccountingAdministrationService, AccountingAdministrationService>();
+        services.AddScoped<IAccountingPostingService, AccountingPostingService>();
+        services.AddScoped<IAccountingJournalReadService, AccountingJournalReadService>();
+        services.AddScoped<IManualJournalPolicy, ManualJournalPolicy>();
+        services.AddScoped<IManualJournalService, ManualJournalService>();
+        services.AddScoped<CustomerInvoiceAccountingPolicy>();
+        services.AddScoped<ICustomerInvoiceAccountingPolicy>(provider => provider.GetRequiredService<CustomerInvoiceAccountingPolicy>());
+        services.AddScoped<ICustomerInvoiceAccountingService, CustomerInvoiceAccountingService>();
+        services.AddScoped<SupplierBillAccountingPolicy>();
+        services.AddScoped<ISupplierBillAccountingPolicy>(provider => provider.GetRequiredService<SupplierBillAccountingPolicy>());
+        services.AddScoped<ISupplierBillAccountingService, SupplierBillAccountingService>();
         services.AddScoped<IGuidedArtifactDefinition, FinanceBudgetGuidedArtifactDefinition>();
         services.AddOptions<CompanySimulationOptions>()
             .Bind(configuration.GetSection(CompanySimulationOptions.SectionName))
@@ -177,11 +222,13 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
         services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();
         services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
-        services.AddScoped<IFinanceCashSettlementPostingService, CompanyCashSettlementPostingService>();
+        services.AddScoped<CompanyCashSettlementPostingService>();
+        services.AddScoped<IFinanceCashSettlementPostingService>(provider => provider.GetRequiredService<CompanyCashSettlementPostingService>());
         services.AddScoped<IFinanceApprovalTaskService, CompanyFinanceApprovalTaskService>();
         services.AddScoped<ICashPostingTraceabilityBackfillService, CompanyCashPostingTraceabilityBackfillService>();
-        services.AddScoped<IBankTransactionReadService, CompanyBankTransactionService>();
-        services.AddScoped<IBankTransactionCommandService, CompanyBankTransactionService>();
+        services.AddScoped<CompanyBankTransactionService>();
+        services.AddScoped<IBankTransactionReadService>(provider => provider.GetRequiredService<CompanyBankTransactionService>());
+        services.AddScoped<IBankTransactionCommandService>(provider => provider.GetRequiredService<CompanyBankTransactionService>());
         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
         services.AddScoped<IFinancialStatementMappingService, CompanyFinancialStatementMappingService>();
         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
@@ -201,6 +248,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
+        services.AddScoped<IAccountingReportingService, AccountingReportingService>();
         services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
         services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
         services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
@@ -250,6 +298,8 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceGenerationPolicy, CompanySimulationFinanceGenerationService>();
         services.AddHostedService<FinanceSeedBackfillBackgroundService>();
         services.AddHostedService<ReportingPeriodRegenerationBackgroundService>();
+        services.AddHostedService<AccountingExportBackgroundService>();
+        services.AddHostedService<AccountingMigrationBackgroundService>();
         services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();

@@ -42,7 +42,7 @@ public sealed class FinancePaymentPersistenceTests
             "PERSIST-001"));
         await dbContext.SaveChangesAsync();
 
-        var stored = await dbContext.Payments.AsNoTracking().SingleAsync();
+        var stored = await dbContext.Payments.IgnoreQueryFilters().AsNoTracking().SingleAsync();
         Assert.Equal("incoming", stored.PaymentType);
         Assert.Equal("USD", stored.Currency);
         Assert.Equal("completed", stored.Status);

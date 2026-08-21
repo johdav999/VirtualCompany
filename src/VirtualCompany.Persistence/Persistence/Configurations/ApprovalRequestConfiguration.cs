@@ -15,6 +15,7 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
         builder.ToTable("approval_requests");
 
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.AgentId).IsRequired();
         builder.Property(x => x.ToolExecutionAttemptId);
         builder.Property(x => x.RequestedByUserId).IsRequired();

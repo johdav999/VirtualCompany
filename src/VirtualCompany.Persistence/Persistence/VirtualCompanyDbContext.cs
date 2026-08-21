@@ -103,6 +103,14 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<DashboardDepartmentConfig> DashboardDepartmentConfigs => Set<DashboardDepartmentConfig>();
     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
+    public DbSet<AccountingConfiguration> AccountingConfigurations => Set<AccountingConfiguration>();
+    public DbSet<AccountingConfigurationAccountRole> AccountingConfigurationAccountRoles => Set<AccountingConfigurationAccountRole>();
+    public DbSet<AccountingPolicyPackSelection> AccountingPolicyPackSelections => Set<AccountingPolicyPackSelection>();
+    public DbSet<AccountingAuthorityPeriod> AccountingAuthorityPeriods => Set<AccountingAuthorityPeriod>();
+    public DbSet<AccountingProviderExport> AccountingProviderExports => Set<AccountingProviderExport>();
+    public DbSet<AccountingMigrationRun> AccountingMigrationRuns => Set<AccountingMigrationRun>();
+    public DbSet<AccountingMigrationConflict> AccountingMigrationConflicts => Set<AccountingMigrationConflict>();
+    public DbSet<AccountingCutoverReport> AccountingCutoverReports => Set<AccountingCutoverReport>();
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<CompanyBankAccount> CompanyBankAccounts => Set<CompanyBankAccount>();
     public DbSet<Budget> Budgets => Set<Budget>();
@@ -110,6 +118,9 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
     public DbSet<BankTransactionPaymentLink> BankTransactionPaymentLinks => Set<BankTransactionPaymentLink>();
     public DbSet<BankTransactionPostingStateRecord> BankTransactionPostingStateRecords => Set<BankTransactionPostingStateRecord>();
+    public DbSet<BankStatementImport> BankStatementImports => Set<BankStatementImport>();
+    public DbSet<BankStatementImportRow> BankStatementImportRows => Set<BankStatementImportRow>();
+    public DbSet<BankReconciliationFollowUp> BankReconciliationFollowUps => Set<BankReconciliationFollowUp>();
     public DbSet<BankTransactionCashLedgerLink> BankTransactionCashLedgerLinks => Set<BankTransactionCashLedgerLink>();
     public DbSet<ReconciliationSuggestionRecord> ReconciliationSuggestionRecords => Set<ReconciliationSuggestionRecord>();
     public DbSet<PaymentCashLedgerLink> PaymentCashLedgerLinks => Set<PaymentCashLedgerLink>();
@@ -136,9 +147,24 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
     public DbSet<LedgerEntrySourceMapping> LedgerEntrySourceMappings => Set<LedgerEntrySourceMapping>();
     public DbSet<LedgerEntryLine> LedgerEntryLines => Set<LedgerEntryLine>();
+    public DbSet<VoucherSeries> VoucherSeries => Set<VoucherSeries>();
+    public DbSet<VoucherSequence> VoucherSequences => Set<VoucherSequence>();
+    public DbSet<LedgerPostingIdentity> LedgerPostingIdentities => Set<LedgerPostingIdentity>();
+    public DbSet<ManualJournalDraft> ManualJournalDrafts => Set<ManualJournalDraft>();
+    public DbSet<ManualJournalDraftLine> ManualJournalDraftLines => Set<ManualJournalDraftLine>();
+    public DbSet<ManualJournalEvidenceLink> ManualJournalEvidenceLinks => Set<ManualJournalEvidenceLink>();
+    public DbSet<ManualJournalOperation> ManualJournalOperations => Set<ManualJournalOperation>();
+    public DbSet<LedgerEntryEvidenceLink> LedgerEntryEvidenceLinks => Set<LedgerEntryEvidenceLink>();
+    public DbSet<CustomerInvoiceAccountingProfile> CustomerInvoiceAccountingProfiles => Set<CustomerInvoiceAccountingProfile>();
+    public DbSet<CustomerInvoiceAccountingLine> CustomerInvoiceAccountingLines => Set<CustomerInvoiceAccountingLine>();
+    public DbSet<SupplierBillAccountingProfile> SupplierBillAccountingProfiles => Set<SupplierBillAccountingProfile>();
+    public DbSet<SupplierBillAccountingLine> SupplierBillAccountingLines => Set<SupplierBillAccountingLine>();
     public DbSet<TrialBalanceSnapshot> TrialBalanceSnapshots => Set<TrialBalanceSnapshot>();
     public DbSet<FinancialStatementSnapshot> FinancialStatementSnapshots => Set<FinancialStatementSnapshot>();
     public DbSet<FinancialStatementSnapshotLine> FinancialStatementSnapshotLines => Set<FinancialStatementSnapshotLine>();
+    public DbSet<AccountingTaxReview> AccountingTaxReviews => Set<AccountingTaxReview>();
+    public DbSet<AccountingPeriodHistory> AccountingPeriodHistory => Set<AccountingPeriodHistory>();
+    public DbSet<AccountingExportJob> AccountingExportJobs => Set<AccountingExportJob>();
     public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
     public DbSet<CompanySimulationState> CompanySimulationStates => Set<CompanySimulationState>();
     public DbSet<CompanySimulationRunHistory> CompanySimulationRunHistories => Set<CompanySimulationRunHistory>();
@@ -297,6 +323,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public override int SaveChanges()
     {
         ValidateCompanyOwnedMutations();
+        EnsurePostedLedgerIsImmutable();
         ApplyFinanceSourceTrackingDefaults();
         EnsureBankTransactionPostingStates();
 
@@ -306,6 +333,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public override async Task<int> SaveChangesAsync(CancellationToken cancellationToken = default)
     {
         ValidateCompanyOwnedMutations();
+        EnsurePostedLedgerIsImmutable();
         ApplyFinanceSourceTrackingDefaults();
         EnsureBankTransactionPostingStates();
         var companiesToInvalidate = CaptureDashboardInvalidationCompanies();
@@ -407,6 +435,47 @@ public sealed class VirtualCompanyDbContext : DbContext
         }
     }
 
+    private void EnsurePostedLedgerIsImmutable()
+    {
+        var changedEntryIds = ChangeTracker.Entries<LedgerEntry>()
+            .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
+            .Select(entry => entry.Entity.Id)
+            .Concat(ChangeTracker.Entries<LedgerEntryLine>()
+                .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
+                .Select(entry => entry.Entity.LedgerEntryId))
+            .Concat(ChangeTracker.Entries<LedgerEntrySourceMapping>()
+                .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
+                .Select(entry => entry.Entity.LedgerEntryId))
+            .Concat(ChangeTracker.Entries<LedgerEntryEvidenceLink>()
+                .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
+                .Select(entry => entry.Entity.LedgerEntryId))
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+
+        if (changedEntryIds.Length == 0)
+        {
+            return;
+        }
+
+        var trackedPosted = ChangeTracker.Entries<LedgerEntry>()
+            .Any(entry => changedEntryIds.Contains(entry.Entity.Id) &&
+                !string.IsNullOrWhiteSpace(entry.Entity.IdempotencyKey) &&
+                (LedgerEntryStatuses.IsPosted(entry.OriginalValues.GetValue<string>(nameof(LedgerEntry.Status))) ||
+                 LedgerEntryStatuses.IsPosted(entry.Entity.Status)));
+        var persistedPosted = LedgerEntries
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Any(entry => changedEntryIds.Contains(entry.Id) &&
+                entry.Status == LedgerEntryStatuses.Posted &&
+                entry.IdempotencyKey != null);
+
+        if (trackedPosted || persistedPosted)
+        {
+            throw new InvalidOperationException("Posted journal entries and their lines cannot be changed or deleted. Create a correction instead.");
+        }
+    }
+
     private IReadOnlyList<Guid> CaptureDashboardInvalidationCompanies() =>
         ChangeTracker.Entries()
             .Where(entry => entry.State is EntityState.Added or EntityState.Modified or EntityState.Deleted)
@@ -432,6 +501,11 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is DashboardWidgetConfig ||
                 entry.Entity is Alert ||
                 entry.Entity is FinanceAccount ||
+                entry.Entity is AccountingConfiguration ||
+                entry.Entity is AccountingConfigurationAccountRole ||
+                entry.Entity is AccountingPolicyPackSelection ||
+                entry.Entity is AccountingAuthorityPeriod ||
+                entry.Entity is AccountingProviderExport ||
                 entry.Entity is Payment ||
                 entry.Entity is Budget ||
                 entry.Entity is Forecast ||
@@ -439,6 +513,9 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is BankTransaction ||
                 entry.Entity is BankTransactionPaymentLink ||
                 entry.Entity is BankTransactionPostingStateRecord ||
+                entry.Entity is BankStatementImport ||
+                entry.Entity is BankStatementImportRow ||
+                entry.Entity is BankReconciliationFollowUp ||
                 entry.Entity is PaymentCashLedgerLink ||
                 entry.Entity is BankTransactionCashLedgerLink ||
                 entry.Entity is PaymentAllocation ||
@@ -456,9 +533,24 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is LedgerEntry ||
                 entry.Entity is LedgerEntrySourceMapping ||
                 entry.Entity is LedgerEntryLine ||
+                entry.Entity is VoucherSeries ||
+                entry.Entity is VoucherSequence ||
+                entry.Entity is LedgerPostingIdentity ||
+                entry.Entity is ManualJournalDraft ||
+                entry.Entity is ManualJournalDraftLine ||
+                entry.Entity is ManualJournalEvidenceLink ||
+                entry.Entity is ManualJournalOperation ||
+                entry.Entity is LedgerEntryEvidenceLink ||
+                entry.Entity is CustomerInvoiceAccountingProfile ||
+                entry.Entity is CustomerInvoiceAccountingLine ||
+                entry.Entity is SupplierBillAccountingProfile ||
+                entry.Entity is SupplierBillAccountingLine ||
                 entry.Entity is TrialBalanceSnapshot ||
                 entry.Entity is FinancialStatementSnapshot ||
                 entry.Entity is FinancialStatementSnapshotLine ||
+                entry.Entity is AccountingTaxReview ||
+                entry.Entity is AccountingPeriodHistory ||
+                entry.Entity is AccountingExportJob ||
                 entry.Entity is MailboxConnection ||
                 entry.Entity is MailboxOAuthAuthorizationState ||
                 entry.Entity is FortnoxConnection ||
@@ -780,6 +872,30 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceAccount>()
             .HasQueryFilter(account =>
                 CurrentCompanyId != null && account.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingConfiguration>()
+            .HasQueryFilter(configuration =>
+                CurrentCompanyId != null && configuration.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingConfigurationAccountRole>()
+            .HasQueryFilter(role =>
+                CurrentCompanyId != null && role.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingPolicyPackSelection>()
+            .HasQueryFilter(selection =>
+                CurrentCompanyId != null && selection.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAuthorityPeriod>()
+            .HasQueryFilter(period =>
+                CurrentCompanyId != null && period.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderExport>()
+            .HasQueryFilter(export =>
+                CurrentCompanyId != null && export.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingMigrationRun>()
+            .HasQueryFilter(run =>
+                CurrentCompanyId != null && run.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingMigrationConflict>()
+            .HasQueryFilter(conflict =>
+                CurrentCompanyId != null && conflict.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCutoverReport>()
+            .HasQueryFilter(report =>
+                CurrentCompanyId != null && report.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinancialStatementMapping>()
             .HasQueryFilter(mapping =>
                 CurrentCompanyId != null && mapping.CompanyId == CurrentCompanyId);
@@ -867,6 +983,33 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<LedgerEntryLine>()
             .HasQueryFilter(line =>
                 CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VoucherSeries>()
+            .HasQueryFilter(series =>
+                CurrentCompanyId != null && series.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VoucherSequence>()
+            .HasQueryFilter(sequence =>
+                CurrentCompanyId != null && sequence.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<LedgerPostingIdentity>()
+            .HasQueryFilter(identity =>
+                CurrentCompanyId != null && identity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ManualJournalDraft>()
+            .HasQueryFilter(draft => CurrentCompanyId != null && draft.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ManualJournalDraftLine>()
+            .HasQueryFilter(line => CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ManualJournalEvidenceLink>()
+            .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ManualJournalOperation>()
+            .HasQueryFilter(operation => CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<LedgerEntryEvidenceLink>()
+            .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceAccountingProfile>()
+            .HasQueryFilter(profile => CurrentCompanyId != null && profile.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceAccountingLine>()
+            .HasQueryFilter(line => CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupplierBillAccountingProfile>()
+            .HasQueryFilter(profile => CurrentCompanyId != null && profile.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<SupplierBillAccountingLine>()
+            .HasQueryFilter(line => CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<TrialBalanceSnapshot>()
             .HasQueryFilter(snapshot =>
                 CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
@@ -876,6 +1019,12 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinancialStatementSnapshotLine>()
             .HasQueryFilter(line =>
                 CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingTaxReview>()
+            .HasQueryFilter(review => CurrentCompanyId != null && review.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingPeriodHistory>()
+            .HasQueryFilter(history => CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingExportJob>()
+            .HasQueryFilter(job => CurrentCompanyId != null && job.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<MailboxConnection>()
             .HasQueryFilter(connection =>
                 CurrentCompanyId != null && connection.CompanyId == CurrentCompanyId);
@@ -1162,12 +1311,26 @@ public sealed class VirtualCompanyDbContext : DbContext
                 property.SetColumnType("TEXT");
             }
 
+            if (string.Equals(property.GetColumnType(), "varbinary(max)", StringComparison.OrdinalIgnoreCase))
+            {
+                property.SetColumnType("BLOB");
+            }
+
             var defaultValueSql = property.GetDefaultValueSql();
             if (defaultValueSql?.StartsWith("N'", StringComparison.OrdinalIgnoreCase) == true)
             {
                 property.SetDefaultValueSql(defaultValueSql[1..]);
             }
         }
+
+        modelBuilder.Entity<VoucherSequence>().Property(sequence => sequence.RowVersion)
+            .HasColumnType("BLOB")
+            .ValueGeneratedNever()
+            .IsConcurrencyToken();
+        modelBuilder.Entity<LedgerEntry>().Property(entry => entry.RowVersion)
+            .HasColumnType("BLOB")
+            .ValueGeneratedNever()
+            .IsConcurrencyToken();
 
         modelBuilder.Entity<DealIntelligenceSignal>().ToTable(table =>
             table.HasCheckConstraint(

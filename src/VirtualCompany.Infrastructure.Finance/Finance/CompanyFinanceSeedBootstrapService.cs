@@ -474,10 +474,10 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
             .IgnoreQueryFilters()
             .SingleAsync(x => x.Id == companyId, cancellationToken);
         _dbContext.PaymentCashLedgerLinks.RemoveRange(paymentCashLedgerLinks);
+        _dbContext.BankTransactionCashLedgerLinks.RemoveRange(bankTransactionCashLedgerLinks);
         _dbContext.LedgerEntrySourceMappings.RemoveRange(cashPostingSourceMappings);
         _dbContext.LedgerEntryLines.RemoveRange(cashPostingLedgerEntryLines);
         _dbContext.LedgerEntries.RemoveRange(cashPostingLedgerEntries);
-        _dbContext.BankTransactionCashLedgerLinks.RemoveRange(bankTransactionCashLedgerLinks);
         _dbContext.BankTransactionPaymentLinks.RemoveRange(bankTransactionPaymentLinks);
         _dbContext.BankTransactionPostingStateRecords.RemoveRange(bankTransactionPostingStates);
         _dbContext.BankTransactions.RemoveRange(bankTransactions);

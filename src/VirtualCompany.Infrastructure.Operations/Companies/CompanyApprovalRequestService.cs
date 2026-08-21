@@ -195,7 +195,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             approval.Status == ApprovalRequestStatus.Approved &&
             ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) == ApprovalTargetEntityType.FinanceIntegrationWrite)
         {
-            await _serviceProvider.GetRequiredService<IFortnoxOutboundActionExecutor>().ExecuteApprovedAsync(companyId, approval.TargetEntityId, cancellationToken);
+            await _serviceProvider.GetRequiredService<IFinanceAccountingActionService>().RetryApprovedAsync(companyId, approval.TargetEntityId, cancellationToken);
             await _serviceProvider.GetRequiredService<ISupportRefundFinanceService>()
                 .RefreshByWriteRequestAsync(companyId, approval.TargetEntityId, cancellationToken);
         }
@@ -528,7 +528,9 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         }
         else if (targetType == ApprovalTargetEntityType.FinanceIntegrationWrite)
         {
-            var command = await _dbContext.FinanceIntegrationWriteCommands.SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
+            var command = await _dbContext.FinanceIntegrationWriteCommands
+                .Include(x => x.Connection)
+                .SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId, cancellationToken);
             var previousStatus = command.Status;
             var now = DateTime.UtcNow;
 
@@ -540,14 +542,14 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                     Guid.NewGuid(),
                     command.CompanyId,
                     command.ConnectionId,
-                    FinanceIntegrationProviderKeys.Fortnox,
+                    command.Connection?.ProviderKey ?? "accounting_system",
                     "write_approval_approved",
                     FinanceIntegrationAuditOutcomes.Succeeded,
                     command.CommandType,
                     command.Id,
                     null,
                     approval.Id.ToString("N"),
-                    "Approved accounting-system action is ready to send to Fortnox.",
+                    "Approved accounting-system action is ready for provider execution.",
                     now));
                 return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
             }

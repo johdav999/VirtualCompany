@@ -1,0 +1,7 @@
+# Bank reconciliation reference prompt
+
+Tool mode: built-in `image_gen` generation.
+
+Prompt used:
+
+> Create a polished 1440×1024 desktop SaaS accounting interface reference image for “Bank reconciliation” in the existing Virtual Company visual language: bright white and very pale blue-gray canvas, compact dark navy typography, thin cool-gray borders, 14–16 px rounded cards, restrained blue primary actions, green success, amber partial/unmatched, and red suspense/conflict accents. Show four KPI cards for Needs review, Partially matched, Ready or posted, and Suspense. Below them show a search and state-filter bar, then a roughly 60/40 split workspace: a bank-activity table on the left and a sticky selected-transaction review panel on the right. Include realistic rows in unmatched, partial, matched, posted, suspense, conflict, and corrected states. The detail panel should show allocation progress, completed-payment candidates, reviewed categorization, explicit suspense with open follow-up, a compact balanced journal preview with bank/receivable/fee or rounding lines, direct source/payment/journal links, and a correction/reclassification card explaining that the original journal remains immutable. Include a small Laura, Finance Manager guidance card. Use plain English only, no raw enum names or developer identifiers. Make the hierarchy dense but calm, accessible, and production-ready, with realistic USD amounts and no brand logos.

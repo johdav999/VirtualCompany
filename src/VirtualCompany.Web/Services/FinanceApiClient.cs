@@ -160,6 +160,10 @@ public sealed partial class FinanceApiClient
         {
             return new FinanceApiValidationException(ResolveProblemMessage(problem, FormatProblemMessage(problem)), problem.Errors);
         }
+        if (problem?.CurrentVersion is long currentVersion)
+        {
+            return new ManualJournalConflictApiException(ResolveProblemMessage(problem, FormatProblemMessage(problem)), currentVersion);
+        }
 
         return new FinanceApiException(problem is null ? "The finance request failed." : ResolveProblemMessage(problem, FormatProblemMessage(problem)));
     }
@@ -268,6 +272,7 @@ public sealed partial class FinanceApiClient
         public string? StatusEndpoint { get; set; }
         public string? SeedEndpoint { get; set; }
         public string? ConfirmationMessage { get; set; }
+        public long? CurrentVersion { get; set; }
 
         public FinanceInitializationProblemResponse ToFinanceInitializationProblemResponse() =>
             new()
@@ -304,6 +309,12 @@ public class FinanceApiException : Exception
     public FinanceApiException(string message) : base(message)
     {
     }
+}
+
+public sealed class ManualJournalConflictApiException : FinanceApiException
+{
+    public ManualJournalConflictApiException(string message, long currentVersion) : base(message) => CurrentVersion = currentVersion;
+    public long CurrentVersion { get; }
 }
 
 public sealed class FinanceNotInitializedApiException : FinanceApiException
@@ -553,6 +564,9 @@ public sealed class FinanceInvoiceResponse
     public string ProcessingStatus { get; set; } = string.Empty;
     public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
     public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
+    public string AccountingStatus { get; set; } = "not_ready";
+    public string AccountingStatusLabel { get; set; } = "Not ready";
+    public Guid? AccountingLedgerEntryId { get; set; }
 }
 
 public sealed class FinanceCounterpartyResponse
@@ -596,6 +610,193 @@ public sealed class FinanceInvoiceDetailResponse
     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
     public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
     public List<FinanceInvoiceRelatedTransactionResponse> RelatedTransactions { get; set; } = [];
+    public CustomerInvoiceAccountingStateResponse? Accounting { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingStateResponse
+{
+    public Guid InvoiceId { get; set; }
+    public Guid? ProfileId { get; set; }
+    public string Status { get; set; } = "not_ready";
+    public string StatusLabel { get; set; } = "Not ready";
+    public bool CanPreview { get; set; }
+    public bool CanSubmit { get; set; }
+    public bool CanPost { get; set; }
+    public bool CanCreateCreditNote { get; set; }
+    public long? SourceVersion { get; set; }
+    public decimal? NetAmount { get; set; }
+    public decimal? TaxAmount { get; set; }
+    public decimal? GrossAmount { get; set; }
+    public string? DocumentCurrency { get; set; }
+    public decimal? ExchangeRate { get; set; }
+    public decimal? GrossBaseAmount { get; set; }
+    public string? BaseCurrency { get; set; }
+    public string? TaxMethod { get; set; }
+    public string? PolicyPackKey { get; set; }
+    public string? PolicyPackVersion { get; set; }
+    public Guid? LedgerEntryId { get; set; }
+    public string? VoucherNumber { get; set; }
+    public Guid? OriginalInvoiceId { get; set; }
+    public string? BlockingReasonCode { get; set; }
+    public string? BlockingReason { get; set; }
+    public CustomerInvoiceAccountingApprovalResponse? Approval { get; set; }
+    public List<CustomerInvoiceAccountingJournalLineResponse> JournalLines { get; set; } = [];
+    public List<CustomerInvoiceAccountingIssueResponse> Issues { get; set; } = [];
+}
+
+public sealed class CustomerInvoiceAccountingApprovalResponse
+{
+    public Guid Id { get; set; }
+    public string Status { get; set; } = string.Empty;
+    public long SourceVersion { get; set; }
+    public string PayloadHash { get; set; } = string.Empty;
+    public DateTime CreatedUtc { get; set; }
+    public DateTime? DecidedUtc { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingJournalLineResponse
+{
+    public Guid FinanceAccountId { get; set; }
+    public string AccountRole { get; set; } = string.Empty;
+    public string AccountCode { get; set; } = string.Empty;
+    public string AccountName { get; set; } = string.Empty;
+    public decimal DebitAmount { get; set; }
+    public decimal CreditAmount { get; set; }
+    public string Currency { get; set; } = string.Empty;
+    public string Description { get; set; } = string.Empty;
+    public string? TaxRuleKey { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingIssueResponse
+{
+    public string ReasonCode { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public bool IsBlocking { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingPreviewResponse
+{
+    public Guid InvoiceId { get; set; }
+    public bool IsReady { get; set; }
+    public string AccountingStatus { get; set; } = string.Empty;
+    public string DocumentKind { get; set; } = string.Empty;
+    public decimal NetAmount { get; set; }
+    public decimal TaxAmount { get; set; }
+    public decimal GrossAmount { get; set; }
+    public string DocumentCurrency { get; set; } = string.Empty;
+    public decimal ExchangeRate { get; set; }
+    public decimal NetBaseAmount { get; set; }
+    public decimal TaxBaseAmount { get; set; }
+    public decimal GrossBaseAmount { get; set; }
+    public decimal RoundingBaseAmount { get; set; }
+    public string BaseCurrency { get; set; } = string.Empty;
+    public string PolicyPackKey { get; set; } = string.Empty;
+    public string PolicyPackVersion { get; set; } = string.Empty;
+    public long SourceVersion { get; set; }
+    public string PayloadHash { get; set; } = string.Empty;
+    public List<CustomerInvoiceAccountingJournalLineResponse> JournalLines { get; set; } = [];
+    public List<CustomerInvoiceAccountingIssueResponse> Issues { get; set; } = [];
+}
+
+public sealed class CustomerInvoiceAccountingReferenceDataResponse
+{
+    public Guid InvoiceId { get; set; }
+    public string DocumentCurrency { get; set; } = string.Empty;
+    public string BaseCurrency { get; set; } = string.Empty;
+    public decimal GrossAmount { get; set; }
+    public List<CustomerInvoiceAccountingTaxRuleOptionResponse> TaxRules { get; set; } = [];
+    public List<CustomerInvoiceAccountingPeriodOptionResponse> OpenPeriods { get; set; } = [];
+    public List<CustomerInvoiceAccountingVoucherSeriesOptionResponse> VoucherSeries { get; set; } = [];
+    public string? DefaultTaxRuleKey { get; set; }
+    public Guid? DefaultPeriodId { get; set; }
+    public string? DefaultVoucherSeriesCode { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingTaxRuleOptionResponse
+{
+    public string Key { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public decimal? Rate { get; set; }
+    public string AmountMethod { get; set; } = string.Empty;
+    public DateOnly EffectiveFrom { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingPeriodOptionResponse
+{
+    public Guid Id { get; set; }
+    public string Name { get; set; } = string.Empty;
+    public DateOnly StartDate { get; set; }
+    public DateOnly EndDate { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingVoucherSeriesOptionResponse
+{
+    public string Code { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+}
+
+public class CustomerInvoiceAccountingApiRequest
+{
+    public Guid FiscalPeriodId { get; set; }
+    public string VoucherSeriesCode { get; set; } = "G";
+    public decimal? ExchangeRate { get; set; }
+    public List<CustomerInvoiceAccountingLineApiRequest> Lines { get; set; } = [];
+}
+
+public sealed class SubmitCustomerInvoiceAccountingApiRequest : CustomerInvoiceAccountingApiRequest
+{
+    public long? ExpectedVersion { get; set; }
+    public string IdempotencyKey { get; set; } = string.Empty;
+}
+
+public sealed class CustomerInvoiceAccountingLineApiRequest
+{
+    public string Description { get; set; } = string.Empty;
+    public decimal Amount { get; set; }
+    public string TaxRuleKey { get; set; } = string.Empty;
+}
+
+public sealed class PostCustomerInvoiceAccountingApiRequest
+{
+    public long ExpectedVersion { get; set; }
+    public string IdempotencyKey { get; set; } = string.Empty;
+}
+
+public sealed class CustomerInvoiceAccountingSubmissionResponse
+{
+    public CustomerInvoiceAccountingStateResponse State { get; set; } = new();
+    public Guid ApprovalRequestId { get; set; }
+    public bool IsIdempotentReplay { get; set; }
+}
+
+public sealed class CustomerInvoiceAccountingPostingResponse
+{
+    public CustomerInvoiceAccountingStateResponse State { get; set; } = new();
+    public AccountingJournalResponse Journal { get; set; } = new();
+    public bool IsIdempotentReplay { get; set; }
+}
+
+public sealed class CreateCustomerCreditNoteApiRequest
+{
+    public string CreditNoteNumber { get; set; } = string.Empty;
+    public DateOnly IssueDate { get; set; }
+    public DateOnly DueDate { get; set; }
+    public string Reason { get; set; } = string.Empty;
+    public string IdempotencyKey { get; set; } = string.Empty;
+    public CustomerInvoiceAccountingApiRequest Accounting { get; set; } = new();
+}
+
+public sealed class CustomerInvoiceReceivableReconciliationResponse
+{
+    public Guid CompanyId { get; set; }
+    public string BaseCurrency { get; set; } = string.Empty;
+    public decimal PostedDocumentReceivable { get; set; }
+    public decimal PostedJournalReceivable { get; set; }
+    public decimal AllocatedAmount { get; set; }
+    public decimal OutstandingAmount { get; set; }
+    public decimal Difference { get; set; }
+    public bool IsReconciled { get; set; }
+    public DateTime AsOfUtc { get; set; }
 }
 
 public sealed class FinanceInvoiceRelatedTransactionResponse
@@ -680,6 +881,7 @@ public sealed class FinanceBillDetailResponse
     public List<SupplierInvoiceCorrectionActionResponse> CorrectionActions { get; set; } = [];
     public SupplierInvoiceEnrichmentActionResponse? EnrichmentAction { get; set; }
     public PaidSupplierBillExpenseAvailabilityResponse? PaidExpensePostingAvailability { get; set; }
+    public SupplierBillAccountingStateResponse? Accounting { get; set; }
 }
 
 public sealed class PaidSupplierBillExpenseAvailabilityResponse

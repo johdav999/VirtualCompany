@@ -32,27 +32,29 @@ internal static class GuidedRealtimeSessionConfiguration
             {
                 ["type"] = "semantic_vad",
                 ["eagerness"] = NormalizeEagerness(options.RealtimeTurnEagerness),
-                ["create_response"] = true,
-                ["interrupt_response"] = options.RealtimeAutomaticInterruption
+                ["create_response"] = false,
+                ["interrupt_response"] = false
             }
             : new JsonObject
             {
                 ["type"] = "server_vad",
                 ["threshold"] = NormalizeVadThreshold(options.RealtimeVadThreshold),
                 ["prefix_padding_ms"] = 300,
-                ["silence_duration_ms"] = 650,
-                ["create_response"] = true,
-                ["interrupt_response"] = options.RealtimeAutomaticInterruption
+                ["silence_duration_ms"] = NormalizeVadSilenceDuration(options.RealtimeVadSilenceDurationMs),
+                ["create_response"] = false,
+                ["interrupt_response"] = false
             };
 
     internal static string NormalizeTurnDetection(string? value) =>
         value?.Trim().ToLowerInvariant() == "semantic_vad" ? "semantic_vad" : "server_vad";
 
     internal static string NormalizeEagerness(string? value) =>
-        value?.Trim().ToLowerInvariant() is "low" or "medium" or "high" ? value.Trim().ToLowerInvariant() : "high";
+        value?.Trim().ToLowerInvariant() is "low" or "medium" or "high" ? value.Trim().ToLowerInvariant() : "low";
 
     internal static double NormalizeVadThreshold(double value) =>
         double.IsFinite(value) ? Math.Clamp(value, 0.05, 1) : 0.15;
+
+    internal static int NormalizeVadSilenceDuration(int value) => Math.Clamp(value, 500, 3000);
 
     internal static string NormalizeNoiseReduction(string? value) =>
         value?.Trim().ToLowerInvariant() is "near_field" or "far_field" ? value.Trim().ToLowerInvariant() : "near_field";

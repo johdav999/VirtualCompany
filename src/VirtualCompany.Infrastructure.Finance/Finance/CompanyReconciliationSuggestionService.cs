@@ -208,7 +208,7 @@ public sealed class CompanyReconciliationSuggestionService :
             }
             EnsureCanAccept(suggestion);
 
-            await ApplyAcceptedOutcomeAsync(suggestion, cancellationToken);
+            await ApplyAcceptedOutcomeAsync(suggestion, command.ActorUserId, cancellationToken);
             var now = DateTime.UtcNow;
             var result = new ReconciliationResultRecord(
                 Guid.NewGuid(),
@@ -277,11 +277,12 @@ public sealed class CompanyReconciliationSuggestionService :
 
     private async Task ApplyAcceptedOutcomeAsync(
         ReconciliationSuggestionRecord suggestion,
+        Guid actorUserId,
         CancellationToken cancellationToken)
     {
         if (IsPaymentBankPair(suggestion.SourceRecordType, suggestion.TargetRecordType))
         {
-            await ApplyPaymentBankAcceptanceAsync(suggestion, cancellationToken);
+            await ApplyPaymentBankAcceptanceAsync(suggestion, actorUserId, cancellationToken);
             return;
         }
 
@@ -303,6 +304,7 @@ public sealed class CompanyReconciliationSuggestionService :
 
     private async Task ApplyPaymentBankAcceptanceAsync(
         ReconciliationSuggestionRecord suggestion,
+        Guid actorUserId,
         CancellationToken cancellationToken)
     {
         var paymentId = suggestion.SourceRecordType == ReconciliationRecordTypes.Payment
@@ -327,7 +329,8 @@ public sealed class CompanyReconciliationSuggestionService :
                 new ReconcileBankTransactionCommand(
                     suggestion.CompanyId,
                     bankTransactionId,
-                    [new BankTransactionPaymentMatchDto(paymentId, existingLink.AllocatedAmount)]),
+                    [new BankTransactionPaymentMatchDto(paymentId, existingLink.AllocatedAmount)],
+                    actorUserId),
                 cancellationToken);
             return;
         }
@@ -346,7 +349,8 @@ public sealed class CompanyReconciliationSuggestionService :
             new ReconcileBankTransactionCommand(
                 suggestion.CompanyId,
                 bankTransactionId,
-                [new BankTransactionPaymentMatchDto(paymentId, allocatedAmount)]),
+                [new BankTransactionPaymentMatchDto(paymentId, allocatedAmount)],
+                actorUserId),
             cancellationToken);
     }
 

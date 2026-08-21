@@ -1,0 +1,198 @@
+using System.Globalization;
+using Microsoft.AspNetCore.Components;
+using VirtualCompany.Shared;
+using VirtualCompany.Web.Services;
+
+namespace VirtualCompany.Web.Pages.Finance;
+
+public partial class AccountingReconciliationPage : FinancePageBase
+{
+    [Parameter] public Guid? TransactionId { get; set; }
+    [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
+
+    private BankReconciliationWorkspaceResponse Workspace { get; set; } = new();
+    private BankReconciliationDetailResponse? Selected { get; set; }
+    private IReadOnlyList<AccountingAccountListItemResponse> Accounts { get; set; } = [];
+    private IReadOnlyList<AccountingFiscalYearResponse> FiscalYears { get; set; } = [];
+    private string? StateFilter { get; set; }
+    private string? Search { get; set; }
+    private Guid SelectedPaymentId { get; set; }
+    private decimal MatchAmount { get; set; }
+    private string ReviewReason { get; set; } = string.Empty;
+    private Guid CategorizationAccountId { get; set; }
+    private string AdjustmentKind { get; set; } = "bank_fee";
+    private decimal AdjustmentDebit { get; set; }
+    private decimal AdjustmentCredit { get; set; }
+    private string AdjustmentExplanation { get; set; } = string.Empty;
+    private Guid ReclassificationAccountId { get; set; }
+    private Guid ReclassificationPeriodId { get; set; }
+    private bool IsWorkspaceLoading { get; set; }
+    private bool IsDetailLoading { get; set; }
+    private bool IsSubmitting { get; set; }
+    private string? ActionError { get; set; }
+    private string? ActionMessage { get; set; }
+    private bool CanManageAccounting => FinanceAccess.CanManageAccounting(AccessState.MembershipRole);
+    private BankReconciliationCandidatePaymentResponse? SelectedPayment =>
+        Selected?.CandidatePayments.FirstOrDefault(x => x.PaymentId == SelectedPaymentId);
+
+    protected override async Task OnParametersSetAsync()
+    {
+        await base.OnParametersSetAsync();
+        if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
+        await LoadWorkspaceAsync(companyId);
+        Accounts = await FinanceApiClient.GetAccountingAccountsAsync(companyId);
+        FiscalYears = await FinanceApiClient.GetAccountingFiscalYearsAsync(companyId);
+        if (TransactionId.HasValue) await SelectAsync(TransactionId.Value, navigate: false);
+        else if (Workspace.Items.Count > 0) await SelectAsync(Workspace.Items[0].BankTransactionId, navigate: false);
+    }
+
+    private async Task LoadWorkspaceAsync(Guid companyId)
+    {
+        IsWorkspaceLoading = true;
+        try { Workspace = await FinanceApiClient.ListBankReconciliationAsync(companyId, StateFilter, Search) ?? new(); }
+        catch (FinanceApiException ex) { ActionError = ex.Message; Workspace = new(); }
+        finally { IsWorkspaceLoading = false; }
+    }
+
+    private async Task ApplyFiltersAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId) return;
+        await LoadWorkspaceAsync(companyId);
+        Selected = null;
+        if (Workspace.Items.Count > 0) await SelectAsync(Workspace.Items[0].BankTransactionId, navigate: false);
+    }
+
+    private async Task ClearFiltersAsync()
+    {
+        StateFilter = null;
+        Search = null;
+        await ApplyFiltersAsync();
+    }
+
+    private async Task SelectAsync(Guid transactionId, bool navigate = true)
+    {
+        if (AccessState.CompanyId is not Guid companyId) return;
+        IsDetailLoading = true;
+        ActionError = null;
+        try
+        {
+            Selected = await FinanceApiClient.GetBankReconciliationDetailAsync(companyId, transactionId);
+            var candidate = Selected?.CandidatePayments.FirstOrDefault();
+            SelectedPaymentId = candidate?.PaymentId ?? Guid.Empty;
+            MatchAmount = Math.Min(candidate?.AvailableAmount ?? 0m, Selected?.RemainingAmount ?? 0m);
+            ReviewReason = Selected?.ReviewReason ?? string.Empty;
+            CategorizationAccountId = Accounts.FirstOrDefault(x => x.IsPostingEnabled && !x.IsProtected)?.Id ?? Guid.Empty;
+            ReclassificationAccountId = CategorizationAccountId;
+            ReclassificationPeriodId = FiscalYears.SelectMany(x => x.Periods).FirstOrDefault(x => !x.IsClosed && !x.IsReportingLocked)?.Id ?? Guid.Empty;
+            if (navigate)
+                Navigation.NavigateTo(FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingReconciliation}/{transactionId:D}", companyId));
+        }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsDetailLoading = false; }
+    }
+
+    private Task MatchPaymentAsync() => SubmitReconciliationAsync("payment", SelectedPaymentId == Guid.Empty
+        ? []
+        : [new ReconcileBankTransactionPaymentApiRequest { PaymentId = SelectedPaymentId, AllocatedAmount = MatchAmount }]);
+    private Task CategorizeAsync() => SubmitReconciliationAsync("categorization", []);
+    private Task PostSuspenseAsync() => SubmitReconciliationAsync("suspense", []);
+    private Task LeaveUnmatchedAsync() => SubmitReconciliationAsync("leave_unmatched", []);
+
+    private async Task SubmitReconciliationAsync(string mode, List<ReconcileBankTransactionPaymentApiRequest> payments)
+    {
+        if (!CanManageAccounting || AccessState.CompanyId is not Guid companyId || Selected is null) return;
+        if (mode != "payment" && string.IsNullOrWhiteSpace(ReviewReason))
+        {
+            ActionError = "Explain why this handling is appropriate before continuing.";
+            return;
+        }
+        if ((AdjustmentDebit > 0m || AdjustmentCredit > 0m) &&
+            (AdjustmentDebit > 0m == (AdjustmentCredit > 0m) || string.IsNullOrWhiteSpace(AdjustmentExplanation)))
+        {
+            ActionError = "Enter either one debit or one credit and explain the difference.";
+            return;
+        }
+        IsSubmitting = true;
+        ActionError = null;
+        ActionMessage = null;
+        try
+        {
+            await FinanceApiClient.ReconcileBankTransactionAsync(companyId, Selected.Transaction.Id, new()
+            {
+                Payments = payments,
+                ExpectedSourceVersion = Selected.SourceVersion,
+                HandlingMode = mode,
+                ReviewReason = string.IsNullOrWhiteSpace(ReviewReason) ? null : ReviewReason.Trim(),
+                CategorizationFinanceAccountId = mode == "categorization" ? CategorizationAccountId : null,
+                Adjustments = BuildAdjustments(),
+                IdempotencyKey = $"bank-ui:{Selected.Transaction.Id:N}:{Selected.SourceVersion}:{mode}"
+            });
+            ActionMessage = mode switch
+            {
+                "payment" => "The payment match was saved and any complete posting was created once.",
+                "suspense" => "The transaction was posted to suspense and follow-up work remains open.",
+                _ => "The transaction remains unmatched and visible for later review."
+            };
+            await LoadWorkspaceAsync(companyId);
+            await SelectAsync(Selected.Transaction.Id, navigate: false);
+        }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsSubmitting = false; }
+    }
+
+    private List<BankReconciliationAdjustmentApiRequest> BuildAdjustments() =>
+        AdjustmentDebit <= 0m && AdjustmentCredit <= 0m
+            ? []
+            : [new BankReconciliationAdjustmentApiRequest
+            {
+                Kind = AdjustmentKind,
+                DebitAmount = AdjustmentDebit,
+                CreditAmount = AdjustmentCredit,
+                Explanation = AdjustmentExplanation.Trim()
+            }];
+
+    private async Task ReclassifyAsync()
+    {
+        if (!CanManageAccounting || AccessState.CompanyId is not Guid companyId || Selected is null) return;
+        if (ReclassificationAccountId == Guid.Empty || ReclassificationPeriodId == Guid.Empty || string.IsNullOrWhiteSpace(ReviewReason))
+        {
+            ActionError = "Choose an account, open period, and correction reason.";
+            return;
+        }
+        IsSubmitting = true;
+        ActionError = null;
+        try
+        {
+            Selected = await FinanceApiClient.ReclassifyBankSuspenseAsync(companyId, Selected.Transaction.Id, new()
+            {
+                TargetFinanceAccountId = ReclassificationAccountId,
+                FiscalPeriodId = ReclassificationPeriodId,
+                PostingDate = DateOnly.FromDateTime(DateTime.Today),
+                Reason = ReviewReason.Trim(),
+                ExpectedSourceVersion = Selected.SourceVersion,
+                IdempotencyKey = $"bank-reclassify:{Selected.Transaction.Id:N}:{Selected.SourceVersion}"
+            });
+            ActionMessage = "Suspense was corrected with linked reversal and replacement journals. The original remains unchanged.";
+            await LoadWorkspaceAsync(companyId);
+        }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsSubmitting = false; }
+    }
+
+    private int Count(string state) => Workspace.StateCounts.GetValueOrDefault(state);
+    private string Money(decimal value, string currency) => string.Format(CultureInfo.CurrentCulture, "{0:N2} {1}", value, currency);
+    private string JournalHref(Guid journalId) => FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingJournal}?journalId={journalId:D}", AccessState.CompanyId);
+    private string PaymentHref(Guid paymentId) => FinanceRoutes.BuildPaymentDetailPath(paymentId, AccessState.CompanyId);
+    private string InvoiceHref(Guid invoiceId) => FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
+    private string BillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
+    private static string StateLabel(string state) => state switch
+    {
+        "partial" => "Partially matched",
+        "matched" => "Ready to post",
+        "posted" => "Posted",
+        "suspense" => "Suspense follow-up",
+        "conflict" => "Conflict",
+        "correction" => "Corrected",
+        _ => "Unmatched"
+    };
+}

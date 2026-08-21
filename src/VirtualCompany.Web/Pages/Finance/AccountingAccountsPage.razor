@@ -1,0 +1,144 @@
+@page "/finance/accounting/accounts"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["ChartOfAccountsTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@FinanceText["ChartOfAccountsTitle"]" Description="@FinanceText["ChartOfAccountsDescription"]" LoadingMessage="@FinanceText["AccountsLoading"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <div class="accounting-page-heading">
+        <div><span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span><h2>@FinanceText["ChartOfAccountsTitle"]</h2><p>@FinanceText["ChartOfAccountsHelp"]</p></div>
+        @if (CanManageAccounting)
+        {
+            <button class="btn btn-primary" type="button" @onclick="BeginCreate">@FinanceText["AddAccount"]</button>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage))
+    {
+        <div class="alert alert-success" role="status">@ActionMessage</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(ActionError))
+    {
+        <div class="alert alert-danger" role="alert"><strong>@FinanceText["AccountingActionFailed"]</strong><div>@ActionError</div><button class="btn btn-sm btn-outline-danger mt-2" type="button" @onclick="ReloadAsync">@CommonText["TryAgain"]</button></div>
+    }
+
+    <section class="accounting-filter-card" aria-label="@FinanceText["AccountFilters"]">
+        <div>
+            <label for="account-search">@FinanceText["SearchAccounts"]</label>
+            <InputText id="account-search" class="form-control" placeholder="@FinanceText["SearchAccountsPlaceholder"]" @bind-Value="Search" />
+        </div>
+        <div>
+            <label for="account-class-filter">@FinanceText["AccountClass"]</label>
+            <InputSelect id="account-class-filter" class="form-select" @bind-Value="AccountClassFilter">
+                <option value="">@FinanceText["AllClasses"]</option><option value="asset">@FinanceText["Assets"]</option><option value="liability">@FinanceText["Liabilities"]</option><option value="equity">@FinanceText["Equity"]</option><option value="income">@FinanceText["Income"]</option><option value="expense">@FinanceText["Expenses"]</option>
+            </InputSelect>
+        </div>
+        <div>
+            <label for="account-status-filter">@FinanceText["Status"]</label>
+            <InputSelect id="account-status-filter" class="form-select" @bind-Value="StatusFilter">
+                <option value="">@FinanceText["AllStatuses"]</option><option value="active">@FinanceText["Active"]</option><option value="inactive">@FinanceText["Inactive"]</option>
+            </InputSelect>
+        </div>
+        <div class="accounting-filter-card__actions"><button class="btn btn-primary" type="button" @onclick="ApplyFiltersAsync">@FinanceText["ApplyFilters"]</button><button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">@FinanceText["Clear"]</button></div>
+    </section>
+
+    <div class="accounting-list-detail">
+        <section class="accounting-list-card" aria-labelledby="account-list-title">
+            <div class="accounting-card-header"><div><h3 id="account-list-title">@FinanceText["Accounts"]</h3><span>@FinanceText["AccountResults", Accounts.Count]</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsAccountsLoading">@CommonText["Refresh"]</button></div>
+            <FinanceDataState IsLoading="@IsAccountsLoading" IsEmpty="@(!IsAccountsLoading && string.IsNullOrWhiteSpace(ListError) && Accounts.Count == 0)" ErrorMessage="@ListError" LoadingTitle="@FinanceText["AccountsLoading"]" LoadingMessage="@FinanceText["AccountsLoadingHelp"]" EmptyTitle="@FinanceText["NoAccountsFound"]" EmptyMessage="@FinanceText["NoAccountsFoundHelp"]" OnRetry="ReloadAsync">
+                <div class="table-responsive">
+                    <table class="table accounting-accounts-table align-middle">
+                        <thead><tr><th>@FinanceText["AccountCode"]</th><th>@FinanceText["AccountName"]</th><th>@FinanceText["AccountClass"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["ControlRole"]</th><th>@FinanceText["Reporting"]</th></tr></thead>
+                        <tbody>
+                            @foreach (var account in Accounts)
+                            {
+                                <tr class="@(Selected?.Id == account.Id ? "selected" : null)" @onclick="() => SelectAccountAsync(account.Id)" tabindex="0" @onkeydown="args => HandleRowKeyAsync(args, account.Id)">
+                                    <td><strong>@account.Code</strong></td>
+                                    <td>
+                                        @account.Name
+                                        @if (account.IsProtected)
+                                        {
+                                            <span class="accounting-badge accounting-badge--info ms-2">@FinanceText["Protected"]</span>
+                                        }
+                                    </td>
+                                    <td>@FinanceText[AccountingPresentation.AccountClassResourceKey(account.AccountClass)]</td>
+                                    <td><span class="@AccountingPresentation.AccountStatusClass(account.IsPostingEnabled)">@FinanceText[account.IsPostingEnabled ? "Active" : "Inactive"]</span></td>
+                                    <td>@(account.RoleName ?? FinanceText["NoControlRole"])</td>
+                                    <td>@(account.ReportingPlacement ?? FinanceText["NotMapped"])</td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+            </FinanceDataState>
+        </section>
+
+        <aside class="accounting-detail-card" aria-live="polite">
+            @if (IsCreating)
+            {
+                <div class="accounting-card-header"><div><span class="dashboard-kicker">@FinanceText["NewAccount"]</span><h3>@FinanceText["AddAccount"]</h3></div><button class="btn-close" aria-label="@CommonText["Close"]" @onclick="CancelCreate"></button></div>
+                <EditForm Model="@NewAccount" OnValidSubmit="CreateAccountAsync">
+                    <div class="accounting-form-stack">
+                        <div><label for="new-account-code">@FinanceText["AccountCode"]</label><InputText id="new-account-code" class="form-control" maxlength="32" @bind-Value="NewAccount.Code" /></div>
+                        <div><label for="new-account-name">@FinanceText["AccountName"]</label><InputText id="new-account-name" class="form-control" maxlength="160" @bind-Value="NewAccount.Name" /></div>
+                        <div><label for="new-account-class">@FinanceText["AccountClass"]</label><InputSelect id="new-account-class" class="form-select" @bind-Value="NewAccount.AccountClass" @bind-Value:after="UpdateDefaultBalance"><option value="asset">@FinanceText["Assets"]</option><option value="liability">@FinanceText["Liabilities"]</option><option value="equity">@FinanceText["Equity"]</option><option value="income">@FinanceText["Income"]</option><option value="expense">@FinanceText["Expenses"]</option></InputSelect></div>
+                        <div><label for="new-normal-balance">@FinanceText["NormalBalance"]</label><InputSelect id="new-normal-balance" class="form-select" @bind-Value="NewAccount.NormalBalance"><option value="debit">@FinanceText["Debit"]</option><option value="credit">@FinanceText["Credit"]</option></InputSelect><small>@FinanceText["NormalBalanceHelp"]</small></div>
+                        <div><label for="new-effective-from">@FinanceText["ActiveFrom"]</label><InputDate id="new-effective-from" class="form-control" @bind-Value="NewAccount.EffectiveFrom" /></div>
+                        <div class="d-flex gap-2"><button class="btn btn-primary" type="submit" disabled="@IsSaving">@(IsSaving ? FinanceText["Saving"] : FinanceText["CreateAccount"])</button><button class="btn btn-outline-secondary" type="button" @onclick="CancelCreate">@CommonText["Cancel"]</button></div>
+                    </div>
+                </EditForm>
+            }
+            else if (IsDetailLoading)
+            {
+                <div class="accounting-detail-state" role="status"><div class="spinner-border text-primary" aria-hidden="true"></div><h3>@FinanceText["AccountDetailLoading"]</h3><p>@FinanceText["AccountDetailLoadingHelp"]</p></div>
+            }
+            else if (Selected is null)
+            {
+                <div class="accounting-detail-state"><span aria-hidden="true">#</span><h3>@FinanceText["SelectAccount"]</h3><p>@FinanceText["SelectAccountHelp"]</p></div>
+            }
+            else
+            {
+                <div class="accounting-card-header accounting-card-header--account">
+                    <div>
+                        <span class="accounting-account-code">@Selected.Code</span>
+                        <h3>@Selected.Name</h3>
+                        <div class="d-flex flex-wrap gap-2">
+                            <span class="@AccountingPresentation.AccountStatusClass(Selected.IsPostingEnabled)">@FinanceText[Selected.IsPostingEnabled ? "Active" : "Inactive"]</span>
+                            @if (Selected.IsProtected)
+                            {
+                                <span class="accounting-badge accounting-badge--info">@FinanceText["Protected"]</span>
+                            }
+                        </div>
+                    </div>
+                </div>
+                <dl class="accounting-detail-list">
+                    <div><dt>@FinanceText["AccountClass"]</dt><dd>@FinanceText[AccountingPresentation.AccountClassResourceKey(Selected.AccountClass)]</dd></div><div><dt>@FinanceText["NormalBalance"]</dt><dd>@FinanceText[AccountingPresentation.NormalBalanceResourceKey(Selected.NormalBalance)]</dd></div><div><dt>@FinanceText["Currency"]</dt><dd>@Selected.Currency</dd></div><div><dt>@FinanceText["ControlRole"]</dt><dd>@(Selected.RoleName ?? FinanceText["NoControlRole"])</dd></div><div><dt>@FinanceText["ActiveDates"]</dt><dd>@FormatActiveDates(Selected)</dd></div><div><dt>@FinanceText["PostingStatus"]</dt><dd>@FinanceText[Selected.IsPostingEnabled ? "PostingEnabled" : "PostingDisabled"]</dd></div><div><dt>@FinanceText["Reporting"]</dt><dd>@(Selected.ReportingPlacement ?? FinanceText["NotMapped"])</dd></div>
+                </dl>
+                @if (!string.IsNullOrWhiteSpace(Selected.ProtectedReason))
+                {
+                    <div class="accounting-notice accounting-notice--info" role="note"><span aria-hidden="true">i</span><p>@Selected.ProtectedReason</p></div>
+                }
+                @if (CanManageAccounting)
+                {
+                    <div class="accounting-account-actions">
+                        <label for="rename-account">@FinanceText["RenameAccount"]</label>
+                        <div class="input-group"><InputText id="rename-account" class="form-control" @bind-Value="RenameValue" /><button class="btn btn-outline-primary" type="button" @onclick="RenameAccountAsync" disabled="@IsSaving">@FinanceText["SaveName"]</button></div>
+                        @if (Selected.IsPostingEnabled)
+                        {
+                            @if (!ConfirmDeactivate)
+                            {
+                                <button class="btn btn-outline-danger w-100" type="button" @onclick="RequestDeactivate" disabled="@(Selected.IsProtected || IsSaving)">@FinanceText["DeactivateAccount"]</button>
+                            }
+                            else
+                            {
+                                <div class="accounting-confirm"><p>@FinanceText["DeactivateAccountConfirm"]</p><div class="d-flex gap-2"><button class="btn btn-danger" type="button" @onclick="DeactivateAccountAsync" disabled="@IsSaving">@FinanceText["ConfirmDeactivate"]</button><button class="btn btn-outline-secondary" type="button" @onclick="CancelDeactivate">@CommonText["Cancel"]</button></div></div>
+                            }
+                        }
+                    </div>
+                }
+                <div class="accounting-laura-mini"><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraAccountAdviceTitle"]</strong><p>@FinanceText["LauraAccountAdvice"]</p></div></div>
+            }
+        </aside>
+    </div>
+</FinancePageLayout>

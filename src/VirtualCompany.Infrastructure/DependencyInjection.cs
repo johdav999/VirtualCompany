@@ -1,5 +1,6 @@
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Mailbox;
@@ -15,6 +16,7 @@ public static class DependencyInjection
         this IServiceCollection services,
         IConfiguration configuration)
     {
+        services.TryAddSingleton<IConfiguration>(configuration);
         services.AddPlatformInfrastructure(configuration);
         services.AddOperationsInfrastructure(configuration);
         services.AddMailboxInfrastructure(configuration);

@@ -112,7 +112,7 @@ public sealed class ReconciliationScoringServiceTests
                 Utc(2026, 4, 20),
                 "INV-2040",
                 "Vendor A",
-                [Candidate(450m, Utc(2026, 5, 10), "INV 2040", "Different Vendor")]),
+                [Candidate(450m, Utc(2026, 5, 10), "INV 2040", "Unrelated Party")]),
             CancellationToken.None);
 
         var suggestion = Assert.Single(result.Suggestions);

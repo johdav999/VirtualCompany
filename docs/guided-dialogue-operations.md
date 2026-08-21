@@ -26,8 +26,10 @@ Configure the `GuidedDialogue` section through normal secret/configuration provi
     "RealtimeModel": "gpt-realtime-2.1-mini",
     "RealtimeVoice": "marin",
     "RealtimeTranscriptionModel": "gpt-4o-mini-transcribe",
-    "RealtimeTurnDetection": "server_vad",
+    "RealtimeTurnDetection": "semantic_vad",
     "RealtimeVadThreshold": 0.15,
+    "RealtimeVadSilenceDurationMs": 900,
+    "RealtimeTurnEagerness": "low",
     "RealtimeNoiseReduction": "near_field",
     "MaxVoiceMinutes": 30,
     "MaxVoiceReconnects": 2
@@ -36,6 +38,16 @@ Configure the `GuidedDialogue` section through normal secret/configuration provi
 ```
 
 `OPENAI_API_KEY` is used when `GuidedDialogue:ApiKey` is empty. Never put the key in Web configuration, JavaScript, source control, logs, diagnostics, or browser responses. Disable `Enabled` to stop model checkpoints and `RealtimeEnabled` to stop new voice calls. Existing text sessions remain readable and directly editable when provider features are disabled.
+
+## Listening-first turn control
+
+The browser keeps Realtime voice activity detection enabled while the server configures `create_response=false` and `interrupt_response=false`. The shared `conversation-turn-controller.mjs` module decides when a normal response may be created. It is provider-neutral and must be reused by future voice conversation surfaces instead of duplicating guided-work turn logic.
+
+User speech immediately cancels the active response and clears buffered WebRTC output before the transcript is classified. A bounded out-of-band text response, tagged with `purpose=turn_intent` and excluded from the default conversation, classifies `pause`, `stop`, `continue`, `incomplete_turn`, or `complete_turn`. Classifier output is never spoken, shown, persisted, or routed to tools. A small deterministic command set is only a fast safety path; semantic classification handles natural variants. Low-confidence, malformed, and timed-out classifications temporarily retain the buffered fragments and favor silence. If no further speech arrives during the bounded grace period, the already-transcribed utterance is accepted so one conservative classification cannot make detected speech disappear. Explicit pause remains latched until the user speaks again.
+
+Pause intent enters a latched visual `Listening — take your time` state with no spoken acknowledgement and no automatic expiry. Incomplete fragments remain bounded and are joined in their original wording when a later fragment completes the thought. Every speech start advances a turn epoch. Browser response gating and the sideband epoch check suppress audio, transcripts, and tool continuations from older turns.
+
+`RealtimeTurnDetection=semantic_vad` with low eagerness is the recommended conversational default. `server_vad` remains available as a fallback; `RealtimeVadSilenceDurationMs` is bounded from 500 to 3000 ms. Response creation and interruption remain application-managed in either VAD mode so there is only one authoritative turn-control path.
 
 Each checkpoint receives the current user turn, the current structured draft, the safe session summary, and up to 20 recent workshop messages. Recent dialogue is bounded to 2,000 characters per message and 12,000 characters in total, ordered oldest to newest. The checkpoint merges supported details into durable field documentation instead of replacing existing material with a terse summary. Narrative fields should retain decisions, rationale, qualifiers, examples, constraints, evidence references, and uncertainty; the separate safe session summary remains concise.
 
@@ -82,6 +94,7 @@ The `VirtualCompany.GuidedWork` meter emits:
 - `guided_work.artifacts.committed`
 - `guided_work.voice.calls.started`
 - `guided_work.voice.tools.rejected`
+- `guided_work.voice.stale_continuations_suppressed`
 - `guided_work.checkpoint.duration`
 
 Dimensions are bounded to artifact type or tool name. Do not add user text, field values, SDP, provider output, or identifiers as metric labels. Alert on sustained checkpoint failures/latency, sideband reconnect exhaustion, rejected-tool spikes, commit conflicts, and retention-worker failures. Audit summaries are intentionally safe and contain no chain of thought.
@@ -91,6 +104,10 @@ Dimensions are bounded to artifact type or tool name. Do not add user text, fiel
 Start from an eligible agent profile or deep-link to `/agents/{agentId}/workshops/{artifactType}?companyId={companyId}`. The supported artifacts are agent operating brief, Marketing strategy, Marketing segment, Finance budget line, Sales campaign plan, and Support service-level policy. A Sales campaign workshop requires an existing campaign target because the current planning contract configures rather than creates that aggregate.
 
 Operators should verify keyboard navigation, visible focus, screen-reader labels, mobile stacking, microphone denial, provider-disabled behavior, reconnect/stop behavior, stale-version conflicts, incomplete review, expired review, and successful commit before enabling the feature for a tenant.
+
+For the live turn-control smoke test, start agent speech and speak over it, verify immediate cutoff, say a pause request and remain silent, verify no automatic acknowledgement or resumed audio, continue with two unfinished fragments, and verify exactly one accepted user turn and one audible response. Interrupt once while a tool is running and confirm that its older continuation is suppressed. Also repeat microphone change, mute, reconnect, explicit interrupt, stop, and text fallback checks. Browser diagnostics may include bounded event names and timing, but must not include transcript text or audio.
+
+Run the package-free deterministic turn-controller suite with `node --test tests/VirtualCompany.Web.Tests/js/conversation-turn-controller.test.mjs` alongside the focused API and Web test projects.
 # Asynchronous public research in workshops
 
 Text workshop research is handled as a durable company-outbox continuation. The initial workshop turn records the user request and the agent acknowledgement, then queues one `guided_work.research_continuation_requested` message. The user may continue the workshop immediately.

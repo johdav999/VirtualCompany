@@ -35,6 +35,11 @@ public sealed record MarketingPlanListItemDto(Guid Id, string Name, string? Stra
     DateTime StartsUtc, DateTime EndsUtc, decimal? PlannedBudget, decimal AllocatedBudget, decimal? RemainingBudget,
     string BudgetCurrency, int ObjectiveCount, int SegmentCount, int CampaignCount, string ReadinessLabel,
     string StatusLabel, Guid? OwnerAgentId, int Version, string? AttentionReason);
+public sealed record MarketingPlanReferenceDto(Guid Id, string Name, string Summary, string Rationale,
+    string? StrategyTitle, int? StrategyVersion, DateTime StartsUtc, DateTime EndsUtc, decimal? PlannedBudget,
+    string BudgetCurrency, string Status, int Version, IReadOnlyList<MarketingPlanObjectiveSummaryDto> Objectives,
+    IReadOnlyList<MarketingPlanSegmentDto> Segments, IReadOnlyList<string> EvidenceReferences,
+    IReadOnlyList<string> MissingEvidence);
 public sealed record MarketingPlanDetailDto(MarketingPlanListItemDto Summary, string Description, string Rationale,
     IReadOnlyList<string> EvidenceReferences, IReadOnlyList<string> MissingEvidence,
     IReadOnlyList<MarketingPlanObjectiveSummaryDto> Objectives, IReadOnlyList<MarketingPlanSegmentDto> Segments,
@@ -76,6 +81,7 @@ public sealed record TransitionMarketingPlanRequest(int ExpectedVersion, string 
 public partial interface IMarketingOperationsService
 {
     Task<MarketingPlanListItemDto[]> ListPlanPortfolioAsync(Guid companyId, CancellationToken ct);
+    Task<IReadOnlyList<MarketingPlanReferenceDto>> ListPlanReferencesAsync(Guid companyId, CancellationToken ct);
     Task<MarketingPlanDetailDto?> GetPlanPortfolioAsync(Guid companyId, Guid planId, CancellationToken ct);
     Task<MarketingPolicyDecisionDto> AssessPlanReadinessAsync(Guid companyId, CreateGroundedMarketingPlanRequest request, CancellationToken ct);
     Task<MarketingPlanDetailDto> CreateGroundedPlanAsync(Guid companyId, Guid userId, CreateGroundedMarketingPlanRequest request, CancellationToken ct);

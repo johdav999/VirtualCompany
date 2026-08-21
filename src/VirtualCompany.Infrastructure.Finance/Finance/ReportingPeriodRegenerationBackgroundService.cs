@@ -131,6 +131,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
     private async Task<IReadOnlyList<BackgroundExecution>> ClaimDueExecutionsAsync(CancellationToken cancellationToken)
     {
         var nowUtc = DateTime.UtcNow;
+        var claimToken = Guid.NewGuid().ToString("N");
         var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
         var candidateIds = await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
@@ -165,6 +166,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
                   x.HeartbeatUtc <= staleBeforeUtc)))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
+                .SetProperty(x => x.CorrelationId, claimToken)
                 .SetProperty(x => x.StartedUtc, nowUtc)
                 .SetProperty(x => x.HeartbeatUtc, nowUtc)
                 .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
@@ -177,7 +179,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
                 candidateIds.Contains(x.Id) &&
                 x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
                 x.Status == BackgroundExecutionStatus.InProgress &&
-                x.StartedUtc == nowUtc)
+                x.CorrelationId == claimToken)
             .OrderBy(x => x.CreatedUtc)
             .ToListAsync(cancellationToken);
     }

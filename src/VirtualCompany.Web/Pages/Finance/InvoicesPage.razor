@@ -64,6 +64,7 @@
                                 <span class="invoice-list-item__meta">
                                     <strong>@invoice.DisplayAmount</strong>
                                     <span class="@($"invoice-status-badge invoice-status-badge--{invoice.StatusTone}")">@invoice.FriendlyStatusLabel</span>
+                                    <span class="@($"invoice-status-badge invoice-status-badge--{invoice.AccountingStatusTone}")">Accounting: @invoice.AccountingStatusLabel</span>
                                     @if (!string.IsNullOrWhiteSpace(invoice.ReviewBadgeLabel))
                                     {
                                         <span class="@($"invoice-status-badge invoice-status-badge--{invoice.ReviewBadgeTone}")">@invoice.ReviewBadgeLabel</span>
@@ -161,6 +162,149 @@
                         <div class="alert alert-success" role="status">@StatusSaveMessage</div>
                     }
 
+                    <section class="invoice-detail-section invoice-accounting-card" aria-labelledby="invoice-accounting-heading">
+                        <div class="invoice-accounting-card__header">
+                            <div>
+                                <h3 id="invoice-accounting-heading">Accounting</h3>
+                                <p>Prepare, approve, and post this invoice to the native ledger.</p>
+                            </div>
+                            <span class="@($"invoice-status-badge invoice-status-badge--{AccountingStatusTone(SelectedInvoice.Accounting?.Status)}")">
+                                @(SelectedInvoice.Accounting?.StatusLabel ?? "Not ready")
+                            </span>
+                        </div>
+
+                        @if (!string.IsNullOrWhiteSpace(AccountingMessage))
+                        {
+                            <div class="alert alert-success" role="status">@AccountingMessage</div>
+                        }
+                        @if (!string.IsNullOrWhiteSpace(AccountingError))
+                        {
+                            <div class="alert alert-danger" role="alert">@AccountingError</div>
+                        }
+
+                        @if (SelectedInvoice.Accounting?.LedgerEntryId is Guid)
+                        {
+                            <dl class="invoice-detail-list invoice-accounting-summary">
+                                <div><dt>Voucher</dt><dd>@(SelectedInvoice.Accounting.VoucherNumber ?? "Posted journal")</dd></div>
+                                <div><dt>Native ledger</dt><dd><a href="@BuildJournalHref()">Open journal</a></dd></div>
+                                <div><dt>Accounting total</dt><dd>@FormatCurrency(SelectedInvoice.Accounting.GrossBaseAmount ?? 0m, SelectedInvoice.Accounting.BaseCurrency ?? SelectedInvoice.Currency)</dd></div>
+                                <div><dt>Policy pack</dt><dd>@SelectedInvoice.Accounting.PolicyPackKey @SelectedInvoice.Accounting.PolicyPackVersion</dd></div>
+                                @if (SelectedInvoice.Accounting.OriginalInvoiceId is Guid originalInvoiceId)
+                                {
+                                    <div><dt>Corrects</dt><dd><a href="@BuildInvoiceHref(originalInvoiceId)">Open original invoice</a></dd></div>
+                                }
+                            </dl>
+                            @if (SelectedInvoice.Accounting.JournalLines.Count > 0)
+                            {
+                                <div class="invoice-journal-preview">
+                                    <div class="invoice-accounting-card__header"><div><h4>Posted journal facts</h4><p>Historical facts retained from the approved accounting version.</p></div></div>
+                                    <div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Account</th><th>Description</th><th class="text-end">Debit</th><th class="text-end">Credit</th></tr></thead><tbody>
+                                        @foreach (var line in SelectedInvoice.Accounting.JournalLines)
+                                        {
+                                            <tr><td><strong>@line.AccountCode</strong> @line.AccountName</td><td>@line.Description</td><td class="text-end">@(line.DebitAmount == 0m ? "—" : FormatCurrency(line.DebitAmount, line.Currency))</td><td class="text-end">@(line.CreditAmount == 0m ? "—" : FormatCurrency(line.CreditAmount, line.Currency))</td></tr>
+                                        }
+                                    </tbody></table></div>
+                                </div>
+                            }
+                        }
+                        else if (AccountingReferenceData is not null)
+                        {
+                            <div class="invoice-accounting-grid">
+                                <div>
+                                    <label for="accounting-period">Accounting period</label>
+                                    <select id="accounting-period" class="form-select" @bind="AccountingPeriodId" disabled="@IsAccountingBusy">
+                                        @foreach (var period in AccountingReferenceData.OpenPeriods)
+                                        {
+                                            <option value="@period.Id">@period.Name</option>
+                                        }
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="accounting-series">Voucher series</label>
+                                    <select id="accounting-series" class="form-select" @bind="AccountingVoucherSeriesCode" disabled="@IsAccountingBusy">
+                                        @foreach (var series in AccountingReferenceData.VoucherSeries)
+                                        {
+                                            <option value="@series.Code">@series.Code — @series.DisplayName</option>
+                                        }
+                                    </select>
+                                </div>
+                                @if (!string.Equals(AccountingReferenceData.DocumentCurrency, AccountingReferenceData.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+                                {
+                                    <div>
+                                        <label for="accounting-rate">Exchange rate to @AccountingReferenceData.BaseCurrency</label>
+                                        <input id="accounting-rate" class="form-control" type="number" step="0.000001" min="0.000001" @bind="AccountingExchangeRate" disabled="@IsAccountingBusy" />
+                                    </div>
+                                }
+                            </div>
+
+                            <div class="invoice-accounting-lines">
+                                @foreach (var line in AccountingLines)
+                                {
+                                    <div class="invoice-accounting-line">
+                                        <div><label>Description</label><input class="form-control" @bind="line.Description" disabled="@IsAccountingBusy" /></div>
+                                        <div><label>Amount (@AccountingReferenceData.DocumentCurrency)</label><input class="form-control" type="number" step="0.01" min="0.01" @bind="line.Amount" disabled="@IsAccountingBusy" /></div>
+                                        <div><label>Tax treatment</label><select class="form-select" @bind="line.TaxRuleKey" disabled="@IsAccountingBusy">@foreach (var rule in AccountingReferenceData.TaxRules) { <option value="@rule.Key">@rule.DisplayName</option> }</select></div>
+                                        <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="() => RemoveAccountingLine(line)" disabled="@(IsAccountingBusy || AccountingLines.Count == 1)">Remove</button>
+                                    </div>
+                                }
+                                <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="AddAccountingLine" disabled="@IsAccountingBusy">Add line</button>
+                            </div>
+
+                            <div class="invoice-detail-actions">
+                                <button class="btn btn-outline-primary" type="button" @onclick="PreviewAccountingAsync" disabled="@IsAccountingBusy">Preview journal</button>
+                                @if (SelectedInvoice.Accounting?.CanSubmit == true)
+                                {
+                                    <button class="btn btn-primary" type="button" @onclick="SubmitAccountingAsync" disabled="@IsAccountingBusy">Submit for approval</button>
+                                }
+                            </div>
+                        }
+
+                        @if (SelectedInvoice.Accounting?.CanPost == true)
+                        {
+                            <div class="invoice-accounting-ready">
+                                <p>The approved accounting version is ready to post.</p>
+                                <button class="btn btn-primary" type="button" @onclick="PostAccountingAsync" disabled="@IsAccountingBusy">Post to ledger</button>
+                            </div>
+                        }
+                        else if (SelectedInvoice.Accounting?.Approval is { } accountingApproval)
+                        {
+                            <div class="invoice-accounting-ready">
+                                <p>Approval: @FormatStatusLabel(accountingApproval.Status)</p>
+                                <a class="btn btn-outline-secondary" href="@BuildApprovalHref(accountingApproval.Id)">Open approval</a>
+                            </div>
+                        }
+
+                        @if (AccountingPreview is { } preview)
+                        {
+                            <div class="invoice-journal-preview">
+                                <div class="invoice-accounting-card__header"><div><h4>Journal preview</h4><p>@preview.PolicyPackKey @preview.PolicyPackVersion · Version @preview.SourceVersion</p></div><strong>@FormatCurrency(preview.GrossBaseAmount, preview.BaseCurrency)</strong></div>
+                                <div class="table-responsive"><table class="table table-sm align-middle"><thead><tr><th>Account</th><th>Description</th><th class="text-end">Debit</th><th class="text-end">Credit</th></tr></thead><tbody>
+                                    @foreach (var line in preview.JournalLines)
+                                    {
+                                        <tr><td><strong>@line.AccountCode</strong> @line.AccountName</td><td>@line.Description</td><td class="text-end">@(line.DebitAmount == 0m ? "—" : FormatCurrency(line.DebitAmount, line.Currency))</td><td class="text-end">@(line.CreditAmount == 0m ? "—" : FormatCurrency(line.CreditAmount, line.Currency))</td></tr>
+                                    }
+                                </tbody></table></div>
+                            </div>
+                        }
+
+                        @if (SelectedInvoice.Accounting?.CanCreateCreditNote == true)
+                        {
+                            <div class="invoice-credit-note">
+                                <button class="btn btn-outline-secondary" type="button" @onclick="() => ShowCreditNoteForm = !ShowCreditNoteForm">Create credit note</button>
+                                @if (ShowCreditNoteForm)
+                                {
+                                    <div class="invoice-credit-note__form">
+                                        <div><label for="credit-number">Credit-note number</label><input id="credit-number" class="form-control" @bind="CreditNoteNumber" /></div>
+                                        <div><label for="credit-reason">Correction reason</label><input id="credit-reason" class="form-control" @bind="CreditNoteReason" /></div>
+                                        <div><label for="credit-issued">Issue date</label><input id="credit-issued" class="form-control" type="date" @bind="CreditNoteIssueDate" /></div>
+                                        <div><label for="credit-due">Due date</label><input id="credit-due" class="form-control" type="date" @bind="CreditNoteDueDate" /></div>
+                                        <button class="btn btn-primary" type="button" @onclick="CreateCreditNoteAsync" disabled="@IsAccountingBusy">Create and submit</button>
+                                    </div>
+                                }
+                            </div>
+                        }
+                    </section>
+
                     <section class="invoice-detail-section">
                         <h3>@FinanceText["ReviewNotes"]</h3>
                         @if (detail.PaymentSummary?.IsPartiallyPaid == true)
@@ -200,7 +344,7 @@
                     @if (detail.SourceDetails.Count > 0)
                     {
                         <section class="invoice-detail-section">
-                            <h3>@FinanceText["SourceDetails"]</h3>
+                            <h3>Delivery and provider status</h3>
                             <dl class="invoice-detail-list invoice-source-detail-list">
                                 @foreach (var sourceDetail in detail.SourceDetails)
                                 {

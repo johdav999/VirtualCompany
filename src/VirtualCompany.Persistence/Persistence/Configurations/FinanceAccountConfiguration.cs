@@ -26,9 +26,17 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
         builder.Property(x => x.OpenedUtc).HasColumnName("opened_at").IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.AccountClass).HasColumnName("account_class").HasMaxLength(32);
+        builder.Property(x => x.NormalBalance).HasColumnName("normal_balance").HasMaxLength(16);
+        builder.Property(x => x.EffectiveFrom).HasColumnName("effective_from").HasColumnType("date");
+        builder.Property(x => x.EffectiveTo).HasColumnName("effective_to").HasColumnType("date");
+        builder.Property(x => x.IsPostingEnabled).HasColumnName("is_posting_enabled").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.ControlAccountRole).HasColumnName("control_account_role").HasMaxLength(96);
+        builder.Property(x => x.RestrictManualPosting).HasColumnName("restrict_manual_posting").HasDefaultValue(false).IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.Code }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.AccountType });
+        builder.HasIndex(x => new { x.CompanyId, x.AccountClass, x.IsPostingEnabled });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }

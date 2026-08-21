@@ -17,6 +17,13 @@ public sealed class OpenAiGuidedCheckpointProviderTests
         Assert.Contains("processing or failed",OpenAiGuidedCheckpointProvider.CheckpointInstructions,StringComparison.OrdinalIgnoreCase);
     }
     [Fact]
+    public void Checkpoint_prompt_uses_company_material_without_overstating_approval()
+    {
+        Assert.Contains("Company reference context is read-only", OpenAiGuidedCheckpointProvider.CheckpointInstructions, StringComparison.Ordinal);
+        Assert.Contains("identifiers, versions, statuses", OpenAiGuidedCheckpointProvider.CheckpointInstructions, StringComparison.Ordinal);
+        Assert.Contains("do not claim", OpenAiGuidedCheckpointProvider.CheckpointInstructions, StringComparison.OrdinalIgnoreCase);
+    }
+    [Fact]
     public void Checkpoint_prompt_preserves_detailed_business_documentation_when_merging_turns()
     {
         Assert.Equal(3000, new GuidedDialogueOptions().MaxOutputTokens);

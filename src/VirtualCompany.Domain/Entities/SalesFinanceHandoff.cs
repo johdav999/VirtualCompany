@@ -20,7 +20,7 @@ public sealed class SalesFinanceHandoff : ICompanyOwnedEntity
         DocumentType = NormalizeDocumentType(documentType);
         DedupeKey = SalesEntityText.NormalizeRequired(dedupeKey, nameof(dedupeKey), 256);
         IdempotencyKey = SalesEntityText.NormalizeRequired(idempotencyKey, nameof(idempotencyKey), 256);
-        ExternalSystem = "Fortnox";
+        ExternalSystem = "virtual_company";
         Status = SalesStatuses.WaitingForApproval;
         ApprovalStatus = SalesStatuses.WaitingForApproval;
         ExecutionStatus = SalesStatuses.Pending;
@@ -77,6 +77,24 @@ public sealed class SalesFinanceHandoff : ICompanyOwnedEntity
         Status = SalesStatuses.WaitingForApproval;
         ApprovalStatus = SalesStatuses.WaitingForApproval;
         ExecutionStatus = SalesStatuses.Pending;
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void SetDestination(string destinationKey)
+    {
+        ExternalSystem = SalesEntityText.NormalizeRequired(destinationKey, nameof(destinationKey), 64).ToLowerInvariant();
+        UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void MarkFinanceReviewRequired(string destinationKey, string summary)
+    {
+        SetDestination(destinationKey);
+        Summary = SalesEntityText.NormalizeRequired(summary, nameof(summary), 1000);
+        Status = SalesStatuses.Open;
+        ApprovalStatus = "not_required";
+        ExecutionStatus = SalesStatuses.Pending;
+        ApprovalId = null;
+        WriteRequestId = null;
         UpdatedUtc = DateTime.UtcNow;
     }
 

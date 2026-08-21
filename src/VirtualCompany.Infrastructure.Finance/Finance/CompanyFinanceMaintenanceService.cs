@@ -299,9 +299,11 @@ public sealed class CompanyFinanceMaintenanceService : IFinanceMaintenanceServic
         await DeleteAsync(counts, "reconciliation_results", _dbContext.ReconciliationResultRecords.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
         await DeleteAsync(counts, "reconciliation_suggestions", _dbContext.ReconciliationSuggestionRecords.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
 
+        await DeleteAsync(counts, "accounting_provider_exports", _dbContext.AccountingProviderExports.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
         await DeleteAsync(counts, "ledger_entry_source_mappings", _dbContext.LedgerEntrySourceMappings.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
         await DeleteAsync(counts, "ledger_entry_lines", _dbContext.LedgerEntryLines.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
         await DeleteAsync(counts, "ledger_entries", _dbContext.LedgerEntries.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
+        await DeleteAsync(counts, "accounting_authority_periods", _dbContext.AccountingAuthorityPeriods.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
 
         await DeleteAsync(counts, "finance_transactions", _dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);
         await DeleteAsync(counts, "payments", _dbContext.Payments.IgnoreQueryFilters().Where(x => x.CompanyId == companyId), cancellationToken);

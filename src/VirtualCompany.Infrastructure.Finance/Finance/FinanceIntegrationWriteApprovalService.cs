@@ -14,6 +14,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
     private const string ApprovalType = "finance_integration_write";
     private readonly IApprovalRequestService _approvalRequestService;
     private readonly VirtualCompanyDbContext _dbContext;
+    private readonly IAccountingAuthorityPolicy _authorityPolicy;
     private readonly TimeProvider _timeProvider;
     private readonly IFortnoxIntegrationDiagnostics? _diagnostics;
     private readonly ILogger<FinanceIntegrationWriteApprovalService>? _logger;
@@ -21,12 +22,14 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
     public FinanceIntegrationWriteApprovalService(
         IApprovalRequestService approvalRequestService,
         VirtualCompanyDbContext dbContext,
+        IAccountingAuthorityPolicy authorityPolicy,
         TimeProvider timeProvider,
         IFortnoxIntegrationDiagnostics? diagnostics = null,
         ILogger<FinanceIntegrationWriteApprovalService>? logger = null)
     {
         _approvalRequestService = approvalRequestService;
         _dbContext = dbContext;
+        _authorityPolicy = authorityPolicy;
         _timeProvider = timeProvider;
         _diagnostics = diagnostics;
         _logger = logger;
@@ -54,6 +57,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
         CancellationToken cancellationToken)
     {
         var commandType = FinanceIntegrationWriteCommandTypes.Normalize(request.CommandType);
+        var authorityDecision = await EnsureAuthorityAllowsAsync(request, cancellationToken);
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         var existing = await _dbContext.FinanceIntegrationWriteCommands
             .SingleOrDefaultAsync(x => x.CompanyId == request.CompanyId && x.Id == request.WriteRequestId, cancellationToken);
@@ -77,6 +81,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
                 request.Payload.SanitizedJson,
                 request.CorrelationId,
                 now);
+            existing.SetAuthorityContext(request.AccountingDate, request.AuthorityOperation, authorityDecision?.AuthorityPeriodId);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
@@ -93,6 +98,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
                 request.Payload.SanitizedJson,
                 request.CorrelationId,
                 now);
+            existing.SetAuthorityContext(request.AccountingDate, request.AuthorityOperation, authorityDecision?.AuthorityPeriodId);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
@@ -111,11 +117,19 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
                 request.Payload.SanitizedJson,
                 request.CorrelationId,
                 now);
+            existing.SetAuthorityContext(request.AccountingDate, request.AuthorityOperation, authorityDecision?.AuthorityPeriodId);
             await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         if (existing?.ApprovalId is Guid existingApprovalId)
         {
+            if (existing.AccountingDate != request.AccountingDate ||
+                !string.Equals(existing.AuthorityOperation, request.AuthorityOperation, StringComparison.Ordinal) ||
+                existing.AuthorityPeriodId != authorityDecision?.AuthorityPeriodId)
+            {
+                existing.SetAuthorityContext(request.AccountingDate, request.AuthorityOperation, authorityDecision?.AuthorityPeriodId);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+            }
             return new FinanceIntegrationWriteResult(request.ProviderKey, existing.Id, existingApprovalId, existing.Status, "Approve this action before data is sent to the accounting system.", false);
         }
 
@@ -132,7 +146,10 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
             request.PayloadHash,
             request.Payload.SanitizedJson,
             request.CorrelationId,
-            now);
+            now,
+            request.AccountingDate,
+            request.AuthorityOperation,
+            authorityDecision?.AuthorityPeriodId);
 
         if (existing is null)
         {
@@ -159,6 +176,7 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
         FinanceIntegrationWriteCommand request,
         CancellationToken cancellationToken)
     {
+        await EnsureAuthorityAllowsAsync(request, cancellationToken);
         var command = await _dbContext.FinanceIntegrationWriteCommands
             .SingleOrDefaultAsync(x => x.CompanyId == request.CompanyId && x.Id == request.WriteRequestId, cancellationToken)
             ?? throw new FortnoxApprovalRequiredException(request.WriteRequestId, "No pending accounting-system approval was found.");
@@ -433,7 +451,9 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
             check.Payload,
             check.WriteRequestId,
             null,
-            check.ApprovedApprovalId);
+            check.ApprovedApprovalId,
+            check.AccountingDate,
+            check.AuthorityOperation);
 
     private static FinanceIntegrationWriteApprovalCheck ToCheck(FinanceIntegrationWriteCommand request) =>
         new(
@@ -449,7 +469,32 @@ public sealed class FinanceIntegrationWriteApprovalService : IFinanceIntegration
             request.PayloadSummary,
             request.PayloadHash,
             request.Payload,
-            request.WriteRequestId);
+            request.WriteRequestId,
+            request.AccountingDate,
+            request.AuthorityOperation);
+
+    private async Task<AccountingAuthorityPolicyDecision?> EnsureAuthorityAllowsAsync(
+        FinanceIntegrationWriteCommand request,
+        CancellationToken cancellationToken)
+    {
+        if (request.AccountingDate is not DateOnly accountingDate ||
+            string.IsNullOrWhiteSpace(request.AuthorityOperation))
+        {
+            return null;
+        }
+
+        var decision = await _authorityPolicy.EvaluateAsync(new(
+            request.CompanyId,
+            accountingDate,
+            request.AuthorityOperation,
+            request.ProviderKey), cancellationToken);
+        if (!decision.IsAllowed)
+        {
+            throw new FortnoxApiException(decision.Explanation, null, "accounting_authority");
+        }
+
+        return decision;
+    }
 
     private static string? TryReadExternalId(object? responsePayload)
     {

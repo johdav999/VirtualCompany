@@ -1,0 +1,23 @@
+<nav class="accounting-navigation" aria-label="@FinanceText["AccountingNavigation"]">
+    <a class="@LinkClass(FinanceRoutes.AccountingSetup)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingSetup, CompanyId)">@FinanceText["AccountingSetupNav"]</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingAccounts)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingAccounts, CompanyId)">@FinanceText["AccountingAccountsNav"]</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingPeriods)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingPeriods, CompanyId)">@FinanceText["AccountingPeriodsNav"]</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingJournal)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, CompanyId)">@FinanceText["AccountingJournalNav"]</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingReconciliation)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReconciliation, CompanyId)">Bank reconciliation</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingReports)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReports, CompanyId)">Reports &amp; close</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingConnections)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingConnections, CompanyId)">Connections</a>
+</nav>
+
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Inject] private NavigationManager Navigation { get; set; } = default!;
+
+    private string LinkClass(string route)
+    {
+        var path = "/" + Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0].Trim('/');
+        return (string.Equals(path, route, StringComparison.OrdinalIgnoreCase) ||
+                route == FinanceRoutes.AccountingJournal && path.StartsWith(route + "/", StringComparison.OrdinalIgnoreCase))
+            ? "accounting-navigation__link active"
+            : "accounting-navigation__link";
+    }
+}

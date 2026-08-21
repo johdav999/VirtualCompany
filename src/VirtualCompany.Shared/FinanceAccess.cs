@@ -7,6 +7,8 @@ public static class FinancePermissions
     public const string Approve = "finance.approve";
     public const string ManageIntegrations = "finance.integrations.manage";
     public const string SandboxAdmin = "finance.sandbox_admin";
+    public const string AccountingView = "finance.accounting.view";
+    public const string AccountingAdmin = "finance.accounting.admin";
 }
 
 public static class FinanceAccess
@@ -90,6 +92,12 @@ public static class FinanceAccess
         FinanceInvoiceApprovalRoleValues.Contains(membershipRole.Trim());
 
     public static bool CanManagePolicies(string? membershipRole) =>
+        CanEdit(membershipRole);
+
+    public static bool CanViewAccounting(string? membershipRole) =>
+        CanView(membershipRole);
+
+    public static bool CanManageAccounting(string? membershipRole) =>
         CanEdit(membershipRole);
 }
 

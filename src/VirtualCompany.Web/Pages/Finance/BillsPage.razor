@@ -200,6 +200,157 @@
                             <div><dt>@FinanceText["ApprovalStatus"]</dt><dd>@detail.ApprovalStatus</dd></div>
                         </dl>
 
+                        <section class="bill-detail-section native-bill-accounting" aria-labelledby="native-accounting-heading">
+                            <div class="bill-detail-section__header">
+                                <div>
+                                    <h3 id="native-accounting-heading">@FinanceText["NativeSupplierAccounting"]</h3>
+                                    <p>@FinanceText["NativeSupplierAccountingDescription"]</p>
+                                </div>
+                                @if (NativeAccountingState is not null)
+                                {
+                                    <span class="@($"bill-status-badge bill-status-badge--{NativeAccountingState.Status switch { "posted" => "success", "ready_to_post" => "success", "awaiting_approval" => "warning", _ => "neutral" }}")">
+                                        @NativeAccountingState.StatusLabel
+                                    </span>
+                                }
+                            </div>
+
+                            @if (IsNativeAccountingLoading)
+                            {
+                                <div class="native-accounting-state"><span class="spinner-border spinner-border-sm" aria-hidden="true"></span> @FinanceText["LoadingNativeAccounting"]</div>
+                            }
+                            else if (NativeAccountingReferenceData is null)
+                            {
+                                <div class="native-accounting-alert native-accounting-alert--warning">
+                                    <strong>@FinanceText["NativeAccountingUnavailable"]</strong>
+                                    <span>@(NativeAccountingMessage ?? FinanceText["NativeAccountingUnavailableDescription"])</span>
+                                </div>
+                            }
+                            else if (NativeAccountingState is { Status: "posted" } postedAccounting)
+                            {
+                                <div class="native-accounting-posted">
+                                    <div>
+                                        <span class="native-accounting-check" aria-hidden="true">✓</span>
+                                        <div><strong>@FinanceText["PostedInVirtualCompany"]</strong><span>@FinanceText["NativePostingIndependent"]</span></div>
+                                    </div>
+                                    @if (postedAccounting.LedgerEntryId is Guid journalId)
+                                    {
+                                        <a class="btn btn-primary btn-sm" href="@BuildNativeJournalHref(journalId)">@FinanceText["ViewVoucher"] @postedAccounting.VoucherNumber</a>
+                                    }
+                                </div>
+                                <dl class="native-accounting-evidence-grid">
+                                    <div><dt>@FinanceText["TaxTreatment"]</dt><dd>@FormatStatusLabel(postedAccounting.TaxTreatment)</dd></div>
+                                    <div><dt>@FinanceText["ApprovedVersion"]</dt><dd>v@postedAccounting.SourceVersion</dd></div>
+                                    <div><dt>@FinanceText["SourceDocumentEvidence"]</dt><dd>@(string.IsNullOrWhiteSpace(postedAccounting.SourceDocumentHash) ? FinanceText["NoSourceHash"] : FinanceText["SourceHashVerified"])</dd></div>
+                                    <div><dt>@FinanceText["CorrectionChain"]</dt><dd>@(postedAccounting.OriginalBillId.HasValue ? FinanceText["LinkedCreditNote"] : FinanceText["OriginalSupplierBill"])</dd></div>
+                                </dl>
+                                <div class="native-credit-note-form">
+                                    <h4>@FinanceText["CreateNativeCreditNote"]</h4>
+                                    <p>@FinanceText["CreateNativeCreditNoteDescription"]</p>
+                                    <div class="native-accounting-form-grid">
+                                        <label><span>@FinanceText["CreditNoteNumber"]</span><input class="form-control" @bind="NativeCreditNoteNumber" /></label>
+                                        <label><span>@FinanceText["CorrectionReason"]</span><input class="form-control" @bind="NativeCreditNoteReason" /></label>
+                                    </div>
+                                    <button type="button" class="btn btn-outline-primary btn-sm" disabled="@(IsNativeAccountingSubmitting || string.IsNullOrWhiteSpace(NativeCreditNoteNumber) || string.IsNullOrWhiteSpace(NativeCreditNoteReason))" @onclick="CreateNativeCreditNoteAsync">
+                                        @FinanceText["CreateNativeCreditNote"]
+                                    </button>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="native-accounting-readiness">
+                                    <div>
+                                        <strong>@(NativeAccountingState?.StatusLabel ?? FinanceText["NeedsAccountingReview"])</strong>
+                                        <span>@(NativeAccountingState?.Status == "awaiting_approval" ? FinanceText["ApprovedFactsWaiting"] : FinanceText["ReviewAccountingEvidence"])</span>
+                                    </div>
+                                    @if (NativeAccountingState?.CanPost == true)
+                                    {
+                                        <button type="button" class="btn btn-primary" disabled="@IsNativeAccountingSubmitting" @onclick="PostNativeAccountingAsync">@FinanceText["PostInVirtualCompany"]</button>
+                                    }
+                                </div>
+
+                                @if (NativeAccountingState?.Status is not "awaiting_approval" and not "ready_to_post")
+                                {
+                                    <div class="native-accounting-form-grid">
+                                        <label>
+                                            <span>@FinanceText["AccountingPeriod"]</span>
+                                            <select class="form-select" @bind="NativeAccountingPeriodId">
+                                                @foreach (var period in NativeAccountingReferenceData.OpenPeriods)
+                                                {
+                                                    <option value="@period.Id">@period.Name</option>
+                                                }
+                                            </select>
+                                        </label>
+                                        <label>
+                                            <span>@FinanceText["ExpenseOrAssetAccount"]</span>
+                                            <select class="form-select" @bind="NativeAccountingCostAccountId">
+                                                <option value="@Guid.Empty">@FinanceText["SelectAccount"]</option>
+                                                @foreach (var account in NativeAccountingReferenceData.CostAccounts)
+                                                {
+                                                    <option value="@account.Id">@account.Code · @account.Name (@FormatStatusLabel(account.AccountClass))</option>
+                                                }
+                                            </select>
+                                            @if (!string.IsNullOrWhiteSpace(NativeAccountingReferenceData.SuggestedCostAccountEvidence))
+                                            {
+                                                <small>@FinanceText["SuggestedFromEvidence"] @NativeAccountingReferenceData.SuggestedCostAccountEvidence</small>
+                                            }
+                                        </label>
+                                        <label>
+                                            <span>@FinanceText["TaxTreatment"]</span>
+                                            <select class="form-select" @bind="NativeAccountingTaxRuleKey">
+                                                @foreach (var rule in NativeAccountingReferenceData.TaxRules)
+                                                {
+                                                    <option value="@rule.Key">@rule.DisplayName · @FormatStatusLabel(rule.TaxTreatment)</option>
+                                                }
+                                            </select>
+                                        </label>
+                                        <label>
+                                            <span>@FinanceText["AccountingLineAmount"]</span>
+                                            <input type="number" step="0.01" class="form-control" @bind="NativeAccountingLineAmount" />
+                                            <small>@FinanceText["AccountingLineAmountHelp"]</small>
+                                        </label>
+                                    </div>
+                                    @if (!string.Equals(NativeAccountingReferenceData.DocumentCurrency, NativeAccountingReferenceData.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        <label class="native-accounting-exchange-rate">
+                                            <span>@FinanceText["ExchangeRate"] (@NativeAccountingReferenceData.DocumentCurrency → @NativeAccountingReferenceData.BaseCurrency)</span>
+                                            <input type="number" step="0.000001" class="form-control" @bind="NativeAccountingExchangeRate" />
+                                        </label>
+                                    }
+                                    <div class="native-accounting-actions">
+                                        <button type="button" class="btn btn-outline-primary" disabled="@IsNativeAccountingSubmitting" @onclick="PreviewNativeAccountingAsync">@FinanceText["PreviewPosting"]</button>
+                                        <button type="button" class="btn btn-primary" disabled="@(IsNativeAccountingSubmitting || NativeAccountingCostAccountId == Guid.Empty)" @onclick="SubmitNativeAccountingAsync">@FinanceText["SubmitAccountingApproval"]</button>
+                                    </div>
+                                }
+
+                                @if (NativeAccountingPreview is not null)
+                                {
+                                    <div class="native-accounting-preview">
+                                        <div class="native-accounting-preview__header"><strong>@FinanceText["PostingPreview"]</strong><span>@(NativeAccountingPreview.IsReady ? FinanceText["Balanced"] : FinanceText["NeedsReview"])</span></div>
+                                        @foreach (var line in NativeAccountingPreview.JournalLines)
+                                        {
+                                            <div class="native-accounting-preview__line"><span>@line.AccountCode · @line.AccountName</span><span>@(line.DebitAmount > 0 ? $"Debit {FormatCurrency(line.DebitAmount, line.Currency)}" : $"Credit {FormatCurrency(line.CreditAmount, line.Currency)}")</span></div>
+                                        }
+                                        @foreach (var issue in NativeAccountingPreview.Issues.Where(x => x.IsBlocking))
+                                        {
+                                            <div class="native-accounting-alert native-accounting-alert--warning"><strong>@FinanceText["NeedsReview"]</strong><span>@issue.Explanation</span></div>
+                                        }
+                                    </div>
+                                }
+
+                                <div class="native-accounting-evidence-grid">
+                                    <div><dt>@FinanceText["DuplicateChecks"]</dt><dd>@(NativeAccountingPreview?.DuplicateEvidence.Count > 0 ? FinanceText["DuplicateEvidenceFound"] : FinanceText["NoDuplicatesFound"])</dd></div>
+                                    <div><dt>@FinanceText["ApprovalStatus"]</dt><dd>@(NativeAccountingState?.Approval is null ? FinanceText["NotRequested"] : FormatStatusLabel(NativeAccountingState.Approval.Status))</dd></div>
+                                    <div><dt>@FinanceText["SourceDocumentEvidence"]</dt><dd>@(NativeAccountingPreview?.SourceDocumentHash is null ? FinanceText["CheckedOnPreview"] : FinanceText["SourceHashVerified"])</dd></div>
+                                    <div><dt>@FinanceText["PolicyVersion"]</dt><dd>@(NativeAccountingPreview is null ? FinanceText["CheckedOnPreview"] : $"{NativeAccountingPreview.PolicyPackKey} {NativeAccountingPreview.PolicyPackVersion}")</dd></div>
+                                </div>
+                            }
+
+                            @if (!string.IsNullOrWhiteSpace(NativeAccountingMessage))
+                            {
+                                <p class="bill-detail-section__message">@NativeAccountingMessage</p>
+                            }
+                        </section>
+
                         @{ var progress = BuildSupplierBillProgress(detail); }
                         <SupplierBillProgressFlow Progress="@progress">
                             <CurrentStepContent>
@@ -401,7 +552,7 @@
 
                         <section class="bill-detail-section">
                             <div class="bill-detail-section__header">
-                                <h3>@FinanceText["FortnoxDraft"]</h3>
+                                <h3>@FinanceText["FortnoxExportOptional"]</h3>
                                 <span class="@($"bill-status-badge bill-status-badge--{detail.DraftAction.StatusTone}")">@detail.DraftAction.StatusLabel</span>
                             </div>
                             <p>@detail.DraftAction.Description</p>

@@ -14,9 +14,50 @@ if (-not (Test-Path $BackupPath))
     throw "Backup file was not found: $BackupPath"
 }
 
-if (-not (Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue))
+$invokeSqlcmdCommand = Get-Command Invoke-Sqlcmd -ErrorAction SilentlyContinue
+$sqlcmdCommand = Get-Command sqlcmd -ErrorAction SilentlyContinue
+if ($null -eq $invokeSqlcmdCommand -and $null -eq $sqlcmdCommand)
 {
-    throw "Invoke-Sqlcmd is not available. Install SQL Server Management tools or the SqlServer PowerShell module."
+    throw "Neither Invoke-Sqlcmd nor sqlcmd is available. Install SQL Server Management tools or the SqlServer PowerShell module."
+}
+
+function Invoke-SqlcmdCli
+{
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Query,
+        [switch]$Delimited,
+        [switch]$UnlimitedTimeout
+    )
+
+    $arguments = @("-S", $ServerInstance, "-b", "-W", "-h", "-1")
+    if ($UseWindowsAuthentication)
+    {
+        $arguments += "-E"
+    }
+    else
+    {
+        $arguments += @("-U", $SqlUser, "-P", $SqlPassword)
+    }
+
+    if ($Delimited)
+    {
+        $arguments += @("-s", "|")
+    }
+
+    if ($UnlimitedTimeout)
+    {
+        $arguments += @("-t", "0")
+    }
+
+    $arguments += @("-Q", $Query)
+    $output = & $sqlcmdCommand.Source @arguments
+    if ($LASTEXITCODE -ne 0)
+    {
+        throw "sqlcmd failed with exit code $LASTEXITCODE."
+    }
+
+    return $output
 }
 
 if ($ServerInstance -match "\\(?<instanceName>[^\\]+)$")
@@ -45,10 +86,15 @@ if (-not $UseWindowsAuthentication)
 }
 
 $backupFullPath = (Resolve-Path $BackupPath).Path
-$backupDirectory = Invoke-Sqlcmd `
-    @invokeSqlArgs `
-    -Query "SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(4000)) AS BackupPath;" |
-    Select-Object -ExpandProperty BackupPath
+$backupDirectoryQuery = "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(4000)) AS BackupPath;"
+$backupDirectory = if ($null -ne $invokeSqlcmdCommand)
+{
+    Invoke-Sqlcmd @invokeSqlArgs -Query $backupDirectoryQuery | Select-Object -ExpandProperty BackupPath
+}
+else
+{
+    (Invoke-SqlcmdCli -Query $backupDirectoryQuery | Select-Object -Last 1).Trim()
+}
 
 if ([string]::IsNullOrWhiteSpace($backupDirectory))
 {
@@ -61,13 +107,38 @@ $sqlReadableBackupPath = Join-Path $backupDirectory (Split-Path $backupFullPath 
 if ($backupFullPath -ne $sqlReadableBackupPath)
 {
     Write-Host "Copying backup to SQL Server backup folder '$backupDirectory'..."
-    Copy-Item -LiteralPath $backupFullPath -Destination $sqlReadableBackupPath -Force
+    try
+    {
+        Copy-Item -LiteralPath $backupFullPath -Destination $sqlReadableBackupPath -Force
+    }
+    catch [System.UnauthorizedAccessException]
+    {
+        # A non-elevated operator may be unable to write SQL Server's protected backup directory.
+        # RESTORE can still use the original absolute path when the SQL Server service account has
+        # read access to that one backup file. SQL Server will return an explicit access error if it does not.
+        Write-Warning "Could not copy into the protected SQL Server backup folder. Using the original backup path; ensure the SQL Server service account has read access to this file."
+        $sqlReadableBackupPath = $backupFullPath
+    }
 }
 
 Write-Host "Reading backup metadata from '$sqlReadableBackupPath'..."
-$fileList = Invoke-Sqlcmd `
-    @invokeSqlArgs `
-    -Query "RESTORE FILELISTONLY FROM DISK = N'$sqlReadableBackupPath';"
+$fileListQuery = "RESTORE FILELISTONLY FROM DISK = N'$sqlReadableBackupPath';"
+$fileList = if ($null -ne $invokeSqlcmdCommand)
+{
+    Invoke-Sqlcmd @invokeSqlArgs -Query $fileListQuery
+}
+else
+{
+    Invoke-SqlcmdCli -Query $fileListQuery -Delimited |
+        Where-Object { $_ -match "\|" } |
+        ForEach-Object {
+            $columns = $_ -split "\|"
+            [pscustomobject]@{
+                LogicalName = $columns[0].Trim()
+                Type = $columns[2].Trim()
+            }
+        }
+}
 
 $dataFile = $fileList | Where-Object { $_.Type -eq "D" } | Select-Object -First 1
 $logFile = $fileList | Where-Object { $_.Type -eq "L" } | Select-Object -First 1
@@ -77,10 +148,15 @@ if ($null -eq $dataFile -or $null -eq $logFile)
     throw "Could not read data and log logical file names from the backup."
 }
 
-$dataDirectory = Invoke-Sqlcmd `
-    @invokeSqlArgs `
-    -Query "SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000)) AS DataPath;" |
-    Select-Object -ExpandProperty DataPath
+$dataDirectoryQuery = "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000)) AS DataPath;"
+$dataDirectory = if ($null -ne $invokeSqlcmdCommand)
+{
+    Invoke-Sqlcmd @invokeSqlArgs -Query $dataDirectoryQuery | Select-Object -ExpandProperty DataPath
+}
+else
+{
+    (Invoke-SqlcmdCli -Query $dataDirectoryQuery | Select-Object -Last 1).Trim()
+}
 
 if ([string]::IsNullOrWhiteSpace($dataDirectory))
 {
@@ -108,10 +184,14 @@ ALTER DATABASE [$DatabaseName] SET MULTI_USER;
 "@
 
 Write-Host "Restoring '$DatabaseName' on '$ServerInstance'..."
-Invoke-Sqlcmd `
-    @invokeSqlArgs `
-    -Query $restoreQuery `
-    -QueryTimeout 0
+if ($null -ne $invokeSqlcmdCommand)
+{
+    Invoke-Sqlcmd @invokeSqlArgs -Query $restoreQuery -QueryTimeout 0
+}
+else
+{
+    Invoke-SqlcmdCli -Query $restoreQuery -UnlimitedTimeout | Out-Host
+}
 
 Write-Host "Restored '$DatabaseName' on '$ServerInstance'."
 Write-Host "Run .\server-local-sql.ps1 to apply pending EF Core migrations and start the API."

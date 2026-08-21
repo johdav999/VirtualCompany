@@ -41,6 +41,7 @@ internal sealed class PaymentEntityConfiguration : IEntityTypeConfiguration<Paym
 
         builder.HasMany(x => x.CashLedgerLinks)
             .WithOne(x => x.Payment)
-            .HasForeignKey(x => x.PaymentId);
+            .HasForeignKey(x => new { x.CompanyId, x.PaymentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id });
     }
 }

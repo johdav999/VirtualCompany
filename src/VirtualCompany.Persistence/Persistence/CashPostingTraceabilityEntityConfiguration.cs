@@ -24,8 +24,14 @@ internal sealed class PaymentCashLedgerLinkEntityConfiguration : IEntityTypeConf
         builder.HasIndex(x => new { x.CompanyId, x.PaymentId, x.LedgerEntryId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.PaymentId, x.SourceType, x.SourceId, x.PostedAtUtc }).IsUnique();
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.Payment).WithMany(x => x.CashLedgerLinks).HasForeignKey(x => x.PaymentId).OnDelete(DeleteBehavior.NoAction);
-        builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => x.LedgerEntryId).OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.Payment).WithMany(x => x.CashLedgerLinks)
+            .HasForeignKey(x => new { x.CompanyId, x.PaymentId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.LedgerEntry).WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }
 
@@ -54,9 +60,19 @@ internal sealed class BankTransactionPostingStateRecordEntityConfiguration : IEn
         builder.Property(x => x.ConflictDetails).HasColumnName("conflict_details").HasMaxLength(512);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.HandlingMode).HasColumnName("handling_mode").HasMaxLength(32);
+        builder.Property(x => x.SourceVersion).HasColumnName("source_version").HasDefaultValue(1L).IsRequired();
+        builder.Property(x => x.ReviewedByUserId).HasColumnName("reviewed_by_user_id");
+        builder.Property(x => x.ReviewedUtc).HasColumnName("reviewed_at");
+        builder.Property(x => x.ReviewReason).HasColumnName("review_reason").HasMaxLength(512);
+        builder.Property(x => x.SuspenseLedgerEntryId).HasColumnName("suspense_ledger_entry_id");
+        builder.Property(x => x.ReclassifiedLedgerEntryId).HasColumnName("reclassified_ledger_entry_id");
         builder.HasIndex(x => new { x.CompanyId, x.BankTransactionId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.MatchingStatus, x.PostingState });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
-        builder.HasOne(x => x.BankTransaction).WithOne(x => x.PostingStateRecord).HasForeignKey<BankTransactionPostingStateRecord>(x => x.BankTransactionId).OnDelete(DeleteBehavior.NoAction);
+        builder.HasOne(x => x.BankTransaction).WithOne(x => x.PostingStateRecord)
+            .HasForeignKey<BankTransactionPostingStateRecord>(x => new { x.CompanyId, x.BankTransactionId })
+            .HasPrincipalKey<BankTransaction>(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.NoAction);
     }
 }

@@ -60,6 +60,51 @@ public sealed partial class MarketingOperationsService
         }).ToArray();
     }
 
+    public async Task<IReadOnlyList<MarketingPlanReferenceDto>> ListPlanReferencesAsync(Guid companyId, CancellationToken ct)
+    {
+        RequireCompany(companyId);
+        var plans = await _db.MarketingPlans.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId).OrderByDescending(x => x.StartsUtc).Take(100).ToArrayAsync(ct);
+        if (plans.Length == 0) return [];
+
+        var planIds = plans.Select(x => x.Id).ToArray();
+        var strategyIds = plans.Where(x => x.MarketingStrategyId.HasValue).Select(x => x.MarketingStrategyId!.Value).Distinct().ToArray();
+        var strategyNames = await _db.MarketingStrategies.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && strategyIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Title, ct);
+        var objectiveLinks = await _db.MarketingPlanObjectives.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && planIds.Contains(x.MarketingPlanId)).ToArrayAsync(ct);
+        var objectiveIds = objectiveLinks.Select(x => x.MarketingObjectiveId).Distinct().ToArray();
+        var objectives = await _db.MarketingObjectives.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && objectiveIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+        var segmentLinks = await _db.MarketingPlanSegments.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && planIds.Contains(x.MarketingPlanId)).ToArrayAsync(ct);
+        var segmentVersionIds = segmentLinks.Select(x => x.MarketingCustomerSegmentVersionId).Distinct().ToArray();
+        var versions = await _db.MarketingCustomerSegmentVersions.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && segmentVersionIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, ct);
+        var segmentIds = versions.Values.Select(x => x.MarketingCustomerSegmentId).Distinct().ToArray();
+        var segmentNames = await _db.MarketingCustomerSegments.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && segmentIds.Contains(x.Id)).ToDictionaryAsync(x => x.Id, x => x.Name, ct);
+
+        return plans.Select(plan =>
+        {
+            var planObjectives = objectiveLinks.Where(x => x.MarketingPlanId == plan.Id && objectives.ContainsKey(x.MarketingObjectiveId))
+                .Select(x => objectives[x.MarketingObjectiveId]).OrderBy(x => x.PeriodEndUtc)
+                .Select(x => new MarketingPlanObjectiveSummaryDto(x.Id, x.Name, x.Status, x.PeriodStartUtc, x.PeriodEndUtc)).ToArray();
+            var planSegments = segmentLinks.Where(x => x.MarketingPlanId == plan.Id && versions.ContainsKey(x.MarketingCustomerSegmentVersionId))
+                .OrderBy(x => x.Priority).Select(link =>
+                {
+                    var version = versions[link.MarketingCustomerSegmentVersionId];
+                    return new MarketingPlanSegmentDto(link.Id, version.Id, version.VersionNumber,
+                        segmentNames.GetValueOrDefault(version.MarketingCustomerSegmentId, "Audience segment"), link.Role,
+                        link.Priority, link.Rationale, link.ExpectedContribution, version.Status);
+                }).ToArray();
+            return new MarketingPlanReferenceDto(plan.Id, plan.Name, plan.Summary, plan.Rationale,
+                strategyNames.GetValueOrDefault(plan.MarketingStrategyId ?? Guid.Empty), plan.MarketingStrategyVersion,
+                plan.StartsUtc, plan.EndsUtc, plan.PlannedBudget, plan.BudgetCurrency, FriendlyStatus(plan.Status), plan.Version,
+                planObjectives, planSegments, ParseList(plan.EvidenceReferencesJson), ParseList(plan.MissingEvidenceJson));
+        }).ToArray();
+    }
+
     public async Task<MarketingPlanDetailDto?> GetPlanPortfolioAsync(Guid companyId, Guid planId, CancellationToken ct)
     {
         RequireCompany(companyId);

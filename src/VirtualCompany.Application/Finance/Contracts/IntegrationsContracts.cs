@@ -133,7 +133,9 @@ public sealed record RequestCustomerInvoiceFortnoxExportCommand(
     Guid InvoiceId,
     Guid? ActorUserId,
     string ActorDisplayName,
-    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox);
+    string ProviderKey = FinanceIntegrationProviderKeys.Fortnox,
+    DateOnly? AccountingDate = null,
+    string? AuthorityOperation = null);
 
 public sealed record ExecuteCustomerInvoiceFortnoxExportCommand(
     Guid CompanyId,

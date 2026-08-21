@@ -21,17 +21,20 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
     private readonly ICompanyMembershipContextResolver _membershipContextResolver;
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly IAuditEventWriter _auditEventWriter;
+    private readonly IAccountingReportingService _accountingReportingService;
 
     public CompanyReportingPeriodCloseService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver membershipContextResolver,
         ICurrentUserAccessor currentUserAccessor,
-        IAuditEventWriter auditEventWriter)
+        IAuditEventWriter auditEventWriter,
+        IAccountingReportingService accountingReportingService)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
         _currentUserAccessor = currentUserAccessor;
         _auditEventWriter = auditEventWriter;
+        _accountingReportingService = accountingReportingService;
     }
 
     public async Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(
@@ -175,6 +178,85 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 cancellationToken);
         }
 
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        return MapLockState(period);
+    }
+
+    public async Task<ReportingPeriodLockStateDto> CloseAndLockAsync(
+        CloseAndLockReportingPeriodCommand command,
+        CancellationToken cancellationToken)
+    {
+        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
+        EnsureFinanceEditPermission(membership);
+        var actor = RequireUserActor();
+        var reason = string.IsNullOrWhiteSpace(command.Reason)
+            ? throw new ReportingPeriodOperationException("close_reason_required", "A close reason is required.", "Explain why this period is ready to close.")
+            : command.Reason.Trim();
+        var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: true, cancellationToken);
+        if (period.IsClosed && period.IsReportingLocked)
+        {
+            return MapLockState(period);
+        }
+
+        var issues = await BuildBlockingIssuesAsync(command.CompanyId, period.Id, cancellationToken);
+        if (issues.Count > 0)
+        {
+            throw new ReportingPeriodOperationException(
+                "reporting_period_close_blocked",
+                "The period is not ready to close.",
+                $"Resolve the {issues.Count} blocking close issue type(s), then run the close review again.");
+        }
+
+        var trialBalance = await _accountingReportingService.GetTrialBalanceAsync(
+            new GetTrialBalanceQuery(command.CompanyId, period.Id), cancellationToken);
+        var now = DateTime.UtcNow;
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await RegenerateSnapshotsAsync(period, now, cancellationToken);
+        period.RecordCloseValidation(actor.ActorId, now);
+        period.Close(now);
+        period.LockReporting(actor.ActorId, now);
+        _dbContext.AccountingPeriodHistory.Add(new AccountingPeriodHistory(Guid.NewGuid(), command.CompanyId,
+            period.Id, AccountingPeriodHistoryActions.ClosedAndLocked, actor.ActorId!.Value, reason,
+            trialBalance.Checksum, now));
+        await _auditEventWriter.WriteAsync(new AuditEventWriteRequest(command.CompanyId, actor.ActorType,
+            actor.ActorId, AuditEventActions.ReportingPeriodClosedAndLocked, AuditTargetTypes.FiscalPeriod,
+            period.Id.ToString("D"), AuditEventOutcomes.Succeeded,
+            $"Closed and locked fiscal period '{period.Name}' after all close checks passed.",
+            Metadata: new Dictionary<string, string?>
+            {
+                ["reason"] = reason,
+                ["trialBalanceChecksum"] = trialBalance.Checksum,
+                ["membershipRole"] = membership.MembershipRole.ToStorageValue()
+            }, OccurredUtc: now), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        await transaction.CommitAsync(cancellationToken);
+        return MapLockState(period);
+    }
+
+    public async Task<ReportingPeriodLockStateDto> ReopenAsync(
+        ReopenReportingPeriodCommand command,
+        CancellationToken cancellationToken)
+    {
+        var membership = await RequireMembershipAsync(command.CompanyId, cancellationToken);
+        if (membership.MembershipRole is not (CompanyMembershipRole.Owner or CompanyMembershipRole.Admin))
+        {
+            throw new UnauthorizedAccessException("Only company owners or admins can reopen a closed fiscal period.");
+        }
+        var actor = RequireUserActor();
+        var reason = string.IsNullOrWhiteSpace(command.Reason) || command.Reason.Trim().Length < 10
+            ? throw new ReportingPeriodOperationException("reopen_reason_required", "A detailed reopen reason is required.", "Enter at least 10 characters explaining the exceptional reason for reopening.")
+            : command.Reason.Trim();
+        var period = await LoadFiscalPeriodAsync(command.CompanyId, command.FiscalPeriodId, track: true, cancellationToken);
+        if (!period.IsClosed && !period.IsReportingLocked) return MapLockState(period);
+        var now = DateTime.UtcNow;
+        period.Reopen(actor.ActorId!.Value, now);
+        _dbContext.AccountingPeriodHistory.Add(new AccountingPeriodHistory(Guid.NewGuid(), command.CompanyId,
+            period.Id, AccountingPeriodHistoryActions.Reopened, actor.ActorId.Value, reason, null, now));
+        await _auditEventWriter.WriteAsync(new AuditEventWriteRequest(command.CompanyId, actor.ActorType,
+            actor.ActorId, AuditEventActions.ReportingPeriodReopened, AuditTargetTypes.FiscalPeriod,
+            period.Id.ToString("D"), AuditEventOutcomes.Succeeded,
+            $"Exceptionally reopened fiscal period '{period.Name}'. Stored snapshots and posted vouchers were preserved.",
+            Metadata: new Dictionary<string, string?> { ["reason"] = reason }, OccurredUtc: now), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return MapLockState(period);
     }
@@ -326,6 +408,10 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 CorrelationId: actor.CorrelationId,
                 OccurredUtc: DateTime.UtcNow),
             cancellationToken);
+
+        // A denied regeneration is still an auditable outcome. Persist it before
+        // returning the stable conflict response that aborts the operation.
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         throw new ReportingPeriodLockedException(period.Id, period.Name);
     }
@@ -729,13 +815,43 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
             .Select(x => x.EntryNumber)
             .ToListAsync(cancellationToken);
 
-        if (unpostedEntries.Count > 0)
+        var unpostedCustomerInvoices = await _dbContext.CustomerInvoiceAccountingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.FiscalPeriodId == fiscalPeriodId &&
+                        x.Status != CustomerInvoiceAccountingStatuses.Posted &&
+                        x.Status != CustomerInvoiceAccountingStatuses.Reversed)
+            .OrderBy(x => x.InvoiceId)
+            .Select(x => x.InvoiceId)
+            .ToListAsync(cancellationToken);
+
+        var unpostedSupplierBills = await _dbContext.SupplierBillAccountingProfiles
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.FiscalPeriodId == fiscalPeriodId &&
+                        x.Status != SupplierBillAccountingStatuses.Posted &&
+                        x.Status != SupplierBillAccountingStatuses.Reversed)
+            .OrderBy(x => x.BillId)
+            .Select(x => x.BillId)
+            .ToListAsync(cancellationToken);
+
+        var unpostedSourceReferences = unpostedEntries
+            .Select(x => $"journal:{x}")
+            .Concat(unpostedCustomerInvoices.Select(x => $"customer-invoice:{x:D}"))
+            .Concat(unpostedSupplierBills.Select(x => $"supplier-bill:{x:D}"))
+            .ToArray();
+
+        if (unpostedSourceReferences.Length > 0)
         {
             issues.Add(new ReportingPeriodBlockingIssueDto(
                 ReportingPeriodBlockingIssueCodes.UnpostedSourceDocuments,
                 "One or more source documents have not been posted to the ledger for the fiscal period.",
-                unpostedEntries.Count,
-                unpostedEntries.Take(5).ToArray()));
+                unpostedSourceReferences.Length,
+                unpostedSourceReferences.Take(5).ToArray(),
+                RecordLinks: unpostedCustomerInvoices.Select(x => $"/finance/invoices?invoiceId={x:D}")
+                    .Concat(unpostedSupplierBills.Select(x => $"/finance/bills?billId={x:D}"))
+                    .Take(5).ToArray(),
+                Remediation: "Post, correct, or explicitly reverse each source document before closing the period."));
         }
 
         var unbalancedEntries = await _dbContext.LedgerEntries
@@ -811,6 +927,97 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                     missingMappings.Count,
                     missingMappings.Select(x => x.AccountCode).Take(5).ToArray()));
             }
+        }
+
+        var period = await _dbContext.FiscalPeriods.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == companyId && x.Id == fiscalPeriodId, cancellationToken);
+        var suspense = await _dbContext.BankReconciliationFollowUps.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status == BankReconciliationFollowUpStatuses.Open &&
+                        x.LedgerEntry.FiscalPeriodId == fiscalPeriodId)
+            .Select(x => new { x.Id, x.Reason, x.BankTransaction.Amount, x.BankTransaction.Currency })
+            .ToListAsync(cancellationToken);
+        if (suspense.Count > 0)
+        {
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.UnresolvedSuspense,
+                "Suspense postings still need an accounting classification before this period can close.",
+                suspense.Count,
+                suspense.Select(x => x.Id.ToString("D")).Take(5).ToArray(),
+                suspense.Sum(x => Math.Abs(x.Amount)),
+                ResolveCurrency(suspense.Select(x => x.Currency)),
+                suspense.Select(x => $"/finance/accounting/reconciliation?followUpId={x.Id:D}").Take(5).ToArray(),
+                "Open bank reconciliation and reclassify or resolve each suspense item.",
+                new Dictionary<string, string> { ["period"] = period.Name }));
+        }
+
+        var conflicts = await _dbContext.BankTransactionPostingStateRecords.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.PostingState == BankTransactionPostingStates.Conflict &&
+                        x.BankTransaction.BookingDate >= period.StartUtc && x.BankTransaction.BookingDate < period.EndUtc)
+            .Select(x => new { x.BankTransactionId, x.ConflictCode, x.BankTransaction.Amount, x.BankTransaction.Currency })
+            .ToListAsync(cancellationToken);
+        if (conflicts.Count > 0)
+        {
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.ReconciliationConflicts,
+                "Bank reconciliation conflicts must be resolved before this period can close.",
+                conflicts.Count,
+                conflicts.Select(x => x.BankTransactionId.ToString("D")).Take(5).ToArray(),
+                conflicts.Sum(x => Math.Abs(x.Amount)), ResolveCurrency(conflicts.Select(x => x.Currency)),
+                conflicts.Select(x => $"/finance/accounting/reconciliation?transactionId={x.BankTransactionId:D}").Take(5).ToArray(),
+                "Review the conflicting bank transactions and correct their payment allocations."));
+        }
+
+        var control = await _accountingReportingService.GetControlAccountReconciliationAsync(
+            new GetControlAccountReconciliationQuery(companyId, fiscalPeriodId), cancellationToken);
+        var differences = control.Accounts.Where(x => !x.IsReconciled).ToArray();
+        if (differences.Length > 0)
+        {
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.ControlAccountDifference,
+                "One or more control accounts do not agree with their posted source journals.",
+                differences.Length,
+                differences.Select(x => x.AccountCode).Take(5).ToArray(),
+                differences.Sum(x => Math.Abs(x.Difference)), ResolveCurrency(differences.Select(x => x.Currency)),
+                differences.Select(x => $"/finance/accounting/reports?periodId={fiscalPeriodId:D}&accountId={x.AccountId:D}").Take(5).ToArray(),
+                "Open the account drill-down and correct unauthorized manual or unmatched source postings."));
+        }
+
+        var tax = await _accountingReportingService.GetTaxSummaryAsync(
+            new GetAccountingTaxSummaryQuery(companyId, fiscalPeriodId), cancellationToken);
+        if (tax.Lines.Count > 0 && !tax.IsReviewed)
+        {
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.TaxReviewIncomplete,
+                "The configured tax summary has not been reviewed for this ledger version.",
+                1, [tax.Checksum], tax.Lines.Sum(x => Math.Abs(x.TaxAmount)),
+                ResolveCurrency(tax.Lines.Select(x => x.Currency)),
+                [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=tax"],
+                "Review the tax summary and confirm it before closing the period.",
+                new Dictionary<string, string> { ["taxSummaryChecksum"] = tax.Checksum }));
+        }
+
+        var failedRegenerations = await _dbContext.BackgroundExecutions.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId &&
+                        x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
+                        x.RelatedEntityType == BackgroundExecutionRelatedEntityTypes.FiscalPeriod &&
+                        x.RelatedEntityId == fiscalPeriodId.ToString("D") &&
+                        (x.Status == BackgroundExecutionStatus.Failed ||
+                         x.Status == BackgroundExecutionStatus.Escalated ||
+                         x.Status == BackgroundExecutionStatus.Blocked))
+            .OrderByDescending(x => x.UpdatedUtc)
+            .Select(x => new { x.Id, x.FailureCode, x.FailureMessage })
+            .ToListAsync(cancellationToken);
+        if (failedRegenerations.Count > 0)
+        {
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.StoredReportsStale,
+                "Stored financial reports could not be regenerated and are not safe to lock.",
+                failedRegenerations.Count,
+                failedRegenerations.Select(x => x.Id.ToString("D")).Take(5).ToArray(),
+                RecordLinks: [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}"],
+                Remediation: "Retry report regeneration and resolve the visible failure before closing the period.",
+                Evidence: failedRegenerations.Where(x => !string.IsNullOrWhiteSpace(x.FailureCode))
+                    .Take(5).ToDictionary(x => x.Id.ToString("D"), x => x.FailureCode!)));
         }
 
         return issues;

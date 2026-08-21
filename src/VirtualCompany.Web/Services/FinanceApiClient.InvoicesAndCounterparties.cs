@@ -78,6 +78,43 @@ public sealed partial class FinanceApiClient
             ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
             : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}", allowNotFound: true, cancellationToken);
 
+    public Task<CustomerInvoiceAccountingReferenceDataResponse> GetCustomerInvoiceAccountingReferenceDataAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
+        GetAsync<CustomerInvoiceAccountingReferenceDataResponse>(companyId,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/accounting/reference-data", allowNotFound: false, cancellationToken)!;
+
+    public Task<CustomerInvoiceAccountingPreviewResponse> PreviewCustomerInvoiceAccountingAsync(Guid companyId, Guid invoiceId,
+        CustomerInvoiceAccountingApiRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<CustomerInvoiceAccountingApiRequest, CustomerInvoiceAccountingPreviewResponse>(companyId, HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/accounting/preview", request, cancellationToken);
+
+    public Task<CustomerInvoiceAccountingSubmissionResponse> SubmitCustomerInvoiceAccountingAsync(Guid companyId, Guid invoiceId,
+        SubmitCustomerInvoiceAccountingApiRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<SubmitCustomerInvoiceAccountingApiRequest, CustomerInvoiceAccountingSubmissionResponse>(companyId, HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/accounting/submit", request, cancellationToken);
+
+    public Task<CustomerInvoiceAccountingPostingResponse> PostCustomerInvoiceAccountingAsync(Guid companyId, Guid invoiceId,
+        PostCustomerInvoiceAccountingApiRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<PostCustomerInvoiceAccountingApiRequest, CustomerInvoiceAccountingPostingResponse>(companyId, HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/accounting/post", request, cancellationToken);
+
+    public Task<CustomerInvoiceAccountingStateResponse> GetCustomerInvoiceAccountingAsync(Guid companyId, Guid invoiceId,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<CustomerInvoiceAccountingStateResponse>(companyId,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/accounting", allowNotFound: false, cancellationToken)!;
+
+    public Task<CustomerInvoiceAccountingStateResponse> CreateCustomerCreditNoteAsync(Guid companyId, Guid invoiceId,
+        CreateCustomerCreditNoteApiRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<CreateCustomerCreditNoteApiRequest, CustomerInvoiceAccountingStateResponse>(companyId, HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/invoices/{invoiceId}/credit-notes", request, cancellationToken);
+
+    public Task<CustomerInvoiceReceivableReconciliationResponse> GetCustomerInvoiceReceivableReconciliationAsync(Guid companyId,
+        DateOnly? throughDate = null, CancellationToken cancellationToken = default)
+    {
+        var query = throughDate.HasValue ? $"?throughDate={throughDate:yyyy-MM-dd}" : string.Empty;
+        return GetAsync<CustomerInvoiceReceivableReconciliationResponse>(companyId,
+            $"internal/companies/{companyId}/finance/accounting/reconciliation/receivables{query}", allowNotFound: false, cancellationToken)!;
+    }
+
     public Task<CustomerInvoiceFortnoxActionResponse> RequestCustomerInvoiceFortnoxExportAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default)
     {
         _logger?.LogInformation(

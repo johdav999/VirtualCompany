@@ -11,12 +11,14 @@ using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Shared;
 using VirtualCompany.Infrastructure.Tenancy;
 using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
+using VirtualCompany.Api.ProblemHandling;
 using System.Text.Json.Nodes;
 using System.Text.Json;
 
@@ -49,6 +51,19 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly ISupplierSubscriptionIntakeProposalService _supplierSubscriptionIntakeProposalService;
     private readonly IAuditQueryService _auditQueryService;
     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
+    private readonly IAccountingConfigurationService _accountingConfigurationService;
+    private readonly IAccountingAuthorityService _accountingAuthorityService;
+    private readonly IAccountingProviderExportService _accountingProviderExportService;
+    private readonly IAccountingOperationsReadService _accountingOperationsReadService;
+    private readonly IAccountingMigrationService _accountingMigrationService;
+    private readonly IAccountingRecoveryVerificationService _accountingRecoveryVerificationService;
+    private readonly IAccountingAdministrationService _accountingAdministrationService;
+    private readonly IAccountingPostingService _accountingPostingService;
+    private readonly IAccountingJournalReadService _accountingJournalReadService;
+    private readonly IAccountingReportingService _accountingReportingService;
+    private readonly IManualJournalService _manualJournalService;
+    private readonly ICustomerInvoiceAccountingService _customerInvoiceAccountingService;
+    private readonly ISupplierBillAccountingService _supplierBillAccountingService;
     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
     private readonly IFinanceEntryService _financeEntryService;
     private readonly IInvoiceReviewWorkflowService _invoiceReviewWorkflowService;
@@ -83,6 +98,19 @@ public sealed partial class InternalFinanceController : ControllerBase
         ISupplierSubscriptionIntakeProposalService supplierSubscriptionIntakeProposalService,
         IAuditQueryService auditQueryService,
         IFinancePolicyConfigurationService financePolicyConfigurationService,
+        IAccountingConfigurationService accountingConfigurationService,
+        IAccountingAuthorityService accountingAuthorityService,
+        IAccountingProviderExportService accountingProviderExportService,
+        IAccountingOperationsReadService accountingOperationsReadService,
+        IAccountingMigrationService accountingMigrationService,
+        IAccountingRecoveryVerificationService accountingRecoveryVerificationService,
+        IAccountingAdministrationService accountingAdministrationService,
+        IAccountingPostingService accountingPostingService,
+        IAccountingJournalReadService accountingJournalReadService,
+        IAccountingReportingService accountingReportingService,
+        IManualJournalService manualJournalService,
+        ICustomerInvoiceAccountingService customerInvoiceAccountingService,
+        ISupplierBillAccountingService supplierBillAccountingService,
         IFinanceEntryService financeEntryService,
         IFinanceSeedBootstrapService financeSeedBootstrapService,
         IFinanceSeedingStateService financeSeedingStateService,
@@ -118,6 +146,19 @@ public sealed partial class InternalFinanceController : ControllerBase
         _financeCommandService = financeCommandService;
         _auditQueryService = auditQueryService;
         _financePolicyConfigurationService = financePolicyConfigurationService;
+        _accountingConfigurationService = accountingConfigurationService;
+        _accountingAuthorityService = accountingAuthorityService;
+        _accountingProviderExportService = accountingProviderExportService;
+        _accountingOperationsReadService = accountingOperationsReadService;
+        _accountingMigrationService = accountingMigrationService;
+        _accountingRecoveryVerificationService = accountingRecoveryVerificationService;
+        _accountingAdministrationService = accountingAdministrationService;
+        _accountingPostingService = accountingPostingService;
+        _accountingJournalReadService = accountingJournalReadService;
+        _accountingReportingService = accountingReportingService;
+        _manualJournalService = manualJournalService;
+        _customerInvoiceAccountingService = customerInvoiceAccountingService;
+        _supplierBillAccountingService = supplierBillAccountingService;
         _financeEntryService = financeEntryService;
         _financeSeedBootstrapService = financeSeedBootstrapService;
         _financeSeedingStateService = financeSeedingStateService;
@@ -1760,6 +1801,36 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("read_not_found", ex);
             return NotFound(CreateProblemDetails(ex.Message, "Finance record was not found.", StatusCodes.Status404NotFound));
         }
+        catch (AccountingConfigurationException ex)
+        {
+            LogHandledFinanceException("read_accounting_configuration", ex);
+            return CreateAccountingConfigurationErrorResult<T>(ex);
+        }
+        catch (AccountingAuthorityException ex)
+        {
+            LogHandledFinanceException("read_accounting_authority", ex);
+            return CreateAccountingAuthorityErrorResult<T>(ex);
+        }
+        catch (AccountingPostingException ex)
+        {
+            LogHandledFinanceException("read_accounting_posting", ex);
+            return CreateAccountingPostingErrorResult<T>(ex);
+        }
+        catch (ManualJournalException ex)
+        {
+            LogHandledFinanceException("read_manual_journal", ex);
+            return CreateManualJournalErrorResult<T>(ex);
+        }
+        catch (CustomerInvoiceAccountingException ex)
+        {
+            LogHandledFinanceException("read_customer_invoice_accounting", ex);
+            return CreateCustomerInvoiceAccountingErrorResult<T>(ex);
+        }
+        catch (SupplierBillAccountingException ex)
+        {
+            LogHandledFinanceException("read_supplier_bill_accounting", ex);
+            return CreateSupplierBillAccountingErrorResult<T>(ex);
+        }
         catch (ArgumentOutOfRangeException ex)
         {
             LogHandledFinanceException("read_argument_out_of_range", ex);
@@ -1840,6 +1911,36 @@ public sealed partial class InternalFinanceController : ControllerBase
                 Status = StatusCodes.Status400BadRequest,
                 Instance = HttpContext.Request.Path
             });
+        }
+        catch (AccountingConfigurationException ex)
+        {
+            LogHandledFinanceException("write_accounting_configuration", ex);
+            return CreateAccountingConfigurationErrorResult<T>(ex);
+        }
+        catch (AccountingAuthorityException ex)
+        {
+            LogHandledFinanceException("write_accounting_authority", ex);
+            return CreateAccountingAuthorityErrorResult<T>(ex);
+        }
+        catch (AccountingPostingException ex)
+        {
+            LogHandledFinanceException("write_accounting_posting", ex);
+            return CreateAccountingPostingErrorResult<T>(ex);
+        }
+        catch (ManualJournalException ex)
+        {
+            LogHandledFinanceException("write_manual_journal", ex);
+            return CreateManualJournalErrorResult<T>(ex);
+        }
+        catch (CustomerInvoiceAccountingException ex)
+        {
+            LogHandledFinanceException("write_customer_invoice_accounting", ex);
+            return CreateCustomerInvoiceAccountingErrorResult<T>(ex);
+        }
+        catch (SupplierBillAccountingException ex)
+        {
+            LogHandledFinanceException("write_supplier_bill_accounting", ex);
+            return CreateSupplierBillAccountingErrorResult<T>(ex);
         }
         catch (KeyNotFoundException ex)
         {
@@ -1932,7 +2033,9 @@ public sealed partial class InternalFinanceController : ControllerBase
 
     private Guid? ResolveActorId()
     {
-        var value = User.FindFirstValue(ClaimTypes.NameIdentifier) ?? User.FindFirstValue("sub");
+        var value = User.FindFirstValue(CurrentUserClaimTypes.UserId) ??
+            User.FindFirstValue(ClaimTypes.NameIdentifier) ??
+            User.FindFirstValue("sub");
         return Guid.TryParse(value, out var userId) ? userId : null;
     }
 
@@ -2052,6 +2155,108 @@ public sealed partial class InternalFinanceController : ControllerBase
             Status = status,
             Instance = HttpContext.Request.Path
         };
+
+    private ActionResult<T> CreateAccountingConfigurationErrorResult<T>(AccountingConfigurationException exception)
+    {
+        var status = exception.ReasonCode is AccountingConfigurationReasonCodes.ConfigurationNotFound
+            or AccountingConfigurationReasonCodes.AccountNotFound
+            or AccountingConfigurationReasonCodes.PeriodNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(
+            HttpContext,
+            status,
+            exception.ReasonCode,
+            status == StatusCodes.Status409Conflict
+                ? "Accounting configuration conflict"
+                : status == StatusCodes.Status404NotFound
+                    ? "Accounting configuration was not found"
+                    : "Accounting configuration request was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateAccountingPostingErrorResult<T>(AccountingPostingException exception)
+    {
+        var status = exception.ReasonCode == AccountingPostingReasonCodes.JournalNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(
+            HttpContext,
+            status,
+            exception.ReasonCode,
+            status == StatusCodes.Status409Conflict
+                ? "Accounting posting conflict"
+                : status == StatusCodes.Status404NotFound
+                    ? "Journal entry was not found"
+                    : "Accounting posting was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateAccountingAuthorityErrorResult<T>(AccountingAuthorityException exception)
+    {
+        var status = exception.ReasonCode is AccountingAuthorityReasonCodes.AuthorityPeriodNotFound
+            or AccountingAuthorityReasonCodes.ExportNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(
+            HttpContext,
+            status,
+            exception.ReasonCode,
+            status == StatusCodes.Status409Conflict
+                ? "Accounting authority conflict"
+                : status == StatusCodes.Status404NotFound
+                    ? "Accounting authority record was not found"
+                    : "Accounting authority request was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateManualJournalErrorResult<T>(ManualJournalException exception)
+    {
+        var status = exception.ReasonCode == ManualJournalReasonCodes.NotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Manual journal conflict" :
+            status == StatusCodes.Status404NotFound ? "Manual journal was not found" : "Manual journal request was rejected",
+            exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateCustomerInvoiceAccountingErrorResult<T>(CustomerInvoiceAccountingException exception)
+    {
+        var status = exception.ReasonCode == CustomerInvoiceAccountingReasonCodes.InvoiceNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Customer invoice accounting conflict" :
+            status == StatusCodes.Status404NotFound ? "Customer invoice was not found" : "Customer invoice accounting was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateSupplierBillAccountingErrorResult<T>(SupplierBillAccountingException exception)
+    {
+        var status = exception.ReasonCode == SupplierBillAccountingReasonCodes.BillNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Supplier bill accounting conflict" :
+            status == StatusCodes.Status404NotFound ? "Supplier bill was not found" : "Supplier bill accounting was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
 
     private static (string EntityType, Guid? EntityId, string EntityReference) ResolveOriginatingEntity(ToolExecutionAttempt attempt)
     {
@@ -2270,7 +2475,8 @@ public sealed record FinanceInvoiceDetailResponse(
     string SettlementStatus = FinanceSettlementStatuses.Unpaid,
     string DueStatus = FinanceDocumentDueStatuses.NotDue,
     string DocumentKind = FinanceDocumentKinds.Invoice,
-    string? ProviderStatus = null);
+    string? ProviderStatus = null,
+    CustomerInvoiceAccountingStateDto? Accounting = null);
 
 public sealed record FinanceInvoiceReviewListItemResponse(
     Guid Id,

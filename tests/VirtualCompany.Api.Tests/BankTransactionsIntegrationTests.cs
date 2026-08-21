@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -77,7 +78,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Assert.Equal("partially_reconciled", firstResult!.Status);
         Assert.Equal(100m, firstResult.ReconciledAmount);
         Assert.Single(firstResult.LinkedPayments);
-        Assert.NotNull(firstResult.CashLedgerEntryId);
+        Assert.Null(firstResult.CashLedgerEntryId);
 
         var retryResponse = await client.PostAsJsonAsync(
             $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
@@ -98,8 +99,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Assert.NotNull(retriedResult);
         Assert.Equal("partially_reconciled", retriedResult!.Status);
         Assert.Single(retriedResult.LinkedPayments);
-        Assert.NotNull(retriedResult.CashLedgerEntryId);
-        Assert.Equal(firstResult.CashLedgerEntryId, retriedResult.CashLedgerEntryId);
+        Assert.Null(retriedResult.CashLedgerEntryId);
 
         var secondResponse = await client.PostAsJsonAsync(
             $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
@@ -122,7 +122,6 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Assert.Equal(150m, secondResult.ReconciledAmount);
         Assert.Equal(2, secondResult.LinkedPayments.Count);
         Assert.NotNull(secondResult.CashLedgerEntryId);
-        Assert.Equal(firstResult.CashLedgerEntryId, secondResult.CashLedgerEntryId);
 
         var counts = await _factory.ExecuteDbContextAsync(async dbContext =>
         {
@@ -141,7 +140,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
                 .ToListAsync();
             var ledgerLines = await dbContext.LedgerEntryLines
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == seed.CompanyId && x.LedgerEntryId == firstResult.CashLedgerEntryId)
+                .Where(x => x.CompanyId == seed.CompanyId && x.LedgerEntryId == secondResult.CashLedgerEntryId)
                 .OrderBy(x => x.DebitAmount == 0m)
                 .ToListAsync();
             var sourceMappings = await dbContext.LedgerEntrySourceMappings
@@ -152,6 +151,10 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
                     x.SourceId == seed.BankTransactionId.ToString("D"))
                 .OrderBy(x => x.PostedAtUtc)
                 .ToListAsync();
+            var reconciliationAudits = await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x =>
+                x.CompanyId == seed.CompanyId &&
+                x.Action == AuditEventActions.AccountingBankReconciliationReviewed &&
+                x.TargetId == seed.BankTransactionId.ToString("N"));
 
             return new
             {
@@ -160,6 +163,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
                 ledgerEntry = ledgerEntries.Single(),
                 ledgerEntryCount = ledgerEntries.Count,
                 ledgerLines,
+                reconciliationAudits,
                 sourceMappings = sourceMappings.Count,
                 sourceMapping = sourceMappings.Single()
             };
@@ -169,12 +173,13 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Assert.Equal(1, counts.cashLedgerLinks);
         Assert.Equal(1, counts.ledgerEntryCount);
         Assert.Equal(1, counts.sourceMappings);
+        Assert.Equal(2, counts.reconciliationAudits);
         Assert.Equal(seed.CompanyId, counts.ledgerEntry.CompanyId);
         Assert.Equal(LedgerEntryStatuses.Posted, counts.ledgerEntry.Status);
         Assert.Equal(FinanceCashPostingSourceTypes.BankTransaction, counts.ledgerEntry.SourceType);
         Assert.Equal(seed.BankTransactionId.ToString("D"), counts.ledgerEntry.SourceId);
         Assert.Equal(new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), counts.ledgerEntry.PostedAtUtc);
-        Assert.Equal(firstResult.CashLedgerEntryId, counts.ledgerEntry.Id);
+        Assert.Equal(secondResult.CashLedgerEntryId, counts.ledgerEntry.Id);
         Assert.Equal(2, counts.ledgerLines.Count);
         Assert.Equal(seed.CashAccountId, counts.ledgerLines[0].FinanceAccountId);
         Assert.Equal(150m, counts.ledgerLines[0].DebitAmount);
@@ -183,7 +188,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Assert.Equal(0m, counts.ledgerLines[1].DebitAmount);
         Assert.Equal(150m, counts.ledgerLines[1].CreditAmount);
         Assert.Equal(counts.ledgerLines.Sum(x => x.DebitAmount), counts.ledgerLines.Sum(x => x.CreditAmount));
-        Assert.Equal(firstResult.CashLedgerEntryId, counts.sourceMapping.LedgerEntryId);
+        Assert.Equal(secondResult.CashLedgerEntryId, counts.sourceMapping.LedgerEntryId);
         Assert.Equal(new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), counts.sourceMapping.PostedAtUtc);
     }
 
@@ -216,6 +221,227 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         var overallocatedProblem = await overallocatedResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
         Assert.NotNull(overallocatedProblem);
         Assert.Contains("AllocatedAmount", overallocatedProblem!.Errors.Keys);
+
+        var wrongDirectionResponse = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+            new ReconcileBankTransactionRequest([
+                new ReconcileBankTransactionPaymentRequest(seed.WrongDirectionPaymentId, 25m)
+            ]));
+        Assert.Equal(HttpStatusCode.BadRequest, wrongDirectionResponse.StatusCode);
+
+        var wrongCurrencyResponse = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+            new ReconcileBankTransactionRequest([
+                new ReconcileBankTransactionPaymentRequest(seed.WrongCurrencyPaymentId, 25m)
+            ]));
+        Assert.Equal(HttpStatusCode.BadRequest, wrongCurrencyResponse.StatusCode);
+    }
+
+    [Fact]
+    public async Task Reconciliation_reuses_existing_payment_cash_posting_and_posts_only_the_uncovered_remainder()
+    {
+        var seed = await SeedReconciliationScenarioAsync();
+        var existingCashJournalId = await _factory.ExecuteDbContextAsync(async dbContext =>
+        {
+            var journalId = Guid.NewGuid();
+            var postedUtc = new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc);
+            var fiscalPeriodId = await dbContext.FiscalPeriods.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && x.StartUtc <= postedUtc && x.EndUtc > postedUtc)
+                .Select(x => x.Id)
+                .SingleAsync();
+            var journal = new LedgerEntry(journalId, seed.CompanyId, fiscalPeriodId, "B-EXISTING-000001", postedUtc,
+                LedgerEntryStatuses.Posted, "Existing governed payment settlement", FinanceCashPostingSourceTypes.PaymentSettlement,
+                "existing-payment-settlement", postedUtc, postedUtc, postedUtc, documentDate: DateOnly.FromDateTime(postedUtc),
+                postingDate: DateOnly.FromDateTime(postedUtc), baseCurrency: "USD", postingType: LedgerPostingTypeValues.CashSettlement,
+                sourceVersion: "1", idempotencyKey: "existing-payment-settlement");
+            journal.Lines.Add(new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, journalId, seed.CashAccountId, 100m, 0m, "USD", createdUtc: postedUtc));
+            journal.Lines.Add(new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, journalId, seed.ReceivablesAccountId, 0m, 100m, "USD", createdUtc: postedUtc));
+            dbContext.LedgerEntries.Add(journal);
+            dbContext.LedgerPostingIdentities.Add(new LedgerPostingIdentity(Guid.NewGuid(), seed.CompanyId, journalId, "post",
+                FinanceCashPostingSourceTypes.PaymentSettlement, "existing-payment-settlement", "1", "existing-payment-settlement",
+                new string('a', 64), postedUtc));
+            dbContext.PaymentCashLedgerLinks.Add(new PaymentCashLedgerLink(Guid.NewGuid(), seed.CompanyId, seed.FirstPaymentId,
+                journalId, FinanceCashPostingSourceTypes.PaymentSettlement, "existing-payment-settlement", postedUtc, postedUtc));
+            await dbContext.SaveChangesAsync();
+            return journalId;
+        });
+
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var response = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+            new ReconcileBankTransactionRequest
+            {
+                Payments =
+                [
+                    new(seed.FirstPaymentId, 100m),
+                    new(seed.SecondPaymentId, 50m)
+                ]
+            });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var reconciled = await response.Content.ReadFromJsonAsync<BankTransactionDetailResponse>();
+        Assert.NotNull(reconciled?.CashLedgerEntryId);
+
+        var accounting = await _factory.ExecuteDbContextAsync(async dbContext =>
+        {
+            var linkedJournalIds = await dbContext.BankTransactionCashLedgerLinks.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && x.BankTransactionId == seed.BankTransactionId)
+                .Select(x => x.LedgerEntryId)
+                .ToListAsync();
+            var lines = await dbContext.LedgerEntryLines.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == seed.CompanyId && linkedJournalIds.Contains(x.LedgerEntryId))
+                .ToListAsync();
+            return new { linkedJournalIds, lines };
+        });
+
+        Assert.Equal(2, accounting.linkedJournalIds.Count);
+        Assert.Contains(existingCashJournalId, accounting.linkedJournalIds);
+        Assert.Contains(reconciled!.CashLedgerEntryId!.Value, accounting.linkedJournalIds);
+        Assert.Equal(150m, accounting.lines.Where(x => x.FinanceAccountId == seed.CashAccountId).Sum(x => x.DebitAmount - x.CreditAmount));
+        Assert.Equal(-150m, accounting.lines.Where(x => x.FinanceAccountId == seed.ReceivablesAccountId).Sum(x => x.DebitAmount - x.CreditAmount));
+        Assert.Equal(accounting.lines.Sum(x => x.DebitAmount), accounting.lines.Sum(x => x.CreditAmount));
+    }
+
+    [Fact]
+    public async Task Statement_import_replays_and_overlaps_without_duplicating_rows_and_reports_content_conflicts()
+    {
+        var seed = await SeedReconciliationScenarioAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var row = new
+        {
+            RowIdentity = "row-stable-001",
+            BookingDateUtc = new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc),
+            ValueDateUtc = new DateTime(2026, 4, 22, 0, 0, 0, DateTimeKind.Utc),
+            Amount = 42.50m,
+            Currency = "USD",
+            ReferenceText = "Imported receipt",
+            Counterparty = "Contoso",
+            ExternalReference = "BANK-ROW-001"
+        };
+
+        var firstRequest = new { seed.BankAccountId, SourceKey = "csv", StatementIdentity = "statement-001", ContentHash = new string('a', 64), Rows = new[] { row } };
+        var first = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId}/finance/bank-transactions/imports", firstRequest);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        var firstResult = await first.Content.ReadFromJsonAsync<BankStatementImportResponse>();
+        Assert.NotNull(firstResult);
+        Assert.Equal(1, firstResult!.ImportedCount);
+
+        var replay = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId}/finance/bank-transactions/imports", firstRequest);
+        var replayResult = await replay.Content.ReadFromJsonAsync<BankStatementImportResponse>();
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.True(replayResult!.IsIdempotentReplay);
+
+        var overlap = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId}/finance/bank-transactions/imports",
+            new { seed.BankAccountId, SourceKey = "csv", StatementIdentity = "statement-002", ContentHash = new string('b', 64), Rows = new[] { row } });
+        var overlapResult = await overlap.Content.ReadFromJsonAsync<BankStatementImportResponse>();
+        Assert.Equal(HttpStatusCode.OK, overlap.StatusCode);
+        Assert.Equal(1, overlapResult!.DuplicateCount);
+
+        var conflict = await client.PostAsJsonAsync($"/internal/companies/{seed.CompanyId}/finance/bank-transactions/imports",
+            new
+            {
+                seed.BankAccountId,
+                SourceKey = "csv",
+                StatementIdentity = "statement-003",
+                ContentHash = new string('c', 64),
+                Rows = new[] { new { row.RowIdentity, row.BookingDateUtc, row.ValueDateUtc, Amount = 99m, row.Currency, row.ReferenceText, row.Counterparty, row.ExternalReference } }
+            });
+        var conflictResult = await conflict.Content.ReadFromJsonAsync<BankStatementImportResponse>();
+        Assert.Equal(HttpStatusCode.OK, conflict.StatusCode);
+        Assert.Equal(1, conflictResult!.ConflictCount);
+        Assert.Contains("row-stable-001", conflictResult.ConflictRowIdentities);
+
+        var importedRows = await _factory.ExecuteDbContextAsync(db => db.BankTransactions.IgnoreQueryFilters()
+            .CountAsync(x => x.CompanyId == seed.CompanyId && x.ImportSource == "csv"));
+        Assert.Equal(1, importedRows);
+    }
+
+    [Fact]
+    public async Task Explicit_exchange_adjustment_completes_a_balanced_reconciliation_through_configured_roles()
+    {
+        var seed = await SeedReconciliationScenarioAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var response = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+            new ReconcileBankTransactionRequest
+            {
+                Payments =
+                [
+                    new(seed.FirstPaymentId, 100m),
+                    new(seed.SecondPaymentId, 45m)
+                ],
+                Adjustments = [new() { Kind = "exchange_gain", CreditAmount = 5m, Explanation = "Bank conversion difference" }]
+            });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var result = await response.Content.ReadFromJsonAsync<BankTransactionDetailResponse>();
+        Assert.NotNull(result?.CashLedgerEntryId);
+        Assert.Equal(150m, result!.ReconciledAmount);
+        var lines = await _factory.ExecuteDbContextAsync(db => db.LedgerEntryLines.IgnoreQueryFilters()
+            .Where(x => x.CompanyId == seed.CompanyId && x.LedgerEntryId == result.CashLedgerEntryId)
+            .ToListAsync());
+        Assert.Equal(3, lines.Count);
+        var differenceLine = Assert.Single(lines, x => x.FinanceAccountId == seed.ExchangeGainAccountId);
+        Assert.Equal(5m, differenceLine.CreditAmount);
+        Assert.Equal(lines.Sum(x => x.DebitAmount), lines.Sum(x => x.CreditAmount));
+    }
+
+    [Fact]
+    public async Task Suspense_reclassification_keeps_original_immutable_and_creates_linked_balanced_corrections()
+    {
+        var seed = await SeedReconciliationScenarioAsync();
+        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        var suspense = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconcile",
+            new ReconcileBankTransactionRequest
+            {
+                HandlingMode = "suspense",
+                ReviewReason = "Counterparty evidence is incomplete; finance will follow up."
+            });
+        Assert.Equal(HttpStatusCode.OK, suspense.StatusCode);
+        var suspenseTransaction = await suspense.Content.ReadFromJsonAsync<BankTransactionDetailResponse>();
+        Assert.NotNull(suspenseTransaction?.CashLedgerEntryId);
+
+        var originalBefore = await _factory.ExecuteDbContextAsync(async db =>
+        {
+            var entry = await db.LedgerEntries.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == suspenseTransaction!.CashLedgerEntryId);
+            var lines = await db.LedgerEntryLines.IgnoreQueryFilters().AsNoTracking().Where(x => x.LedgerEntryId == entry.Id)
+                .OrderBy(x => x.FinanceAccountId).Select(x => new { x.FinanceAccountId, x.DebitAmount, x.CreditAmount }).ToListAsync();
+            return new { entry.EntryNumber, entry.Status, Lines = lines };
+        });
+
+        var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reconciliation");
+        var suspenseDetail = await detailResponse.Content.ReadFromJsonAsync<BankReconciliationDetailResponse>();
+        Assert.Equal("suspense", suspenseDetail!.State);
+        Assert.Equal("open", suspenseDetail.FollowUp!.Status);
+
+        var correction = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reclassify-suspense",
+            new
+            {
+                TargetFinanceAccountId = seed.CategoryAccountId,
+                FiscalPeriodId = seed.FiscalPeriodId,
+                PostingDate = new DateOnly(2026, 4, 22),
+                Reason = "Evidence confirms other operating income.",
+                ExpectedSourceVersion = 1,
+                IdempotencyKey = $"suspense-correction:{seed.BankTransactionId:N}"
+            });
+        Assert.Equal(HttpStatusCode.OK, correction.StatusCode);
+        var corrected = await correction.Content.ReadFromJsonAsync<BankReconciliationDetailResponse>();
+        Assert.Equal("correction", corrected!.State);
+        Assert.Equal("resolved", corrected.FollowUp!.Status);
+        Assert.Equal(3, corrected.Journals.Count);
+
+        var originalAfter = await _factory.ExecuteDbContextAsync(async db =>
+        {
+            var entry = await db.LedgerEntries.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == suspenseTransaction!.CashLedgerEntryId);
+            var lines = await db.LedgerEntryLines.IgnoreQueryFilters().AsNoTracking().Where(x => x.LedgerEntryId == entry.Id)
+                .OrderBy(x => x.FinanceAccountId).Select(x => new { x.FinanceAccountId, x.DebitAmount, x.CreditAmount }).ToListAsync();
+            return new { entry.EntryNumber, entry.Status, Lines = lines };
+        });
+        Assert.Equal(originalBefore.EntryNumber, originalAfter.EntryNumber);
+        Assert.Equal(originalBefore.Status, originalAfter.Status);
+        Assert.Equal(originalBefore.Lines, originalAfter.Lines);
     }
 
     private async Task<BankTransactionListSeed> SeedFinanceBankTransactionsAsync()
@@ -259,8 +485,15 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         var firstPaymentId = Guid.Empty;
         var secondPaymentId = Guid.Empty;
         var pendingPaymentId = Guid.Empty;
+        var wrongDirectionPaymentId = Guid.Empty;
+        var wrongCurrencyPaymentId = Guid.Empty;
         var cashAccountId = Guid.Empty;
         var receivablesAccountId = Guid.Empty;
+        var suspenseAccountId = Guid.Empty;
+        var categoryAccountId = Guid.Empty;
+        var exchangeGainAccountId = Guid.Empty;
+        var fiscalPeriodId = Guid.Empty;
+        var bankAccountId = Guid.Empty;
 
         await _factory.SeedAsync(dbContext =>
         {
@@ -268,11 +501,59 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
             dbContext.Companies.Add(new Company(companyId, "Bank Reconcile Company"));
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
 
-            var cashAccount = new FinanceAccount(Guid.NewGuid(), companyId, "1000", "Operating Cash", "asset", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
-            var receivablesAccount = new FinanceAccount(Guid.NewGuid(), companyId, "1100", "Receivables", "asset", "USD", 0m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+            var configuredAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var cashAccount = new FinanceAccount(
+                Guid.NewGuid(), companyId, "1000", "Operating Cash", "asset", "USD", 0m, configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Asset,
+                normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1),
+                isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.Bank);
+            var receivablesAccount = new FinanceAccount(
+                Guid.NewGuid(), companyId, "1100", "Receivables", "asset", "USD", 0m, configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Asset,
+                normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1),
+                isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.AccountsReceivable);
+            var suspenseAccount = new FinanceAccount(
+                Guid.NewGuid(), companyId, "1900", "Bank suspense", "asset", "USD", 0m, configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Asset, normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.Suspense, restrictManualPosting: true);
+            var categoryAccount = new FinanceAccount(
+                Guid.NewGuid(), companyId, "4100", "Other operating income", "revenue", "USD", 0m, configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Income, normalBalance: FinanceNormalBalanceValues.Credit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true);
+            var exchangeGainAccount = new FinanceAccount(
+                Guid.NewGuid(), companyId, "4110", "Exchange gains", "revenue", "USD", 0m, configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Income, normalBalance: FinanceNormalBalanceValues.Credit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.ExchangeGain);
             cashAccountId = cashAccount.Id;
             receivablesAccountId = receivablesAccount.Id;
-            dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount);
+            suspenseAccountId = suspenseAccount.Id;
+            categoryAccountId = categoryAccount.Id;
+            exchangeGainAccountId = exchangeGainAccount.Id;
+            dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount, suspenseAccount, categoryAccount, exchangeGainAccount);
+
+            var configuration = new AccountingConfiguration(
+                Guid.NewGuid(), companyId, "USD", 1, 1,
+                AccountingPolicyPackDefaults.CountryNeutralPackKey,
+                AccountingPolicyPackDefaults.CountryNeutralBankingVersion,
+                new DateOnly(2026, 1, 1), 2,
+                AccountingRoundingModeValues.AwayFromZero,
+                ownerUserId, configuredAtUtc);
+            configuration.SetSetupState(AccountingSetupStateValues.Ready, ownerUserId, configuredAtUtc);
+            dbContext.AccountingConfigurations.Add(configuration);
+            dbContext.AccountingConfigurationAccountRoles.AddRange(
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.Bank, cashAccount.Id, configuredAtUtc),
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.AccountsReceivable, receivablesAccount.Id, configuredAtUtc),
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.Suspense, suspenseAccount.Id, configuredAtUtc),
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.ExchangeGain, exchangeGainAccount.Id, configuredAtUtc));
+            dbContext.VoucherSeries.AddRange(
+                new VoucherSeries(Guid.NewGuid(), companyId, "B", "Bank", "B", true, configuredAtUtc),
+                new VoucherSeries(Guid.NewGuid(), companyId, "CR", "Corrections", "CR", true, configuredAtUtc));
 
             var fiscalPeriod = new FiscalPeriod(
                 Guid.NewGuid(),
@@ -281,6 +562,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
                 new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
                 new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc));
             dbContext.FiscalPeriods.Add(fiscalPeriod);
+            fiscalPeriodId = fiscalPeriod.Id;
 
             var bankAccount = new CompanyBankAccount(
                 Guid.NewGuid(),
@@ -296,6 +578,7 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
                 new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
                 new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc));
             dbContext.CompanyBankAccounts.Add(bankAccount);
+            bankAccountId = bankAccount.Id;
 
             var firstPayment = new Payment(
                 Guid.NewGuid(),
@@ -327,7 +610,13 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
                 "bank_transfer",
                 PaymentStatuses.Pending,
                 "INV-002");
-            dbContext.Payments.AddRange(firstPayment, secondPayment, pendingPayment);
+            var wrongDirectionPayment = new Payment(
+                Guid.NewGuid(), companyId, PaymentTypes.Outgoing, 25m, "USD",
+                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", PaymentStatuses.Completed, "BILL-WRONG-DIRECTION");
+            var wrongCurrencyPayment = new Payment(
+                Guid.NewGuid(), companyId, PaymentTypes.Incoming, 25m, "EUR",
+                new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc), "bank_transfer", PaymentStatuses.Completed, "INV-WRONG-CURRENCY");
+            dbContext.Payments.AddRange(firstPayment, secondPayment, pendingPayment, wrongDirectionPayment, wrongCurrencyPayment);
 
             var bankTransaction = new BankTransaction(
                 Guid.NewGuid(),
@@ -345,6 +634,8 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
             firstPaymentId = firstPayment.Id;
             secondPaymentId = secondPayment.Id;
             pendingPaymentId = pendingPayment.Id;
+            wrongDirectionPaymentId = wrongDirectionPayment.Id;
+            wrongCurrencyPaymentId = wrongCurrencyPayment.Id;
             return Task.CompletedTask;
         });
 
@@ -356,7 +647,12 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
             bankTransactionId,
             cashAccountId,
             receivablesAccountId,
-            firstPaymentId, secondPaymentId, pendingPaymentId);
+            suspenseAccountId,
+            categoryAccountId,
+            exchangeGainAccountId,
+            fiscalPeriodId,
+            bankAccountId,
+            firstPaymentId, secondPaymentId, pendingPaymentId, wrongDirectionPaymentId, wrongCurrencyPaymentId);
     }
 
     private HttpClient CreateAuthenticatedClient(string subject, string email, string displayName)
@@ -384,9 +680,16 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Guid BankTransactionId,
         Guid CashAccountId,
         Guid ReceivablesAccountId,
+        Guid SuspenseAccountId,
+        Guid CategoryAccountId,
+        Guid ExchangeGainAccountId,
+        Guid FiscalPeriodId,
+        Guid BankAccountId,
         Guid FirstPaymentId,
         Guid SecondPaymentId,
-        Guid PendingPaymentId);
+        Guid PendingPaymentId,
+        Guid WrongDirectionPaymentId,
+        Guid WrongCurrencyPaymentId);
 
     private class BankTransactionResponse
     {
@@ -425,6 +728,11 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         public ReconcileBankTransactionRequest(List<ReconcileBankTransactionPaymentRequest> payments) => Payments = payments;
 
         public List<ReconcileBankTransactionPaymentRequest> Payments { get; init; } = [];
+        public long ExpectedSourceVersion { get; init; } = 1;
+        public string HandlingMode { get; init; } = "payment";
+        public string? ReviewReason { get; init; }
+        public Guid? CategorizationFinanceAccountId { get; init; }
+        public List<BankReconciliationAdjustmentRequest> Adjustments { get; init; } = [];
     }
 
     private sealed class ReconcileBankTransactionPaymentRequest
@@ -441,5 +749,41 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
 
         public Guid PaymentId { get; init; }
         public decimal AllocatedAmount { get; init; }
+    }
+
+    private sealed class BankReconciliationAdjustmentRequest
+    {
+        public string Kind { get; init; } = string.Empty;
+        public decimal DebitAmount { get; init; }
+        public decimal CreditAmount { get; init; }
+        public string Explanation { get; init; } = string.Empty;
+    }
+
+    private sealed class BankStatementImportResponse
+    {
+        public int ImportedCount { get; set; }
+        public int DuplicateCount { get; set; }
+        public int ConflictCount { get; set; }
+        public bool IsIdempotentReplay { get; set; }
+        public List<string> ConflictRowIdentities { get; set; } = [];
+    }
+
+    private sealed class BankReconciliationDetailResponse
+    {
+        public string State { get; set; } = string.Empty;
+        public List<BankReconciliationJournalLinkResponse> Journals { get; set; } = [];
+        public BankReconciliationFollowUpResponse? FollowUp { get; set; }
+    }
+
+    private sealed class BankReconciliationJournalLinkResponse
+    {
+        public Guid LedgerEntryId { get; set; }
+        public bool IsOriginalSuspense { get; set; }
+        public bool IsCorrection { get; set; }
+    }
+
+    private sealed class BankReconciliationFollowUpResponse
+    {
+        public string Status { get; set; } = string.Empty;
     }
 }

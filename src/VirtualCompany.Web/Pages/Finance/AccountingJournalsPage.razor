@@ -1,0 +1,78 @@
+@page "/finance/accounting/journal"
+@page "/finance/accounting/journals"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["JournalTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@FinanceText["JournalTitle"]" Description="@FinanceText["JournalDescription"]" LoadingMessage="@FinanceText["JournalsLoading"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <div class="journal-heading">
+        <div><span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span><h2>@FinanceText["JournalTitle"]</h2><p>@FinanceText["JournalHelp"]</p></div>
+        @if (CanManageAccounting)
+        {
+            <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingManualJournal, AccessState.CompanyId)">@FinanceText["NewManualJournal"]</a>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert">@ActionError</div> }
+
+    <section class="journal-filters" aria-label="@FinanceText["JournalFilters"]">
+        <div><label for="journal-search">@FinanceText["Search"]</label><InputText id="journal-search" class="form-control" placeholder="@FinanceText["JournalSearchPlaceholder"]" @bind-Value="Search" /></div>
+        <div><label for="journal-from">@FinanceText["FromDate"]</label><InputDate id="journal-from" class="form-control" @bind-Value="From" /></div>
+        <div><label for="journal-to">@FinanceText["ToDate"]</label><InputDate id="journal-to" class="form-control" @bind-Value="To" /></div>
+        <div><label for="journal-type">@FinanceText["EntryType"]</label><InputSelect id="journal-type" class="form-select" @bind-Value="PostingType"><option value="">@FinanceText["AllEntryTypes"]</option><option value="manual">@FinanceText["Manual"]</option><option value="reversal">@FinanceText["Reversal"]</option><option value="adjustment">@FinanceText["Adjustment"]</option></InputSelect></div>
+        <div class="journal-filters__actions"><button class="btn btn-primary" @onclick="ReloadAsync">@FinanceText["ApplyFilters"]</button><button class="btn btn-outline-secondary" @onclick="ClearFiltersAsync">@FinanceText["Clear"]</button></div>
+    </section>
+
+    @if (Drafts.Count > 0)
+    {
+        <section class="journal-drafts" aria-labelledby="journal-drafts-title">
+            <div class="journal-card-header"><div><h3 id="journal-drafts-title">@FinanceText["JournalWorkInProgress"]</h3><span>@FinanceText["DraftResults", Drafts.Count]</span></div></div>
+            <div class="journal-draft-grid">
+                @foreach (var draft in Drafts)
+                {
+                    <a href="@FinanceRoutes.BuildManualJournalDraftPath(draft.Id, AccessState.CompanyId)" class="journal-draft-card">
+                        <span class="@StatusClass(draft.Status)">@StatusText(draft.Status)</span>
+                        <strong>@draft.Explanation</strong>
+                        <small>@draft.PostingDate.ToString("d") · @LocalMoney.Format(draft.DebitTotal, draft.Currency)</small>
+                    </a>
+                }
+            </div>
+        </section>
+    }
+
+    <div class="journal-layout">
+        <section class="journal-list-card" aria-labelledby="posted-journals-title">
+            <div class="journal-card-header"><div><h3 id="posted-journals-title">@FinanceText["PostedJournals"]</h3><span>@FinanceText["JournalResults", TotalCount]</span></div><button class="btn btn-sm btn-outline-secondary" @onclick="ReloadAsync" disabled="@IsListLoading">@CommonText["Refresh"]</button></div>
+            <FinanceDataState IsLoading="@IsListLoading" IsEmpty="@(!IsListLoading && string.IsNullOrWhiteSpace(ListError) && Journals.Count == 0)" ErrorMessage="@ListError" LoadingTitle="@FinanceText["JournalsLoading"]" LoadingMessage="@FinanceText["JournalsLoadingHelp"]" EmptyTitle="@FinanceText["NoJournals"]" EmptyMessage="@FinanceText["NoJournalsHelp"]" OnRetry="ReloadAsync">
+                <div class="table-responsive"><table class="table journal-table align-middle">
+                    <thead><tr><th>@FinanceText["VoucherNumber"]</th><th>@FinanceText["PostingDate"]</th><th>@FinanceText["Description"]</th><th>@FinanceText["EntryType"]</th><th class="text-end">@FinanceText["Amount"]</th></tr></thead>
+                    <tbody>@foreach (var journal in Journals) { <tr class="@(Selected?.Id == journal.Id ? "selected" : null)" tabindex="0" @onclick="() => SelectJournalAsync(journal.Id)" @onkeydown="args => HandleRowKeyAsync(args, journal.Id)"><td><strong>@journal.EntryNumber</strong><small>@journal.VoucherSeriesCode</small></td><td>@journal.PostingDate?.ToString("d")</td><td>@journal.Description</td><td><span class="@StatusClass(journal.PostingType ?? journal.Status)">@EntryTypeText(journal.PostingType)</span></td><td class="text-end">@LocalMoney.Format(journal.DebitTotal, journal.BaseCurrency)</td></tr> }</tbody>
+                </table></div>
+            </FinanceDataState>
+        </section>
+
+        <aside class="journal-detail-card" aria-live="polite">
+            @if (IsDetailLoading) { <div class="journal-empty"><div class="spinner-border text-primary"></div><h3>@FinanceText["JournalDetailLoading"]</h3></div> }
+            else if (Selected is null) { <div class="journal-empty"><span aria-hidden="true">J</span><h3>@FinanceText["SelectJournal"]</h3><p>@FinanceText["SelectJournalHelp"]</p></div> }
+            else
+            {
+                <div class="journal-detail-title"><div><span class="dashboard-kicker">@EntryTypeText(Selected.PostingType)</span><h3>@Selected.EntryNumber</h3><p>@Selected.Description</p></div><span class="accounting-badge accounting-badge--success">@StatusText(Selected.Status)</span></div>
+                <dl class="journal-meta"><div><dt>@FinanceText["PostingDate"]</dt><dd>@Selected.PostingDate?.ToString("d")</dd></div><div><dt>@FinanceText["DocumentDate"]</dt><dd>@Selected.DocumentDate?.ToString("d")</dd></div><div><dt>@FinanceText["VoucherSeries"]</dt><dd>@Selected.VoucherSeriesCode</dd></div><div><dt>@FinanceText["Source"]</dt><dd>@SourceText(Selected.SourceType)</dd></div></dl>
+                @if (SourceInvoicePath(Selected) is { } sourceInvoicePath) { <section class="journal-detail-section"><h4>Source document</h4><a class="btn btn-sm btn-outline-secondary" href="@sourceInvoicePath">Open source invoice</a></section> }
+                <section class="journal-detail-section"><h4>@FinanceText["JournalLines"]</h4><div class="table-responsive"><table class="table table-sm"><thead><tr><th>@FinanceText["Account"]</th><th class="text-end">@FinanceText["Debit"]</th><th class="text-end">@FinanceText["Credit"]</th></tr></thead><tbody>@foreach (var line in Selected.Lines) { <tr><td><strong>@line.AccountCode</strong> @line.AccountName@if (!string.IsNullOrWhiteSpace(line.Description)) { <small>@line.Description</small> }</td><td class="text-end">@Amount(line.DebitAmount)</td><td class="text-end">@Amount(line.CreditAmount)</td></tr> }</tbody><tfoot><tr><th>@FinanceText["Total"]</th><th class="text-end">@Amount(Selected.DebitTotal)</th><th class="text-end">@Amount(Selected.CreditTotal)</th></tr></tfoot></table></div></section>
+                @if (Selected.Approval is not null) { <section class="journal-detail-section"><h4>@FinanceText["Approval"]</h4><p><span class="@StatusClass(Selected.Approval.Status)">@StatusText(Selected.Approval.Status)</span> @(Selected.Approval.DecisionSummary ?? FinanceText["NoDecisionSummary"])</p></section> }
+                <section class="journal-detail-section"><h4>@FinanceText["Evidence"]</h4>@if (Selected.Evidence.Count == 0) { <p class="text-secondary">@FinanceText["NoEvidence"]</p> } else { <ul class="journal-evidence">@foreach (var evidence in Selected.Evidence) { <li><strong>@evidence.Title</strong><small>@evidence.OriginalFileName</small></li> }</ul> }</section>
+                @if (Selected.OriginalLedgerEntryId.HasValue || Selected.Corrections.Count > 0) { <section class="journal-detail-section"><h4>@FinanceText["CorrectionHistory"]</h4>@if (Selected.OriginalLedgerEntryId is Guid originalJournalId) { <button class="journal-correction" @onclick="() => SelectJournalAsync(originalJournalId)"><strong>Open original journal</strong><span>@FinanceText["CorrectsOriginalJournal"]</span></button> }@foreach (var correction in Selected.Corrections) { <button class="journal-correction" @onclick="() => SelectJournalAsync(correction.Id)"><strong>@correction.EntryNumber</strong><span>@EntryTypeText(correction.PostingType) · @correction.Reason</span></button> }</section> }
+                <section class="journal-detail-section"><h4>@FinanceText["AuditTimeline"]</h4>@if (Selected.AuditTimeline.Count == 0) { <p class="text-secondary">@FinanceText["NoAuditEvents"]</p> } else { <ol class="journal-timeline">@foreach (var item in Selected.AuditTimeline) { <li><span></span><div><strong>@ActionText(item.Action)</strong><small>@LocalDateTime.DateTime(item.OccurredUtc)</small><p>@item.Summary</p></div></li> }</ol> }</section>
+                @if (CanManageAccounting && !string.Equals(Selected.PostingType, "reversal", StringComparison.OrdinalIgnoreCase))
+                {
+                    <div class="journal-actions"><a class="btn btn-outline-primary" href="@AdjustmentPath(Selected.Id)">@FinanceText["CreateAdjustment"]</a><button class="btn btn-outline-danger" @onclick="ToggleReversal">@FinanceText["ReverseJournal"]</button></div>
+                    @if (ShowReversal) { <div class="journal-reversal"><label for="reversal-reason">@FinanceText["ReversalReason"]</label><InputTextArea id="reversal-reason" class="form-control" @bind-Value="ReversalReason" /><div><button class="btn btn-danger" @onclick="ReverseAsync" disabled="@IsSaving">@FinanceText["ConfirmReversal"]</button><button class="btn btn-outline-secondary" @onclick="ToggleReversal">@CommonText["Cancel"]</button></div></div> }
+                }
+            }
+        </aside>
+    </div>
+</FinancePageLayout>

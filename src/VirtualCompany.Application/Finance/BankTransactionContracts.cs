@@ -17,7 +17,15 @@ public sealed record GetBankTransactionDetailQuery(
 public sealed record ReconcileBankTransactionCommand(
     Guid CompanyId,
     Guid BankTransactionId,
-    IReadOnlyList<BankTransactionPaymentMatchDto> Payments);
+    IReadOnlyList<BankTransactionPaymentMatchDto> Payments,
+    Guid ActorUserId = default,
+    long ExpectedSourceVersion = 1,
+    string HandlingMode = BankReconciliationHandlingModes.Payment,
+    string? ReviewReason = null,
+    Guid? CategorizationFinanceAccountId = null,
+    IReadOnlyList<BankReconciliationAdjustmentDto>? Adjustments = null,
+    string? IdempotencyKey = null,
+    string? CorrelationId = null);
 
 public sealed record BankTransactionPaymentMatchDto(
     Guid PaymentId,
@@ -90,9 +98,13 @@ public interface IBankTransactionReadService
 {
     Task<IReadOnlyList<BankTransactionDto>> ListAsync(ListBankTransactionsQuery query, CancellationToken cancellationToken);
     Task<BankTransactionDetailDto?> GetDetailAsync(GetBankTransactionDetailQuery query, CancellationToken cancellationToken);
+    Task<BankReconciliationWorkspaceDto> ListReconciliationAsync(ListBankReconciliationItemsQuery query, CancellationToken cancellationToken);
+    Task<BankReconciliationDetailDto?> GetReconciliationDetailAsync(GetBankReconciliationDetailQuery query, CancellationToken cancellationToken);
 }
 
 public interface IBankTransactionCommandService
 {
     Task<BankTransactionDetailDto> ReconcileAsync(ReconcileBankTransactionCommand command, CancellationToken cancellationToken);
+    Task<BankStatementImportResultDto> ImportStatementAsync(ImportBankStatementCommand command, CancellationToken cancellationToken);
+    Task<BankReconciliationDetailDto> ReclassifySuspenseAsync(ReclassifyBankSuspenseCommand command, CancellationToken cancellationToken);
 }

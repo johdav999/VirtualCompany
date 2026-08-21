@@ -176,6 +176,11 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
                 return BackgroundJobFailureClassification.ApprovalRequired;
             }
 
+            if (current is VirtualCompany.Application.Finance.ReportingPeriodLockedException)
+            {
+                return BackgroundJobFailureClassification.PermanentPolicy;
+            }
+
             if (current is UnauthorizedAccessException)
             {
                 return BackgroundJobFailureClassification.PermanentPolicy;

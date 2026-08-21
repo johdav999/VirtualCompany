@@ -5,6 +5,7 @@ using VirtualCompany.Application.Sales;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Companies;
+using VirtualCompany.Infrastructure.Marketing;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Sales;
 
@@ -31,6 +32,51 @@ public sealed class MarketingPlanPortfolioTests
         plan.Activate();
 
         Assert.Equal(MarketingStatuses.Active, plan.Status);
+    }
+
+    [Fact]
+    public async Task Market_plan_workshop_reference_context_includes_company_strategies_segmentation_and_previous_plans_only()
+    {
+        await using var connection = new SqliteConnection("Data Source=:memory:"); await connection.OpenAsync();
+        var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>().UseSqlite(connection).Options;
+        await using var db = new VirtualCompanyDbContext(options); await db.Database.EnsureCreatedAsync();
+        var companyId = Guid.NewGuid(); var otherCompanyId = Guid.NewGuid(); var userId = Guid.NewGuid();
+        db.Companies.AddRange(new Company(companyId, "Workshop company"), new Company(otherCompanyId, "Other company"));
+
+        var approved = new MarketingStrategy(Guid.NewGuid(), companyId, "Nordic growth strategy", "Grow qualified Nordic demand", "Existing market position",
+            Start.AddMonths(-1), Start.AddMonths(9), userId, "{\"positioning\":\"Trusted operations partner\"}", "[\"strategy-source\"]", "[]", "strategy:approved");
+        approved.Submit(Guid.NewGuid()); approved.MarkApproved(); approved.Activate();
+        var draft = new MarketingStrategy(Guid.NewGuid(), companyId, "Enterprise strategy draft", "Explore enterprise demand", "Draft direction",
+            Start, Start.AddMonths(12), userId, "{}", "[]", "[\"customer interviews\"]", "strategy:draft");
+        var foreign = new MarketingStrategy(Guid.NewGuid(), otherCompanyId, "Other company secret strategy", "Must stay isolated", "Foreign context",
+            Start, Start.AddMonths(6), userId, "{}", "[]", "[]", "strategy:foreign");
+        var segment = new MarketingCustomerSegment(Guid.NewGuid(), companyId, "Operations leaders", "Leaders improving operational control", userId);
+        var segmentVersion = new MarketingCustomerSegmentVersion(Guid.NewGuid(), companyId, segment.Id, 2,
+            "{\"employee_count\":\"50-500\"}", "{\"primary\":\"Reduce manual work\"}", "{\"signal\":\"Replacing spreadsheets\"}",
+            "[\"linkedin\",\"events\"]", "{\"sensitivity\":\"medium\"}", 100, 300, "bottom_up", .8m,
+            "{\"sales_cycle_days\":60}", "{}", 82, "[\"segment-study\"]", Start.AddDays(-1), userId, "segment:v2");
+        segmentVersion.Submit(Guid.NewGuid()); segmentVersion.MarkApproved(); segmentVersion.ActivateTarget("primary", "Best strategic fit");
+        var previousPlan = new MarketingPlan(Guid.NewGuid(), companyId, "Spring demand plan", "Previous plan outcome", Start.AddMonths(-6), Start.AddMonths(-3),
+            75_000m, "SEK", strategyId: approved.Id, strategyVersion: approved.Version, rationale: "Applied the Nordic strategy",
+            evidenceReferencesJson: "[\"spring-review\"]", missingEvidenceJson: "[]");
+        db.AddRange(approved, draft, foreign, segment, segmentVersion, previousPlan,
+            new MarketingStrategySegment(Guid.NewGuid(), companyId, approved.Id, segment.Id, segmentVersion.Id));
+        await db.SaveChangesAsync();
+
+        var definition = new MarketingPlanGuidedArtifactDefinition(
+            new MarketingOperationsService(db),
+            new MarketingStrategyService(db, null!, null!, null!, null!, null!),
+            null!);
+        var context = await definition.BuildCompanyReferenceContextAsync(companyId, Guid.NewGuid(), default);
+
+        Assert.Contains("Nordic growth strategy", context, StringComparison.Ordinal);
+        Assert.Contains("Enterprise strategy draft", context, StringComparison.Ordinal);
+        Assert.Contains("\"current_version\":4", context, StringComparison.Ordinal);
+        Assert.Contains("Operations leaders", context, StringComparison.Ordinal);
+        Assert.Contains("\"version\":2", context, StringComparison.Ordinal);
+        Assert.Contains("Spring demand plan", context, StringComparison.Ordinal);
+        Assert.Contains("reference material only", context, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("Other company secret strategy", context, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
@@ -31,7 +32,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
                 Currency = "usd"
             });
 
-        Assert.Equal(HttpStatusCode.OK, invoiceAPartialResponse.StatusCode);
+        Assert.True(invoiceAPartialResponse.StatusCode == HttpStatusCode.OK,
+            await invoiceAPartialResponse.Content.ReadAsStringAsync());
         var invoiceAPartial = await invoiceAPartialResponse.Content.ReadFromJsonAsync<FinancePaymentAllocationResponse>();
         Assert.NotNull(invoiceAPartial);
         Assert.Equal(seed.CompanyId, invoiceAPartial!.CompanyId);
@@ -109,7 +111,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
         var persistedAllocations = await _factory.ExecuteDbContextAsync(async dbContext =>
             await dbContext.PaymentAllocations
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == seed.CompanyId)
+                .Where(x => x.CompanyId == seed.CompanyId &&
+                    (x.PaymentId == seed.IncomingPaymentId || x.PaymentId == seed.IncomingPaymentBId || x.PaymentId == seed.OutgoingPaymentId))
                 .Select(x => new PersistedAllocationRow(x.Id, x.PaymentId, x.InvoiceId, x.BillId, x.AllocatedAmount, x.Currency))
                 .ToListAsync());
 
@@ -165,7 +168,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
                 Currency = "USD"
             });
 
-        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+        Assert.True(firstResponse.StatusCode == HttpStatusCode.OK,
+            await firstResponse.Content.ReadAsStringAsync());
 
         var overAllocationResponse = await client.PostAsJsonAsync(
             $"/internal/companies/{seed.CompanyId}/finance/payments/{seed.IncomingPaymentId}/allocations",
@@ -259,6 +263,30 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
 
             FinanceSeedData.AddMockFinanceData(dbContext, companyId);
             FinanceSeedData.AddMockFinanceData(dbContext, otherCompanyId);
+
+            var configuredAtUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            var cashAccount = new FinanceAccount(Guid.NewGuid(), companyId, "1010", "Settlement bank", "asset", "USD", 0m,
+                configuredAtUtc, accountClass: FinanceAccountClassValues.Asset, normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true, controlAccountRole: AccountingAccountRoleKeys.Bank);
+            var receivablesAccount = new FinanceAccount(Guid.NewGuid(), companyId, "1110", "Settlement receivables", "asset", "USD", 0m,
+                configuredAtUtc, accountClass: FinanceAccountClassValues.Asset, normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true, controlAccountRole: AccountingAccountRoleKeys.AccountsReceivable);
+            var payablesAccount = new FinanceAccount(Guid.NewGuid(), companyId, "2010", "Settlement payables", "liability", "USD", 0m,
+                configuredAtUtc, accountClass: FinanceAccountClassValues.Liability, normalBalance: FinanceNormalBalanceValues.Credit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true, controlAccountRole: AccountingAccountRoleKeys.AccountsPayable);
+            dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount, payablesAccount);
+            var configuration = new AccountingConfiguration(Guid.NewGuid(), companyId, "USD", 1, 1,
+                AccountingPolicyPackDefaults.CountryNeutralPackKey, AccountingPolicyPackDefaults.CountryNeutralBankingVersion,
+                new DateOnly(2026, 1, 1), 2, AccountingRoundingModeValues.AwayFromZero, userId, configuredAtUtc);
+            configuration.SetSetupState(AccountingSetupStateValues.Ready, userId, configuredAtUtc);
+            dbContext.AccountingConfigurations.Add(configuration);
+            dbContext.AccountingConfigurationAccountRoles.AddRange(
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.Bank, cashAccount.Id, configuredAtUtc),
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.AccountsReceivable, receivablesAccount.Id, configuredAtUtc),
+                new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configuration.Id, AccountingAccountRoleKeys.AccountsPayable, payablesAccount.Id, configuredAtUtc));
+            dbContext.VoucherSeries.Add(new VoucherSeries(Guid.NewGuid(), companyId, "B", "Bank", "B", true, configuredAtUtc));
+            dbContext.FiscalPeriods.Add(new FiscalPeriod(Guid.NewGuid(), companyId, "FY 2026", configuredAtUtc,
+                new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
 
             dbContext.FinanceCounterparties.AddRange(
                 new FinanceCounterparty(counterpartyId, companyId, "Allocation Customer", "customer", "customer@example.com"),

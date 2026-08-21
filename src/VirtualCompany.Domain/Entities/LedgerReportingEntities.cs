@@ -26,6 +26,30 @@ public static class LedgerEntryStatuses
         string.Equals(Normalize(status), Posted, StringComparison.Ordinal);
 }
 
+public static class LedgerPostingTypeValues
+{
+    public const string Manual = "manual";
+    public const string SourceDocument = "source_document";
+    public const string Bank = "bank";
+    public const string CashSettlement = "cash_settlement";
+    public const string Reversal = "reversal";
+    public const string Adjustment = "adjustment";
+
+    public static string Normalize(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? throw new ArgumentException("Posting type is required.", nameof(value))
+            : value.Trim().ToLowerInvariant() switch
+            {
+                Manual => Manual,
+                SourceDocument => SourceDocument,
+                Bank => Bank,
+                CashSettlement => CashSettlement,
+                Reversal => Reversal,
+                Adjustment => Adjustment,
+                _ => throw new ArgumentOutOfRangeException(nameof(value), "Posting type is not supported.")
+            };
+}
+
 public sealed class FiscalPeriod : ICompanyOwnedEntity
 {
     private FiscalPeriod()
@@ -154,6 +178,22 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
         UpdatedUtc = ReportingUnlockedUtc.Value;
     }
 
+    public void Reopen(Guid actorUserId, DateTime? reopenedUtc = null)
+    {
+        if (actorUserId == Guid.Empty)
+        {
+            throw new ArgumentException("Actor user id is required.", nameof(actorUserId));
+        }
+
+        var occurredUtc = EntityTimestampNormalizer.NormalizeUtc(reopenedUtc ?? DateTime.UtcNow, nameof(reopenedUtc));
+        IsClosed = false;
+        ClosedUtc = null;
+        IsReportingLocked = false;
+        ReportingUnlockedUtc = occurredUtc;
+        ReportingUnlockedByUserId = actorUserId;
+        UpdatedUtc = occurredUtc;
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -189,7 +229,23 @@ public sealed class LedgerEntry : ICompanyOwnedEntity
         string? sourceId = null,
         DateTime? postedAtUtc = null,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        Guid? voucherSeriesId = null,
+        long? voucherSequenceNumber = null,
+        int? voucherFiscalYear = null,
+        DateOnly? documentDate = null,
+        DateOnly? postingDate = null,
+        string? baseCurrency = null,
+        string? postingType = null,
+        string? sourceVersion = null,
+        string? idempotencyKey = null,
+        string? policyPackKey = null,
+        string? policyPackVersion = null,
+        string? policyFactsJson = null,
+        Guid? postedByUserId = null,
+        Guid? approvalRequestId = null,
+        Guid? originalLedgerEntryId = null,
+        string? correctionReason = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -218,6 +274,28 @@ public sealed class LedgerEntry : ICompanyOwnedEntity
                 : null;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? EntryUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
+        if (voucherSeriesId == Guid.Empty) throw new ArgumentException("VoucherSeriesId cannot be empty.", nameof(voucherSeriesId));
+        if (voucherSequenceNumber is <= 0) throw new ArgumentOutOfRangeException(nameof(voucherSequenceNumber));
+        if (voucherFiscalYear is < 1 or > 9999) throw new ArgumentOutOfRangeException(nameof(voucherFiscalYear));
+        if (postedByUserId == Guid.Empty) throw new ArgumentException("PostedByUserId cannot be empty.", nameof(postedByUserId));
+        if (approvalRequestId == Guid.Empty) throw new ArgumentException("ApprovalRequestId cannot be empty.", nameof(approvalRequestId));
+        if (originalLedgerEntryId == Guid.Empty) throw new ArgumentException("OriginalLedgerEntryId cannot be empty.", nameof(originalLedgerEntryId));
+        VoucherSeriesId = voucherSeriesId;
+        VoucherSequenceNumber = voucherSequenceNumber;
+        VoucherFiscalYear = voucherFiscalYear;
+        DocumentDate = documentDate;
+        PostingDate = postingDate;
+        BaseCurrency = NormalizeOptional(baseCurrency, nameof(baseCurrency), 3)?.ToUpperInvariant();
+        PostingType = string.IsNullOrWhiteSpace(postingType) ? null : LedgerPostingTypeValues.Normalize(postingType);
+        SourceVersion = NormalizeOptional(sourceVersion, nameof(sourceVersion), 128);
+        IdempotencyKey = NormalizeOptional(idempotencyKey, nameof(idempotencyKey), 200);
+        PolicyPackKey = NormalizeOptional(policyPackKey, nameof(policyPackKey), 96)?.ToLowerInvariant();
+        PolicyPackVersion = NormalizeOptional(policyPackVersion, nameof(policyPackVersion), 32);
+        PolicyFactsJson = NormalizeOptional(policyFactsJson, nameof(policyFactsJson), 16000);
+        PostedByUserId = postedByUserId;
+        ApprovalRequestId = approvalRequestId;
+        OriginalLedgerEntryId = originalLedgerEntryId;
+        CorrectionReason = NormalizeOptional(correctionReason, nameof(correctionReason), 1000);
     }
 
     public Guid Id { get; private set; }
@@ -231,14 +309,41 @@ public sealed class LedgerEntry : ICompanyOwnedEntity
     public string? SourceId { get; private set; }
     public DateTime? PostedAtUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
+    public Guid? VoucherSeriesId { get; private set; }
+    public long? VoucherSequenceNumber { get; private set; }
+    public int? VoucherFiscalYear { get; private set; }
+    public DateOnly? DocumentDate { get; private set; }
+    public DateOnly? PostingDate { get; private set; }
+    public string? BaseCurrency { get; private set; }
+    public string? PostingType { get; private set; }
+    public string? SourceVersion { get; private set; }
+    public string? IdempotencyKey { get; private set; }
+    public string? PolicyPackKey { get; private set; }
+    public string? PolicyPackVersion { get; private set; }
+    public string? PolicyFactsJson { get; private set; }
+    public Guid? PostedByUserId { get; private set; }
+    public Guid? ApprovalRequestId { get; private set; }
+    public Guid? OriginalLedgerEntryId { get; private set; }
+    public string? CorrectionReason { get; private set; }
+    public byte[] RowVersion { get; private set; } = [];
     public ICollection<LedgerEntrySourceMapping> SourceMappings { get; } = new List<LedgerEntrySourceMapping>();
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FiscalPeriod FiscalPeriod { get; private set; } = null!;
+    public VoucherSeries? VoucherSeries { get; private set; }
+    public ApprovalRequest? ApprovalRequest { get; private set; }
+    public LedgerEntry? OriginalLedgerEntry { get; private set; }
     public ICollection<LedgerEntryLine> Lines { get; } = new List<LedgerEntryLine>();
+    public ICollection<LedgerEntryEvidenceLink> EvidenceLinks { get; } = new List<LedgerEntryEvidenceLink>();
+    public ICollection<LedgerEntry> Corrections { get; } = new List<LedgerEntry>();
 
     public void Post(DateTime? updatedUtc = null)
     {
+        if (LedgerEntryStatuses.IsPosted(Status))
+        {
+            throw new InvalidOperationException("A posted ledger entry cannot be posted again.");
+        }
+
         Status = LedgerEntryStatuses.Posted;
         PostedAtUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
@@ -397,7 +502,9 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
         string currency,
         Guid? costCenterId = null,
         string? description = null,
-        DateTime? createdUtc = null)
+        DateTime? createdUtc = null,
+        string? taxFactsJson = null,
+        string? dimensionFactsJson = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -449,6 +556,8 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
         Currency = NormalizeRequired(currency, nameof(currency), 3).ToUpperInvariant();
         Description = NormalizeOptional(description, nameof(description), 500);
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
+        TaxFactsJson = NormalizeOptional(taxFactsJson, nameof(taxFactsJson), 8000);
+        DimensionFactsJson = NormalizeOptional(dimensionFactsJson, nameof(dimensionFactsJson), 8000);
     }
 
     public Guid Id { get; private set; }
@@ -461,6 +570,8 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
     public string Currency { get; private set; } = null!;
     public string? Description { get; private set; }
     public DateTime CreatedUtc { get; private set; }
+    public string? TaxFactsJson { get; private set; }
+    public string? DimensionFactsJson { get; private set; }
     public Company Company { get; private set; } = null!;
     public LedgerEntry LedgerEntry { get; private set; } = null!;
     public FinanceAccount FinanceAccount { get; private set; } = null!;

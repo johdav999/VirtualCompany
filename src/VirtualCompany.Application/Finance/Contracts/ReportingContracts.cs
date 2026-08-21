@@ -44,6 +44,10 @@ public sealed record ValidateReportingPeriodCloseQuery(Guid CompanyId, Guid Fisc
 
 public sealed record LockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
 
+public sealed record CloseAndLockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId, string Reason);
+
+public sealed record ReopenReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId, string Reason);
+
 public sealed record UnlockReportingPeriodCommand(Guid CompanyId, Guid FiscalPeriodId);
 
 public sealed record RegenerateStoredReportingStatementsCommand(
@@ -55,7 +59,12 @@ public sealed record ReportingPeriodBlockingIssueDto(
     string Code,
     string Message,
     int Count,
-    IReadOnlyList<string> SampleReferences);
+    IReadOnlyList<string> SampleReferences,
+    decimal? Amount = null,
+    string? Currency = null,
+    IReadOnlyList<string>? RecordLinks = null,
+    string? Remediation = null,
+    IReadOnlyDictionary<string, string>? Evidence = null);
 
 public sealed record ReportingPeriodCloseValidationResultDto(
     Guid CompanyId,
@@ -69,6 +78,7 @@ public sealed record ReportingPeriodCloseValidationResultDto(
     bool IsReadyToClose,
     bool IsClosed,
     bool IsReportingLocked,
+    [property: System.Text.Json.Serialization.JsonPropertyName("blockingIssues")]
     IReadOnlyList<ReportingPeriodBlockingIssueDto> Issues);
 
 public sealed record ReportingPeriodLockStateDto(
@@ -96,6 +106,11 @@ public static class ReportingPeriodBlockingIssueCodes
     public const string UnpostedSourceDocuments = "unposted_source_documents";
     public const string UnbalancedJournalEntries = "unbalanced_journal_entries";
     public const string MissingStatementMappings = "missing_statement_mappings";
+    public const string UnresolvedSuspense = "unresolved_suspense";
+    public const string ReconciliationConflicts = "reconciliation_conflicts";
+    public const string ControlAccountDifference = "control_account_difference";
+    public const string TaxReviewIncomplete = "tax_review_incomplete";
+    public const string StoredReportsStale = "stored_reports_stale";
 }
 
 public class ReportingPeriodOperationException : Exception
@@ -413,12 +428,12 @@ public sealed record FinancialStatementDrilldownDto(
     string StatementType,
     string SourceMode,
     FinancialStatementSnapshotMetadataDto? Snapshot,
-    FinancialStatementDrilldownLineDto Line,
+    FinancialStatementDrilldownLineDto SelectedLine,
     decimal OpeningBalanceAdjustment,
     decimal JournalLineTotal,
     decimal ReconciliationTotal,
     decimal ReconciliationDelta,
-    IReadOnlyList<FinancialStatementDrilldownJournalEntryDto> Entries);
+    IReadOnlyList<FinancialStatementDrilldownJournalEntryDto> JournalEntries);
 
 public sealed record FinanceForecastDto(
     Guid Id,
@@ -446,6 +461,14 @@ public interface IReportingPeriodCloseService
 
     Task<ReportingPeriodLockStateDto> UnlockAsync(
         UnlockReportingPeriodCommand command,
+        CancellationToken cancellationToken);
+
+    Task<ReportingPeriodLockStateDto> CloseAndLockAsync(
+        CloseAndLockReportingPeriodCommand command,
+        CancellationToken cancellationToken);
+
+    Task<ReportingPeriodLockStateDto> ReopenAsync(
+        ReopenReportingPeriodCommand command,
         CancellationToken cancellationToken);
 
     Task<ReportingPeriodRegenerationRequestResultDto> RegenerateStoredStatementsAsync(

@@ -96,6 +96,28 @@ public sealed class ReportingPeriodsController : ControllerBase
         }
     }
 
+    [HttpPost("close-and-lock")]
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    public async Task<ActionResult<ReportingPeriodLockStateDto>> CloseAndLockAsync(
+        Guid companyId, Guid fiscalPeriodId, [FromBody] ReportingPeriodReasonRequest request, CancellationToken cancellationToken)
+    {
+        try { return Ok(await _service.CloseAndLockAsync(new CloseAndLockReportingPeriodCommand(companyId, fiscalPeriodId, request.Reason), cancellationToken)); }
+        catch (ReportingPeriodOperationException ex) { return Conflict(CreateProblemDetails(ex.Title, ex.Message, 409, ex.Code)); }
+        catch (UnauthorizedAccessException) { return Forbid(); }
+        catch (KeyNotFoundException ex) { return NotFound(CreateProblemDetails("Fiscal period was not found.", ex.Message, 404, "fiscal_period_not_found")); }
+    }
+
+    [HttpPost("reopen")]
+    [Authorize(Policy = CompanyPolicies.CompanyOwnerOrAdmin)]
+    public async Task<ActionResult<ReportingPeriodLockStateDto>> ReopenAsync(
+        Guid companyId, Guid fiscalPeriodId, [FromBody] ReportingPeriodReasonRequest request, CancellationToken cancellationToken)
+    {
+        try { return Ok(await _service.ReopenAsync(new ReopenReportingPeriodCommand(companyId, fiscalPeriodId, request.Reason), cancellationToken)); }
+        catch (ReportingPeriodOperationException ex) { return Conflict(CreateProblemDetails(ex.Title, ex.Message, 409, ex.Code)); }
+        catch (UnauthorizedAccessException) { return Forbid(); }
+        catch (KeyNotFoundException ex) { return NotFound(CreateProblemDetails("Fiscal period was not found.", ex.Message, 404, "fiscal_period_not_found")); }
+    }
+
     [HttpPost("stored-statements/regenerate")]
     [Authorize(Policy = CompanyPolicies.FinanceEdit)]
     public async Task<ActionResult<ReportingPeriodRegenerationRequestResultDto>> RegenerateAsync(
@@ -151,3 +173,4 @@ public sealed class ReportingPeriodsController : ControllerBase
 }
 
 public sealed record RegenerateStoredReportingStatementsRequest(bool RunInBackground = false);
+public sealed record ReportingPeriodReasonRequest(string Reason);

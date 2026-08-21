@@ -670,6 +670,14 @@ internal sealed class FinancePaymentAllocationService
             return;
         }
 
+        // Companies created before native accounting activation retain the legacy settlement
+        // workflow until setup and historical migration establish periods, roles, and policy.
+        // This avoids fabricating a journal from incomplete configuration while preserving the
+        // allocation as migration evidence. Configured internal-ledger companies remain strict.
+        var nativeAccountingEnabled = await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
+        if (!nativeAccountingEnabled) return;
+
         await _cashSettlementPostingService.PostCashSettlementAsync(
             new PostCashSettlementCommand(
                 companyId,

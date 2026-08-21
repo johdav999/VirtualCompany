@@ -63,6 +63,14 @@ public static class CompanyAuthorizationServiceCollectionExtensions
                 policy.RequireAuthenticatedUser()
                     .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.SandboxAdmin)));
 
+            options.AddPolicy(CompanyPolicies.AccountingView, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.AccountingView)));
+
+            options.AddPolicy(CompanyPolicies.AccountingAdmin, policy =>
+                policy.RequireAuthenticatedUser()
+                    .AddRequirements(new CompanyPermissionRequirement(FinancePermissions.AccountingAdmin)));
+
             options.AddPolicy(CompanyPolicies.CompanyOwnerOrAdmin, policy =>
                 policy.RequireAuthenticatedUser()
                     .AddRequirements(new CompanyMembershipRoleRequirement(

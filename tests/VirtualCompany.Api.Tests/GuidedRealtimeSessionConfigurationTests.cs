@@ -7,30 +7,31 @@ namespace VirtualCompany.Api.Tests;
 public sealed class GuidedRealtimeSessionConfigurationTests
 {
     [Fact]
-    public void Audio_input_uses_sensitive_server_turn_detection_without_automatic_barge_in()
+    public void Audio_input_uses_conservative_semantic_turn_detection_with_application_response_control()
     {
         var input = GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions());
 
         Assert.Equal("near_field", input["noise_reduction"]!["type"]!.GetValue<string>());
-        Assert.Equal("server_vad", input["turn_detection"]!["type"]!.GetValue<string>());
-        Assert.Equal(0.15, input["turn_detection"]!["threshold"]!.GetValue<double>());
-        Assert.Equal(300, input["turn_detection"]!["prefix_padding_ms"]!.GetValue<int>());
-        Assert.Equal(650, input["turn_detection"]!["silence_duration_ms"]!.GetValue<int>());
-        Assert.True(input["turn_detection"]!["create_response"]!.GetValue<bool>());
+        Assert.Equal("semantic_vad", input["turn_detection"]!["type"]!.GetValue<string>());
+        Assert.Equal("low", input["turn_detection"]!["eagerness"]!.GetValue<string>());
+        Assert.False(input["turn_detection"]!["create_response"]!.GetValue<bool>());
         Assert.False(input["turn_detection"]!["interrupt_response"]!.GetValue<bool>());
     }
 
     [Fact]
-    public void Semantic_turn_detection_remains_an_explicit_supported_option()
+    public void Server_turn_detection_remains_a_bounded_supported_fallback()
     {
         var input = GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions
         {
-            RealtimeTurnDetection = "semantic_vad",
-            RealtimeTurnEagerness = "medium"
+            RealtimeTurnDetection = "server_vad",
+            RealtimeVadSilenceDurationMs = 1200
         });
 
-        Assert.Equal("semantic_vad", input["turn_detection"]!["type"]!.GetValue<string>());
-        Assert.Equal("medium", input["turn_detection"]!["eagerness"]!.GetValue<string>());
+        Assert.Equal("server_vad", input["turn_detection"]!["type"]!.GetValue<string>());
+        Assert.Equal(0.15, input["turn_detection"]!["threshold"]!.GetValue<double>());
+        Assert.Equal(300, input["turn_detection"]!["prefix_padding_ms"]!.GetValue<int>());
+        Assert.Equal(1200, input["turn_detection"]!["silence_duration_ms"]!.GetValue<int>());
+        Assert.False(input["turn_detection"]!["create_response"]!.GetValue<bool>());
     }
 
     [Fact]
@@ -53,9 +54,20 @@ public sealed class GuidedRealtimeSessionConfigurationTests
     [InlineData(2, 1)]
     public void Server_vad_threshold_is_configurable_and_bounded(double configured,double expected)
     {
-        var input=GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions { RealtimeVadThreshold=configured });
+        var input=GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions { RealtimeTurnDetection="server_vad",RealtimeVadThreshold=configured });
 
         Assert.Equal(expected,input["turn_detection"]!["threshold"]!.GetValue<double>());
+    }
+
+    [Theory]
+    [InlineData(100,500)]
+    [InlineData(1500,1500)]
+    [InlineData(9000,3000)]
+    public void Server_vad_silence_duration_is_configurable_and_bounded(int configured,int expected)
+    {
+        var input=GuidedRealtimeSessionConfiguration.BuildAudioInput(new GuidedDialogueOptions { RealtimeTurnDetection="server_vad",RealtimeVadSilenceDurationMs=configured });
+
+        Assert.Equal(expected,input["turn_detection"]!["silence_duration_ms"]!.GetValue<int>());
     }
 
     [Fact]
@@ -142,6 +154,18 @@ public sealed class GuidedRealtimeSessionConfigurationTests
 
         Assert.True(GuidedRealtimeSidebandRegistry.TryBeginToolCall(handled,"call-1"));
         Assert.False(GuidedRealtimeSidebandRegistry.TryBeginToolCall(handled,"call-1"));
+    }
+
+    [Fact]
+    public void New_user_speech_invalidates_an_older_tool_continuation_epoch()
+    {
+        var epoch=new GuidedRealtimeTurnEpoch();
+        var toolEpoch=epoch.Current;
+
+        epoch.Advance();
+
+        Assert.False(epoch.IsCurrent(toolEpoch));
+        Assert.True(epoch.IsCurrent(epoch.Current));
     }
 
     [Fact]

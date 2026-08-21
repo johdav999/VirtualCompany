@@ -1,0 +1,22 @@
+<section class="accounting-statement-section">
+    <h4>@Title</h4>
+    @if (Lines is null || Lines.Count == 0)
+    {
+        <p>No mapped balances in this section.</p>
+    }
+    else
+    {
+        @foreach (var line in Lines)
+        {
+            <button type="button" class="accounting-statement-line">
+                <span><strong>@line.AccountCode</strong> @line.AccountName</span>
+                <strong>@line.Amount.ToString("N2") @line.Currency</strong>
+            </button>
+        }
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public string Title { get; set; } = string.Empty;
+    [Parameter] public IReadOnlyList<FinanceStatementLineResponse>? Lines { get; set; }
+}

@@ -31,7 +31,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
         Assert.Equal(1, provider.CallCount);
         Assert.Equal("invoice.pdf", provider.LastFileName);
         Assert.Equal("PDF bytes", provider.LastContent);
-        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.Id));
+        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.BillId));
     }
 
     [Fact]
@@ -48,7 +48,7 @@ public sealed class SupplierInvoiceSourceDocumentAttachmentServiceTests
         Assert.Equal(SupplierInvoiceSourceDocumentAttachmentStatuses.NotAvailable, result.Status);
         Assert.Equal("No source document available.", result.ResponseSummary);
         Assert.Equal(0, provider.CallCount);
-        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.Id));
+        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.BillId));
     }
 
     [Fact]

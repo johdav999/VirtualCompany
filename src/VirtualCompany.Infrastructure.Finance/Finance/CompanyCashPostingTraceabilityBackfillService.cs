@@ -1,5 +1,8 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
+using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
@@ -30,6 +33,11 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
         CancellationToken cancellationToken)
     {
         EnsureTenant(command.CompanyId);
+
+        // Backfills are database snapshots, not continuations of an interactive unit of work.
+        // Detach stale tracked graphs so prior bulk operations or earlier batches cannot make
+        // relationship fix-up replace a required one-to-one posting-state relationship.
+        _dbContext.ChangeTracker.Clear();
 
         var correlationId = string.IsNullOrWhiteSpace(command.CorrelationId)
             ? Guid.NewGuid().ToString("N")
@@ -176,7 +184,10 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
                         matchingStatus,
                         ledgerEntryId.HasValue,
                         !string.IsNullOrWhiteSpace(conflictCode));
-                    var desiredUnmatchedReason = linksForTransaction.Count > 0 ? null : "no_payment_match";
+                    var desiredUnmatchedReason = linksForTransaction.Count > 0 ||
+                        string.Equals(matchingStatus, BankTransactionMatchingStatuses.ManuallyClassified, StringComparison.OrdinalIgnoreCase)
+                            ? null
+                            : "no_payment_match";
 
                     if (postingState.MatchingStatus != matchingStatus ||
                         postingState.PostingState != desiredPostingState ||
@@ -203,6 +214,42 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
 
                 if (ledgerEntryId.HasValue && linksForTransaction.Count > 0 && string.IsNullOrWhiteSpace(conflictCode))
                 {
+                    var hasCentralIdentity = await _dbContext.LedgerPostingIdentities
+                        .IgnoreQueryFilters()
+                        .AsNoTracking()
+                        .AnyAsync(x => x.CompanyId == command.CompanyId && x.LedgerEntryId == ledgerEntryId.Value, cancellationToken);
+                    if (!hasCentralIdentity)
+                    {
+                        var legacyEntry = await _dbContext.LedgerEntries
+                            .IgnoreQueryFilters()
+                            .AsNoTracking()
+                            .Include(x => x.Lines)
+                            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == ledgerEntryId.Value, cancellationToken);
+                        if (legacyEntry is null || !LedgerEntryStatuses.IsPosted(legacyEntry.Status) || legacyEntry.Lines.Count < 2)
+                        {
+                            conflictCode = "legacy_journal_cannot_map_to_posting_identity";
+                            conflictDetails = "The linked legacy journal is missing, unposted, or incomplete and cannot be mapped to the governed posting identity.";
+                        }
+                        else
+                        {
+                            var sourceId = transaction.Id.ToString("D");
+                            var idempotencyKey = cashLinksForTransaction.SingleOrDefault()?.IdempotencyKey
+                                ?? BuildIdempotencyKey(command.CompanyId, transaction.Id);
+                            _dbContext.LedgerPostingIdentities.Add(new LedgerPostingIdentity(
+                                Guid.NewGuid(),
+                                command.CompanyId,
+                                legacyEntry.Id,
+                                "post",
+                                FinanceCashPostingSourceTypes.BankTransaction,
+                                sourceId,
+                                legacyEntry.SourceVersion ?? "legacy-1",
+                                idempotencyKey,
+                                ComputeLegacyPayloadHash(legacyEntry),
+                                effectivePostedAtUtc));
+                            backfilled++;
+                        }
+                    }
+
                     foreach (var paymentLink in linksForTransaction)
                     {
                         var key = (paymentLink.PaymentId, ledgerEntryId.Value);
@@ -228,6 +275,17 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
 
                 if (!string.IsNullOrWhiteSpace(conflictCode))
                 {
+                    var conflictState = postingState ?? _dbContext.ChangeTracker.Entries<BankTransactionPostingStateRecord>()
+                        .Select(x => x.Entity)
+                        .FirstOrDefault(x => x.CompanyId == command.CompanyId && x.BankTransactionId == transaction.Id);
+                    conflictState?.SyncSnapshot(
+                        linksForTransaction.Count > 0 ? BankTransactionMatchingStatuses.Matched : BankTransactionMatchingStatuses.Unmatched,
+                        BankTransactionPostingStates.Conflict,
+                        linksForTransaction.Count,
+                        transaction.BookingDate,
+                        linksForTransaction.Count > 0 ? null : "no_payment_match",
+                        conflictCode,
+                        conflictDetails);
                     conflicts++;
                 }
             }
@@ -268,6 +326,23 @@ public sealed class CompanyCashPostingTraceabilityBackfillService : ICashPosting
 
     private static string BuildIdempotencyKey(Guid companyId, Guid bankTransactionId) =>
         $"bank-transaction-ledger:{companyId:N}:{bankTransactionId:N}";
+
+    private static string ComputeLegacyPayloadHash(LedgerEntry entry)
+    {
+        var canonical = new StringBuilder()
+            .Append(entry.CompanyId.ToString("N")).Append('|')
+            .Append(entry.Id.ToString("N")).Append('|')
+            .Append(entry.EntryNumber).Append('|')
+            .Append(entry.PostedAtUtc?.ToString("O") ?? string.Empty);
+        foreach (var line in entry.Lines.OrderBy(x => x.Id))
+        {
+            canonical.Append('|').Append(line.FinanceAccountId.ToString("N"))
+                .Append(':').Append(line.DebitAmount.ToString("0.00", CultureInfo.InvariantCulture))
+                .Append(':').Append(line.CreditAmount.ToString("0.00", CultureInfo.InvariantCulture))
+                .Append(':').Append(line.Currency);
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical.ToString()))).ToLowerInvariant();
+    }
 
     private static BankTransactionPostingStateRecord CreatePostingStateRecord(
         Guid companyId,

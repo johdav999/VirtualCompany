@@ -9,7 +9,10 @@ public enum ApprovalTargetEntityType
     SalesMeetingInvitation = 5,
     SalesMeetingChangeRequest = 6,
     OperatingPlan = 7,
-    OperatingDecision = 8
+    OperatingDecision = 8,
+    ManualJournalDraft = 9,
+    CustomerInvoiceAccounting = 10,
+    SupplierBillAccounting = 11
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -23,7 +26,10 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.SalesMeetingInvitation] = "sales_meeting_invitation",
         [ApprovalTargetEntityType.SalesMeetingChangeRequest] = "sales_meeting_change_request",
         [ApprovalTargetEntityType.OperatingPlan] = "operating_plan",
-        [ApprovalTargetEntityType.OperatingDecision] = "operating_decision"
+        [ApprovalTargetEntityType.OperatingDecision] = "operating_decision",
+        [ApprovalTargetEntityType.ManualJournalDraft] = "manual_journal_draft",
+        [ApprovalTargetEntityType.CustomerInvoiceAccounting] = "customer_invoice_accounting",
+        [ApprovalTargetEntityType.SupplierBillAccounting] = "supplier_bill_accounting"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

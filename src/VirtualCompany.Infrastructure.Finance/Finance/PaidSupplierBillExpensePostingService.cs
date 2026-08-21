@@ -15,6 +15,7 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFinanceSupplierInvoiceDraftActionService _draftActionService;
+    private readonly IAccountingAuthorityPolicy? _accountingAuthorityPolicy;
     private readonly ICompanyContextAccessor? _companyContextAccessor;
     private readonly ILogger<PaidSupplierBillExpensePostingService>? _logger;
 
@@ -22,10 +23,12 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
         VirtualCompanyDbContext dbContext,
         IFinanceSupplierInvoiceDraftActionService draftActionService,
         ICompanyContextAccessor? companyContextAccessor = null,
-        ILogger<PaidSupplierBillExpensePostingService>? logger = null)
+        ILogger<PaidSupplierBillExpensePostingService>? logger = null,
+        IAccountingAuthorityPolicy? accountingAuthorityPolicy = null)
     {
         _dbContext = dbContext;
         _draftActionService = draftActionService;
+        _accountingAuthorityPolicy = accountingAuthorityPolicy;
         _companyContextAccessor = companyContextAccessor;
         _logger = logger;
     }
@@ -35,11 +38,14 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
         CancellationToken cancellationToken)
     {
         EnsureTenant(command.CompanyId);
-        var providerKey = NormalizeProviderKey(command.ProviderKey);
         var bill = await LoadBillAsync(command.CompanyId, command.BillId, cancellationToken);
         await ValidateBillCanBePostedAsPaidExpenseAsync(bill, cancellationToken);
+        var providerKey = await ResolveProviderKeyAsync(command, bill, cancellationToken);
         var connection = await ResolveConnectedFinanceIntegrationAsync(command.CompanyId, providerKey, cancellationToken);
-        await EnsureFortnoxScopesAsync(command.CompanyId, connection.Id, cancellationToken);
+        if (string.Equals(providerKey, FinanceIntegrationProviderKeys.Fortnox, StringComparison.OrdinalIgnoreCase))
+        {
+            await EnsureFortnoxScopesAsync(command.CompanyId, connection.Id, cancellationToken);
+        }
 
         _logger?.LogInformation(
             "Posting paid supplier bill expense. CompanyId: {CompanyId}. BillId: {BillId}. BillNumber: {BillNumber}. ProviderKey: {ProviderKey}. ConnectionId: {ConnectionId}.",
@@ -70,10 +76,49 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
         }
     }
 
-    private static string NormalizeProviderKey(string? providerKey) =>
+    private static string NormalizeLegacyProviderKey(string? providerKey) =>
         string.IsNullOrWhiteSpace(providerKey)
             ? FinanceIntegrationProviderKeys.Fortnox
             : providerKey.Trim().ToLowerInvariant();
+
+    private async Task<string> ResolveProviderKeyAsync(
+        PostPaidSupplierBillExpenseCommand command,
+        FinanceBill bill,
+        CancellationToken cancellationToken)
+    {
+        if (_accountingAuthorityPolicy is null)
+        {
+            return NormalizeLegacyProviderKey(command.ProviderKey);
+        }
+
+        var decision = await _accountingAuthorityPolicy.EvaluateAsync(
+            new EvaluateAccountingAuthorityQuery(
+                command.CompanyId,
+                DateOnly.FromDateTime(bill.ReceivedUtc),
+                AccountingAuthorityOperationValues.ProviderAuthoritativeWrite,
+                command.ProviderKey),
+            cancellationToken);
+
+        if (!decision.IsAllowed)
+        {
+            if (decision.ReasonCode == AccountingAuthorityReasonCodes.AuthorityNotConfigured)
+            {
+                return NormalizeLegacyProviderKey(command.ProviderKey);
+            }
+
+            throw new InvalidOperationException(decision.Explanation);
+        }
+
+        var providerKey = string.IsNullOrWhiteSpace(command.ProviderKey)
+            ? decision.ProviderKey
+            : command.ProviderKey;
+        if (string.IsNullOrWhiteSpace(providerKey))
+        {
+            throw new InvalidOperationException("The authoritative accounting provider is not configured for this period.");
+        }
+
+        return providerKey.Trim().ToLowerInvariant();
+    }
 
     private async Task<FinanceBill> LoadBillAsync(Guid companyId, Guid billId, CancellationToken cancellationToken) =>
         await _dbContext.FinanceBills
@@ -220,7 +265,7 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
                 x.Status == FinanceIntegrationConnectionStatuses.Connected)
             .OrderByDescending(x => x.ConnectedUtc ?? x.UpdatedUtc)
             .FirstOrDefaultAsync(cancellationToken)
-        ?? throw new InvalidOperationException("Fortnox is not connected for this company. Connect Fortnox and try again.");
+        ?? throw new InvalidOperationException("The authoritative accounting provider is not connected for this company. Connect it and try again.");
 
     private async Task EnsureFortnoxScopesAsync(Guid companyId, Guid connectionId, CancellationToken cancellationToken)
     {
@@ -256,8 +301,8 @@ public sealed class PaidSupplierBillExpensePostingService : IPaidSupplierBillExp
         var posted = string.Equals(draftAction.Status, SupplierInvoiceDraftActionStatuses.Booked, StringComparison.OrdinalIgnoreCase);
         var summary = string.IsNullOrWhiteSpace(draftAction.ResponseSummary)
             ? posted
-                ? "Laura posted the paid supplier bill as an expense in Fortnox."
-                : "Laura recorded the Fortnox expense posting request."
+                ? "Laura posted the paid supplier bill as an expense in the authoritative accounting system."
+                : "Laura recorded the accounting-system expense posting request."
             : draftAction.ResponseSummary;
 
         return new PaidSupplierBillExpensePostingDto(

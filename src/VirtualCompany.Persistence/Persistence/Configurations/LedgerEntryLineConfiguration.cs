@@ -25,6 +25,8 @@ internal sealed class LedgerEntryLineConfiguration : IEntityTypeConfiguration<Le
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         builder.Property(x => x.Description).HasColumnName("description").HasMaxLength(500);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
+        builder.Property(x => x.TaxFactsJson).HasColumnName("tax_facts_json").HasMaxLength(8000);
+        builder.Property(x => x.DimensionFactsJson).HasColumnName("dimension_facts_json").HasMaxLength(8000);
 
         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.CostCenterId });
         builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId });

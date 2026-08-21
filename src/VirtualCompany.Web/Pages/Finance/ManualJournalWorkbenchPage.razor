@@ -1,0 +1,65 @@
+@page "/finance/accounting/journals/new"
+@page "/finance/accounting/journals/drafts/{DraftId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["ManualJournalTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@FinanceText["ManualJournalTitle"]" Description="@FinanceText["ManualJournalDescription"]" LoadingMessage="@FinanceText["ManualJournalLoading"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+    <div class="workbench-heading">
+        <div><a class="workbench-back" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, AccessState.CompanyId)">← @FinanceText["BackToJournal"]</a><span class="dashboard-kicker">@FinanceText["ManualJournal"]</span><h2>@(DraftId.HasValue ? FinanceText["EditManualJournal"] : FinanceText["NewManualJournal"])</h2><p>@FinanceText["ManualJournalHelp"]</p></div>
+        @if (Draft is not null) { <div class="workbench-status"><span class="@StatusClass">@StatusText</span><small>@FinanceText["DraftVersion", Draft.Version]</small></div> }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ManualJournalActionFailed"]</strong><div>@ActionError</div>@if (HasVersionConflict) { <button class="btn btn-sm btn-outline-danger mt-2" @onclick="ReloadDraftAsync">@FinanceText["ReloadCurrentVersion"]</button> }</div> }
+    @if (OriginalJournal is not null) { <div class="workbench-correction" role="note"><strong>@FinanceText["AdjustmentFor", OriginalJournal.EntryNumber]</strong><span>@FinanceText["OriginalJournalRemainsUnchanged"]</span></div> }
+
+    <div class="workbench-grid">
+        <main class="workbench-main">
+            <section class="workbench-card">
+                <div class="workbench-card__header"><div><span>1</span><h3>@FinanceText["JournalDetails"]</h3></div><small>@FinanceText["RequiredFields"]</small></div>
+                <div class="workbench-form-grid">
+                    <div><label for="journal-document-date">@FinanceText["DocumentDate"]</label><InputDate id="journal-document-date" class="form-control" @bind-Value="Model.DocumentDate" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></div>
+                    <div><label for="journal-posting-date">@FinanceText["PostingDate"]</label><InputDate id="journal-posting-date" class="form-control" @bind-Value="Model.PostingDate" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></div>
+                    <div><label for="journal-period">@FinanceText["FiscalPeriod"]</label><InputSelect id="journal-period" class="form-select" @bind-Value="Model.FiscalPeriodId" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)"><option value="@Guid.Empty">@FinanceText["SelectPeriod"]</option>@foreach (var period in Periods) { <option value="@period.Id">@period.Name (@period.StartDate.ToString("d") – @period.EndDate.ToString("d"))</option> }</InputSelect></div>
+                    <div><label for="journal-series">@FinanceText["VoucherSeries"]</label><InputSelect id="journal-series" class="form-select" @bind-Value="Model.VoucherSeriesCode" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)"><option value="">@FinanceText["SelectVoucherSeries"]</option>@foreach (var series in ReferenceData.VoucherSeries) { <option value="@series.Code">@series.Code — @series.DisplayName</option> }</InputSelect></div>
+                    <div><label for="journal-currency">@FinanceText["Currency"]</label><InputText id="journal-currency" class="form-control" maxlength="3" @bind-Value="Model.Currency" @bind-Value:after="NormalizeCurrency" disabled="@(!CanEdit)" /></div>
+                    <div class="workbench-field--wide"><label for="journal-explanation">@FinanceText["BusinessExplanation"]</label><InputTextArea id="journal-explanation" class="form-control" rows="3" maxlength="1000" placeholder="@FinanceText["BusinessExplanationPlaceholder"]" @bind-Value="Model.Explanation" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></div>
+                    @if (Model.OriginalLedgerEntryId.HasValue) { <div class="workbench-field--wide"><label for="journal-correction-reason">@FinanceText["CorrectionReason"]</label><InputTextArea id="journal-correction-reason" class="form-control" rows="2" maxlength="1000" @bind-Value="Model.CorrectionReason" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></div> }
+                </div>
+            </section>
+
+            <section class="workbench-card">
+                <div class="workbench-card__header"><div><span>2</span><h3>@FinanceText["JournalLines"]</h3></div>@if (CanEdit) { <button class="btn btn-sm btn-outline-primary" @onclick="AddLine">+ @FinanceText["AddLine"]</button> }</div>
+                <div class="table-responsive"><table class="table workbench-lines align-middle">
+                    <thead><tr><th>#</th><th>@FinanceText["Account"]</th><th>@FinanceText["LineDescription"]</th><th>@FinanceText["TaxCode"]</th><th class="text-end">@FinanceText["Debit"]</th><th class="text-end">@FinanceText["Credit"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead>
+                    <tbody>@for (var index = 0; index < Model.Lines.Count; index++) { var line = Model.Lines[index]; var lineNumber = index + 1; <tr><td>@lineNumber</td><td><InputSelect class="form-select" @bind-Value="line.FinanceAccountId" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)"><option value="@Guid.Empty">@FinanceText["SelectAccount"]</option>@foreach (var account in Accounts) { <option value="@account.Id">@account.Code · @account.Name</option> }</InputSelect></td><td><InputText class="form-control" @bind-Value="line.Description" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></td><td><InputText class="form-control" placeholder="@FinanceText["Optional"]" @bind-Value="line.TaxCode" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></td><td><InputNumber class="form-control text-end" min="0" step="0.01" @bind-Value="line.DebitAmount" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></td><td><InputNumber class="form-control text-end" min="0" step="0.01" @bind-Value="line.CreditAmount" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /></td><td>@if (CanEdit && Model.Lines.Count > 2) { <button class="btn btn-sm btn-link text-danger" title="@FinanceText["RemoveLine"]" @onclick="() => RemoveLine(line)">×</button> }</td></tr> }</tbody>
+                    <tfoot><tr><th colspan="4">@FinanceText["Total"]</th><th class="text-end">@LocalMoney.Format(DebitTotal, Model.Currency)</th><th class="text-end">@LocalMoney.Format(CreditTotal, Model.Currency)</th><th></th></tr></tfoot>
+                </table></div>
+                <div class="workbench-balance @(IsBalanced ? "balanced" : "unbalanced")" role="status"><span>@(IsBalanced ? "✓" : "!")</span><div><strong>@(IsBalanced ? FinanceText["JournalBalanced"] : FinanceText["JournalOutOfBalance"])</strong><small>@FinanceText["JournalDifference", LocalMoney.Format(Difference, Model.Currency)]</small></div></div>
+            </section>
+
+            <section class="workbench-card">
+                <div class="workbench-card__header"><div><span>3</span><h3>@FinanceText["EvidenceAndDimensions"]</h3></div></div>
+                <div class="workbench-evidence-picker"><div><label for="evidence-document">@FinanceText["EvidenceDocument"]</label><InputSelect id="evidence-document" class="form-select" @bind-Value="SelectedEvidenceId" disabled="@(!CanEdit)"><option value="@Guid.Empty">@FinanceText["SelectEvidenceDocument"]</option>@foreach (var document in AvailableEvidence) { <option value="@document.DocumentId">@document.Title — @document.OriginalFileName</option> }</InputSelect></div><button class="btn btn-outline-primary" @onclick="AddEvidence" disabled="@(!CanEdit || SelectedEvidenceId == Guid.Empty)">@FinanceText["Attach"]</button></div>
+                @if (Model.EvidenceDocumentIds.Count == 0) { <div class="workbench-evidence-empty"><span aria-hidden="true">↥</span><div><strong>@FinanceText["EvidenceRequired"]</strong><p>@FinanceText["EvidenceRequiredHelp"]</p></div></div> }
+                else { <ul class="workbench-evidence-list">@foreach (var documentId in Model.EvidenceDocumentIds) { var document = ReferenceData.EvidenceDocuments.FirstOrDefault(item => item.DocumentId == documentId); <li><div><strong>@(document?.Title ?? documentId.ToString("D"))</strong><small>@document?.OriginalFileName</small></div>@if (CanEdit) { <button class="btn btn-sm btn-link text-danger" @onclick="() => RemoveEvidence(documentId)">@FinanceText["Remove"]</button> }</li> }</ul> }
+                <div class="workbench-dimension"><label for="journal-dimension">@FinanceText["Dimensions"]</label><InputText id="journal-dimension" class="form-control" placeholder="@FinanceText["DimensionsPlaceholder"]" @bind-Value="Model.DimensionInput" @bind-Value:after="MarkDirty" disabled="@(!CanEdit)" /><small>@FinanceText["DimensionsHelp"]</small></div>
+            </section>
+        </main>
+
+        <aside class="workbench-sidebar">
+            <section class="workbench-summary"><div class="workbench-summary__identity"><span>L</span><div><strong>@FinanceText["LauraJournalReview"]</strong><small>@FinanceText["AccountingAssistant"]</small></div></div><h3>@FinanceText["ReadyToReview"]</h3><ul><li class="@(Model.Explanation.Trim().Length >= 8 ? "complete" : null)">@FinanceText["ExplanationCheck"]</li><li class="@(Model.EvidenceDocumentIds.Count > 0 ? "complete" : null)">@FinanceText["EvidenceCheck"]</li><li class="@(IsBalanced ? "complete" : null)">@FinanceText["BalanceCheck"]</li><li class="@(Model.FiscalPeriodId != Guid.Empty ? "complete" : null)">@FinanceText["PeriodCheck"]</li></ul>
+                @if (Preview is not null) { <div class="workbench-preview @(Preview.Policy.IsAllowed && Preview.PostingPreview.IsValid ? "valid" : "invalid")"><strong>@(Preview.Policy.IsAllowed && Preview.PostingPreview.IsValid ? FinanceText["PreviewPassed"] : FinanceText["PreviewNeedsChanges"])</strong>@foreach (var issue in Preview.Policy.Issues.Concat(Preview.PostingPreview.Issues)) { <p>@issue.Explanation</p> }@foreach (var warning in Preview.Policy.Warnings) { <p>@warning.Explanation</p> }</div> }
+                <div class="workbench-summary__totals"><div><span>@FinanceText["Debit"]</span><strong>@LocalMoney.Format(DebitTotal, Model.Currency)</strong></div><div><span>@FinanceText["Credit"]</span><strong>@LocalMoney.Format(CreditTotal, Model.Currency)</strong></div></div>
+            </section>
+            <section class="workbench-actions">
+                @if (CanEdit) { <button class="btn btn-outline-primary" @onclick="SaveAsync" disabled="@IsSaving">@(IsSaving ? FinanceText["Saving"] : FinanceText["SaveDraft"])</button><button class="btn btn-outline-secondary" @onclick="PreviewAsync" disabled="@IsSaving">@FinanceText["PreviewJournal"]</button><button class="btn btn-primary" @onclick="SubmitAsync" disabled="@(!CanSubmit || IsSaving)">@FinanceText["SubmitForApproval"]</button> }
+                @if (Draft?.Status == "approved") { <button class="btn btn-success" @onclick="PostAsync" disabled="@IsSaving">@FinanceText["PostApprovedJournal"]</button> }
+                @if (Draft is not null && Draft.Status is not "posted" and not "discarded") { <button class="btn btn-link text-danger" @onclick="DiscardAsync" disabled="@IsSaving">@FinanceText["DiscardDraft"]</button> }
+                @if (Draft?.Status is "awaiting_approval" or "approved") { <button class="btn btn-outline-secondary" @onclick="ReloadDraftAsync">@CommonText["Refresh"]</button> }
+            </section>
+        </aside>
+    </div>
+</FinancePageLayout>

@@ -33,7 +33,7 @@ public sealed class CashPostingTraceabilityBackfillServiceTests
         Assert.Equal(companyId, first.CompanyId);
         Assert.Equal("backfill-run-001", first.CorrelationId);
         Assert.Equal(1, first.MigratedRecordCount);
-        Assert.Equal(3, first.BackfilledRecordCount);
+        Assert.Equal(4, first.BackfilledRecordCount);
         Assert.Equal(0, first.ConflictCount);
 
         var postingStates = await dbContext.BankTransactionPostingStateRecords
@@ -54,6 +54,10 @@ public sealed class CashPostingTraceabilityBackfillServiceTests
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.BankTransactionId == seed.MatchedBankTransactionId)
             .ToListAsync());
+        Assert.Single(await dbContext.LedgerPostingIdentities
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId && x.LedgerEntryId == seed.LedgerEntryId)
+            .ToListAsync());
 
         var paymentLedgerLink = await dbContext.PaymentCashLedgerLinks
             .IgnoreQueryFilters()
@@ -73,7 +77,9 @@ public sealed class CashPostingTraceabilityBackfillServiceTests
         Assert.Single(await dbContext.PaymentCashLedgerLinks.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
         Assert.Equal(2, await dbContext.BankTransactionPostingStateRecords.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
 
-        var entry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Completed cash posting traceability backfill", StringComparison.Ordinal)));
+        var entry = Assert.Single(logger.Entries.Where(x =>
+            x.Message.Contains("Completed cash posting traceability backfill", StringComparison.Ordinal) &&
+            Equals(AssertScopeValue(x.Scope, "CorrelationId"), "backfill-run-001")));
         Assert.Equal(companyId, AssertScopeValue(entry.Scope, "CompanyId"));
         Assert.Equal("backfill-run-001", AssertScopeValue(entry.Scope, "CorrelationId"));
     }
@@ -230,6 +236,9 @@ public sealed class CashPostingTraceabilityBackfillServiceTests
             new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
             new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc),
             new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
+        dbContext.LedgerEntryLines.AddRange(
+            new LedgerEntryLine(Guid.NewGuid(), companyId, ledgerEntryId, cashAccountId, 100m, 0m, "USD", "Legacy customer receipt"),
+            new LedgerEntryLine(Guid.NewGuid(), companyId, ledgerEntryId, receivablesAccountId, 0m, 100m, "USD", "Legacy customer receipt"));
         dbContext.LedgerEntrySourceMappings.Add(new LedgerEntrySourceMapping(
             Guid.NewGuid(),
             companyId,
@@ -244,6 +253,7 @@ public sealed class CashPostingTraceabilityBackfillServiceTests
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .ExecuteDeleteAsync();
+        dbContext.ChangeTracker.Clear();
 
         return new LegacyBackfillSeed(companyId, paymentId, matchedBankTransactionId, unmatchedBankTransactionId, ledgerEntryId);
     }

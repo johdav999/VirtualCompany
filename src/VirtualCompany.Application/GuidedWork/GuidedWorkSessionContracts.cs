@@ -144,6 +144,8 @@ public interface IGuidedArtifactDefinition
     IReadOnlyList<string> QuestionPriorities => Fields.Where(x => x.IsRequired).Select(x => x.Path).ToArray();
     Task<GuidedArtifactInitialization> InitializeAsync(Guid companyId, Guid agentId, Guid? targetArtifactId, CancellationToken cancellationToken);
     Task EnsureEligibleAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken);
+    Task<string> BuildCompanyReferenceContextAsync(Guid companyId, Guid agentId, CancellationToken cancellationToken) =>
+        Task.FromResult("No additional company material is available for this workshop.");
     Task<IReadOnlyList<string>> ValidateAsync(Guid companyId, Guid agentId, Guid? targetArtifactId,
         IReadOnlyDictionary<string, JsonNode?> values, CancellationToken cancellationToken);
     Task<IReadOnlyList<GuidedReviewInsightDto>> BuildReviewInsightsAsync(Guid companyId, Guid agentId, Guid? targetArtifactId,
@@ -162,7 +164,8 @@ public sealed record GuidedCheckpointRequest(Guid CompanyId, Guid SessionId, Gui
     IReadOnlyList<GuidedCheckpointConversationTurn> RecentConversation,
     IReadOnlyList<GuidedCheckpointField> Fields, IReadOnlyList<string> QuestionPriorities,
     string AttachedDocumentContext = "No ready workshop documents are attached.",
-    string PublicResearchContext = "Public research has not been performed for this turn.");
+    string PublicResearchContext = "Public research has not been performed for this turn.",
+    string CompanyReferenceContext = "No additional company material is available for this workshop.");
 public sealed record GuidedPatchOperation(string Path, JsonNode? Value, string Status, string SourceType,
     string Explanation, IReadOnlyDictionary<string, JsonNode?>? SourceMetadata = null);
 public sealed record GuidedFieldStatusChangeOperation(string Path, string Status, string Explanation);

@@ -1,0 +1,89 @@
+@page "/finance/accounting/reconciliation"
+@page "/finance/accounting/reconciliation/{TransactionId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>Bank reconciliation</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="Bank reconciliation" Description="Match bank activity to payments, post reviewed suspense items, and keep every correction traceable." LoadingMessage="Loading bank reconciliation">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <div class="reconciliation-heading">
+        <div><span class="dashboard-kicker">NATIVE ACCOUNTING</span><h2>Bank reconciliation</h2><p>Review imported activity, allocate payments safely, and prepare balanced postings.</p></div>
+        <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, AccessState.CompanyId)">Open journals</a>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert">@ActionError</div> }
+
+    <section class="reconciliation-kpis" aria-label="Reconciliation summary">
+        <article><span class="reconciliation-kpi-icon reconciliation-kpi-icon--amber">!</span><div><small>Needs review</small><strong>@Count("unmatched")</strong><span>Unmatched bank items</span></div></article>
+        <article><span class="reconciliation-kpi-icon reconciliation-kpi-icon--amber">½</span><div><small>Partially matched</small><strong>@Count("partial")</strong><span>Amounts still remaining</span></div></article>
+        <article><span class="reconciliation-kpi-icon reconciliation-kpi-icon--green">✓</span><div><small>Ready or posted</small><strong>@(Count("matched") + Count("posted"))</strong><span>Governed journal path</span></div></article>
+        <article><span class="reconciliation-kpi-icon reconciliation-kpi-icon--red">⌂</span><div><small>Suspense</small><strong>@Count("suspense")</strong><span>Follow-up is still open</span></div></article>
+    </section>
+
+    <section class="reconciliation-filter-card">
+        <div><label for="reconciliation-search">Search transactions</label><input id="reconciliation-search" class="form-control" @bind="Search" placeholder="Counterparty, reference, or statement row" /></div>
+        <div><label for="reconciliation-state">Reconciliation state</label><select id="reconciliation-state" class="form-select" @bind="StateFilter"><option value="">All states</option><option value="unmatched">Unmatched</option><option value="partial">Partially matched</option><option value="matched">Ready to post</option><option value="posted">Posted</option><option value="suspense">Suspense</option><option value="conflict">Conflict</option><option value="correction">Corrected</option></select></div>
+        <div class="reconciliation-filter-actions"><button class="btn btn-link" type="button" @onclick="ClearFiltersAsync">Clear filters</button><button class="btn btn-primary" type="button" @onclick="ApplyFiltersAsync">Apply filters</button></div>
+    </section>
+
+    <div class="reconciliation-layout">
+        <section class="reconciliation-list-card">
+            <header><div><h3>Bank activity</h3><span>@Workspace.Items.Count transaction(s)</span></div><button class="btn btn-sm btn-outline-secondary" @onclick="ApplyFiltersAsync">Refresh</button></header>
+            <FinanceDataState IsLoading="@IsWorkspaceLoading" IsEmpty="@(!IsWorkspaceLoading && Workspace.Items.Count == 0)" ErrorMessage="@null" LoadingTitle="Loading bank activity" LoadingMessage="Checking reconciliation state and posting links." EmptyTitle="No bank items in this queue" EmptyMessage="Change the filters or import bank activity through a configured source." OnRetry="ApplyFiltersAsync">
+                <div class="table-responsive"><table class="table reconciliation-table align-middle"><thead><tr><th>Date</th><th>Counterparty / reference</th><th>Amount</th><th>Allocated / remaining</th><th>State</th></tr></thead><tbody>
+                    @foreach (var item in Workspace.Items)
+                    {
+                        <tr class="@(Selected?.Transaction.Id == item.BankTransactionId ? "selected" : null)" @onclick="() => SelectAsync(item.BankTransactionId)"><td>@item.BookingDate.ToString("d")</td><td><strong>@item.Counterparty</strong><small>@item.ReferenceText</small></td><td class="@(item.Amount >= 0 ? "amount-positive" : "amount-negative")">@Money(item.Amount, item.Currency)</td><td><strong>@Money(item.AllocatedAmount, item.Currency)</strong><small>@Money(item.RemainingAmount, item.Currency) remaining</small></td><td><span class="reconciliation-badge reconciliation-badge--@item.State">@StateLabel(item.State)</span></td></tr>
+                    }
+                </tbody></table></div>
+            </FinanceDataState>
+        </section>
+
+        <aside class="reconciliation-detail-card" aria-live="polite">
+            @if (IsDetailLoading) { <FinanceLoadingState Title="Opening transaction" Message="Loading payment, source, and journal evidence." /> }
+            else if (Selected is null) { <div class="reconciliation-empty"><span>↔</span><h3>Select a bank transaction</h3><p>Choose an item to review its allocations and accounting path.</p></div> }
+            else
+            {
+                <header class="reconciliation-detail-header"><div><span class="reconciliation-badge reconciliation-badge--@Selected.State">@StateLabel(Selected.State)</span><h3 class="@(Selected.Transaction.Amount >= 0 ? "amount-positive" : "amount-negative")">@Money(Selected.Transaction.Amount, Selected.Transaction.Currency)</h3><p>@Selected.Transaction.Counterparty · @Selected.Transaction.ReferenceText</p></div><small>@Selected.Transaction.BookingDate.ToString("d")</small></header>
+                <section class="reconciliation-progress"><div><span>Allocation progress</span><strong>@Money(Selected.Transaction.ReconciledAmount, Selected.Transaction.Currency) of @Money(Math.Abs(Selected.Transaction.Amount), Selected.Transaction.Currency)</strong></div><progress value="@Selected.Transaction.ReconciledAmount" max="@Math.Abs(Selected.Transaction.Amount)"></progress><small>@Money(Selected.RemainingAmount, Selected.Transaction.Currency) remains visible</small></section>
+
+                @if (!string.IsNullOrWhiteSpace(Selected.BlockingReason)) { <div class="reconciliation-notice reconciliation-notice--danger"><strong>Needs attention</strong><p>@Selected.BlockingReason</p></div> }
+
+                <section class="reconciliation-section"><h4>Match a completed payment</h4>
+                    @if (Selected.CandidatePayments.Count == 0) { <p class="text-secondary">No completed payment with the same direction and currency is available.</p> }
+                    else
+                    {
+                        <select class="form-select" @bind="SelectedPaymentId"><option value="@Guid.Empty">Select payment</option>@foreach (var payment in Selected.CandidatePayments) { <option value="@payment.PaymentId">@payment.CounterpartyReference · @Money(payment.AvailableAmount, payment.Currency) available</option> }</select>
+                        <div class="reconciliation-amount-row"><input class="form-control" type="number" step="0.01" min="0.01" @bind="MatchAmount" /><button class="btn btn-primary" type="button" disabled="@(!CanManageAccounting || IsSubmitting || SelectedPaymentId == Guid.Empty)" @onclick="MatchPaymentAsync">Match payment</button></div>
+                        @if (SelectedPayment is { } selectedPayment)
+                        {
+                            <div class="reconciliation-link-list" aria-label="Selected payment source links">
+                                <a href="@PaymentHref(selectedPayment.PaymentId)"><span>Open payment</span><small>Review the completed payment and its allocations</small></a>
+                                @if (selectedPayment.InvoiceId is Guid invoiceId) { <a href="@InvoiceHref(invoiceId)"><span>Open customer invoice</span><small>@(selectedPayment.InvoiceNumber ?? "Related receivable")</small></a> }
+                                @if (selectedPayment.BillId is Guid billId) { <a href="@BillHref(billId)"><span>Open supplier bill</span><small>@(selectedPayment.BillNumber ?? "Related payable")</small></a> }
+                            </div>
+                        }
+                    }
+                </section>
+
+                <section class="reconciliation-section"><h4>Explicit difference lines</h4><p class="reconciliation-help">Use a configured policy role for a fee, discount, rounding amount, or exchange difference. Leave both amounts at zero when none applies.</p><div class="reconciliation-adjustment-grid"><select class="form-select" @bind="AdjustmentKind"><option value="bank_fee">Bank fee</option><option value="settlement_discount">Settlement discount</option><option value="rounding_difference">Rounding difference</option><option value="exchange_gain">Exchange gain</option><option value="exchange_loss">Exchange loss</option></select><input class="form-control" type="number" min="0" step="0.01" aria-label="Adjustment debit" placeholder="Debit" @bind="AdjustmentDebit" /><input class="form-control" type="number" min="0" step="0.01" aria-label="Adjustment credit" placeholder="Credit" @bind="AdjustmentCredit" /></div><input class="form-control reconciliation-adjustment-explanation" @bind="AdjustmentExplanation" placeholder="Explain the difference" /></section>
+
+                <section class="reconciliation-section"><h4>Reviewed handling</h4><textarea class="form-control" rows="2" @bind="ReviewReason" placeholder="Why is this handling appropriate?"></textarea><select class="form-select reconciliation-category" @bind="CategorizationAccountId"><option value="@Guid.Empty">Select reviewed category</option>@foreach (var account in Accounts.Where(x => x.IsPostingEnabled && !x.IsProtected)) { <option value="@account.Id">@account.Code · @account.Name</option> }</select><div class="reconciliation-choice-grid"><button type="button" class="reconciliation-choice" disabled="@(!CanManageAccounting || IsSubmitting || CategorizationAccountId == Guid.Empty)" @onclick="CategorizeAsync"><strong>Post reviewed category</strong><span>Uses the selected posting-enabled account.</span></button><button type="button" class="reconciliation-choice" disabled="@(!CanManageAccounting || IsSubmitting || !Selected.CanPostToSuspense)" @onclick="PostSuspenseAsync"><strong>Post to suspense</strong><span>Creates follow-up work and is not resolved.</span></button><button type="button" class="reconciliation-choice" disabled="@(!CanManageAccounting || IsSubmitting)" @onclick="LeaveUnmatchedAsync"><strong>Leave unmatched</strong><span>Keeps the remaining amount in review.</span></button></div></section>
+
+                <section class="reconciliation-section"><h4>Source and journal links</h4>
+                    @if (Selected.Journals.Count == 0) { <p class="text-secondary">No journal has been posted for this item.</p> }
+                    else { <div class="reconciliation-link-list">@foreach (var journal in Selected.Journals) { <a href="@JournalHref(journal.LedgerEntryId)"><span>@journal.EntryNumber</span><small>@(journal.IsOriginalSuspense ? "Original suspense journal (immutable)" : journal.IsCorrection ? "Linked correction" : "Governed bank journal")</small></a> }</div> }
+                </section>
+
+                @if (Selected.CanReclassify)
+                {
+                    <section class="reconciliation-section reconciliation-correction"><h4>Correct suspense classification</h4><p>The original stays unchanged. This creates a linked reversal and replacement in an open period.</p><select class="form-select" @bind="ReclassificationAccountId"><option value="@Guid.Empty">Select replacement account</option>@foreach (var account in Accounts.Where(x => x.IsPostingEnabled && !x.IsProtected)) { <option value="@account.Id">@account.Code · @account.Name</option> }</select><select class="form-select" @bind="ReclassificationPeriodId"><option value="@Guid.Empty">Select open period</option>@foreach (var period in FiscalYears.SelectMany(x => x.Periods).Where(x => !x.IsClosed && !x.IsReportingLocked)) { <option value="@period.Id">@period.Name</option> }</select><button class="btn btn-outline-primary" type="button" disabled="@(!CanManageAccounting || IsSubmitting)" @onclick="ReclassifyAsync">Create linked correction</button></section>
+                }
+
+                <section class="reconciliation-laura"><span>L</span><div><strong>Laura, Finance Manager</strong><p>@(Selected.State == "suspense" ? "This item is posted, but follow-up is still required before reconciliation is complete." : Selected.RemainingAmount > 0 ? "An amount remains unmatched. Review candidates or keep it visibly open." : "The bank item has a traceable accounting path.")</p></div></section>
+            }
+        </aside>
+    </div>
+</FinancePageLayout>

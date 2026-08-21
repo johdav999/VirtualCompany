@@ -17,6 +17,7 @@ internal static class GuidedWorkTelemetry
     internal static readonly Counter<long> VoiceCallsStarted=Meter.CreateCounter<long>("guided_work.voice.calls.started");
     internal static readonly Counter<long> VoiceReconnects=Meter.CreateCounter<long>("guided_work.voice.reconnects");
     internal static readonly Counter<long> VoiceInterruptions=Meter.CreateCounter<long>("guided_work.voice.interruptions");
+    internal static readonly Counter<long> VoiceStaleContinuationsSuppressed=Meter.CreateCounter<long>("guided_work.voice.stale_continuations_suppressed");
     internal static readonly Counter<long> VoiceToolRejected=Meter.CreateCounter<long>("guided_work.voice.tools.rejected");
     internal static readonly Counter<long> ResearchCompleted=Meter.CreateCounter<long>("guided_work.research.completed");
     internal static readonly Histogram<double> CheckpointDuration=Meter.CreateHistogram<double>("guided_work.checkpoint.duration","ms");

@@ -75,7 +75,6 @@ public sealed partial class CompanyFinanceReadService
             invoiceReviewStates,
             new Dictionary<Guid, TransactionDocumentReviewState>());
         var relatedTransactions = await LoadInvoiceRelatedTransactionsAsync(query.CompanyId, row.Id, cancellationToken);
-
         return new FinanceInvoiceDetailDto(
             row.Id,
             row.CounterpartyId,
@@ -97,7 +96,8 @@ public sealed partial class CompanyFinanceReadService
             row.ProviderStatus,
             row.ProcessingStatus,
             paymentContext,
-            relatedTransactions);
+            relatedTransactions,
+            null);
     }
 
     private async Task<Dictionary<Guid, List<FinanceSeedAnomalyDto>>> LoadTransactionAnomalyLookupAsync(
@@ -207,11 +207,19 @@ public sealed partial class CompanyFinanceReadService
             rows.Select(x => (Guid?)x.Id),
             cancellationToken);
         var emptyBillReviewStates = new Dictionary<Guid, TransactionDocumentReviewState>();
+        var accountingStates = await _dbContext.CustomerInvoiceAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && rows.Select(row => row.Id).Contains(x.InvoiceId))
+            .Select(x => new { x.InvoiceId, x.Status, x.LedgerEntryId, ApprovalStatus = x.ApprovalRequest == null ? null : (ApprovalRequestStatus?)x.ApprovalRequest.Status })
+            .ToDictionaryAsync(x => x.InvoiceId, cancellationToken);
 
         return rows
             .Select(x =>
             {
                 var paymentContext = BuildPaymentContext(x.Id, null, invoiceReviewStates, emptyBillReviewStates);
+                accountingStates.TryGetValue(x.Id, out var accounting);
+                var accountingStatus = accounting?.Status == CustomerInvoiceAccountingStatuses.AwaitingApproval && accounting.ApprovalStatus == ApprovalRequestStatus.Approved
+                    ? CustomerInvoiceAccountingStatuses.ReadyToPost
+                    : accounting?.Status ?? CustomerInvoiceAccountingStatuses.NotReady;
                 return new FinanceInvoiceDto(
                     x.Id,
                     x.CounterpartyId,
@@ -230,10 +238,23 @@ public sealed partial class CompanyFinanceReadService
                     x.DocumentKind,
                     x.ProviderStatus,
                     x.ProcessingStatus,
-                    paymentContext);
+                    paymentContext,
+                    accountingStatus,
+                    AccountingStatusLabel(accountingStatus),
+                    accounting?.LedgerEntryId);
             })
             .ToList();
     }
+
+    private static string AccountingStatusLabel(string status) => status switch
+    {
+        CustomerInvoiceAccountingStatuses.AwaitingApproval => "Waiting for approval",
+        CustomerInvoiceAccountingStatuses.ReadyToPost => "Ready to post",
+        CustomerInvoiceAccountingStatuses.Posted => "Posted",
+        CustomerInvoiceAccountingStatuses.Reversed => "Reversed",
+        CustomerInvoiceAccountingStatuses.Blocked => "Needs review",
+        _ => "Not ready"
+    };
 
 }
 

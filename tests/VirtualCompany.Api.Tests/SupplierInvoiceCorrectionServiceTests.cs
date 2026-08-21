@@ -39,7 +39,7 @@ public sealed class SupplierInvoiceCorrectionServiceTests
         Assert.NotNull(result.ApprovedUtc);
         Assert.Equal(1, provider.CancelCallCount);
         Assert.Equal("3", provider.LastRequest?.SourceBillNumber);
-        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.Id));
+        Assert.Equal(1, await fixture.Db.FinanceIntegrationAuditEvents.IgnoreQueryFilters().CountAsync(x => x.InternalRecordId == result.BillId));
     }
 
     [Fact]

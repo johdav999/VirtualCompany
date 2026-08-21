@@ -22,6 +22,20 @@ public partial class InvoicesPage : FinancePageBase
     private string? StatusValidationMessage { get; set; }
     private string? StatusSaveMessage { get; set; }
     private bool IsSavingStatus { get; set; }
+    private CustomerInvoiceAccountingReferenceDataResponse? AccountingReferenceData { get; set; }
+    private CustomerInvoiceAccountingPreviewResponse? AccountingPreview { get; set; }
+    private List<AccountingLineModel> AccountingLines { get; set; } = [];
+    private Guid AccountingPeriodId { get; set; }
+    private string AccountingVoucherSeriesCode { get; set; } = "G";
+    private decimal? AccountingExchangeRate { get; set; }
+    private bool IsAccountingBusy { get; set; }
+    private string? AccountingMessage { get; set; }
+    private string? AccountingError { get; set; }
+    private bool ShowCreditNoteForm { get; set; }
+    private string CreditNoteNumber { get; set; } = string.Empty;
+    private string CreditNoteReason { get; set; } = string.Empty;
+    private DateTime CreditNoteIssueDate { get; set; } = DateTime.Today;
+    private DateTime CreditNoteDueDate { get; set; } = DateTime.Today;
 
     private bool IsListEmpty => !IsListLoading && string.IsNullOrWhiteSpace(ListErrorMessage) && Invoices.Count == 0;
     private IReadOnlyList<InvoiceListItemViewModel> InvoiceItems =>
@@ -49,6 +63,7 @@ public partial class InvoicesPage : FinancePageBase
         EditableStatus = string.Empty;
         StatusValidationMessage = null;
         StatusSaveMessage = null;
+        ResetAccountingEditor();
 
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId)
         {
@@ -109,6 +124,10 @@ public partial class InvoicesPage : FinancePageBase
                 DetailErrorMessage = "The selected invoice could not be found for this company.";
                 EditableStatus = string.Empty;
             }
+            else
+            {
+                await LoadAccountingReferenceDataAsync(companyId, SelectedInvoice);
+            }
         }
         catch (FinanceApiException ex)
         {
@@ -121,6 +140,173 @@ public partial class InvoicesPage : FinancePageBase
             IsDetailLoading = false;
         }
     }
+
+    private async Task LoadAccountingReferenceDataAsync(Guid companyId, FinanceInvoiceDetailResponse invoice)
+    {
+        AccountingReferenceData = null;
+        AccountingPreview = null;
+        AccountingLines = [];
+        AccountingError = null;
+        AccountingMessage = null;
+        ShowCreditNoteForm = false;
+        try
+        {
+            AccountingReferenceData = await FinanceApiClient.GetCustomerInvoiceAccountingReferenceDataAsync(companyId, invoice.Id);
+            AccountingPeriodId = AccountingReferenceData.DefaultPeriodId ?? AccountingReferenceData.OpenPeriods.FirstOrDefault()?.Id ?? Guid.Empty;
+            AccountingVoucherSeriesCode = AccountingReferenceData.DefaultVoucherSeriesCode ?? AccountingReferenceData.VoucherSeries.FirstOrDefault()?.Code ?? "G";
+            AccountingExchangeRate = string.Equals(AccountingReferenceData.DocumentCurrency, AccountingReferenceData.BaseCurrency, StringComparison.OrdinalIgnoreCase) ? 1m : null;
+            AccountingLines = [new AccountingLineModel
+            {
+                Description = $"Invoice {invoice.InvoiceNumber}",
+                Amount = Math.Abs(invoice.Accounting?.NetAmount ?? AccountingReferenceData.GrossAmount),
+                TaxRuleKey = AccountingReferenceData.DefaultTaxRuleKey ?? AccountingReferenceData.TaxRules.FirstOrDefault()?.Key ?? string.Empty
+            }];
+            CreditNoteNumber = $"CN-{invoice.InvoiceNumber}";
+            CreditNoteReason = string.Empty;
+            CreditNoteIssueDate = DateTime.Today;
+            CreditNoteDueDate = DateTime.Today;
+        }
+        catch (FinanceApiException ex)
+        {
+            AccountingError = ex.Message;
+        }
+    }
+
+    private void ResetAccountingEditor()
+    {
+        AccountingReferenceData = null;
+        AccountingPreview = null;
+        AccountingLines = [];
+        AccountingPeriodId = Guid.Empty;
+        AccountingVoucherSeriesCode = "G";
+        AccountingExchangeRate = null;
+        AccountingMessage = null;
+        AccountingError = null;
+        ShowCreditNoteForm = false;
+    }
+
+    private CustomerInvoiceAccountingApiRequest BuildAccountingRequest() => new()
+    {
+        FiscalPeriodId = AccountingPeriodId,
+        VoucherSeriesCode = AccountingVoucherSeriesCode,
+        ExchangeRate = AccountingExchangeRate,
+        Lines = AccountingLines.Select(line => new CustomerInvoiceAccountingLineApiRequest
+        {
+            Description = line.Description,
+            Amount = line.Amount,
+            TaxRuleKey = line.TaxRuleKey
+        }).ToList()
+    };
+
+    private async Task PreviewAccountingAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedInvoice is null) return;
+        IsAccountingBusy = true; AccountingError = AccountingMessage = null;
+        try
+        {
+            AccountingPreview = await FinanceApiClient.PreviewCustomerInvoiceAccountingAsync(companyId, SelectedInvoice.Id, BuildAccountingRequest());
+            if (!AccountingPreview.IsReady)
+                AccountingError = AccountingPreview.Issues.FirstOrDefault(issue => issue.IsBlocking)?.Explanation ?? "Resolve the accounting issues before continuing.";
+        }
+        catch (FinanceApiException ex) { AccountingError = ex.Message; }
+        finally { IsAccountingBusy = false; }
+    }
+
+    private async Task SubmitAccountingAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedInvoice is null) return;
+        IsAccountingBusy = true; AccountingError = AccountingMessage = null;
+        try
+        {
+            var input = BuildAccountingRequest();
+            var result = await FinanceApiClient.SubmitCustomerInvoiceAccountingAsync(companyId, SelectedInvoice.Id, new()
+            {
+                FiscalPeriodId = input.FiscalPeriodId, VoucherSeriesCode = input.VoucherSeriesCode,
+                ExchangeRate = input.ExchangeRate, Lines = input.Lines,
+                ExpectedVersion = SelectedInvoice.Accounting?.SourceVersion,
+                IdempotencyKey = $"customer-invoice-submit:{SelectedInvoice.Id:N}:{Guid.NewGuid():N}"
+            });
+            SelectedInvoice.Accounting = result.State;
+            AccountingPreview = null;
+            AccountingMessage = result.IsIdempotentReplay
+                ? "This exact accounting version is already waiting for approval."
+                : "Accounting entry submitted for approval.";
+            await LoadInvoicesAsync(companyId);
+        }
+        catch (FinanceApiException ex) { AccountingError = ex.Message; }
+        finally { IsAccountingBusy = false; }
+    }
+
+    private async Task PostAccountingAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedInvoice?.Accounting?.SourceVersion is not long version) return;
+        IsAccountingBusy = true; AccountingError = AccountingMessage = null;
+        try
+        {
+            var result = await FinanceApiClient.PostCustomerInvoiceAccountingAsync(companyId, SelectedInvoice.Id, new()
+            {
+                ExpectedVersion = version,
+                IdempotencyKey = $"customer-invoice-post:{SelectedInvoice.Id:N}:v{version}"
+            });
+            SelectedInvoice.Accounting = result.State;
+            AccountingMessage = result.IsIdempotentReplay ? "This invoice was already posted." : $"Posted as {result.Journal.EntryNumber}.";
+            await LoadInvoicesAsync(companyId);
+        }
+        catch (FinanceApiException ex) { AccountingError = ex.Message; }
+        finally { IsAccountingBusy = false; }
+    }
+
+    private async Task CreateCreditNoteAsync()
+    {
+        if (AccessState.CompanyId is not Guid companyId || SelectedInvoice is null) return;
+        if (string.IsNullOrWhiteSpace(CreditNoteNumber) || string.IsNullOrWhiteSpace(CreditNoteReason))
+        {
+            AccountingError = "Enter a credit-note number and correction reason.";
+            return;
+        }
+        IsAccountingBusy = true; AccountingError = AccountingMessage = null;
+        try
+        {
+            var state = await FinanceApiClient.CreateCustomerCreditNoteAsync(companyId, SelectedInvoice.Id, new()
+            {
+                CreditNoteNumber = CreditNoteNumber,
+                IssueDate = DateOnly.FromDateTime(CreditNoteIssueDate), DueDate = DateOnly.FromDateTime(CreditNoteDueDate),
+                Reason = CreditNoteReason,
+                IdempotencyKey = $"customer-credit:{SelectedInvoice.Id:N}:{CreditNoteNumber.Trim().ToLowerInvariant()}",
+                Accounting = BuildAccountingRequest()
+            });
+            AccountingMessage = "Credit note created and submitted for approval.";
+            ShowCreditNoteForm = false;
+            await LoadInvoicesAsync(companyId);
+            Navigation.NavigateTo(BuildInvoiceHref(state.InvoiceId));
+        }
+        catch (FinanceApiException ex) { AccountingError = ex.Message; }
+        finally { IsAccountingBusy = false; }
+    }
+
+    private void AddAccountingLine() => AccountingLines.Add(new AccountingLineModel
+    {
+        Description = "Invoice line",
+        TaxRuleKey = AccountingReferenceData?.DefaultTaxRuleKey ?? AccountingReferenceData?.TaxRules.FirstOrDefault()?.Key ?? string.Empty
+    });
+
+    private void RemoveAccountingLine(AccountingLineModel line)
+    {
+        if (AccountingLines.Count > 1) AccountingLines.Remove(line);
+    }
+
+    private string AccountingStatusTone(string? status) => NormalizeStatusToken(status) switch
+    {
+        "posted" => "success",
+        "ready_to_post" => "info",
+        "awaiting_approval" => "warning",
+        "blocked" or "reversed" => "danger",
+        _ => "neutral"
+    };
+
+    private string BuildJournalHref() => SelectedInvoice?.Accounting?.LedgerEntryId is Guid journalId
+        ? FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingJournal}?journalId={journalId:D}", AccessState.CompanyId)
+        : FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, AccessState.CompanyId);
 
     private async Task HandleStatusSaveAsync()
     {
@@ -214,6 +400,8 @@ public partial class InvoicesPage : FinancePageBase
             status.Label,
             status.Tone,
             status.Tone,
+            invoice.AccountingStatusLabel,
+            AccountingStatusTone(invoice.AccountingStatus),
             paymentSummary?.IsPartiallyPaid == true ? "Needs review" : null,
             paymentSummary?.IsPartiallyPaid == true ? "danger" : "neutral",
             isSelected);
@@ -588,6 +776,8 @@ public partial class InvoicesPage : FinancePageBase
         string FriendlyStatusLabel,
         string StatusTone,
         string IconTone,
+        string AccountingStatusLabel,
+        string AccountingStatusTone,
         string? ReviewBadgeLabel,
         string ReviewBadgeTone,
         bool IsSelected);
@@ -634,4 +824,11 @@ public partial class InvoicesPage : FinancePageBase
         string DisplayAmount,
         string TypeLabel,
         string TypeTone);
+
+    private sealed class AccountingLineModel
+    {
+        public string Description { get; set; } = string.Empty;
+        public decimal Amount { get; set; }
+        public string TaxRuleKey { get; set; } = string.Empty;
+    }
 }

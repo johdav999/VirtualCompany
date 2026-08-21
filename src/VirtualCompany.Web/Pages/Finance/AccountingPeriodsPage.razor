@@ -1,0 +1,112 @@
+@page "/finance/accounting/periods"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["FiscalPeriodsTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@FinanceText["FiscalPeriodsTitle"]" Description="@FinanceText["FiscalPeriodsDescription"]" LoadingMessage="@FinanceText["PeriodsLoading"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <div class="accounting-page-heading">
+        <div><span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span><h2>@FinanceText["FiscalPeriodsTitle"]</h2><p>@FinanceText["FiscalPeriodsHelp"]</p></div>
+        @if (CanManageAccounting)
+        {
+            <button class="btn btn-primary" type="button" @onclick="ToggleCreate">@FinanceText["CreateFiscalYear"]</button>
+        }
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage))
+    {
+        <div class="alert alert-success" role="status">@ActionMessage</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(ActionError))
+    {
+        <div class="alert alert-danger" role="alert"><strong>@FinanceText["AccountingActionFailed"]</strong><div>@ActionError</div><button class="btn btn-sm btn-outline-danger mt-2" type="button" @onclick="ReloadAsync">@CommonText["TryAgain"]</button></div>
+    }
+
+    <section class="accounting-period-kpis" aria-label="@FinanceText["PeriodSummary"]">
+        <div><span class="accounting-period-kpi__icon accounting-period-kpi__icon--blue" aria-hidden="true">▣</span><div><small>@FinanceText["CurrentFiscalYear"]</small><strong>@(CurrentFiscalYear is null ? FinanceText["NotAvailable"] : AccountingPresentation.FiscalYearLabel(CurrentFiscalYear))</strong><span>@FormatFiscalYearDates(CurrentFiscalYear)</span></div></div>
+        <div><span class="accounting-period-kpi__icon accounting-period-kpi__icon--green" aria-hidden="true">○</span><div><small>@FinanceText["OpenPeriods"]</small><strong>@Years.Sum(year => year.OpenPeriodCount)</strong><span>@FinanceText["AvailableForPosting"]</span></div></div>
+        <div><span class="accounting-period-kpi__icon" aria-hidden="true">●</span><div><small>@FinanceText["ClosedPeriods"]</small><strong>@Years.Sum(year => year.ClosedPeriodCount)</strong><span>@FinanceText["ClosedHistory"]</span></div></div>
+        <div><span class="accounting-period-kpi__icon accounting-period-kpi__icon--amber" aria-hidden="true">◆</span><div><small>@FinanceText["ReportingLocks"]</small><strong>@Years.Sum(year => year.ReportingLockedPeriodCount)</strong><span>@FinanceText["LockedReports"]</span></div></div>
+    </section>
+
+    <div class="accounting-period-layout">
+        <section class="accounting-period-list-card" aria-labelledby="period-list-title">
+            <div class="accounting-card-header"><div><h3 id="period-list-title">@FinanceText["FiscalYearsAndPeriods"]</h3><span>@FinanceText["FiscalYearResults", Years.Count]</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsPeriodsLoading">@CommonText["Refresh"]</button></div>
+            <FinanceDataState IsLoading="@IsPeriodsLoading" IsEmpty="@(!IsPeriodsLoading && string.IsNullOrWhiteSpace(ListError) && Years.Count == 0)" ErrorMessage="@ListError" LoadingTitle="@FinanceText["PeriodsLoading"]" LoadingMessage="@FinanceText["PeriodsLoadingHelp"]" EmptyTitle="@FinanceText["NoFiscalYears"]" EmptyMessage="@FinanceText["NoFiscalYearsHelp"]" OnRetry="ReloadAsync">
+                @foreach (var year in Years)
+                {
+                    <div class="accounting-fiscal-year-group">
+                        <div class="accounting-fiscal-year-group__header"><div><strong>@AccountingPresentation.FiscalYearLabel(year)</strong><span>@year.StartDate.ToString("d") – @year.EndDate.ToString("d")</span></div><span>@FinanceText["PeriodCount", year.Periods.Count]</span></div>
+                        <div class="table-responsive">
+                            <table class="table accounting-period-table align-middle">
+                                <thead><tr><th>@FinanceText["Period"]</th><th>@FinanceText["PeriodDates"]</th><th>@FinanceText["Status"]</th></tr></thead>
+                                <tbody>
+                                    @foreach (var period in year.Periods)
+                                    {
+                                        <tr class="@(Selected?.Id == period.Id ? "selected" : null)" @onclick="() => SelectPeriodAsync(period.Id)" tabindex="0" @onkeydown="args => HandleRowKeyAsync(args, period.Id)"><td><strong>@period.Name</strong></td><td>@period.StartDate.ToString("d") – @period.EndDate.ToString("d")</td><td><span class="@AccountingPresentation.PeriodStatusClass(period)">@FinanceText[PeriodStatusKey(period)]</span></td></tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                }
+            </FinanceDataState>
+        </section>
+
+        <aside class="accounting-period-detail-card" aria-live="polite">
+            @if (ShowCreate)
+            {
+                <div class="accounting-card-header"><div><span class="dashboard-kicker">@FinanceText["NewFiscalYear"]</span><h3>@FinanceText["CreateFiscalYear"]</h3></div><button class="btn-close" aria-label="@CommonText["Close"]" @onclick="ToggleCreate"></button></div>
+                <div class="accounting-create-period-form">
+                    <label for="new-fiscal-year-start">@FinanceText["FiscalYearStarts"]</label>
+                    <InputDate id="new-fiscal-year-start" class="form-control" @bind-Value="NewFiscalYearStart" />
+                    <small>@FinanceText["FiscalYearCreationHelp"]</small>
+                    <button class="btn btn-outline-primary" type="button" @onclick="PreviewFiscalYearAsync" disabled="@IsPreviewLoading">@(IsPreviewLoading ? FinanceText["Reviewing"] : FinanceText["ReviewDates"])</button>
+                    @if (FiscalYearPreview is not null)
+                    {
+                        <div class="accounting-period-preview-summary">
+                            <div><span>@FinanceText["FiscalYearEnds"]</span><strong>@FiscalYearPreview.EndDate.ToString("d")</strong></div><div><span>@FinanceText["MonthlyPeriods"]</span><strong>@FiscalYearPreview.Periods.Count</strong></div>
+                        </div>
+                        @if (FiscalYearPreview.Issues.Count > 0)
+                        {
+                            <div class="accounting-notice accounting-notice--danger" role="alert">
+                                <span aria-hidden="true">!</span>
+                                <div>
+                                    <strong>@FinanceText["PeriodDatesConflict"]</strong>
+                                    @foreach (var issue in FiscalYearPreview.Issues)
+                                    {
+                                        <p>@issue.Explanation</p>
+                                    }
+                                </div>
+                            </div>
+                        }
+                        else
+                        {
+                            <div class="accounting-notice accounting-notice--success" role="status"><span aria-hidden="true">✓</span><p>@FinanceText["PeriodDatesValid"]</p></div>
+                        }
+                    }
+                    <button class="btn btn-primary" type="button" @onclick="CreateFiscalYearAsync" disabled="@(IsSaving || FiscalYearPreview?.IsValid != true)">@(IsSaving ? FinanceText["CreatingFiscalYear"] : FinanceText["CreateFiscalYear"])</button>
+                </div>
+            }
+            else if (IsDetailLoading)
+            {
+                <div class="accounting-detail-state" role="status"><div class="spinner-border text-primary" aria-hidden="true"></div><h3>@FinanceText["PeriodDetailLoading"]</h3><p>@FinanceText["PeriodDetailLoadingHelp"]</p></div>
+            }
+            else if (Selected is null)
+            {
+                <div class="accounting-detail-state"><span aria-hidden="true">▣</span><h3>@FinanceText["SelectPeriod"]</h3><p>@FinanceText["SelectPeriodHelp"]</p></div>
+            }
+            else
+            {
+                <div class="accounting-card-header accounting-card-header--period"><div><h3>@Selected.Name</h3><span>@Selected.StartDate.ToString("d") – @Selected.EndDate.ToString("d")</span></div><span class="@AccountingPresentation.PeriodStatusClass(Selected)">@FinanceText[PeriodStatusKey(Selected)]</span></div>
+                <section class="accounting-period-detail-section"><h4>@FinanceText["PeriodDates"]</h4><dl><div><dt>@FinanceText["StartDate"]</dt><dd>@Selected.StartDate.ToString("D")</dd></div><div><dt>@FinanceText["EndDate"]</dt><dd>@Selected.EndDate.ToString("D")</dd></div></dl></section>
+                <section class="accounting-period-detail-section"><h4>@FinanceText["PostingAvailability"]</h4><dl><div><dt>@FinanceText["GeneralLedger"]</dt><dd>@FinanceText[Selected.IsClosed || Selected.IsReportingLocked ? "PostingUnavailable" : "PostingAvailable"]</dd></div><div><dt>@FinanceText["Reporting"]</dt><dd>@FinanceText[Selected.IsReportingLocked ? "ReportingLocked" : "ReportingAvailable"]</dd></div></dl></section>
+                <section class="accounting-period-detail-section"><h4>@FinanceText["Validation"]</h4><dl><div><dt>@FinanceText["LastCloseReview"]</dt><dd>@FormatTimestamp(Selected.LastCloseValidatedUtc)</dd></div><div><dt>@FinanceText["PeriodSequence"]</dt><dd>@FinanceText["InSequence"]</dd></div></dl></section>
+                <section class="accounting-period-detail-section"><h4>@FinanceText["CloseAndLockHistory"]</h4><dl><div><dt>@FinanceText["ClosedOn"]</dt><dd>@FormatTimestamp(Selected.ClosedUtc)</dd></div><div><dt>@FinanceText["ReportingLockedOn"]</dt><dd>@FormatTimestamp(Selected.ReportingLockedUtc)</dd></div></dl></section>
+                <div class="accounting-notice accounting-notice--info" role="note"><span aria-hidden="true">i</span><p>@FinanceText["PeriodCloseLaterHelp"]</p></div>
+                <div class="accounting-laura-mini"><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraPeriodAdviceTitle"]</strong><p>@FinanceText["LauraPeriodAdvice"]</p></div></div>
+            }
+        </aside>
+    </div>
+</FinancePageLayout>

@@ -54,6 +54,15 @@ public static class FinanceRoutes
     public const string EmailProviderSettings = "/system/admin/integrations/email-providers";
     public const string SandboxAdmin = "/simulation-lab";
     public const string Settings = "/finance/settings";
+    public const string AccountingSetup = "/finance/accounting/setup";
+    public const string AccountingAccounts = "/finance/accounting/accounts";
+    public const string AccountingPeriods = "/finance/accounting/periods";
+    public const string AccountingJournal = "/finance/accounting/journals";
+    public const string AccountingReconciliation = "/finance/accounting/reconciliation";
+    public const string AccountingReports = "/finance/accounting/reports";
+    public const string AccountingConnections = "/finance/accounting/connections";
+    public const string AccountingManualJournal = "/finance/accounting/journals/new";
+    public const string AccountingManualJournalDraft = "/finance/accounting/journals/drafts/{DraftId:guid}";
     public const string EmailSettings = "/finance/settings/email-settings";
     public const string FinanceIntegrationSettings = "/finance/settings/integrations";
     public const string AlertDetail = "/finance/alerts/{AlertId:guid}";
@@ -78,6 +87,7 @@ public static class FinanceRoutes
             new("Subscriptions", SupplierSubscriptions, "Track recurring supplier agreements and bill matching."),
             new("Payments", Payments, "Track money coming in and going out."),
             new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity]),
+            new("Accounting", AccountingSetup, "Set up and administer native accounting.", ActivePathPrefixes: [AccountingSetup, AccountingAccounts, AccountingPeriods, AccountingJournal, AccountingReconciliation, AccountingReports, AccountingConnections]),
             new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies])
         ];
 
@@ -132,6 +142,9 @@ public static class FinanceRoutes
 
     public static string BuildAlertDetailPath(Guid alertId, Guid? companyId) =>
         WithCompanyContext($"/finance/alerts/{alertId:D}", companyId);
+
+    public static string BuildManualJournalDraftPath(Guid draftId, Guid? companyId) =>
+        WithCompanyContext($"/finance/accounting/journals/drafts/{draftId:D}", companyId);
 
     public static string BuildFinanceIntegrationSettingsPath(string providerKey, Guid? companyId) =>
         WithCompanyContext($"/finance/settings/integrations/{Uri.EscapeDataString(providerKey)}", companyId);

@@ -448,31 +448,31 @@ public sealed class FinancePeriodReportingIntegrationTests : IDisposable
             new LedgerEntryLine(Guid.NewGuid(), companyId, periodStartRevenue.Id, context.CashAccountId, 200m, 0m, "USD", "Boundary cash receipt"),
             new LedgerEntryLine(Guid.NewGuid(), companyId, periodStartRevenue.Id, context.RevenueAccountId, 0m, 200m, "USD", "Boundary revenue"));
 
-        var postedRevenue = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0001", new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Posted January revenue");
+        var postedRevenue = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0002", new DateTime(2026, 1, 10, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Posted January revenue");
         dbContext.LedgerEntries.Add(postedRevenue);
         dbContext.LedgerEntryLines.AddRange(
             new LedgerEntryLine(Guid.NewGuid(), companyId, postedRevenue.Id, context.CashAccountId, 1200m, 0m, "USD", "Cash receipt"),
             new LedgerEntryLine(Guid.NewGuid(), companyId, postedRevenue.Id, context.RevenueAccountId, 0m, 1200m, "USD", "Revenue"));
 
-        var postedExpense = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0002", new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Posted January expense");
+        var postedExpense = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0003", new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Posted January expense");
         dbContext.LedgerEntries.Add(postedExpense);
         dbContext.LedgerEntryLines.AddRange(
             new LedgerEntryLine(Guid.NewGuid(), companyId, postedExpense.Id, context.ExpenseAccountId, 300m, 0m, "USD", "Expense"),
             new LedgerEntryLine(Guid.NewGuid(), companyId, postedExpense.Id, context.CashAccountId, 0m, 300m, "USD", "Cash disbursement"));
 
-        var draftRevenue = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0003", new DateTime(2026, 1, 21, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Draft, "Draft revenue");
+        var draftRevenue = new LedgerEntry(Guid.NewGuid(), companyId, januaryPeriodId, "JE-0004", new DateTime(2026, 1, 21, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Draft, "Draft revenue");
         dbContext.LedgerEntries.Add(draftRevenue);
         dbContext.LedgerEntryLines.AddRange(
             new LedgerEntryLine(Guid.NewGuid(), companyId, draftRevenue.Id, context.CashAccountId, 999m, 0m, "USD"),
             new LedgerEntryLine(Guid.NewGuid(), companyId, draftRevenue.Id, context.RevenueAccountId, 0m, 999m, "USD"));
 
-        var periodBoundaryRevenue = new LedgerEntry(Guid.NewGuid(), companyId, februaryPeriodId, "JE-0004", new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Revenue at next period boundary");
+        var periodBoundaryRevenue = new LedgerEntry(Guid.NewGuid(), companyId, februaryPeriodId, "JE-0005", new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "Revenue at next period boundary");
         dbContext.LedgerEntries.Add(periodBoundaryRevenue);
         dbContext.LedgerEntryLines.AddRange(
             new LedgerEntryLine(Guid.NewGuid(), companyId, periodBoundaryRevenue.Id, context.CashAccountId, 650m, 0m, "USD"),
             new LedgerEntryLine(Guid.NewGuid(), companyId, periodBoundaryRevenue.Id, context.RevenueAccountId, 0m, 650m, "USD"));
 
-        var outOfPeriodRevenue = new LedgerEntry(Guid.NewGuid(), companyId, februaryPeriodId, "JE-0004", new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "February revenue");
+        var outOfPeriodRevenue = new LedgerEntry(Guid.NewGuid(), companyId, februaryPeriodId, "JE-0006", new DateTime(2026, 2, 5, 0, 0, 0, DateTimeKind.Utc), LedgerEntryStatuses.Posted, "February revenue");
         dbContext.LedgerEntries.Add(outOfPeriodRevenue);
         dbContext.LedgerEntryLines.AddRange(
             new LedgerEntryLine(Guid.NewGuid(), companyId, outOfPeriodRevenue.Id, context.CashAccountId, 777m, 0m, "USD"),

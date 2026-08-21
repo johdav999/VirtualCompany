@@ -181,6 +181,8 @@ public sealed partial class InternalFinanceController
                 workflowContext,
                 relatedApprovalId,
                 cancellationToken);
+            var accounting = await _customerInvoiceAccountingService.GetAsync(
+                new GetCustomerInvoiceAccountingQuery(companyId, invoiceId), cancellationToken);
 
             return Ok(new FinanceInvoiceDetailResponse(
                 detail.Id,
@@ -202,7 +204,8 @@ public sealed partial class InternalFinanceController
                 detail.SettlementStatus,
                 detail.DueStatus,
                 detail.DocumentKind,
-                detail.ProviderStatus));
+                detail.ProviderStatus,
+                accounting));
         }
         catch (UnauthorizedAccessException)
         {

@@ -21,22 +21,20 @@ public sealed class SalesOperationsService : ISalesOperationsService
     private readonly IMailboxProviderRegistry _mailboxProviderRegistry;
     private readonly IMailboxOAuthAccessTokenLeaseService _tokenLeaseService;
     private readonly ICompanyOutboxEnqueuer _outbox;
-    private readonly IFinanceIntegrationWriteCommandService _financeWriteCommands;
+    private readonly IFinanceAccountingActionService _financeAccountingActions;
     private readonly IApprovalRequestService _approvalRequestService;
-    private readonly IFortnoxOutboundActionExecutor _fortnoxOutboundActionExecutor;
     private readonly ISalesAutomationPolicyEvaluator _policyEvaluator;
     private readonly TimeProvider _timeProvider;
     private readonly ICustomerMemoryService _customerMemory;
 
-    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IMailboxOAuthAccessTokenLeaseService tokenLeaseService, ICompanyOutboxEnqueuer outbox, IFinanceIntegrationWriteCommandService financeWriteCommands, IApprovalRequestService approvalRequestService, IFortnoxOutboundActionExecutor fortnoxOutboundActionExecutor, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider, ICustomerMemoryService customerMemory)
+    public SalesOperationsService(VirtualCompanyDbContext dbContext, IMailboxProviderRegistry mailboxProviderRegistry, IMailboxOAuthAccessTokenLeaseService tokenLeaseService, ICompanyOutboxEnqueuer outbox, IFinanceAccountingActionService financeAccountingActions, IApprovalRequestService approvalRequestService, ISalesAutomationPolicyEvaluator policyEvaluator, TimeProvider timeProvider, ICustomerMemoryService customerMemory)
     {
         _dbContext = dbContext;
         _mailboxProviderRegistry = mailboxProviderRegistry;
         _tokenLeaseService = tokenLeaseService;
         _outbox = outbox;
-        _financeWriteCommands = financeWriteCommands;
+        _financeAccountingActions = financeAccountingActions;
         _approvalRequestService = approvalRequestService;
-        _fortnoxOutboundActionExecutor = fortnoxOutboundActionExecutor;
         _policyEvaluator = policyEvaluator;
         _timeProvider = timeProvider;
         _customerMemory = customerMemory;
@@ -306,7 +304,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
         deal.MarkWon();
         _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "won", BuildSummary(request.Note, "Deal marked won."), DateTime.UtcNow, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
-        await EnsureFinanceHandoffAsync(companyId, deal, cancellationToken);
+        await EnsureFinanceHandoffAsync(companyId, userId, deal, cancellationToken);
         AddAudit(companyId, userId, AuditEventActions.SalesDealWon, "deal", deal.Id, AuditEventOutcomes.Succeeded, request.Note ?? "The deal was won.");
         EnqueueSalesEvent(companyId, CompanyOutboxTopics.SalesDealWon, "deal", deal.Id, new { dealId = deal.Id, deal.Title, deal.Amount, deal.Currency });
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -505,7 +503,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         handoff.MarkExecutionStarted();
-        AddAudit(companyId, userId, "sales.finance_handoff.execution_started", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Started, "Laura started creating the approved Fortnox draft.");
+        AddAudit(companyId, userId, "sales.finance_handoff.execution_started", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Started, "Laura started the approved Finance document action.");
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         var decision = await _approvalRequestService.DecideAsync(
@@ -543,10 +541,10 @@ public sealed class SalesOperationsService : ISalesOperationsService
         }
 
         handoff.MarkRetrying();
-        AddAudit(companyId, userId, "sales.finance_handoff.retried", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Started, "Laura retried the approved Fortnox draft creation with the original idempotency key.");
+        AddAudit(companyId, userId, "sales.finance_handoff.retried", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Started, "Laura retried the approved Finance document action with the original idempotency key.");
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        await _fortnoxOutboundActionExecutor.ExecuteApprovedAsync(companyId, writeRequestId, cancellationToken);
+        await _financeAccountingActions.RetryApprovedAsync(companyId, writeRequestId, cancellationToken);
         await RefreshFinanceHandoffFromWriteCommandAsync(companyId, userId, handoff, isRetry: true, cancellationToken);
         return MapFinanceHandoff(handoff);
     }
@@ -742,7 +740,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
         return recommendation;
     }
 
-    private async Task EnsureFinanceHandoffAsync(Guid companyId, Deal deal, CancellationToken cancellationToken)
+    private async Task EnsureFinanceHandoffAsync(Guid companyId, Guid userId, Deal deal, CancellationToken cancellationToken)
     {
         var dedupeKey = $"sales-finance-handoff:{companyId:N}:{deal.Id:N}";
         var existing = await _dbContext.SalesFinanceHandoffs.IgnoreQueryFilters()
@@ -759,7 +757,7 @@ public sealed class SalesOperationsService : ISalesOperationsService
             Guid.NewGuid(),
             companyId,
             deal.Id,
-            $"Create a draft {documentType} in Fortnox for {deal.Title}. Approval is required before finance documents are created.",
+            $"Ask Finance to prepare a {documentType} for {deal.Title} using the authoritative accounting workflow.",
             documentType,
             dedupeKey,
             idempotencyKey);
@@ -767,62 +765,38 @@ public sealed class SalesOperationsService : ISalesOperationsService
         _dbContext.SalesFinanceHandoffs.Add(handoff);
         await _dbContext.SaveChangesAsync(cancellationToken);
 
-        var writeResult = await _financeWriteCommands.RequestApprovalAsync(
-            BuildFinanceWriteCommand(companyId, deal, handoff, writeRequestId),
-            cancellationToken);
+        var action = await _financeAccountingActions.RequestDocumentAsync(new RequestFinanceDocumentActionCommand(
+            companyId,
+            "sales_deal",
+            deal.Id.ToString("D"),
+            deal.UpdatedUtc.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture),
+            documentType,
+            DateOnly.FromDateTime(_timeProvider.GetUtcNow().UtcDateTime),
+            deal.CustomerCompany?.Name ?? deal.Title,
+            deal.Title,
+            deal.Amount,
+            deal.Currency,
+            deal.PrimaryContact?.FullName,
+            writeRequestId,
+            userId,
+            handoff.IdempotencyKey), cancellationToken);
 
-        if (writeResult.ApprovalId is Guid approvalId)
+        if (action.ApprovalId is Guid approvalId)
         {
+            handoff.SetDestination(action.DestinationKey);
             handoff.AttachApproval(approvalId, writeRequestId);
         }
-
-        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "finance_handoff", "Laura prepared a Fortnox draft request. Approval is required before anything is created.", _timeProvider.GetUtcNow().UtcDateTime, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
-        AddAudit(companyId, deal.CompanyId, "sales.finance_handoff.requested", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Laura requested approval to create a Fortnox draft for the won deal.", new Dictionary<string, string?> { ["documentType"] = handoff.DocumentType, ["approvalId"] = handoff.ApprovalId?.ToString("D"), ["writeRequestId"] = handoff.WriteRequestId?.ToString("D") });
-        AddAudit(companyId, deal.CompanyId, "sales.finance_handoff.approval_requested", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Finance approval is required before Fortnox draft creation.", new Dictionary<string, string?> { ["approvalId"] = handoff.ApprovalId?.ToString("D") });
-    }
-
-    private static FinanceIntegrationWriteCommand BuildFinanceWriteCommand(Guid companyId, Deal deal, SalesFinanceHandoff handoff, Guid writeRequestId)
-    {
-        var path = handoff.DocumentType == "quote" ? "offers" : "invoices";
-        var payload = BuildFortnoxDraftPayload(deal, handoff);
-        return new FinanceIntegrationWriteCommand(
-            FinanceIntegrationProviderKeys.Fortnox,
-            companyId,
-            ConnectionId: null,
-            ActorUserId: null,
-            FinanceIntegrationWriteCommandTypes.InvoiceExport,
-            "POST",
-            path,
-            deal.CustomerCompany?.Name ?? deal.Title,
-            FortnoxWritePayloadSanitizer.CreateSummary(payload),
-            FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
-            new FinanceIntegrationWritePayload(FortnoxWritePayloadSanitizer.CreateSanitizedJson(payload), "SalesFinanceHandoffDraft"),
-            writeRequestId,
-            handoff.IdempotencyKey);
-    }
-
-    private static JsonObject BuildFortnoxDraftPayload(Deal deal, SalesFinanceHandoff handoff)
-    {
-        var line = new JsonObject
+        else
         {
-            ["Description"] = deal.Title,
-            ["DeliveredQuantity"] = 1,
-            ["Price"] = deal.Amount,
-            ["VAT"] = 0
-        };
+            handoff.MarkFinanceReviewRequired(action.DestinationKey, action.Message);
+        }
 
-        var document = new JsonObject
+        _dbContext.SalesActivities.Add(new SalesActivity(Guid.NewGuid(), companyId, "finance_handoff", action.Message, _timeProvider.GetUtcNow().UtcDateTime, dealId: deal.Id, contactId: deal.PrimaryContactId, customerCompanyId: deal.CustomerCompanyId));
+        AddAudit(companyId, userId, "sales.finance_handoff.requested", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, action.Message, new Dictionary<string, string?> { ["documentType"] = handoff.DocumentType, ["destination"] = action.DestinationKey, ["authority"] = action.Authority, ["approvalId"] = handoff.ApprovalId?.ToString("D"), ["writeRequestId"] = handoff.WriteRequestId?.ToString("D") });
+        if (handoff.ApprovalId.HasValue)
         {
-            ["CustomerName"] = deal.CustomerCompany?.Name ?? deal.Title,
-            ["Currency"] = deal.Currency,
-            ["YourReference"] = deal.PrimaryContact?.FullName,
-            ["Remarks"] = $"Created from won sales deal {deal.Id:D}.",
-            ["InvoiceRows"] = new JsonArray(line)
-        };
-
-        return handoff.DocumentType == "quote"
-            ? new JsonObject { ["Offer"] = document }
-            : new JsonObject { ["Invoice"] = document };
+            AddAudit(companyId, userId, "sales.finance_handoff.approval_requested", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Finance approval is required before the external document action runs.", new Dictionary<string, string?> { ["approvalId"] = handoff.ApprovalId?.ToString("D"), ["destination"] = action.DestinationKey });
+        }
     }
 
     private async Task RefreshFinanceHandoffFromWriteCommandAsync(Guid companyId, Guid userId, SalesFinanceHandoff handoff, bool isRetry, CancellationToken cancellationToken)
@@ -847,11 +821,11 @@ public sealed class SalesOperationsService : ISalesOperationsService
             var externalId = command.ExternalId ?? command.Id.ToString("D");
             handoff.MarkCompleted(externalId, command.ExternalId);
             await EnsureFinanceExternalReferenceAsync(companyId, handoff, command, externalId, cancellationToken);
-            AddAudit(companyId, userId, isRetry ? "sales.finance_handoff.retry_succeeded" : "sales.finance_handoff.execution_succeeded", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "Fortnox accepted the approved draft finance document.", new Dictionary<string, string?> { ["externalDocumentId"] = handoff.ExternalDocumentId, ["externalDocumentNumber"] = handoff.ExternalDocumentNumber });
+            AddAudit(companyId, userId, isRetry ? "sales.finance_handoff.retry_succeeded" : "sales.finance_handoff.execution_succeeded", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Succeeded, "The accounting provider accepted the approved Finance document action.", new Dictionary<string, string?> { ["externalDocumentId"] = handoff.ExternalDocumentId, ["externalDocumentNumber"] = handoff.ExternalDocumentNumber });
         }
         else if (command.Status == FinanceIntegrationWriteCommandRecordStatuses.Failed)
         {
-            handoff.MarkFailed(command.FailureCategory ?? "fortnox_write_failed", command.SafeFailureSummary ?? "Fortnox could not create the draft. You can retry this action.", command.RetrySupported);
+            handoff.MarkFailed(command.FailureCategory ?? "provider_write_failed", command.SafeFailureSummary ?? "The accounting provider could not create the document. You can retry this action.", command.RetrySupported);
             AddAudit(companyId, userId, isRetry ? "sales.finance_handoff.retry_failed" : "sales.finance_handoff.execution_failed", "sales_finance_handoff", handoff.Id, AuditEventOutcomes.Failed, handoff.FailureSummary ?? "Finance draft creation failed.", new Dictionary<string, string?> { ["errorCode"] = command.FailureCategory, ["retryable"] = command.RetrySupported.ToString() });
         }
 
@@ -860,8 +834,10 @@ public sealed class SalesOperationsService : ISalesOperationsService
 
     private async Task EnsureFinanceExternalReferenceAsync(Guid companyId, SalesFinanceHandoff handoff, FinanceIntegrationWriteCommandRecord command, string externalId, CancellationToken cancellationToken)
     {
+        var providerKey = handoff.ExternalSystem;
+        if (string.Equals(providerKey, "virtual_company", StringComparison.OrdinalIgnoreCase)) return;
         var connectionId = command.ConnectionId ?? await _dbContext.FinanceIntegrationConnections.AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox && x.Status == FinanceIntegrationConnectionStatuses.Connected)
+            .Where(x => x.CompanyId == companyId && x.ProviderKey == providerKey && x.Status == FinanceIntegrationConnectionStatuses.Connected)
             .OrderByDescending(x => x.ConnectedUtc ?? x.UpdatedUtc)
             .Select(x => (Guid?)x.Id)
             .FirstOrDefaultAsync(cancellationToken);
@@ -872,13 +848,13 @@ public sealed class SalesOperationsService : ISalesOperationsService
         }
 
         var exists = await _dbContext.FinanceExternalReferences.AsNoTracking()
-            .AnyAsync(x => x.CompanyId == companyId && x.ProviderKey == FinanceIntegrationProviderKeys.Fortnox && x.EntityType == "sales_finance_handoff" && x.InternalRecordId == handoff.Id, cancellationToken);
+            .AnyAsync(x => x.CompanyId == companyId && x.ProviderKey == providerKey && x.EntityType == "sales_finance_handoff" && x.InternalRecordId == handoff.Id, cancellationToken);
         if (exists)
         {
             return;
         }
 
-        _dbContext.FinanceExternalReferences.Add(new FinanceExternalReference(Guid.NewGuid(), companyId, resolvedConnectionId, FinanceIntegrationProviderKeys.Fortnox, "sales_finance_handoff", handoff.Id, externalId, handoff.ExternalDocumentNumber, DateTime.UtcNow, DateTime.UtcNow));
+        _dbContext.FinanceExternalReferences.Add(new FinanceExternalReference(Guid.NewGuid(), companyId, resolvedConnectionId, providerKey, "sales_finance_handoff", handoff.Id, externalId, handoff.ExternalDocumentNumber, DateTime.UtcNow, DateTime.UtcNow));
     }
 
     private static string ResolveTemperature(Lead lead)

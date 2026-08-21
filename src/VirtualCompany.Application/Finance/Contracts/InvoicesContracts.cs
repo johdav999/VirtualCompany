@@ -80,7 +80,10 @@ public sealed record FinanceInvoiceDto(
     string DocumentKind = FinanceDocumentKinds.Invoice,
     string? ProviderStatus = null,
     string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
-    FinanceTransactionPaymentContextDto? PaymentContext = null);
+    FinanceTransactionPaymentContextDto? PaymentContext = null,
+    string AccountingStatus = CustomerInvoiceAccountingStatuses.NotReady,
+    string AccountingStatusLabel = "Not ready",
+    Guid? AccountingLedgerEntryId = null);
 
 public sealed record FinanceInvoiceWorkflowContextDto(
     Guid? WorkflowInstanceId,
@@ -120,7 +123,8 @@ public sealed record FinanceInvoiceDetailDto(
     string? ProviderStatus = null,
     string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
     FinanceTransactionPaymentContextDto? PaymentContext = null,
-    IReadOnlyList<FinanceInvoiceRelatedTransactionDto>? RelatedTransactions = null);
+    IReadOnlyList<FinanceInvoiceRelatedTransactionDto>? RelatedTransactions = null,
+    CustomerInvoiceAccountingStateDto? Accounting = null);
 
 public sealed record FinanceInvoiceRelatedTransactionDto(
     Guid Id,

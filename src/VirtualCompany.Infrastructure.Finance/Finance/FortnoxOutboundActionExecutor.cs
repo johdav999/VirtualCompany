@@ -13,6 +13,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
     private readonly IFortnoxApiClient _fortnoxApiClient;
     private readonly IFinanceIntegrationWriteApprovalService _writeApprovalService;
     private readonly FinanceBillFortnoxRegistrationCompletionService _billCompletionService;
+    private readonly IAccountingAuthorityPolicy _authorityPolicy;
+    private readonly IAccountingProviderExportExecutionTracker _exportTracker;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FortnoxOutboundActionExecutor> _logger;
 
@@ -21,6 +23,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         IFortnoxApiClient fortnoxApiClient,
         IFinanceIntegrationWriteApprovalService writeApprovalService,
         FinanceBillFortnoxRegistrationCompletionService billCompletionService,
+        IAccountingAuthorityPolicy authorityPolicy,
+        IAccountingProviderExportExecutionTracker exportTracker,
         TimeProvider timeProvider,
         ILogger<FortnoxOutboundActionExecutor> logger)
     {
@@ -28,6 +32,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         _fortnoxApiClient = fortnoxApiClient;
         _writeApprovalService = writeApprovalService;
         _billCompletionService = billCompletionService;
+        _authorityPolicy = authorityPolicy;
+        _exportTracker = exportTracker;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -131,7 +137,44 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             command.PayloadSummary,
             command.PayloadHash,
             new FinanceIntegrationWritePayload(command.SanitizedPayloadJson),
-            command.Id);
+            command.Id,
+            AccountingDate: command.AccountingDate,
+            AuthorityOperation: command.AuthorityOperation);
+        try
+        {
+            await _exportTracker.EnsureExecutionAllowedAsync(companyId, writeRequestId, cancellationToken);
+            var isTrackedCommittedExport = await _dbContext.AccountingProviderExports
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.WriteRequestId == writeRequestId, cancellationToken);
+            if (!isTrackedCommittedExport && IsProviderAuthoritativeAccountingAction(command.CommandType))
+            {
+                var authority = await _authorityPolicy.EvaluateAsync(new(
+                    companyId,
+                    command.AccountingDate ?? DateOnly.FromDateTime(_timeProvider.GetUtcNow().UtcDateTime),
+                    command.AuthorityOperation ?? AccountingAuthorityOperationValues.ProviderAuthoritativeWrite,
+                    FinanceIntegrationProviderKeys.Fortnox), cancellationToken);
+                if (!authority.IsAllowed && authority.ReasonCode != AccountingAuthorityReasonCodes.AuthorityNotConfigured)
+                {
+                    throw new AccountingAuthorityException(
+                        authority.ReasonCode ?? AccountingAuthorityReasonCodes.ProviderPostingBlocked,
+                        authority.Explanation,
+                        true);
+                }
+
+                if (command.AuthorityPeriodId.HasValue && command.AuthorityPeriodId != authority.AuthorityPeriodId)
+                {
+                    throw new AccountingAuthorityException(
+                        AccountingAuthorityReasonCodes.PreviewStale,
+                        "The accounting authority changed after this provider action was approved. Request a new approval.",
+                        true);
+                }
+            }
+        }
+        catch (AccountingAuthorityException exception)
+        {
+            throw new FortnoxApiException(exception.Message, null, "accounting_authority");
+        }
         await WriteAuditAsync(command, "write_execution_started", FinanceIntegrationAuditOutcomes.Succeeded, "Approved accounting-system action is being sent to Fortnox.", cancellationToken);
         var payload = ParsePayload(command.SanitizedPayloadJson);
         var context = new FortnoxRequestContext(companyId, activeConnection.Id, command.CorrelationId, approvalId, command.ActorUserId, command.Id, command.RetrySupported);
@@ -145,8 +188,10 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             command.Path,
             command.PayloadHash);
 
+        var providerAcceptedRequest = false;
         try
         {
+            await _exportTracker.MarkExecutionStartedAsync(companyId, writeRequestId, cancellationToken);
             JsonNode? response = command.HttpMethod switch
             {
                 "POST" => await _fortnoxApiClient.PostAsync<JsonNode?, JsonNode?>(context, command.Path, payload, cancellationToken),
@@ -154,8 +199,16 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 "DELETE" => await ExecuteDeleteAsync(context, command.Path, cancellationToken),
                 _ => throw new FortnoxApiException("This Fortnox action type is not supported for execution.", null, "unsupported_action")
             };
+            providerAcceptedRequest = true;
 
             await _writeApprovalService.RecordExecutionSucceededAsync(approvalCheck, response, cancellationToken);
+            var commandAfterSuccess = await ReloadAsync(companyId, writeRequestId, cancellationToken);
+            await _exportTracker.MarkExecutionSucceededAsync(
+                companyId,
+                writeRequestId,
+                commandAfterSuccess.ExternalId,
+                commandAfterSuccess.SafeResponseSummary ?? "The provider accepted the committed journal export.",
+                cancellationToken);
             await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             await _billCompletionService.CompleteAsync(refreshed, cancellationToken);
@@ -182,6 +235,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 command.Path,
                 safeSummary);
             await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
+            await _exportTracker.MarkExecutionFailedAsync(
+                companyId, writeRequestId, exception, providerAcceptedRequest, cancellationToken);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             return ToResult(refreshed, safeSummary, executed: false);
@@ -198,11 +253,20 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 command.HttpMethod,
                 command.Path);
             await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
+            await _exportTracker.MarkExecutionFailedAsync(
+                companyId, writeRequestId, exception, providerAcceptedRequest, cancellationToken);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             return ToResult(refreshed, safeSummary, executed: false);
         }
     }
+
+    private static bool IsProviderAuthoritativeAccountingAction(string commandType) =>
+        FinanceIntegrationWriteCommandTypes.Normalize(commandType) is
+            FinanceIntegrationWriteCommandTypes.InvoiceExport or
+            FinanceIntegrationWriteCommandTypes.Payment or
+            FinanceIntegrationWriteCommandTypes.VoucherCreate or
+            FinanceIntegrationWriteCommandTypes.AccountingRecord;
 
     private async Task<JsonNode?> ExecuteDeleteAsync(FortnoxRequestContext context, string path, CancellationToken cancellationToken)
     {

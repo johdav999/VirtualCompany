@@ -83,6 +83,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{ObservabilityOptions.SectionName}:Redis:ConnectionString"] = "",
                 [$"{FinanceSeedWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{FinanceSeedBackfillWorkerOptions.SectionName}:Enabled"] = "false",
+                [$"{AccountingMigrationWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{FinanceApprovalTaskBackfillWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{KnowledgeEmbeddingOptions.SectionName}:Dimensions"] = "256",
                 [$"{ReportingPeriodRegenerationWorkerOptions.SectionName}:Enabled"] = "false",

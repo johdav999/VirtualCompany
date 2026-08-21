@@ -26,18 +26,18 @@ public sealed class SupportRefundFinanceService : ISupportRefundFinanceService
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAuditEventWriter _audit;
     private readonly TimeProvider _timeProvider;
-    private readonly IFinanceCustomerInvoiceFortnoxActionService? _customerInvoiceActions;
+    private readonly IFinanceAccountingActionService? _financeActions;
 
     public SupportRefundFinanceService(
         VirtualCompanyDbContext dbContext,
         IAuditEventWriter audit,
         TimeProvider timeProvider,
-        IFinanceCustomerInvoiceFortnoxActionService? customerInvoiceActions = null)
+        IFinanceAccountingActionService? financeActions = null)
     {
         _dbContext = dbContext;
         _audit = audit;
         _timeProvider = timeProvider;
-        _customerInvoiceActions = customerInvoiceActions;
+        _financeActions = financeActions;
     }
 
     public async Task<SupportRefundFinanceActionResult> CreateApprovedActionAsync(Guid companyId, Guid refundRequestId, CancellationToken cancellationToken)
@@ -158,12 +158,26 @@ public sealed class SupportRefundFinanceService : ISupportRefundFinanceService
             throw new InvalidOperationException("Create the internal customer credit action before requesting provider execution.");
         }
 
-        var customerInvoiceActions = _customerInvoiceActions
+        var financeActions = _financeActions
             ?? throw new InvalidOperationException("Customer credit provider execution is not configured.");
-        var state = await customerInvoiceActions.RequestExportAsync(
-            new RequestCustomerInvoiceFortnoxExportCommand(companyId, creditActionId, actorUserId, actorDisplayName),
+        var creditAction = await _dbContext.FinanceInvoices.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == creditActionId, cancellationToken)
+            ?? throw new InvalidOperationException("The internal customer credit action was not found.");
+        var writeRequestId = FinanceIntegrationWriteIdentity.CustomerInvoice("create", creditActionId, null);
+        var state = await financeActions.RequestCustomerDocumentExportAsync(
+            new RequestFinanceCustomerDocumentExportCommand(
+                companyId,
+                creditActionId,
+                DateOnly.FromDateTime(creditAction.IssuedUtc),
+                writeRequestId,
+                actorUserId,
+                actorDisplayName,
+                $"support-refund:{refund.Id:N}:customer-credit"),
             cancellationToken);
-        refund.MarkPendingFinanceApproval(state.CreateWriteRequestId, state.CreateApprovalId);
+        if (state.Status != FinanceAccountingActionStatuses.FinanceReviewRequired)
+        {
+            refund.MarkPendingFinanceApproval(state.WriteRequestId, state.ApprovalId);
+        }
         await _audit.WriteAsync(new AuditEventWriteRequest(
             companyId,
             actorUserId.HasValue ? AuditActorTypes.Human : AuditActorTypes.System,
@@ -173,12 +187,14 @@ public sealed class SupportRefundFinanceService : ISupportRefundFinanceService
             refund.Id.ToString("D"),
             AuditEventOutcomes.Pending,
             "Customer credit is waiting for accounting-system approval.",
-            ["support", "finance", "approvals", "fortnox"],
+            ["support", "finance", "approvals"],
             Metadata: new Dictionary<string, string?>
             {
                 ["financeActionReferenceId"] = creditActionId.ToString("D"),
-                ["writeRequestId"] = state.CreateWriteRequestId?.ToString("D"),
-                ["approvalRequestId"] = state.CreateApprovalId?.ToString("D")
+                ["writeRequestId"] = state.WriteRequestId.ToString("D"),
+                ["approvalRequestId"] = state.ApprovalId?.ToString("D"),
+                ["destination"] = state.DestinationName,
+                ["authority"] = state.Authority
             }), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return SupportCaseService.MapRefund(refund);
@@ -213,7 +229,7 @@ public sealed class SupportRefundFinanceService : ISupportRefundFinanceService
                 refund.Id.ToString("D"),
                 write.Status == FinanceIntegrationWriteCommandRecordStatuses.Executed ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Pending,
                 BuildSafeExecutionSummary(refund.Status),
-                ["support", "finance", "fortnox"],
+                ["support", "finance"],
                 Metadata: new Dictionary<string, string?>
                 {
                     ["financeActionReferenceId"] = financeActionReferenceId.ToString("D"),

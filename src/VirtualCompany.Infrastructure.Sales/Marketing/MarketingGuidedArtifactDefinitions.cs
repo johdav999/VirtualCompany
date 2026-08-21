@@ -170,6 +170,95 @@ public sealed class MarketingPlanGuidedArtifactDefinition(
     public Task EnsureEligibleAsync(Guid companyId, Guid agentId, CancellationToken ct) =>
         MarketingStrategyGuidedArtifactDefinition.EnsureCapability(capabilities, companyId, agentId, AgentCapabilityIds.MarketingPlanning, ct);
 
+    public async Task<string> BuildCompanyReferenceContextAsync(Guid companyId, Guid agentId, CancellationToken ct)
+    {
+        var strategies = (await strategyService.ListStrategiesAsync(companyId, ct))
+            .OrderByDescending(x => x.UpdatedUtc)
+            .ToArray();
+        var segments = (await strategyService.ListSegmentsAsync(companyId, ct))
+            .OrderBy(x => x.Name, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var plans = await marketing.ListPlanReferencesAsync(companyId, ct);
+
+        var strategyItems = BuildBoundedArray(strategies, 10_000, strategy => new
+        {
+            artifact_type = "marketing_strategy",
+            id = strategy.Id,
+            title = strategy.Title,
+            current_version = strategy.Version,
+            status = strategy.Status,
+            valid_from = strategy.ValidFromUtc.ToString("yyyy-MM-dd"),
+            valid_to = strategy.ValidToUtc.ToString("yyyy-MM-dd"),
+            summary = ReferenceText(strategy.Summary, 900),
+            business_context = ReferenceText(strategy.BusinessContext, 900),
+            sections_json = ReferenceText(strategy.SectionsJson, 2_500),
+            evidence_references_json = ReferenceText(strategy.EvidenceReferencesJson, 800),
+            missing_evidence_json = ReferenceText(strategy.MissingEvidenceJson, 800),
+            linked_segment_version_ids = strategy.SegmentVersionIds
+        });
+        var segmentItems = BuildBoundedArray(segments, 10_000, segment => new
+        {
+            artifact_type = "marketing_segmentation",
+            id = segment.Id,
+            name = segment.Name,
+            archived = segment.IsArchived,
+            description = ReferenceText(segment.Description, 700),
+            versions = segment.Versions.OrderByDescending(x => x.VersionNumber).Take(5).Select(version => new
+            {
+                id = version.Id,
+                version = version.VersionNumber,
+                status = version.Status,
+                criteria_json = ReferenceText(version.CriteriaJson, 500),
+                needs_json = ReferenceText(version.NeedsJson, 700),
+                behaviors_json = ReferenceText(version.BehaviorsJson, 500),
+                channels_json = ReferenceText(version.ChannelsJson, 400),
+                pricing_json = ReferenceText(version.PricingJson, 400),
+                size_low = version.SizeLow,
+                size_high = version.SizeHigh,
+                size_method = version.SizeMethod,
+                confidence = version.Confidence,
+                economics_json = ReferenceText(version.EconomicsJson, 500),
+                evidence_json = ReferenceText(version.EvidenceJson, 600),
+                target_rationale = ReferenceText(version.TargetRationale, 600)
+            })
+        });
+        var planItems = BuildBoundedArray(plans, 7_000, plan => new
+        {
+            artifact_type = "marketing_plan",
+            id = plan.Id,
+            name = plan.Name,
+            version = plan.Version,
+            status = plan.Status,
+            strategy_title = plan.StrategyTitle,
+            strategy_version = plan.StrategyVersion,
+            starts_on = plan.StartsUtc.ToString("yyyy-MM-dd"),
+            ends_on = plan.EndsUtc.ToString("yyyy-MM-dd"),
+            summary = ReferenceText(plan.Summary, 900),
+            rationale = ReferenceText(plan.Rationale, 900),
+            planned_budget = plan.PlannedBudget,
+            budget_currency = plan.BudgetCurrency,
+            objectives = plan.Objectives.Take(8).Select(x => new { x.Id, x.Name, x.Status }),
+            audiences = plan.Segments.Take(8).Select(x => new { x.SegmentVersionId, x.SegmentVersionNumber, x.SegmentName, x.Role, x.Status }),
+            evidence_references = plan.EvidenceReferences.Take(20),
+            missing_evidence = plan.MissingEvidence.Take(20)
+        });
+
+        return new JsonObject
+        {
+            ["purpose"] = "Existing company Marketing material that may inform this plan workshop.",
+            ["governance"] = "Only a currently valid approved or active strategy and its linked approved or active audience versions may govern a new plan. Other statuses and previous plans are reference material only.",
+            ["strategy_count"] = strategies.Length,
+            ["included_strategy_count"] = strategyItems.Count,
+            ["strategies"] = strategyItems,
+            ["segmentation_artifact_count"] = segments.Length,
+            ["included_segmentation_artifact_count"] = segmentItems.Count,
+            ["segmentation"] = segmentItems,
+            ["previous_plan_count"] = plans.Count,
+            ["included_previous_plan_count"] = planItems.Count,
+            ["previous_plans"] = planItems
+        }.ToJsonString();
+    }
+
     public async Task<GuidedArtifactInitialization> InitializeAsync(Guid companyId, Guid agentId, Guid? targetId, CancellationToken ct)
     {
         if (targetId.HasValue)
@@ -339,5 +428,25 @@ public sealed class MarketingPlanGuidedArtifactDefinition(
     }
     private static DateTime MinDate(DateTime left, DateTime right) => left <= right ? left : right;
     private static DateTime MaxDate(DateTime left, DateTime right) => left >= right ? left : right;
+    private static JsonArray BuildBoundedArray<T>(IEnumerable<T> source, int characterBudget, Func<T, object> project)
+    {
+        var result = new JsonArray();
+        var used = 2;
+        foreach (var item in source)
+        {
+            var node = JsonSerializer.SerializeToNode(project(item))!;
+            var length = node.ToJsonString().Length + (result.Count == 0 ? 0 : 1);
+            if (used + length > characterBudget) break;
+            result.Add(node);
+            used += length;
+        }
+        return result;
+    }
+    private static string ReferenceText(string? value, int max)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return string.Empty;
+        var normalized = value.Trim();
+        return normalized.Length <= max ? normalized : normalized[..max] + "…";
+    }
     private static string Bound(string value, int max) => value.Length <= max ? value : value[..max];
 }

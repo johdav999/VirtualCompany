@@ -712,7 +712,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 billId.Value,
                 null,
                 "Laura",
-                ReadString(request.Payload, "providerKey") ?? FinanceIntegrationProviderKeys.Fortnox),
+                ReadString(request.Payload, "providerKey")),
             cancellationToken);
 
         return InternalToolExecutionResponse.Succeeded(
