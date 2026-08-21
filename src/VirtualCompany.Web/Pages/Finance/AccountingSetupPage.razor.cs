@@ -133,7 +133,7 @@ public partial class AccountingSetupPage : FinancePageBase
     private async Task NextStepAsync()
     {
         await ReloadPreviewAsync();
-        if (Preview?.IsValid != true)
+        if (Preview is null)
         {
             return;
         }

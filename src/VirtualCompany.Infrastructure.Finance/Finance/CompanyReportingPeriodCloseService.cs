@@ -89,7 +89,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 OccurredUtc: executedAtUtc),
             cancellationToken);
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await SavePeriodChangesAsync(cancellationToken);
         return result;
     }
 
@@ -132,7 +132,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 cancellationToken);
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await SavePeriodChangesAsync(cancellationToken);
         return MapLockState(period);
     }
 
@@ -178,7 +178,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 cancellationToken);
         }
 
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await SavePeriodChangesAsync(cancellationToken);
         return MapLockState(period);
     }
 
@@ -228,7 +228,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 ["trialBalanceChecksum"] = trialBalance.Checksum,
                 ["membershipRole"] = membership.MembershipRole.ToStorageValue()
             }, OccurredUtc: now), cancellationToken);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await SavePeriodChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return MapLockState(period);
     }
@@ -257,8 +257,23 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
             period.Id.ToString("D"), AuditEventOutcomes.Succeeded,
             $"Exceptionally reopened fiscal period '{period.Name}'. Stored snapshots and posted vouchers were preserved.",
             Metadata: new Dictionary<string, string?> { ["reason"] = reason }, OccurredUtc: now), cancellationToken);
-        await _dbContext.SaveChangesAsync(cancellationToken);
+        await SavePeriodChangesAsync(cancellationToken);
         return MapLockState(period);
+    }
+
+    private async Task SavePeriodChangesAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            throw new ReportingPeriodOperationException(
+                ReportingPeriodErrorCodes.ReportingPeriodStateChanged,
+                "The fiscal period changed",
+                "Another close or reopen action changed this fiscal period. Refresh the close review and try again.");
+        }
     }
 
     public async Task<ReportingPeriodRegenerationRequestResultDto> RegenerateStoredStatementsAsync(

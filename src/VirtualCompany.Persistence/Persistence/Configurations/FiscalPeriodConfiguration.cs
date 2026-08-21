@@ -31,6 +31,7 @@ internal sealed class FiscalPeriodConfiguration : IEntityTypeConfiguration<Fisca
         builder.Property(x => x.ClosedUtc).HasColumnName("closed_at");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.RowVersion).HasColumnName("row_version").IsRowVersion();
 
         builder.HasIndex(x => new { x.CompanyId, x.StartUtc, x.EndUtc });
         builder.HasIndex(x => new { x.CompanyId, x.IsClosed, x.IsReportingLocked });

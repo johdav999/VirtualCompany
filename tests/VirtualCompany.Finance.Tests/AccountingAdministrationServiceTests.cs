@@ -40,6 +40,48 @@ public sealed class AccountingAdministrationServiceTests
     }
 
     [Fact]
+    public async Task Complete_setup_preserves_imported_account_collisions_and_uses_safe_internal_codes()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+        fixture.Context.FinanceAccounts.AddRange(
+            ImportedAccount(fixture.CompanyId, "3000", "Försäljning inom Sverige", "revenue"),
+            ImportedAccount(fixture.CompanyId, "4000", "Inköp av handelsvaror (gruppkonto)", "expense"),
+            ImportedAccount(fixture.CompanyId, "5000", "Lokalkostnader (gruppkonto)", "expense"));
+        await fixture.Context.SaveChangesAsync();
+
+        var command = fixture.CreateSetupCommand() with { BaseCurrency = "SEK" };
+        var preview = await fixture.Service.PreviewSetupAsync(
+            new PreviewAccountingSetupQuery(
+                command.CompanyId,
+                command.BaseCurrency,
+                command.FiscalYearStart,
+                command.PolicyPackKey,
+                command.PolicyPackVersion,
+                command.ChartTemplateKey),
+            CancellationToken.None);
+
+        Assert.True(preview.IsValid);
+        Assert.Contains(preview.Accounts, account => account.Code == "VC-3000" && account.AccountClass == "Equity");
+        Assert.Contains(preview.Accounts, account => account.Code == "VC-4000" && account.AccountClass == "Income");
+        Assert.Contains(preview.Accounts, account => account.Code == "5000" && account.AccountClass == "Expense");
+        Assert.Equal(2, preview.Warnings.Count(warning => warning.ReasonCode == AccountingConfigurationReasonCodes.SetupConflict));
+
+        var completion = await fixture.Service.CompleteSetupAsync(command, CancellationToken.None);
+        var replay = await fixture.Service.CompleteSetupAsync(command, CancellationToken.None);
+
+        Assert.True(completion.SetupStatus.IsReady);
+        Assert.True(replay.WasAlreadyApplied);
+        Assert.Equal("revenue", (await fixture.Context.FinanceAccounts.SingleAsync(account => account.Code == "3000")).AccountType);
+        Assert.Equal("expense", (await fixture.Context.FinanceAccounts.SingleAsync(account => account.Code == "4000")).AccountType);
+        var compatibleExpense = await fixture.Context.FinanceAccounts.SingleAsync(account => account.Code == "5000");
+        Assert.Equal(FinanceAccountClassValues.Expense, compatibleExpense.AccountClass);
+        Assert.Equal(FinanceNormalBalanceValues.Debit, compatibleExpense.NormalBalance);
+        Assert.True(compatibleExpense.IsPostingEnabled);
+        Assert.NotNull(await fixture.Context.FinanceAccounts.SingleOrDefaultAsync(account => account.Code == "VC-3000"));
+        Assert.NotNull(await fixture.Context.FinanceAccounts.SingleOrDefaultAsync(account => account.Code == "VC-4000"));
+    }
+
+    [Fact]
     public async Task Fiscal_year_creation_completes_missing_months_and_then_replays_without_duplicates()
     {
         await using var fixture = await AdministrationFixture.CreateAsync();
@@ -94,6 +136,9 @@ public sealed class AccountingAdministrationServiceTests
     }
 
     private static DateTime ToUtc(DateOnly value) => value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
+
+    private static FinanceAccount ImportedAccount(Guid companyId, string code, string name, string accountType) =>
+        new(Guid.NewGuid(), companyId, code, name, accountType, "SEK", 0m, NowUtc.AddDays(-30));
 
     private sealed class AdministrationFixture : IAsyncDisposable
     {

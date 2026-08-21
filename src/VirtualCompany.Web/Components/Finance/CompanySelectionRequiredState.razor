@@ -1,11 +1,97 @@
-<section class="py-4">
-    <h1>@FinanceText["SelectCompany"]</h1>
-    <p class="text-body-secondary mb-3">@Message</p>
-    <a class="btn btn-primary" href="/dashboard">@FinanceText["OpenDashboard"]</a>
+@inject NavigationManager Navigation
+
+<section class="vc-page container-md mx-auto finance-company-selection" aria-labelledby="finance-company-selection-title">
+    <header class="vc-page-header finance-company-selection__header mb-4">
+        <div>
+            <span class="vc-kicker">@FinanceText["CompanySelectionKicker"]</span>
+            <h1 id="finance-company-selection-title" class="mb-2">@FinanceText["ChooseCompany"]</h1>
+            <p>@FinanceText["ChooseCompanyDescription"]</p>
+        </div>
+    </header>
+
+    @if (Companies.Count > 0)
+    {
+        <section class="vc-panel finance-company-selection__card p-4 shadow-sm"
+                 aria-labelledby="finance-company-list-title">
+            <h2 id="finance-company-list-title" class="finance-company-selection__card-title h5 mb-3">
+                @FinanceText["CompaniesYouCanAccess"]
+            </h2>
+
+            <ul class="finance-company-selection__list list-unstyled d-grid gap-3 mb-0"
+                data-testid="finance-company-selector">
+                @foreach (var company in Companies)
+                {
+                    var membershipRole = FormatMembershipRole(company.MembershipRole);
+                    <li>
+                        <a class="finance-company-selection__option d-flex align-items-center gap-3 w-100 p-3 border rounded-3 text-decoration-none"
+                           href="@BuildCompanyHref(company.CompanyId)"
+                           aria-label="@FinanceText["OpenFinanceForCompanyWithRole", company.CompanyName, membershipRole]">
+                            <span class="finance-company-selection__monogram d-inline-flex align-items-center justify-content-center flex-shrink-0 rounded-3"
+                                  aria-hidden="true">
+                                @BuildCompanyInitials(company.CompanyName)
+                            </span>
+                            <span class="finance-company-selection__copy d-grid flex-grow-1 text-start">
+                                <strong>@company.CompanyName</strong>
+                                <small>@FinanceText["CompanyFinanceAccess", membershipRole]</small>
+                            </span>
+                            <svg class="finance-company-selection__chevron flex-shrink-0"
+                                 viewBox="0 0 20 20"
+                                 width="20"
+                                 height="20"
+                                 aria-hidden="true">
+                                <path d="m7.5 4 6 6-6 6" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="2" />
+                            </svg>
+                        </a>
+                    </li>
+                }
+            </ul>
+        </section>
+
+        <div class="finance-company-selection__secondary mt-4 text-center">
+            <a class="btn btn-link text-decoration-none" href="/dashboard">
+                @FinanceText["BackToCompanyOverview"]
+            </a>
+        </div>
+    }
+    else
+    {
+        <section class="vc-panel finance-company-selection__card p-4 shadow-sm text-center">
+            <p class="text-body-secondary mb-3">@Message</p>
+            <a class="btn btn-primary" href="/dashboard">@FinanceText["OpenDashboard"]</a>
+        </section>
+    }
 </section>
 
 @code {
     [Parameter]
     public string Message { get; set; } =
         "Finance pages stay scoped to the active company. Select a company before opening the finance workspace.";
+
+    [Parameter]
+    public IReadOnlyList<FinanceCompanyOption> Companies { get; set; } = [];
+
+    private string BuildCompanyHref(Guid companyId) =>
+        Navigation.GetUriWithQueryParameter(FinanceRoutes.CompanyIdQueryKey, companyId);
+
+    private static string BuildCompanyInitials(string companyName)
+    {
+        var words = companyName.Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        if (words.Length == 0)
+        {
+            return "C";
+        }
+
+        return string.Concat(words.Take(2).Select(word => char.ToUpperInvariant(word[0])));
+    }
+
+    private string FormatMembershipRole(string? role) =>
+        role?.Trim().ToLowerInvariant() switch
+        {
+            "owner" => CommonText["MembershipOwner"],
+            "admin" or "administrator" => CommonText["MembershipAdmin"],
+            "manager" => FinanceText["MembershipManager"],
+            "finance_approver" => FinanceText["MembershipFinanceApprover"],
+            "tester" => FinanceText["MembershipFinanceTester"],
+            _ => CommonText["MembershipMember"]
+        };
 }

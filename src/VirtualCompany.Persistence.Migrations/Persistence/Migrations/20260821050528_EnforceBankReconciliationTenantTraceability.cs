@@ -34,29 +34,51 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                 name: "FK_company_bank_accounts_finance_accounts_finance_account_id",
                 table: "company_bank_accounts");
 
-            migrationBuilder.DropForeignKey(
-                name: "FK_payment_cash_ledger_links_finance_payments_payment_id",
-                table: "payment_cash_ledger_links");
+            // AddFinancePayments created this relationship with the legacy principal name
+            // "payments". Databases rebuilt from a newer model snapshot can instead have
+            // the conventional "finance_payments" name, so accept either upgrade path.
+            migrationBuilder.Sql(
+                """
+                IF EXISTS (
+                    SELECT 1
+                    FROM sys.foreign_keys
+                    WHERE [name] = N'FK_payment_cash_ledger_links_finance_payments_payment_id'
+                      AND [parent_object_id] = OBJECT_ID(N'[payment_cash_ledger_links]'))
+                BEGIN
+                    ALTER TABLE [payment_cash_ledger_links]
+                        DROP CONSTRAINT [FK_payment_cash_ledger_links_finance_payments_payment_id];
+                END
+                ELSE IF EXISTS (
+                    SELECT 1
+                    FROM sys.foreign_keys
+                    WHERE [name] = N'FK_payment_cash_ledger_links_payments_payment_id'
+                      AND [parent_object_id] = OBJECT_ID(N'[payment_cash_ledger_links]'))
+                BEGIN
+                    ALTER TABLE [payment_cash_ledger_links]
+                        DROP CONSTRAINT [FK_payment_cash_ledger_links_payments_payment_id];
+                END
+                ELSE
+                BEGIN
+                    THROW 51000, 'The payment cash-ledger payment foreign key was not found.', 1;
+                END;
+                """);
 
             migrationBuilder.DropForeignKey(
                 name: "FK_payment_cash_ledger_links_ledger_entries_ledger_entry_id",
                 table: "payment_cash_ledger_links");
 
-            migrationBuilder.DropIndex(
-                name: "IX_payment_cash_ledger_links_ledger_entry_id",
-                table: "payment_cash_ledger_links");
+            migrationBuilder.Sql(
+                "DROP INDEX IF EXISTS [IX_payment_cash_ledger_links_ledger_entry_id] ON [payment_cash_ledger_links];");
 
-            migrationBuilder.DropIndex(
-                name: "IX_payment_cash_ledger_links_payment_id",
-                table: "payment_cash_ledger_links");
+            migrationBuilder.Sql(
+                "DROP INDEX IF EXISTS [IX_payment_cash_ledger_links_payment_id] ON [payment_cash_ledger_links];");
 
             migrationBuilder.DropIndex(
                 name: "IX_company_bank_accounts_finance_account_id",
                 table: "company_bank_accounts");
 
-            migrationBuilder.DropIndex(
-                name: "IX_bank_transaction_posting_states_bank_transaction_id",
-                table: "bank_transaction_posting_states");
+            migrationBuilder.Sql(
+                "DROP INDEX IF EXISTS [IX_bank_transaction_posting_states_bank_transaction_id] ON [bank_transaction_posting_states];");
 
             migrationBuilder.DropIndex(
                 name: "IX_bank_transaction_payment_links_bank_transaction_id",

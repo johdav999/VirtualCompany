@@ -124,6 +124,7 @@ public sealed class FiscalPeriod : ICompanyOwnedEntity
     public DateTime? ClosedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
+    public byte[] RowVersion { get; private set; } = [];
     public Company Company { get; private set; } = null!;
 
     public void RecordCloseValidation(Guid? actorUserId, DateTime? validatedUtc = null)

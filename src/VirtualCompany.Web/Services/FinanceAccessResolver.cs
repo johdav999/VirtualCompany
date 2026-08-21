@@ -9,25 +9,30 @@ public enum FinanceAccessStateKind
     CompanySelectionRequired = 3
 }
 
+public sealed record FinanceCompanyOption(Guid CompanyId, string CompanyName, string MembershipRole);
+
 public sealed record FinanceAccessState(
     FinanceAccessStateKind Kind,
     Guid? CompanyId,
     string? CompanyName,
     string? MembershipRole,
-    string Message)
+    string Message,
+    IReadOnlyList<FinanceCompanyOption> AvailableCompanies)
 {
     public bool IsAllowed => Kind == FinanceAccessStateKind.Allowed;
     public bool IsForbidden => Kind == FinanceAccessStateKind.Forbidden;
     public bool RequiresCompanySelection => Kind == FinanceAccessStateKind.CompanySelectionRequired;
 
     public static FinanceAccessState Allowed(Guid companyId, string companyName, string membershipRole) =>
-        new(FinanceAccessStateKind.Allowed, companyId, companyName, membershipRole, string.Empty);
+        new(FinanceAccessStateKind.Allowed, companyId, companyName, membershipRole, string.Empty, []);
 
     public static FinanceAccessState Forbidden(string message) =>
-        new(FinanceAccessStateKind.Forbidden, null, null, null, message);
+        new(FinanceAccessStateKind.Forbidden, null, null, null, message, []);
 
-    public static FinanceAccessState CompanySelectionRequired(string message) =>
-        new(FinanceAccessStateKind.CompanySelectionRequired, null, null, null, message);
+    public static FinanceAccessState CompanySelectionRequired(
+        string message,
+        IReadOnlyList<FinanceCompanyOption> availableCompanies) =>
+        new(FinanceAccessStateKind.CompanySelectionRequired, null, null, null, message, availableCompanies);
 }
 
 public sealed class FinanceAccessResolver
@@ -89,7 +94,14 @@ public sealed class FinanceAccessResolver
         if (financeMemberships.Count > 1)
         {
             return FinanceAccessState.CompanySelectionRequired(
-                "Finance pages stay scoped to the active company. Select a company before opening the finance workspace.");
+                "Finance pages stay scoped to the active company. Select a company before opening the finance workspace.",
+                financeMemberships
+                    .OrderBy(membership => membership.CompanyName, StringComparer.OrdinalIgnoreCase)
+                    .Select(membership => new FinanceCompanyOption(
+                        membership.CompanyId,
+                        membership.CompanyName,
+                        membership.MembershipRole))
+                    .ToList());
         }
 
         return activeMemberships.Count > 0

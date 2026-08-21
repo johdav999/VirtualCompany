@@ -14,12 +14,16 @@ public sealed class AccountingAdministrationSurfaceTests
         var periodsCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingPeriodsPage.razor.css");
 
         Assert.Contains("@page \"/finance/accounting/setup\"", setup, StringComparison.Ordinal);
+        Assert.Contains("@rendermode InteractiveServer", setup, StringComparison.Ordinal);
         Assert.Contains("FinanceDataState", setup, StringComparison.Ordinal);
         Assert.Contains("role=\"alert\"", setup, StringComparison.Ordinal);
         Assert.Contains("CanManageAccounting", setup, StringComparison.Ordinal);
         Assert.Contains("IdempotencyKey", setupCode, StringComparison.Ordinal);
         Assert.Contains("CountryNeutralNotice", setup, StringComparison.Ordinal);
         Assert.Contains("LauraAccountingSetupAdvice", setup, StringComparison.Ordinal);
+        Assert.Contains("CurrentStep < Steps.Count && Preview?.Issues.Any(issue => issue.IsBlocking) == true", setup, StringComparison.Ordinal);
+        Assert.Contains("if (Preview is null)", setupCode, StringComparison.Ordinal);
+        Assert.DoesNotContain("if (Preview?.IsValid != true)", setupCode, StringComparison.Ordinal);
 
         Assert.Contains("@page \"/finance/accounting/accounts\"", accounts, StringComparison.Ordinal);
         Assert.Contains("FinanceDataState", accounts, StringComparison.Ordinal);

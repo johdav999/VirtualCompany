@@ -1,9 +1,27 @@
+using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Finance.Tests;
 
 public sealed class AccountingReportingDomainTests
 {
+    [Fact]
+    public void Fiscal_period_maps_a_concurrency_token_for_close_workflows()
+    {
+        using var dbContext = new VirtualCompanyDbContext(
+            new DbContextOptionsBuilder<VirtualCompanyDbContext>()
+                .UseSqlite("Data Source=:memory:")
+                .Options);
+
+        var rowVersion = dbContext.Model.FindEntityType(typeof(FiscalPeriod))!
+            .FindProperty(nameof(FiscalPeriod.RowVersion));
+
+        Assert.NotNull(rowVersion);
+        Assert.True(rowVersion.IsConcurrencyToken);
+        Assert.Equal(Microsoft.EntityFrameworkCore.Metadata.ValueGenerated.Never, rowVersion.ValueGenerated);
+    }
+
     [Fact]
     public void Reopening_preserves_reporting_history_fields_without_touching_vouchers()
     {

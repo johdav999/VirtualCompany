@@ -1,4 +1,5 @@
 @page "/finance/accounting/setup"
+@rendermode InteractiveServer
 @inherits FinancePageBase
 
 <PageTitle>@FinanceText["AccountingSetupTitle"]</PageTitle>
@@ -206,6 +207,20 @@
                             <div><dt>@FinanceText["TaxBehavior"]</dt><dd>@Preview?.TaxBehavior</dd></div>
                         </dl>
                     </section>
+                }
+
+                @if (CurrentStep < Steps.Count && Preview?.Issues.Any(issue => issue.IsBlocking) == true)
+                {
+                    <div class="accounting-notice accounting-notice--danger" role="alert">
+                        <span aria-hidden="true">×</span>
+                        <div>
+                            <strong>@FinanceText["SetupNeedsChanges"]</strong>
+                            @foreach (var issue in Preview.Issues.Where(issue => issue.IsBlocking))
+                            {
+                                <p>@issue.Explanation</p>
+                            }
+                        </div>
+                    </div>
                 }
 
                 <footer class="accounting-setup-actions">

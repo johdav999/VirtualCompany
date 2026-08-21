@@ -69,43 +69,22 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         ValidateCompanyId(query.CompanyId);
         var currency = NormalizeCurrency(query.BaseCurrency);
         var pack = _packResolver.Resolve(query.PolicyPackKey, query.PolicyPackVersion);
-        var chart = ResolveChart(pack, query.ChartTemplateKey);
+        var templateChart = ResolveChart(pack, query.ChartTemplateKey);
         var periods = BuildMonthlyPeriods(query.FiscalYearStart);
         var issues = new List<AccountingConfigurationIssueDto>();
         var warnings = new List<AccountingConfigurationIssueDto>();
+        var chart = await ResolveSetupChartAsync(
+            query.CompanyId,
+            currency,
+            templateChart,
+            warnings,
+            cancellationToken);
         var roleAssignments = BuildRoleAssignments(pack, chart, query.AccountRoleCodeAssignments, issues);
         var endExclusive = query.FiscalYearStart.AddYears(1);
 
         var existingConfiguration = await _dbContext.AccountingConfigurations
             .AsNoTracking()
             .AnyAsync(configuration => configuration.CompanyId == query.CompanyId, cancellationToken);
-
-        var chartCodes = chart.Accounts.Select(account => account.Code).ToArray();
-        var existingAccounts = await _dbContext.FinanceAccounts
-            .AsNoTracking()
-            .Where(account => account.CompanyId == query.CompanyId && chartCodes.Contains(account.Code))
-            .ToListAsync(cancellationToken);
-
-        foreach (var templateAccount in chart.Accounts)
-        {
-            var existing = existingAccounts.FirstOrDefault(account =>
-                string.Equals(account.Code, templateAccount.Code, StringComparison.OrdinalIgnoreCase));
-            if (existing is null)
-            {
-                continue;
-            }
-
-            var expectedClass = FinanceAccountClassValues.NormalizeOptional(templateAccount.AccountClass);
-            if (!string.Equals(existing.Currency, currency, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(existing.AccountClass, expectedClass, StringComparison.OrdinalIgnoreCase) ||
-                !string.Equals(existing.NormalBalance, FinanceNormalBalanceValues.NormalizeOptional(templateAccount.NormalBalance), StringComparison.OrdinalIgnoreCase))
-            {
-                issues.Add(new AccountingConfigurationIssueDto(
-                    AccountingConfigurationReasonCodes.SetupConflict,
-                    $"Account {templateAccount.Code} already exists with settings that do not match this setup.",
-                    templateAccount.Code));
-            }
-        }
 
         var existingPeriods = await _dbContext.FiscalPeriods
             .AsNoTracking()
@@ -167,7 +146,7 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             query.FiscalYearStart,
             endExclusive.AddDays(-1),
             pack.Definition.DisplayName,
-            chart.DisplayName,
+            templateChart.DisplayName,
             pack.Definition.IsCountryNeutral,
             pack.Definition.IsStatutoryComplianceValidated,
             pack.Definition.ComplianceNotice,
@@ -215,14 +194,26 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         }
 
         var pack = _packResolver.Resolve(command.PolicyPackKey, command.PolicyPackVersion);
-        var chart = ResolveChart(pack, command.ChartTemplateKey);
+        var templateChart = ResolveChart(pack, command.ChartTemplateKey);
+        var chart = await ResolveSetupChartAsync(
+            command.CompanyId,
+            preview.BaseCurrency,
+            templateChart,
+            warnings: null,
+            cancellationToken);
         var roleIssues = new List<AccountingConfigurationIssueDto>();
         var roleAssignments = BuildRoleAssignments(pack, chart, command.AccountRoleCodeAssignments, roleIssues);
         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
 
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
-        try
+        // SQL Server retrying execution strategies require explicit transactions to be
+        // created inside the retriable delegate. This keeps the complete setup write
+        // atomic while allowing transient SQL failures to be retried safely.
+        var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
+        return await executionStrategy.ExecuteAsync(async () =>
         {
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+            try
+            {
             var chartCodes = chart.Accounts.Select(account => account.Code).ToArray();
             var accounts = await _dbContext.FinanceAccounts
                 .Where(account => account.CompanyId == command.CompanyId && chartCodes.Contains(account.Code))
@@ -258,6 +249,20 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
                         restrictManualPosting: role?.IsControlAccount == true);
                     accounts.Add(account);
                     _dbContext.FinanceAccounts.Add(account);
+                }
+                else
+                {
+                    var role = pack.Definition.AccountRoles.FirstOrDefault(candidate =>
+                        string.Equals(candidate.Key, template.DefaultRoleKey, StringComparison.OrdinalIgnoreCase));
+                    account.ApplyAccountingSemantics(
+                        template.AccountClass,
+                        template.NormalBalance,
+                        account.EffectiveFrom ?? command.FiscalYearStart,
+                        account.EffectiveTo,
+                        isPostingEnabled: true,
+                        role?.Key,
+                        restrictManualPosting: role?.IsControlAccount == true,
+                        nowUtc);
                 }
 
                 if (!mappings.Any(mapping => mapping.FinanceAccountId == account.Id && mapping.IsActive))
@@ -365,24 +370,25 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
                 expectedPeriods.Count,
                 DefaultVoucherSeries.Count,
                 WasAlreadyApplied: false);
-        }
-        catch (Exception exception) when (exception is DbUpdateException or AccountingConfigurationException)
-        {
-            await transaction.RollbackAsync(cancellationToken);
-            _dbContext.ChangeTracker.Clear();
-            if (await MatchesCompletedSetupAsync(command, cancellationToken))
-            {
-                return await BuildCompletionAsync(command.CompanyId, wasAlreadyApplied: true, cancellationToken);
             }
-
-            if (exception is AccountingConfigurationException configurationException &&
-                configurationException.ReasonCode != AccountingConfigurationReasonCodes.ConfigurationAlreadyExists)
+            catch (Exception exception) when (exception is DbUpdateException or AccountingConfigurationException)
             {
-                throw;
-            }
+                await transaction.RollbackAsync(cancellationToken);
+                _dbContext.ChangeTracker.Clear();
+                if (await MatchesCompletedSetupAsync(command, cancellationToken))
+                {
+                    return await BuildCompletionAsync(command.CompanyId, wasAlreadyApplied: true, cancellationToken);
+                }
 
-            throw SetupConflict("Accounting setup conflicted with another change. Reload the setup preview and try again.");
-        }
+                if (exception is AccountingConfigurationException configurationException &&
+                    configurationException.ReasonCode != AccountingConfigurationReasonCodes.ConfigurationAlreadyExists)
+                {
+                    throw;
+                }
+
+                throw SetupConflict("Accounting setup conflicted with another change. Reload the setup preview and try again.");
+            }
+        });
     }
 
     public async Task<IReadOnlyList<AccountingAccountListItemDto>> GetAccountsAsync(
@@ -738,7 +744,13 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         }
 
         var pack = _packResolver.Resolve(command.PolicyPackKey, command.PolicyPackVersion);
-        var chart = ResolveChart(pack, command.ChartTemplateKey);
+        var templateChart = ResolveChart(pack, command.ChartTemplateKey);
+        var chart = await ResolveSetupChartAsync(
+            command.CompanyId,
+            NormalizeCurrency(command.BaseCurrency),
+            templateChart,
+            warnings: null,
+            cancellationToken);
         var codes = chart.Accounts.Select(account => account.Code).ToArray();
         var accountCount = await _dbContext.FinanceAccounts.CountAsync(
             account => account.CompanyId == command.CompanyId && codes.Contains(account.Code),
@@ -896,6 +908,93 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         ?? throw new AccountingConfigurationException(
             AccountingConfigurationReasonCodes.InvalidChartTemplate,
             "The selected chart template is not available for this accounting policy.");
+
+    private async Task<AccountingChartTemplateDefinition> ResolveSetupChartAsync(
+        Guid companyId,
+        string currency,
+        AccountingChartTemplateDefinition template,
+        List<AccountingConfigurationIssueDto>? warnings,
+        CancellationToken cancellationToken)
+    {
+        var existingAccounts = await _dbContext.FinanceAccounts
+            .AsNoTracking()
+            .Where(account => account.CompanyId == companyId)
+            .ToListAsync(cancellationToken);
+        var accountsByCode = existingAccounts.ToDictionary(account => account.Code, StringComparer.OrdinalIgnoreCase);
+        var resolvedAccounts = new List<AccountingChartAccountTemplate>(template.Accounts.Count);
+
+        foreach (var templateAccount in template.Accounts)
+        {
+            if (!accountsByCode.TryGetValue(templateAccount.Code, out var existing) ||
+                IsCompatibleSetupAccount(existing, templateAccount, currency))
+            {
+                resolvedAccounts.Add(templateAccount);
+                continue;
+            }
+
+            var resolvedCode = ResolveAvailableSetupCode(templateAccount, currency, accountsByCode);
+            resolvedAccounts.Add(templateAccount with { Code = resolvedCode });
+            warnings?.Add(new AccountingConfigurationIssueDto(
+                AccountingConfigurationReasonCodes.SetupConflict,
+                $"Account {templateAccount.Code} is already used by {existing.Name}. It will be preserved, and {templateAccount.Label} will use account {resolvedCode}.",
+                templateAccount.Code,
+                IsBlocking: false));
+        }
+
+        return template with { Accounts = resolvedAccounts };
+    }
+
+    private static string ResolveAvailableSetupCode(
+        AccountingChartAccountTemplate template,
+        string currency,
+        IReadOnlyDictionary<string, FinanceAccount> accountsByCode)
+    {
+        var baseCode = $"VC-{template.Code}";
+        for (var suffix = 1; ; suffix++)
+        {
+            var candidate = suffix == 1 ? baseCode : $"{baseCode}-{suffix}";
+            if (!accountsByCode.TryGetValue(candidate, out var existing) ||
+                IsCompatibleSetupAccount(existing, template, currency))
+            {
+                return candidate;
+            }
+        }
+    }
+
+    private static bool IsCompatibleSetupAccount(
+        FinanceAccount account,
+        AccountingChartAccountTemplate template,
+        string currency)
+    {
+        if (!string.Equals(account.Currency, currency, StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        var expectedClass = FinanceAccountClassValues.NormalizeOptional(template.AccountClass);
+        var existingClass = FinanceAccountClassValues.NormalizeOptional(account.AccountClass);
+        if (existingClass is null)
+        {
+            existingClass = TryNormalizeAccountClass(account.AccountType);
+        }
+
+        var expectedBalance = FinanceNormalBalanceValues.NormalizeOptional(template.NormalBalance);
+        return string.Equals(existingClass, expectedClass, StringComparison.OrdinalIgnoreCase) &&
+               (account.NormalBalance is null ||
+                string.Equals(account.NormalBalance, expectedBalance, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string? TryNormalizeAccountClass(string? value)
+    {
+        try
+        {
+            return FinanceAccountClassValues.NormalizeOptional(value);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return null;
+        }
+    }
 
     private static Dictionary<string, string> BuildRoleAssignments(
         IAccountingPolicyPack pack,

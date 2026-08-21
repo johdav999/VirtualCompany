@@ -1331,6 +1331,10 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasColumnType("BLOB")
             .ValueGeneratedNever()
             .IsConcurrencyToken();
+        modelBuilder.Entity<FiscalPeriod>().Property(period => period.RowVersion)
+            .HasColumnType("BLOB")
+            .ValueGeneratedNever()
+            .IsConcurrencyToken();
 
         modelBuilder.Entity<DealIntelligenceSignal>().ToTable(table =>
             table.HasCheckConstraint(

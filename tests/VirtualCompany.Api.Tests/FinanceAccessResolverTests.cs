@@ -87,17 +87,24 @@ public sealed class FinanceAccessResolverTests
     [Fact]
     public void Resolve_requires_company_selection_when_multiple_active_memberships_exist()
     {
+        var companyAId = Guid.NewGuid();
+        var companyBId = Guid.NewGuid();
         var currentUser = CreateCurrentUser(
             memberships:
             [
-                CreateMembership(Guid.NewGuid(), "Company A", "owner", "active"),
-                CreateMembership(Guid.NewGuid(), "Company B", "admin", "active")
+                CreateMembership(companyBId, "Company B", "admin", "active"),
+                CreateMembership(companyAId, "Company A", "owner", "active"),
+                CreateMembership(Guid.NewGuid(), "Company without Finance access", "employee", "active")
             ],
             activeCompany: null);
 
         var state = _resolver.Resolve(currentUser, null);
 
         Assert.True(state.RequiresCompanySelection);
+        Assert.Collection(
+            state.AvailableCompanies,
+            company => Assert.Equal(new FinanceCompanyOption(companyAId, "Company A", "owner"), company),
+            company => Assert.Equal(new FinanceCompanyOption(companyBId, "Company B", "admin"), company));
         Assert.False(_resolver.CanShowNavigation(currentUser));
         Assert.Null(_resolver.BuildNavigationHref(currentUser));
     }

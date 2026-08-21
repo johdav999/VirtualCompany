@@ -99,6 +99,7 @@ public static class ReportingPeriodErrorCodes
 {
     public const string ReportingPeriodNotClosed = "reporting_period_not_closed";
     public const string ReportingPeriodLocked = "reporting_period_locked";
+    public const string ReportingPeriodStateChanged = "reporting_period_state_changed";
 }
 
 public static class ReportingPeriodBlockingIssueCodes
