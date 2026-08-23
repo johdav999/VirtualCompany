@@ -11,7 +11,6 @@ namespace VirtualCompany.Infrastructure.Finance;
 
 public sealed class FortnoxApiClient : IFortnoxApiClient
 {
-    private const int DefaultMaxRetries = 3;
     private readonly HttpClient _httpClient;
     private readonly IFortnoxOAuthService _oauthService;
     private readonly IFinanceIntegrationWriteApprovalService _writeApprovalService;
@@ -240,7 +239,7 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
                 ResolveCommandType(path),
                 method.Method,
                 path,
-                "Accounting system",
+                "Fortnox company",
                 summary,
                 FortnoxWritePayloadSanitizer.CreatePayloadHash(payload),
                 new FinanceIntegrationWritePayload(
@@ -330,11 +329,6 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
         var requestUri = BuildUri(path, options);
         var maxRetries = context.RetryExternalFailures ? Math.Max(0, _options.CurrentValue.ApiMaxRetries) : 0;
         var replayedAfterUnauthorized = false;
-        if (context.RetryExternalFailures && maxRetries == 0)
-        {
-            maxRetries = DefaultMaxRetries;
-        }
-
         for (var attempt = 1; ; attempt++)
         {
             using var request = CreateRequest(method, requestUri, accessToken, context.CorrelationId, contentFactory);
@@ -363,7 +357,7 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
                 continue;
             }
 
-            if (response.StatusCode == HttpStatusCode.Unauthorized && !replayedAfterUnauthorized)
+            if (response.StatusCode == HttpStatusCode.Unauthorized && context.RetryExternalFailures && maxRetries > 0 && !replayedAfterUnauthorized)
             {
                 replayedAfterUnauthorized = true;
                 response.Dispose();
@@ -574,7 +568,13 @@ public sealed class FortnoxApiClient : IFortnoxApiClient
             _ when (int)statusCode >= 500 => "upstream_unavailable",
             _ => "upstream_error"
         };
-        var safeMessage = _errorTranslator.Translate(new FortnoxErrorTranslationContext(statusCode, category, code, message, retryAfter));
+        var translatedMessage = _errorTranslator.Translate(new FortnoxErrorTranslationContext(statusCode, category, code, message, retryAfter));
+        var safeMessage = category switch
+        {
+            "authorization" => "Fortnox connection needs attention.",
+            "validation" => "Fortnox could not process the requested data.",
+            _ => translatedMessage
+        };
         return new FortnoxApiException(
             safeMessage,
             statusCode,

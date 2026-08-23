@@ -57,6 +57,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var actionType = ToolActionTypeValues.Parse(command.ActionType);
         var actionTypeValue = actionType.ToStorageValue();
         var toolVersion = ResolveToolVersion(command.ToolName);
+        command = command with { SensitiveAction = IsSensitiveAction(command.ToolName, command.SensitiveAction) };
 
         var attempt = new ToolExecutionAttempt(
             executionId,
@@ -94,7 +95,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             command.ThresholdValue,
             command.SensitiveAction,
             executionId,
-            correlationId);
+            correlationId,
+            IsTrustedToolApprovalRequired(command.ToolName));
 
         var decision = _policyGuardrailEngine.Evaluate(policyRequest);
         _dbContext.ToolExecutionAttempts.Add(attempt);
@@ -219,7 +221,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 command.WorkflowInstanceId,
                 correlationId,
                 executionId,
-                toolVersion),
+                toolVersion,
+                membership.UserId),
             cancellationToken);
             result = NormalizeStructuredResult(result, command);
 
@@ -250,7 +253,30 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 null,
                 decision,
                 result.ToStructuredPayload(),
-                result.Summary);
+                    result.Summary);
+            }
+
+            if (!result.Success)
+            {
+                attempt.MarkFailed(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
+                await _auditEventWriter.WriteAsync(
+                    new AuditEventWriteRequest(
+                        companyId,
+                        AuditActorTypes.Agent,
+                        agentId,
+                        AuditEventActions.AgentToolExecutionExecuted,
+                        AuditTargetTypes.AgentToolExecution,
+                        attempt.Id.ToString("N"),
+                        AuditEventOutcomes.Failed,
+                        DataSources: ["agent_execution", "policy_guardrail", "finance_application"],
+                        CorrelationId: correlationId,
+                        RationaleSummary: result.Summary,
+                        Metadata: BuildAuditMetadata(command, decision)),
+                    cancellationToken);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+                return new ExecuteAgentToolResultDto(
+                    attempt.Id, attempt.Status.ToStorageValue(), null, decision,
+                    result.ToStructuredPayload(), result.Summary);
             }
 
             attempt.MarkExecuted(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
@@ -364,6 +390,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
         var financeDefinitions = _companyToolRegistry
             .ListToolDefinitions()
+            .Where(definition => _companyToolRegistry.TryGetTool(definition.ToolName, out var registration) &&
+                                 registration.Scopes.Contains("finance"))
             .OrderBy(definition => definition.ToolName, StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -798,4 +826,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         _companyToolRegistry.TryGetTool(toolName, out var registration) &&
         !string.IsNullOrWhiteSpace(registration.Version)
             ? registration.Version : "unknown";
+
+    private bool IsSensitiveAction(string toolName, bool requestedSensitiveAction) =>
+        requestedSensitiveAction ||
+        (_companyToolRegistry.TryGetTool(toolName, out var registration) && registration.SensitiveAction);
+
+    private bool IsTrustedToolApprovalRequired(string toolName) =>
+        _companyToolRegistry.TryGetTool(toolName, out var registration) && registration.SensitiveAction;
 }

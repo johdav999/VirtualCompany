@@ -1,0 +1,574 @@
+<section class="migration-workspace" aria-labelledby="migration-workspace-title" data-testid="accounting-migration-workspace">
+    <header class="migration-workspace__hero">
+        <div>
+            <span class="dashboard-kicker">@FinanceText["AccountingMigrationKicker"]</span>
+            <h2 id="migration-workspace-title">@FinanceText["AccountingMigrationTitle"]</h2>
+            <p>@FinanceText["AccountingMigrationDescription"]</p>
+        </div>
+        <div class="migration-authority-flow" aria-label="@FinanceText["AuthorityTimeline"]">
+            <div><small>@FinanceText["CurrentAuthority"]</small><strong>@Switch.Source.DisplayName</strong><span>@FinanceText["AuthoritativeNow"]</span></div>
+            <span aria-hidden="true">→</span>
+            <div><small>@FinanceText["PlannedAuthority"]</small><strong>@Switch.Target.DisplayName</strong><span>@FinanceText["PlannedForDate", Switch.EffectiveFrom.ToString("d")]</span></div>
+        </div>
+    </header>
+
+    @if (PartialFailures.Count > 0)
+    {
+        <div class="migration-notice migration-notice--warning" role="status" data-testid="partial-provider-failure">
+            <strong>@FinanceText["SomeMigrationEvidenceUnavailable"]</strong>
+            <span>@FinanceText["SomeMigrationEvidenceUnavailableDescription"]</span>
+            <button type="button" class="btn btn-sm btn-outline-secondary" @onclick='() => OnAction.InvokeAsync("refresh")'>@FinanceText["TryAgain"]</button>
+        </div>
+    }
+
+    @if (IsStale)
+    {
+        <div class="migration-notice migration-notice--warning" role="alert" data-testid="stale-migration-guidance">
+            <strong>@FinanceText["MigrationEvidenceChanged"]</strong>
+            <span>@FinanceText["MigrationEvidenceChangedDescription"]</span>
+        </div>
+    }
+
+    <ol class="migration-stepper" aria-label="@FinanceText["MigrationProgress"]">
+        @foreach (var step in Steps)
+        {
+            var state = StepState(step.Index);
+            <li class="@state" aria-current="@(state == "is-current" ? "step" : null)">
+                <span>@(state == "is-complete" ? "✓" : step.Index.ToString())</span>
+                <div><strong>@FinanceText[step.ResourceKey]</strong><small>@StepStateLabel(state)</small></div>
+            </li>
+        }
+    </ol>
+
+    @if (IsBlockedOrRecovery)
+    {
+        <div class="migration-notice @(Switch.Status == "recovery" ? "migration-notice--info" : "migration-notice--danger")" role="alert" data-testid="migration-recovery-state">
+            <strong>@(Switch.Status == "recovery" ? FinanceText["RecoveryInProgress"] : FinanceText["MigrationBlocked"])</strong>
+            <span>@(Switch.FailureSummary ?? AllowedActions?.BlockingSummary ?? FinanceText["MigrationBlockedDescription"])</span>
+            @if (Cutover?.AllowedActions.CanRetry == true && CanManage)
+            {
+                <button class="btn btn-sm btn-outline-primary" type="button" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("retry-cutover")'>@FinanceText["RetrySafeStep"]</button>
+            }
+            @if (Cutover?.AllowedActions.CanRecoverSource == true && CanManage)
+            {
+                <button class="btn btn-sm btn-outline-danger" type="button" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("recover-source")'>@FinanceText["ReviewRecovery"]</button>
+            }
+        </div>
+    }
+    @if (Switch.Status == "cancelled")
+    {
+        <div class="migration-notice migration-notice--info" role="status" data-testid="migration-cancelled-state"><strong>@FinanceText["MigrationWasCancelled"]</strong><span>@(Switch.CancellationReason ?? FinanceText["MigrationCancelledDescription"])</span></div>
+    }
+    @if (Switch.Status == "completed")
+    {
+        <div class="migration-notice migration-notice--info" role="status" data-testid="migration-completed-state"><strong>@FinanceText["MigrationCompleted"]</strong><span>@FinanceText["MigrationCompletedDescription"]</span></div>
+    }
+
+    <div class="migration-workspace__grid">
+        <div class="migration-workspace__main">
+            <section class="migration-summary-grid" aria-label="@FinanceText["MigrationSummary"]">
+                <article class="migration-card migration-progress-card">
+                    <span>@FinanceText["OverallProgress"]</span>
+                    <strong>@ProgressPercent%</strong>
+                    <div class="migration-progress" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="@ProgressPercent"><i style="width:@ProgressPercent%"></i></div>
+                    <small>@Switch.StatusLabel</small>
+                </article>
+                @EndpointHealthCard(Switch.Source, true)
+                @EndpointHealthCard(Switch.Target, false)
+            </section>
+
+            @if (BlockingReadinessChecks.Count > 0)
+            {
+                <section class="migration-notice migration-notice--warning migration-readiness-notice" role="alert" data-testid="migration-internal-readiness">
+                    <div>
+                        <strong>@FinanceText["InternalTargetSetupRequired"]</strong>
+                        @foreach (var check in BlockingReadinessChecks.Take(4))
+                        {
+                            <span>@check.Explanation</span>
+                        }
+                    </div>
+                    <a class="btn btn-sm btn-outline-primary" href="@AccountingSetupHref">@FinanceText["OpenAccountingSetup"]</a>
+                </section>
+            }
+
+            <section class="migration-card migration-attention" data-testid="migration-gap-list">
+                <header>
+                    <div><h3>@FinanceText["NeedsAttention"] <span>@AttentionCount</span></h3><p>@FinanceText["MigrationAttentionDescription"]</p></div>
+                    <strong>@FinanceText["ResponsibleParty"]: @(Guidance?.ResponsibleParty ?? FinanceText["AccountingAdministrator"])</strong>
+                </header>
+                @if (Assessment?.Gaps.Count > 0)
+                {
+                    <div class="migration-list-detail">
+                        <div class="migration-item-list" role="list" aria-label="@FinanceText["MigrationGaps"]">
+                            @foreach (var gap in Assessment.Gaps)
+                            {
+                                <button type="button" role="listitem" class="@(SelectedGap?.Id == gap.Id ? "is-selected" : null)" @onclick="() => SelectGap(gap)">
+                                    <span class="migration-severity migration-severity--@(gap.IsBlocking ? "danger" : "warning")" aria-hidden="true"></span>
+                                    <span><strong>@Friendly(gap.Category)</strong><small>@gap.Explanation</small></span>
+                                    <em>@(gap.IsBlocking ? FinanceText["BlocksProgress"] : FinanceText["NeedsReview"])</em>
+                                </button>
+                            }
+                        </div>
+                        @if (SelectedGap is not null)
+                        {
+                            <article class="migration-detail" tabindex="-1" @key="SelectedGap.Id" data-testid="migration-gap-detail">
+                                <span class="status-badge @(SelectedGap.IsBlocking ? "status-badge-danger" : "status-badge-warning")">@(SelectedGap.IsBlocking ? FinanceText["BlocksProgress"] : FinanceText["NeedsReview"])</span>
+                                <h4>@Friendly(SelectedGap.Category)</h4>
+                                <dl>
+                                    <dt>@FinanceText["WhatThisMeans"]</dt><dd>@SelectedGap.Explanation</dd>
+                                    <dt>@FinanceText["EvidenceUsed"]</dt><dd>@GapEvidenceLabel(SelectedGap)</dd>
+                                    <dt>@FinanceText["FinancialImpact"]</dt><dd>@GapFinancialImpact(SelectedGap)</dd>
+                                    <dt>@FinanceText["ResponsiblePerson"]</dt><dd>@(Guidance?.ResponsibleParty ?? FinanceText["AccountingAdministrator"])</dd>
+                                    <dt>@FinanceText["ResolutionStatus"]</dt><dd>@(SelectedGap.IsBlocking ? FinanceText["OpenBlockingIssue"] : FinanceText["ReviewRecommended"])</dd>
+                                    <dt>@FinanceText["NextAction"]</dt><dd>@SelectedGap.OperatorAction</dd>
+                                </dl>
+                            </article>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="migration-empty"><span aria-hidden="true">✓</span><strong>@FinanceText["NoMigrationGaps"]</strong><p>@FinanceText["NoMigrationGapsDescription"]</p></div>
+                }
+            </section>
+
+            <div class="migration-two-column">
+                <section class="migration-card" data-testid="migration-mapping-list">
+                    <header><div><h3>@FinanceText["MappingReview"]</h3><p>@(Completeness?.Explanation ?? FinanceText["MappingReviewDescription"])</p></div><span class="status-badge">@(Completeness?.IsComplete == true ? FinanceText["Complete"] : FinanceText["NeedsReview"])</span></header>
+                    @if (Mappings.Count > 0)
+                    {
+                        <div class="migration-compact-list" role="list">
+                            @foreach (var mapping in Mappings)
+                            {
+                                <button type="button" role="listitem" class="@(SelectedMapping?.Id == mapping.Id ? "is-selected" : null)" @onclick="() => SelectMapping(mapping)">
+                                    <span><strong>@Friendly(mapping.MappingType)</strong><small>@mapping.SourceKey → @(mapping.TargetKey ?? FinanceText["NoTargetSelected"])</small></span>
+                                    <em>@StatusLabel(mapping.Status)</em>
+                                </button>
+                            }
+                        </div>
+                        @if (SelectedMapping is not null)
+                        {
+                            <div class="migration-inline-detail" data-testid="migration-mapping-detail">
+                                <h4>@SelectedMapping.SourceKey → @(SelectedMapping.TargetKey ?? FinanceText["NoTargetSelected"])</h4>
+                                <p>@FinanceText["MappingEvidenceSummary", SelectedMapping.AffectedRecordCount, SelectedMapping.Confidence.ToString("P0")]</p>
+                                <p><strong>@FinanceText["FinancialImpact"]:</strong> @SelectedMapping.AffectedFinancialTotal.ToString("N2")</p>
+                                <p><strong>@FinanceText["ApprovalStatus"]:</strong> @StatusLabel(SelectedMapping.Status)</p>
+                                @if (CanRequestMappingApproval(SelectedMapping))
+                                {
+                                    <button class="btn btn-sm btn-outline-primary" disabled="@IsActing" @onclick="RequestSelectedMappingApprovalAsync">@FinanceText["RequestMappingApproval"]</button>
+                                }
+                                @if (SelectedMapping.ApprovalRequestId is Guid mappingApprovalId)
+                                {
+                                    <a class="btn btn-sm btn-link" href="@ApprovalHref(mappingApprovalId)">@FinanceText["OpenApproval"]</a>
+                                }
+                            </div>
+                        }
+                    }
+                    else
+                    {
+                        <div class="migration-empty migration-empty--small"><strong>@FinanceText["NoMappingsYet"]</strong><p>@FinanceText["NoMappingsYetDescription"]</p></div>
+                    }
+                </section>
+
+                <section class="migration-card" data-testid="migration-rehearsal">
+                    <header><div><h3>@FinanceText["RehearsalComparison"]</h3><p>@(Rehearsal?.ReadinessExplanation ?? FinanceText["RehearsalDescription"])</p></div><span class="status-badge @Tone(Rehearsal?.IsReadyForPlan == true)">@RehearsalStatus</span></header>
+                    @if (Rehearsal?.Datasets.Count > 0)
+                    {
+                        <div class="migration-check-list">
+                            @foreach (var dataset in Rehearsal.Datasets.Take(5))
+                            {
+                                <div><span>@Friendly(dataset.Dataset)</span><strong>@dataset.ObservedCount / @dataset.ExpectedCount</strong><em class="@Tone(IsPassed(dataset.Result))">@StatusLabel(dataset.Result)</em></div>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <div class="migration-empty migration-empty--small"><strong>@FinanceText["NoRehearsalYet"]</strong><p>@FinanceText["NoRehearsalYetDescription"]</p></div>
+                    }
+                    @if (CanStartRehearsal)
+                    {
+                        <button class="btn btn-sm btn-outline-primary migration-card__action" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("start-rehearsal")'>@FinanceText["RunRehearsal"]</button>
+                    }
+                    else if (CanReplayRehearsal)
+                    {
+                        <button class="btn btn-sm btn-outline-primary migration-card__action" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("retry-rehearsal")'>@FinanceText["RunRehearsalAgain"]</button>
+                    }
+                </section>
+            </div>
+
+            <section class="migration-card migration-approvals" data-testid="migration-approvals">
+                <header><div><h3>@FinanceText["MigrationApprovals"]</h3><p>@FinanceText["MigrationApprovalsDescription"]</p></div></header>
+                <div>
+                    @ApprovalCard(FinanceText["PlanApproval"], FinanceText["PlanApprovalDescription"], PlanReadiness?.Plan?.ApprovalStatus,
+                        PlanReadiness?.Plan?.ApprovalRequestId, "plan")
+                    @ApprovalCard(FinanceText["ActivationApproval"], FinanceText["ActivationApprovalDescription"], Cutover?.ActivationApproval?.Status,
+                        Cutover?.ActivationApproval?.ApprovalRequestId, "activation")
+                </div>
+            </section>
+
+            <section class="migration-card" data-testid="migration-reconciliation">
+                <header><div><h3>@FinanceText["ReconciliationEvidence"]</h3><p>@FinanceText["ReconciliationEvidenceDescription"]</p></div><span class="status-badge @Tone(ReconciliationPassed)">@(ReconciliationPassed ? FinanceText["ChecksPassed"] : FinanceText["EvidenceRequired"])</span></header>
+                <div class="migration-check-list">
+                    @foreach (var check in EvidenceChecks)
+                    {
+                        <div><span>@Friendly(check.Label)</span><strong>@check.Explanation</strong><em class="@Tone(check.Passed)">@(check.Passed ? FinanceText["Passed"] : FinanceText["NeedsReview"])</em></div>
+                    }
+                </div>
+                @if (Cutover?.ProviderReconciliationRequired == true)
+                {
+                    <div class="migration-notice migration-notice--danger" data-testid="ambiguous-provider-outcome"><strong>@FinanceText["ProviderOutcomeUncertain"]</strong><span>@FinanceText["ProviderOutcomeUncertainDescription"]</span></div>
+                }
+                @foreach (var item in Transfer?.Items.Where(x => x.ReconciliationNeeded).Take(5) ?? [])
+                {
+                    <div class="migration-reconcile-action" data-testid="transfer-reconciliation-action">
+                        <div><strong>@Friendly(item.Dataset)</strong><span>@(item.SafeSummary ?? FinanceText["ProviderOutcomeUncertainDescription"])</span></div>
+                        @if (CanManage)
+                        {
+                            <button class="btn btn-sm btn-outline-success" disabled="@IsActing" @onclick="() => ReconcileTransferAsync(item.Id, true)">@FinanceText["ConfirmProviderSuccess"]</button>
+                            <button class="btn btn-sm btn-outline-secondary" disabled="@IsActing" @onclick="() => ReconcileTransferAsync(item.Id, false)">@FinanceText["ConfirmProviderNotSent"]</button>
+                        }
+                    </div>
+                }
+            </section>
+
+            @if (Monitoring is not null)
+            {
+                <section class="migration-card migration-monitoring" data-testid="migration-post-activation-monitoring">
+                    <header>
+                        <div><h3>@FinanceText["PostActivationMonitoring"]</h3><p>@Monitoring.AllowedActions.Explanation</p></div>
+                        <span class="status-badge @Tone(Monitoring.Status is "active" or "closed")">@StatusLabel(Monitoring.Status)</span>
+                    </header>
+                    <div class="migration-monitoring__summary">
+                        <div><small>@FinanceText["MonitoringWindow"]</small><strong>@Monitoring.WindowDays @FinanceText["Days"]</strong><span>@FinanceText["Ends"] @LocalDateTime.DateTime(Monitoring.WindowEndsUtc)</span></div>
+                        <div><small>@FinanceText["LastSuccessfulCheck"]</small><strong>@(Monitoring.LastSuccessfulCheckUtc.HasValue ? LocalDateTime.DateTime(Monitoring.LastSuccessfulCheckUtc.Value) : FinanceText["NotAvailable"])</strong><span>@FinanceText["CheckSequence", Monitoring.CheckSequence]</span></div>
+                        <div><small>@FinanceText["OpenIssues"]</small><strong>@Monitoring.Incidents.Count(x => x.Status == "open")</strong><span>@FinanceText["ResponsibleParty"]: @(Guidance?.ResponsibleParty ?? FinanceText["AccountingAdministrator"])</span></div>
+                    </div>
+                    <div class="migration-check-list">
+                        @foreach (var check in Monitoring.Checks)
+                        {
+                            <div><span>@Friendly(check.CheckKey)</span><strong>@check.Explanation</strong><em class="@Tone(check.Status == "healthy")">@StatusLabel(check.Status)</em></div>
+                        }
+                    </div>
+                    @if (Monitoring.Incidents.Count > 0)
+                    {
+                        <div class="migration-item-list migration-monitoring__incidents" role="list" aria-label="@FinanceText["MonitoringIssues"]">
+                            @foreach (var incident in Monitoring.Incidents)
+                            {
+                                <button type="button" role="listitem" class="@(SelectedMonitoringIncident?.Id == incident.Id ? "is-selected" : null)" @onclick="() => SelectedMonitoringIncident = incident">
+                                    <span class="migration-severity migration-severity--@(incident.IsBlocking ? "danger" : "warning")" aria-hidden="true"></span>
+                                    <span><strong>@Friendly(incident.CheckKey)</strong><small>@incident.Explanation</small></span>
+                                    <em>@StatusLabel(incident.Status)</em>
+                                </button>
+                            }
+                        </div>
+                    }
+                    @if (SelectedMonitoringIncident is { IsBlocking: false, Status: "open" } && CanManage)
+                    {
+                        <details class="migration-monitoring__exception">
+                            <summary>@FinanceText["AcceptDocumentedException"]</summary>
+                            <label>@FinanceText["ExceptionExplanation"]<textarea class="form-control" rows="2" @bind="ExceptionExplanation"></textarea></label>
+                            <label>@FinanceText["ExceptionScope"]<input class="form-control" @bind="ExceptionScope" /></label>
+                            <label>@FinanceText["FinancialImpact"]<input class="form-control" type="number" step="0.01" @bind="ExceptionFinancialImpact" /></label>
+                            <label>@FinanceText["EvidenceReference"]<input class="form-control" @bind="ExceptionEvidenceReference" /></label>
+                            <button class="btn btn-sm btn-outline-primary" disabled="@(IsActing || !CanAcceptException)" @onclick="AcceptSelectedExceptionAsync">@FinanceText["AcceptException"]</button>
+                        </details>
+                    }
+                    @if (CanManage)
+                    {
+                        <div class="migration-monitoring__actions">
+                            @if (Monitoring.AllowedActions.CanRunNow) { <button class="btn btn-sm btn-outline-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("monitoring-run")'>@FinanceText["RunChecksNow"]</button> }
+                            @if (Monitoring.AllowedActions.CanRetry) { <button class="btn btn-sm btn-outline-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("monitoring-retry")'>@FinanceText["RetrySafeStep"]</button> }
+                            @if (Monitoring.AllowedActions.CanReconnectAccess) { <a class="btn btn-sm btn-outline-secondary" href="@ProviderSettingsHref">@FinanceText["ReconnectAccess"]</a> }
+                            @if (Monitoring.AllowedActions.CanReconcileProviderOutcome) { <a class="btn btn-sm btn-outline-secondary" href="#accounting-exports">@FinanceText["ReconcileProviderOutcome"]</a> }
+                            @if (Monitoring.AllowedActions.CanRequestClosure) { <button class="btn btn-sm btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("monitoring-request-closure")'>@FinanceText["RequestClosureApproval"]</button> }
+                            @if (Monitoring.AllowedActions.CanClose) { <button class="btn btn-sm btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("monitoring-close")'>@FinanceText["CloseMonitoring"]</button> }
+                            @if (Monitoring.AllowedActions.CanCreateCorrectiveCutover) { <button class="btn btn-sm btn-outline-danger" disabled="@(IsActing || !FuturePeriodAvailable)" @onclick='() => OnAction.InvokeAsync("monitoring-corrective-cutover")'>@FinanceText["CreateCorrectiveCutover"]</button> }
+                        </div>
+                    }
+                </section>
+            }
+
+            @if (Operations?.Issues.Count > 0)
+            {
+                <section class="migration-card migration-operations" data-testid="migration-operations-dashboard">
+                    <header><div><h3>@FinanceText["MigrationOperations"]</h3><p>@FinanceText["MigrationOperationsDescription"]</p></div><span class="status-badge status-badge-warning">@Operations.Issues.Sum(x => x.Count)</span></header>
+                    <div class="migration-check-list">
+                        @foreach (var issue in Operations.Issues)
+                        {
+                            <div><span>@Friendly(issue.Category)</span><strong>@issue.Explanation</strong><em>@issue.Count</em><small>@issue.NextAction</small></div>
+                        }
+                    </div>
+                </section>
+            }
+
+            <section class="migration-card migration-activity">
+                <header><div><h3>@FinanceText["RecentMigrationActivity"]</h3><p>@FinanceText["RecentMigrationActivityDescription"]</p></div></header>
+                <div>
+                    @foreach (var item in AuditEvidence?.Items.Take(4) ?? [])
+                    {
+                        <article><span class="@Tone(!item.NeedsAttention)">@(item.NeedsAttention ? "!" : "✓")</span><div><strong>@item.Label</strong><small>@item.Explanation</small></div></article>
+                    }
+                    @if (AuditEvidence?.Items.Count is null or 0)
+                    {
+                        <p>@FinanceText["NoMigrationActivityYet"]</p>
+                    }
+                </div>
+            </section>
+        </div>
+
+        <aside class="migration-workspace__side">
+            <section class="migration-card migration-laura" data-testid="migration-laura-guidance">
+                <header><span>L</span><div><h3>Laura</h3><p>@FinanceText["FinanceManager"]</p></div><span class="migration-laura__freshness">@GuidanceFreshness</span></header>
+                <div class="migration-laura__recommendation"><small>@FinanceText["Recommendation"]</small><strong>@(Recommendation?.Recommendation ?? Guidance?.NextCheckpoint ?? FinanceText["LauraGuidanceUnavailable"])</strong></div>
+                <h4>@FinanceText["Why"]</h4><p>@(Recommendation?.Rationale ?? Guidance?.WhyItMatters ?? FinanceText["LauraGuidanceUnavailableDescription"])</p>
+                <h4>@FinanceText["DataUsed"]</h4>
+                <ul>@foreach (var source in (Recommendation?.DataSources ?? Guidance?.DataSources ?? []).Take(5)) { <li>@Friendly(source)</li> }</ul>
+                @if (Recommendation is not null)
+                {
+                    <div class="migration-confidence"><span>@FinanceText["Confidence"]</span><strong>@Recommendation.Confidence.ToString("P0")</strong><i><span style="width:@(Recommendation.Confidence * 100)%"></span></i></div>
+                }
+                <h4>@FinanceText["Blockers"] <span>@(Guidance?.Blockers.Count ?? 0)</span></h4>
+                @if (Guidance?.Blockers.Count > 0)
+                {
+                    <ul class="migration-laura__blockers">@foreach (var blocker in Guidance.Blockers.Take(5)) { <li>@blocker</li> }</ul>
+                }
+                else
+                {
+                    <p>@FinanceText["NoCurrentBlockers"]</p>
+                }
+                <h4>@FinanceText["SafeNextActions"]</h4>
+                <ul>@foreach (var action in Guidance?.AllowedActions.Take(5) ?? []) { <li>@action</li> }</ul>
+                <a class="btn btn-outline-primary w-100" href="@MessageLauraHref">@FinanceText["MessageLaura"]</a>
+                <small>@FinanceText["MessagingLauraDoesNotChangeMigration"]</small>
+            </section>
+
+            <section class="migration-card migration-next-action">
+                <header><div><h3>@FinanceText["WhatHappensNext"]</h3><p>@(Guidance?.NextCheckpoint ?? AllowedActions?.Explanation)</p></div></header>
+                <div class="d-grid gap-2 p-3">
+                    @if (CanStartAssessment)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("start-assessment")'>@FinanceText["StartReadOnlyAssessment"]</button>
+                    }
+                    @if (CanReplayAssessment)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("retry-assessment")'>@FinanceText["RunAssessmentAgain"]</button>
+                    }
+                    @if (CanGeneratePlan)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("generate-plan")'>@FinanceText["GenerateCutoverPlan"]</button>
+                    }
+                    @if (CanRequestPlanApproval)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("request-plan-approval")'>@FinanceText["RequestPlanApproval"]</button>
+                    }
+                    @if (CanPrepareTarget)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("prepare-target")'>@FinanceText["PrepareTarget"]</button>
+                    }
+                    @if (CanScheduleCutover)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("schedule-cutover")'>@FinanceText["ScheduleCutover"]</button>
+                    }
+                    @if (Cutover?.AllowedActions.CanStartFreeze == true && CanManage)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("start-freeze")'>@FinanceText["StartApprovedFreeze"]</button>
+                    }
+                    @if (Cutover?.AllowedActions.CanRequestActivationApproval == true && CanManage)
+                    {
+                        <button class="btn btn-primary" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("request-activation-approval")'>@FinanceText["RequestActivationApproval"]</button>
+                    }
+                    @if (Cutover?.AllowedActions.CanActivate == true && CanManage)
+                    {
+                        <button class="btn btn-danger" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("activate")'>@FinanceText["ActivateTargetAuthority"]</button>
+                    }
+                    @if (!CanManage)
+                    {
+                        <div class="migration-notice migration-notice--info" data-testid="migration-no-permission"><strong>@FinanceText["ViewOnlyMigrationAccess"]</strong><span>@FinanceText["ViewOnlyMigrationAccessDescription"]</span></div>
+                    }
+                    @if (AllowedActions?.CanCancel == true && CanManage)
+                    {
+                        <button class="btn btn-sm btn-link text-danger" disabled="@IsActing" @onclick='() => OnAction.InvokeAsync("cancel")'>@FinanceText["CancelMigration"]</button>
+                    }
+                </div>
+            </section>
+
+            <section class="migration-card migration-secondary-links">
+                <a href="@ProviderSettingsHref">@FinanceText["ProviderManagement"] <span>→</span></a>
+                <a href="#accounting-exports">@FinanceText["ExportAndReconciliation"] <span>→</span></a>
+                <a href="@ApprovalsHref">@FinanceText["OpenWorkApprovals"] <span>→</span></a>
+            </section>
+        </aside>
+    </div>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter, EditorRequired] public AccountingProviderSwitchResponse Switch { get; set; } = new();
+    [Parameter] public AccountingAuthorityReadModelResponse? Authority { get; set; }
+    [Parameter] public AccountingProviderSwitchAllowedActionsResponse? AllowedActions { get; set; }
+    [Parameter] public AccountingProviderSwitchAssessmentResponse? Assessment { get; set; }
+    [Parameter] public AccountingProviderSwitchCompletenessResponse? Completeness { get; set; }
+    [Parameter] public IReadOnlyList<AccountingProviderSwitchMappingResponse> Mappings { get; set; } = [];
+    [Parameter] public AccountingProviderSwitchRehearsalResponse? Rehearsal { get; set; }
+    [Parameter] public AccountingProviderSwitchPlanReadinessResponse? PlanReadiness { get; set; }
+    [Parameter] public AccountingProviderSwitchInternalReadinessResponse? InternalReadiness { get; set; }
+    [Parameter] public AccountingProviderSwitchPreparationResponse? Preparation { get; set; }
+    [Parameter] public AccountingProviderSwitchTargetTransferResponse? Transfer { get; set; }
+    [Parameter] public AccountingProviderSwitchCutoverResponse? Cutover { get; set; }
+    [Parameter] public AccountingProviderSwitchMonitoringResponse? Monitoring { get; set; }
+    [Parameter] public AccountingProviderSwitchOperationsResponse? Operations { get; set; }
+    [Parameter] public bool FuturePeriodAvailable { get; set; }
+    [Parameter] public AccountingMigrationGuidanceResponse? Guidance { get; set; }
+    [Parameter] public AccountingMigrationRecommendationResponse? Recommendation { get; set; }
+    [Parameter] public AccountingMigrationEvidenceResponse? AuditEvidence { get; set; }
+    [Parameter] public AccountingMigrationEvidenceResponse? MonitoringEvidence { get; set; }
+    [Parameter] public IReadOnlyList<string> PartialFailures { get; set; } = [];
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool IsActing { get; set; }
+    [Parameter] public EventCallback<string> OnAction { get; set; }
+    [Parameter] public EventCallback<AcceptAccountingProviderSwitchMonitoringExceptionApiRequest> OnAcceptMonitoringException { get; set; }
+
+    private AccountingProviderSwitchGapResponse? SelectedGap { get; set; }
+    private AccountingProviderSwitchMappingResponse? SelectedMapping { get; set; }
+    private AccountingProviderSwitchMonitoringIncidentResponse? SelectedMonitoringIncident { get; set; }
+    private string ExceptionExplanation { get; set; } = string.Empty;
+    private string ExceptionScope { get; set; } = string.Empty;
+    private decimal ExceptionFinancialImpact { get; set; }
+    private string ExceptionEvidenceReference { get; set; } = string.Empty;
+    private static readonly (int Index, string ResourceKey)[] Steps =
+    [
+        (1, "AssessStep"), (2, "MapStep"), (3, "RehearseStep"), (4, "PlanApprovalStep"),
+        (5, "CutoverStep"), (6, "ReconcileStep"), (7, "MonitorStep")
+    ];
+
+    protected override void OnParametersSet()
+    {
+        if (SelectedGap is null || Assessment?.Gaps.Any(x => x.Id == SelectedGap.Id) != true)
+            SelectedGap = Assessment?.Gaps.FirstOrDefault();
+        if (SelectedMapping is null || !Mappings.Any(x => x.Id == SelectedMapping.Id))
+            SelectedMapping = Mappings.FirstOrDefault();
+        if (SelectedMonitoringIncident is null || Monitoring?.Incidents.Any(x => x.Id == SelectedMonitoringIncident.Id) != true)
+            SelectedMonitoringIncident = Monitoring?.Incidents.FirstOrDefault(x => x.Status == "open");
+    }
+
+    private int CurrentStep => Switch.Status switch
+    {
+        "draft" or "assessing" => 1,
+        "ready_for_planning" => Rehearsal is null ? 2 : 3,
+        "plan_awaiting_approval" => 4,
+        "preparing_target" or "rehearsal_passed" or "scheduled" or "source_frozen" => 5,
+        "reconciling" or "activation_awaiting_approval" => 6,
+        "target_authoritative" or "monitoring" or "completed" => 7,
+        "blocked" or "recovery" => Math.Max(1, GuidanceStep),
+        _ => 1
+    };
+    private int GuidanceStep => Guidance?.CurrentStep.ToLowerInvariant() switch
+    {
+        var x when x?.Contains("map") == true => 2,
+        var x when x?.Contains("rehears") == true => 3,
+        var x when x?.Contains("approval") == true => 4,
+        var x when x?.Contains("cutover") == true || x?.Contains("frozen") == true => 5,
+        var x when x?.Contains("reconcil") == true || x?.Contains("activation") == true => 6,
+        var x when x?.Contains("monitor") == true || x?.Contains("complete") == true => 7,
+        _ => 1
+    };
+    private int ProgressPercent => Switch.Status == "completed" ? 100 : Math.Clamp((CurrentStep - 1) * 100 / 7 + Math.Max(8, Math.Min(14, Assessment?.ProgressPercent / 10 ?? 8)), 8, 96);
+    private int AttentionCount => (Assessment?.Gaps.Count(x => x.IsBlocking || x.Severity == "warning") ?? 0) + (Mappings.Count(x => x.Status is "suggested" or "rejected" or "stale") );
+    private bool IsStale => Guidance is not null && Guidance.SwitchVersion != Switch.Version || Recommendation?.SwitchVersion is long version && version != Switch.Version;
+    private bool IsBlockedOrRecovery => Switch.Status is "blocked" or "recovery";
+    private bool CanStartAssessment => CanManage && AllowedActions?.AllowedTransitions.Contains("assessing") == true && Assessment is null;
+    private bool CanReplayAssessment => CanManage && Assessment?.AllowedNextAction == "replay_assessment";
+    private bool CanStartRehearsal => CanManage && Switch.Status == "ready_for_planning" && Completeness?.IsComplete == true && Assessment?.HasBlockingGaps == false && Rehearsal is null;
+    private bool CanReplayRehearsal => CanManage && Rehearsal?.Status == "failed";
+    private bool CanGeneratePlan => CanManage && Rehearsal?.IsReadyForPlan == true && PlanReadiness?.Plan is null;
+    private bool CanRequestPlanApproval => CanManage && PlanReadiness?.Plan is { ApprovalRequestId: null, IsCurrent: true };
+    private bool CanPrepareTarget => CanManage && PlanReadiness?.IsReady == true && Preparation is null && Transfer is null;
+    private bool CanScheduleCutover => CanManage && PlanReadiness?.Plan is not null && Cutover is null && (Preparation?.IsActivationReady == true || Transfer?.IsReadyForCutover == true);
+    private bool CanAcceptException => SelectedMonitoringIncident is not null && !string.IsNullOrWhiteSpace(ExceptionExplanation) &&
+        !string.IsNullOrWhiteSpace(ExceptionScope) && !string.IsNullOrWhiteSpace(ExceptionEvidenceReference);
+    private string RehearsalStatus => Rehearsal is null ? FinanceText["NotStarted"] : Rehearsal.IsReadyForPlan ? FinanceText["Passed"] : StatusLabel(Rehearsal.Status);
+    private bool ReconciliationPassed => EvidenceChecks.Count > 0 && EvidenceChecks.All(x => x.Passed);
+    private IReadOnlyList<AccountingProviderSwitchReadinessCheckResponse> BlockingReadinessChecks =>
+        InternalReadiness?.Checks.Where(x => x.IsBlocking && !x.IsReady).ToArray() ?? [];
+    private IReadOnlyList<EvidenceCheck> EvidenceChecks => Cutover?.Checks.Count > 0
+        ? Cutover.Checks.Select(x => new EvidenceCheck(x.CheckKey, x.Explanation, IsPassed(x.Result))).ToArray()
+        : Rehearsal?.Checks.Select(x => new EvidenceCheck(x.CheckKey, $"{x.ObservedValue} / {x.ExpectedValue}", IsPassed(x.Result) || x.HasCurrentManualEvidence)).ToArray() ?? [];
+    private string GuidanceFreshness => Guidance is null ? FinanceText["Unavailable"] : IsStale ? FinanceText["RefreshRequired"] : FinanceText["CurrentEvidence"];
+    private string MessageLauraHref => Switch.ResponsibleAgentId is Guid agentId
+        ? $"/agents/{agentId:D}/chat?companyId={CompanyId:D}"
+        : $"/agents?companyId={CompanyId:D}";
+    private string AccountingSetupHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingSetup, CompanyId);
+    private string ProviderSettingsHref => $"/settings/integrations?companyId={CompanyId:D}";
+    private string ApprovalsHref => $"/work?companyId={CompanyId:D}&tab=approvals";
+
+    private string StepState(int step) => Switch.Status == "cancelled" ? "is-pending" : step < CurrentStep || Switch.Status == "completed" ? "is-complete" : step == CurrentStep ? (Switch.Status == "blocked" ? "is-blocked" : "is-current") : "is-pending";
+    private string StepStateLabel(string state) => state switch { "is-complete" => FinanceText["Complete"], "is-current" => FinanceText["InProgress"], "is-blocked" => FinanceText["Blocked"], _ => FinanceText["Pending"] };
+    private static bool IsPassed(string? value) => value is "passed" or "complete" or "completed" or "succeeded" or "approved" or "ready";
+    private static string Tone(bool positive) => positive ? "status-badge-success" : "status-badge-warning";
+    private string Friendly(string token) => string.Join(' ', token.Replace('-', '_').Split('_', StringSplitOptions.RemoveEmptyEntries).Select(x => char.ToUpperInvariant(x[0]) + x[1..]));
+    private string StatusLabel(string token) => token switch
+    {
+        "awaiting_approval" or "pending" => FinanceText["WaitingForApproval"],
+        "approved" => FinanceText["Approved"], "rejected" => FinanceText["Rejected"],
+        "changes_requested" or "revision_requested" => FinanceText["ChangesRequested"],
+        "expired" or "stale" => FinanceText["ExpiredOrChanged"], "failed" => FinanceText["Failed"],
+        "completed" or "complete" => FinanceText["Complete"], "passed" => FinanceText["Passed"],
+        "suggested" => FinanceText["NeedsReview"], _ => Friendly(token)
+    };
+    private void SelectGap(AccountingProviderSwitchGapResponse gap) => SelectedGap = gap;
+    private void SelectMapping(AccountingProviderSwitchMappingResponse mapping) => SelectedMapping = mapping;
+    private Task RequestSelectedMappingApprovalAsync() => SelectedMapping is null
+        ? Task.CompletedTask
+        : OnAction.InvokeAsync($"mapping-approval:{SelectedMapping.Id:D}");
+    private Task ReconcileTransferAsync(Guid itemId, bool succeeded) =>
+        OnAction.InvokeAsync($"reconcile-transfer:{itemId:D}:{(succeeded ? "success" : "not-sent")}");
+    private async Task AcceptSelectedExceptionAsync()
+    {
+        if (SelectedMonitoringIncident is null) return;
+        await OnAcceptMonitoringException.InvokeAsync(new()
+        {
+            IncidentId = SelectedMonitoringIncident.Id,
+            ExpectedVersion = SelectedMonitoringIncident.Version,
+            Explanation = ExceptionExplanation,
+            Scope = ExceptionScope,
+            FinancialImpact = ExceptionFinancialImpact,
+            EvidenceReference = ExceptionEvidenceReference
+        });
+        ExceptionExplanation = ExceptionScope = ExceptionEvidenceReference = string.Empty;
+        ExceptionFinancialImpact = 0;
+    }
+    private string GapEvidenceLabel(AccountingProviderSwitchGapResponse gap) => FinanceText["GapEvidenceLabel", Friendly(gap.DatasetKey ?? gap.Category), gap.CreatedUtc.ToString("d")];
+    private string GapFinancialImpact(AccountingProviderSwitchGapResponse gap)
+    {
+        var data = Assessment?.Datasets.FirstOrDefault(x => x.DatasetKey == gap.DatasetKey && x.EndpointRole == "source");
+        return data is null ? FinanceText["ImpactNeedsReview"] : $"{data.FinancialTotal:N2} {data.Currency}";
+    }
+    private bool CanRequestMappingApproval(AccountingProviderSwitchMappingResponse mapping) => CanManage && mapping.IsMaterial && mapping.ApprovalRequestId is null && mapping.Status == "suggested";
+    private string ApprovalHref(Guid approvalId) => $"/work?companyId={CompanyId:D}&tab=approvals&itemId={approvalId:D}";
+
+    private RenderFragment EndpointHealthCard(AccountingProviderSwitchEndpointResponse endpoint, bool source) => builder =>
+    {
+        var provider = Authority?.Providers.FirstOrDefault(x => x.ProviderKey == endpoint.ProviderKey);
+        var checks = Assessment?.Capabilities.Where(x => x.EndpointRole == (source ? "source" : "target")).ToArray() ?? [];
+        var issueCount = checks.Count(x => x.Level is "unsupported" or "unavailable" or "partial");
+        var connected = endpoint.Kind == "internal" || provider?.IsConnected == true;
+        builder.OpenElement(0, "article"); builder.AddAttribute(1, "class", "migration-card migration-health-card");
+        builder.OpenElement(2, "header"); builder.OpenElement(3, "span"); builder.AddContent(4, endpoint.DisplayName[..1]); builder.CloseElement();
+        builder.OpenElement(5, "div"); builder.OpenElement(6, "h3"); builder.AddContent(7, source ? FinanceText["SourceHealth"] : FinanceText["TargetHealth"]); builder.CloseElement(); builder.OpenElement(8, "p"); builder.AddContent(9, endpoint.DisplayName); builder.CloseElement(); builder.CloseElement(); builder.CloseElement();
+        builder.OpenElement(10, "dl"); builder.OpenElement(11, "dt"); builder.AddContent(12, FinanceText["Connection"]); builder.CloseElement(); builder.OpenElement(13, "dd"); builder.AddContent(14, connected ? FinanceText["Ready"] : FinanceText["NeedsAttention"]); builder.CloseElement();
+        builder.OpenElement(15, "dt"); builder.AddContent(16, FinanceText["EvidenceChecks"]); builder.CloseElement(); builder.OpenElement(17, "dd"); builder.AddContent(18, checks.Length == 0 ? FinanceText["WaitingForAssessment"] : FinanceText["EvidenceCheckCount", checks.Length - issueCount, checks.Length]); builder.CloseElement();
+        builder.OpenElement(19, "dt"); builder.AddContent(20, FinanceText["OpenIssues"]); builder.CloseElement(); builder.OpenElement(21, "dd"); builder.AddContent(22, issueCount); builder.CloseElement(); builder.CloseElement(); builder.CloseElement();
+    };
+
+    private RenderFragment ApprovalCard(string title, string description, string? status, Guid? approvalId, string kind) => builder =>
+    {
+        builder.OpenElement(0, "article"); builder.AddAttribute(1, "class", $"migration-approval-card migration-approval-card--{kind}");
+        builder.OpenElement(2, "span"); builder.AddContent(3, kind == "plan" ? "1" : "2"); builder.CloseElement();
+        builder.OpenElement(4, "div"); builder.OpenElement(5, "h4"); builder.AddContent(6, title); builder.CloseElement(); builder.OpenElement(7, "p"); builder.AddContent(8, description); builder.CloseElement();
+        builder.OpenElement(9, "strong"); builder.AddContent(10, status is null ? FinanceText["NotRequested"] : StatusLabel(status)); builder.CloseElement();
+        if (approvalId.HasValue) { builder.OpenElement(11, "a"); builder.AddAttribute(12, "href", ApprovalHref(approvalId.Value)); builder.AddContent(13, FinanceText["OpenApproval"]); builder.CloseElement(); }
+        builder.CloseElement(); builder.CloseElement();
+    };
+
+    private sealed record EvidenceCheck(string Label, string Explanation, bool Passed);
+}

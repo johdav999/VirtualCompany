@@ -52,7 +52,8 @@ public sealed class NoOpCompanyToolExecutor : ICompanyToolExecutor
             request.TaskId,
             request.WorkflowInstanceId,
             request.CorrelationId,
-            request.ToolVersion ?? registration.Version);
+            request.ToolVersion ?? registration.Version,
+            request.ActorUserId);
 
         var response = await _internalToolContract.ExecuteAsync(
             new InternalToolExecutionRequest(request.ToolName, context, request.RequestPayload),

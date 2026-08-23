@@ -40,16 +40,101 @@ public sealed class AccountingPostingService : IAccountingPostingService
     {
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(command.Entry);
-        return await ValidateAsync(command.Entry, cancellationToken);
+        return await ValidateAsync(command.Entry, requireAuthority: true, cancellationToken);
+    }
+
+    public async Task<AccountingPostingPreview> PreviewNonAuthoritativeCandidateAsync(
+        PreviewNonAuthoritativeAccountingCandidateCommand command,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(command);
+        ArgumentNullException.ThrowIfNull(command.Entry);
+        return await ValidateAsync(command.Entry, requireAuthority: false, cancellationToken);
     }
 
     public async Task<PostedAccountingJournal> PostAsync(PostAccountingEntryCommand command, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(command.Entry);
+        try
+        {
+            return await ExecuteWithSqlRetryAsync(
+                () => PostInternalAsync(command.Entry, command.CorrelationId, command.Entry.OriginalLedgerEntryId,
+                    command.Entry.CorrectionReason, null, cancellationToken),
+                cancellationToken);
+        }
+        catch (AccountingPostingException exception) when (exception.ReasonCode == AccountingPostingReasonCodes.AuthorityUnavailable)
+        {
+            await RecordFormerAuthorityPostingAttemptAsync(command, cancellationToken);
+            throw;
+        }
+    }
+
+    private async Task RecordFormerAuthorityPostingAttemptAsync(PostAccountingEntryCommand command,
+        CancellationToken cancellationToken)
+    {
+        _dbContext.ChangeTracker.Clear();
+        var monitoringRun = await _dbContext.AccountingProviderSwitchMonitoringRuns.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == command.Entry.CompanyId &&
+                (x.Status == AccountingProviderSwitchMonitoringStatuses.Active ||
+                 x.Status == AccountingProviderSwitchMonitoringStatuses.AttentionRequired ||
+                 x.Status == AccountingProviderSwitchMonitoringStatuses.ClosureAwaitingApproval))
+            .OrderByDescending(x => x.StartedUtc).FirstOrDefaultAsync(cancellationToken);
+        if (monitoringRun is null) return;
+        await _auditEventWriter.WriteAsync(new AuditEventWriteRequest(command.Entry.CompanyId, command.Entry.ActorType,
+            command.Entry.ActorUserId == Guid.Empty ? null : command.Entry.ActorUserId,
+            AuditEventActions.AccountingFormerAuthorityPostingBlocked,
+            AuditTargetTypes.AccountingProviderSwitchMonitoring, monitoringRun.Id.ToString("D"), AuditEventOutcomes.Rejected,
+            "A posting attempt to the former accounting authority was blocked after activation.",
+            ["accounting_authority", "accounting_provider_switch_monitoring"],
+            new Dictionary<string, string?> { ["switchId"] = monitoringRun.SwitchId.ToString("D"),
+                ["postingDate"] = command.Entry.PostingDate.ToString("O"), ["sourceType"] = command.Entry.SourceType,
+                ["sourceId"] = command.Entry.SourceId }, command.CorrelationId,
+            _timeProvider.GetUtcNow().UtcDateTime), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+
+    public async Task<PostedAccountingJournal> MaterializeProviderSwitchJournalAsync(
+        MaterializeAccountingProviderSwitchJournalCommand command, CancellationToken cancellationToken)
+    {
+        if (command.CompanyId == Guid.Empty || command.SwitchId == Guid.Empty || command.ExecutionId == Guid.Empty ||
+            command.CandidateId == Guid.Empty || command.ActivationApprovalRequestId == Guid.Empty || command.ActorUserId == Guid.Empty)
+            throw Error(AccountingPostingReasonCodes.InvalidSource, "The provider-switch journal binding is incomplete.");
+        var candidate = await _dbContext.AccountingProviderSwitchNativeCandidates.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.SwitchId == command.SwitchId &&
+                x.Id == command.CandidateId, cancellationToken)
+            ?? throw Error(AccountingPostingReasonCodes.InvalidSource, "The approved native journal candidate was not found.");
+        if (candidate.Status != AccountingProviderSwitchNativeCandidateStatuses.Valid ||
+            candidate.CandidateKind is not (AccountingProviderSwitchNativeCandidateKinds.OpeningJournal or
+                AccountingProviderSwitchNativeCandidateKinds.HistoricalJournal))
+            throw Error(AccountingPostingReasonCodes.InvalidSource, "Only a valid prepared journal candidate can be materialized.");
+        var execution = await _dbContext.AccountingProviderSwitchCutoverExecutions.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.SwitchId == command.SwitchId &&
+                x.Id == command.ExecutionId && x.Status == AccountingProviderSwitchCutoverStatuses.Activating,
+                cancellationToken)
+            ?? throw Error(AccountingPostingReasonCodes.AuthorityUnavailable,
+                "Native migration journals can be committed only inside atomic switch activation.");
+        var snapshot = await _dbContext.AccountingProviderSwitchFinalSnapshots.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == command.CompanyId && x.SwitchId == command.SwitchId &&
+                x.ExecutionId == command.ExecutionId, cancellationToken);
+        if (!string.Equals(snapshot.FinalSourceSnapshotHash, command.FinalSnapshotHash, StringComparison.Ordinal))
+            throw Error(AccountingPostingReasonCodes.IdempotencyConflict, "The final source snapshot changed before journal materialization.", true);
+        var activation = await _dbContext.AccountingProviderSwitchActivationApprovals.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.ExecutionId == command.ExecutionId &&
+                x.ApprovalRequestId == command.ActivationApprovalRequestId && x.FinalSnapshotHash == command.FinalSnapshotHash,
+                cancellationToken)
+            ?? throw Error(AccountingPostingReasonCodes.ApprovalInvalid, "The activation approval is not bound to this final snapshot.");
+        _ = activation;
+        var authority = await _dbContext.AccountingAuthorityPeriods.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == execution.AuthorityPeriodId &&
+                x.Authority == AccountingAuthorityValues.Migration && x.TargetAuthority == AccountingAuthorityValues.InternalLedger,
+                cancellationToken)
+            ?? throw Error(AccountingPostingReasonCodes.AuthorityUnavailable,
+                "The switch is not in the bounded migration authority state for an internal target.");
+        _ = authority;
+        var entry = BuildProviderSwitchEntry(candidate, command.ActorUserId, command.ActivationApprovalRequestId);
         return await ExecuteWithSqlRetryAsync(
-            () => PostInternalAsync(command.Entry, command.CorrelationId, command.Entry.OriginalLedgerEntryId,
-                command.Entry.CorrectionReason, null, cancellationToken),
+            () => PostInternalAsync(entry, command.CorrelationId, null, null, null, cancellationToken, requireAuthority: false),
             cancellationToken);
     }
 
@@ -128,7 +213,8 @@ public sealed class AccountingPostingService : IAccountingPostingService
         Guid? originalLedgerEntryId,
         string? correctionReason,
         (string? Key, string? Version)? policyOverride,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool requireAuthority = true)
     {
         var payloadHash = ComputePayloadHash(entry, originalLedgerEntryId, correctionReason);
         await using var ownedTransaction = _dbContext.Database.CurrentTransaction is null
@@ -148,7 +234,7 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 true);
         }
 
-        var preview = await ValidateAsync(entry, cancellationToken);
+        var preview = await ValidateAsync(entry, requireAuthority, cancellationToken);
         if (!preview.IsValid)
         {
             var first = preview.Issues[0];
@@ -320,7 +406,10 @@ public sealed class AccountingPostingService : IAccountingPostingService
             false);
     }
 
-    private async Task<AccountingPostingPreview> ValidateAsync(ProposedAccountingEntry entry, CancellationToken cancellationToken)
+    private async Task<AccountingPostingPreview> ValidateAsync(
+        ProposedAccountingEntry entry,
+        bool requireAuthority,
+        CancellationToken cancellationToken)
     {
         var issues = new List<AccountingPostingIssue>();
         if (entry.CompanyId == Guid.Empty)
@@ -339,12 +428,12 @@ public sealed class AccountingPostingService : IAccountingPostingService
 
         if (configuration.SetupState != AccountingSetupStateValues.Ready)
             issues.Add(new(AccountingPostingReasonCodes.ConfigurationIncomplete, "Accounting setup must be completed before journals can be posted."));
-        if (_authorityPolicy is null)
+        if (requireAuthority && _authorityPolicy is null)
         {
             if (configuration.Authority != AccountingAuthorityValues.InternalLedger)
                 issues.Add(new(AccountingPostingReasonCodes.AuthorityUnavailable, "The internal ledger is not the accounting authority for this company."));
         }
-        else
+        else if (requireAuthority)
         {
             var authority = await _authorityPolicy.EvaluateAsync(
                 new EvaluateAccountingAuthorityQuery(
@@ -670,6 +759,54 @@ public sealed class AccountingPostingService : IAccountingPostingService
             })
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
+
+    private static ProposedAccountingEntry BuildProviderSwitchEntry(AccountingProviderSwitchNativeCandidate candidate,
+        Guid actorUserId, Guid activationApprovalRequestId)
+    {
+        if (!candidate.FiscalPeriodId.HasValue || !candidate.PostingDate.HasValue || !candidate.DocumentDate.HasValue)
+            throw Error(AccountingPostingReasonCodes.InvalidSource, "The prepared migration journal is missing its period or accounting dates.");
+        using var document = JsonDocument.Parse(candidate.PayloadJson);
+        var root = document.RootElement;
+        var series = String(root, "voucherSeriesCode") ?? throw Error(AccountingPostingReasonCodes.VoucherSeriesNotFound,
+            "The prepared migration journal has no approved voucher series.");
+        if (!root.TryGetProperty("lines", out var lineArray) || lineArray.ValueKind != JsonValueKind.Array)
+            throw Error(AccountingPostingReasonCodes.InvalidLine, "The prepared migration journal has no normalized lines.");
+        var lines = lineArray.EnumerateArray().Select(line => new ProposedAccountingLine(
+            Guid.TryParse(String(line, "financeAccountId"), out var accountId) ? accountId : Guid.Empty,
+            Decimal(line, "debitAmount") ?? Decimal(line, "debit") ?? 0m,
+            Decimal(line, "creditAmount") ?? Decimal(line, "credit") ?? 0m,
+            String(line, "currency") ?? candidate.Currency ?? string.Empty,
+            String(line, "description"),
+            Guid.TryParse(String(line, "costCenterId"), out var costCenterId) ? costCenterId : null,
+            StringDictionary(line, "taxFacts"), StringDictionary(line, "dimensionFacts"))).ToArray();
+        return new ProposedAccountingEntry(candidate.CompanyId, candidate.FiscalPeriodId.Value, series,
+            candidate.DocumentDate.Value, candidate.PostingDate.Value,
+            candidate.CandidateKind == AccountingProviderSwitchNativeCandidateKinds.OpeningJournal
+                ? LedgerPostingTypeValues.SourceDocument
+                : String(root, "postingType") ?? LedgerPostingTypeValues.SourceDocument,
+            String(root, "description") ?? "Approved accounting provider migration journal",
+            "provider_switch_candidate", candidate.Id.ToString("N"), candidate.SourceVersion,
+            candidate.IdempotencyKey, lines, actorUserId, activationApprovalRequestId,
+            RequiresApproval: false,
+            PolicyFacts: new Dictionary<string, string>
+            {
+                ["providerSwitchId"] = candidate.SwitchId.ToString("D"),
+                ["candidateId"] = candidate.Id.ToString("D"),
+                ["sourceHash"] = candidate.SourceHash,
+                ["activationApprovalId"] = activationApprovalRequestId.ToString("D")
+            });
+
+        static string? String(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.ValueKind == JsonValueKind.String ? value.GetString() : null;
+        static decimal? Decimal(JsonElement element, string name) =>
+            element.TryGetProperty(name, out var value) && value.TryGetDecimal(out var number) ? number : null;
+        static IReadOnlyDictionary<string, string> StringDictionary(JsonElement element, string name)
+        {
+            if (!element.TryGetProperty(name, out var value) || value.ValueKind != JsonValueKind.Object)
+                return new Dictionary<string, string>();
+            return value.EnumerateObject().ToDictionary(x => x.Name, x => x.Value.ToString(), StringComparer.Ordinal);
+        }
     }
 
     internal static IReadOnlyDictionary<string, string> ParseFacts(string? json)

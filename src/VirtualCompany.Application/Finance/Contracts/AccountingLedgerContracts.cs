@@ -85,7 +85,11 @@ public sealed record AccountingPostingPreview(
     IReadOnlyList<AccountingPostingIssue> Issues);
 
 public sealed record PreviewAccountingEntryCommand(ProposedAccountingEntry Entry);
+public sealed record PreviewNonAuthoritativeAccountingCandidateCommand(ProposedAccountingEntry Entry);
 public sealed record PostAccountingEntryCommand(ProposedAccountingEntry Entry, string? CorrelationId = null);
+public sealed record MaterializeAccountingProviderSwitchJournalCommand(Guid CompanyId, Guid SwitchId,
+    Guid ExecutionId, Guid CandidateId, string FinalSnapshotHash, Guid ActivationApprovalRequestId,
+    Guid ActorUserId, string CorrelationId);
 public sealed record ReverseAccountingEntryCommand(
     Guid CompanyId,
     Guid OriginalLedgerEntryId,
@@ -163,7 +167,12 @@ public sealed record GetAccountingJournalBySourceQuery(Guid CompanyId, string So
 public interface IAccountingPostingService
 {
     Task<AccountingPostingPreview> PreviewAsync(PreviewAccountingEntryCommand command, CancellationToken cancellationToken);
+    Task<AccountingPostingPreview> PreviewNonAuthoritativeCandidateAsync(
+        PreviewNonAuthoritativeAccountingCandidateCommand command,
+        CancellationToken cancellationToken);
     Task<PostedAccountingJournal> PostAsync(PostAccountingEntryCommand command, CancellationToken cancellationToken);
+    Task<PostedAccountingJournal> MaterializeProviderSwitchJournalAsync(
+        MaterializeAccountingProviderSwitchJournalCommand command, CancellationToken cancellationToken);
     Task<PostedAccountingJournal> ReverseAsync(ReverseAccountingEntryCommand command, CancellationToken cancellationToken);
 }
 

@@ -985,6 +985,3266 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("BlockedFromStatus")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("blocked_from_status");
+
+                    b.Property<DateTime?>("BlockedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("blocked_at");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<Guid?>("CancelledByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("cancelled_by_user_id");
+
+                    b.Property<DateTime?>("CancelledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("EffectiveFiscalPeriodId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("effective_fiscal_period_id");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<string>("MigrationStrategy")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("migration_strategy");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("reason");
+
+                    b.Property<Guid?>("ResponsibleAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("responsible_agent_id");
+
+                    b.Property<Guid>("ResponsibleUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("responsible_user_id");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("source_kind");
+
+                    b.Property<string>("SourceProviderKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_provider_key");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("StatusChangedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("status_changed_at");
+
+                    b.Property<string>("TargetKind")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("target_kind");
+
+                    b.Property<string>("TargetProviderKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("target_provider_key");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId")
+                        .IsUnique()
+                        .HasDatabaseName("UX_accounting_provider_switches_company_active")
+                        .HasFilter("[status] <> 'completed' AND [status] <> 'cancelled'");
+
+                    b.HasIndex("EffectiveFiscalPeriodId");
+
+                    b.HasIndex("CompanyId", "CorrelationId");
+
+                    b.HasIndex("CompanyId", "EffectiveFiscalPeriodId");
+
+                    b.HasIndex("CompanyId", "ResponsibleAgentId");
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("accounting_provider_switches", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switches_cancellation", "([status] = 'cancelled' AND [cancelled_at] IS NOT NULL AND [cancelled_by_user_id] IS NOT NULL AND [cancellation_reason] IS NOT NULL) OR ([status] <> 'cancelled' AND [cancelled_at] IS NULL AND [cancelled_by_user_id] IS NULL AND [cancellation_reason] IS NULL)");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switches_distinct_endpoints", "NOT ([source_kind] = [target_kind] AND COALESCE([source_provider_key], '') = COALESCE([target_provider_key], ''))");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switches_source_endpoint", "([source_kind] = 'internal' AND [source_provider_key] IS NULL) OR ([source_kind] = 'external' AND [source_provider_key] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switches_status", "[status] IN ('draft', 'assessing', 'ready_for_planning', 'plan_awaiting_approval', 'preparing_target', 'rehearsal_passed', 'scheduled', 'source_frozen', 'reconciling', 'activation_awaiting_approval', 'target_authoritative', 'monitoring', 'completed', 'blocked', 'cancelled', 'recovery')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switches_strategy", "[migration_strategy] IN ('opening_balances_and_open_items', 'current_fiscal_year', 'full_history')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switches_target_endpoint", "([target_kind] = 'internal' AND [target_provider_key] IS NULL) OR ([target_kind] = 'external' AND [target_provider_key] IS NOT NULL)");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switches_version", "[version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchActivationApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<string>("FinalSnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("final_snapshot_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("FinalSnapshotId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("final_snapshot_id");
+
+                    b.Property<string>("ReconciliationHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("reconciliation_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<long>("SwitchVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("switch_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("CompanyId", "ApprovalRequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ExecutionId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "ExecutionId");
+
+                    b.ToTable("accounting_provider_switch_activation_approvals", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchArchiveDependency", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApprovedPlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("approved_plan_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("ApprovedPlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approved_plan_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Dataset")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("dataset");
+
+                    b.Property<string>("EvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("evidence_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<Guid>("PreparedByRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("prepared_by_run_id");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<Guid?>("StagedRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("staged_record_id");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "PreparedByRunId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "Dataset", "SourceIdentity", "ReasonCode")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_archive_dependencies", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchAssessment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<int>("TotalWorkItems")
+                        .HasColumnType("int")
+                        .HasColumnName("total_work_items");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<int>("WorkIndex")
+                        .HasColumnType("int")
+                        .HasColumnName("work_index");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "RequestedUtc");
+
+                    b.HasIndex("Status", "NextAttemptUtc", "LeaseExpiresUtc");
+
+                    b.ToTable("accounting_provider_switch_assessments", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_assessments_progress", "[work_index] >= 0 AND [work_index] <= [total_work_items] AND [total_work_items] > 0");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_assessments_status", "[status] IN ('queued', 'running', 'completed', 'failed')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_assessments_version", "[version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCandidateValidation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("candidate_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<bool>("IsBlocking")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_blocking");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<DateTime>("ValidatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("validated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "CandidateId", "ReasonCode")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_candidate_validations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCapability", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("assessment_id");
+
+                    b.Property<string>("CapabilityKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("capability_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EndpointRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("endpoint_role");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<string>("Level")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("level");
+
+                    b.Property<DateTime>("ObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<string>("RequiredScope")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("required_scope");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "AssessmentId");
+
+                    b.HasIndex("CompanyId", "AssessmentId", "EndpointRole", "CapabilityKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_capabilities", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_capabilities_level", "[level] IN ('supported', 'partial', 'unsupported', 'unknown')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_capabilities_role", "[endpoint_role] IN ('source', 'target')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("ActivatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("activated_at");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid?>("AuthorityPeriodId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("authority_period_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("CurrentStep")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("current_step");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<Guid?>("FinalSnapshotId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("final_snapshot_id");
+
+                    b.Property<DateTime?>("FreezeStartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("freeze_started_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<string>("NextAction")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("next_action");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("plan_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("plan_id");
+
+                    b.Property<int>("PlanVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("plan_version");
+
+                    b.Property<Guid?>("PreparationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("preparation_id");
+
+                    b.Property<bool>("ProviderReconciliationRequired")
+                        .HasColumnType("bit")
+                        .HasColumnName("provider_reconciliation_required");
+
+                    b.Property<DateTime?>("ReconciledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reconciled_at");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<bool>("RetryIsSafe")
+                        .HasColumnType("bit")
+                        .HasColumnName("retry_is_safe");
+
+                    b.Property<DateTime>("ScheduledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("scheduled_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<bool>("TargetActivityRecorded")
+                        .HasColumnType("bit")
+                        .HasColumnName("target_activity_recorded");
+
+                    b.Property<Guid?>("TargetTransferBatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("target_transfer_batch_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("AuthorityPeriodId");
+
+                    b.HasIndex("PreparationId");
+
+                    b.HasIndex("TargetTransferBatchId");
+
+                    b.HasIndex("CompanyId", "SwitchId")
+                        .IsUnique()
+                        .HasFilter("[status] <> 'activated' AND [status] <> 'cancelled' AND [status] <> 'recovered' AND [status] <> 'corrective_cutover_required'");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanId");
+
+                    b.HasIndex("Status", "NextAttemptUtc", "LeaseExpiresUtc");
+
+                    b.ToTable("accounting_provider_switch_cutover_executions", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_accounting_provider_switch_cutover_executions_attempt_count", "[attempt_count] >= 0");
+
+                            t.HasCheckConstraint("ck_accounting_provider_switch_cutover_executions_status", "[status] IN ('queued','freezing','transferring','reconciling','awaiting_activation_approval','activating','activated','blocked','cancelled','recovered','corrective_cutover_required')");
+
+                            t.HasCheckConstraint("ck_accounting_provider_switch_cutover_executions_version", "[version] >= 1");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverPlan", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("FreezeEndsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("freeze_ends_at");
+
+                    b.Property<DateTime>("FreezeStartsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("freeze_starts_at");
+
+                    b.Property<Guid>("GeneratedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("generated_by_user_id");
+
+                    b.Property<DateTime>("GeneratedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("generated_at");
+
+                    b.Property<string>("ParticipantsJson")
+                        .IsRequired()
+                        .HasMaxLength(8000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("participants_json");
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("plan_hash")
+                        .IsFixedLength();
+
+                    b.Property<int>("PlanVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("plan_version");
+
+                    b.Property<string>("RecoveryBoundary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("recovery_boundary");
+
+                    b.Property<Guid>("RehearsalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rehearsal_id");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasMaxLength(32000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("snapshot_json");
+
+                    b.Property<string>("SourceSnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("source_snapshot_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("Strategy")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("strategy");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanHash")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanVersion")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "RehearsalId");
+
+                    b.ToTable("accounting_provider_switch_cutover_plans", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchDataset", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("assessment_id");
+
+                    b.Property<string>("Availability")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("availability");
+
+                    b.Property<string>("CapabilityLevel")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("capability_level");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("DatasetKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("dataset_key");
+
+                    b.Property<string>("EndpointRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("endpoint_role");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<DateTime>("ExtractedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("extracted_at");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<decimal>("FinancialTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("financial_total");
+
+                    b.Property<string>("IntegrityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("integrity_hash");
+
+                    b.Property<long>("RecordCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("record_count");
+
+                    b.Property<string>("SourceCursor")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_cursor");
+
+                    b.Property<string>("SourceVersion")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_version");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "AssessmentId");
+
+                    b.HasIndex("CompanyId", "AssessmentId", "EndpointRole", "DatasetKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_datasets", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_datasets_availability", "[availability] IN ('available', 'confirmed_absent', 'not_returned', 'not_authorized', 'unsupported', 'unknown')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_datasets_capability", "[capability_level] IN ('supported', 'partial', 'unsupported', 'unknown')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_datasets_count", "[record_count] >= 0");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_datasets_role", "[endpoint_role] IN ('source', 'target')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchFinalCheck", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CalculatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("calculated_at");
+
+                    b.Property<string>("CheckKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("check_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("result");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "ExecutionId", "CheckKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_final_checks", null, t =>
+                        {
+                            t.HasCheckConstraint("ck_accounting_provider_switch_final_checks_result", "[result] IN ('passed','failed')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchFinalSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApprovedSourceSnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("approved_source_snapshot_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<decimal>("DeltaFinancialTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("delta_financial_total");
+
+                    b.Property<long>("DeltaRecordCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("delta_record_count");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<DateTime>("ExtractionCompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("extraction_completed_at");
+
+                    b.Property<DateTime>("ExtractionStartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("extraction_started_at");
+
+                    b.Property<string>("FinalSourceSnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("final_source_snapshot_hash")
+                        .IsFixedLength();
+
+                    b.Property<decimal>("FinancialTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("financial_total");
+
+                    b.Property<string>("GapHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("gap_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("MappingHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("mapping_hash")
+                        .IsFixedLength();
+
+                    b.Property<long>("RecordCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("record_count");
+
+                    b.Property<string>("SnapshotJson")
+                        .IsRequired()
+                        .HasMaxLength(64000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("snapshot_json");
+
+                    b.Property<string>("StagingHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("staging_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "ExecutionId")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_final_snapshots", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchGap", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AssessmentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("assessment_id");
+
+                    b.Property<string>("Category")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("category");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DatasetKey")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("dataset_key");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<bool>("IsBlocking")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_blocking");
+
+                    b.Property<string>("OperatorAction")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("operator_action");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("severity");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "AssessmentId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IsBlocking");
+
+                    b.HasIndex("CompanyId", "AssessmentId", "ReasonCode", "DatasetKey")
+                        .IsUnique()
+                        .HasFilter("[dataset_key] IS NOT NULL");
+
+                    b.ToTable("accounting_provider_switch_gaps", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_gaps_severity", "[severity] IN ('information', 'warning', 'blocking')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchManualEvidence", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CheckId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("check_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EvidenceReference")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("evidence_reference");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<string>("InputHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("input_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("RecordedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("recorded_by_user_id");
+
+                    b.Property<DateTime>("RecordedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("recorded_at");
+
+                    b.Property<Guid>("RehearsalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rehearsal_id");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CheckId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "RehearsalId", "CheckId", "InputHash")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_manual_evidence", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingDecision", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("AffectedFinancialTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("affected_financial_total");
+
+                    b.Property<long>("AffectedRecordCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("affected_record_count");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<string>("BindingHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("binding_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<decimal>("Confidence")
+                        .HasPrecision(5, 4)
+                        .HasColumnType("decimal(5,4)")
+                        .HasColumnName("confidence");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<bool>("IsMaterial")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_material");
+
+                    b.Property<Guid>("MappingSetId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("mapping_set_id");
+
+                    b.Property<string>("MappingType")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("mapping_type");
+
+                    b.Property<int>("MappingVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("mapping_version");
+
+                    b.Property<string>("SourceKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_key");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("SuggestionMethod")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("suggestion_method");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<string>("TargetKey")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("target_key");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("CompanyId", "MappingSetId", "SourceKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "MappingSetId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "Status", "MappingType");
+
+                    b.ToTable("accounting_provider_switch_mapping_decisions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_mapping_decisions_status", "[status] IN ('suggested','awaiting_approval','approved','rejected','stale')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_mapping_decisions_version", "[version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("MappingDecisionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("mapping_decision_id");
+
+                    b.Property<string>("StagedNormalizedHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("staged_normalized_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("StagedRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("staged_record_id");
+
+                    b.Property<string>("StagedSourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("staged_source_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "MappingDecisionId", "StagedRecordId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "MappingDecisionId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "StagedRecordId");
+
+                    b.ToTable("accounting_provider_switch_mapping_records", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingSet", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_current");
+
+                    b.Property<string>("MappingType")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("mapping_type");
+
+                    b.Property<int>("MappingVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("mapping_version");
+
+                    b.Property<string>("ScopeKey")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("scope_key");
+
+                    b.Property<DateTime?>("SupersededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("superseded_at");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "MappingType", "ScopeKey", "IsCurrent")
+                        .IsUnique()
+                        .HasFilter("[is_current] = CAST(1 AS bit)");
+
+                    b.HasIndex("CompanyId", "SwitchId", "MappingType", "ScopeKey", "MappingVersion")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_mapping_sets", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_mapping_sets_version", "[mapping_version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringCheck", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CheckKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("check_key");
+
+                    b.Property<int>("CheckSequence")
+                        .HasColumnType("int")
+                        .HasColumnName("check_sequence");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("fingerprint");
+
+                    b.Property<bool>("IsBlocking")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_blocking");
+
+                    b.Property<Guid>("MonitoringRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("monitoring_run_id");
+
+                    b.Property<DateTime>("ObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)")
+                        .HasColumnName("severity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "MonitoringRunId", "CheckSequence", "CheckKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_monitoring_checks", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringIncident", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("AcceptedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("accepted_by_user_id");
+
+                    b.Property<DateTime?>("AcceptedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("accepted_at");
+
+                    b.Property<string>("CheckKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("check_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EvidenceReference")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("evidence_reference");
+
+                    b.Property<string>("ExceptionExplanation")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("exception_explanation");
+
+                    b.Property<string>("ExceptionScope")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("exception_scope");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<decimal?>("FinancialImpact")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("financial_impact");
+
+                    b.Property<string>("Fingerprint")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("fingerprint");
+
+                    b.Property<DateTime>("FirstObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("first_observed_at");
+
+                    b.Property<bool>("IsBlocking")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_blocking");
+
+                    b.Property<DateTime>("LastObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_observed_at");
+
+                    b.Property<Guid>("MonitoringRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("monitoring_run_id");
+
+                    b.Property<int>("OccurrenceCount")
+                        .HasColumnType("int")
+                        .HasColumnName("occurrence_count");
+
+                    b.Property<DateTime?>("ResolvedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)")
+                        .HasColumnName("severity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<Guid?>("TaskId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("task_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("TaskId");
+
+                    b.HasIndex("CompanyId", "MonitoringRunId", "Fingerprint")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "IsBlocking");
+
+                    b.ToTable("accounting_provider_switch_monitoring_incidents", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringRun", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActivationExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("activation_execution_id");
+
+                    b.Property<Guid?>("AssignedOwnerAgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("assigned_owner_agent_id");
+
+                    b.Property<Guid>("AssignedOwnerUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("assigned_owner_user_id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<int>("CheckSequence")
+                        .HasColumnType("int")
+                        .HasColumnName("check_sequence");
+
+                    b.Property<Guid?>("ClosedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("closed_by_user_id");
+
+                    b.Property<DateTime?>("ClosedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("closed_at");
+
+                    b.Property<Guid?>("ClosureApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("closure_approval_request_id");
+
+                    b.Property<string>("ClosureDecision")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("closure_decision");
+
+                    b.Property<string>("ClosureEvidenceHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("closure_evidence_hash");
+
+                    b.Property<string>("ClosureSummary")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("closure_summary");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<int>("ConsecutiveFailureCount")
+                        .HasColumnType("int")
+                        .HasColumnName("consecutive_failure_count");
+
+                    b.Property<Guid?>("CorrectiveSwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("corrective_switch_id");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<DateTime?>("LastCheckStartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_check_started_at");
+
+                    b.Property<DateTime?>("LastSuccessfulCheckUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_successful_check_at");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextRunUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_run_at");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<int>("WindowDays")
+                        .HasColumnType("int")
+                        .HasColumnName("window_days");
+
+                    b.Property<DateTime>("WindowEndsUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("window_ends_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ClosureApprovalRequestId");
+
+                    b.HasIndex("CompanyId", "CorrectiveSwitchId");
+
+                    b.HasIndex("CompanyId", "SwitchId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "ActivationExecutionId");
+
+                    b.HasIndex("Status", "NextRunUtc", "LeaseExpiresUtc");
+
+                    b.ToTable("accounting_provider_switch_monitoring_runs", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_provider_switch_monitoring_status", "[status] IN ('active','attention_required','closure_awaiting_approval','closed','failed')");
+
+                            t.HasCheckConstraint("CK_provider_switch_monitoring_window", "[window_days] BETWEEN 7 AND 30");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchNativeCandidate", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CandidateKind")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("candidate_kind");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateOnly?>("DocumentDate")
+                        .HasColumnType("date")
+                        .HasColumnName("document_date");
+
+                    b.Property<string>("EvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("evidence_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid?>("ExternalReferenceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("external_reference_id");
+
+                    b.Property<decimal>("FinancialAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("financial_amount");
+
+                    b.Property<Guid?>("FiscalPeriodId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("fiscal_period_id");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("PayloadJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("payload_json");
+
+                    b.Property<DateOnly?>("PostingDate")
+                        .HasColumnType("date")
+                        .HasColumnName("posting_date");
+
+                    b.Property<Guid>("PreparedByRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("prepared_by_run_id");
+
+                    b.Property<string>("SourceDataset")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_dataset");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("source_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_version");
+
+                    b.Property<Guid>("StagedRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("staged_record_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "PreparedByRunId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "StagedRecordId", "CandidateKind")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "Status", "CandidateKind");
+
+                    b.ToTable("accounting_provider_switch_native_candidates", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_native_candidates_status", "[status] IN ('valid','rejected')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchNativeMaterialization", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("CandidateHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("candidate_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("CandidateId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("candidate_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<DateTime>("MaterializedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("materialized_at");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<Guid>("TargetRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("target_record_id");
+
+                    b.Property<string>("TargetRecordType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("target_record_type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CandidateId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "CandidateId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "ExecutionId");
+
+                    b.ToTable("accounting_provider_switch_native_materializations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchPlanApproval", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("plan_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("plan_id");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("CompanyId", "ApprovalRequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "PlanId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanId");
+
+                    b.ToTable("accounting_provider_switch_plan_approvals", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchPreparation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("ArchiveDependencyCount")
+                        .HasColumnType("int")
+                        .HasColumnName("archive_dependency_count");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<int>("CandidateCount")
+                        .HasColumnType("int")
+                        .HasColumnName("candidate_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<int>("CompletedWorkItems")
+                        .HasColumnType("int")
+                        .HasColumnName("completed_work_items");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<int>("ExistingReferenceCount")
+                        .HasColumnType("int")
+                        .HasColumnName("existing_reference_count");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("plan_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("plan_id");
+
+                    b.Property<int>("RejectedCandidateCount")
+                        .HasColumnType("int")
+                        .HasColumnName("rejected_candidate_count");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Strategy")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("strategy");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<int>("TotalWorkItems")
+                        .HasColumnType("int")
+                        .HasColumnName("total_work_items");
+
+                    b.Property<int>("ValidCandidateCount")
+                        .HasColumnType("int")
+                        .HasColumnName("valid_candidate_count");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanHash")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanId");
+
+                    b.HasIndex("Status", "NextAttemptUtc", "LeaseExpiresUtc");
+
+                    b.ToTable("accounting_provider_switch_preparations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_preparations_counts", "[completed_work_items] >= 0 AND [total_work_items] >= 0 AND [candidate_count] >= 0 AND [valid_candidate_count] >= 0 AND [rejected_candidate_count] >= 0 AND [existing_reference_count] >= 0 AND [archive_dependency_count] >= 0");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_preparations_status", "[status] IN ('queued','running','completed','failed')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_preparations_version", "[version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchReadinessCheck", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CalculatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("calculated_at");
+
+                    b.Property<string>("CheckKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("check_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<bool>("IsBlocking")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_blocking");
+
+                    b.Property<bool>("IsReady")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_ready");
+
+                    b.Property<Guid>("PreparationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("preparation_id");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "PreparationId", "CheckKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_readiness_checks", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchReconciliationCheck", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CalculatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("calculated_at");
+
+                    b.Property<string>("CalculationVersion")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("calculation_version");
+
+                    b.Property<string>("CheckKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("check_key");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("CurrencyKey")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("currency_key");
+
+                    b.Property<string>("DataSourcesJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("data_sources_json");
+
+                    b.Property<string>("ExpectedValue")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("expected_value");
+
+                    b.Property<bool>("ManualEvidenceAllowed")
+                        .HasColumnType("bit")
+                        .HasColumnName("manual_evidence_allowed");
+
+                    b.Property<string>("ObservedValue")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("observed_value");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("RehearsalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rehearsal_id");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("result");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<decimal>("Tolerance")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("tolerance");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "RehearsalId", "CheckKey", "CurrencyKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_reconciliation_checks", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<int>("CompletedWorkItems")
+                        .HasColumnType("int")
+                        .HasColumnName("completed_work_items");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("Disclosure")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("disclosure");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<bool>("ProviderAcceptanceProven")
+                        .HasColumnType("bit")
+                        .HasColumnName("provider_acceptance_proven");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<string>("SimulationKind")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("simulation_kind");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(24)
+                        .HasColumnType("nvarchar(24)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<int>("TotalWorkItems")
+                        .HasColumnType("int")
+                        .HasColumnName("total_work_items");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "NextAttemptUtc", "LeaseExpiresUtc");
+
+                    b.ToTable("accounting_provider_switch_rehearsals", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_rehearsals_status", "[status] IN ('queued','running','completed','failed')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_rehearsals_version", "[version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsalDatasetResult", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("CalculatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("calculated_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("CurrencyKey")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("currency_key");
+
+                    b.Property<string>("Dataset")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("dataset");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<long>("ExpectedCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("expected_count");
+
+                    b.Property<decimal>("ExpectedTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("expected_total");
+
+                    b.Property<long>("ObservedCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("observed_count");
+
+                    b.Property<decimal>("ObservedTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("observed_total");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("RehearsalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rehearsal_id");
+
+                    b.Property<string>("Result")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("result");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "RehearsalId", "Dataset", "CurrencyKey")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_rehearsal_datasets", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsalInput", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("DatasetSummaryJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("dataset_summary_json");
+
+                    b.Property<decimal>("FinancialTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("financial_total");
+
+                    b.Property<string>("GapHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("gap_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("MappingHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("mapping_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("RehearsalId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rehearsal_id");
+
+                    b.Property<string>("SourceSnapshotHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("source_snapshot_hash")
+                        .IsFixedLength();
+
+                    b.Property<long>("StagedRecordCount")
+                        .HasColumnType("bigint")
+                        .HasColumnName("staged_record_count");
+
+                    b.Property<string>("StagingHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("staging_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("Strategy")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("strategy");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<long>("SwitchVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("switch_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "RehearsalId")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_rehearsal_inputs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchStagedRecord", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("ApprovalBindingHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("approval_binding_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("Dataset")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("dataset");
+
+                    b.Property<string>("Disposition")
+                        .IsRequired()
+                        .HasMaxLength(48)
+                        .HasColumnType("nvarchar(48)")
+                        .HasColumnName("disposition");
+
+                    b.Property<string>("DispositionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("disposition_reason");
+
+                    b.Property<Guid?>("DuplicateOfStagedRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("duplicate_of_staged_record_id");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<Guid>("ExtractionBatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("extraction_batch_id");
+
+                    b.Property<decimal>("FinancialAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("financial_amount");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_current");
+
+                    b.Property<Guid?>("MappingDecisionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("mapping_decision_id");
+
+                    b.Property<int?>("MappingVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("mapping_version");
+
+                    b.Property<string>("NormalizedDataJson")
+                        .IsRequired()
+                        .HasMaxLength(16000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("normalized_data_json");
+
+                    b.Property<string>("NormalizedHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("normalized_hash")
+                        .IsFixedLength();
+
+                    b.Property<DateTime?>("ProviderModifiedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("provider_modified_at");
+
+                    b.Property<string>("SourceEndpointKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("source_endpoint_key");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("source_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("SourceRecordKeyHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("source_record_key_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_version");
+
+                    b.Property<string>("StableIdentityHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("stable_identity_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("DuplicateOfStagedRecordId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "SourceRecordKeyHash")
+                        .IsUnique()
+                        .HasFilter("[is_current] = CAST(1 AS bit)");
+
+                    b.HasIndex("CompanyId", "SwitchId", "StableIdentityHash")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "IsCurrent", "MappingDecisionId");
+
+                    b.HasIndex("CompanyId", "SwitchId", "Dataset", "Disposition", "IsCurrent");
+
+                    b.ToTable("accounting_provider_switch_staged_records", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_accounting_provider_switch_staged_records_disposition", "[disposition] IN ('ready','mapped','transformed','opening_balance_representation','duplicate','excluded_with_approval','missing','unsupported','conflicting','awaiting_evidence','blocked')");
+
+                            t.HasCheckConstraint("CK_accounting_provider_switch_staged_records_version", "[version] > 0");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetAcknowledgement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AcknowledgementHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("acknowledgement_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ExternalId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("external_id");
+
+                    b.Property<Guid>("ItemId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("item_id");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<DateTime>("ReceivedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("received_at");
+
+                    b.Property<string>("SafeSummary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ItemId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "BatchId", "ItemId");
+
+                    b.ToTable("accounting_provider_switch_target_acknowledgements", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_number");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<string>("FailureCategory")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_category");
+
+                    b.Property<Guid>("ItemId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("item_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<bool>("ProviderAcceptedRequest")
+                        .HasColumnType("bit")
+                        .HasColumnName("provider_accepted_request");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ItemId", "AttemptNumber")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "SwitchId", "BatchId", "ItemId");
+
+                    b.ToTable("accounting_provider_switch_target_transfer_attempts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferBatch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<string>("CorrelationId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<int>("FinalItemCount")
+                        .HasColumnType("int")
+                        .HasColumnName("final_item_count");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("PackageHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("package_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("PlanHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("plan_hash")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("PlanId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("plan_id");
+
+                    b.Property<int>("PlanVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("plan_version");
+
+                    b.Property<int>("PreparatoryItemCount")
+                        .HasColumnType("int")
+                        .HasColumnName("preparatory_item_count");
+
+                    b.Property<int>("PreviewItemCount")
+                        .HasColumnType("int")
+                        .HasColumnName("preview_item_count");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<DateTime>("RequestedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("requested_at");
+
+                    b.Property<DateTime?>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<string>("TargetProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("target_provider_key");
+
+                    b.Property<int>("TotalItemCount")
+                        .HasColumnType("int")
+                        .HasColumnName("total_item_count");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SwitchId", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "NextAttemptUtc", "LeaseExpiresUtc");
+
+                    b.HasIndex("CompanyId", "SwitchId", "PlanId", "PackageHash")
+                        .IsUnique();
+
+                    b.ToTable("accounting_provider_switch_target_transfer_batches", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferItem", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<string>("CommandType")
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("command_type");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Dataset")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("dataset");
+
+                    b.Property<string>("FailureCategory")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_category");
+
+                    b.Property<string>("HttpMethod")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("http_method");
+
+                    b.Property<int?>("MappingVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("mapping_version");
+
+                    b.Property<string>("NormalizedHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("normalized_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("OperationMode")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("operation_mode");
+
+                    b.Property<string>("Path")
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("path");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("payload_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("ProviderExternalId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_external_id");
+
+                    b.Property<string>("ProviderPayloadType")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("provider_payload_type");
+
+                    b.Property<bool>("ReconciliationNeeded")
+                        .HasColumnType("bit")
+                        .HasColumnName("reconciliation_needed");
+
+                    b.Property<string>("SafePayloadSummary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_payload_summary");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<string>("SanitizedPayloadJson")
+                        .HasMaxLength(64000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("sanitized_payload_json");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("source_hash")
+                        .IsFixedLength();
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_version");
+
+                    b.Property<string>("StableIdentity")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nchar(64)")
+                        .HasColumnName("stable_identity")
+                        .IsFixedLength();
+
+                    b.Property<Guid>("StagedRecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("staged_record_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("SwitchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("switch_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<Guid?>("WriteRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("write_request_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ApprovalRequestId");
+
+                    b.HasIndex("WriteRequestId");
+
+                    b.HasIndex("CompanyId", "StableIdentity")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "WriteRequestId")
+                        .IsUnique()
+                        .HasFilter("[write_request_id] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "BatchId", "Status");
+
+                    b.HasIndex("CompanyId", "SwitchId", "StagedRecordId");
+
+                    b.ToTable("accounting_provider_switch_target_transfer_items", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingTaxReview", b =>
                 {
                     b.Property<Guid>("Id")
@@ -27457,6 +30717,621 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Navigation("LedgerEntry");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitch", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FiscalPeriod", "EffectiveFiscalPeriod")
+                        .WithMany()
+                        .HasForeignKey("EffectiveFiscalPeriodId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Agent", "ResponsibleAgent")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ResponsibleAgentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("Company");
+
+                    b.Navigation("EffectiveFiscalPeriod");
+
+                    b.Navigation("ResponsibleAgent");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchActivationApproval", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchArchiveDependency", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchPreparation", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PreparedByRunId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchAssessment", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCandidateValidation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchNativeCandidate", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "CandidateId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCapability", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchAssessment", "Assessment")
+                        .WithMany("Capabilities")
+                        .HasForeignKey("CompanyId", "SwitchId", "AssessmentId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Assessment");
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingAuthorityPeriod", null)
+                        .WithMany()
+                        .HasForeignKey("AuthorityPeriodId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchPreparation", null)
+                        .WithMany()
+                        .HasForeignKey("PreparationId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferBatch", null)
+                        .WithMany()
+                        .HasForeignKey("TargetTransferBatchId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverPlan", "Plan")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Plan");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverPlan", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "RehearsalId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchDataset", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchAssessment", "Assessment")
+                        .WithMany("Datasets")
+                        .HasForeignKey("CompanyId", "SwitchId", "AssessmentId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Assessment");
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchFinalCheck", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchFinalSnapshot", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchGap", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchAssessment", "Assessment")
+                        .WithMany("Gaps")
+                        .HasForeignKey("CompanyId", "SwitchId", "AssessmentId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Assessment");
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchManualEvidence", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchReconciliationCheck", null)
+                        .WithMany()
+                        .HasForeignKey("CheckId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "RehearsalId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingDecision", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingSet", "MappingSet")
+                        .WithMany("Decisions")
+                        .HasForeignKey("CompanyId", "SwitchId", "MappingSetId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("MappingSet");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingRecord", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingDecision", "MappingDecision")
+                        .WithMany("AffectedRecords")
+                        .HasForeignKey("CompanyId", "SwitchId", "MappingDecisionId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchStagedRecord", "StagedRecord")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "StagedRecordId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("MappingDecision");
+
+                    b.Navigation("StagedRecord");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingSet", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringCheck", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringRun", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MonitoringRunId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringIncident", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.WorkTask", null)
+                        .WithMany()
+                        .HasForeignKey("TaskId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringRun", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "MonitoringRunId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMonitoringRun", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ClosureApprovalRequestId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CorrectiveSwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "ActivationExecutionId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchNativeCandidate", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchPreparation", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PreparedByRunId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchStagedRecord", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "StagedRecordId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchNativeMaterialization", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchNativeCandidate", null)
+                        .WithMany()
+                        .HasForeignKey("CandidateId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchPlanApproval", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverPlan", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchPreparation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverPlan", "Plan")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Plan");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchReadinessCheck", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchPreparation", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PreparationId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchReconciliationCheck", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "RehearsalId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsalDatasetResult", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "RehearsalId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsalInput", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchRehearsal", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "RehearsalId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchStagedRecord", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchStagedRecord", null)
+                        .WithMany()
+                        .HasForeignKey("DuplicateOfStagedRecordId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetAcknowledgement", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferItem", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "BatchId", "ItemId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "BatchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferAttempt", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferItem", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "BatchId", "ItemId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "BatchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferBatch", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitch", "Switch")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchCutoverPlan", "Plan")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "PlanId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Plan");
+
+                    b.Navigation("Switch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferItem", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", null)
+                        .WithMany()
+                        .HasForeignKey("ApprovalRequestId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceIntegrationWriteCommandRecord", null)
+                        .WithMany()
+                        .HasForeignKey("WriteRequestId")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchTargetTransferBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AccountingProviderSwitchStagedRecord", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SwitchId", "StagedRecordId")
+                        .HasPrincipalKey("CompanyId", "SwitchId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingTaxReview", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -32286,6 +36161,25 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.Navigation("Conflicts");
 
                     b.Navigation("Reports");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchAssessment", b =>
+                {
+                    b.Navigation("Capabilities");
+
+                    b.Navigation("Datasets");
+
+                    b.Navigation("Gaps");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingDecision", b =>
+                {
+                    b.Navigation("AffectedRecords");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AccountingProviderSwitchMappingSet", b =>
+                {
+                    b.Navigation("Decisions");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentScheduledTrigger", b =>

@@ -13,7 +13,8 @@ public sealed record InternalToolExecutionContext(
     Guid? TaskId = null,
     Guid? WorkflowInstanceId = null,
     string? CorrelationId = null,
-    string? ToolVersion = null);
+    string? ToolVersion = null,
+    Guid? ActorUserId = null);
 
 public sealed record InternalToolExecutionRequest(
     string ToolName,
@@ -30,6 +31,7 @@ public sealed record InternalToolExecutionRequest(
     public Guid? WorkflowInstanceId => Context.WorkflowInstanceId;
     public string? CorrelationId => Context.CorrelationId;
     public string? ToolVersion => Context.ToolVersion;
+    public Guid? ActorUserId => Context.ActorUserId;
 }
 
 public sealed record InternalToolExecutionResponse(
@@ -103,7 +105,8 @@ public sealed record TrustedToolRegistration(
     IReadOnlySet<string> Scopes,
     string Version = "1.0.0",
     JsonObject? InputSchema = null,
-    JsonObject? OutputSchema = null)
+    JsonObject? OutputSchema = null,
+    bool SensitiveAction = false)
 {
     private static readonly Regex SemanticVersionPattern = new(
         @"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$",
@@ -131,7 +134,8 @@ public sealed record ToolDefinitionManifest(
     string Version,
     ToolActionType ActionType,
     JsonObject InputSchema,
-    JsonObject OutputSchema);
+    JsonObject OutputSchema,
+    bool SensitiveAction = false);
 
 public interface ICompanyToolRegistry
 {

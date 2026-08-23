@@ -42,6 +42,103 @@ public static class FinanceModuleRegistration
         services.AddScoped<IAccountingAuthorityPolicy>(provider => provider.GetRequiredService<AccountingAuthorityPolicy>());
         services.AddScoped<AccountingAuthorityService>();
         services.AddScoped<IAccountingAuthorityService>(provider => provider.GetRequiredService<AccountingAuthorityService>());
+        services.AddScoped<AccountingProviderSwitchService>();
+        services.AddScoped<IAccountingProviderSwitchService>(provider => provider.GetRequiredService<AccountingProviderSwitchService>());
+        services.AddOptions<AccountingProviderSwitchAssessmentWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingProviderSwitchAssessmentWorkerOptions.SectionName));
+        services.PostConfigure<AccountingProviderSwitchAssessmentWorkerOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 20);
+            options.PageSize = Math.Clamp(options.PageSize, 1, 500);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+        });
+        services.AddScoped<IAccountingProviderSwitchAdapter, InternalLedgerProviderSwitchAdapter>();
+        services.AddScoped<IAccountingProviderSwitchAdapter, FortnoxProviderSwitchAdapter>();
+        services.AddScoped<IAccountingProviderSwitchAdapter, UnavailableExternalProviderSwitchAdapter>();
+        services.AddScoped<IAccountingProviderSwitchAdapterResolver, AccountingProviderSwitchAdapterResolver>();
+        services.AddSingleton<IAccountingProviderSwitchGapPolicy, AccountingProviderSwitchGapPolicy>();
+        services.AddScoped<AccountingProviderSwitchAssessmentService>();
+        services.AddScoped<IAccountingProviderSwitchAssessmentService>(provider => provider.GetRequiredService<AccountingProviderSwitchAssessmentService>());
+        services.AddScoped<IAccountingProviderSwitchAssessmentJobRunner>(provider => provider.GetRequiredService<AccountingProviderSwitchAssessmentService>());
+        services.AddScoped<AccountingProviderSwitchStagingService>();
+        services.AddScoped<IAccountingProviderSwitchStagingService>(provider => provider.GetRequiredService<AccountingProviderSwitchStagingService>());
+        services.AddOptions<AccountingProviderSwitchRehearsalWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingProviderSwitchRehearsalWorkerOptions.SectionName));
+        services.PostConfigure<AccountingProviderSwitchRehearsalWorkerOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 20);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+            options.SourceFreshnessHours = Math.Clamp(options.SourceFreshnessHours, 1, 168);
+        });
+        services.AddScoped<IAccountingProviderSwitchRehearsalAdapter, InternalLedgerProviderSwitchRehearsalAdapter>();
+        services.AddScoped<IAccountingProviderSwitchRehearsalAdapter, FortnoxProviderSwitchRehearsalAdapter>();
+        services.AddScoped<IAccountingProviderSwitchRehearsalAdapter, UnavailableProviderSwitchRehearsalAdapter>();
+        services.AddScoped<AccountingProviderSwitchRehearsalService>();
+        services.AddScoped<IAccountingProviderSwitchRehearsalService>(provider => provider.GetRequiredService<AccountingProviderSwitchRehearsalService>());
+        services.AddScoped<IAccountingProviderSwitchRehearsalJobRunner>(provider => provider.GetRequiredService<AccountingProviderSwitchRehearsalService>());
+        services.AddOptions<AccountingProviderSwitchPreparationWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingProviderSwitchPreparationWorkerOptions.SectionName));
+        services.PostConfigure<AccountingProviderSwitchPreparationWorkerOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 20);
+            options.SaveBatchSize = Math.Clamp(options.SaveBatchSize, 1, 500);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+        });
+        services.AddScoped<IAccountingProviderSwitchInternalReadinessPolicy, AccountingProviderSwitchInternalReadinessPolicy>();
+        services.AddScoped<AccountingProviderSwitchPreparationService>();
+        services.AddScoped<IAccountingProviderSwitchPreparationService>(provider => provider.GetRequiredService<AccountingProviderSwitchPreparationService>());
+        services.AddScoped<IAccountingProviderSwitchPreparationJobRunner>(provider => provider.GetRequiredService<AccountingProviderSwitchPreparationService>());
+        services.AddOptions<AccountingProviderSwitchTargetTransferWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingProviderSwitchTargetTransferWorkerOptions.SectionName));
+        services.PostConfigure<AccountingProviderSwitchTargetTransferWorkerOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 20);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+        });
+        services.AddScoped<IAccountingProviderSwitchTargetPreparationAdapter, FortnoxAccountingProviderSwitchTargetPreparationAdapter>();
+        services.AddScoped<AccountingProviderSwitchTargetTransferService>();
+        services.AddScoped<IAccountingProviderSwitchTargetTransferService>(provider => provider.GetRequiredService<AccountingProviderSwitchTargetTransferService>());
+        services.AddScoped<IAccountingProviderSwitchTargetTransferJobRunner>(provider => provider.GetRequiredService<AccountingProviderSwitchTargetTransferService>());
+        services.AddScoped<IAccountingProviderSwitchTargetTransferExecutionTracker>(provider => provider.GetRequiredService<AccountingProviderSwitchTargetTransferService>());
+        services.AddOptions<AccountingProviderSwitchCutoverWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingProviderSwitchCutoverWorkerOptions.SectionName));
+        services.PostConfigure<AccountingProviderSwitchCutoverWorkerOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 20);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+        });
+        services.AddSingleton<IAccountingProviderSwitchCutoverPolicy, AccountingProviderSwitchCutoverPolicy>();
+        services.AddScoped<IAccountingProviderSwitchFinalTransferExecutor, FortnoxAccountingProviderSwitchFinalTransferExecutor>();
+        services.AddScoped<AccountingProviderSwitchCutoverService>();
+        services.AddScoped<IAccountingProviderSwitchCutoverService>(provider => provider.GetRequiredService<AccountingProviderSwitchCutoverService>());
+        services.AddScoped<IAccountingProviderSwitchCutoverJobRunner>(provider => provider.GetRequiredService<AccountingProviderSwitchCutoverService>());
+        services.AddOptions<AccountingProviderSwitchMonitoringOptions>()
+            .Bind(configuration.GetSection(AccountingProviderSwitchMonitoringOptions.SectionName));
+        services.PostConfigure<AccountingProviderSwitchMonitoringOptions>(options =>
+        {
+            options.PollIntervalSeconds = Math.Max(1, options.PollIntervalSeconds);
+            options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 20);
+            options.LeaseSeconds = Math.Max(15, options.LeaseSeconds);
+            options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
+            options.DefaultWindowDays = Math.Clamp(options.DefaultWindowDays, 7, 30);
+            options.CheckIntervalHours = Math.Clamp(options.CheckIntervalHours, 1, 24);
+            options.SyncStaleHours = Math.Clamp(options.SyncStaleHours, 1, 168);
+            options.StaleFreezeHours = Math.Clamp(options.StaleFreezeHours, 1, 48);
+        });
+        services.AddScoped<AccountingProviderSwitchMonitoringService>();
+        services.AddScoped<IAccountingProviderSwitchMonitoringService>(provider => provider.GetRequiredService<AccountingProviderSwitchMonitoringService>());
+        services.AddScoped<IAccountingProviderSwitchMonitoringJobRunner>(provider => provider.GetRequiredService<AccountingProviderSwitchMonitoringService>());
+        services.AddScoped<IAccountingProviderSwitchAgentService, AccountingProviderSwitchAgentService>();
         services.AddScoped<IAccountingProviderExportAdapter, FortnoxAccountingProviderExportAdapter>();
         services.AddScoped<AccountingProviderExportService>();
         services.AddScoped<IAccountingProviderExportService>(provider => provider.GetRequiredService<AccountingProviderExportService>());
@@ -300,6 +397,12 @@ public static class FinanceModuleRegistration
         services.AddHostedService<ReportingPeriodRegenerationBackgroundService>();
         services.AddHostedService<AccountingExportBackgroundService>();
         services.AddHostedService<AccountingMigrationBackgroundService>();
+        services.AddHostedService<AccountingProviderSwitchAssessmentBackgroundService>();
+        services.AddHostedService<AccountingProviderSwitchRehearsalBackgroundService>();
+        services.AddHostedService<AccountingProviderSwitchPreparationBackgroundService>();
+        services.AddHostedService<AccountingProviderSwitchTargetTransferBackgroundService>();
+        services.AddHostedService<AccountingProviderSwitchCutoverBackgroundService>();
+        services.AddHostedService<AccountingProviderSwitchMonitoringBackgroundService>();
         services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();

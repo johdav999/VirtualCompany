@@ -117,6 +117,26 @@ public sealed class AccountingPostingServiceTests
     }
 
     [Fact]
+    public async Task Non_authoritative_candidate_preview_uses_posting_rules_without_requiring_current_authority()
+    {
+        await using var fixture = await PostingFixture.CreateAsync();
+        var configuration = await fixture.Context.AccountingConfigurations.SingleAsync();
+        configuration.SetAuthority(AccountingAuthorityValues.ExternalProvider, fixture.ActorId, NowUtc);
+        await fixture.Context.SaveChangesAsync();
+
+        var normal = await fixture.Service.PreviewAsync(
+            new PreviewAccountingEntryCommand(fixture.CreateEntry()), CancellationToken.None);
+        var candidate = await fixture.Service.PreviewNonAuthoritativeCandidateAsync(
+            new PreviewNonAuthoritativeAccountingCandidateCommand(fixture.CreateEntry()), CancellationToken.None);
+
+        Assert.Contains(normal.Issues, issue => issue.ReasonCode == AccountingPostingReasonCodes.AuthorityUnavailable);
+        Assert.True(candidate.IsValid);
+        Assert.DoesNotContain(candidate.Issues, issue => issue.ReasonCode == AccountingPostingReasonCodes.AuthorityUnavailable);
+        Assert.Empty(await fixture.Context.LedgerEntries.ToListAsync());
+        Assert.Empty(await fixture.Context.VoucherSequences.ToListAsync());
+    }
+
+    [Fact]
     public void Legacy_accounts_remain_explicitly_unclassified_and_cannot_post_by_default()
     {
         var account = new FinanceAccount(Guid.NewGuid(), Guid.NewGuid(), "1000", "Legacy cash", "asset", "USD", 0m, NowUtc);

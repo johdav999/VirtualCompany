@@ -100,34 +100,20 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
 
         var toolName = request.ToolName.Trim();
         var normalizedScope = string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim();
-        if (!_toolRegistry.TryGetTool(toolName, out var registeredTool))
+        // The policy layer evaluates the agent's configured authority. The executor remains the
+        // fail-closed enforcement boundary for trusted registry membership, action, scope, and schema.
+        if (_toolRegistry.TryGetTool(toolName, out var registeredTool))
+        {
+            metadata["registryPolicyState"] = JsonValue.Create("registered");
+            metadata["registeredToolVersion"] = JsonValue.Create(registeredTool.Version);
+            metadata["registeredToolActions"] = ToJsonArray(registeredTool.SupportedActions.Select(static action => action.ToStorageValue()));
+            metadata["registryActionAllowed"] = JsonValue.Create(registeredTool.Supports(actionType, normalizedScope));
+        }
+        else
         {
             metadata["registryPolicyState"] = JsonValue.Create("unregistered");
-            return Deny(
-                request,
-                normalizedAction,
-                [PolicyDecisionReasonCodes.ToolNotConfigured],
-                "The requested tool is not registered for trusted execution.",
-                metadata,
-                thresholdEvaluations);
-        }
-
-        metadata["registryPolicyState"] = JsonValue.Create("registered");
-        metadata["registeredToolVersion"] = JsonValue.Create(registeredTool.Version);
-        metadata["registeredToolActions"] = ToJsonArray(registeredTool.SupportedActions.Select(static action => action.ToStorageValue()));
-        if (!registeredTool.Supports(actionType, normalizedScope))
-        {
             metadata["registryActionAllowed"] = JsonValue.Create(false);
-            return Deny(
-                request,
-                normalizedAction,
-                [PolicyDecisionReasonCodes.ToolActionTypeMismatch, PolicyDecisionReasonCodes.ToolActionNotPermitted],
-                "The requested action type or scope does not match the registered tool metadata.",
-                metadata,
-                thresholdEvaluations);
         }
-
-        metadata["registryActionAllowed"] = JsonValue.Create(true);
         if (!TryGetIdentifierSet(request.ToolPermissions, "allowed", out var allowedTools, out var allowedToolsExists) ||
             !TryGetIdentifierSet(request.ToolPermissions, "denied", out var deniedTools, out _) ||
             !TryGetIdentifierSet(request.ToolPermissions, "actions", out var allowedActions, out var allowedActionsExists) ||
@@ -237,6 +223,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
 
         if (!TryResolveScopePolicyBucket(request.DataScopes, actionType, out var requiredScopeBucket, out var scopes, out var scopeConfigState))
         {
+            metadata["scopePolicyBucket"] = JsonValue.Create(requiredScopeBucket);
             metadata["scopeConfigState"] = JsonValue.Create(scopeConfigState);
             return Deny(
                 request, normalizedAction,
@@ -317,6 +304,30 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
                 metadata,
                 [PolicyDecisionReasonCodes.AutonomyLevelRequiresApproval],
                 "Autonomy level 1 requires approval before execute actions can run.",
+                thresholdEvaluations,
+                approvalRequirement);
+        }
+
+        if (actionType == ToolActionType.Execute && request.TrustedToolApprovalRequired)
+        {
+            metadata["trustedToolApprovalRequired"] = JsonValue.Create(true);
+            approvalRequirement = new PolicyDecisionApprovalRequirementDto(
+                "trusted_tool",
+                null,
+                "trusted_tool_registry",
+                null,
+                null,
+                null,
+                null,
+                [normalizedAction],
+                [toolName],
+                normalizedScope is null ? [] : [normalizedScope]);
+            return RequireApproval(
+                request,
+                normalizedAction,
+                metadata,
+                [PolicyDecisionReasonCodes.SensitiveActionRequiresApproval],
+                "This trusted sensitive tool requires human approval before it can run.",
                 thresholdEvaluations,
                 approvalRequirement);
         }
@@ -519,6 +530,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         string explanation,
         IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations)
     {
+        metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Allow);
         metadata["executionBlocked"] = JsonValue.Create(false);
         metadata["blockedPendingApproval"] = JsonValue.Create(false);
         metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.Executed.ToStorageValue());
@@ -550,6 +562,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         IReadOnlyList<PolicyDecisionThresholdEvaluationDto> thresholdEvaluations,
         PolicyDecisionApprovalRequirementDto? approvalRequirement = null)
     {
+        metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.Deny);
         metadata["executionBlocked"] = JsonValue.Create(true);
         metadata["internalRationaleSummary"] = JsonValue.Create(explanation);
         metadata["safeUserFacingExplanation"] = JsonValue.Create(SafeDeniedExplanation);
@@ -599,6 +612,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
 
         metadata["approvalTarget"] = JsonValue.Create(approvalTarget);
         metadata["approvalRequirementState"] = JsonValue.Create("configured");
+        metadata["decisionOutcome"] = JsonValue.Create(PolicyDecisionOutcomeValues.RequireApproval);
         metadata["executionBlocked"] = JsonValue.Create(true);
         metadata["blockedPendingApproval"] = JsonValue.Create(true);
         metadata["executionState"] = JsonValue.Create(ToolExecutionStatus.AwaitingApproval.ToStorageValue());

@@ -44,6 +44,15 @@ public sealed class DependencyInjectionArchitectureTests
 
     private static readonly string[] ExpectedHostedServiceTypes =
     [
+        "AccountingExportBackgroundService",
+        "AccountingMigrationBackgroundService",
+        "AccountingPolicyPackCatalogStartupValidator",
+        "AccountingProviderSwitchAssessmentBackgroundService",
+        "AccountingProviderSwitchCutoverBackgroundService",
+        "AccountingProviderSwitchMonitoringBackgroundService",
+        "AccountingProviderSwitchPreparationBackgroundService",
+        "AccountingProviderSwitchRehearsalBackgroundService",
+        "AccountingProviderSwitchTargetTransferBackgroundService",
         "AgentMemoryCandidateExpiryWorker",
         "AgentScheduledTriggerSchedulerBackgroundService",
         "BriefingSchedulerBackgroundService",

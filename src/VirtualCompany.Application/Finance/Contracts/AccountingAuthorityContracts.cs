@@ -17,6 +17,7 @@ public static class AccountingAuthorityReasonCodes
     public const string CutoverIncomplete = "accounting_authority_cutover_incomplete";
     public const string ExportNotFound = "accounting_provider_export_not_found";
     public const string ReconciliationRequired = "accounting_provider_export_reconciliation_required";
+    public const string SwitchEvidenceRequired = "accounting_provider_switch_evidence_required";
 }
 
 public sealed record AccountingAuthorityPeriodDto(

@@ -86,6 +86,7 @@ if (-not $UseWindowsAuthentication)
 }
 
 $backupFullPath = (Resolve-Path $BackupPath).Path
+$stagedBackupPath = $null
 $backupDirectoryQuery = "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('InstanceDefaultBackupPath') AS nvarchar(4000)) AS BackupPath;"
 $backupDirectory = if ($null -ne $invokeSqlcmdCommand)
 {
@@ -113,60 +114,76 @@ if ($backupFullPath -ne $sqlReadableBackupPath)
     }
     catch [System.UnauthorizedAccessException]
     {
-        # A non-elevated operator may be unable to write SQL Server's protected backup directory.
-        # RESTORE can still use the original absolute path when the SQL Server service account has
-        # read access to that one backup file. SQL Server will return an explicit access error if it does not.
-        Write-Warning "Could not copy into the protected SQL Server backup folder. Using the original backup path; ensure the SQL Server service account has read access to this file."
-        $sqlReadableBackupPath = $backupFullPath
+        # A non-elevated operator may be unable to write SQL Server's protected backup directory, and
+        # the SQL Server service account commonly cannot read a backup kept in a user's repository.
+        # Stage a uniquely named copy in the shared documents directory and always remove it below.
+        $commonDocuments = [Environment]::GetFolderPath([Environment+SpecialFolder]::CommonDocuments)
+        if ([string]::IsNullOrWhiteSpace($commonDocuments))
+        {
+            throw "Could not resolve the shared documents directory required to stage the SQL Server backup."
+        }
+
+        $sharedRestoreDirectory = Join-Path $commonDocuments "VirtualCompany\SqlRestore"
+        New-Item -ItemType Directory -Force -Path $sharedRestoreDirectory | Out-Null
+        $stagedFileName = "{0}-{1}{2}" -f `
+            [IO.Path]::GetFileNameWithoutExtension($backupFullPath), `
+            [Guid]::NewGuid().ToString("N"), `
+            [IO.Path]::GetExtension($backupFullPath)
+        $stagedBackupPath = Join-Path $sharedRestoreDirectory $stagedFileName
+        Copy-Item -LiteralPath $backupFullPath -Destination $stagedBackupPath
+        $sqlReadableBackupPath = $stagedBackupPath
+        Write-Warning "Could not copy into the protected SQL Server backup folder. Using a temporary shared backup copy instead."
     }
 }
 
-Write-Host "Reading backup metadata from '$sqlReadableBackupPath'..."
-$fileListQuery = "RESTORE FILELISTONLY FROM DISK = N'$sqlReadableBackupPath';"
-$fileList = if ($null -ne $invokeSqlcmdCommand)
+try
 {
-    Invoke-Sqlcmd @invokeSqlArgs -Query $fileListQuery
-}
-else
-{
-    Invoke-SqlcmdCli -Query $fileListQuery -Delimited |
-        Where-Object { $_ -match "\|" } |
-        ForEach-Object {
-            $columns = $_ -split "\|"
-            [pscustomobject]@{
-                LogicalName = $columns[0].Trim()
-                Type = $columns[2].Trim()
+    Write-Host "Reading backup metadata from '$sqlReadableBackupPath'..."
+    $fileListQuery = "RESTORE FILELISTONLY FROM DISK = N'$sqlReadableBackupPath';"
+    $fileList = if ($null -ne $invokeSqlcmdCommand)
+    {
+        Invoke-Sqlcmd @invokeSqlArgs -Query $fileListQuery
+    }
+    else
+    {
+        Invoke-SqlcmdCli -Query $fileListQuery -Delimited |
+            Where-Object { $_ -match "\|" } |
+            ForEach-Object {
+                $columns = $_ -split "\|"
+                [pscustomobject]@{
+                    LogicalName = $columns[0].Trim()
+                    Type = $columns[2].Trim()
+                }
             }
-        }
-}
+    }
 
-$dataFile = $fileList | Where-Object { $_.Type -eq "D" } | Select-Object -First 1
-$logFile = $fileList | Where-Object { $_.Type -eq "L" } | Select-Object -First 1
+    $dataFile = $fileList | Where-Object { $_.Type -eq "D" } | Select-Object -First 1
+    $logFile = $fileList | Where-Object { $_.Type -eq "L" } | Select-Object -First 1
 
-if ($null -eq $dataFile -or $null -eq $logFile)
-{
-    throw "Could not read data and log logical file names from the backup."
-}
+    if ($null -eq $dataFile -or $null -eq $logFile)
+    {
+        throw "Could not read data and log logical file names from the backup."
+    }
 
-$dataDirectoryQuery = "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000)) AS DataPath;"
-$dataDirectory = if ($null -ne $invokeSqlcmdCommand)
-{
-    Invoke-Sqlcmd @invokeSqlArgs -Query $dataDirectoryQuery | Select-Object -ExpandProperty DataPath
-}
-else
-{
-    (Invoke-SqlcmdCli -Query $dataDirectoryQuery | Select-Object -Last 1).Trim()
-}
+    $dataDirectoryQuery = "SET NOCOUNT ON; SELECT CAST(SERVERPROPERTY('InstanceDefaultDataPath') AS nvarchar(4000)) AS DataPath;"
+    $dataDirectory = if ($null -ne $invokeSqlcmdCommand)
+    {
+        Invoke-Sqlcmd @invokeSqlArgs -Query $dataDirectoryQuery | Select-Object -ExpandProperty DataPath
+    }
+    else
+    {
+        (Invoke-SqlcmdCli -Query $dataDirectoryQuery | Select-Object -Last 1).Trim()
+    }
 
-if ([string]::IsNullOrWhiteSpace($dataDirectory))
-{
-    $dataDirectory = "C:\Program Files\Microsoft SQL Server\MSSQL17.SQLEXPRESS\MSSQL\DATA\"
-}
+    if ([string]::IsNullOrWhiteSpace($dataDirectory))
+    {
+        $dataDirectory = "C:\Program Files\Microsoft SQL Server\MSSQL17.SQLEXPRESS\MSSQL\DATA\"
+    }
 
-$dataPath = Join-Path $dataDirectory "$DatabaseName.mdf"
-$logPath = Join-Path $dataDirectory "${DatabaseName}_log.ldf"
+    $dataPath = Join-Path $dataDirectory "$DatabaseName.mdf"
+    $logPath = Join-Path $dataDirectory "${DatabaseName}_log.ldf"
 
-$restoreQuery = @"
+    $restoreQuery = @"
 IF DB_ID(N'$DatabaseName') IS NOT NULL
 BEGIN
     ALTER DATABASE [$DatabaseName] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
@@ -183,15 +200,23 @@ WITH REPLACE,
 ALTER DATABASE [$DatabaseName] SET MULTI_USER;
 "@
 
-Write-Host "Restoring '$DatabaseName' on '$ServerInstance'..."
-if ($null -ne $invokeSqlcmdCommand)
-{
-    Invoke-Sqlcmd @invokeSqlArgs -Query $restoreQuery -QueryTimeout 0
-}
-else
-{
-    Invoke-SqlcmdCli -Query $restoreQuery -UnlimitedTimeout | Out-Host
-}
+    Write-Host "Restoring '$DatabaseName' on '$ServerInstance'..."
+    if ($null -ne $invokeSqlcmdCommand)
+    {
+        Invoke-Sqlcmd @invokeSqlArgs -Query $restoreQuery -QueryTimeout 0
+    }
+    else
+    {
+        Invoke-SqlcmdCli -Query $restoreQuery -UnlimitedTimeout | Out-Host
+    }
 
-Write-Host "Restored '$DatabaseName' on '$ServerInstance'."
-Write-Host "Run .\server-local-sql.ps1 to apply pending EF Core migrations and start the API."
+    Write-Host "Restored '$DatabaseName' on '$ServerInstance'."
+    Write-Host "Run .\server-local-sql.ps1 to apply pending EF Core migrations and start the API."
+}
+finally
+{
+    if ($null -ne $stagedBackupPath -and (Test-Path -LiteralPath $stagedBackupPath))
+    {
+        Remove-Item -LiteralPath $stagedBackupPath -Force
+    }
+}

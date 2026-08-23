@@ -9,6 +9,7 @@ using VirtualCompany.Application.Approvals;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
@@ -27,6 +28,95 @@ public sealed class AgentExecutionPolicyGuardrailTests : IDisposable
     }
 
     public void Dispose() => _factory.Dispose();
+
+    [Fact]
+    public async Task Laura_migration_execute_tool_is_manifest_sensitive_and_requires_approval_even_when_caller_marks_it_non_sensitive()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level2,
+            tools: Payload(("allowed", new JsonArray(JsonValue.Create("get_cash_balance")))),
+            scopes: Payload(("read", new JsonArray(JsonValue.Create("finance")))),
+            thresholds: Payload(("financePolicy", new JsonObject
+            {
+                ["respectCompanyFinanceThresholds"] = true,
+                ["requireApprovalForExecute"] = true
+            })),
+            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
+            templateId: CoreAgentTemplateIds.Finance);
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = AccountingProviderSwitchAgentToolIds.StartAssessment,
+            actionType = "execute",
+            scope = "finance",
+            sensitiveAction = false,
+            requestPayload = new
+            {
+                switchId = Guid.NewGuid(),
+                expectedSwitchVersion = 3,
+                idempotencyKey = "laura-assessment-v3"
+            }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
+        Assert.NotNull(payload);
+        Assert.True(string.Equals("awaiting_approval", payload!.Status, StringComparison.OrdinalIgnoreCase),
+            JsonSerializer.Serialize(payload));
+        Assert.Equal("require_approval", payload.PolicyDecision.Outcome);
+        Assert.Contains(PolicyDecisionReasonCodes.SensitiveActionRequiresApproval, payload.PolicyDecision.ReasonCodes);
+        Assert.NotNull(payload.ApprovalRequestId);
+        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContext = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContext.SetCompanyId(seed.CompanyId);
+        var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var attempt = await db.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+        Assert.Equal("1.0.0", attempt.ToolVersion);
+        Assert.Equal(ToolExecutionStatus.AwaitingApproval, attempt.Status);
+    }
+
+    [Fact]
+    public async Task Non_Laura_agent_without_migration_permission_is_denied_and_attempt_is_auditable()
+    {
+        var seed = await SeedAgentAsync(
+            autonomyLevel: AgentAutonomyLevel.Level2,
+            tools: Payload(
+                ("allowed", new JsonArray(JsonValue.Create("get_cash_balance"))),
+                ("actions", new JsonArray(JsonValue.Create("read")))),
+            scopes: Payload(("read", new JsonArray(JsonValue.Create("finance")))),
+            thresholds: Payload(("approval", new JsonObject { ["expenseUsd"] = 1000 })),
+            escalationRules: Payload(("escalateTo", JsonValue.Create("founder"))),
+            templateId: "finance-analyst");
+
+        using var client = CreateAuthenticatedClient();
+        var response = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/agents/{seed.AgentId}/executions", new
+        {
+            toolName = AccountingProviderSwitchAgentToolIds.ReadBriefing,
+            actionType = "read",
+            scope = "finance",
+            requestPayload = new { switchId = Guid.NewGuid() }
+        });
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var payload = await response.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
+        Assert.NotNull(payload);
+        Assert.Equal("denied", payload!.Status);
+        Assert.Equal("deny", payload.PolicyDecision.Outcome);
+        Assert.Contains(PolicyDecisionReasonCodes.ToolNotPermitted, payload.PolicyDecision.ReasonCodes);
+        Assert.Equal(0, _factory.ToolExecutor.ExecutionCount);
+
+        using var scope = _factory.Services.CreateScope();
+        var companyContext = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
+        companyContext.SetCompanyId(seed.CompanyId);
+        var db = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var attempt = await db.ToolExecutionAttempts.AsNoTracking().SingleAsync(x => x.Id == payload.ExecutionId);
+        Assert.Equal(ToolExecutionStatus.Denied, attempt.Status);
+        Assert.Contains(PolicyDecisionReasonCodes.ToolNotPermitted, attempt.PolicyDecision["reasonCodes"]!
+            .AsArray().Select(x => x!.GetValue<string>()));
+    }
 
     [Fact]
     public async Task Denied_execution_is_blocked_before_tool_executor_runs_and_attempt_is_auditable()
@@ -740,7 +830,8 @@ public sealed class AgentExecutionPolicyGuardrailTests : IDisposable
         Dictionary<string, JsonNode?> tools,
         Dictionary<string, JsonNode?> scopes,
         Dictionary<string, JsonNode?> thresholds,
-        Dictionary<string, JsonNode?> escalationRules)
+        Dictionary<string, JsonNode?> escalationRules,
+        string templateId = "finance")
     {
         var userId = Guid.NewGuid();
         var companyId = Guid.NewGuid();
@@ -759,7 +850,7 @@ public sealed class AgentExecutionPolicyGuardrailTests : IDisposable
             dbContext.Agents.Add(new Agent(
                 agentId,
                 companyId,
-                "finance",
+                templateId,
                 "Nora Ledger",
                 "Finance Manager",
                 "Finance",

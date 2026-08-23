@@ -53,6 +53,15 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
     private readonly IAccountingConfigurationService _accountingConfigurationService;
     private readonly IAccountingAuthorityService _accountingAuthorityService;
+    private readonly IAccountingProviderSwitchService _accountingProviderSwitchService;
+    private readonly IAccountingProviderSwitchAssessmentService _accountingProviderSwitchAssessmentService;
+    private readonly IAccountingProviderSwitchStagingService _accountingProviderSwitchStagingService;
+    private readonly IAccountingProviderSwitchRehearsalService _accountingProviderSwitchRehearsalService;
+    private readonly IAccountingProviderSwitchPreparationService _accountingProviderSwitchPreparationService;
+    private readonly IAccountingProviderSwitchTargetTransferService _accountingProviderSwitchTargetTransferService;
+    private readonly IAccountingProviderSwitchCutoverService _accountingProviderSwitchCutoverService;
+    private readonly IAccountingProviderSwitchMonitoringService _accountingProviderSwitchMonitoringService;
+    private readonly IAccountingProviderSwitchAgentService _accountingProviderSwitchAgentService;
     private readonly IAccountingProviderExportService _accountingProviderExportService;
     private readonly IAccountingOperationsReadService _accountingOperationsReadService;
     private readonly IAccountingMigrationService _accountingMigrationService;
@@ -100,6 +109,15 @@ public sealed partial class InternalFinanceController : ControllerBase
         IFinancePolicyConfigurationService financePolicyConfigurationService,
         IAccountingConfigurationService accountingConfigurationService,
         IAccountingAuthorityService accountingAuthorityService,
+        IAccountingProviderSwitchService accountingProviderSwitchService,
+        IAccountingProviderSwitchAssessmentService accountingProviderSwitchAssessmentService,
+        IAccountingProviderSwitchStagingService accountingProviderSwitchStagingService,
+        IAccountingProviderSwitchRehearsalService accountingProviderSwitchRehearsalService,
+        IAccountingProviderSwitchPreparationService accountingProviderSwitchPreparationService,
+        IAccountingProviderSwitchTargetTransferService accountingProviderSwitchTargetTransferService,
+        IAccountingProviderSwitchCutoverService accountingProviderSwitchCutoverService,
+        IAccountingProviderSwitchMonitoringService accountingProviderSwitchMonitoringService,
+        IAccountingProviderSwitchAgentService accountingProviderSwitchAgentService,
         IAccountingProviderExportService accountingProviderExportService,
         IAccountingOperationsReadService accountingOperationsReadService,
         IAccountingMigrationService accountingMigrationService,
@@ -148,6 +166,15 @@ public sealed partial class InternalFinanceController : ControllerBase
         _financePolicyConfigurationService = financePolicyConfigurationService;
         _accountingConfigurationService = accountingConfigurationService;
         _accountingAuthorityService = accountingAuthorityService;
+        _accountingProviderSwitchService = accountingProviderSwitchService;
+        _accountingProviderSwitchAssessmentService = accountingProviderSwitchAssessmentService;
+        _accountingProviderSwitchStagingService = accountingProviderSwitchStagingService;
+        _accountingProviderSwitchRehearsalService = accountingProviderSwitchRehearsalService;
+        _accountingProviderSwitchPreparationService = accountingProviderSwitchPreparationService;
+        _accountingProviderSwitchTargetTransferService = accountingProviderSwitchTargetTransferService;
+        _accountingProviderSwitchCutoverService = accountingProviderSwitchCutoverService;
+        _accountingProviderSwitchMonitoringService = accountingProviderSwitchMonitoringService;
+        _accountingProviderSwitchAgentService = accountingProviderSwitchAgentService;
         _accountingProviderExportService = accountingProviderExportService;
         _accountingOperationsReadService = accountingOperationsReadService;
         _accountingMigrationService = accountingMigrationService;
@@ -2202,6 +2229,10 @@ public sealed partial class InternalFinanceController : ControllerBase
     {
         var status = exception.ReasonCode is AccountingAuthorityReasonCodes.AuthorityPeriodNotFound
             or AccountingAuthorityReasonCodes.ExportNotFound
+            or AccountingProviderSwitchReasonCodes.NotFound
+            or AccountingProviderSwitchReasonCodes.AssessmentNotFound
+            or AccountingProviderSwitchCutoverReasonCodes.NotFound
+            or AccountingProviderSwitchMonitoringReasonCodes.NotFound
             ? StatusCodes.Status404NotFound
             : exception.IsConflict
                 ? StatusCodes.Status409Conflict

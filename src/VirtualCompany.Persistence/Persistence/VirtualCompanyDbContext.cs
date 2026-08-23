@@ -107,6 +107,39 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AccountingConfigurationAccountRole> AccountingConfigurationAccountRoles => Set<AccountingConfigurationAccountRole>();
     public DbSet<AccountingPolicyPackSelection> AccountingPolicyPackSelections => Set<AccountingPolicyPackSelection>();
     public DbSet<AccountingAuthorityPeriod> AccountingAuthorityPeriods => Set<AccountingAuthorityPeriod>();
+    public DbSet<AccountingProviderSwitch> AccountingProviderSwitches => Set<AccountingProviderSwitch>();
+    public DbSet<AccountingProviderSwitchAssessment> AccountingProviderSwitchAssessments => Set<AccountingProviderSwitchAssessment>();
+    public DbSet<AccountingProviderSwitchCapability> AccountingProviderSwitchCapabilities => Set<AccountingProviderSwitchCapability>();
+    public DbSet<AccountingProviderSwitchDataset> AccountingProviderSwitchDatasets => Set<AccountingProviderSwitchDataset>();
+    public DbSet<AccountingProviderSwitchGap> AccountingProviderSwitchGaps => Set<AccountingProviderSwitchGap>();
+    public DbSet<AccountingProviderSwitchStagedRecord> AccountingProviderSwitchStagedRecords => Set<AccountingProviderSwitchStagedRecord>();
+    public DbSet<AccountingProviderSwitchMappingSet> AccountingProviderSwitchMappingSets => Set<AccountingProviderSwitchMappingSet>();
+    public DbSet<AccountingProviderSwitchMappingDecision> AccountingProviderSwitchMappingDecisions => Set<AccountingProviderSwitchMappingDecision>();
+    public DbSet<AccountingProviderSwitchMappingRecord> AccountingProviderSwitchMappingRecords => Set<AccountingProviderSwitchMappingRecord>();
+    public DbSet<AccountingProviderSwitchRehearsal> AccountingProviderSwitchRehearsals => Set<AccountingProviderSwitchRehearsal>();
+    public DbSet<AccountingProviderSwitchRehearsalInput> AccountingProviderSwitchRehearsalInputs => Set<AccountingProviderSwitchRehearsalInput>();
+    public DbSet<AccountingProviderSwitchRehearsalDatasetResult> AccountingProviderSwitchRehearsalDatasetResults => Set<AccountingProviderSwitchRehearsalDatasetResult>();
+    public DbSet<AccountingProviderSwitchReconciliationCheck> AccountingProviderSwitchReconciliationChecks => Set<AccountingProviderSwitchReconciliationCheck>();
+    public DbSet<AccountingProviderSwitchManualEvidence> AccountingProviderSwitchManualEvidence => Set<AccountingProviderSwitchManualEvidence>();
+    public DbSet<AccountingProviderSwitchCutoverPlan> AccountingProviderSwitchCutoverPlans => Set<AccountingProviderSwitchCutoverPlan>();
+    public DbSet<AccountingProviderSwitchPlanApproval> AccountingProviderSwitchPlanApprovals => Set<AccountingProviderSwitchPlanApproval>();
+    public DbSet<AccountingProviderSwitchPreparation> AccountingProviderSwitchPreparations => Set<AccountingProviderSwitchPreparation>();
+    public DbSet<AccountingProviderSwitchReadinessCheck> AccountingProviderSwitchReadinessChecks => Set<AccountingProviderSwitchReadinessCheck>();
+    public DbSet<AccountingProviderSwitchNativeCandidate> AccountingProviderSwitchNativeCandidates => Set<AccountingProviderSwitchNativeCandidate>();
+    public DbSet<AccountingProviderSwitchCandidateValidation> AccountingProviderSwitchCandidateValidations => Set<AccountingProviderSwitchCandidateValidation>();
+    public DbSet<AccountingProviderSwitchArchiveDependency> AccountingProviderSwitchArchiveDependencies => Set<AccountingProviderSwitchArchiveDependency>();
+    public DbSet<AccountingProviderSwitchTargetTransferBatch> AccountingProviderSwitchTargetTransferBatches => Set<AccountingProviderSwitchTargetTransferBatch>();
+    public DbSet<AccountingProviderSwitchTargetTransferItem> AccountingProviderSwitchTargetTransferItems => Set<AccountingProviderSwitchTargetTransferItem>();
+    public DbSet<AccountingProviderSwitchTargetTransferAttempt> AccountingProviderSwitchTargetTransferAttempts => Set<AccountingProviderSwitchTargetTransferAttempt>();
+    public DbSet<AccountingProviderSwitchTargetAcknowledgement> AccountingProviderSwitchTargetAcknowledgements => Set<AccountingProviderSwitchTargetAcknowledgement>();
+    public DbSet<AccountingProviderSwitchCutoverExecution> AccountingProviderSwitchCutoverExecutions => Set<AccountingProviderSwitchCutoverExecution>();
+    public DbSet<AccountingProviderSwitchFinalSnapshot> AccountingProviderSwitchFinalSnapshots => Set<AccountingProviderSwitchFinalSnapshot>();
+    public DbSet<AccountingProviderSwitchFinalCheck> AccountingProviderSwitchFinalChecks => Set<AccountingProviderSwitchFinalCheck>();
+    public DbSet<AccountingProviderSwitchActivationApproval> AccountingProviderSwitchActivationApprovals => Set<AccountingProviderSwitchActivationApproval>();
+    public DbSet<AccountingProviderSwitchNativeMaterialization> AccountingProviderSwitchNativeMaterializations => Set<AccountingProviderSwitchNativeMaterialization>();
+    public DbSet<AccountingProviderSwitchMonitoringRun> AccountingProviderSwitchMonitoringRuns => Set<AccountingProviderSwitchMonitoringRun>();
+    public DbSet<AccountingProviderSwitchMonitoringCheck> AccountingProviderSwitchMonitoringChecks => Set<AccountingProviderSwitchMonitoringCheck>();
+    public DbSet<AccountingProviderSwitchMonitoringIncident> AccountingProviderSwitchMonitoringIncidents => Set<AccountingProviderSwitchMonitoringIncident>();
     public DbSet<AccountingProviderExport> AccountingProviderExports => Set<AccountingProviderExport>();
     public DbSet<AccountingMigrationRun> AccountingMigrationRuns => Set<AccountingMigrationRun>();
     public DbSet<AccountingMigrationConflict> AccountingMigrationConflicts => Set<AccountingMigrationConflict>();
@@ -505,6 +538,39 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is AccountingConfigurationAccountRole ||
                 entry.Entity is AccountingPolicyPackSelection ||
                 entry.Entity is AccountingAuthorityPeriod ||
+                entry.Entity is AccountingProviderSwitch ||
+                entry.Entity is AccountingProviderSwitchAssessment ||
+                entry.Entity is AccountingProviderSwitchCapability ||
+                entry.Entity is AccountingProviderSwitchDataset ||
+                entry.Entity is AccountingProviderSwitchGap ||
+                entry.Entity is AccountingProviderSwitchStagedRecord ||
+                entry.Entity is AccountingProviderSwitchMappingSet ||
+                entry.Entity is AccountingProviderSwitchMappingDecision ||
+                entry.Entity is AccountingProviderSwitchMappingRecord ||
+                entry.Entity is AccountingProviderSwitchRehearsal ||
+                entry.Entity is AccountingProviderSwitchRehearsalInput ||
+                entry.Entity is AccountingProviderSwitchRehearsalDatasetResult ||
+                entry.Entity is AccountingProviderSwitchReconciliationCheck ||
+                entry.Entity is AccountingProviderSwitchManualEvidence ||
+                entry.Entity is AccountingProviderSwitchCutoverPlan ||
+                entry.Entity is AccountingProviderSwitchPlanApproval ||
+                entry.Entity is AccountingProviderSwitchPreparation ||
+                entry.Entity is AccountingProviderSwitchReadinessCheck ||
+                entry.Entity is AccountingProviderSwitchNativeCandidate ||
+                entry.Entity is AccountingProviderSwitchCandidateValidation ||
+                entry.Entity is AccountingProviderSwitchArchiveDependency ||
+                entry.Entity is AccountingProviderSwitchTargetTransferBatch ||
+                entry.Entity is AccountingProviderSwitchTargetTransferItem ||
+                entry.Entity is AccountingProviderSwitchTargetTransferAttempt ||
+                entry.Entity is AccountingProviderSwitchTargetAcknowledgement ||
+                entry.Entity is AccountingProviderSwitchCutoverExecution ||
+                entry.Entity is AccountingProviderSwitchFinalSnapshot ||
+                entry.Entity is AccountingProviderSwitchFinalCheck ||
+                entry.Entity is AccountingProviderSwitchActivationApproval ||
+                entry.Entity is AccountingProviderSwitchNativeMaterialization ||
+                entry.Entity is AccountingProviderSwitchMonitoringRun ||
+                entry.Entity is AccountingProviderSwitchMonitoringCheck ||
+                entry.Entity is AccountingProviderSwitchMonitoringIncident ||
                 entry.Entity is AccountingProviderExport ||
                 entry.Entity is Payment ||
                 entry.Entity is Budget ||
@@ -884,6 +950,81 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<AccountingAuthorityPeriod>()
             .HasQueryFilter(period =>
                 CurrentCompanyId != null && period.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitch>()
+            .HasQueryFilter(providerSwitch =>
+                CurrentCompanyId != null && providerSwitch.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchAssessment>()
+            .HasQueryFilter(assessment =>
+                CurrentCompanyId != null && assessment.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchCapability>()
+            .HasQueryFilter(capability =>
+                CurrentCompanyId != null && capability.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchDataset>()
+            .HasQueryFilter(dataset =>
+                CurrentCompanyId != null && dataset.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchGap>()
+            .HasQueryFilter(gap =>
+                CurrentCompanyId != null && gap.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchStagedRecord>()
+            .HasQueryFilter(record =>
+                CurrentCompanyId != null && record.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchMappingSet>()
+            .HasQueryFilter(mappingSet =>
+                CurrentCompanyId != null && mappingSet.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchMappingDecision>()
+            .HasQueryFilter(decision =>
+                CurrentCompanyId != null && decision.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchMappingRecord>()
+            .HasQueryFilter(mappingRecord =>
+                CurrentCompanyId != null && mappingRecord.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchRehearsal>()
+            .HasQueryFilter(run => CurrentCompanyId != null && run.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchRehearsalInput>()
+            .HasQueryFilter(input => CurrentCompanyId != null && input.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchRehearsalDatasetResult>()
+            .HasQueryFilter(result => CurrentCompanyId != null && result.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchReconciliationCheck>()
+            .HasQueryFilter(check => CurrentCompanyId != null && check.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchManualEvidence>()
+            .HasQueryFilter(evidence => CurrentCompanyId != null && evidence.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchCutoverPlan>()
+            .HasQueryFilter(plan => CurrentCompanyId != null && plan.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchPlanApproval>()
+            .HasQueryFilter(approval => CurrentCompanyId != null && approval.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchPreparation>()
+            .HasQueryFilter(preparation => CurrentCompanyId != null && preparation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchReadinessCheck>()
+            .HasQueryFilter(check => CurrentCompanyId != null && check.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchNativeCandidate>()
+            .HasQueryFilter(candidate => CurrentCompanyId != null && candidate.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchCandidateValidation>()
+            .HasQueryFilter(validation => CurrentCompanyId != null && validation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchArchiveDependency>()
+            .HasQueryFilter(dependency => CurrentCompanyId != null && dependency.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchTargetTransferBatch>()
+            .HasQueryFilter(batch => CurrentCompanyId != null && batch.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchTargetTransferItem>()
+            .HasQueryFilter(item => CurrentCompanyId != null && item.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchTargetTransferAttempt>()
+            .HasQueryFilter(attempt => CurrentCompanyId != null && attempt.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchTargetAcknowledgement>()
+            .HasQueryFilter(acknowledgement => CurrentCompanyId != null && acknowledgement.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchCutoverExecution>()
+            .HasQueryFilter(execution => CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchFinalSnapshot>()
+            .HasQueryFilter(snapshot => CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchFinalCheck>()
+            .HasQueryFilter(check => CurrentCompanyId != null && check.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchActivationApproval>()
+            .HasQueryFilter(approval => CurrentCompanyId != null && approval.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchNativeMaterialization>()
+            .HasQueryFilter(materialization => CurrentCompanyId != null && materialization.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchMonitoringRun>()
+            .HasQueryFilter(run => CurrentCompanyId != null && run.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchMonitoringCheck>()
+            .HasQueryFilter(check => CurrentCompanyId != null && check.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingProviderSwitchMonitoringIncident>()
+            .HasQueryFilter(incident => CurrentCompanyId != null && incident.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingProviderExport>()
             .HasQueryFilter(export =>
                 CurrentCompanyId != null && export.CompanyId == CurrentCompanyId);

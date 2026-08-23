@@ -15,6 +15,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
     private readonly FinanceBillFortnoxRegistrationCompletionService _billCompletionService;
     private readonly IAccountingAuthorityPolicy _authorityPolicy;
     private readonly IAccountingProviderExportExecutionTracker _exportTracker;
+    private readonly IAccountingProviderSwitchTargetTransferExecutionTracker _targetTransferTracker;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<FortnoxOutboundActionExecutor> _logger;
 
@@ -25,6 +26,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         FinanceBillFortnoxRegistrationCompletionService billCompletionService,
         IAccountingAuthorityPolicy authorityPolicy,
         IAccountingProviderExportExecutionTracker exportTracker,
+        IAccountingProviderSwitchTargetTransferExecutionTracker targetTransferTracker,
         TimeProvider timeProvider,
         ILogger<FortnoxOutboundActionExecutor> logger)
     {
@@ -34,6 +36,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         _billCompletionService = billCompletionService;
         _authorityPolicy = authorityPolicy;
         _exportTracker = exportTracker;
+        _targetTransferTracker = targetTransferTracker;
         _timeProvider = timeProvider;
         _logger = logger;
     }
@@ -143,11 +146,17 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         try
         {
             await _exportTracker.EnsureExecutionAllowedAsync(companyId, writeRequestId, cancellationToken);
+            await _targetTransferTracker.EnsureExecutionAllowedAsync(companyId, writeRequestId, cancellationToken);
             var isTrackedCommittedExport = await _dbContext.AccountingProviderExports
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.WriteRequestId == writeRequestId, cancellationToken);
-            if (!isTrackedCommittedExport && IsProviderAuthoritativeAccountingAction(command.CommandType))
+            var isTrackedFinalSwitchOperation = await _dbContext.AccountingProviderSwitchTargetTransferItems
+                .IgnoreQueryFilters().AsNoTracking().AnyAsync(x => x.CompanyId == companyId &&
+                    x.WriteRequestId == writeRequestId &&
+                    x.OperationMode == AccountingProviderSwitchTargetOperationModes.FinalAuthoritative,
+                    cancellationToken);
+            if (!isTrackedCommittedExport && !isTrackedFinalSwitchOperation && IsProviderAuthoritativeAccountingAction(command.CommandType))
             {
                 var authority = await _authorityPolicy.EvaluateAsync(new(
                     companyId,
@@ -192,6 +201,7 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
         try
         {
             await _exportTracker.MarkExecutionStartedAsync(companyId, writeRequestId, cancellationToken);
+            await _targetTransferTracker.MarkExecutionStartedAsync(companyId, writeRequestId, cancellationToken);
             JsonNode? response = command.HttpMethod switch
             {
                 "POST" => await _fortnoxApiClient.PostAsync<JsonNode?, JsonNode?>(context, command.Path, payload, cancellationToken),
@@ -208,6 +218,12 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 writeRequestId,
                 commandAfterSuccess.ExternalId,
                 commandAfterSuccess.SafeResponseSummary ?? "The provider accepted the committed journal export.",
+                cancellationToken);
+            await _targetTransferTracker.MarkExecutionSucceededAsync(
+                companyId,
+                writeRequestId,
+                commandAfterSuccess.ExternalId,
+                commandAfterSuccess.SafeResponseSummary ?? "The provider accepted the preparatory migration write.",
                 cancellationToken);
             await WriteAuditAsync(command, "write_execution_succeeded", FinanceIntegrationAuditOutcomes.Succeeded, "Fortnox accepted the approved accounting-system action.", cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
@@ -237,6 +253,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
             await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
             await _exportTracker.MarkExecutionFailedAsync(
                 companyId, writeRequestId, exception, providerAcceptedRequest, cancellationToken);
+            await _targetTransferTracker.MarkExecutionFailedAsync(
+                companyId, writeRequestId, exception, providerAcceptedRequest, cancellationToken);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);
             return ToResult(refreshed, safeSummary, executed: false);
@@ -254,6 +272,8 @@ public sealed class FortnoxOutboundActionExecutor : IFortnoxOutboundActionExecut
                 command.Path);
             await _writeApprovalService.RecordExecutionFailedAsync(approvalCheck, exception, cancellationToken);
             await _exportTracker.MarkExecutionFailedAsync(
+                companyId, writeRequestId, exception, providerAcceptedRequest, cancellationToken);
+            await _targetTransferTracker.MarkExecutionFailedAsync(
                 companyId, writeRequestId, exception, providerAcceptedRequest, cancellationToken);
             await WriteAuditAsync(command, "write_execution_failed", FinanceIntegrationAuditOutcomes.Failed, safeSummary, cancellationToken);
             var refreshed = await ReloadAsync(companyId, writeRequestId, cancellationToken);

@@ -284,6 +284,9 @@ public sealed class AccountingAuthorityService : IAccountingAuthorityService
             .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == command.AuthorityPeriodId, cancellationToken)
             ?? throw new AccountingAuthorityException(AccountingAuthorityReasonCodes.AuthorityPeriodNotFound,
                 "The authority cutover could not be found.");
+        if (await IsSwitchBackedCutoverAsync(command.CompanyId, period.Id, cancellationToken))
+            throw new AccountingAuthorityException(AccountingAuthorityReasonCodes.SwitchEvidenceRequired,
+                "This guided accounting migration derives readiness from persisted final reconciliation evidence; manual success claims are not accepted.", true);
         if (period.Version != command.ExpectedVersion)
             throw new AccountingAuthorityException(AccountingAuthorityReasonCodes.ConcurrencyConflict,
                 "The cutover changed while it was being reviewed.", true);
@@ -319,6 +322,9 @@ public sealed class AccountingAuthorityService : IAccountingAuthorityService
             .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == command.AuthorityPeriodId, cancellationToken)
             ?? throw new AccountingAuthorityException(AccountingAuthorityReasonCodes.AuthorityPeriodNotFound,
                 "The authority cutover could not be found.");
+        if (await IsSwitchBackedCutoverAsync(command.CompanyId, period.Id, cancellationToken))
+            throw new AccountingAuthorityException(AccountingAuthorityReasonCodes.SwitchEvidenceRequired,
+                "This guided accounting migration can be activated only by its cutover coordinator after separate activation approval.", true);
         if (period.Version != command.ExpectedVersion)
             throw new AccountingAuthorityException(AccountingAuthorityReasonCodes.ConcurrencyConflict,
                 "The cutover changed while completion was being requested.", true);
@@ -363,6 +369,11 @@ public sealed class AccountingAuthorityService : IAccountingAuthorityService
         if (!tracking) query = query.AsNoTracking();
         return query.OrderByDescending(x => x.EffectiveFrom).FirstOrDefaultAsync(cancellationToken);
     }
+
+    private Task<bool> IsSwitchBackedCutoverAsync(Guid companyId, Guid authorityPeriodId,
+        CancellationToken cancellationToken) => _dbContext.AccountingProviderSwitchCutoverExecutions
+        .IgnoreQueryFilters().AsNoTracking().AnyAsync(x => x.CompanyId == companyId &&
+            x.AuthorityPeriodId == authorityPeriodId, cancellationToken);
 
     private AccountingAuthorityPeriodDto ToPeriodDto(AccountingAuthorityPeriod period) =>
         new(period.Id, period.EffectiveFrom, period.EffectiveTo, period.Authority, AuthorityLabel(period.Authority),

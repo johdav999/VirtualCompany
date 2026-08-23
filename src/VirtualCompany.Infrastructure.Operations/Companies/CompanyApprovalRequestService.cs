@@ -170,7 +170,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             ? approval.RejectCurrentStep(currentStep.Id, membership.UserId, command.Comment)
             : approval.ApproveCurrentStep(currentStep.Id, membership.UserId, command.Comment);
 
-        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
+        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, membership.UserId, cancellationToken);
         await WriteDecisionAuditAsync(approval, decidedStep, membership.UserId, rejected, cancellationToken);
 
         var finalized = approval.Status != ApprovalRequestStatus.Pending;
@@ -235,7 +235,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             });
         var comment = $"Automatically approved by {grant.AgentDisplayName} under supplier trust rule {grant.GrantId:N} for {grant.SupplierName} ({grant.Stage}).";
         var decidedStep = approval.ApproveCurrentStep(currentStep.Id, grant.GrantorUserId, comment);
-        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
+        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, grant.GrantorUserId, cancellationToken);
 
         await WriteDecisionAuditAsync(approval, decidedStep, grant.GrantorUserId, rejected: false, cancellationToken);
         await _auditEventWriter.WriteAsync(
@@ -335,6 +335,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
 
     private async Task<LinkedEntityStateTransition?> UpdateLinkedEntityAfterDecisionAsync(
         ApprovalRequest approval,
+        Guid executionActorUserId,
         CancellationToken cancellationToken)
     {
         if (approval.Status == ApprovalRequestStatus.Pending)
@@ -429,11 +430,19 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                         attempt.TaskId,
                         attempt.WorkflowInstanceId,
                         attempt.CorrelationId,
-                        attempt.Id),
+                        attempt.Id,
+                        attempt.ToolVersion,
+                        executionActorUserId),
                     cancellationToken);
                 if (string.Equals(result.Status, ToolExecutionStatus.Denied.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
                 {
                     attempt.MarkDenied(policyDecision, result.ToStructuredPayload());
+                    return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                }
+
+                if (!result.Success)
+                {
+                    attempt.MarkFailed(policyDecision, result.ToStructuredPayload());
                     return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
                 }
 
@@ -565,6 +574,93 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 command.MarkExpired(now);
                 return LinkedEntityStateTransition.ForFinanceIntegrationWrite(command.Id, previousStatus, command.Status);
             }
+        }
+        else if (targetType == ApprovalTargetEntityType.AccountingProviderSwitchMappingDecision)
+        {
+            var decision = await _dbContext.AccountingProviderSwitchMappingDecisions.IgnoreQueryFilters()
+                .Include(x => x.AffectedRecords)
+                .SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId,
+                    cancellationToken);
+            var recordIds = decision.AffectedRecords.Select(x => x.StagedRecordId).ToArray();
+            var currentRecords = await _dbContext.AccountingProviderSwitchStagedRecords.IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == approval.CompanyId && x.SwitchId == decision.SwitchId &&
+                            recordIds.Contains(x.Id))
+                .ToDictionaryAsync(x => x.Id, cancellationToken);
+            var bindingCurrent = decision.AffectedRecords.Count > 0 && decision.AffectedRecords.All(link =>
+                currentRecords.TryGetValue(link.StagedRecordId, out var record) && record.IsCurrent &&
+                record.SourceHash == link.StagedSourceHash && record.NormalizedHash == link.StagedNormalizedHash);
+            var actorUserId = approval.Steps.Where(x => x.DecidedByUserId.HasValue)
+                .OrderByDescending(x => x.DecidedUtc).Select(x => x.DecidedByUserId!.Value)
+                .FirstOrDefault();
+            string action;
+            string summary;
+            string outcome;
+            if (!bindingCurrent || decision.Status == AccountingProviderSwitchMappingStatuses.Stale)
+            {
+                if (decision.Status != AccountingProviderSwitchMappingStatuses.Stale)
+                    decision.MarkStale(DateTime.UtcNow);
+                action = AuditEventActions.AccountingProviderSwitchStaleDecisionRejected;
+                summary = "The approval decision was recorded, but the mapping evidence was stale and cannot be used.";
+                outcome = AuditEventOutcomes.Blocked;
+            }
+            else if (approval.Status == ApprovalRequestStatus.Approved)
+            {
+                decision.RecordApprovalDecision(approval.Id, approved: true, DateTime.UtcNow);
+                action = AuditEventActions.AccountingProviderSwitchMappingApproved;
+                summary = "The versioned accounting migration mapping was approved with current source evidence.";
+                outcome = AuditEventOutcomes.Approved;
+            }
+            else
+            {
+                decision.RecordApprovalDecision(approval.Id, approved: false, DateTime.UtcNow);
+                action = AuditEventActions.AccountingProviderSwitchMappingRejected;
+                summary = "The versioned accounting migration mapping was rejected.";
+                outcome = AuditEventOutcomes.Rejected;
+            }
+            await _auditEventWriter.WriteAsync(new AuditEventWriteRequest(
+                approval.CompanyId,
+                AuditActorTypes.User,
+                actorUserId == Guid.Empty ? approval.RequestedByActorId : actorUserId,
+                action,
+                AuditTargetTypes.AccountingProviderSwitchMappingDecision,
+                decision.Id.ToString("D"),
+                outcome,
+                summary,
+                ["approval", "accounting_provider_switch", "mapping_decision"],
+                new Dictionary<string, string?>
+                {
+                    ["switchId"] = decision.SwitchId.ToString("D"),
+                    ["mappingVersion"] = decision.MappingVersion.ToString(),
+                    ["bindingHash"] = decision.BindingHash,
+                    ["approvalRequestId"] = approval.Id.ToString("D"),
+                    ["bindingCurrent"] = bindingCurrent.ToString()
+                }), cancellationToken);
+        }
+        else if (targetType == ApprovalTargetEntityType.AccountingProviderSwitchCutoverPlan)
+        {
+            var plan = await _dbContext.AccountingProviderSwitchCutoverPlans.IgnoreQueryFilters().AsNoTracking()
+                .SingleAsync(x => x.CompanyId == approval.CompanyId && x.Id == approval.TargetEntityId,
+                    cancellationToken);
+            var actorUserId = approval.Steps.Where(x => x.DecidedByUserId.HasValue)
+                .OrderByDescending(x => x.DecidedUtc).Select(x => x.DecidedByUserId!.Value).FirstOrDefault();
+            await _auditEventWriter.WriteAsync(new AuditEventWriteRequest(
+                approval.CompanyId, AuditActorTypes.User,
+                actorUserId == Guid.Empty ? approval.RequestedByActorId : actorUserId,
+                approval.Status == ApprovalRequestStatus.Approved
+                    ? "accounting.provider_switch.plan_approved"
+                    : "accounting.provider_switch.plan_rejected",
+                AuditTargetTypes.AccountingProviderSwitchCutoverPlan, plan.Id.ToString("D"),
+                approval.Status == ApprovalRequestStatus.Approved ? AuditEventOutcomes.Approved : AuditEventOutcomes.Rejected,
+                approval.Status == ApprovalRequestStatus.Approved
+                    ? "The immutable accounting migration cutover plan was approved."
+                    : "The immutable accounting migration cutover plan was not approved.",
+                ["approval", "accounting_provider_switch", "cutover_plan"],
+                new Dictionary<string, string?>
+                {
+                    ["switchId"] = plan.SwitchId.ToString("D"), ["planVersion"] = plan.PlanVersion.ToString(),
+                    ["planHash"] = plan.PlanHash, ["approvalRequestId"] = approval.Id.ToString("D")
+                }), cancellationToken);
         }
 
         return null;
@@ -749,6 +845,22 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             ApprovalTargetEntityType.OperatingDecision => await _dbContext.OperatingDecisions
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.AccountingProviderSwitchMappingDecision => await _dbContext.AccountingProviderSwitchMappingDecisions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.AccountingProviderSwitchCutoverPlan => await _dbContext.AccountingProviderSwitchCutoverPlans
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.AccountingProviderSwitchActivation => await _dbContext.AccountingProviderSwitchCutoverExecutions
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.AccountingProviderSwitchClosure => await _dbContext.AccountingProviderSwitchMonitoringRuns
+                .IgnoreQueryFilters()
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
@@ -1473,6 +1585,10 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             var value when string.Equals(value, ApprovalTargetEntityType.SalesMeetingChangeRequest.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Meeting change",
             var value when string.Equals(value, ApprovalTargetEntityType.OperatingPlan.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Company operating plan",
             var value when string.Equals(value, ApprovalTargetEntityType.OperatingDecision.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Controlled company action",
+            var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchMappingDecision.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration mapping",
+            var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchCutoverPlan.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration cutover plan",
+            var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchActivation.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration activation",
+            var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchClosure.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration closure",
             var value when string.Equals(value, "fortnox_write", StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             _ => entityType
         };

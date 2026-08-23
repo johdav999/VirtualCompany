@@ -168,7 +168,8 @@ public sealed record PolicyEvaluationRequest(
     decimal? ThresholdValue,
     bool SensitiveAction,
     Guid ExecutionId,
-    string? CorrelationId);
+    string? CorrelationId,
+    bool TrustedToolApprovalRequired = false);
 
 public sealed record ToolExecutionRequest(
     Guid CompanyId,
@@ -181,7 +182,8 @@ public sealed record ToolExecutionRequest(
     Guid? WorkflowInstanceId = null,
     string? CorrelationId = null,
     Guid ExecutionId = default,
-    string? ToolVersion = null);
+    string? ToolVersion = null,
+    Guid? ActorUserId = null);
 
 public sealed record ToolExecutionResult(
     bool Success,
@@ -219,6 +221,11 @@ public sealed record ToolExecutionResult(
         foreach (var (key, value) in Payload)
         {
             payload.TryAdd(key, value?.DeepClone());
+        }
+
+        if (Metadata is not null && Metadata.TryGetValue("contractSchemaVersion", out var contractSchemaVersion))
+        {
+            payload["contractSchemaVersion"] = contractSchemaVersion?.DeepClone();
         }
 
         return payload;

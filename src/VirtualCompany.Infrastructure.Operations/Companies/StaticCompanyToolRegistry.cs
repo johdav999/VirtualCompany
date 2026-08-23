@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Domain.Enums;
 
@@ -42,7 +43,8 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                 financeScopes,
                 definition.Version,
                 definition.InputSchema,
-                definition.OutputSchema)))
+                definition.OutputSchema,
+                definition.SensitiveAction)))
           .Concat(SalesToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, salesScopes, definition.Version, definition.InputSchema, definition.OutputSchema)))
           .Concat(MarketingToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, marketingScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
 
@@ -64,8 +66,48 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         FinanceDefinition("evaluate_transaction_anomaly", ToolActionType.Recommend, FinanceInputSchemas.TransactionAnomalyEvaluation(), FinanceOutputSchemas.WithDataProperty("anomalyEvaluation")),
         FinanceDefinition("categorize_transaction", ToolActionType.Execute, FinanceInputSchemas.CategorizeTransaction(), FinanceOutputSchemas.WithDataProperty("transaction")),
         FinanceDefinition("approve_invoice", ToolActionType.Execute, FinanceInputSchemas.ApproveInvoice(), FinanceOutputSchemas.WithDataProperty("invoice")),
-        FinanceDefinition("post_paid_supplier_bill_expense", ToolActionType.Execute, FinanceInputSchemas.PostPaidSupplierBillExpense(), FinanceOutputSchemas.WithDataProperty("expensePosting"))
+        FinanceDefinition("post_paid_supplier_bill_expense", ToolActionType.Execute, FinanceInputSchemas.PostPaidSupplierBillExpense(), FinanceOutputSchemas.WithDataProperty("expensePosting")),
+
+        ..AccountingProviderSwitchAgentToolIds.ReadTools.Select(tool =>
+            FinanceDefinition(tool, ToolActionType.Read, FinanceInputSchemas.MigrationRead(), FinanceOutputSchemas.WithDataProperty(MigrationReadProperty(tool)))),
+        ..AccountingProviderSwitchAgentToolIds.RecommendationTools.Select(tool =>
+            FinanceDefinition(tool, ToolActionType.Recommend, FinanceInputSchemas.MigrationRecommendation(), FinanceOutputSchemas.WithDataProperty("recommendation"))),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.StartAssessment, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(), FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.StartRehearsal, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(), FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.StartPreparation, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(("planId", FinanceInputSchemas.Uuid())), FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.ApplyApprovedMapping, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(
+                ("stagedRecordId", FinanceInputSchemas.Uuid()),
+                ("mappingDecisionId", FinanceInputSchemas.Uuid()),
+                ("expectedRecordVersion", FinanceInputSchemas.PositiveInteger()),
+                ("disposition", FinanceInputSchemas.StringEnum("mapped", "transformed", "ready", "opening_balance_representation"))),
+            FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.CreateFollowUpTask, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(
+                ("title", FinanceInputSchemas.String(1, 200)),
+                ("description", FinanceInputSchemas.String(1, 2000)),
+                ("priority", FinanceInputSchemas.StringEnum("low", "normal", "high", "urgent"))),
+            FinanceOutputSchemas.WithDataProperty("task"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.RequestPlanApproval, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(("planId", FinanceInputSchemas.Uuid())), FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.StartApprovedFreeze, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(("cutoverExecutionId", FinanceInputSchemas.Uuid()), ("expectedExecutionVersion", FinanceInputSchemas.PositiveInteger())),
+            FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.RequestActivationApproval, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(("cutoverExecutionId", FinanceInputSchemas.Uuid()), ("expectedExecutionVersion", FinanceInputSchemas.PositiveInteger())),
+            FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true),
+        FinanceDefinition(AccountingProviderSwitchAgentToolIds.ResumeRecovery, ToolActionType.Execute,
+            FinanceInputSchemas.MigrationExecute(("cutoverExecutionId", FinanceInputSchemas.Uuid()), ("expectedExecutionVersion", FinanceInputSchemas.PositiveInteger())),
+            FinanceOutputSchemas.WithDataProperty("commandResult"), sensitiveAction: true)
     ];
+
+    private static string MigrationReadProperty(string toolName) =>
+        string.Equals(toolName, AccountingProviderSwitchAgentToolIds.ReadBriefing, StringComparison.OrdinalIgnoreCase)
+            ? "briefing"
+            : "evidence";
 
     private static IReadOnlyList<ToolDefinitionManifest> SalesToolDefinitions { get; } =
     [
@@ -187,21 +229,24 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         IReadOnlySet<string>? scopes = null,
         string version = "1.0.0",
         JsonObject? inputSchema = null,
-        JsonObject? outputSchema = null) =>
+        JsonObject? outputSchema = null,
+        bool sensitiveAction = false) =>
         new(
             toolName,
             supportedActions ?? StandardActions,
             scopes ?? new HashSet<string>(StringComparer.OrdinalIgnoreCase),
             version,
             inputSchema?.DeepClone().AsObject(),
-            outputSchema?.DeepClone().AsObject());
+            outputSchema?.DeepClone().AsObject(),
+            sensitiveAction);
 
     private static ToolDefinitionManifest FinanceDefinition(
         string toolName,
         ToolActionType actionType,
         JsonObject inputSchema,
-        JsonObject outputSchema) =>
-        new(toolName, "1.0.0", actionType, inputSchema, outputSchema);
+        JsonObject outputSchema,
+        bool sensitiveAction = false) =>
+        new(toolName, "1.0.0", actionType, inputSchema, outputSchema, sensitiveAction);
 
     private static class FinanceInputSchemas
     {
@@ -351,6 +396,76 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                   }
                 }
                 """);
+
+        public static JsonObject MigrationRead() =>
+            ParseSchema(
+                """
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [ "switchId" ],
+                  "properties": {
+                    "switchId": { "type": "string", "format": "uuid" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                  }
+                }
+                """);
+
+        public static JsonObject MigrationRecommendation() =>
+            ParseSchema(
+                """
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "properties": {
+                    "switchId": { "type": "string", "format": "uuid" },
+                    "sourceKind": { "type": "string", "enum": [ "internal", "external" ] },
+                    "sourceProviderKey": { "type": "string", "minLength": 1, "maxLength": 64 },
+                    "targetKind": { "type": "string", "enum": [ "internal", "external" ] },
+                    "targetProviderKey": { "type": "string", "minLength": 1, "maxLength": 64 },
+                    "requestedStrategy": { "type": "string", "enum": [ "opening_balances_and_open_items", "current_fiscal_year", "full_history" ] },
+                    "focusRecordId": { "type": "string", "format": "uuid" },
+                    "gapId": { "type": "string", "format": "uuid" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 50 }
+                  }
+                }
+                """);
+
+        public static JsonObject MigrationExecute(params (string Name, JsonObject Schema)[] extraProperties)
+        {
+            var required = new JsonArray("switchId", "expectedSwitchVersion", "idempotencyKey");
+            var properties = new JsonObject
+            {
+                ["switchId"] = Uuid(),
+                ["expectedSwitchVersion"] = PositiveInteger(),
+                ["idempotencyKey"] = String(8, 200)
+            };
+            foreach (var (name, schema) in extraProperties)
+            {
+                required.Add(name);
+                properties[name] = schema.DeepClone();
+            }
+
+            return new JsonObject
+            {
+                ["type"] = "object",
+                ["additionalProperties"] = false,
+                ["required"] = required,
+                ["properties"] = properties
+            };
+        }
+
+        public static JsonObject Uuid() => new() { ["type"] = "string", ["format"] = "uuid" };
+        public static JsonObject PositiveInteger() => new() { ["type"] = "integer", ["minimum"] = 1 };
+        public static JsonObject String(int minLength, int maxLength) => new()
+        {
+            ["type"] = "string", ["minLength"] = minLength, ["maxLength"] = maxLength
+        };
+        public static JsonObject StringEnum(params string[] values) => new()
+        {
+            ["type"] = "string",
+            ["enum"] = new JsonArray(values.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray())
+        };
     }
 
     private static class FinanceOutputSchemas

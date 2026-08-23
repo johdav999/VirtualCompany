@@ -44,11 +44,14 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var approval = await dbContext.ApprovalRequests
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Include(x => x.Steps)
-            .SingleAsync(x => x.Id == seed.ApprovalId);
-        var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.Id == seed.ApprovalId);
+        var task = await dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.Id == seed.TaskId);
         var auditActions = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == seed.CompanyId && x.RelatedApprovalRequestId == seed.ApprovalId)
             .Select(x => x.Action)
@@ -120,11 +123,14 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var approval = await dbContext.ApprovalRequests
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Include(x => x.Steps)
-            .SingleAsync(x => x.Id == seed.ApprovalId);
-        var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.Id == seed.ApprovalId);
+        var task = await dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.Id == seed.TaskId);
         var auditActions = await dbContext.AuditEvents
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == seed.CompanyId && x.RelatedApprovalRequestId == seed.ApprovalId)
             .Select(x => x.Action)
@@ -199,10 +205,12 @@ public sealed class ApprovalDecisionApiIntegrationTests : IDisposable
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
         var approval = await dbContext.ApprovalRequests
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .Include(x => x.Steps)
-            .SingleAsync(x => x.Id == seed.ApprovalId);
-        var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.Id == seed.ApprovalId);
+        var task = await dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking()
+            .SingleAsync(x => x.CompanyId == seed.CompanyId && x.Id == seed.TaskId);
 
         Assert.Equal(ApprovalRequestStatus.Pending, approval.Status);
         Assert.Equal(ApprovalStepStatus.Pending, Assert.Single(approval.Steps).Status);

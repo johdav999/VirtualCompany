@@ -14,27 +14,33 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
 {
     private readonly ICompanyTaskQueryService _taskQueryService;
     private readonly ICompanyTaskCommandService _taskCommandService;
+    private readonly IProactiveTaskCreationService _proactiveTaskCreationService;
     private readonly IApprovalRequestService _approvalRequestService;
     private readonly ICompanyKnowledgeSearchService _knowledgeSearchService;
     private readonly IFinanceToolProvider _financeToolProvider;
     private readonly IFinanceTransactionAnomalyDetectionService _financeAnomalyDetectionService;
+    private readonly IAccountingProviderSwitchAgentService _accountingProviderSwitchAgentService;
     private readonly ILeadGenerationService _leadGenerationService;
 
     public InternalCompanyToolContract(
         ICompanyTaskQueryService taskQueryService,
         ICompanyTaskCommandService taskCommandService,
+        IProactiveTaskCreationService proactiveTaskCreationService,
         IApprovalRequestService approvalRequestService,
         ICompanyKnowledgeSearchService knowledgeSearchService,
         IFinanceToolProvider financeToolProvider,
         IFinanceTransactionAnomalyDetectionService financeAnomalyDetectionService,
+        IAccountingProviderSwitchAgentService accountingProviderSwitchAgentService,
         ILeadGenerationService leadGenerationService)
     {
         _taskQueryService = taskQueryService;
         _taskCommandService = taskCommandService;
+        _proactiveTaskCreationService = proactiveTaskCreationService;
         _approvalRequestService = approvalRequestService;
         _knowledgeSearchService = knowledgeSearchService;
         _financeToolProvider = financeToolProvider;
         _financeAnomalyDetectionService = financeAnomalyDetectionService;
+        _accountingProviderSwitchAgentService = accountingProviderSwitchAgentService;
         _leadGenerationService = leadGenerationService;
     }
 
@@ -78,6 +84,36 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
                 "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
                 "post_paid_supplier_bill_expense" => await ExecutePostPaidSupplierBillExpenseAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadBriefing => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadStatus => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadCapabilities => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadInventory => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadGaps => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadMappings => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadRehearsal => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadReconciliation => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadApprovals => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadTransferProgress => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadMonitoring => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ReadAuditEvidence => await ExecuteMigrationReadAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendEffectivePeriod => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendStrategy => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendMapping => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendGapResolution => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendRequiredEvidence => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendCutoverPlan => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendFreezeWindow => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RecommendMonitoringPeriod => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ExplainReadiness => await ExecuteMigrationRecommendationAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.StartAssessment => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.StartRehearsal => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.StartPreparation => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ApplyApprovedMapping => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.CreateFollowUpTask => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RequestPlanApproval => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.StartApprovedFreeze => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.RequestActivationApproval => await ExecuteMigrationCommandAsync(request, cancellationToken),
+                AccountingProviderSwitchAgentToolIds.ResumeRecovery => await ExecuteMigrationCommandAsync(request, cancellationToken),
                 "sales.plan_prospecting_run" => await ExecutePlanProspectingRunAsync(request, cancellationToken),
                 "sales.start_prospecting_run" => await ExecuteStartProspectingRunAsync(request, cancellationToken),
                 "sales.list_prospects" => await ExecuteListProspectsAsync(request, cancellationToken),
@@ -101,6 +137,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         catch (ArgumentException)
         {
             return Failed("finance_tool_validation_failed", "The finance tool request was not valid.");
+        }
+        catch (AccountingAuthorityException ex)
+        {
+            return Failed(ex.ReasonCode, SafeMigrationFailure(ex));
         }
         catch (KeyNotFoundException)
         {
@@ -728,6 +768,183 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
             Metadata(request, "finance_tool_provider"));
     }
 
+    private async Task<InternalToolExecutionResponse> ExecuteMigrationReadAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Read, out var failure)) return failure;
+        var switchId = ReadGuid(request.Payload, "switchId");
+        if (!switchId.HasValue) return Failed("migration_switch_required", "Select an accounting migration to continue.");
+        var limit = Math.Clamp(ReadInt(request.Payload, "limit") ?? 20, 1, 50);
+
+        if (string.Equals(request.ToolName, AccountingProviderSwitchAgentToolIds.ReadBriefing, StringComparison.OrdinalIgnoreCase))
+        {
+            var briefing = await _accountingProviderSwitchAgentService.GetBriefingAsync(
+                new(request.CompanyId, switchId.Value, limit), cancellationToken);
+            return InternalToolExecutionResponse.Succeeded(
+                "Laura prepared a current evidence-backed migration briefing.",
+                new Dictionary<string, JsonNode?> { ["briefing"] = Serialize(briefing) },
+                Metadata(request, "accounting_provider_switch_agent_service"));
+        }
+
+        var view = request.ToolName switch
+        {
+            AccountingProviderSwitchAgentToolIds.ReadStatus => AccountingProviderSwitchAgentEvidenceViews.Status,
+            AccountingProviderSwitchAgentToolIds.ReadCapabilities => AccountingProviderSwitchAgentEvidenceViews.Capabilities,
+            AccountingProviderSwitchAgentToolIds.ReadInventory => AccountingProviderSwitchAgentEvidenceViews.Inventory,
+            AccountingProviderSwitchAgentToolIds.ReadGaps => AccountingProviderSwitchAgentEvidenceViews.Gaps,
+            AccountingProviderSwitchAgentToolIds.ReadMappings => AccountingProviderSwitchAgentEvidenceViews.Mappings,
+            AccountingProviderSwitchAgentToolIds.ReadRehearsal => AccountingProviderSwitchAgentEvidenceViews.Rehearsal,
+            AccountingProviderSwitchAgentToolIds.ReadReconciliation => AccountingProviderSwitchAgentEvidenceViews.Reconciliation,
+            AccountingProviderSwitchAgentToolIds.ReadApprovals => AccountingProviderSwitchAgentEvidenceViews.Approvals,
+            AccountingProviderSwitchAgentToolIds.ReadTransferProgress => AccountingProviderSwitchAgentEvidenceViews.TransferProgress,
+            AccountingProviderSwitchAgentToolIds.ReadMonitoring => AccountingProviderSwitchAgentEvidenceViews.Monitoring,
+            AccountingProviderSwitchAgentToolIds.ReadAuditEvidence => AccountingProviderSwitchAgentEvidenceViews.Audit,
+            _ => throw new ArgumentException("The migration evidence tool is not supported.")
+        };
+        var evidence = await _accountingProviderSwitchAgentService.GetEvidenceAsync(
+            new(request.CompanyId, switchId.Value, view, limit), cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "Laura retrieved current persisted migration evidence.",
+            new Dictionary<string, JsonNode?> { ["evidence"] = Serialize(evidence) },
+            Metadata(request, "accounting_provider_switch_agent_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteMigrationRecommendationAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Recommend, out var failure)) return failure;
+        var recommendation = await _accountingProviderSwitchAgentService.RecommendAsync(
+            new RecommendAccountingProviderSwitchActionQuery(
+                request.CompanyId,
+                ReadGuid(request.Payload, "switchId"),
+                request.ToolName,
+                ReadString(request.Payload, "sourceKind"),
+                ReadString(request.Payload, "sourceProviderKey"),
+                ReadString(request.Payload, "targetKind"),
+                ReadString(request.Payload, "targetProviderKey"),
+                ReadString(request.Payload, "requestedStrategy"),
+                Math.Clamp(ReadInt(request.Payload, "limit") ?? 20, 1, 50)),
+            cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(
+            "Laura prepared a migration recommendation from current Finance evidence.",
+            new Dictionary<string, JsonNode?> { ["recommendation"] = Serialize(recommendation) },
+            Metadata(request, "accounting_provider_switch_agent_service"));
+    }
+
+    private async Task<InternalToolExecutionResponse> ExecuteMigrationCommandAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var failure)) return failure;
+        var switchId = ReadGuid(request.Payload, "switchId");
+        var expectedSwitchVersion = ReadLong(request.Payload, "expectedSwitchVersion");
+        var idempotencyKey = ReadString(request.Payload, "idempotencyKey");
+        if (!switchId.HasValue || !expectedSwitchVersion.HasValue || expectedSwitchVersion <= 0 ||
+            string.IsNullOrWhiteSpace(idempotencyKey) || !request.ActorUserId.HasValue || request.ActorUserId == Guid.Empty)
+            return Failed("migration_context_stale_or_incomplete",
+                "Read the current migration briefing and retry with its switch version and current approval context.");
+
+        var context = new AccountingProviderSwitchAgentCommandContext(
+            request.CompanyId, switchId.Value, expectedSwitchVersion.Value, request.ActorUserId.Value,
+            request.AgentId, request.CorrelationId ?? request.ExecutionId.ToString("N"), idempotencyKey);
+        AccountingProviderSwitchAgentCommandResultDto result;
+
+        switch (request.ToolName)
+        {
+            case AccountingProviderSwitchAgentToolIds.StartAssessment:
+                result = await _accountingProviderSwitchAgentService.StartAssessmentAsync(context, cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.StartRehearsal:
+                result = await _accountingProviderSwitchAgentService.StartRehearsalAsync(context, cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.StartPreparation:
+                var planId = ReadGuid(request.Payload, "planId") ?? throw new ArgumentException("PlanId is required.");
+                result = await _accountingProviderSwitchAgentService.StartPreparationAsync(context, planId, cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.ApplyApprovedMapping:
+                result = await _accountingProviderSwitchAgentService.ApplyApprovedMappingAsync(
+                    context,
+                    ReadGuid(request.Payload, "stagedRecordId") ?? throw new ArgumentException("StagedRecordId is required."),
+                    ReadGuid(request.Payload, "mappingDecisionId") ?? throw new ArgumentException("MappingDecisionId is required."),
+                    ReadLong(request.Payload, "expectedRecordVersion") ?? throw new ArgumentException("ExpectedRecordVersion is required."),
+                    ReadString(request.Payload, "disposition") ?? throw new ArgumentException("Disposition is required."),
+                    cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.RequestPlanApproval:
+                result = await _accountingProviderSwitchAgentService.RequestPlanApprovalAsync(context,
+                    ReadGuid(request.Payload, "planId") ?? throw new ArgumentException("PlanId is required."), cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.StartApprovedFreeze:
+                result = await _accountingProviderSwitchAgentService.StartApprovedFreezeAsync(context,
+                    ReadGuid(request.Payload, "cutoverExecutionId") ?? throw new ArgumentException("CutoverExecutionId is required."),
+                    ReadLong(request.Payload, "expectedExecutionVersion") ?? throw new ArgumentException("ExpectedExecutionVersion is required."), cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.RequestActivationApproval:
+                result = await _accountingProviderSwitchAgentService.RequestActivationApprovalAsync(context,
+                    ReadGuid(request.Payload, "cutoverExecutionId") ?? throw new ArgumentException("CutoverExecutionId is required."),
+                    ReadLong(request.Payload, "expectedExecutionVersion") ?? throw new ArgumentException("ExpectedExecutionVersion is required."), cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.ResumeRecovery:
+                result = await _accountingProviderSwitchAgentService.ResumeRecoveryAsync(context,
+                    ReadGuid(request.Payload, "cutoverExecutionId") ?? throw new ArgumentException("CutoverExecutionId is required."),
+                    ReadLong(request.Payload, "expectedExecutionVersion") ?? throw new ArgumentException("ExpectedExecutionVersion is required."), cancellationToken);
+                break;
+            case AccountingProviderSwitchAgentToolIds.CreateFollowUpTask:
+                var briefing = await _accountingProviderSwitchAgentService.GetBriefingAsync(
+                    new(request.CompanyId, switchId.Value, 20), cancellationToken);
+                if (briefing.SwitchVersion != expectedSwitchVersion.Value)
+                    return Failed(AccountingProviderSwitchReasonCodes.ConcurrencyConflict,
+                        "The migration changed. Read the current briefing before creating a follow-up task.");
+                var task = await _proactiveTaskCreationService.CreateAsync(new CreateAgentInitiatedTaskCommand(
+                    new ProactiveTaskTrigger(
+                        request.CompanyId,
+                        request.AgentId,
+                        "accounting_provider_switch",
+                        $"{switchId.Value:N}:{expectedSwitchVersion.Value}:{idempotencyKey}",
+                        request.CorrelationId ?? request.ExecutionId.ToString("N"),
+                        "A current accounting migration integrity item needs durable follow-up.",
+                        new Dictionary<string, JsonNode?>
+                        {
+                            ["switchId"] = JsonValue.Create(switchId.Value),
+                            ["switchVersion"] = JsonValue.Create(expectedSwitchVersion.Value),
+                            ["financialIntegrityGap"] = JsonValue.Create(true),
+                            ["dataSources"] = new JsonArray("accounting switch", "migration briefing")
+                        },
+                        TaskType: "finance.accounting_migration_follow_up",
+                        TaskTitle: ReadString(request.Payload, "title") ?? "Review accounting migration evidence",
+                        TaskDescription: ReadString(request.Payload, "description"),
+                        TaskPriority: ReadString(request.Payload, "priority") ?? "high",
+                        AssignedAgentId: request.AgentId)), cancellationToken);
+                return InternalToolExecutionResponse.Succeeded(
+                    task.Duplicate
+                        ? "The existing durable finance follow-up task already covers this migration version."
+                        : "A durable finance follow-up task was created from the current migration version.",
+                    new Dictionary<string, JsonNode?> { ["task"] = Serialize(task) },
+                    Metadata(request, "company_task_command_service"));
+            default:
+                return Failed("unsupported_migration_command", "This accounting migration command is not available.");
+        }
+
+        return InternalToolExecutionResponse.Succeeded(
+            result.Summary,
+            new Dictionary<string, JsonNode?> { ["commandResult"] = Serialize(result) },
+            Metadata(request, "accounting_provider_switch_agent_service"));
+    }
+
+    private static string SafeMigrationFailure(AccountingAuthorityException exception)
+    {
+        if (exception.ReasonCode.Contains("not_found", StringComparison.OrdinalIgnoreCase))
+            return "The accounting migration is unavailable for this company.";
+        if (exception.IsConflict || exception.ReasonCode.Contains("stale", StringComparison.OrdinalIgnoreCase) ||
+            exception.ReasonCode.Contains("concurrency", StringComparison.OrdinalIgnoreCase))
+            return "The accounting migration changed. Read the current briefing and retry from its allowed actions.";
+        if (exception.ReasonCode.Contains("reconciliation_required", StringComparison.OrdinalIgnoreCase))
+            return "The provider outcome must be reconciled before this action can continue; do not retry it blindly.";
+        return "The accounting migration action could not continue. Read the current briefing and follow its allowed recovery action.";
+    }
+
     private static bool EnsureAction(
         InternalToolExecutionRequest request,
         ToolActionType expectedAction,
@@ -816,6 +1033,23 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         }
 
         return value.TryGetValue<string>(out var text) && int.TryParse(text, out number)
+            ? number
+            : null;
+    }
+
+    private static long? ReadLong(IReadOnlyDictionary<string, JsonNode?> payload, string key)
+    {
+        if (!payload.TryGetValue(key, out var node) || node is not JsonValue value)
+        {
+            return null;
+        }
+
+        if (value.TryGetValue<long>(out var number))
+        {
+            return number;
+        }
+
+        return value.TryGetValue<string>(out var text) && long.TryParse(text, out number)
             ? number
             : null;
     }

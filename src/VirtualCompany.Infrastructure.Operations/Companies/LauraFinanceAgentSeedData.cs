@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -84,18 +85,20 @@ internal static class LauraFinanceAgentSeedData
     private static Dictionary<string, JsonNode?> ToolPermissions() =>
         new(StringComparer.OrdinalIgnoreCase)
         {
-            ["allowed"] = new JsonArray(
-                JsonValue.Create("get_cash_balance"),
-                JsonValue.Create("resolve_finance_agent_query"),
-                JsonValue.Create("list_transactions"),
-                JsonValue.Create("list_uncategorized_transactions"),
-                JsonValue.Create("list_invoices_awaiting_approval"),
-                JsonValue.Create("get_profit_and_loss_summary"),
-                JsonValue.Create("recommend_transaction_category"),
-                JsonValue.Create("recommend_invoice_approval_decision"),
-                JsonValue.Create("categorize_transaction"),
-                JsonValue.Create("approve_invoice"),
-                JsonValue.Create("post_paid_supplier_bill_expense")),
+            ["allowed"] = ToJsonArray(new[]
+            {
+                "get_cash_balance",
+                "resolve_finance_agent_query",
+                "list_transactions",
+                "list_uncategorized_transactions",
+                "list_invoices_awaiting_approval",
+                "get_profit_and_loss_summary",
+                "recommend_transaction_category",
+                "recommend_invoice_approval_decision",
+                "categorize_transaction",
+                "approve_invoice",
+                "post_paid_supplier_bill_expense"
+            }.Concat(AccountingProviderSwitchAgentToolIds.All)),
             ["actions"] = new JsonArray(
                 JsonValue.Create("read"),
                 JsonValue.Create("recommend"),
@@ -153,11 +156,14 @@ internal static class LauraFinanceAgentSeedData
                     JsonValue.Create("invoice_approval_review"),
                     JsonValue.Create("profit_and_loss_summary"),
                     JsonValue.Create("finance_risk_detection"),
-                    JsonValue.Create("paid_supplier_bill_expense_posting")),
-                ["requiresApproval"] = new JsonArray(
-                    JsonValue.Create("categorize_transaction"),
-                    JsonValue.Create("approve_invoice"),
-                    JsonValue.Create("post_paid_supplier_bill_expense")),
+                    JsonValue.Create("paid_supplier_bill_expense_posting"),
+                    JsonValue.Create("accounting_migration_guidance")),
+                ["requiresApproval"] = ToJsonArray(new[]
+                {
+                    "categorize_transaction",
+                    "approve_invoice",
+                    "post_paid_supplier_bill_expense"
+                }.Concat(AccountingProviderSwitchAgentToolIds.ExecuteTools)),
                 ["financeBoundary"] = JsonValue.Create("finance")
             },
             ["conditions"] = new JsonArray()
@@ -177,4 +183,7 @@ internal static class LauraFinanceAgentSeedData
             ["defaultAudience"] = JsonValue.Create("finance_owner"),
             ["summaryStyle"] = JsonValue.Create("evidence_first")
         };
+
+    private static JsonArray ToJsonArray(IEnumerable<string> values) =>
+        new(values.Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
 }

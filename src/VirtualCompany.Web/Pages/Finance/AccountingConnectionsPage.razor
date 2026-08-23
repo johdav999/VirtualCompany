@@ -1,193 +1,179 @@
 @page "/finance/accounting/connections"
 @inherits FinancePageBase
 
-<PageTitle>Accounting connections</PageTitle>
+<PageTitle>@FinanceText["AccountingMigrationTitle"]</PageTitle>
 
 <FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
-                   Title="Accounting connections"
-                   Description="See where the books are authoritative, manage period-safe cutovers, and reconcile approved provider exports."
-                   LoadingMessage="Loading accounting authority…">
+                   Title="@FinanceText["AccountingConnections"]"
+                   Description="@FinanceText["AccountingConnectionsWorkspaceDescription"]"
+                   LoadingMessage="@FinanceText["LoadingAccountingMigration"]">
     <AccountingNavigation CompanyId="@AccessState.CompanyId" />
-
-    <div class="accounting-connections-heading">
-        <div>
-            <span class="dashboard-kicker">Accounting</span>
-            <h2>Accounting connections</h2>
-            <p>@(Authority?.Explanation ?? "Accounting authority has not been configured for the current period.")</p>
-        </div>
-        <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsActing">Refresh</button>
-    </div>
 
     @if (!string.IsNullOrWhiteSpace(ActionMessage))
     {
-        <div class="alert alert-success" role="status">@ActionMessage</div>
+        <div class="alert alert-success mt-3" role="status" tabindex="-1">@ActionMessage</div>
     }
     @if (!string.IsNullOrWhiteSpace(ActionError))
     {
-        <div class="alert alert-danger" role="alert"><strong>Action could not be completed.</strong><div>@ActionError</div></div>
+        <div class="alert alert-danger mt-3" role="alert" tabindex="-1" data-testid="migration-connection-lost"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div><button class="btn btn-sm btn-outline-danger mt-2" @onclick="ReloadAsync">@FinanceText["TryAgain"]</button></div>
     }
 
-    <section class="accounting-authority-kpis" aria-label="Accounting authority summary">
-        <article><span class="is-blue">◇</span><div><small>Current authority</small><strong>@CurrentAuthorityLabel</strong></div></article>
-        <article><span class="is-green">▣</span><div><small>Effective period</small><strong>@CurrentEffectivePeriod</strong></div></article>
-        <article><span class="is-amber">↑</span><div><small>Pending exports</small><strong>@(Authority?.PendingExportCount ?? 0)</strong></div></article>
-        <article><span class="is-red">!</span><div><small>Issues needing review</small><strong>@(Authority?.ReconciliationRequiredCount ?? 0)</strong></div></article>
-    </section>
-
-    <div class="accounting-connections-grid">
-        <div class="accounting-connections-main">
-            <section class="accounting-connection-card accounting-authority-card">
-                <header>
-                    <div><h3>Accounting authority</h3><p>Each accounting period has exactly one authoritative book.</p></div>
-                    @if (CanManageAccounting && Authority?.CanChangeAuthority == true)
-                    {
-                        <button class="btn btn-sm btn-outline-primary" type="button" @onclick="ToggleAuthorityChange">@(ShowAuthorityChange ? "Close preview" : "Preview authority change")</button>
-                    }
-                </header>
-
-                @if (Authority?.Periods.Count > 0)
+    @if (SelectedSwitch is not null && AccessState.CompanyId is Guid workspaceCompanyId)
+    {
+        <AccountingMigrationWorkspace CompanyId="@workspaceCompanyId"
+                                      Switch="@SelectedSwitch"
+                                      Authority="@Authority"
+                                      AllowedActions="@SwitchAllowedActions"
+                                      Assessment="@Assessment"
+                                      Completeness="@Completeness"
+                                      Mappings="@Mappings"
+                                      Rehearsal="@Rehearsal"
+                                      PlanReadiness="@PlanReadiness"
+                                      InternalReadiness="@InternalReadiness"
+                                      Preparation="@Preparation"
+                                      Transfer="@Transfer"
+                                      Cutover="@SwitchCutover"
+                                      Monitoring="@SwitchMonitoring"
+                                      Operations="@SwitchOperations"
+                                      FuturePeriodAvailable="@(EffectiveFiscalPeriodId != Guid.Empty)"
+                                      Guidance="@Guidance"
+                                      Recommendation="@Recommendation"
+                                      AuditEvidence="@AuditEvidence"
+                                      MonitoringEvidence="@MonitoringEvidence"
+                                      PartialFailures="@PartialFailures"
+                                      CanManage="@CanManageAccounting"
+                                      IsActing="@IsActing"
+                                      OnAction="@HandleMigrationActionAsync"
+                                      OnAcceptMonitoringException="@AcceptMonitoringExceptionAsync" />
+    }
+    else
+    {
+        <section class="accounting-migration-empty-state" data-testid="no-active-accounting-migration">
+            <div class="accounting-migration-empty-state__copy">
+                <span class="dashboard-kicker">@FinanceText["AccountingMigrationKicker"]</span>
+                <h2>@FinanceText["AccountingConnections"]</h2>
+                <p>@(Authority?.Explanation ?? FinanceText["AccountingAuthorityNotConfigured"])</p>
+                <div class="accounting-current-authority">
+                    <span aria-hidden="true">@AuthorityIcon(Authority?.CurrentPeriod?.Authority ?? string.Empty)</span>
+                    <div><small>@FinanceText["CurrentAuthority"]</small><strong>@CurrentAuthorityLabel</strong><em>@CurrentEffectivePeriod</em></div>
+                </div>
+            </div>
+            <div class="accounting-migration-start-card">
+                <header><div><h3>@FinanceText["StartGuidedMigration"]</h3><p>@FinanceText["StartGuidedMigrationDescription"]</p></div><span aria-hidden="true">→</span></header>
+                @if (CanManageAccounting)
                 {
-                    <div class="accounting-authority-timeline">
-                        @foreach (var period in Authority.Periods.OrderBy(x => x.EffectiveFrom))
-                        {
-                            <article class="@(period.Id == Authority.CurrentPeriod?.Id ? "is-current" : null)">
-                                <span>@AuthorityIcon(period.Authority)</span>
-                                <div><small>@PeriodRange(period)</small><strong>@period.AuthorityLabel</strong><em>@(period.ProviderName ?? period.ChangeReason)</em></div>
-                            </article>
-                        }
-                    </div>
-                }
-                else
-                {
-                    <div class="accounting-connection-empty"><strong>No authority period is available</strong><p>Complete accounting setup to make Virtual Company authoritative by default.</p></div>
-                }
-
-                @if (ShowAuthorityChange)
-                {
-                    <div class="accounting-authority-change">
-                        <div class="accounting-authority-change-fields">
-                            <label>New authority
-                                <select class="form-select" @bind="TargetAuthority">
-                                    <option value="external_provider">External accounting provider</option>
-                                    <option value="internal_ledger">Virtual Company</option>
-                                </select>
-                            </label>
-                            <label>Provider
-                                <select class="form-select" @bind="TargetProviderKey" disabled="@(TargetAuthority != "external_provider")">
-                                    @foreach (var provider in Authority?.Providers ?? [])
-                                    {
-                                        <option value="@provider.ProviderKey">@provider.DisplayName</option>
-                                    }
-                                </select>
-                            </label>
-                            <label>Effective accounting period
-                                <select class="form-select" @bind="EffectiveFiscalPeriodId">
-                                    @foreach (var period in AvailablePeriods)
-                                    {
-                                        <option value="@period.Id">@period.Name · @period.StartDate.ToString("d")</option>
-                                    }
-                                </select>
-                            </label>
-                            <label>Reason
-                                <input class="form-control" @bind="AuthorityChangeReason" />
-                            </label>
-                        </div>
-                        <div class="d-flex flex-wrap gap-2">
-                            <button class="btn btn-outline-primary" type="button" @onclick="PreviewAuthorityChangeAsync" disabled="@IsActing">Review impact</button>
-                            @if (Preview?.IsAllowed == true)
-                            {
-                                <button class="btn btn-primary" type="button" @onclick="StartAuthorityChangeAsync" disabled="@IsActing">Start controlled cutover</button>
-                            }
-                        </div>
-                        @if (Preview is not null)
-                        {
-                            <div class="accounting-authority-impact @(Preview.IsAllowed ? "is-ready" : "is-blocked")">
-                                <strong>@(Preview.IsAllowed ? "Ready to start cutover" : "Cutover is blocked")</strong>
-                                <p>@Preview.PostedJournalCount committed journals, @Preview.PendingExportCount pending exports, and @Preview.UnmappedSourceCount historical mappings need consideration from @Preview.EffectiveFrom.ToString("d").</p>
-                                @foreach (var issue in Preview.Issues.Concat(Preview.Warnings))
+                    <div class="accounting-migration-start-fields">
+                        <label>@FinanceText["MoveAccountingTo"]
+                            <select class="form-select" @bind="MigrationTarget">
+                                <option value="internal">@FinanceText["VirtualCompanyBuiltInAccounting"]</option>
+                                @foreach (var provider in Authority?.Providers ?? [])
                                 {
-                                    <div>• @issue.Explanation</div>
+                                    <option value="external:@provider.ProviderKey">@provider.DisplayName</option>
                                 }
-                            </div>
-                        }
+                            </select>
+                        </label>
+                        <label>@FinanceText["EffectiveAccountingPeriod"]
+                            <select class="form-select" @bind="EffectiveFiscalPeriodId">
+                                @foreach (var period in AvailablePeriods)
+                                {
+                                    <option value="@period.Id">@period.Name · @period.StartDate.ToString("d")</option>
+                                }
+                            </select>
+                        </label>
+                        <label>@FinanceText["MigrationBoundary"]
+                            <select class="form-select" @bind="MigrationStrategy">
+                                <option value="opening_balances_and_open_items">@FinanceText["OpeningBalancesAndOpenItems"]</option>
+                                <option value="current_fiscal_year">@FinanceText["CurrentFiscalYear"]</option>
+                                <option value="full_history">@FinanceText["FullHistory"]</option>
+                            </select>
+                        </label>
+                        <label>@FinanceText["ReasonForMigration"]
+                            <textarea class="form-control" rows="2" @bind="MigrationReason"></textarea>
+                        </label>
                     </div>
-                }
-            </section>
-
-            <section class="accounting-connection-card accounting-export-card">
-                <header><div><h3>Export and reconciliation</h3><p>Provider state is kept separately from committed local journals.</p></div></header>
-                @if (Authority?.Exports.Count > 0)
-                {
-                    <div class="table-responsive">
-                        <table class="table align-middle mb-0">
-                            <thead><tr><th>Journal</th><th>Period</th><th>Provider</th><th>Status</th><th>Last update</th><th></th></tr></thead>
-                            <tbody>
-                            @foreach (var export in Authority.Exports)
-                            {
-                                <tr>
-                                    <td><strong>@export.JournalNumber</strong><small>@SourceLabel(export.SourceType)</small></td>
-                                    <td>@export.PostingDate.ToString("yyyy-MM")</td>
-                                    <td>@export.ProviderName</td>
-                                    <td><span class="@ExportBadge(export.Status)">@export.StatusLabel</span>@if (!string.IsNullOrWhiteSpace(export.SafeSummary)) { <small>@export.SafeSummary</small> }</td>
-                                    <td>@LocalDateTime.DateTime(export.UpdatedUtc)</td>
-                                    <td>
-                                        @if (CanManageAccounting && export.Status == "reconciliation_required")
-                                        {
-                                            <div class="accounting-export-actions">
-                                                <button class="btn btn-sm btn-outline-success" @onclick="() => ReconcileExportAsync(export, true)" disabled="@IsActing">Confirm exported</button>
-                                                <button class="btn btn-sm btn-outline-secondary" @onclick="() => ReconcileExportAsync(export, false)" disabled="@IsActing">Confirm not sent</button>
-                                            </div>
-                                        }
-                                    </td>
-                                </tr>
-                            }
-                            </tbody>
-                        </table>
-                    </div>
+                    <button class="btn btn-primary" type="button" @onclick="StartGuidedMigrationAsync" disabled="@(IsActing || EffectiveFiscalPeriodId == Guid.Empty)">@FinanceText["StartGuidedMigration"]</button>
+                    @if (AvailablePeriods.Count == 0)
+                    {
+                        <p class="accounting-migration-start-warning">@FinanceText["FutureMonthlyPeriodRequired"]</p>
+                    }
                 }
                 else
                 {
-                    <div class="accounting-connection-empty"><strong>No provider exports yet</strong><p>Approved exports of committed journals will appear here without changing the local books.</p></div>
+                    <div class="accounting-view-only"><strong>@FinanceText["ViewOnlyMigrationAccess"]</strong><p>@FinanceText["ViewOnlyMigrationAccessDescription"]</p></div>
                 }
-            </section>
-        </div>
+            </div>
+        </section>
+    }
 
-        <aside class="accounting-connections-side">
+    <section class="accounting-connection-card accounting-provider-access mt-3" aria-labelledby="provider-access-heading">
+        <header><div><h3 id="provider-access-heading">@FinanceText["ConnectedAccountingSystems"]</h3><p>@FinanceText["ConnectedAccountingSystemsDescription"]</p></div></header>
+        <div class="accounting-provider-access-grid">
             @foreach (var provider in Authority?.Providers ?? [])
             {
-                <section class="accounting-connection-card accounting-provider-card">
-                    <header><div class="accounting-provider-identity"><span>@ProviderMark(provider.DisplayName)</span><div><h3>@provider.DisplayName</h3><p>@provider.ModeExplanation</p></div></div><span class="@(provider.IsConnected ? "status-badge status-badge-success" : "status-badge")">@(provider.IsConnected ? "Connected" : "Not connected")</span></header>
-                    <dl><dt>Last successful sync</dt><dd>@(provider.LastSuccessfulSyncUtc.HasValue ? LocalDateTime.DateTime(provider.LastSuccessfulSyncUtc.Value) : "No sync yet")</dd><dt>Granted permissions</dt><dd>@(provider.GrantedScopes.Count > 0 ? string.Join(", ", provider.GrantedScopes) : "No permissions granted")</dd></dl>
-                    @if (!string.IsNullOrWhiteSpace(provider.SafeIssueSummary)) { <div class="alert alert-warning small">@provider.SafeIssueSummary</div> }
-                    <a class="btn btn-primary w-100" href="@FinanceRoutes.BuildFinanceIntegrationSettingsPath(provider.ProviderKey, AccessState.CompanyId)">Manage connection</a>
-                </section>
+                <article>
+                    <span>@ProviderMark(provider.DisplayName)</span>
+                    <div><strong>@provider.DisplayName</strong><small>@provider.ModeExplanation</small></div>
+                    <em class="@(provider.IsConnected ? "status-badge status-badge-success" : "status-badge")">@(provider.IsConnected ? FinanceText["Connected"] : FinanceText["NotConnected"])</em>
+                    <a class="btn btn-sm btn-outline-primary" href="@FinanceRoutes.BuildFinanceIntegrationSettingsPath(provider.ProviderKey, AccessState.CompanyId)">@FinanceText["ManageConnection"]</a>
+                </article>
             }
+        </div>
+    </section>
 
-            @if (CurrentCutover is not null)
-            {
-                <section class="accounting-connection-card accounting-cutover-card">
-                    <header><div><h3>Cutover readiness</h3><p>Completion stays blocked until every reconciliation check passes.</p></div></header>
-                    @if (CanManageAccounting)
+    <section id="accounting-exports" class="accounting-connection-card accounting-export-card mt-3">
+        <header><div><h3>@FinanceText["ExportAndReconciliation"]</h3><p>@FinanceText["ExportAndReconciliationDescription"]</p></div></header>
+        @if (Authority?.Exports.Count > 0)
+        {
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead><tr><th>@FinanceText["Journal"]</th><th>@FinanceText["Period"]</th><th>@FinanceText["Provider"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["LastUpdate"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead>
+                    <tbody>
+                    @foreach (var export in Authority.Exports)
                     {
-                        <label><input type="checkbox" @bind="OpeningBalancesReconciled" /> <span>Opening balances</span></label>
-                        <label><input type="checkbox" @bind="TrialBalanceReconciled" /> <span>Trial balance</span></label>
-                        <label><input type="checkbox" @bind="SourceMappingsReconciled" /> <span>Source mappings</span></label>
-                        <label class="is-conflict"><span>Unresolved conflicts</span><input class="form-control" type="number" min="0" @bind="ConflictCount" /></label>
-                        <textarea class="form-control" rows="3" @bind="CutoverSummary" aria-label="Cutover validation summary"></textarea>
-                        <button class="btn btn-outline-primary w-100" @onclick="SaveCutoverValidationAsync" disabled="@IsActing">Save reconciliation checks</button>
-                        <button class="btn btn-primary w-100" @onclick="CompleteCutoverAsync" disabled="@(!CurrentCutover.IsCutoverReady || IsActing)">Complete cutover</button>
+                        <tr>
+                            <td><strong>@export.JournalNumber</strong><small>@SourceLabel(export.SourceType)</small></td>
+                            <td>@export.PostingDate.ToString("yyyy-MM")</td>
+                            <td>@export.ProviderName</td>
+                            <td><span class="@ExportBadge(export.Status)">@export.StatusLabel</span>@if (!string.IsNullOrWhiteSpace(export.SafeSummary)) { <small>@export.SafeSummary</small> }</td>
+                            <td>@LocalDateTime.DateTime(export.UpdatedUtc)</td>
+                            <td>
+                                @if (CanManageAccounting && export.Status == "reconciliation_required")
+                                {
+                                    <div class="accounting-export-actions">
+                                        <button class="btn btn-sm btn-outline-success" @onclick="() => ReconcileExportAsync(export, true)" disabled="@IsActing">@FinanceText["ConfirmExported"]</button>
+                                        <button class="btn btn-sm btn-outline-secondary" @onclick="() => ReconcileExportAsync(export, false)" disabled="@IsActing">@FinanceText["ConfirmNotSent"]</button>
+                                    </div>
+                                }
+                            </td>
+                        </tr>
                     }
-                    else
-                    {
-                        @CutoverCheck("Opening balances", CurrentCutover.OpeningBalancesReconciled)
-                        @CutoverCheck("Trial balance", CurrentCutover.TrialBalanceReconciled)
-                        @CutoverCheck("Source mappings", CurrentCutover.SourceMappingsReconciled)
-                        @CutoverCheck("No unresolved conflicts", CurrentCutover.ConflictCount == 0)
-                    }
-                </section>
-            }
+                    </tbody>
+                </table>
+            </div>
+        }
+        else
+        {
+            <div class="accounting-connection-empty"><strong>@FinanceText["NoProviderExportsYet"]</strong><p>@FinanceText["NoProviderExportsYetDescription"]</p></div>
+        }
+    </section>
 
-            <section class="accounting-laura-card"><span>L</span><div><strong>Laura · Finance Manager</strong><p>I keep provider exports downstream from the authoritative books and surface every uncertain outcome for review.</p></div></section>
-        </aside>
-    </div>
+    @if (SelectedSwitch is null && CurrentCutover is not null)
+    {
+        <details class="accounting-legacy-cutover mt-3">
+            <summary>@FinanceText["LegacyCutoverChecks"]</summary>
+            <section class="accounting-connection-card accounting-cutover-card">
+                <header><div><h3>@FinanceText["CutoverReadiness"]</h3><p>@FinanceText["LegacyCutoverDescription"]</p></div></header>
+                @if (CanManageAccounting)
+                {
+                    <label><input type="checkbox" @bind="OpeningBalancesReconciled" /> <span>@FinanceText["OpeningBalances"]</span></label>
+                    <label><input type="checkbox" @bind="TrialBalanceReconciled" /> <span>@FinanceText["TrialBalance"]</span></label>
+                    <label><input type="checkbox" @bind="SourceMappingsReconciled" /> <span>@FinanceText["SourceMappings"]</span></label>
+                    <label class="is-conflict"><span>@FinanceText["UnresolvedConflicts"]</span><input class="form-control" type="number" min="0" @bind="ConflictCount" /></label>
+                    <textarea class="form-control" rows="3" @bind="CutoverSummary" aria-label="@FinanceText["CutoverValidationSummary"]"></textarea>
+                    <button class="btn btn-outline-primary w-100" @onclick="SaveCutoverValidationAsync" disabled="@IsActing">@FinanceText["SaveReconciliationChecks"]</button>
+                    <button class="btn btn-primary w-100" @onclick="CompleteCutoverAsync" disabled="@(!CurrentCutover.IsCutoverReady || IsActing)">@FinanceText["CompleteCutover"]</button>
+                }
+            </section>
+        </details>
+    }
 </FinancePageLayout>

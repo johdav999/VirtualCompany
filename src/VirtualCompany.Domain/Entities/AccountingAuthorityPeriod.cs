@@ -143,6 +143,26 @@ public sealed class AccountingAuthorityPeriod : ICompanyOwnedEntity
         Version++;
     }
 
+    public void RestoreSourceAuthority(string sourceAuthority, string? sourceProviderKey, string reason,
+        Guid actorUserId, DateTime recoveredUtc)
+    {
+        if (Authority != AccountingAuthorityValues.Migration)
+            throw new InvalidOperationException("Source authority can be restored only while cutover is in progress.");
+        if (actorUserId == Guid.Empty) throw new ArgumentException("ActorUserId is required.", nameof(actorUserId));
+        Authority = AccountingAuthorityValues.Normalize(sourceAuthority);
+        if (Authority == AccountingAuthorityValues.Migration)
+            throw new ArgumentException("Migration cannot be restored as source authority.", nameof(sourceAuthority));
+        ProviderKey = NormalizeOptional(sourceProviderKey, nameof(sourceProviderKey), 64)?.ToLowerInvariant();
+        TargetAuthority = null;
+        ChangeReason = NormalizeRequired(reason, nameof(reason), 1000);
+        ValidateProvider();
+        CompletedByUserId = actorUserId;
+        CompletedUtc = EntityTimestampNormalizer.NormalizeUtc(recoveredUtc, nameof(recoveredUtc));
+        ChangedByUserId = actorUserId;
+        UpdatedUtc = CompletedUtc.Value;
+        Version++;
+    }
+
     private void ValidateProvider()
     {
         var requiresProvider = Authority == AccountingAuthorityValues.ExternalProvider ||
