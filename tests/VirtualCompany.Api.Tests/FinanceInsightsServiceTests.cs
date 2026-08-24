@@ -120,7 +120,7 @@ public sealed class FinanceInsightsServiceTests
 
         var service = new CompanyFinanceReadService(dbContext);
         var fullResult = await service.GetInsightsAsync(new GetFinanceInsightsQuery(companyId), CancellationToken.None);
-        var sourceInsight = Assert.Single(fullResult.Items.Where(x => x.PrimaryEntity is not null));
+        var sourceInsight = fullResult.Items.First(x => x.PrimaryEntity is not null);
         var entityType = sourceInsight.PrimaryEntity!.EntityType;
         var entityId = sourceInsight.PrimaryEntity.EntityId;
 

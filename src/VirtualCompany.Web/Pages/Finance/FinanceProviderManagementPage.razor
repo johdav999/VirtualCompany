@@ -1,29 +1,29 @@
 @page "/system/admin/finance-providers"
 @rendermode InteractiveServer
 
-<PageTitle>Finance providers</PageTitle>
+<PageTitle>@FinanceText["FinanceProvidersTitle"]</PageTitle>
 
 <main class="finance-provider-admin">
     <header class="finance-provider-admin__header">
         <div>
-            <span class="dashboard-kicker">System / Admin</span>
-            <h1>Finance providers</h1>
-            <p>Configure the shared provider applications used when companies connect their accounting systems.</p>
+            <span class="dashboard-kicker">@FinanceText["SystemAdministration"]</span>
+            <h1>@FinanceText["FinanceProvidersTitle"]</h1>
+            <p>@FinanceText["FinanceProvidersDescription"]</p>
         </div>
-        <button class="btn btn-outline-secondary" type="button" @onclick="LoadAsync" disabled="@IsBusy">Refresh</button>
+        <button class="btn btn-outline-secondary" type="button" @onclick="LoadAsync" disabled="@IsBusy">@CommonText["Refresh"]</button>
     </header>
 
     @if (IsLoading)
     {
-        <div class="wizard-card" role="status">Loading finance provider settings…</div>
+        <div class="wizard-card" role="status">@FinanceText["LoadingFinanceProviderSettings"]</div>
     }
     else if (!string.IsNullOrWhiteSpace(AccessError))
     {
         <ForbiddenState
-            Title="Platform administrator access required"
+            Title="@FinanceText["PlatformAdminAccessRequired"]"
             Message="@AccessError"
             ReturnHref="/settings"
-            ReturnText="Back to settings" />
+            ReturnText="@FinanceText["BackToSettings"]" />
     }
     else if (!string.IsNullOrWhiteSpace(ErrorMessage))
     {
@@ -32,8 +32,8 @@
     else
     {
         <div class="finance-provider-admin__workspace">
-            <aside class="wizard-card finance-provider-admin__providers" aria-label="Finance providers">
-                <h2>Providers</h2>
+            <aside class="wizard-card finance-provider-admin__providers" aria-label="@FinanceText["FinanceProvidersTitle"]">
+                <h2>@FinanceText["Providers"]</h2>
                 @foreach (var provider in Providers)
                 {
                     <button type="button"
@@ -49,8 +49,8 @@
                 }
 
                 <div class="finance-provider-admin__extension">
-                    <strong>More providers</strong>
-                    <p>New provider adapters appear here automatically when they are registered.</p>
+                    <strong>@FinanceText["MoreProviders"]</strong>
+                    <p>@FinanceText["MoreProvidersHelp"]</p>
                 </div>
             </aside>
 
@@ -61,8 +61,8 @@
                         <div class="finance-integration-card__identity">
                             <span class="finance-integration-card__mark" aria-hidden="true">@ProviderMark(SelectedProvider.DisplayName)</span>
                             <div>
-                                <h2>@SelectedProvider.DisplayName application</h2>
-                                <p>One application is shared by every company. Company authorizations remain separate.</p>
+                                <h2>@FinanceText["ProviderApplicationTitle", SelectedProvider.DisplayName]</h2>
+                                <p>@FinanceText["ProviderApplicationSharedHelp"]</p>
                             </div>
                         </div>
                         <span class="@StatusBadge(SelectedProvider.Status)">@StatusLabel(SelectedProvider.Status)</span>
@@ -83,27 +83,27 @@
 
                         <div class="finance-provider-admin__section">
                             <div>
-                                <h3>Provider application</h3>
-                                <p>Create this OAuth application in the provider’s developer portal.</p>
+                                <h3>@FinanceText["ProviderApplication"]</h3>
+                                <p>@FinanceText["ProviderApplicationHelp"]</p>
                             </div>
                             <label class="form-check form-switch">
                                 <InputCheckbox class="form-check-input" @bind-Value="Form.Enabled" disabled="@IsBusy" />
-                                <span class="form-check-label">Enabled for company connections</span>
+                                <span class="form-check-label">@FinanceText["EnabledForCompanyConnections"]</span>
                             </label>
                         </div>
 
                         <div class="mb-4">
-                            <label class="form-label" for="provider-callback">Authorized callback URL</label>
+                            <label class="form-label" for="provider-callback">@FinanceText["AuthorizedCallbackUrl"]</label>
                             <div class="input-group">
                                 <InputText id="provider-callback" class="form-control" @bind-Value="Form.RedirectUri" disabled="@IsBusy" />
-                                <button class="btn btn-outline-secondary" type="button" @onclick="CopyCallbackAsync">Copy</button>
+                                <button class="btn btn-outline-secondary" type="button" @onclick="CopyCallbackAsync">@FinanceText["Copy"]</button>
                             </div>
-                            <div class="form-text">Register this exact URL with @SelectedProvider.DisplayName.</div>
+                            <div class="form-text">@FinanceText["RegisterCallbackHelp", SelectedProvider.DisplayName]</div>
                         </div>
 
                         <div class="row g-3 mb-4">
                             <div class="col-12 col-lg-6">
-                                <label class="form-label" for="provider-client-id">Client ID</label>
+                                <label class="form-label" for="provider-client-id">@FinanceText["ClientId"]</label>
                                 <InputText id="provider-client-id"
                                            class="form-control"
                                            @bind-Value="Form.ClientId"
@@ -113,7 +113,7 @@
                                 <div class="form-text">@PreserveClientIdHelp</div>
                             </div>
                             <div class="col-12 col-lg-6">
-                                <label class="form-label" for="provider-client-secret">Client secret</label>
+                                <label class="form-label" for="provider-client-secret">@FinanceText["ClientSecret"]</label>
                                 <InputText id="provider-client-secret"
                                            class="form-control"
                                            @bind-Value="Form.ClientSecret"
@@ -126,7 +126,7 @@
                         </div>
 
                         <fieldset class="mb-4">
-                            <legend class="form-label">Permissions</legend>
+                            <legend class="form-label">@FinanceText["Permissions"]</legend>
                             <div class="finance-provider-admin__scopes">
                                 @foreach (var scope in SelectedProvider.SupportedScopes)
                                 {
@@ -139,20 +139,20 @@
                                     </label>
                                 }
                             </div>
-                            <div class="form-text">Grant only the permissions required for synchronization and approved writes.</div>
+                            <div class="form-text">@FinanceText["ProviderPermissionsHelp"]</div>
                         </fieldset>
 
                         <div class="finance-provider-admin__actions">
-                            <button class="btn btn-primary" type="submit" disabled="@IsBusy">@(IsSaving ? "Saving…" : "Save configuration")</button>
-                            <button class="btn btn-outline-primary" type="button" @onclick="ValidateAsync" disabled="@IsBusy">@(IsValidating ? "Validating…" : "Validate setup")</button>
-                            <span class="text-body-secondary small">Secrets are stored in @SelectedProvider.SecretBackend and are never returned to the browser.</span>
+                            <button class="btn btn-primary" type="submit" disabled="@IsBusy">@FinanceText[IsSaving ? "Saving" : "SaveConfiguration"]</button>
+                            <button class="btn btn-outline-primary" type="button" @onclick="ValidateAsync" disabled="@IsBusy">@FinanceText[IsValidating ? "Validating" : "ValidateSetup"]</button>
+                            <span class="text-body-secondary small">@FinanceText["SecretStorageHelp", SelectedProvider.SecretBackend]</span>
                         </div>
                     </EditForm>
 
                     @if (Validation is not null)
                     {
                         <section class="finance-provider-admin__validation" aria-live="polite">
-                            <h3>Validation</h3>
+                            <h3>@FinanceText["Validation"]</h3>
                             <p>@Validation.Summary</p>
                             <ul>
                                 @foreach (var check in Validation.Checks)
@@ -167,18 +167,18 @@
 
                     <section class="finance-provider-admin__audit">
                         <div>
-                            <h3>Recent changes</h3>
-                            <p>Configuration actions are recorded without credential values.</p>
+                            <h3>@FinanceText["RecentChanges"]</h3>
+                            <p>@FinanceText["RecentChangesHelp"]</p>
                         </div>
                         @if (AuditItems.Count == 0)
                         {
-                            <p class="text-body-secondary">No changes have been recorded yet.</p>
+                            <p class="text-body-secondary">@FinanceText["NoProviderChanges"]</p>
                         }
                         else
                         {
                             <div class="table-responsive">
                                 <table class="table align-middle">
-                                    <thead><tr><th>Time</th><th>Action</th><th>Outcome</th><th>Summary</th></tr></thead>
+                                    <thead><tr><th>@FinanceText["Time"]</th><th>@FinanceText["Action"]</th><th>@FinanceText["Outcome"]</th><th>@FinanceText["Summary"]</th></tr></thead>
                                     <tbody>
                                     @foreach (var item in AuditItems)
                                     {

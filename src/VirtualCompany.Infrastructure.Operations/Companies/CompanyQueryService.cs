@@ -87,9 +87,13 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
         }
 
         var memberships = await GetMembershipsForUserAsync(resolvedUserId, cancellationToken);
+        var preferredCompanyId = await _dbContext.UserPreferences.AsNoTracking()
+            .Where(x => x.UserId == resolvedUserId)
+            .Select(x => x.PreferredCompanyId)
+            .SingleOrDefaultAsync(cancellationToken);
         var activeCompany = _companyContextAccessor.Membership is not null
             ? ToResolvedCompanyContext(_companyContextAccessor.Membership)
-            : ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId);
+            : ResolveActiveCompany(memberships, _companyContextAccessor.CompanyId ?? preferredCompanyId);
         var activeMembershipCount = memberships.Count(x => x.Status == CompanyMembershipStatus.Active);
 
         return new CurrentUserContextDto(
@@ -250,7 +254,9 @@ public sealed class CompanyQueryService : ICurrentUserCompanyService, ICompanyNo
                 x.CompanyId,
                 x.Company.Name,
                 x.Role,
-                x.Status))
+                x.Status,
+                x.Company.CreatedUtc,
+                x.Company.OnboardingStatus))
             .ToListAsync(cancellationToken);
     }
 

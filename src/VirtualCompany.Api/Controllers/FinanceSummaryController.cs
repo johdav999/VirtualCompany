@@ -28,7 +28,7 @@ public sealed class FinanceSummaryController : ControllerBase
         [FromQuery] DateTime? asOfUtc,
         [FromQuery] bool includeConsistencyCheck = false,
         [FromQuery] int recentAssetPurchaseLimit = 5,
-        [FromQuery] string source = FinanceDataSources.All,
+        [FromQuery] string source = FinanceDataSources.Operational,
         CancellationToken cancellationToken = default)
     {
         try

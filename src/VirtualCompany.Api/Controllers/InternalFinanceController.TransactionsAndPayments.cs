@@ -33,7 +33,7 @@ public sealed partial class InternalFinanceController
         [FromQuery] string? flagged,
         [FromQuery] int limit,
         CancellationToken cancellationToken,
-        [FromQuery] string source = FinanceDataSources.All) =>
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadAsync(
             () => _financeReadService.GetTransactionsAsync(
                 new GetFinanceTransactionsQuery(companyId, startUtc, endUtc, limit, category, flagged, source),
@@ -43,10 +43,11 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<FinanceTransactionDetailDto>> GetTransactionDetailAsync(
         Guid companyId,
         Guid transactionId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadOptionalAsync(
             () => _financeReadService.GetTransactionDetailAsync(
-                new GetFinanceTransactionDetailQuery(companyId, transactionId),
+                new GetFinanceTransactionDetailQuery(companyId, transactionId, source),
                 cancellationToken),
             "Finance transaction was not found.");
 
@@ -56,7 +57,7 @@ public sealed partial class InternalFinanceController
         [FromQuery(Name = "type")] string? paymentType,
         [FromQuery] int limit,
         CancellationToken cancellationToken,
-        [FromQuery] string source = FinanceDataSources.All) =>
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadAsync(
             () => _financePaymentReadService.GetPaymentsAsync(
                 new GetFinancePaymentsQuery(companyId, paymentType, limit, source),
@@ -66,10 +67,11 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<FinancePaymentDto>> GetPaymentDetailAsync(
         Guid companyId,
         Guid paymentId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadOptionalAsync(
             () => _financePaymentReadService.GetPaymentDetailAsync(
-                new GetFinancePaymentDetailQuery(companyId, paymentId),
+                new GetFinancePaymentDetailQuery(companyId, paymentId, source),
                 cancellationToken),
             "Finance payment was not found.");
 
@@ -77,10 +79,11 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetPaymentAllocationsAsync(
         Guid companyId,
         Guid paymentId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadOptionalAsync(
             () => _financePaymentReadService.GetAllocationsByPaymentAsync(
-                new GetFinancePaymentAllocationsByPaymentQuery(companyId, paymentId),
+                new GetFinancePaymentAllocationsByPaymentQuery(companyId, paymentId, source),
                 cancellationToken),
             "Finance payment was not found.");
 

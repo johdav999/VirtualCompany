@@ -54,14 +54,14 @@ public sealed class FinanceSeedJobRunnerTests
 
         Assert.Equal(1, handled);
 
-        var execution = await dbContext.BackgroundExecutions.SingleAsync(x => x.CompanyId == companyId);
+        var execution = await dbContext.BackgroundExecutions.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId);
         Assert.Equal(BackgroundExecutionStatus.Succeeded, execution.Status);
 
-        var company = await dbContext.Companies.SingleAsync(x => x.Id == companyId);
+        var company = await dbContext.Companies.IgnoreQueryFilters().SingleAsync(x => x.Id == companyId);
         Assert.Equal(FinanceSeedingState.FullySeeded, company.FinanceSeedStatus);
         Assert.NotNull(company.FinanceSeededUtc);
 
-        var actions = await dbContext.AuditEvents
+        var actions = await dbContext.AuditEvents.IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .Select(x => x.Action)
             .ToListAsync();
@@ -134,14 +134,14 @@ public sealed class FinanceSeedJobRunnerTests
 
         Assert.Equal(1, handled);
 
-        var execution = await dbContext.BackgroundExecutions.SingleAsync(x => x.CompanyId == companyId);
+        var execution = await dbContext.BackgroundExecutions.IgnoreQueryFilters().SingleAsync(x => x.CompanyId == companyId);
         Assert.Equal(BackgroundExecutionStatus.Failed, execution.Status);
         Assert.Contains("Configured finance seed failure.", execution.FailureMessage ?? string.Empty, StringComparison.OrdinalIgnoreCase);
 
-        var company = await dbContext.Companies.SingleAsync(x => x.Id == companyId);
+        var company = await dbContext.Companies.IgnoreQueryFilters().SingleAsync(x => x.Id == companyId);
         Assert.Equal(FinanceSeedingState.Failed, company.FinanceSeedStatus);
 
-        var actions = await dbContext.AuditEvents
+        var actions = await dbContext.AuditEvents.IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
             .Select(x => x.Action)
             .ToListAsync();
@@ -158,7 +158,7 @@ public sealed class FinanceSeedJobRunnerTests
         Assert.Equal(companyId, failedEvent.Context.CompanyId);
         Assert.Equal(FinanceSeedingState.Seeding, failedEvent.Context.SeedStateBefore);
         Assert.Equal(FinanceSeedingState.Failed, failedEvent.Context.SeedStateAfter);
-        Assert.Equal(nameof(InvalidOperationException), failedEvent.Context.ErrorType);
+        Assert.Equal(typeof(InvalidOperationException).FullName, failedEvent.Context.ErrorType);
         Assert.Contains("Configured finance seed failure.", failedEvent.Context.ErrorMessageSafe ?? string.Empty, StringComparison.OrdinalIgnoreCase);
         Assert.NotNull(failedEvent.Context.DurationMs);
         Assert.True(failedEvent.Context.DurationMs >= 0);
@@ -168,7 +168,7 @@ public sealed class FinanceSeedJobRunnerTests
         var failedLog = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Finance seed orchestration failed", StringComparison.Ordinal)));
         Assert.Equal(companyId, Assert.IsType<Guid>(failedLog.State["CompanyId"]));
         Assert.Equal(1, Assert.IsType<int>(failedLog.State["Attempt"]));
-        Assert.Equal(nameof(InvalidOperationException), Assert.IsType<string>(failedLog.State["ErrorType"]));
+        Assert.Equal(typeof(InvalidOperationException).FullName, Assert.IsType<string>(failedLog.State["ErrorType"]));
         Assert.Equal(FinanceSeedRequestModes.Replace, Assert.IsType<string>(failedLog.State["SeedMode"]));
         Assert.NotNull(failedLog.State["DurationMs"]);
     }
@@ -223,7 +223,7 @@ public sealed class FinanceSeedJobRunnerTests
 
         Assert.Equal(0, handled);
 
-        var refreshedExecution = await dbContext.BackgroundExecutions.SingleAsync(x => x.Id == execution.Id);
+        var refreshedExecution = await dbContext.BackgroundExecutions.IgnoreQueryFilters().SingleAsync(x => x.Id == execution.Id);
         Assert.Equal(BackgroundExecutionStatus.RetryScheduled, refreshedExecution.Status);
         Assert.NotNull(refreshedExecution.NextRetryUtc);
         Assert.InRange((refreshedExecution.NextRetryUtc!.Value - refreshedExecution.UpdatedUtc).TotalSeconds, 6.5d, 7.5d);

@@ -511,12 +511,23 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
     }
 
     private static SupplierBillAccountingInput ToInput(SupplierBillAccountingProfile profile) => new(
-        profile.FiscalPeriodId, profile.VoucherSeriesCode, profile.ExchangeRate,
+        profile.FiscalPeriodId, profile.VoucherSeriesCode, CanonicalInputDecimal(profile.ExchangeRate),
         profile.Lines.OrderBy(x => x.Sequence).Select(x => new SupplierBillAccountingLineInput(
             x.Description,
-            x.TaxMethod == CustomerInvoiceTaxMethodValues.Inclusive ? x.GrossAmount : x.NetAmount,
+            CanonicalInputDecimal(x.TaxMethod == CustomerInvoiceTaxMethodValues.Inclusive
+                ? x.GrossAmount
+                : x.NetAmount),
             x.CostAccountId,
             x.TaxRuleKey)).ToArray());
+
+    // SQL Server preserves the declared decimal column scale on materialization (for example,
+    // 1 becomes 1.00000000). The approval hash is JSON-based, so rebuild the submitted input
+    // with a canonical scale before revalidating it; otherwise numerically identical approved
+    // facts can produce a different JSON hash after a database round trip.
+    private static decimal CanonicalInputDecimal(decimal value) => decimal.Parse(
+        value.ToString("0.############################", CultureInfo.InvariantCulture),
+        NumberStyles.Number,
+        CultureInfo.InvariantCulture);
 
     private static SupplierBillAccountingStateDto EmptyState(FinanceBill bill) => new(
         bill.Id, null, SupplierBillAccountingStatuses.NotReady, "Not ready", true, IsApproved(bill.Status),

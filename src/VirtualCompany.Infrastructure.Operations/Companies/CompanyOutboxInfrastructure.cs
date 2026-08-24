@@ -425,6 +425,14 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 .SetProperty(x => x.LastError, (string?)null),
                 cancellationToken);
 
+        // ExecuteUpdate bypasses the change tracker. Detach any messages that were
+        // created earlier in this scope so the claimed rows are reloaded with their
+        // lease values and can be updated without a stale concurrency token.
+        foreach (var entry in _dbContext.ChangeTracker.Entries<CompanyOutboxMessage>().ToArray())
+        {
+            entry.State = EntityState.Detached;
+        }
+
         return await _dbContext.CompanyOutboxMessages
             .Where(x => x.ClaimToken == claimToken && x.Status == CompanyOutboxMessageStatus.InProgress)
             .OrderBy(x => x.AvailableUtc)

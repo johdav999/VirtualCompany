@@ -13,11 +13,12 @@ public sealed record GetFinanceInvoicesQuery(
     DateTime? StartUtc = null,
     DateTime? EndUtc = null,
     int Limit = 100,
-    string SourceFilter = FinanceDataSources.All);
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinanceInvoiceDetailQuery(
     Guid CompanyId,
-    Guid InvoiceId);
+    Guid InvoiceId,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record UpdateFinanceInvoiceApprovalStatusCommand(
     Guid CompanyId,
@@ -29,7 +30,8 @@ public sealed record ReviewFinanceInvoiceWorkflowCommand(
     Guid InvoiceId,
     Guid? WorkflowInstanceId,
     Guid? AgentId,
-    Dictionary<string, JsonNode?>? Payload);
+    Dictionary<string, JsonNode?>? Payload,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record FinanceOverdueInvoiceRecommendationDto(
     int Rank,
@@ -124,7 +126,8 @@ public sealed record FinanceInvoiceDetailDto(
     string ProcessingStatus = FinanceDocumentProcessingStatuses.None,
     FinanceTransactionPaymentContextDto? PaymentContext = null,
     IReadOnlyList<FinanceInvoiceRelatedTransactionDto>? RelatedTransactions = null,
-    CustomerInvoiceAccountingStateDto? Accounting = null);
+    CustomerInvoiceAccountingStateDto? Accounting = null,
+    string Source = FinanceDataSources.Manual);
 
 public sealed record FinanceInvoiceRelatedTransactionDto(
     Guid Id,
@@ -165,6 +168,10 @@ public sealed record FinanceInvoiceReviewWorkflowResultDto(
 public interface IInvoiceReviewWorkflowService
 {
     Task<FinanceInvoiceReviewWorkflowResultDto> ExecuteAsync(ReviewFinanceInvoiceWorkflowCommand command, CancellationToken cancellationToken);
-    Task<FinanceInvoiceReviewWorkflowResultDto?> GetLatestByInvoiceAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken);
+    Task<FinanceInvoiceReviewWorkflowResultDto?> GetLatestByInvoiceAsync(
+        Guid companyId,
+        Guid invoiceId,
+        CancellationToken cancellationToken,
+        string sourceFilter = FinanceDataSources.Operational);
 }
 

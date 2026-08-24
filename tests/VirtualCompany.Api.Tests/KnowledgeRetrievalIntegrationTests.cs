@@ -220,7 +220,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IDisposable
             dbContext.Users.Add(new User(userId, "ranking@example.com", "Ranking", "dev-header", "ranking"));
             dbContext.Companies.Add(new Company(companyId, "Scoped Company"));
             dbContext.CompanyMemberships.Add(
-                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
 
             var accessibleDocument = CreateIndexedDocument(companyId, "Accessible Payroll Handbook");
             var restrictedDocument = CreateIndexedDocument(
@@ -293,7 +293,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IDisposable
             dbContext.Users.Add(new User(userId, "scope-filter@example.com", "Scope Filter", "dev-header", "scope-filter"));
             dbContext.Companies.Add(new Company(companyId, "Scope Filter Company"));
             dbContext.CompanyMemberships.Add(
-                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Manager, CompanyMembershipStatus.Active));
+                new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
 
             var accessibleDocument = CreateIndexedDocument(companyId, "Accessible Expense Guide");
             var restrictedDocument = CreateIndexedDocument(
@@ -341,7 +341,7 @@ public sealed class KnowledgeRetrievalIntegrationTests : IDisposable
 
         var searchService = scope.ServiceProvider.GetRequiredService<ICompanyKnowledgeSearchService>();
         var results = await searchService.SearchAsync(
-            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 1, TestAccess(companyId, userId)),
+            new CompanyKnowledgeSemanticSearchQuery(companyId, "payroll policy for remote employees", 1, TestAccess(companyId, userId, membershipRole: CompanyMembershipRole.Employee)),
             CancellationToken.None);
 
         var result = Assert.Single(results);
@@ -776,12 +776,13 @@ public sealed class KnowledgeRetrievalIntegrationTests : IDisposable
     private static CompanyKnowledgeAccessContext TestAccess(
         Guid companyId,
         Guid userId,
-        IReadOnlyList<string>? dataScopes = null) =>
+        IReadOnlyList<string>? dataScopes = null,
+        CompanyMembershipRole membershipRole = CompanyMembershipRole.Manager) =>
         new(
             companyId,
             MembershipId: Guid.NewGuid(),
             UserId: userId,
-            MembershipRole: CompanyMembershipRole.Manager.ToStorageValue(),
+            MembershipRole: membershipRole.ToStorageValue(),
             DataScopes: dataScopes);
 
     private async Task<Guid> GetCompanyIdForDocumentAsync(Guid documentId)

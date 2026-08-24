@@ -10,6 +10,8 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
     private const int IdempotencyKeyMaxLength = 200;
     private const int FailureCodeMaxLength = 100;
     private const int FailureMessageMaxLength = 4000;
+    private const int LeaseOwnerMaxLength = 128;
+    private const int OperatorReasonMaxLength = 1000;
 
     private BackgroundExecution()
     {
@@ -64,15 +66,24 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
     public DateTime? StartedUtc { get; private set; }
     public DateTime? HeartbeatUtc { get; private set; }
     public DateTime? CompletedUtc { get; private set; }
+    public string? LeaseOwner { get; private set; }
+    public DateTime? LeaseExpiresUtc { get; private set; }
     public BackgroundExecutionFailureCategory? FailureCategory { get; private set; }
     public string? FailureCode { get; private set; }
     public string? FailureMessage { get; private set; }
     public Guid? EscalationId { get; private set; }
+    public DateTime? CancelledUtc { get; private set; }
+    public Guid? CancelledByUserId { get; private set; }
+    public string? CancellationReason { get; private set; }
+    public DateTime? AcknowledgedUtc { get; private set; }
+    public Guid? AcknowledgedByUserId { get; private set; }
+    public string? Acknowledgement { get; private set; }
+    public long Version { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
 
-    public bool IsTerminal => Status is BackgroundExecutionStatus.Succeeded or BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Escalated or BackgroundExecutionStatus.Blocked;
+    public bool IsTerminal => Status is BackgroundExecutionStatus.Succeeded or BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Escalated or BackgroundExecutionStatus.Blocked or BackgroundExecutionStatus.Cancelled;
 
     public void StartAttempt(string correlationId, int attempt, int maxAttempts)
     {
@@ -97,7 +108,23 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         FailureCategory = null;
         FailureCode = null;
         FailureMessage = null;
+        AcknowledgedUtc = null;
+        AcknowledgedByUserId = null;
+        Acknowledgement = null;
+        CancelledUtc = null;
+        CancelledByUserId = null;
+        CancellationReason = null;
         UpdatedUtc = StartedUtc.Value;
+        Version++;
+    }
+
+    public void RecordLease(string owner, DateTime expiresUtc, DateTime utcNow)
+    {
+        LeaseOwner = NormalizeRequired(owner, nameof(owner), LeaseOwnerMaxLength);
+        LeaseExpiresUtc = NormalizeUtc(expiresUtc);
+        HeartbeatUtc = NormalizeUtc(utcNow);
+        UpdatedUtc = HeartbeatUtc.Value;
+        Version++;
     }
 
     public void Queue(DateTime utcNow, string? correlationId = null, bool resetAttempts = false)
@@ -122,13 +149,22 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         FailureCode = null;
         FailureMessage = null;
         EscalationId = null;
+        ClearLease();
+        CancelledUtc = null;
+        CancelledByUserId = null;
+        CancellationReason = null;
+        AcknowledgedUtc = null;
+        AcknowledgedByUserId = null;
+        Acknowledgement = null;
         UpdatedUtc = normalizedUtcNow;
+        Version++;
     }
 
     public void RecordHeartbeat(DateTime utcNow)
     {
         HeartbeatUtc = utcNow.Kind == DateTimeKind.Utc ? utcNow : utcNow.ToUniversalTime();
         UpdatedUtc = HeartbeatUtc.Value;
+        Version++;
     }
 
     public void MarkSucceeded()
@@ -141,7 +177,9 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         FailureCategory = null;
         FailureCode = null;
         FailureMessage = null;
+        ClearLease();
         UpdatedUtc = utcNow;
+        Version++;
     }
 
     public void ScheduleRetry(
@@ -158,7 +196,9 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         FailureCategory = failureCategory;
         FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
         FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), FailureMessageMaxLength);
+        ClearLease();
         UpdatedUtc = utcNow;
+        Version++;
     }
 
     public void MarkFailed(
@@ -176,7 +216,9 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
         FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), FailureMessageMaxLength);
         EscalationId = escalationId;
+        ClearLease();
         UpdatedUtc = utcNow;
+        Version++;
     }
 
     public void MarkBlocked(
@@ -194,7 +236,43 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
         FailureCode = NormalizeOptional(failureCode, nameof(failureCode), FailureCodeMaxLength);
         FailureMessage = NormalizeRequired(failureMessage, nameof(failureMessage), FailureMessageMaxLength);
         EscalationId = escalationId;
+        ClearLease();
         UpdatedUtc = utcNow;
+        Version++;
+    }
+
+    public void Cancel(Guid actorUserId, string reason, DateTime utcNow)
+    {
+        if (actorUserId == Guid.Empty) throw new ArgumentException("Actor user id is required.", nameof(actorUserId));
+        if (Status is not (BackgroundExecutionStatus.Pending or BackgroundExecutionStatus.RetryScheduled))
+        {
+            throw new InvalidOperationException("Only queued Finance work can be stopped safely.");
+        }
+
+        Status = BackgroundExecutionStatus.Cancelled;
+        CancelledUtc = NormalizeUtc(utcNow);
+        CancelledByUserId = actorUserId;
+        CancellationReason = NormalizeRequired(reason, nameof(reason), OperatorReasonMaxLength);
+        CompletedUtc = CancelledUtc;
+        NextRetryUtc = null;
+        ClearLease();
+        UpdatedUtc = CancelledUtc.Value;
+        Version++;
+    }
+
+    public void Acknowledge(Guid actorUserId, string acknowledgement, DateTime utcNow)
+    {
+        if (actorUserId == Guid.Empty) throw new ArgumentException("Actor user id is required.", nameof(actorUserId));
+        if (Status is not (BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Blocked or BackgroundExecutionStatus.Escalated))
+        {
+            throw new InvalidOperationException("Only terminal failed Finance work can be acknowledged.");
+        }
+
+        AcknowledgedUtc = NormalizeUtc(utcNow);
+        AcknowledgedByUserId = actorUserId;
+        Acknowledgement = NormalizeRequired(acknowledgement, nameof(acknowledgement), OperatorReasonMaxLength);
+        UpdatedUtc = AcknowledgedUtc.Value;
+        Version++;
     }
 
     public void RecoverStale(DateTime nextRetryUtc, string failureMessage)
@@ -205,6 +283,15 @@ public sealed class BackgroundExecution : ICompanyOwnedEntity
             "stale_execution",
             failureMessage);
     }
+
+    private void ClearLease()
+    {
+        LeaseOwner = null;
+        LeaseExpiresUtc = null;
+    }
+
+    private static DateTime NormalizeUtc(DateTime value) =>
+        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
@@ -243,4 +330,84 @@ public static class BackgroundExecutionRelatedEntityTypes
     public const string FiscalPeriod = "fiscal_period";
     public const string FinanceSeed = "finance_seed";
     public const string FinanceInsightSnapshot = "finance_insight_snapshot";
+}
+
+public static class BackgroundExecutionAttemptOutcomes
+{
+    public const string InProgress = "in_progress";
+    public const string Succeeded = "succeeded";
+    public const string RetryScheduled = "retry_scheduled";
+    public const string Failed = "failed";
+    public const string Blocked = "blocked";
+    public const string LeaseExpired = "lease_expired";
+    public const string Cancelled = "cancelled";
+}
+
+public sealed class BackgroundExecutionAttempt : ICompanyOwnedEntity
+{
+    private BackgroundExecutionAttempt() { }
+
+    public BackgroundExecutionAttempt(
+        Guid id,
+        Guid companyId,
+        Guid backgroundExecutionId,
+        string workerName,
+        int attemptNumber,
+        string leaseOwner,
+        DateTime leaseExpiresUtc,
+        DateTime startedUtc)
+    {
+        if (companyId == Guid.Empty) throw new ArgumentException("CompanyId is required.", nameof(companyId));
+        if (backgroundExecutionId == Guid.Empty) throw new ArgumentException("Background execution id is required.", nameof(backgroundExecutionId));
+        if (attemptNumber <= 0) throw new ArgumentOutOfRangeException(nameof(attemptNumber));
+        Id = id == Guid.Empty ? Guid.NewGuid() : id;
+        CompanyId = companyId;
+        BackgroundExecutionId = backgroundExecutionId;
+        WorkerName = Normalize(workerName, nameof(workerName), 100);
+        AttemptNumber = attemptNumber;
+        LeaseOwner = Normalize(leaseOwner, nameof(leaseOwner), 128);
+        LeaseExpiresUtc = Utc(leaseExpiresUtc);
+        Outcome = BackgroundExecutionAttemptOutcomes.InProgress;
+        StartedUtc = Utc(startedUtc);
+    }
+
+    public Guid Id { get; private set; }
+    public Guid CompanyId { get; private set; }
+    public Guid BackgroundExecutionId { get; private set; }
+    public string WorkerName { get; private set; } = null!;
+    public int AttemptNumber { get; private set; }
+    public string LeaseOwner { get; private set; } = null!;
+    public DateTime LeaseExpiresUtc { get; private set; }
+    public string Outcome { get; private set; } = null!;
+    public BackgroundExecutionFailureCategory? FailureCategory { get; private set; }
+    public string? FailureCode { get; private set; }
+    public string? SafeSummary { get; private set; }
+    public DateTime StartedUtc { get; private set; }
+    public DateTime? CompletedUtc { get; private set; }
+    public long? DurationMilliseconds { get; private set; }
+    public BackgroundExecution BackgroundExecution { get; private set; } = null!;
+    public Company Company { get; private set; } = null!;
+
+    public void Complete(string outcome, DateTime completedUtc, BackgroundExecutionFailureCategory? failureCategory = null,
+        string? failureCode = null, string? safeSummary = null)
+    {
+        if (CompletedUtc.HasValue) return;
+        Outcome = Normalize(outcome, nameof(outcome), 32);
+        FailureCategory = failureCategory;
+        FailureCode = Optional(failureCode, 100);
+        SafeSummary = Optional(safeSummary, 2000);
+        CompletedUtc = Utc(completedUtc);
+        DurationMilliseconds = Math.Max(0, (long)(CompletedUtc.Value - StartedUtc).TotalMilliseconds);
+    }
+
+    private static DateTime Utc(DateTime value) => value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+    private static string Normalize(string value, string name, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"{name} is required.", name);
+        var normalized = value.Trim();
+        if (normalized.Length > maxLength) throw new ArgumentOutOfRangeException(name);
+        return normalized;
+    }
+    private static string? Optional(string? value, int maxLength) =>
+        string.IsNullOrWhiteSpace(value) ? null : value.Trim()[..Math.Min(value.Trim().Length, maxLength)];
 }

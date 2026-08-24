@@ -14,6 +14,7 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class AuditQueryServiceTests
 {
+    private readonly Dictionary<VirtualCompanyDbContext, TestCompanyContextAccessor> _contextAccessors = [];
     [Fact]
     public async Task ListAsync_filters_by_agent_and_company_context()
     {
@@ -53,7 +54,7 @@ public sealed class AuditQueryServiceTests
             Guid.NewGuid().ToString(),
             AuditEventOutcomes.Succeeded,
             dataSources: ["policy guardrails"]));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -127,7 +128,7 @@ public sealed class AuditQueryServiceTests
             taskId,
             new DateTime(2026, 4, 10, 12, 0, 0, DateTimeKind.Utc),
             new Dictionary<string, string?> { ["workflowInstanceId"] = workflowInstanceId.ToString() }));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -175,7 +176,7 @@ public sealed class AuditQueryServiceTests
             AuditTargetTypes.WorkTask,
             Guid.NewGuid(),
             DateTime.UtcNow));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid(), CompanyMembershipRole.Employee));
 
@@ -200,7 +201,7 @@ public sealed class AuditQueryServiceTests
             AuditTargetTypes.WorkflowInstance,
             Guid.NewGuid().ToString(),
             AuditEventOutcomes.Succeeded));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -227,7 +228,7 @@ public sealed class AuditQueryServiceTests
             ["knowledge document"],
             metadata: new Dictionary<string, string?> { ["policyVersion"] = "task_8_3_7" },
             dataSourcesUsed: [new AuditDataSourceUsed("document", "runbook-1", "Runbook", "kb://runbook-1")]));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -236,12 +237,13 @@ public sealed class AuditQueryServiceTests
         Assert.Equal("The task was completed using the approved data source.", detail.RationaleSummary);
         Assert.Equal("The task was completed using the approved data source.", detail.Explanation.Summary);
         Assert.Equal("succeeded", detail.Explanation.Outcome);
-        Assert.Contains("Runbook", detail.Explanation.DataSources);
+        Assert.Contains("Document: Runbook", detail.Explanation.DataSources);
         Assert.Contains(detail.SourceReferences, source =>
             source.Label == "Document: Runbook" &&
             source.DisplayName == "Runbook" &&
             source.Type == "document" &&
-            source.Reference == "kb://runbook-1");
+            source.Reference == "runbook-1" &&
+            source.SecondaryText == "kb://runbook-1");
         Assert.Empty(detail.LinkedApprovals);
         Assert.Empty(detail.LinkedToolExecutions);
         Assert.DoesNotContain(detail.Metadata.Keys, key => key.Contains("chainOfThought", StringComparison.OrdinalIgnoreCase));
@@ -275,7 +277,7 @@ public sealed class AuditQueryServiceTests
                 ["rawReasoning"] = "chain-of-thought: hidden deliberation",
                 ["notes"] = "scratchpad: private reasoning"
             }));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -410,7 +412,7 @@ public sealed class AuditQueryServiceTests
             },
             correlationId: "corr-audit-detail",
             occurredUtc: now));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -543,7 +545,7 @@ public sealed class AuditQueryServiceTests
                 new AuditDataSourceUsed(AuditTargetTypes.AgentToolExecution, toolExecutionId.ToString()),
                 new AuditDataSourceUsed("conversation", conversationId.ToString())
             ]));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
 
@@ -625,7 +627,7 @@ public sealed class AuditQueryServiceTests
             AuditEventOutcomes.Succeeded,
             "Completed using available company data.",
             dataSourcesUsed: [new AuditDataSourceUsed(GroundedContextSourceTypes.KnowledgeChunk, chunkId.ToString(), Reference: "s3://tenant/acme/hr-plan.pdf")]));
-        await dbContext.SaveChangesAsync();
+        await SaveAndActivateAsync(dbContext, companyId);
 
         var service = new CompanyAuditQueryService(dbContext, new TestCompanyContextAccessor(companyId, Guid.NewGuid(), CompanyMembershipRole.Manager));
 
@@ -657,12 +659,23 @@ public sealed class AuditQueryServiceTests
             metadata: metadata,
             occurredUtc: occurredUtc);
 
-    private static VirtualCompanyDbContext CreateDbContext(Guid companyId)
+    private VirtualCompanyDbContext CreateDbContext(Guid companyId)
     {
         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
-        return new VirtualCompanyDbContext(options, new TestCompanyContextAccessor(companyId, Guid.NewGuid()));
+        var accessor = new TestCompanyContextAccessor(companyId, Guid.NewGuid());
+        var context = new VirtualCompanyDbContext(options, accessor);
+        _contextAccessors.Add(context, accessor);
+        return context;
+    }
+
+    private async Task SaveAndActivateAsync(VirtualCompanyDbContext context, Guid companyId)
+    {
+        var accessor = _contextAccessors[context];
+        accessor.SetCompanyId(null);
+        await context.SaveChangesAsync();
+        accessor.SetCompanyId(companyId);
     }
 
     private sealed class TestCompanyContextAccessor : ICompanyContextAccessor

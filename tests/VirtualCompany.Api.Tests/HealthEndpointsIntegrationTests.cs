@@ -56,6 +56,7 @@ public sealed class HealthEndpointsIntegrationTests : IDisposable
         Assert.True(results.TryGetProperty("database", out _));
         Assert.True(results.TryGetProperty("redis", out _));
         Assert.True(results.TryGetProperty("object-storage", out _));
+        Assert.True(results.TryGetProperty("finance-workers", out _));
         Assert.False(results.TryGetProperty("application", out _));
 
         foreach (var result in results.EnumerateObject())

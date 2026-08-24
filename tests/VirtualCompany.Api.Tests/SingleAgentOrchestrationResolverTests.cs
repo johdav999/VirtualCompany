@@ -55,7 +55,7 @@ public sealed class SingleAgentOrchestrationResolverTests : IDisposable
     [Fact]
     public async Task ResolveAsync_fails_when_task_has_no_assigned_agent()
     {
-        var seed = await SeedScenarioAsync(taskAssignedAgentId: null);
+        var seed = await SeedScenarioAsync(unassignedTask: true);
 
         var result = await ResolveAsync(new OrchestrationRequest(
             seed.CompanyId,
@@ -220,6 +220,7 @@ public sealed class SingleAgentOrchestrationResolverTests : IDisposable
 
     private async Task<SeededScenario> SeedScenarioAsync(
         Guid? taskAssignedAgentId = default,
+        bool unassignedTask = false,
         AgentStatus agentStatus = AgentStatus.Active,
         bool createConversation = false,
         string conversationChannelType = ChatChannelTypes.DirectAgent,
@@ -230,7 +231,9 @@ public sealed class SingleAgentOrchestrationResolverTests : IDisposable
         var agentId = Guid.NewGuid();
         var taskId = Guid.NewGuid();
         var conversationId = createConversation ? Guid.NewGuid() : (Guid?)null;
-        var resolvedTaskAssignedAgentId = taskAssignedAgentId == default ? agentId : taskAssignedAgentId;
+        var resolvedTaskAssignedAgentId = unassignedTask
+            ? null
+            : taskAssignedAgentId == default ? agentId : taskAssignedAgentId;
         var resolvedConversationAgentId = conversationAgentId == default && conversationChannelType == ChatChannelTypes.DirectAgent
             ? agentId
             : conversationAgentId;

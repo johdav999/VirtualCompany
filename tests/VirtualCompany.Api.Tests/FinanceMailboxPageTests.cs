@@ -65,8 +65,9 @@ public sealed class FinanceMailboxPageTests
         {
             Assert.Contains("Mailbox connection", cut.Markup);
             Assert.Contains("Manage mailbox connection", cut.Markup);
-            Assert.DoesNotContain("Connect Gmail", cut.Markup);
-            Assert.DoesNotContain("Connect Microsoft 365", cut.Markup);
+            Assert.Empty(cut.FindAll("a, button").Where(element =>
+                element.TextContent.Contains("Connect Gmail", StringComparison.Ordinal) ||
+                element.TextContent.Contains("Connect Microsoft 365", StringComparison.Ordinal)));
             Assert.Contains("Ask Laura to scan again", cut.Markup);
             Assert.Contains("Gmail", cut.Markup);
             Assert.Contains("Accounts Payable", cut.Markup);
@@ -140,7 +141,7 @@ public sealed class FinanceMailboxPageTests
         MailboxProviderAvailabilityResponse? providerAvailability = null,
         IReadOnlyList<MailboxScannedMessageResponse>? messages = null)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddOptions();
         context.Services.AddSingleton(new FinanceAccessResolver());
 

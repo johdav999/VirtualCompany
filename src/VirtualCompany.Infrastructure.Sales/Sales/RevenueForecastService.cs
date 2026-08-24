@@ -139,6 +139,7 @@ public sealed class RevenueForecastService : IRevenueForecastService, IPipelineR
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => !x.IsDeleted && x.Status == SalesStatuses.Open)
+            .Where(x => !_companyContextAccessor!.CompanyId.HasValue || x.CompanyId == _companyContextAccessor.CompanyId.Value)
             .Select(x => x.CompanyId)
             .Distinct()
             .ToListAsync(cancellationToken);

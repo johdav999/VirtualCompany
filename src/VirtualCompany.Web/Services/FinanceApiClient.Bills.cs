@@ -27,7 +27,7 @@ public sealed partial class FinanceApiClient
     public Task<FinanceBillDetailResponse?> GetBillDetailAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? Task.FromResult<FinanceBillDetailResponse?>(null)
-            : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinanceBillDetailResponse>(companyId, $"internal/companies/{companyId}/finance/bills/{billId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
     public Task<SupplierInvoicePaymentProposalResponse> RequestSupplierBillPaymentProposalAsync(Guid companyId, Guid billId, CancellationToken cancellationToken = default)
     {

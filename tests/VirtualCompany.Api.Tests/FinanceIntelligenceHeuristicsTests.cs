@@ -104,7 +104,7 @@ public sealed class FinanceIntelligenceHeuristicsTests
         var result = FinanceIntelligenceHeuristics.Evaluate(input);
 
         Assert.Equal(new[] { "INV-TIE-100", "INV-TIE-200" }, result.OverdueInvoices.Select(x => x.InvoiceNumber).ToArray());
-        Assert.Equal(new[] { 95, 15 }, result.OverdueInvoices.Select(x => x.PaymentPatternScore).ToArray());
+        Assert.Equal(new[] { 100, 15 }, result.OverdueInvoices.Select(x => x.PaymentPatternScore).ToArray());
     }
 
     [Fact]
@@ -127,9 +127,9 @@ public sealed class FinanceIntelligenceHeuristicsTests
         var result = FinanceIntelligenceHeuristics.Evaluate(input);
 
         Assert.Equal(new[] { "BILL-100", "BILL-200" }, result.DueSoonBills.Select(x => x.BillNumber).ToArray());
-        Assert.Equal(new[] { 68, 68 }, result.DueSoonBills.Select(x => x.UrgencyScore).ToArray());
+        Assert.Equal(new[] { 70, 70 }, result.DueSoonBills.Select(x => x.UrgencyScore).ToArray());
         Assert.Equal(new[] { "important", "important" }, result.DueSoonBills.Select(x => x.VendorCriticality).ToArray());
-        Assert.Equal(new[] { "elevated", "elevated" }, result.DueSoonBills.Select(x => x.CashPressure).ToArray());
+        Assert.Equal(new[] { "severe", "severe" }, result.DueSoonBills.Select(x => x.CashPressure).ToArray());
     }
 
     private static FinanceIntelligenceInputDto CreateSeededScenario()

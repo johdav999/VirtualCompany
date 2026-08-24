@@ -180,9 +180,9 @@ public sealed class InternalAuditEventsIntegrationTests : IDisposable
             boundaryDecisionOutcome: AuditBoundaryDecisionOutcomes.InScope,
             identityReasonCode: identityReasonCode);
 
-    private static HttpClient CreateAuthenticatedClient()
+    private HttpClient CreateAuthenticatedClient()
     {
-        var client = new TestWebApplicationFactory().CreateClient();
+        var client = _factory.CreateClient();
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.SubjectHeader, "internal-audit-owner");
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.EmailHeader, "internal.audit@example.com");
         client.DefaultRequestHeaders.Add(DevHeaderAuthenticationDefaults.DisplayNameHeader, "Audit Owner");

@@ -19,7 +19,9 @@ public sealed record CompanyMembershipDto(
     Guid CompanyId,
     string CompanyName,
     [property: JsonPropertyName("membershipRole")] CompanyMembershipRole MembershipRole,
-    CompanyMembershipStatus Status);
+    CompanyMembershipStatus Status,
+    DateTime? CompanyCreatedUtc = null,
+    CompanyOnboardingStatus? OnboardingStatus = null);
 
 public sealed record ResolvedCompanyContextDto(
     Guid MembershipId,
@@ -158,7 +160,8 @@ public sealed record CreateCompanyCommand(
     string? Currency,
     string? Language,
     string? ComplianceRegion,
-    string? SelectedTemplateId);
+    string? SelectedTemplateId,
+    bool ExplicitNewCompany = false);
 
 public sealed record CreateCompanyResultDto(Guid CompanyId, string CompanyName, string DashboardPath, IReadOnlyList<string> StarterGuidance);
 
@@ -174,7 +177,8 @@ public sealed record CreateCompanyWorkspaceRequest(
     string? ComplianceRegion,
     int CurrentStep,
     string? SelectedTemplateId,
-    Guid? CompanyId = null);
+    Guid? CompanyId = null,
+    bool ExplicitNewCompany = false);
 
 public sealed record SaveCompanyOnboardingProgressRequest(
     Guid? CompanyId,
@@ -218,15 +222,36 @@ public sealed record CompanyOnboardingWorkshopBootstrapDto(
     string Route,
     bool Resumed);
 
+public static class CompanyOnboardingErrorCodes
+{
+    public const string CompanySelectionRequired = "onboarding.company_selection_required";
+    public const string ExplicitNewCompanyRequired = "onboarding.explicit_new_company_required";
+}
+
 public sealed class CompanyOnboardingValidationException : Exception
 {
-    public CompanyOnboardingValidationException(IDictionary<string, string[]> errors)
+    public CompanyOnboardingValidationException(IDictionary<string, string[]> errors, string? code = null)
         : base("Company onboarding validation failed.")
     {
         Errors = new ReadOnlyDictionary<string, string[]>(new Dictionary<string, string[]>(errors, StringComparer.OrdinalIgnoreCase));
+        Code = code;
     }
 
     public IReadOnlyDictionary<string, string[]> Errors { get; }
+    public string? Code { get; }
+}
+
+public sealed class CompanySelectionRequiredException : Exception
+{
+    public CompanySelectionRequiredException()
+        : base("Choose a company before continuing onboarding.")
+    {
+    }
+}
+
+public interface ICompanySelectionService
+{
+    Task<ResolvedCompanyContextDto?> SelectAsync(Guid companyId, CancellationToken cancellationToken);
 }
 
 public interface ICurrentUserCompanyService

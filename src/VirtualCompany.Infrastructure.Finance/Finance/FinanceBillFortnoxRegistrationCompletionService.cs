@@ -3,6 +3,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
@@ -157,21 +158,36 @@ public sealed class FinanceBillFortnoxRegistrationCompletionService
     }
 }
 
+public sealed class FinanceBillRegistrationReconciliationOptions
+{
+    public const string SectionName = "FinanceBillRegistrationReconciliation";
+    public bool Enabled { get; set; } = true;
+    public int BatchSize { get; set; } = 500;
+}
+
 public sealed class FinanceBillFortnoxRegistrationReconciliationBackgroundService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<FinanceBillFortnoxRegistrationReconciliationBackgroundService> _logger;
+    private readonly IOptions<FinanceBillRegistrationReconciliationOptions> _options;
 
     public FinanceBillFortnoxRegistrationReconciliationBackgroundService(
         IServiceScopeFactory scopeFactory,
+        IOptions<FinanceBillRegistrationReconciliationOptions> options,
         ILogger<FinanceBillFortnoxRegistrationReconciliationBackgroundService> logger)
     {
         _scopeFactory = scopeFactory;
+        _options = options;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_options.Value.Enabled)
+        {
+            _logger.LogInformation("Supplier bill registration reconciliation is disabled.");
+            return;
+        }
         try
         {
             using var scope = _scopeFactory.CreateScope();
@@ -187,7 +203,7 @@ public sealed class FinanceBillFortnoxRegistrationReconciliationBackgroundServic
                     x.CorrelationId.StartsWith("finance-bill-inbox:") &&
                     x.CorrelationId.EndsWith(":fortnox-registration"))
                 .OrderBy(x => x.ExecutedUtc)
-                .Take(500)
+                .Take(Math.Max(1, _options.Value.BatchSize))
                 .ToListAsync(stoppingToken);
 
             var repaired = 0;

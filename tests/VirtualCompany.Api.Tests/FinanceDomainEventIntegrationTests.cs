@@ -294,7 +294,7 @@ public sealed class FinanceDomainEventIntegrationTests : IDisposable
         {
             var simulation = scope.ServiceProvider.GetRequiredService<ICompanySimulationService>();
             var result = await simulation.AdvanceAsync(
-                new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, Accelerated: true),
+                new AdvanceCompanySimulationTimeCommand(companyId, 240, 24, Accelerated: true),
                 CancellationToken.None);
             Assert.True(result.TransactionsGenerated > 0);
             Assert.True(result.InvoicesGenerated > 0);

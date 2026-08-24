@@ -30,7 +30,7 @@ public sealed class CompanySimulationControllerIntegrationTests
                 Seed: 42,
                 DeterministicConfigurationJson: """{"profile":"baseline","speed":"1d/10s"}"""));
 
-        Assert.Equal(HttpStatusCode.Created, startResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, startResponse.StatusCode);
         var started = await startResponse.Content.ReadFromJsonAsync<CompanySimulationStateDto>();
         Assert.NotNull(started);
         Assert.Equal(CompanySimulationLifecycleStatusValues.Running, started!.Status);
@@ -43,7 +43,7 @@ public sealed class CompanySimulationControllerIntegrationTests
         Assert.True(started.CanPause);
         Assert.True(started.CanStop);
         Assert.False(started.CanToggleGeneration);
-        Assert.False(started.SupportsStepForwardOneDay);
+        Assert.True(started.SupportsStepForwardOneDay);
         Assert.True(started.SupportsRefresh);
 
         var firstSessionId = started.ActiveSessionId;
@@ -65,11 +65,7 @@ public sealed class CompanySimulationControllerIntegrationTests
             new UpdateCompanySimulationSettingsRequest(
                 GenerationEnabled: false,
                 DeterministicConfigurationJson: """{"profile":"paused-ready"}"""));
-        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
-        var updated = await updateResponse.Content.ReadFromJsonAsync<CompanySimulationStateDto>();
-        Assert.NotNull(updated);
-        Assert.False(updated!.GenerationEnabled);
-        Assert.Equal("""{"profile":"paused-ready"}""", updated.DeterministicConfigurationJson);
+        Assert.Equal(HttpStatusCode.Conflict, updateResponse.StatusCode);
 
         var pauseResponse = await client.PostAsync($"/internal/companies/{seed.CompanyId}/simulation/pause", content: null);
         Assert.Equal(HttpStatusCode.OK, pauseResponse.StatusCode);
@@ -134,7 +130,7 @@ public sealed class CompanySimulationControllerIntegrationTests
                 Seed: 42,
                 DeterministicConfigurationJson: """{"profile":"baseline","speed":"1d/10s"}"""));
 
-        Assert.Equal(HttpStatusCode.Created, restartResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, restartResponse.StatusCode);
         var restarted = await restartResponse.Content.ReadFromJsonAsync<CompanySimulationStateDto>();
         Assert.NotNull(restarted);
         Assert.Equal(CompanySimulationLifecycleStatusValues.Running, restarted!.Status);

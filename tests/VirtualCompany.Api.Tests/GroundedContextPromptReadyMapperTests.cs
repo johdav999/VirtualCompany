@@ -181,7 +181,7 @@ public sealed class GroundedContextPromptReadyMapperTests
 
         Assert.Equal(["attempt-a", "attempt-b"], normalized.RecentTasks.Items.Select(x => x.AttemptId));
         Assert.Equal("approval_request", normalized.RelevantRecords.Items[0].RecordType);
-        Assert.Equal(["chunk-a", "chunk-b", "memory-a", "attempt-a", "attempt-b", "approval-a", "company-a"], normalized.SourceReferences.Select(x => x.SourceId));
+        Assert.Equal(["chunk-a", "memory-a", "attempt-a", "approval-a", "chunk-b", "attempt-b", "company-a"], normalized.SourceReferences.Select(x => x.SourceId));
         Assert.Equal(sourceReferences.Length, normalized.SourceReferences.Count);
         Assert.Equal(sourceReferences.Length, normalized.Counts.SourceReferences);
     }

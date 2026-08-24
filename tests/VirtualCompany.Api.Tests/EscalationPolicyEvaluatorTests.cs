@@ -410,7 +410,12 @@ public sealed class EscalationPolicyEvaluatorTests
     }
 
     private static EscalationPolicyEvaluationService CreateService(InMemoryEscalationRepository repository, CapturingAuditEventWriter audit) =>
-        new(repository, audit, TimeProvider.System);
+        new(repository, audit, new TestTimeProvider(EventUtc));
+
+    private sealed class TestTimeProvider(DateTime utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(utcNow, TimeSpan.Zero);
+    }
 
     private static EscalationPolicyDefinition Policy(params EscalationLevelDefinition[] levels) =>
         new(PolicyId, "Default escalation policy", true, levels);

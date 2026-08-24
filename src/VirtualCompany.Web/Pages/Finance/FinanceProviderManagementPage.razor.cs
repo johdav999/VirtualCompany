@@ -25,17 +25,17 @@ public partial class FinanceProviderManagementPage
     private string? SuccessMessage { get; set; }
     private bool IsBusy => IsLoading || IsSaving || IsValidating;
     private string ClientIdPlaceholder => SelectedProvider?.ClientIdConfigured == true
-        ? $"Configured ({SelectedProvider.ClientIdHint})"
-        : "Enter the provider client ID";
+        ? FinanceText["ConfiguredHint", SelectedProvider.ClientIdHint ?? FinanceText["NotAvailable"].Value]
+        : FinanceText["EnterProviderClientId"];
     private string PreserveClientIdHelp => SelectedProvider?.ClientIdConfigured == true
-        ? "Leave blank to keep the configured client ID."
-        : "Required before company users can connect.";
+        ? FinanceText["KeepConfiguredClientIdHelp"]
+        : FinanceText["ClientIdRequiredHelp"];
     private string SecretPlaceholder => SelectedProvider?.ClientSecretConfigured == true
-        ? "Configured — leave blank to keep"
-        : "Enter the provider client secret";
+        ? FinanceText["KeepConfiguredSecretPlaceholder"]
+        : FinanceText["EnterProviderClientSecret"];
     private string SecretHelp => SelectedProvider?.SecretBackendSupportsWrites == true
-        ? "The value is write-only. Saving a new value creates a new secret version."
-        : "The configured production secret backend is unavailable or read-only.";
+        ? FinanceText["SecretWriteOnlyHelp"]
+        : FinanceText["SecretBackendUnavailableHelp"];
 
     protected override Task OnInitializedAsync() => LoadAsync();
 
@@ -94,7 +94,7 @@ public partial class FinanceProviderManagementPage
         }
         catch (Exception ex)
         {
-            ActionError = $"The audit history could not be loaded. {ex.Message}";
+            ActionError = FinanceText["AuditHistoryLoadFailed", ex.Message];
             AuditItems = [];
         }
     }
@@ -124,7 +124,7 @@ public partial class FinanceProviderManagementPage
             SelectedProvider = saved;
             Form.ClientId = string.Empty;
             Form.ClientSecret = string.Empty;
-            SuccessMessage = "The provider configuration was saved safely.";
+            SuccessMessage = FinanceText["ProviderConfigurationSaved"];
             var history = await ApiClient.GetAuditHistoryAsync(saved.ProviderKey);
             AuditItems = history.Items;
         }
@@ -152,7 +152,7 @@ public partial class FinanceProviderManagementPage
         {
             Validation = await ApiClient.ValidateAsync(SelectedProvider.ProviderKey);
             SuccessMessage = Validation.Succeeded
-                ? "The provider setup passed validation."
+                ? FinanceText["ProviderValidationPassed"].Value
                 : null;
             var refreshed = await ApiClient.GetAllAsync();
             Providers = refreshed.Providers.ToList();
@@ -200,13 +200,13 @@ public partial class FinanceProviderManagementPage
         string.Concat(displayName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Select(x => x[0]))
             .ToUpperInvariant()[..Math.Min(2, displayName.Split(' ', StringSplitOptions.RemoveEmptyEntries).Length)];
 
-    private static string StatusLabel(string status) => status switch
+    private string StatusLabel(string status) => FinanceText[status switch
     {
         "ready" => "Ready",
         "disabled" => "Disabled",
-        "invalid" => "Needs attention",
-        _ => "Setup required"
-    };
+        "invalid" => "NeedsAttention",
+        _ => "SetupRequired"
+    }];
 
     private static string StatusBadge(string status) => status switch
     {

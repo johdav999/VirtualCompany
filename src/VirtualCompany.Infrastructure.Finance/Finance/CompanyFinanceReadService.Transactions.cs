@@ -149,10 +149,15 @@ public sealed partial class CompanyFinanceReadService
             throw new ArgumentException("Transaction id is required.", nameof(query));
         }
 
-        var row = await _dbContext.FinanceTransactions
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
+        var row = await ApplySourceFilter(_dbContext.FinanceTransactions
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.TransactionId)
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.TransactionId),
+            query.CompanyId,
+            sourceFilter,
+            "voucher", "payment", "transaction")
             .Select(x => new FinanceTransactionRow(
                 x.Id,
                 x.AccountId,
@@ -241,7 +246,8 @@ public sealed partial class CompanyFinanceReadService
             flags,
             BuildActionPermissions(),
             documentAccess,
-            paymentContext);
+            paymentContext,
+            ResolveFinanceSource(row.SourceType, row.ProviderKey, hasFortnoxReference));
     }
 
 }

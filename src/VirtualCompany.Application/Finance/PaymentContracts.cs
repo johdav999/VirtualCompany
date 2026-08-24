@@ -4,21 +4,27 @@ public sealed record GetFinancePaymentsQuery(
     Guid CompanyId,
     string? PaymentType = null,
     int Limit = 100,
-    string SourceFilter = FinanceDataSources.All);
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinancePaymentDetailQuery(
     Guid CompanyId,
-    Guid PaymentId);
+    Guid PaymentId,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinancePaymentAllocationsByPaymentQuery(
     Guid CompanyId,
-    Guid PaymentId);
+    Guid PaymentId,
+    string SourceFilter = FinanceDataSources.Operational);
 
-public sealed record GetFinanceInvoiceAllocationsQuery(Guid CompanyId, Guid InvoiceId);
+public sealed record GetFinanceInvoiceAllocationsQuery(
+    Guid CompanyId,
+    Guid InvoiceId,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinanceBillAllocationsQuery(
     Guid CompanyId,
-    Guid BillId);
+    Guid BillId,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinancePaymentAllocationTraceQuery(
     Guid CompanyId,
@@ -42,7 +48,8 @@ public sealed record CreateFinancePaymentAllocationDto(
     Guid? InvoiceId,
     Guid? BillId,
     decimal AllocatedAmount,
-    string Currency);
+    string Currency,
+    string? IdempotencyKey = null);
 
 public sealed record UpdateFinancePaymentAllocationDto(
     Guid PaymentId,
@@ -90,7 +97,9 @@ public sealed record FinancePaymentAllocationDto(
     DateTime UpdatedUtc,
     Guid? SourceSimulationEventRecordId,
     Guid? PaymentSourceSimulationEventRecordId,
-    Guid? TargetSourceSimulationEventRecordId);
+    Guid? TargetSourceSimulationEventRecordId,
+    string? IdempotencyKey = null,
+    bool IsIdempotentReplay = false);
 
 public sealed record FinanceSimulationEventReferenceDto(
     Guid Id,

@@ -121,12 +121,14 @@ public sealed class ActionQueueEndpointTests : IDisposable
         Assert.NotNull(pageOne);
         Assert.NotNull(pageTwo);
         Assert.NotNull(repeatedPageTwo);
-        Assert.Equal(7, pageOne!.TotalCount);
-        Assert.Equal(4, pageOne.TotalPages);
+        Assert.Equal(5, pageOne!.TotalCount);
+        Assert.Equal(3, pageOne.TotalPages);
         Assert.Equal(pageTwo!.Items.Select(item => item.InsightKey), repeatedPageTwo!.Items.Select(item => item.InsightKey));
         Assert.Empty(pageOne.Items.Select(item => item.InsightKey).Intersect(pageTwo.Items.Select(item => item.InsightKey)));
         Assert.Equal(new[] { "Due soon normal supplier task", "Due soon low supplier task" }, pageTwo.Items.Select(item => item.Title).ToArray());
-        Assert.Empty(otherTenantPage!.Items);
+        var otherTenantItem = Assert.Single(otherTenantPage!.Items);
+        Assert.Equal(seed.OtherCompanyId, otherTenantItem.CompanyId);
+        Assert.Equal("Other tenant follow-up", otherTenantItem.Title);
     }
 
     [Fact]

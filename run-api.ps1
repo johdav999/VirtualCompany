@@ -220,8 +220,8 @@ finally
         }
     }
 
-    try { $standardOutputCopy.GetAwaiter().GetResult() } catch { }
-    try { $standardErrorCopy.GetAwaiter().GetResult() } catch { }
+    try { $standardOutputCopy.GetAwaiter().GetResult() | Out-Null } catch { }
+    try { $standardErrorCopy.GetAwaiter().GetResult() | Out-Null } catch { }
     $standardOutputStream.Dispose()
     $standardErrorStream.Dispose()
 }

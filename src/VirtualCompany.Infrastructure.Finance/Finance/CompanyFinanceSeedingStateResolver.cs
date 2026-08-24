@@ -201,14 +201,14 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
         FinanceSeedRecordChecks recordChecks,
         BackgroundExecution? execution)
     {
-        if (recordChecks.IsComplete)
-        {
-            return FinanceSeedingState.Seeded;
-        }
-
         if (execution?.Status is BackgroundExecutionStatus.Pending or BackgroundExecutionStatus.InProgress or BackgroundExecutionStatus.RetryScheduled)
         {
             return FinanceSeedingState.Seeding;
+        }
+
+        if (recordChecks.IsComplete)
+        {
+            return FinanceSeedingState.Seeded;
         }
 
         if (execution?.Status is BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Blocked)
@@ -241,6 +241,23 @@ public sealed class CompanyFinanceSeedingStateResolver : IFinanceSeedingStateRes
         out FinanceSeedingStateResultDto result)
     {
         result = default!;
+
+        if (persistedState == FinanceSeedingState.Seeded &&
+            metadata?.HasExtensionMetadata != true &&
+            metadata?.SeededAtUtc is not null)
+        {
+            result = BuildResult(
+                companyId,
+                FinanceSeedingState.Seeded,
+                FinanceSeedingStateDerivedFromValues.Metadata,
+                checkedAtUtc,
+                metadata,
+                persistedState,
+                new FinanceSeedRecordChecks(false, false, false, false, false, false, false),
+                usedFastPath: true,
+                "Persisted company finance seed metadata confirms that initialization completed.");
+            return true;
+        }
 
         if (metadata?.HasExtensionMetadata != true)
         {

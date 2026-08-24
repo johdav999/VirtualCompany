@@ -38,11 +38,11 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
     {
         Validate(command.CompanyId, command.InvoiceId);
 
-        var invoice = await LoadInvoiceAsync(command.CompanyId, command.InvoiceId, cancellationToken);
+        var invoice = await LoadInvoiceAsync(command.CompanyId, command.InvoiceId, command.SourceFilter, cancellationToken);
         var policy = await _policyConfigurationService.GetPolicyConfigurationAsync(
             new GetFinancePolicyConfigurationQuery(command.CompanyId),
             cancellationToken);
-        var paymentContext = await LoadRelatedPaymentContextAsync(command.CompanyId, command.InvoiceId, cancellationToken);
+        var paymentContext = await LoadRelatedPaymentContextAsync(command.CompanyId, command.InvoiceId, command.SourceFilter, cancellationToken);
         var review = BuildReview(invoice, policy, paymentContext);
         var reviewAgentId = command.AgentId ?? await ResolveLauraAgentIdAsync(command.CompanyId, cancellationToken);
         var correlationId = BuildInvoiceReviewCorrelationId(command.CompanyId, invoice.Id);
@@ -75,6 +75,9 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
                 review.RequiresHumanApproval ? WorkTaskStatus.AwaitingApproval : WorkTaskStatus.Completed);
             task.SetDueDate(invoice.DueUtc);
             _dbContext.WorkTasks.Add(task);
+            // Approval validation resolves targets from the database. Persist the newly-created
+            // review task before asking the approval service to validate and link it.
+            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         var outputPayload = BuildOutputPayload(command.CompanyId, invoice, policy, paymentContext, review, task.Id, null, command.WorkflowInstanceId);
@@ -92,9 +95,14 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
             }
         }
 
-        var targetStatus = review.RequiresHumanApproval
-            ? WorkTaskStatus.AwaitingApproval
-            : WorkTaskStatus.Completed;
+        var requestedStatus = TryGetString(command.Payload, "requestedStatus");
+        var resolvesCurrentReview = requestedStatus is not null &&
+            (string.Equals(requestedStatus, "open", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(requestedStatus, "approved", StringComparison.OrdinalIgnoreCase) ||
+             string.Equals(requestedStatus, "rejected", StringComparison.OrdinalIgnoreCase));
+        var targetStatus = resolvesCurrentReview || !review.RequiresHumanApproval
+            ? WorkTaskStatus.Completed
+            : WorkTaskStatus.AwaitingApproval;
         task.UpdateStatus(targetStatus, outputPayload, review.Rationale, review.ConfidenceScore);
         await PersistWorkflowOutputAsync(command.CompanyId, command.WorkflowInstanceId, outputPayload, cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
@@ -130,7 +138,8 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
     public async Task<FinanceInvoiceReviewWorkflowResultDto?> GetLatestByInvoiceAsync(
         Guid companyId,
         Guid invoiceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string sourceFilter = FinanceDataSources.Operational)
     {
         Validate(companyId, invoiceId);
 
@@ -161,11 +170,11 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
             return null;
         }
 
-        var invoice = await LoadInvoiceAsync(companyId, invoiceId, cancellationToken);
+        var invoice = await LoadInvoiceAsync(companyId, invoiceId, sourceFilter, cancellationToken);
         var policy = await _policyConfigurationService.GetPolicyConfigurationAsync(
             new GetFinancePolicyConfigurationQuery(companyId),
             cancellationToken);
-        var paymentContext = BuildPaymentContextFromTask(task) ?? await LoadRelatedPaymentContextAsync(companyId, invoiceId, cancellationToken);
+        var paymentContext = BuildPaymentContextFromTask(task) ?? await LoadRelatedPaymentContextAsync(companyId, invoiceId, sourceFilter, cancellationToken);
         var review = BuildReviewFromTask(task) ?? BuildReview(invoice, policy, paymentContext);
 
         return new FinanceInvoiceReviewWorkflowResultDto(
@@ -199,10 +208,11 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
     private async Task<FinanceInvoiceDto> LoadInvoiceAsync(
         Guid companyId,
         Guid invoiceId,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         var invoices = await _financeReadService.GetInvoicesAsync(
-            new GetFinanceInvoicesQuery(companyId, null, null, 500),
+            new GetFinanceInvoicesQuery(companyId, null, null, 500, sourceFilter),
             cancellationToken);
         var invoice = invoices.FirstOrDefault(x => x.Id == invoiceId);
         return invoice ?? throw new KeyNotFoundException("Finance invoice was not found.");
@@ -315,7 +325,7 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
                 reviewAgentId ?? Guid.NewGuid(),
                 "invoice_review",
                 thresholdContext,
-                FinanceApproverRole,
+                null,
                 null,
                 [new CreateApprovalStepInput(1, "role", FinanceApproverRole)]),
             cancellationToken);
@@ -459,10 +469,11 @@ public sealed class CompanyInvoiceReviewWorkflowService : IInvoiceReviewWorkflow
     private async Task<InvoicePaymentContext> LoadRelatedPaymentContextAsync(
         Guid companyId,
         Guid invoiceId,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         var transactions = await _financeReadService.GetTransactionsAsync(
-            new GetFinanceTransactionsQuery(companyId, null, null, 500),
+            new GetFinanceTransactionsQuery(companyId, null, null, 500, SourceFilter: sourceFilter),
             cancellationToken);
 
         var relatedTransactions = transactions

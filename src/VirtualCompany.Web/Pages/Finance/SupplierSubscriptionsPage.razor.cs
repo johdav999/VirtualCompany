@@ -115,9 +115,9 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         ProposalForm.NextExpectedBillDateUtc.HasValue;
     private IReadOnlyList<LifecycleAction> AvailableLifecycleActions => SelectedSubscription?.Status switch
     {
-        "draft" => [new("Activate", "activate")],
-        "active" => [new("Pause", "pause"), new("Cancel", "cancel")],
-        "paused" => [new("Resume", "resume"), new("Cancel", "cancel")],
+        "draft" => [new("activate")],
+        "active" => [new("pause"), new("cancel")],
+        "paused" => [new("resume"), new("cancel")],
         _ => []
     };
 
@@ -232,7 +232,7 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         try
         {
             SelectedProposal = await FinanceApiClient.GetSupplierSubscriptionProposalAsync(companyId, proposalId);
-            ProposalForm = SupplierSubscriptionProposalReviewModel.From(SelectedProposal);
+            ProposalForm = SupplierSubscriptionProposalReviewModel.From(SelectedProposal, FinanceText["SubscriptionProposal"]);
             ProposalSupplierSearchText = SelectedProposal?.SupplierName ?? string.Empty;
             IsProposalSupplierPickerOpen = SelectedProposal?.Terms.CounterpartyId is null;
         }
@@ -260,7 +260,7 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
             SelectedSubscription = await FinanceApiClient.AcceptSupplierSubscriptionProposalAsync(
                 companyId,
                 proposalId,
-                new AcceptSupplierSubscriptionProposalRequest(ProposalForm.ToRequest(), "Accepted from inbox-discovered agreement evidence."));
+                new AcceptSupplierSubscriptionProposalRequest(ProposalForm.ToRequest(), FinanceText["SubscriptionAcceptedFromEvidence"]));
             SelectedProposal = null;
             await LoadAsync(companyId, SelectedSubscription.Id);
         }
@@ -285,7 +285,7 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         ProposalErrorMessage = null;
         try
         {
-            await FinanceApiClient.RejectSupplierSubscriptionProposalAsync(companyId, proposalId, new RejectSupplierSubscriptionProposalRequest("Not a supplier subscription agreement."));
+            await FinanceApiClient.RejectSupplierSubscriptionProposalAsync(companyId, proposalId, new RejectSupplierSubscriptionProposalRequest(FinanceText["NotSupplierSubscriptionAgreement"]));
             SelectedProposal = null;
             await LoadProposalsAsync(companyId);
         }
@@ -391,7 +391,7 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         {
             if (Form.CounterpartyId == Guid.Empty)
             {
-                FormErrorMessage = "Choose a supplier before saving the subscription.";
+                FormErrorMessage = FinanceText["ChooseSupplierBeforeSavingSubscription"];
                 return;
             }
 
@@ -449,13 +449,13 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         IsProposalSupplierPickerOpen = true;
     }
 
-    private static string SupplierMeta(FinanceCounterpartyResponse supplier)
+    private string SupplierMeta(FinanceCounterpartyResponse supplier)
     {
         var parts = new[] { supplier.TaxId, supplier.Email, supplier.PaymentTerms }
             .Where(x => !string.IsNullOrWhiteSpace(x))
             .ToArray();
 
-        return parts.Length == 0 ? "Supplier" : string.Join(" - ", parts);
+        return parts.Length == 0 ? FinanceText["Supplier"] : string.Join(" - ", parts);
     }
 
     private async Task ChangeStatusAsync(string action)
@@ -514,18 +514,43 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         }
     }
 
-    private static string FormatOptionalMoney(decimal? amount, string? currency) =>
-        amount.HasValue ? string.Create(CultureInfo.InvariantCulture, $"{amount.Value:0.00} {currency ?? "SEK"}") : "Needs review";
+    private string FormatOptionalMoney(decimal? amount, string? currency) =>
+        amount.HasValue ? string.Format(CultureInfo.CurrentCulture, "{0:N2} {1}", amount.Value, currency ?? "SEK") : FinanceText["NeedsReview"];
 
-    private static string FormatOptionalDate(DateTime? value) =>
-        value.HasValue ? FormatDate(value.Value) : "Needs review";
+    private string FormatOptionalDate(DateTime? value) =>
+        value.HasValue ? FormatDate(value.Value) : FinanceText["NeedsReview"];
 
     private static string FormatMoney(decimal amount, string currency) =>
-        string.Create(CultureInfo.InvariantCulture, $"{amount:0.00} {currency}");
+        string.Format(CultureInfo.CurrentCulture, "{0:N2} {1}", amount, currency);
 
     private static string FormatDate(DateTime value) => value.ToLocalTime().ToString("d MMM yyyy", CultureInfo.CurrentCulture);
 
-    private static string Label(string value) => value.Replace('_', ' ');
+    private string Label(string value) => FinanceText[value.Trim().ToLowerInvariant() switch
+    {
+        "active" => "Active",
+        "activate" => "Activate",
+        "accepted" => "Accepted",
+        "cancel" => "Cancel",
+        "cancelled" => "Cancelled",
+        "confirmed" => "Confirmed",
+        "detected" => "Detected",
+        "draft" => "Draft",
+        "due" => "Due",
+        "exception" => "Exception",
+        "failed" => "Failed",
+        "missing_bill" => "MissingBill",
+        "monthly" => "Monthly",
+        "needs_review" => "NeedsReview",
+        "pause" => "Pause",
+        "paused" => "Paused",
+        "quarterly" => "Quarterly",
+        "rejected" => "Rejected",
+        "resume" => "Resume",
+        "suggested" => "Suggested",
+        "upcoming" => "Upcoming",
+        "yearly" => "Yearly",
+        _ => "Unknown"
+    }];
 
     private static string Tone(string value) => value switch
     {
@@ -541,7 +566,7 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
         return string.Concat(parts.Take(2).Select(x => char.ToUpperInvariant(x[0])));
     }
 
-    private sealed record LifecycleAction(string Label, string Value);
+    private sealed record LifecycleAction(string Value);
 
     private sealed class SupplierSubscriptionProposalReviewModel
     {
@@ -572,12 +597,12 @@ public partial class SupplierSubscriptionsPage : FinancePageBase
             NoticePeriodDays = 30
         };
 
-        public static SupplierSubscriptionProposalReviewModel From(SupplierSubscriptionIntakeProposalDetailResponse? proposal) => proposal is null
+        public static SupplierSubscriptionProposalReviewModel From(SupplierSubscriptionIntakeProposalDetailResponse? proposal, string defaultName) => proposal is null
             ? CreateDefault()
             : new SupplierSubscriptionProposalReviewModel
             {
                 CounterpartyId = proposal.Terms.CounterpartyId,
-                Name = string.IsNullOrWhiteSpace(proposal.Terms.Name) ? "Subscription proposal" : proposal.Terms.Name!,
+                Name = string.IsNullOrWhiteSpace(proposal.Terms.Name) ? defaultName : proposal.Terms.Name!,
                 Currency = string.IsNullOrWhiteSpace(proposal.Terms.Currency) ? "SEK" : proposal.Terms.Currency!,
                 ExpectedAmount = proposal.Terms.ExpectedAmount,
                 Cadence = string.IsNullOrWhiteSpace(proposal.Terms.Cadence) ? "monthly" : proposal.Terms.Cadence!,

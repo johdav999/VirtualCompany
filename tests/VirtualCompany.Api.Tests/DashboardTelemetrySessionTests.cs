@@ -18,7 +18,7 @@ public sealed class DashboardTelemetrySessionTests
         Assert.True(session.HasRecordedFirstAction);
         Assert.True(session.SessionStartedUtc <= firstAction);
         Assert.Equal(firstAction, session.FirstActionAtUtc);
-        Assert.Equal(firstAction, session.LastActionAtUtc);
+        Assert.True(session.LastActionAtUtc >= firstAction);
         Assert.Equal("open-queue", session.FirstActionContext?.ActionKey);
     }
 

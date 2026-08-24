@@ -1,13 +1,22 @@
 namespace VirtualCompany.Application.Finance;
 
-public sealed record GetGeneralLedgerQuery(Guid CompanyId, Guid FiscalPeriodId, Guid? FinanceAccountId = null);
+public sealed record GetGeneralLedgerQuery(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    Guid? FinanceAccountId = null,
+    int Page = 1,
+    int PageSize = 200);
 public sealed record GetTrialBalanceQuery(Guid CompanyId, Guid FiscalPeriodId);
 public sealed record GetAccountingTaxSummaryQuery(Guid CompanyId, Guid FiscalPeriodId);
 public sealed record GetControlAccountReconciliationQuery(Guid CompanyId, Guid FiscalPeriodId);
 public sealed record ReviewAccountingTaxSummaryCommand(Guid CompanyId, Guid FiscalPeriodId, Guid ActorUserId);
 public sealed record RequestAccountingExportCommand(Guid CompanyId, Guid FiscalPeriodId, Guid ActorUserId, string IdempotencyKey);
 public sealed record GetAccountingExportQuery(Guid CompanyId, Guid ExportId);
-public sealed record ListAccountingExportsQuery(Guid CompanyId, Guid? FiscalPeriodId = null);
+public sealed record ListAccountingExportsQuery(
+    Guid CompanyId,
+    Guid? FiscalPeriodId = null,
+    int Page = 1,
+    int PageSize = 100);
 
 public sealed record GeneralLedgerLineDto(
     Guid LedgerEntryLineId, Guid LedgerEntryId, string VoucherNumber, DateOnly PostingDate,
@@ -18,12 +27,16 @@ public sealed record GeneralLedgerLineDto(
 public sealed record GeneralLedgerAccountDto(
     Guid AccountId, string AccountCode, string AccountName, string AccountClass, string Currency,
     decimal OpeningBalance, decimal Debit, decimal Credit, decimal ClosingBalance,
-    IReadOnlyList<GeneralLedgerLineDto> Lines);
+    int TotalLineCount, IReadOnlyList<GeneralLedgerLineDto> Lines);
 
 public sealed record GeneralLedgerReportDto(
     Guid CompanyId, Guid FiscalPeriodId, string FiscalPeriodName, DateTime PeriodStartUtc,
     DateTime PeriodEndUtc, bool IsClosed, bool IsReportingLocked, string SourceMode,
-    IReadOnlyList<GeneralLedgerAccountDto> Accounts);
+    IReadOnlyList<GeneralLedgerAccountDto> Accounts,
+    int Page,
+    int PageSize,
+    long TotalLineCount,
+    bool HasMore);
 
 public sealed record TrialBalanceAccountDto(
     Guid AccountId, string AccountCode, string AccountName, string AccountClass, string Currency,

@@ -1,0 +1,144 @@
+@page "/system/admin/finance-work"
+@inherits FinancePageBase
+@rendermode InteractiveServer
+
+<PageTitle>@FinanceText["FinanceWorkRecoveryTitle"]</PageTitle>
+
+<main class="finance-work-recovery" aria-busy="@IsBusy">
+    <header class="finance-work-recovery__header">
+        <div>
+            <span class="dashboard-kicker">@FinanceText["SystemAdministration"]</span>
+            <h1>@FinanceText["FinanceWorkRecoveryTitle"]</h1>
+            <p>@FinanceText["FinanceWorkRecoveryDescription"]</p>
+        </div>
+        <button class="btn btn-outline-secondary" type="button" @onclick="LoadOperationsAsync" disabled="@IsBusy">@CommonText["Refresh"]</button>
+    </header>
+
+    @if (IsLoading || IsOperationsLoading)
+    {
+        <section class="wizard-card" role="status">@FinanceText["LoadingFinanceWork"]</section>
+    }
+    else if (AccessState.RequiresCompanySelection)
+    {
+        <CompanySelectionRequiredState
+            Message="@AccessState.Message"
+            Companies="@AccessState.AvailableCompanies" />
+    }
+    else if (AccessState.IsForbidden)
+    {
+        <ForbiddenState
+            Title="@FinanceText["SystemAccessRequired"]"
+            Message="@FinanceText["SystemAccessRequiredMessage"]"
+            ReturnHref="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)"
+            ReturnText="@FinanceText["BackToFinance"]" />
+    }
+    else if (!string.IsNullOrWhiteSpace(ActionError) && Operations is null)
+    {
+        <div class="alert alert-danger" role="alert">@ActionError</div>
+    }
+    else if (Operations is not null)
+    {
+        <section class="finance-work-recovery__kpis" aria-label="@FinanceText["FinanceWorkerHealth"]">
+            <article class="finance-work-recovery__kpi">
+                <span class="finance-work-recovery__kpi-icon bi bi-list-check" aria-hidden="true"></span>
+                <div><small>@FinanceText["QueuedWork"]</small><strong>@Operations.Health.QueuedCount</strong><span>@FinanceText["AcrossFinanceQueues"]</span></div>
+            </article>
+            <article class="finance-work-recovery__kpi">
+                <span class="finance-work-recovery__kpi-icon bi bi-clock" aria-hidden="true"></span>
+                <div><small>@FinanceText["OldestItem"]</small><strong>@OldestAge</strong><span>@OldestCreatedLabel</span></div>
+            </article>
+            <article class="finance-work-recovery__kpi finance-work-recovery__kpi--warning">
+                <span class="finance-work-recovery__kpi-icon bi bi-exclamation-triangle" aria-hidden="true"></span>
+                <div><small>@FinanceText["NeedsAttention"]</small><strong>@AttentionCount</strong><span>@FinanceText["FailuresOrReconciliation"]</span></div>
+            </article>
+            <article class="finance-work-recovery__kpi finance-work-recovery__kpi--success">
+                <span class="finance-work-recovery__kpi-icon bi bi-check-circle" aria-hidden="true"></span>
+                <div><small>@FinanceText["WorkerReadiness"]</small><strong>@ReadyWorkerCount / @Operations.Workers.Count</strong><span>@HealthLabel</span></div>
+            </article>
+        </section>
+
+        @if (Operations.Health.Issues.Count > 0)
+        {
+            <section class="finance-work-recovery__issues" aria-label="@FinanceText["WorkerReadinessIssues"]">
+                <strong>@FinanceText["WorkerReadinessNeedsAttention"]</strong>
+                <ul>@foreach (var issue in Operations.Health.Issues) { <li>@issue</li> }</ul>
+            </section>
+        }
+
+        <section class="finance-work-recovery__filters" aria-label="@FinanceText["FilterFinanceWork"]">
+            <label><span>@FinanceText["Search"]</span><input class="form-control" @bind="Search" placeholder="@FinanceText["SearchFinanceWorkPlaceholder"]" /></label>
+            <label><span>@FinanceText["Status"]</span><select class="form-select" @bind="StatusFilter" @bind:after="LoadOperationsAsync">
+                <option value="">@FinanceText["AllStatuses"]</option><option value="queued">@FinanceText["Queued"]</option><option value="in_progress">@FinanceText["InProgress"]</option>
+                <option value="retry_scheduled">@FinanceText["RetryScheduled"]</option><option value="needs_attention">@FinanceText["NeedsAttention"]</option>
+                <option value="completed">@FinanceText["Completed"]</option><option value="stopped">@FinanceText["Stopped"]</option>
+            </select></label>
+            <label><span>@FinanceText["Worker"]</span><select class="form-select" @bind="WorkerFilter" @bind:after="LoadOperationsAsync">
+                <option value="">@FinanceText["AllWorkers"]</option>
+                @foreach (var worker in Operations.Workers) { <option value="@worker.Key">@worker.DisplayName</option> }
+            </select></label>
+            <button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">@FinanceText["ClearFilters"]</button>
+        </section>
+
+        @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert">@ActionError</div> }
+        @if (!string.IsNullOrWhiteSpace(ActionSuccess)) { <div class="alert alert-success" role="status">@ActionSuccess</div> }
+
+        <div class="finance-work-recovery__workspace">
+            <section class="finance-work-recovery__list-card">
+                <div class="finance-work-recovery__section-title"><h2>@FinanceText["FinanceWork"]</h2><span>@FinanceText["ItemCount", FilteredItems.Count]</span></div>
+                @if (FilteredItems.Count == 0)
+                {
+                    <div class="finance-work-recovery__empty">
+                        <span class="bi bi-search" aria-hidden="true"></span><h3>@FinanceText["NoMatchingWork"]</h3>
+                        <p>@FinanceText["NoMatchingWorkHelp"]</p><button class="btn btn-outline-primary" type="button" @onclick="ClearFiltersAsync">@FinanceText["ClearFilters"]</button>
+                    </div>
+                }
+                else
+                {
+                    <div class="finance-work-recovery__rows">
+                        @foreach (var item in FilteredItems)
+                        {
+                            <button type="button" class="finance-work-recovery__row @(Selected?.Id == item.Id ? "is-selected" : null)" aria-pressed="@(Selected?.Id == item.Id)" @onclick="() => Select(item)">
+                                <span class="finance-work-recovery__row-icon bi bi-gear" aria-hidden="true"></span>
+                                <span class="finance-work-recovery__row-main"><strong>@item.WorkerName</strong><small>@FinanceText["UpdatedReference", FormatDate(item.UpdatedUtc), ShortReference(item.WorkReference)]</small></span>
+                                <span class="finance-work-recovery__attempts"><small>@FinanceText["Attempts"]</small><strong>@item.AttemptCount / @item.MaxAttempts</strong></span>
+                                <span class="@StatusClass(item.Status)">@StatusLabel(item.Status)</span>
+                                <span class="bi bi-chevron-right" aria-hidden="true"></span>
+                            </button>
+                        }
+                    </div>
+                }
+            </section>
+
+            <aside class="finance-work-recovery__detail" aria-live="polite">
+                @if (Selected is null)
+                {
+                    <div class="finance-work-recovery__empty"><span class="bi bi-card-list" aria-hidden="true"></span><h3>@FinanceText["NoWorkSelected"]</h3><p>@FinanceText["NoWorkSelectedHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="finance-work-recovery__detail-header"><div><h2>@Selected.WorkerName</h2><small>@FinanceText["UpdatedValue", FormatDate(Selected.UpdatedUtc)]</small></div><span class="@StatusClass(Selected.Status)">@StatusLabel(Selected.Status)</span></div>
+                    <section><h3>@FinanceText["WhatHappened"]</h3><p>@FailureSummary</p></section>
+                    <div class="finance-work-recovery__facts">
+                        <section><h3>@FinanceText["Progress"]</h3><strong>@FinanceText["AttemptOf", Selected.AttemptCount, Selected.MaxAttempts]</strong><p>@RetryLabel</p></section>
+                        <section><h3>@FinanceText["LatestSafeFailure"]</h3><strong>@FailureCodeLabel</strong><p>@FinanceText["SafeFailureSanitizedHelp"]</p></section>
+                    </div>
+                    <section><h3>@FinanceText["AttemptTimeline"]</h3>
+                        @if (Selected.Attempts.Count == 0) { <p class="text-body-secondary">@FinanceText["NoWorkerAttempt"]</p> }
+                        else { <ol class="finance-work-recovery__timeline">@foreach (var attempt in Selected.Attempts) { <li><strong>@FinanceText["AttemptWithOutcome", attempt.AttemptNumber, AttemptLabel(attempt.Outcome)]</strong><span>@FormatDate(attempt.StartedUtc)@if (attempt.DurationMilliseconds.HasValue) { <text> · @FormatDuration(attempt.DurationMilliseconds.Value)</text> }</span><p>@(attempt.SafeSummary ?? FinanceText["AttemptNoFailureSummary"])</p></li> }</ol> }
+                    </section>
+                    <section><h3>@FinanceText["NextAction"]</h3><p>@Selected.AllowedActions.Explanation</p>
+                        <label class="form-label" for="operator-reason">@FinanceText["OperatorNote"]</label>
+                        <textarea id="operator-reason" class="form-control" rows="3" @bind="OperatorReason" placeholder="@FinanceText["OperatorNotePlaceholder"]"></textarea>
+                        <div class="finance-work-recovery__actions">
+                            <button class="btn btn-primary" type="button" @onclick='() => RunActionAsync("retry")' disabled="@(!CanRunRetry)"><span class="bi bi-arrow-clockwise" aria-hidden="true"></span> @FinanceText["RetryWork"]</button>
+                            <a class="btn btn-outline-warning @(Operations.Health.ReconciliationRequiredCount == 0 ? "disabled" : null)" aria-disabled="@(Operations.Health.ReconciliationRequiredCount == 0)" href="@ReconciliationHref"><span class="bi bi-arrow-repeat" aria-hidden="true"></span> @FinanceText["ReconcileOutcome"]</a>
+                            <button class="btn btn-outline-danger" type="button" @onclick='() => RunActionAsync("stop")' disabled="@(!CanRunStop)"><span class="bi bi-stop-circle" aria-hidden="true"></span> @FinanceText["StopFutureWork"]</button>
+                            <button class="btn btn-outline-secondary" type="button" @onclick='() => RunActionAsync("acknowledge")' disabled="@(!CanRunAcknowledge)"><span class="bi bi-shield-check" aria-hidden="true"></span> @FinanceText["AcknowledgeFailure"]</button>
+                        </div>
+                        @if (!CanManageAccounting) { <p class="finance-work-recovery__permission">@FinanceText["AccountingAdminRecoveryRequired"]</p> }
+                    </section>
+                }
+            </aside>
+        </div>
+    }
+</main>

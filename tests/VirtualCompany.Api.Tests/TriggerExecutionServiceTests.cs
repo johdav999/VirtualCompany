@@ -117,7 +117,7 @@ public sealed class TriggerExecutionServiceTests
         var workItem = CreateWorkItem(companyId, agentId);
 
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
-            service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None));
+            service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None, retryBackoffSeconds: 10));
 
         var failedAttempt = await dbContext.TriggerExecutionAttempts
             .IgnoreQueryFilters()
@@ -134,7 +134,7 @@ public sealed class TriggerExecutionServiceTests
         Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled.ToStorageValue(), failedAudit.Metadata["executionStatus"]);
         Assert.Equal("Transient orchestration outage.", failedAudit.Metadata["failureDetails"]);
 
-        var retryDeferred = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);
+        var retryDeferred = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None, retryBackoffSeconds: 10);
         Assert.Equal(TriggerExecutionAttemptStatus.RetryScheduled, retryDeferred);
         Assert.Equal(1, dispatcher.DispatchCount);
         var retryDeferredAudit = await dbContext.AuditEvents
@@ -148,6 +148,9 @@ public sealed class TriggerExecutionServiceTests
         Assert.Equal(workItem.IdempotencyKey, retryDeferredAudit.Metadata["idempotencyKey"]);
         Assert.Equal("true", retryDeferredAudit.Metadata["retryDeferred"]);
 
+        failedAttempt = await dbContext.TriggerExecutionAttempts
+            .IgnoreQueryFilters()
+            .SingleAsync(x => x.IdempotencyKey == workItem.IdempotencyKey);
         failedAttempt.MarkRetried(failedAttempt.RetryAttemptCount + 1);
         await dbContext.SaveChangesAsync();
         var retryOutcome = await service.EvaluateAndDispatchAsync(workItem, maxRetryAttempts: 3, CancellationToken.None);

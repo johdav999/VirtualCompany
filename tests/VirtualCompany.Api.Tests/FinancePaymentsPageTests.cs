@@ -88,7 +88,7 @@ public sealed class FinancePaymentsPageTests
 
     private static PaymentsPageHarness CreateHarness(Guid companyId, List<FinancePaymentResponse> payments)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddOptions();
         context.Services.AddSingleton(new FinanceAccessResolver());
 

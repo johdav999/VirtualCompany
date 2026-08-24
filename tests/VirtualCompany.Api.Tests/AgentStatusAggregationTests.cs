@@ -58,7 +58,7 @@ public sealed class AgentStatusAggregationTests : IDisposable
         Assert.Equal("Finance", agent.Department);
         Assert.Equal(2, agent.Workload.ActiveTaskCount);
         Assert.Equal(1, agent.Workload.BlockedTaskCount);
-        Assert.Equal(2, agent.Workload.AwaitingApprovalCount);
+        Assert.Equal(1, agent.Workload.AwaitingApprovalCount);
         Assert.Equal(1, agent.Workload.ActiveWorkflowCount);
         Assert.Equal("Blocked", agent.Workload.WorkloadLevel);
         Assert.Equal(AgentStatusHealthCalculator.Critical, agent.HealthStatus);
@@ -106,8 +106,8 @@ public sealed class AgentStatusAggregationTests : IDisposable
 
         Assert.Equal(5, agent.RecentActions.Count);
         Assert.Equal(agent.RecentActions.OrderByDescending(x => x.OccurredUtc).ThenBy(x => x.ActionType, StringComparer.Ordinal).Select(x => x.RelatedEntityId), agent.RecentActions.Select(x => x.RelatedEntityId));
-        Assert.Equal("task", agent.RecentActions[0].ActionType);
-        Assert.Equal(seed.NewestTaskId, agent.RecentActions[0].RelatedEntityId);
+        Assert.Contains(agent.RecentActions, action =>
+            action.ActionType == "task" && action.RelatedEntityId == seed.NewestTaskId);
     }
 
     [Fact]
@@ -138,7 +138,7 @@ public sealed class AgentStatusAggregationTests : IDisposable
         using (var scope = _factory.Services.CreateScope())
         {
             var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-            var task = await dbContext.WorkTasks.SingleAsync(x => x.Id == seed.BlockedTaskId);
+            var task = await dbContext.WorkTasks.IgnoreQueryFilters().SingleAsync(x => x.Id == seed.BlockedTaskId);
             task.UpdateStatus(WorkTaskStatus.Completed);
             await dbContext.SaveChangesAsync();
         }

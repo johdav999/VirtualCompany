@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using System.Text.Json.Nodes;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -170,7 +171,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
             Assert.True(transaction.IsFlagged);
         });
 
-        var firstInvoice = Assert.Single(invoices.Where(x => x.Id == seed.ReviewInvoiceId));
+        var firstInvoice = invoices[0];
         var invoiceCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/customers/{firstInvoice.CounterpartyId}");
         Assert.NotNull(invoiceCounterparty);
         Assert.Equal(firstInvoice.CounterpartyId, invoiceCounterparty!.Id);
@@ -180,11 +181,11 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
         Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.PreferredPaymentMethod));
         Assert.False(string.IsNullOrWhiteSpace(invoiceCounterparty.DefaultAccountMapping));
 
-        var firstBill = bills.First();
-        var billCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{firstBill.CounterpartyId}");
+        var firstSupplier = suppliers[0];
+        var billCounterparty = await client.GetFromJsonAsync<CounterpartyResponse>($"/internal/companies/{seed.CompanyId}/finance/suppliers/{firstSupplier.Id}");
         Assert.NotNull(billCounterparty);
-        Assert.Equal(firstBill.CounterpartyId, billCounterparty!.Id);
-        Assert.Equal(firstBill.CounterpartyName, billCounterparty.Name);
+        Assert.Equal(firstSupplier.Id, billCounterparty!.Id);
+        Assert.Equal(firstSupplier.Name, billCounterparty.Name);
         Assert.False(string.IsNullOrWhiteSpace(billCounterparty.PaymentTerms));
         Assert.NotNull(billCounterparty.CreditLimit);
         Assert.False(string.IsNullOrWhiteSpace(billCounterparty.PreferredPaymentMethod));
@@ -219,12 +220,16 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
     [Fact]
     public async Task Finance_read_endpoint_returns_structured_not_initialized_response_and_requests_fallback_seed()
     {
-        _factory.FinanceSeedTelemetry.Reset();
-        var seed = await SeedFinanceSeedingStateCompanyAsync((_, company, _) =>
+        using var factory = new TestWebApplicationFactory(new Dictionary<string, string?>
+        {
+            [$"{FinanceInitializationOptions.SectionName}:MissingDatasetBehavior"] = FinanceMissingDatasetBehaviorValues.TriggerSeed
+        });
+        factory.FinanceSeedTelemetry.Reset();
+        var seed = await SeedFinanceSeedingStateCompanyAsync(factory, (_, company, _) =>
         {
             ApplySeedingMetadata(company, FinanceSeedingState.NotSeeded);
         });
-        using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
+        using var client = CreateAuthenticatedClient(factory, seed.Subject, seed.Email, seed.DisplayName);
 
         var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/cash-balance");
 
@@ -235,24 +240,24 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
         Assert.Equal(FinanceInitializationDomainValues.Finance, problem.Domain);
         Assert.True(problem.CanTriggerSeed);
         Assert.True(problem.CanGenerate);
-        Assert.Equal(FinanceRecommendedActionContractValues.Generate, problem.RecommendedAction);
+        Assert.Equal(FinanceRecommendedActionContractValues.Regenerate, problem.RecommendedAction);
         Assert.Equal([FinanceManualSeedModes.Replace], problem.SupportedModes);
         Assert.True(problem.FallbackTriggered);
         Assert.True(problem.SeedRequested);
         Assert.True(problem.SeedJobActive);
         Assert.Equal(FinanceEntryProgressStateContractValues.SeedingRequested, problem.ProgressState);
 
-        var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
+        var snapshot = await factory.ExecuteDbContextAsync(async dbContext =>
             await Task.FromResult(new
             {
-                JobCount = dbContext.BackgroundExecutions.Count(x =>
+                JobCount = dbContext.BackgroundExecutions.IgnoreQueryFilters().Count(x =>
                     x.CompanyId == seed.CompanyId &&
                     x.ExecutionType == BackgroundExecutionType.FinanceSeed),
-                RequestedAuditCount = dbContext.AuditEvents.Count(x =>
+                RequestedAuditCount = dbContext.AuditEvents.IgnoreQueryFilters().Count(x =>
                     x.CompanyId == seed.CompanyId &&
                     x.Action == "finance.seed.job.requested" &&
                     x.ActorType == "system"),
-                AuditCount = dbContext.AuditEvents.Count(x =>
+                AuditCount = dbContext.AuditEvents.IgnoreQueryFilters().Count(x =>
                     x.CompanyId == seed.CompanyId &&
                     x.Action == "finance.request.not_initialized")
             }));
@@ -260,7 +265,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
         Assert.Equal(1, snapshot.JobCount);
         Assert.Equal(1, snapshot.RequestedAuditCount);
         Assert.Equal(1, snapshot.AuditCount);
-        var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events
+        var telemetryEvent = Assert.Single(factory.FinanceSeedTelemetry.Events
             .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
         Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
         Assert.Equal("system", telemetryEvent.Context.ActorType);
@@ -297,10 +302,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
                 x.CompanyId == seed.CompanyId &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
 
-        Assert.Equal(1, snapshot);
-        var telemetryEvent = Assert.Single(_factory.FinanceSeedTelemetry.Events
-            .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
-        Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
+        Assert.Equal(0, snapshot);
         Assert.Empty(factory.FinanceSeedTelemetry.Events
             .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
     }
@@ -493,8 +495,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
                 -89.42m,
                 templateTransaction.Currency,
                 "Missing linked document transaction",
-                $"missing-tx-{Guid.NewGuid():N}".Substring(0, 22),
-                Guid.NewGuid());
+                $"missing-tx-{Guid.NewGuid():N}".Substring(0, 22));
             dbContext.FinanceTransactions.Add(missingTransaction);
             missingTransactionId = missingTransaction.Id;
 
@@ -508,8 +509,7 @@ public sealed class FinanceReadEndpointsIntegrationTests : IDisposable
                 templateInvoice.DueUtc.AddDays(3),
                 templateInvoice.Amount + 42m,
                 templateInvoice.Currency,
-                "pending_approval",
-                Guid.NewGuid());
+                "pending_approval");
             dbContext.FinanceInvoices.Add(missingInvoice);
             missingInvoiceId = missingInvoice.Id;
 

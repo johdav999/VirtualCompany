@@ -30,6 +30,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
     private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
     private readonly IOptions<ReportingPeriodRegenerationWorkerOptions> _options;
+    private readonly FinanceBackgroundExecutionAttemptRecorder _attemptRecorder;
 
     public ReportingPeriodRegenerationJobRunner(
         VirtualCompanyDbContext dbContext,
@@ -37,6 +38,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
         IBackgroundJobExecutor backgroundJobExecutor,
         IBackgroundExecutionRetryPolicy retryPolicy,
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+        FinanceBackgroundExecutionAttemptRecorder attemptRecorder,
         IOptions<ReportingPeriodRegenerationWorkerOptions> options)
     {
         _dbContext = dbContext;
@@ -44,6 +46,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
         _backgroundJobExecutor = backgroundJobExecutor;
         _retryPolicy = retryPolicy;
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
+        _attemptRecorder = attemptRecorder;
         _options = options;
     }
 
@@ -59,8 +62,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
             var maxAttempts = Math.Max(1, execution.MaxAttempts);
             var retryDelay = _retryPolicy.GetRetryDelay(attempt);
 
-            execution.StartAttempt(execution.CorrelationId, attempt, maxAttempts);
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            var attemptRecord = await _attemptRecorder.StartAsync(execution, "report-regeneration", cancellationToken);
 
             if (!Guid.TryParse(execution.RelatedEntityId, out var fiscalPeriodId))
             {
@@ -68,7 +70,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
                     BackgroundExecutionFailureCategory.Validation,
                     "invalid_fiscal_period_reference",
                     "Background reporting regeneration execution does not reference a valid fiscal period id.");
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                await _attemptRecorder.CompleteAsync(execution, attemptRecord, cancellationToken);
                 handled++;
                 continue;
             }
@@ -122,7 +124,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
                     break;
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _attemptRecorder.CompleteAsync(execution, attemptRecord, cancellationToken);
         }
 
         return handled;
@@ -133,10 +135,12 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
         var nowUtc = DateTime.UtcNow;
         var claimToken = Guid.NewGuid().ToString("N");
         var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
+        var leaseExpiresUtc = nowUtc.AddSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds));
         var candidateIds = await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
@@ -158,6 +162,7 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
             .IgnoreQueryFilters()
             .Where(x =>
                 candidateIds.Contains(x.Id) &&
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
@@ -166,20 +171,23 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
                   x.HeartbeatUtc <= staleBeforeUtc)))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
-                .SetProperty(x => x.CorrelationId, claimToken)
+                .SetProperty(x => x.LeaseOwner, claimToken)
+                .SetProperty(x => x.LeaseExpiresUtc, leaseExpiresUtc)
                 .SetProperty(x => x.StartedUtc, nowUtc)
                 .SetProperty(x => x.HeartbeatUtc, nowUtc)
                 .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
-                .SetProperty(x => x.UpdatedUtc, nowUtc),
+                .SetProperty(x => x.UpdatedUtc, nowUtc)
+                .SetProperty(x => x.Version, x => x.Version + 1),
                 cancellationToken);
 
         return await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .Where(x =>
                 candidateIds.Contains(x.Id) &&
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&
                 x.Status == BackgroundExecutionStatus.InProgress &&
-                x.CorrelationId == claimToken)
+                x.LeaseOwner == claimToken)
             .OrderBy(x => x.CreatedUtc)
             .ToListAsync(cancellationToken);
     }
@@ -203,6 +211,13 @@ public sealed class ReportingPeriodRegenerationJobRunner : IReportingPeriodRegen
             BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
             BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
             BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
+            BackgroundJobFailureClassification.Cancellation => BackgroundExecutionFailureCategory.Cancellation,
+            BackgroundJobFailureClassification.Authorization => BackgroundExecutionFailureCategory.Authorization,
+            BackgroundJobFailureClassification.Concurrency => BackgroundExecutionFailureCategory.Concurrency,
+            BackgroundJobFailureClassification.AmbiguousExternalResult => BackgroundExecutionFailureCategory.AmbiguousExternalResult,
+            BackgroundJobFailureClassification.Persistence => BackgroundExecutionFailureCategory.Persistence,
+            BackgroundJobFailureClassification.ObjectStorage => BackgroundExecutionFailureCategory.ObjectStorage,
+            BackgroundJobFailureClassification.PoisonPayload => BackgroundExecutionFailureCategory.PoisonPayload,
             _ => BackgroundExecutionFailureCategory.TransientInfrastructure
         };
 }

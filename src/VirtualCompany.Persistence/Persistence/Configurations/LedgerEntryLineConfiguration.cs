@@ -30,7 +30,9 @@ internal sealed class LedgerEntryLineConfiguration : IEntityTypeConfiguration<Le
 
         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.CostCenterId });
         builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId });
-        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId });
+        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId })
+            .HasAnnotation("SqlServer:Include",
+                new[] { nameof(LedgerEntryLine.LedgerEntryId), nameof(LedgerEntryLine.DebitAmount), nameof(LedgerEntryLine.CreditAmount) });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.LedgerEntry)
             .WithMany(x => x.Lines)

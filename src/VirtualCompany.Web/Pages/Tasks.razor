@@ -34,6 +34,7 @@ else if (CompanyId is null)
                     {
                         <a class="template-card text-decoration-none text-reset" href="@BuildTasksUri(membership.CompanyId, EffectiveStatus, null, null, ReturnUrl, Filter, Source)">
                             <strong>@membership.CompanyName</strong>
+                            <CompanyIdentityHint Membership="membership" />
                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
                         </a>
                     }
@@ -240,7 +241,7 @@ else
 
         try
         {
-            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
             if (CompanyId is null && currentUser?.ActiveCompany is not null)
             {
                 Navigation.NavigateTo(BuildTasksUri(currentUser.ActiveCompany.CompanyId, EffectiveStatus, AssignedAgentId, TaskId, ReturnUrl, Filter, Source), replace: true);

@@ -12,6 +12,12 @@ public sealed class AgentOperatingBriefGuidedArtifactDefinition : IGuidedArtifac
     public string ArtifactType => GuidedArtifactTypes.AgentOperatingBrief;
     public string SchemaVersion => "1.0";
     public string DisplayName => "Agent operating brief";
+    public GuidedArtifactCapabilities Capabilities { get; } = new(
+        SupportsDocumentAttachments: true,
+        AllowedDocumentExtensions: [".pdf", ".docx", ".pptx", ".xlsx", ".csv", ".txt", ".md"],
+        DocumentDataScopes: ["knowledge", "operations", "sales", "marketing", "support"],
+        SupportsVoiceDocumentSearch: true,
+        SupportsExternalResearch: true);
     public IReadOnlyList<string> QuestionPriorities =>
         [AgentBriefingCategories.CompanyInformation, AgentBriefingCategories.ProductsAndServices, AgentBriefingCategories.Policies, AgentBriefingCategories.CustomerSupport, AgentBriefingCategories.OtherInstructions];
     public IReadOnlyList<GuidedFieldDefinition> Fields { get; } =

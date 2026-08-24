@@ -43,7 +43,7 @@ public sealed class FinanceApprovalTaskPersistenceTests
             dueDate: new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc)));
         await dbContext.SaveChangesAsync();
 
-        var stored = await dbContext.ApprovalTasks.AsNoTracking().SingleAsync();
+        var stored = await dbContext.ApprovalTasks.IgnoreQueryFilters().AsNoTracking().SingleAsync();
         Assert.Equal(ApprovalTargetType.Bill, stored.TargetType);
         Assert.Equal(ApprovalTaskStatus.Pending, stored.Status);
         Assert.Equal(new DateTime(2026, 4, 25, 0, 0, 0, DateTimeKind.Utc), stored.DueDate);
@@ -74,9 +74,9 @@ public sealed class FinanceApprovalTaskPersistenceTests
         dbContext.FinanceBills.Add(bill);
         await dbContext.SaveChangesAsync();
 
-        var storedBill = await dbContext.FinanceBills.AsNoTracking().SingleAsync();
+        var storedBill = await dbContext.FinanceBills.IgnoreQueryFilters().AsNoTracking().SingleAsync();
         Assert.Equal(bill.Id, storedBill.Id);
-        Assert.Empty(await dbContext.ApprovalTasks.AsNoTracking().ToListAsync());
+        Assert.Empty(await dbContext.ApprovalTasks.IgnoreQueryFilters().AsNoTracking().ToListAsync());
 
         dbContext.ApprovalTasks.Add(new ApprovalTask(
             Guid.NewGuid(),

@@ -112,6 +112,18 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return;
         }
 
+        // Native accounting setup is an authoritative finance dataset. It must not be hidden
+        // behind the separate simulation-data bootstrap state once setup is ready.
+        var hasReadyNativeAccounting = await _dbContext.AccountingConfigurations
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(x => x.CompanyId == companyId && x.SetupState == AccountingSetupStateValues.Ready,
+                cancellationToken);
+        if (hasReadyNativeAccounting)
+        {
+            return;
+        }
+
         var state = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(companyId, cancellationToken);
         if (state.State != FinanceSeedingState.Seeded)
         {
@@ -1034,8 +1046,8 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         if (documentId is not Guid resolvedDocumentId)
         {
             return new FinanceLinkedDocumentAccessDto(
-                "none",
-                "No linked document is attached.",
+                "missing",
+                "Linked document is no longer available.",
                 false,
                 null);
         }
@@ -1043,15 +1055,15 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         if (!linkedDocuments.TryGetValue(resolvedDocumentId, out var document))
         {
             return new FinanceLinkedDocumentAccessDto(
-                "restricted",
-                "The linked document could not be loaded for the current access context.",
+                "inaccessible",
+                "Linked document unavailable or you do not have access.",
                 false,
                 null);
         }
 
         return new FinanceLinkedDocumentAccessDto(
             "available",
-            "Linked document is available.",
+            "Linked document available.",
             true,
             new FinanceLinkedDocumentDto(document.Id, document.Title, document.OriginalFileName, document.ContentType));
     }
@@ -1386,9 +1398,9 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
                 ?? ExtractDecimal(alert.Evidence, "confidence")
                 ?? 0m,
             NormalizeOptionalText(
-                invoice?.CounterpartyName
+                transaction?.CounterpartyName
+                ?? invoice?.CounterpartyName
                 ?? bill?.CounterpartyName
-                ?? transaction?.CounterpartyName
                 ?? ExtractString(alert.Evidence, "counterpartyName")),
             transaction?.Id,
             transaction?.ExternalReference
@@ -1547,11 +1559,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
     private static (int Page, int PageSize) NormalizePagination(int page, int pageSize)
     {
         var normalizedPage = page <= 0 ? 1 : page;
-        var normalizedPageSize = pageSize switch
-        {
-            25 or 50 or 100 => pageSize,
-            _ => 50
-        };
+        var normalizedPageSize = pageSize <= 0 ? 50 : Math.Clamp(pageSize, 1, 100);
 
         return (normalizedPage, normalizedPageSize);
     }
@@ -1766,13 +1774,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return [];
         }
 
-        return await _dbContext.PaymentAllocations
+        var rows = await _dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.InvoiceId.HasValue && invoiceIds.Contains(x.InvoiceId.Value))
             .GroupBy(x => x.InvoiceId!.Value)
             .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount) })
-            .ToDictionaryAsync(x => x.Id, x => decimal.Round(Math.Abs(x.Amount), 2, MidpointRounding.AwayFromZero), cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        return rows.ToDictionary(
+            x => x.Id,
+            x => decimal.Round(Math.Abs(x.Amount), 2, MidpointRounding.AwayFromZero));
     }
 
     private async Task<Dictionary<Guid, decimal>> LoadAllocatedAmountsByBillAsync(
@@ -1785,13 +1797,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return [];
         }
 
-        return await _dbContext.PaymentAllocations
+        var rows = await _dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.BillId.HasValue && billIds.Contains(x.BillId.Value))
             .GroupBy(x => x.BillId!.Value)
             .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount) })
-            .ToDictionaryAsync(x => x.Id, x => decimal.Round(Math.Abs(x.Amount), 2, MidpointRounding.AwayFromZero), cancellationToken);
+            .ToListAsync(cancellationToken);
+
+        return rows.ToDictionary(
+            x => x.Id,
+            x => decimal.Round(Math.Abs(x.Amount), 2, MidpointRounding.AwayFromZero));
     }
 
     private static bool RequiresLinkedDocumentReview(
@@ -1992,16 +2008,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         string paymentType,
         DateTime? paymentDateFromUtc,
         DateTime? paymentDateToExclusiveUtc,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
-        var rows = _dbContext.PaymentAllocations
+        var rows = _sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId.HasValue &&
                 x.Payment.Status == paymentStatus &&
-                x.Payment.PaymentType == paymentType);
+                x.Payment.PaymentType == paymentType), companyId, sourceFilter);
 
         if (paymentDateFromUtc.HasValue)
         {
@@ -2024,16 +2041,17 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         string paymentType,
         DateTime? paymentDateFromUtc,
         DateTime? paymentDateToExclusiveUtc,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
-        var rows = _dbContext.PaymentAllocations
+        var rows = _sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.BillId.HasValue &&
                 x.Payment.Status == paymentStatus &&
-                x.Payment.PaymentType == paymentType);
+                x.Payment.PaymentType == paymentType), companyId, sourceFilter);
 
         if (paymentDateFromUtc.HasValue)
         {
@@ -2055,6 +2073,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         IReadOnlyList<Guid> cashAccountIds,
         DateTime startUtc,
         DateTime endUtc,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         if (cashAccountIds.Count == 0)
@@ -2062,14 +2081,14 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             return [];
         }
 
-        return await _dbContext.FinanceTransactions
+        return await ApplySourceFilter(_dbContext.FinanceTransactions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
                 x.CompanyId == companyId &&
                 cashAccountIds.Contains(x.AccountId) &&
                 x.TransactionUtc >= startUtc &&
-                x.TransactionUtc < endUtc)
+                x.TransactionUtc < endUtc), companyId, sourceFilter, "voucher", "payment", "transaction")
             .Select(x => new CashMovementQueryRow(
                 x.Id,
                 NormalizeCategory(x.TransactionType),
@@ -2106,9 +2125,20 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Select(key =>
             {
-                var currentValue = current.GetValueOrDefault(key).Amount;
-                var previousValue = comparison.GetValueOrDefault(key).Amount;
-                return new FinanceAgentMetricComponentDto(key, FormatCategoryLabel(key), currentValue, previousValue, currentValue - previousValue, currency, DistinctIds(current.GetValueOrDefault(key).SourceRecordIds.Concat(comparison.GetValueOrDefault(key).SourceRecordIds)));
+                var currentSummary = current.TryGetValue(key, out var currentValue)
+                    ? currentValue
+                    : AllocationSummary.Empty;
+                var comparisonSummary = comparison.TryGetValue(key, out var previousValue)
+                    ? previousValue
+                    : AllocationSummary.Empty;
+                return new FinanceAgentMetricComponentDto(
+                    key,
+                    FormatCategoryLabel(key),
+                    currentSummary.Amount,
+                    comparisonSummary.Amount,
+                    currentSummary.Amount - comparisonSummary.Amount,
+                    currency,
+                    DistinctIds(currentSummary.SourceRecordIds.Concat(comparisonSummary.SourceRecordIds)));
             })
             .Where(x => x.Delta != 0m)
             .ToArray();

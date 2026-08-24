@@ -78,7 +78,7 @@ public sealed class BankTransactionPersistenceTests
    }
 
     [Fact]
-    public async Task SaveChanges_enforces_exact_once_cash_ledger_link_uniqueness()
+    public async Task SaveChanges_enforces_cash_ledger_link_idempotency_uniqueness()
     {
         await using var connection = await OpenConnectionAsync();
 
@@ -97,7 +97,7 @@ public sealed class BankTransactionPersistenceTests
             Guid.NewGuid(),
             seed.CompanyId,
             seed.FirstBankTransactionId,
-            seed.SecondLedgerEntryId,
+            seed.FirstLedgerEntryId,
             "bank-transaction-ledger:first-retry",
             new DateTime(2026, 4, 20, 0, 0, 0, DateTimeKind.Utc)));
         await Assert.ThrowsAsync<DbUpdateException>(() => duplicateByTransaction.SaveChangesAsync());

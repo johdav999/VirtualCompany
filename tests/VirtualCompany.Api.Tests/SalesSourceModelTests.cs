@@ -4,6 +4,7 @@ using VirtualCompany.Application.Sales;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Companies;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Entities;
 
 namespace VirtualCompany.Api.Tests;
 
@@ -18,10 +19,14 @@ public sealed class SalesSourceModelTests : IDisposable
     {
         var company = Guid.NewGuid(); var other = Guid.NewGuid(); var lead = Guid.NewGuid();
         using var scope = _factory.Services.CreateScope(); var service = scope.ServiceProvider.GetRequiredService<ISalesSourceService>();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        dbContext.Companies.AddRange(new Company(company, "Sales Source Company"), new Company(other, "Other Sales Source Company"));
+        dbContext.Leads.Add(new Lead(lead, company, "Attributed lead", SalesPipelineStage.NewStageId));
+        await dbContext.SaveChangesAsync();
         await service.RecordAsync(company, new("lead", lead, "event", "sme_fair", "event", "discovery", "badge-1", DateTime.UtcNow.AddDays(-2), "human", "owner", Cost: 100, Currency: "SEK"), default);
-        await scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>().SaveChangesAsync();
+        await dbContext.SaveChangesAsync();
         await service.RecordAsync(company, new("lead", lead, "email", "outlook", "email", "inquiry", "message-1", DateTime.UtcNow, "visitor", "buyer@example.com", Cost: 20, Currency: "SEK", IsConversion: true), default);
-        await scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>().SaveChangesAsync();
+        await dbContext.SaveChangesAsync();
 
         var attribution = await service.GetAsync(company, "lead", lead, default);
         Assert.NotNull(attribution); Assert.Equal(2, attribution!.TouchCount); Assert.Equal(120, attribution.TotalAcquisitionCost); Assert.NotNull(attribution.ConversionTouchId); Assert.Equal(2, attribution.Timeline.Count);

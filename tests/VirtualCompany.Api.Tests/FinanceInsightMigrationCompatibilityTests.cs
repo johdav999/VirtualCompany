@@ -1,5 +1,5 @@
 using System.Text.Json.Nodes;
-using Microsoft.Data.Sqlite;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
@@ -12,8 +12,9 @@ using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
 using Xunit;
 
-namespace VirtualCompany.Api.Tests;
+namespace VirtualCompany.Finance.Tests;
 
+[Trait("Category", "SqlServer")]
 public sealed class FinanceInsightMigrationCompatibilityTests
 {
     private static readonly DateTime LegacySeedAnchorUtc = new(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
@@ -21,10 +22,11 @@ public sealed class FinanceInsightMigrationCompatibilityTests
     private const string FinanceInsightSchemaMigration = "20260422110000_AddFinanceAgentInsights";
     private const string PartiallySeededCompanyMigration = "20260422120000_AddBudgetAndForecastPlanning";
 
-    [Fact]
+    [SqlServerFact]
     public async Task Clean_database_migrates_to_latest_schema_without_pending_migrations()
     {
-        await using var connection = await OpenConnectionAsync();
+        await using var database = CreateDatabase();
+        var connection = database.Connection;
         await MigrateAsync(connection);
 
         await using var dbContext = CreateContext(connection);
@@ -40,11 +42,12 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.True(await IndexExistsAsync(connection, "IX_forecasts_company_id_period_start_at_finance_account_id_version_null_cost_center"));
     }
 
-    [Fact]
+    [SqlServerFact]
     public async Task Clean_database_migration_supports_finance_insight_aggregation()
     {
         var companyId = Guid.NewGuid();
-        await using var connection = await OpenConnectionAsync();
+        await using var database = CreateDatabase();
+        var connection = database.Connection;
         await MigrateAsync(connection);
         await SeedMockFinanceCompanyAsync(connection, companyId, "Insight Company");
 
@@ -60,11 +63,12 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.Empty(await dbContext.Database.GetPendingMigrationsAsync());
     }
 
-    [Fact]
+    [SqlServerFact]
     public async Task Mock_finance_schema_migrates_to_latest_and_bootstrap_rerun_stays_idempotent()
     {
         var companyId = Guid.NewGuid();
-        await using var connection = await OpenConnectionAsync();
+        await using var database = CreateDatabase();
+        var connection = database.Connection;
         await MigrateAsync(connection, MockFinanceSchemaMigration);
         await SeedMockFinanceCompanyAsync(connection, companyId, "Existing Mock Finance Company");
 
@@ -93,11 +97,12 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.Equal(0, duplicateApprovalTargets);
     }
 
-    [Fact]
+    [SqlServerFact]
     public async Task Financial_reset_removes_finance_approval_inbox_requests()
     {
         var companyId = Guid.NewGuid();
-        await using var connection = await OpenConnectionAsync();
+        await using var database = CreateDatabase();
+        var connection = database.Connection;
         await MigrateAsync(connection);
         await SeedMockFinanceCompanyAsync(connection, companyId, "Approval Reset Company");
 
@@ -165,11 +170,12 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.False(await dbContext.WorkTasks.IgnoreQueryFilters().AnyAsync(x => x.CompanyId == companyId && x.Id == taskId));
     }
 
-    [Fact]
+    [SqlServerFact]
     public async Task Finance_insights_tolerate_missing_planning_tables_on_pre_planning_schema()
     {
         var companyId = Guid.NewGuid();
-        await using var connection = await OpenConnectionAsync();
+        await using var database = CreateDatabase();
+        var connection = database.Connection;
         await MigrateAsync(connection, FinanceInsightSchemaMigration);
         await SeedMockFinanceCompanyAsync(connection, companyId, "Insight Compatibility Company");
 
@@ -187,11 +193,12 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.Contains(result.Items, item => item.CheckCode == FinancialCheckDefinitions.ForecastGap.Code);
     }
 
-    [Fact]
+    [SqlServerFact]
     public async Task Partially_seeded_company_migrates_to_latest_and_rerun_repairs_missing_planning_without_duplicate_tasks()
     {
         var companyId = Guid.NewGuid();
-        await using var connection = await OpenConnectionAsync();
+        await using var database = CreateDatabase();
+        var connection = database.Connection;
         await MigrateAsync(connection, PartiallySeededCompanyMigration);
         await SeedMockFinanceCompanyAsync(connection, companyId, "Partial Finance Company", FinanceSeedingState.Seeding);
         await SeedPartialPlanningBaselineAsync(connection, companyId);
@@ -237,7 +244,7 @@ public sealed class FinanceInsightMigrationCompatibilityTests
     }
 
     private static async Task SeedMockFinanceCompanyAsync(
-        SqliteConnection connection,
+        SqlConnection connection,
         Guid companyId,
         string companyName,
         FinanceSeedingState seedState = FinanceSeedingState.Seeded)
@@ -267,11 +274,44 @@ public sealed class FinanceInsightMigrationCompatibilityTests
                 CompanyMembershipRole.Owner,
                 CompanyMembershipStatus.Active));
 
-        FinanceSeedData.AddMockFinanceData(dbContext, companyId, LegacySeedAnchorUtc);
         await dbContext.SaveChangesAsync();
+        await SeedLegacyFinanceAccountsAsync(connection, companyId);
     }
 
-    private static async Task SeedPartialPlanningBaselineAsync(SqliteConnection connection, Guid companyId)
+    private static async Task SeedLegacyFinanceAccountsAsync(SqlConnection connection, Guid companyId)
+    {
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
+        var accounts = new[]
+        {
+            (Guid.NewGuid(), "1000", "Operating Cash", "asset", 25_000m),
+            (Guid.NewGuid(), "1100", "Receivables", "asset", 12_000m),
+            (Guid.NewGuid(), "2000", "Payables", "liability", -8_000m)
+        };
+        foreach (var account in accounts)
+        {
+            await using var command = connection.CreateCommand();
+            command.CommandText = """
+                INSERT INTO finance_accounts
+                    (id, company_id, code, name, account_type, currency, opening_balance, opened_at, created_at, updated_at)
+                VALUES
+                    (@id, @company_id, @code, @name, @account_type, 'USD', @opening_balance, @at, @at, @at)
+                """;
+            command.Parameters.AddWithValue("@id", account.Item1);
+            command.Parameters.AddWithValue("@company_id", companyId);
+            command.Parameters.AddWithValue("@code", account.Item2);
+            command.Parameters.AddWithValue("@name", account.Item3);
+            command.Parameters.AddWithValue("@account_type", account.Item4);
+            command.Parameters.AddWithValue("@opening_balance", account.Item5);
+            command.Parameters.AddWithValue("@at", LegacySeedAnchorUtc);
+            await command.ExecuteNonQueryAsync();
+        }
+    }
+
+    private static async Task SeedPartialPlanningBaselineAsync(SqlConnection connection, Guid companyId)
     {
         await using var dbContext = CreateContext(connection);
 
@@ -307,14 +347,10 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         await dbContext.SaveChangesAsync();
     }
 
-    private static async Task<SqliteConnection> OpenConnectionAsync()
-    {
-        var connection = new SqliteConnection("Data Source=:memory:");
-        await connection.OpenAsync();
-        return connection;
-    }
+    private static SqlServerTestDatabase CreateDatabase() =>
+        new(Environment.GetEnvironmentVariable(SqlServerFactAttribute.ConnectionVariable)!);
 
-    private static async Task MigrateAsync(SqliteConnection connection, string? targetMigration = null)
+    private static async Task MigrateAsync(SqlConnection connection, string? targetMigration = null)
     {
         await using var dbContext = CreateContext(connection);
 
@@ -328,30 +364,63 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         await migrator.MigrateAsync(targetMigration);
     }
 
-    private static async Task<bool> TableExistsAsync(SqliteConnection connection, string tableName)
+    private static async Task<bool> TableExistsAsync(SqlConnection connection, string tableName)
     {
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = $tableName;";
-        command.Parameters.AddWithValue("$tableName", tableName);
+        command.CommandText = "SELECT COUNT(*) FROM sys.tables WHERE name = @tableName;";
+        command.Parameters.AddWithValue("@tableName", tableName);
         var result = await command.ExecuteScalarAsync();
         return Convert.ToInt64(result) > 0;
     }
 
-    private static async Task<bool> IndexExistsAsync(SqliteConnection connection, string indexName)
+    private static async Task<bool> IndexExistsAsync(SqlConnection connection, string indexName)
     {
+        if (connection.State != System.Data.ConnectionState.Open)
+        {
+            await connection.OpenAsync();
+        }
+
         await using var command = connection.CreateCommand();
-        command.CommandText = "SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = $indexName;";
-        command.Parameters.AddWithValue("$indexName", indexName);
+        command.CommandText = "SELECT COUNT(*) FROM sys.indexes WHERE name = @indexName;";
+        command.Parameters.AddWithValue("@indexName", indexName);
         var result = await command.ExecuteScalarAsync();
         return Convert.ToInt64(result) > 0;
     }
 
-    private static VirtualCompanyDbContext CreateContext(SqliteConnection connection) =>
+    private static VirtualCompanyDbContext CreateContext(SqlConnection connection) =>
         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
-            .UseSqlite(
+            .UseSqlServer(
                 connection,
-                sqlite => sqlite.MigrationsAssembly(typeof(VirtualCompanyDbContextFactory).Assembly.GetName().Name))
+                sqlServer => sqlServer.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection).Assembly.GetName().Name))
             .Options);
+
+    private sealed class SqlServerTestDatabase : IAsyncDisposable
+    {
+        public SqlServerTestDatabase(string baseConnectionString)
+        {
+            var builder = new SqlConnectionStringBuilder(baseConnectionString)
+            {
+                InitialCatalog = $"virtualcompany_finance_migration_{Guid.NewGuid():N}",
+                MultipleActiveResultSets = false
+            };
+            Connection = new SqlConnection(builder.ConnectionString);
+        }
+
+        public SqlConnection Connection { get; }
+
+        public async ValueTask DisposeAsync()
+        {
+            await Connection.CloseAsync();
+            await using var cleanup = CreateContext(Connection);
+            await cleanup.Database.EnsureDeletedAsync();
+            await Connection.DisposeAsync();
+        }
+    }
 
     private static CompanyFinanceBootstrapRerunService CreateBootstrapRerunService(VirtualCompanyDbContext dbContext, Guid companyId)
     {

@@ -3,6 +3,7 @@ using System.Text.Json.Nodes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Hosting;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Domain.Entities;
@@ -42,6 +43,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
     private readonly IExternalUserIdentityResolver _externalUserIdentityResolver;
     private readonly IHostEnvironment _hostEnvironment;
     private readonly ICoreCompanyAgentSeeder _coreCompanyAgentSeeder;
+    private readonly IAuditEventWriter _audit;
 
     public CompanyOnboardingService(
         VirtualCompanyDbContext dbContext,
@@ -49,7 +51,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         IExternalUserIdentityAccessor externalUserIdentityAccessor,
         IExternalUserIdentityResolver externalUserIdentityResolver,
         IHostEnvironment hostEnvironment,
-        ICoreCompanyAgentSeeder coreCompanyAgentSeeder)
+        ICoreCompanyAgentSeeder coreCompanyAgentSeeder,
+        IAuditEventWriter audit)
     {
         _dbContext = dbContext;
         _currentUserAccessor = currentUserAccessor;
@@ -57,6 +60,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         _externalUserIdentityResolver = externalUserIdentityResolver;
         _hostEnvironment = hostEnvironment;
         _coreCompanyAgentSeeder = coreCompanyAgentSeeder;
+        _audit = audit;
     }
 
     public async Task<CreateCompanyResultDto> CreateCompanyAsync(
@@ -64,6 +68,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         CancellationToken cancellationToken)
     {
         var userId = await RequireCurrentUserIdAsync(cancellationToken);
+        await EnsureExplicitCreationAllowedAsync(userId, command.ExplicitNewCompany, cancellationToken);
         var selectedTemplateId = NormalizeOptional(command.SelectedTemplateId);
         var resolvedTemplate = await FindTemplateAsync(selectedTemplateId, cancellationToken);
         EnsureTemplateExists(selectedTemplateId, resolvedTemplate);
@@ -113,6 +118,15 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             CompanyMembershipStatus.Active));
         await _coreCompanyAgentSeeder.SeedAsync(company.Id, cancellationToken);
 
+        await SelectCompanyAsync(userId, company.Id, cancellationToken);
+        await WriteCompanyAuditAsync(
+            company.Id,
+            userId,
+            AuditEventActions.CompanyCreated,
+            "Created and completed a new company workspace.",
+            "completed",
+            cancellationToken);
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new CreateCompanyResultDto(company.Id, company.Name, BuildDashboardPath(company.Id, includeStarterGuidance: true), guidance);
     }
@@ -152,7 +166,7 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             return null;
         }
 
-        var company = await GetLatestOwnedOnboardingAsync(resolvedUserId, cancellationToken);
+        var company = await GetSelectedOwnedOnboardingAsync(resolvedUserId, cancellationToken);
         return company is null ? null : MapProgress(company);
     }
 
@@ -173,8 +187,10 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
         CancellationToken cancellationToken)
     {
         var userId = await RequireCurrentUserIdAsync(cancellationToken);
+        await EnsureExplicitCreationAllowedAsync(userId, request.ExplicitNewCompany, cancellationToken);
 
         var company = await GetLatestOwnedDraftAsync(userId, cancellationToken);
+        var created = company is null;
         if (company is null)
         {
             company = new Company(Guid.NewGuid(), request.Name);
@@ -233,6 +249,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
                 false,
                 guidance));
 
+        await SelectCompanyAsync(userId, company.Id, cancellationToken);
+        if (created)
+        {
+            await WriteCompanyAuditAsync(
+                company.Id,
+                userId,
+                AuditEventActions.CompanyCreated,
+                "Created a new company workspace through onboarding.",
+                "in_progress",
+                cancellationToken);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
         return MapProgress(company);
     }
@@ -255,7 +283,8 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
                     request.Language,
                     request.ComplianceRegion,
                     request.CurrentStep,
-                    request.SelectedTemplateId),
+                    request.SelectedTemplateId,
+                    ExplicitNewCompany: false),
                 cancellationToken);
         }
 
@@ -427,6 +456,18 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             SerializeState(merged, selectedTemplateId, CompletedWizardStep, true, guidance));
         await _coreCompanyAgentSeeder.SeedAsync(company.Id, cancellationToken);
 
+        await SelectCompanyAsync(userId, company.Id, cancellationToken);
+        if (!wasCompleted)
+        {
+            await WriteCompanyAuditAsync(
+                company.Id,
+                userId,
+                AuditEventActions.CompanyOnboardingCompleted,
+                "Completed company onboarding and opened the workspace.",
+                "completed",
+                cancellationToken);
+        }
+
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new CompleteCompanyOnboardingResultDto(
@@ -436,22 +477,33 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
             guidance);
     }
 
-    private async Task<Company?> GetLatestOwnedOnboardingAsync(Guid userId, CancellationToken cancellationToken)
+    private async Task<Company?> GetSelectedOwnedOnboardingAsync(Guid userId, CancellationToken cancellationToken)
     {
-        return await _dbContext.Companies
-            .Where(x => x.Memberships.Any(m =>
-                m.UserId == userId &&
-                m.Role == CompanyMembershipRole.Owner &&
-                m.Status == CompanyMembershipStatus.Active))
-            .Where(x =>
-                x.OnboardingStatus != CompanyOnboardingStatus.NotStarted ||
-                x.OnboardingCurrentStep != null ||
-                x.OnboardingLastSavedUtc != null ||
-                x.OnboardingCompletedUtc != null ||
-                x.OnboardingAbandonedUtc != null)
-            .OrderByDescending(x => x.OnboardingStatus == CompanyOnboardingStatus.InProgress)
-            .ThenByDescending(x => x.OnboardingLastSavedUtc ?? x.OnboardingCompletedUtc ?? x.OnboardingAbandonedUtc ?? x.UpdatedUtc)
-            .FirstOrDefaultAsync(cancellationToken);
+        var ownedCompanyIds = await _dbContext.CompanyMemberships
+            .AsNoTracking()
+            .Where(x => x.UserId == userId &&
+                        x.Role == CompanyMembershipRole.Owner &&
+                        x.Status == CompanyMembershipStatus.Active)
+            .Select(x => x.CompanyId)
+            .ToListAsync(cancellationToken);
+
+        if (ownedCompanyIds.Count == 0)
+        {
+            return null;
+        }
+
+        var preferredCompanyId = await _dbContext.UserPreferences
+            .AsNoTracking()
+            .Where(x => x.UserId == userId)
+            .Select(x => x.PreferredCompanyId)
+            .SingleOrDefaultAsync(cancellationToken);
+        var selectedCompanyId = preferredCompanyId is Guid preferred && ownedCompanyIds.Contains(preferred)
+            ? preferred
+            : ownedCompanyIds.Count == 1
+                ? ownedCompanyIds[0]
+                : throw new CompanySelectionRequiredException();
+
+        return await GetOwnedCompanyAsync(userId, selectedCompanyId, cancellationToken);
     }
 
     private async Task<Company?> GetLatestOwnedDraftAsync(Guid userId, CancellationToken cancellationToken)
@@ -509,6 +561,70 @@ public sealed class CompanyOnboardingService : ICompanyOnboardingService
 
         return resolvedUserId;
     }
+
+    private async Task EnsureExplicitCreationAllowedAsync(
+        Guid userId,
+        bool explicitNewCompany,
+        CancellationToken cancellationToken)
+    {
+        if (explicitNewCompany)
+        {
+            return;
+        }
+
+        var hasExistingCompany = await _dbContext.CompanyMemberships.AsNoTracking().AnyAsync(
+            membership => membership.UserId == userId &&
+                          membership.Status == CompanyMembershipStatus.Active,
+            cancellationToken);
+        if (!hasExistingCompany)
+        {
+            return;
+        }
+
+        throw new CompanyOnboardingValidationException(
+            new Dictionary<string, string[]>
+            {
+                [nameof(CreateCompanyWorkspaceRequest.ExplicitNewCompany)] =
+                    ["Choose Create another company before starting a separate workspace."]
+            },
+            CompanyOnboardingErrorCodes.ExplicitNewCompanyRequired);
+    }
+
+    private async Task SelectCompanyAsync(Guid userId, Guid companyId, CancellationToken cancellationToken)
+    {
+        var preference = await _dbContext.UserPreferences
+            .SingleOrDefaultAsync(item => item.UserId == userId, cancellationToken);
+        if (preference is null)
+        {
+            preference = new UserPreference(userId, SupportedUserCultures.Default);
+            _dbContext.UserPreferences.Add(preference);
+        }
+
+        preference.SelectCompany(companyId);
+    }
+
+    private Task WriteCompanyAuditAsync(
+        Guid companyId,
+        Guid userId,
+        string action,
+        string summary,
+        string onboardingStatus,
+        CancellationToken cancellationToken) =>
+        _audit.WriteAsync(
+            new AuditEventWriteRequest(
+                companyId,
+                AuditActorTypes.User,
+                userId,
+                action,
+                AuditTargetTypes.Company,
+                companyId.ToString("N"),
+                AuditEventOutcomes.Succeeded,
+                summary,
+                Metadata: new Dictionary<string, string?>
+                {
+                    ["onboardingStatus"] = onboardingStatus
+                }),
+            cancellationToken);
 
     private static OnboardingTemplateDto ToDto(CompanySetupTemplate template) =>
         new(

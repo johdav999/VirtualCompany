@@ -110,10 +110,19 @@ public sealed class ActivityCorrelationIntegrationTests : IDisposable
     [Fact]
     public async Task Correlation_timeline_is_tenant_scoped()
     {
-        var seed = await SeedAsync(includeOtherMembership: false);
+        var seed = await SeedAsync();
         using var client = CreateClient();
 
         await PersistActivityAsync(client, seed.OtherCompanyId, "other_tenant", seed.CorrelationId, seed.OtherTaskId, occurredAt: DateTime.UtcNow);
+
+        await _factory.ExecuteDbContextAsync(async dbContext =>
+        {
+            var membership = await dbContext.CompanyMemberships
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.CompanyId == seed.OtherCompanyId);
+            dbContext.CompanyMemberships.Remove(membership);
+            await dbContext.SaveChangesAsync();
+        });
 
         var response = await client.GetAsync($"/api/companies/{seed.OtherCompanyId}/activity-feed/correlations/{seed.CorrelationId}");
 

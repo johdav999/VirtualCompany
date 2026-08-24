@@ -60,16 +60,18 @@ public sealed class FinanceRouteRegistrationTests
             new[]
             {
                 FinanceRoutes.Home,
+                FinanceRoutes.CashPosition,
                 FinanceRoutes.Invoices,
                 FinanceRoutes.SupplierBills,
+                FinanceRoutes.SupplierSubscriptions,
                 FinanceRoutes.Payments,
-                FinanceRoutes.Activity,
-                FinanceRoutes.Issues,
-                FinanceRoutes.Settings
+                FinanceRoutes.Transactions,
+                FinanceRoutes.AccountingSetup,
+                FinanceRoutes.Issues
             },
             routes);
         Assert.DoesNotContain(FinanceRoutes.BillInbox, routes);
-        Assert.DoesNotContain(FinanceRoutes.Transactions, routes);
+        Assert.DoesNotContain(FinanceRoutes.Activity, routes);
         Assert.DoesNotContain(FinanceRoutes.Anomalies, routes);
         Assert.DoesNotContain(FinanceRoutes.TransparencyEvents, routes);
         Assert.DoesNotContain(FinanceRoutes.TransparencyToolRegistry, routes);
@@ -82,12 +84,12 @@ public sealed class FinanceRouteRegistrationTests
     public void Finance_section_pages_group_old_routes_under_new_navigation_items()
     {
         var supplierBills = Assert.Single(FinanceRoutes.SectionPages, route => route.Path == FinanceRoutes.SupplierBills);
-        var activity = Assert.Single(FinanceRoutes.SectionPages, route => route.Path == FinanceRoutes.Activity);
+        var transactions = Assert.Single(FinanceRoutes.SectionPages, route => route.Path == FinanceRoutes.Transactions);
         var issues = Assert.Single(FinanceRoutes.SectionPages, route => route.Path == FinanceRoutes.Issues);
 
         Assert.Contains(FinanceRoutes.Bills, supplierBills.ActivePathPrefixes!);
         Assert.Contains(FinanceRoutes.BillInbox, supplierBills.ActivePathPrefixes!);
-        Assert.Contains(FinanceRoutes.Transactions, activity.ActivePathPrefixes!);
+        Assert.Contains(FinanceRoutes.Activity, transactions.ActivePathPrefixes!);
         Assert.Contains(FinanceRoutes.Anomalies, issues.ActivePathPrefixes!);
     }
 

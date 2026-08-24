@@ -1,0 +1,27 @@
+@if (Membership is not null)
+{
+    <div class="text-body-secondary mt-2">
+        @if (Membership.CompanyCreatedUtc is DateTime createdUtc)
+        {
+            @CommonText["CompanyCreatedDescription", LocalDateTime.DateTime(createdUtc), SetupLabel, ShortId]
+        }
+        else
+        {
+            @($"{SetupLabel} · ID {ShortId}")
+        }
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired]
+    public CompanyMembershipViewModel Membership { get; set; } = default!;
+
+    private string SetupLabel =>
+        string.Equals(Membership.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["CompanySetupComplete"]
+            : string.Equals(Membership.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                ? CommonText["CompanySetupInProgress"]
+                : CommonText["CompanySetupNotStarted"];
+
+    private string ShortId => Membership.CompanyId.ToString("N")[..8];
+}

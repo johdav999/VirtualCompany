@@ -172,7 +172,7 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         {
             ("open", "pending_approval" or "approved" or "rejected") => true,
             ("pending", "pending_approval" or "approved" or "rejected") => true,
-            ("pending_approval", "approved" or "rejected") => true,
+            ("pending_approval", "open" or "approved" or "rejected") => true,
             ("approved", "paid" or "void") => true,
             ("rejected", "open" or "void") => true,
             _ => false

@@ -143,7 +143,7 @@ public sealed class ExecutiveCockpitKpiDashboardIntegrationTests : IDisposable
             salesTask.UpdateStatus(WorkTaskStatus.InProgress);
             SetTaskTimestamps(salesTask, now.AddDays(-2), now.AddDays(-2), null);
 
-            var otherCompanyTask = new WorkTask(Guid.NewGuid(), otherCompanyId, "ops", "Other company blocked", null, WorkTaskPriority.High, Guid.NewGuid(), null, "user", userId);
+            var otherCompanyTask = new WorkTask(Guid.NewGuid(), otherCompanyId, "ops", "Other company blocked", null, WorkTaskPriority.High, null, null, "user", userId);
             otherCompanyTask.UpdateStatus(WorkTaskStatus.Blocked);
             SetTaskTimestamps(otherCompanyTask, now.AddDays(-2), now.AddDays(-2), null);
 

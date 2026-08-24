@@ -15,7 +15,7 @@ public sealed class TaskCreationIntegrationTests : IDisposable
     public void Dispose() => _factory.Dispose();
 
     [Fact]
-    public async Task Create_task_with_valid_agent_persists_task_defaults_and_human_creator()
+    public async Task Create_task_with_valid_agent_persists_task_defaults_and_user_creator()
     {
         var seed = await SeedTaskCompanyAsync(AgentStatus.Active);
 
@@ -41,14 +41,17 @@ public sealed class TaskCreationIntegrationTests : IDisposable
         });
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var task = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        var created = await response.Content.ReadFromJsonAsync<TaskCommandResponse>();
+        Assert.NotNull(created);
+        var task = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{created!.Id}");
 
         Assert.NotNull(task);
         Assert.Equal(seed.CompanyId, task!.CompanyId);
         Assert.Equal(seed.AgentId, task.AssignedAgentId);
         Assert.Equal("new", task.Status);
         Assert.Equal("high", task.Priority);
-        Assert.Equal("human", task.CreatedByActorType);
+        Assert.Equal("user", task.CreatedByActorType);
         Assert.Equal(seed.UserId, task.CreatedByActorId);
         Assert.Equal("spring", task.InputPayload["launchId"].GetString());
         Assert.Equal("planner", task.OutputPayload["source"].GetString());
@@ -114,7 +117,7 @@ public sealed class TaskCreationIntegrationTests : IDisposable
         Assert.NotNull(problem);
         Assert.True(problem!.Errors.ContainsKey("Type"));
         Assert.True(problem.Errors.ContainsKey("Title"));
-        Assert.True(problem.Errors.ContainsKey("Priority"));
+        Assert.False(problem.Errors.ContainsKey("Priority"));
     }
 
     private HttpClient CreateAuthenticatedClient()
@@ -165,6 +168,11 @@ public sealed class TaskCreationIntegrationTests : IDisposable
 
     private sealed record TaskSeed(Guid CompanyId, Guid UserId, Guid AgentId);
     private sealed record CrossTenantAgentSeed(Guid CompanyId, Guid OtherCompanyAgentId);
+
+    private sealed class TaskCommandResponse
+    {
+        public Guid Id { get; set; }
+    }
 
     private sealed class TaskDetailResponse
     {

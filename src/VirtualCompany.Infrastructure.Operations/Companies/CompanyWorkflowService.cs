@@ -361,7 +361,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
                     requireMembership: false,
                     cancellationToken));
             }
-            catch (DbUpdateException ex) when (IsDuplicateWorkflowInstanceStart(ex))
+            catch (DbUpdateException ex) when (IsDuplicateWorkflowInstanceStart(ex) || IsDuplicateProcessedTriggerEvent(ex))
             {
                 _dbContext.ChangeTracker.Clear();
                 _logger.LogInformation(
@@ -522,7 +522,7 @@ public sealed class CompanyWorkflowService : ICompanyWorkflowService, IWorkflowS
                     normalizedEvent.CorrelationId,
                     instance.Id);
             }
-            catch (DbUpdateException ex) when (IsDuplicateWorkflowInstanceStart(ex))
+            catch (DbUpdateException ex) when (IsDuplicateWorkflowInstanceStart(ex) || IsDuplicateProcessedTriggerEvent(ex))
             {
                 _dbContext.ChangeTracker.Clear();
                 _logger.LogInformation(

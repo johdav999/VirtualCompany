@@ -1,5 +1,7 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Finance;
@@ -55,7 +57,7 @@ public sealed class FinanceToolProviderBoundaryTests
         {
             var source = File.ReadAllText(file);
             violations.AddRange(ForbiddenOrchestrationFinanceReferences
-                .Where(reference => source.Contains(reference, StringComparison.Ordinal))
+                .Where(reference => Regex.IsMatch(source, $@"\b{Regex.Escape(reference)}\b", RegexOptions.CultureInvariant))
                 .Select(reference => $"{Path.GetFileName(file)} directly references {reference}."));
         }
 
@@ -68,7 +70,7 @@ public sealed class FinanceToolProviderBoundaryTests
     public void Internal_company_tool_contract_dispatches_registered_finance_tools_through_provider_boundary()
     {
         var repositoryRoot = FindRepositoryRoot();
-        var source = File.ReadAllText(Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure", "Companies", "InternalCompanyToolContract.cs"));
+        var source = File.ReadAllText(Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure.Operations", "Companies", "InternalCompanyToolContract.cs"));
 
         foreach (var (toolName, providerMethod) in RegisteredFinanceToolProviderOperations)
         {
@@ -111,6 +113,61 @@ public sealed class FinanceToolProviderBoundaryTests
         using var scope = provider.CreateScope();
 
         Assert.IsType<MockFinanceToolProvider>(scope.ServiceProvider.GetRequiredService<IFinanceToolProvider>());
+    }
+
+    [Fact]
+    public void Mock_finance_provider_requires_an_explicit_safe_environment_opt_in()
+    {
+        var productionValidator = new FinanceToolProviderOptionsValidator(new TestHostEnvironment(Environments.Production));
+        var developmentValidator = new FinanceToolProviderOptionsValidator(new TestHostEnvironment(Environments.Development));
+
+        var rejected = productionValidator.Validate(null, new FinanceToolProviderOptions
+        {
+            Provider = FinanceToolProviderOptions.MockProvider,
+            AllowMockProvider = false
+        });
+        var accepted = developmentValidator.Validate(null, new FinanceToolProviderOptions
+        {
+            Provider = FinanceToolProviderOptions.MockProvider,
+            AllowMockProvider = true
+        });
+
+        Assert.True(rejected.Failed);
+        Assert.True(accepted.Succeeded);
+    }
+
+    [Fact]
+    public void Production_rejects_mock_provider_even_when_it_is_explicitly_enabled()
+    {
+        var validator = new FinanceToolProviderOptionsValidator(new TestHostEnvironment(Environments.Production));
+
+        var result = validator.Validate(null, new FinanceToolProviderOptions
+        {
+            Provider = FinanceToolProviderOptions.MockProvider,
+            AllowMockProvider = true
+        });
+
+        Assert.True(result.Failed);
+    }
+
+    [Fact]
+    public void Production_rejects_automatic_finance_seed_backfill()
+    {
+        var productionValidator = new FinanceSeedBackfillWorkerOptionsValidator(new TestHostEnvironment(Environments.Production));
+        var developmentValidator = new FinanceSeedBackfillWorkerOptionsValidator(new TestHostEnvironment(Environments.Development));
+
+        var rejected = productionValidator.Validate(null, new FinanceSeedBackfillWorkerOptions { Enabled = true });
+        var accepted = developmentValidator.Validate(null, new FinanceSeedBackfillWorkerOptions { Enabled = true });
+
+        Assert.True(rejected.Failed);
+        Assert.True(accepted.Succeeded);
+    }
+
+    [Fact]
+    public void Operational_finance_reads_never_default_to_a_combined_source()
+    {
+        Assert.Equal(FinanceDataSources.Operational, FinanceDataSources.NormalizeOperationalRead(null));
+        Assert.Throws<ArgumentOutOfRangeException>(() => FinanceDataSources.NormalizeOperationalRead(FinanceDataSources.All));
     }
 
     [Fact]
@@ -256,7 +313,7 @@ public sealed class FinanceToolProviderBoundaryTests
             [
                 Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Agents", "AgentToolOrchestrationExecutor.cs"),
                 Path.Combine(repositoryRoot, "src", "VirtualCompany.Application", "Agents", "CompanyAgentToolExecutionContracts.cs"),
-                Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure", "Companies", "InternalCompanyToolContract.cs")
+                Path.Combine(repositoryRoot, "src", "VirtualCompany.Infrastructure.Operations", "Companies", "InternalCompanyToolContract.cs")
             ])
             .Where(File.Exists)
             .ToArray();
@@ -271,5 +328,14 @@ public sealed class FinanceToolProviderBoundaryTests
         }
 
         return directory?.FullName ?? throw new DirectoryNotFoundException("Could not locate repository root.");
+    }
+
+    private sealed class TestHostEnvironment(string environmentName) : IHostEnvironment
+    {
+        public string EnvironmentName { get; set; } = environmentName;
+        public string ApplicationName { get; set; } = "VirtualCompany.Tests";
+        public string ContentRootPath { get; set; } = AppContext.BaseDirectory;
+        public Microsoft.Extensions.FileProviders.IFileProvider ContentRootFileProvider { get; set; } =
+            new Microsoft.Extensions.FileProviders.NullFileProvider();
     }
 }

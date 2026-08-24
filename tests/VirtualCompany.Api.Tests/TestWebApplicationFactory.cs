@@ -1,11 +1,13 @@
 using System.Collections.Concurrent;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.Data.SqlClient;
 using Microsoft.Data.Sqlite;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
@@ -25,9 +27,18 @@ namespace VirtualCompany.Api.Tests;
 public class TestWebApplicationFactory : WebApplicationFactory<Program>
 {
     private readonly TimeProvider _timeProvider;
-    private readonly SqliteConnection _connection = new("Data Source=:memory:");
+    private readonly string _connectionString = new SqliteConnectionStringBuilder
+    {
+        DataSource = $"virtual-company-tests-{Guid.NewGuid():N}",
+        Mode = SqliteOpenMode.Memory,
+        Cache = SqliteCacheMode.Shared
+    }.ToString();
+    private readonly SqliteConnection? _connection;
+    private readonly string? _sqlServerConnectionString;
     private readonly IReadOnlyDictionary<string, string?> _configurationOverrides;
     private readonly bool _seedCompanySetupTemplates;
+    private readonly IReadOnlyList<IInterceptor> _dbInterceptors;
+    private int _disposeStarted;
 
     public TestWebApplicationFactory()
         : this(TimeProvider.System, null, false)
@@ -52,11 +63,30 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
     internal TestWebApplicationFactory(
         TimeProvider timeProvider,
         IReadOnlyDictionary<string, string?>? configurationOverrides,
-        bool seedCompanySetupTemplates = false)
+        bool seedCompanySetupTemplates = false,
+        IReadOnlyList<IInterceptor>? dbInterceptors = null,
+        string? sqlServerConnectionString = null)
     {
         _timeProvider = timeProvider;
         _configurationOverrides = configurationOverrides ?? new Dictionary<string, string?>();
         _seedCompanySetupTemplates = seedCompanySetupTemplates;
+        _dbInterceptors = dbInterceptors ?? [];
+        _sqlServerConnectionString = sqlServerConnectionString;
+        _connection = sqlServerConnectionString is null ? new SqliteConnection(_connectionString) : null;
+    }
+
+    internal static TestWebApplicationFactory CreateSqlServer(
+        TimeProvider timeProvider,
+        IReadOnlyList<IInterceptor>? dbInterceptors = null)
+    {
+        var baseConnection = Environment.GetEnvironmentVariable(ApiSqlServerFactAttribute.ConnectionVariable)
+            ?? throw new InvalidOperationException($"Set {ApiSqlServerFactAttribute.ConnectionVariable} before creating the SQL Server test host.");
+        var builder = new SqlConnectionStringBuilder(baseConnection)
+        {
+            InitialCatalog = $"virtualcompany_accounting_scenario_{Guid.NewGuid():N}",
+            MultipleActiveResultSets = false
+        };
+        return new TestWebApplicationFactory(timeProvider, null, false, dbInterceptors, builder.ConnectionString);
     }
 
     protected override void ConfigureWebHost(IWebHostBuilder builder)
@@ -73,6 +103,9 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 [$"{BriefingUpdateJobWorkerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanySimulationOptions.SectionName}:DefaultAutoAdvanceIntervalSeconds"] = "0",
                 [$"{CompanySimulationProgressionWorkerOptions.SectionName}:Enabled"] = "false",
+                [$"{SimulationFeatureOptions.SectionName}:UiVisible"] = "true",
+                [$"{SimulationFeatureOptions.SectionName}:BackendExecutionEnabled"] = "true",
+                [$"{SimulationFeatureOptions.SectionName}:BackgroundJobsEnabled"] = "true",
                 [$"{BriefingSchedulerOptions.SectionName}:Enabled"] = "false",
                 [$"{CompanyOutboxDispatcherOptions.SectionName}:RetryDelaySeconds"] = "0",
                 [$"{BackgroundExecutionOptions.SectionName}:BaseRetryDelaySeconds"] = "0",
@@ -113,9 +146,21 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
             services.AddSingleton(_timeProvider);
             services.RemoveAll<VirtualCompanyDbContext>();
 
-            _connection.Open();
+            _connection?.Open();
             services.AddDbContext<VirtualCompanyDbContext>(options =>
-                options.UseSqlite(_connection));
+            {
+                if (_sqlServerConnectionString is null)
+                {
+                    options.UseSqlite(_connectionString);
+                }
+                else
+                {
+                    options.UseSqlServer(_sqlServerConnectionString, sqlServer => sqlServer.MigrationsAssembly(
+                        typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection)
+                            .Assembly.GetName().Name));
+                }
+                if (_dbInterceptors.Count > 0) options.AddInterceptors(_dbInterceptors);
+            });
 
             services.RemoveAll<ICompanyInvitationSender>();
             services.AddSingleton<TestCompanyInvitationSender>();
@@ -143,7 +188,8 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
         var host = base.CreateHost(builder);
         using var scope = host.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-        dbContext.Database.EnsureCreated();
+        if (_sqlServerConnectionString is null) dbContext.Database.EnsureCreated();
+        else dbContext.Database.Migrate();
         if (_seedCompanySetupTemplates)
         {
             scope.ServiceProvider.GetRequiredService<CompanySetupTemplateSeeder>()
@@ -202,10 +248,31 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
 
     protected override void Dispose(bool disposing)
     {
-        base.Dispose(disposing);
-        if (disposing)
+        if (!disposing)
         {
-            _connection.Dispose();
+            base.Dispose(false);
+            return;
+        }
+
+        // WebApplicationFactory's synchronous/async disposal bridge can re-enter this
+        // override. Cleanup must run exactly once while the provider is still alive.
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            if (_sqlServerConnectionString is not null)
+            {
+                using var scope = Services.CreateScope();
+                scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>().Database.EnsureDeleted();
+            }
+        }
+        finally
+        {
+            base.Dispose(true);
+            _connection?.Dispose();
         }
     }
 

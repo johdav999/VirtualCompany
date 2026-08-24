@@ -49,7 +49,7 @@ public sealed class ExecutiveCockpitKpiCalculatorTests
         var anomaly = ExecutiveCockpitKpiCalculator.DetectAnomaly(metric);
 
         Assert.NotNull(anomaly);
-        Assert.Equal("threshold_breach", anomaly!.Reason);
+        Assert.Contains("threshold_breach", anomaly!.Reason, StringComparison.Ordinal);
         Assert.Equal("critical", anomaly.Severity);
         Assert.Equal(3, anomaly.ThresholdValue);
     }

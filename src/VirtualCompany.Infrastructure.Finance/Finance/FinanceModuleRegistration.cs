@@ -32,12 +32,33 @@ public static class FinanceModuleRegistration
             options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
         });
         services.AddSingleton<AccountingOperationsTelemetry>();
+        services.AddOptions<AccountingCapacityOptions>()
+            .Bind(configuration.GetSection(AccountingCapacityOptions.SectionName))
+            .Validate(x => x.DefaultProfile is AccountingCapacityProfileKeys.Small or AccountingCapacityProfileKeys.Medium,
+                "Accounting capacity default profile must be small or medium.")
+            .Validate(x => x.DefaultCleanupBatchSize is >= 1 and <= 500,
+                "Accounting cleanup default batch size must be between 1 and 500.")
+            .Validate(x => x.MaximumCleanupBatchSize is >= 1 and <= 1000 &&
+                x.MaximumCleanupBatchSize >= x.DefaultCleanupBatchSize,
+                "Accounting cleanup maximum batch size must be between the default size and 1000.")
+            .ValidateOnStart();
+        services.AddScoped<IAccountingCapacityService, AccountingCapacityService>();
         services.AddScoped<AccountingHistoricalMigrationService>();
         services.AddScoped<IAccountingMigrationService>(provider => provider.GetRequiredService<AccountingHistoricalMigrationService>());
         services.AddScoped<IAccountingMigrationJobRunner>(provider => provider.GetRequiredService<AccountingHistoricalMigrationService>());
         services.AddScoped<IAccountingReadinessService, AccountingReadinessService>();
         services.AddScoped<IAccountingOperationsReadService, AccountingOperationsReadService>();
         services.AddScoped<IAccountingRecoveryVerificationService, AccountingRecoveryVerificationService>();
+        services.AddOptions<FinanceWorkerRecoveryOptions>()
+            .Bind(configuration.GetSection(FinanceWorkerRecoveryOptions.SectionName))
+            .Validate(x => x.BacklogWarningMinutes > 0, "Finance worker backlog warning minutes must be positive.")
+            .Validate(x => x.LeaseGraceSeconds >= 0, "Finance worker lease grace seconds cannot be negative.")
+            .Validate(x => x.MaximumVisibleItems is >= 1 and <= 1000, "Finance worker maximum visible items must be between 1 and 1000.")
+            .ValidateOnStart();
+        services.AddSingleton<FinanceWorkerOperationsTelemetry>();
+        services.AddScoped<IFinanceWorkerOperationsService, FinanceWorkerOperationsService>();
+        services.AddScoped<FinanceBackgroundExecutionAttemptRecorder>();
+        services.AddHealthChecks().AddCheck<FinanceWorkerReadinessHealthCheck>("finance-workers", tags: ["ready"]);
         services.AddScoped<AccountingAuthorityPolicy>();
         services.AddScoped<IAccountingAuthorityPolicy>(provider => provider.GetRequiredService<AccountingAuthorityPolicy>());
         services.AddScoped<AccountingAuthorityService>();
@@ -198,7 +219,9 @@ public static class FinanceModuleRegistration
         services.AddScoped<CompanySimulationStateService>();
         services.AddScoped<ICompanySimulationStateService>(provider => provider.GetRequiredService<CompanySimulationStateService>());
         services.AddScoped<ICompanySimulationProgressionRunner, CompanySimulationProgressionRunner>();
+        services.AddScoped<IFinanceOperatingModeService, FinanceOperatingModeService>();
 
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<FinanceToolProviderOptions>, FinanceToolProviderOptionsValidator>());
         services.AddOptions<FinanceToolProviderOptions>()
             .Bind(configuration.GetSection(FinanceToolProviderOptions.SectionName))
             .PostConfigure(options =>
@@ -206,7 +229,8 @@ public static class FinanceModuleRegistration
                 options.Provider = string.IsNullOrWhiteSpace(options.Provider)
                     ? FinanceToolProviderOptions.InternalProvider
                     : options.Provider.Trim();
-            });
+            })
+            .ValidateOnStart();
         services.AddOptions<FinanceAnomalyDetectionOptions>()
             .Bind(configuration.GetSection(FinanceAnomalyDetectionOptions.SectionName));
         services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<FortnoxOptions>, FortnoxOptionsValidator>());
@@ -268,6 +292,15 @@ public static class FinanceModuleRegistration
                 options.BatchSize = Math.Max(1, options.BatchSize);
                 options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds);
             });
+        services.AddOptions<AccountingExportWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingExportWorkerOptions.SectionName))
+            .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
+        services.AddOptions<FinanceAnalyticsStartupRefreshOptions>()
+            .Bind(configuration.GetSection(FinanceAnalyticsStartupRefreshOptions.SectionName))
+            .PostConfigure(options => options.CompanyBatchSize = Math.Clamp(options.CompanyBatchSize, 1, 5000));
+        services.AddOptions<FinanceBillRegistrationReconciliationOptions>()
+            .Bind(configuration.GetSection(FinanceBillRegistrationReconciliationOptions.SectionName))
+            .PostConfigure(options => options.BatchSize = Math.Clamp(options.BatchSize, 1, 5000));
         services.AddOptions<FinanceInitializationOptions>()
             .Bind(configuration.GetSection(FinanceInitializationOptions.SectionName))
             .PostConfigure(options =>
@@ -298,6 +331,7 @@ public static class FinanceModuleRegistration
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToArray() ?? [];
             });
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<FinanceSeedBackfillWorkerOptions>, FinanceSeedBackfillWorkerOptionsValidator>());
         services.AddOptions<FinanceSeedBackfillWorkerOptions>()
             .Bind(configuration.GetSection(FinanceSeedBackfillWorkerOptions.SectionName))
             .PostConfigure(options =>
@@ -311,10 +345,14 @@ public static class FinanceModuleRegistration
                 options.BaseRetryDelaySeconds = Math.Max(0, options.BaseRetryDelaySeconds);
                 options.RetryBackoffMultiplier = options.RetryBackoffMultiplier < 1d ? 1d : options.RetryBackoffMultiplier;
                 options.MaxRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, options.MaxRetryDelaySeconds);
-            });
+            })
+            .ValidateOnStart();
         services.AddHttpClient(OpenAiPdfOcrTextExtractor.ClientName);
         services.AddScoped<InternalFinanceToolProvider>();
-        services.AddScoped<MockFinanceToolProvider>();
+        if (configuration.GetValue<bool>("FinanceTools:AllowMockProvider"))
+        {
+            services.AddScoped<MockFinanceToolProvider>();
+        }
         services.AddScoped<IFinanceCommandService, CompanyFinanceCommandService>();
         services.AddScoped<IFinanceAgentInsightRepository, FinanceAgentInsightRepository>();
         services.AddScoped<IFinanceInsightPersistenceService, FinanceInsightPersistenceService>();

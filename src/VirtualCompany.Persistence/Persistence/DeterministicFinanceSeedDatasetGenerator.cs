@@ -1,6 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json.Nodes;
+using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 
@@ -41,8 +42,27 @@ public static class DeterministicFinanceSeedDatasetGenerator
         var windowEndUtc = anchorUtc.Date;
         var random = new Random(StableSeed(companyId, seedValue));
 
-        var accounts = CreateAccounts(companyId, windowStartUtc);
-        var counterparties = CreateCounterparties(companyId);
+        var generatedAccounts = CreateAccounts(companyId, windowStartUtc);
+        var existingAccounts = dbContext.FinanceAccounts
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToList();
+        var accounts = generatedAccounts
+            .Select(generated => existingAccounts.FirstOrDefault(existing =>
+                string.Equals(existing.Code, generated.Code, StringComparison.OrdinalIgnoreCase)) ?? generated)
+            .ToArray();
+        var accountsToCreate = accounts.Where(account => !existingAccounts.Contains(account)).ToArray();
+        var generatedCounterparties = CreateCounterparties(companyId);
+        var existingCounterparties = dbContext.FinanceCounterparties
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToList();
+        var counterparties = generatedCounterparties
+            .Select(generated => existingCounterparties.FirstOrDefault(existing =>
+                string.Equals(existing.Name, generated.Name, StringComparison.OrdinalIgnoreCase) &&
+                string.Equals(existing.CounterpartyType, generated.CounterpartyType, StringComparison.OrdinalIgnoreCase)) ?? generated)
+            .ToArray();
+        var counterpartiesToCreate = counterparties.Where(counterparty => !existingCounterparties.Contains(counterparty)).ToArray();
         var documents = CreateDocuments(companyId);
         var categoryIds = new[]
         {
@@ -59,8 +79,25 @@ public static class DeterministicFinanceSeedDatasetGenerator
         };
 
         var allCategoryIds = categoryIds.Append("supplier_payment").ToArray();
-        var invoices = CreateInvoices(companyId, counterparties, documents, windowStartUtc, random).ToList();
-        var bills = CreateBills(companyId, counterparties, documents, windowStartUtc, random);
+        var generatedInvoices = CreateInvoices(companyId, counterparties, documents, windowStartUtc, random).ToList();
+        var existingInvoices = dbContext.FinanceInvoices
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToList();
+        var invoices = generatedInvoices
+            .Select(generated => existingInvoices.FirstOrDefault(existing =>
+                string.Equals(existing.InvoiceNumber, generated.InvoiceNumber, StringComparison.OrdinalIgnoreCase)) ?? generated)
+            .ToList();
+        var generatedBills = CreateBills(companyId, counterparties, documents, windowStartUtc, random);
+        var existingBills = dbContext.FinanceBills
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .ToList();
+        var bills = generatedBills
+            .Select(generated => existingBills.FirstOrDefault(existing =>
+                string.Equals(existing.BillNumber, generated.BillNumber, StringComparison.OrdinalIgnoreCase)) ?? generated)
+            .ToArray();
+        var billsToCreate = bills.Where(bill => !existingBills.Contains(bill)).ToArray();
         var recurringExpenses = CreateRecurringExpenses(companyId, counterparties);
         var transactions = includeTransactions
             ? CreateTransactions(
@@ -85,6 +122,10 @@ public static class DeterministicFinanceSeedDatasetGenerator
             invoices,
             transactions,
             windowEndUtc);
+        // Anomaly injection can append invoices to the working dataset. Resolve the final
+        // persistence set only after those records have been added so their dependent
+        // transactions never reference an invoice that was omitted from the insert batch.
+        var invoicesToCreate = invoices.Where(invoice => !existingInvoices.Contains(invoice)).ToArray();
         var payments = CreatePayments(companyId, invoices, bills, windowEndUtc);
         var balances = CreateBalances(companyId, accounts, transactions, windowEndUtc);
         var policy = new FinancePolicyConfiguration(
@@ -99,13 +140,13 @@ public static class DeterministicFinanceSeedDatasetGenerator
             90,
             30);
 
-        dbContext.FinanceAccounts.AddRange(accounts);
-        dbContext.FinanceCounterparties.AddRange(counterparties);
+        dbContext.FinanceAccounts.AddRange(accountsToCreate);
+        dbContext.FinanceCounterparties.AddRange(counterpartiesToCreate);
         dbContext.Payments.AddRange(payments);
         dbContext.CompanyKnowledgeDocuments.AddRange(documents);
         FinancialStatementMappingSeedDefaults.Apply(dbContext, companyId, accounts);
-        dbContext.FinanceInvoices.AddRange(invoices);
-        dbContext.FinanceBills.AddRange(bills);
+        dbContext.FinanceInvoices.AddRange(invoicesToCreate);
+        dbContext.FinanceBills.AddRange(billsToCreate);
         if (includeTransactions)
         {
             dbContext.FinanceTransactions.AddRange(transactions);
@@ -115,11 +156,11 @@ public static class DeterministicFinanceSeedDatasetGenerator
         dbContext.FinanceSeedAnomalies.AddRange(anomalies);
         MarkSeedRecordsAsSimulation(
             dbContext,
-            accounts,
-            counterparties,
+            accountsToCreate,
+            counterpartiesToCreate,
             payments,
-            invoices,
-            bills,
+            invoicesToCreate,
+            billsToCreate,
             transactions,
             balances);
 

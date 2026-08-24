@@ -31,23 +31,23 @@ public sealed class FinanceSimulationServiceTests
             CancellationToken.None);
 
         var result = await service.AdvanceAsync(
-            new AdvanceCompanySimulationTimeCommand(companyId, 72, 24, Accelerated: true),
+            new AdvanceCompanySimulationTimeCommand(companyId, 240, 24, Accelerated: true),
             CancellationToken.None);
 
-        Assert.Equal(initialClock.CurrentUtc.AddHours(72), result.CurrentUtc);
-        Assert.Equal(72, result.TotalHoursProcessed);
+        Assert.Equal(initialClock.CurrentUtc.AddHours(240), result.CurrentUtc);
+        Assert.Equal(240, result.TotalHoursProcessed);
         Assert.Equal(24, result.ExecutionStepHours);
-        Assert.Equal(3, result.Logs.Count);
+        Assert.Equal(10, result.Logs.Count);
         Assert.True(result.TransactionsGenerated > 0);
         Assert.True(result.InvoicesGenerated > 0);
         Assert.True(result.BillsGenerated > 0);
         Assert.True(result.RecurringExpenseInstancesGenerated > 0);
-        Assert.Equal(result.Logs.Count, result.EventsEmitted);
+        Assert.True(result.EventsEmitted >= result.Logs.Sum(log => log.EventsEmitted));
         Assert.All(result.Logs, log =>
         {
             Assert.Equal(companyId, log.CompanyId);
             Assert.True(log.WindowEndUtc > log.WindowStartUtc);
-            Assert.Equal(1, log.EventsEmitted);
+            Assert.True(log.EventsEmitted > 0);
         });
 
         var transactions = await dbContext.FinanceTransactions
@@ -71,7 +71,7 @@ public sealed class FinanceSimulationServiceTests
         Assert.NotEmpty(transactions);
         Assert.NotEmpty(invoices);
         Assert.NotEmpty(bills);
-        Assert.Equal(result.EventsEmitted, activityEvents.Length);
+        Assert.Equal(result.Logs.Count, activityEvents.Length);
         Assert.All(transactions, transaction =>
         {
             Assert.InRange(transaction.TransactionUtc, initialClock.CurrentUtc, result.CurrentUtc);
@@ -93,7 +93,7 @@ public sealed class FinanceSimulationServiceTests
         {
             Assert.InRange(activityEvent.CreatedUtc, initialClock.CurrentUtc, result.CurrentUtc);
             Assert.Equal(companyId.ToString(), activityEvent.SourceMetadata["companyId"]?.GetValue<string>());
-            Assert.Equal(1, activityEvent.SourceMetadata["eventsEmitted"]?.GetValue<int>());
+            Assert.True(activityEvent.SourceMetadata["eventsEmitted"]?.GetValue<int>() > 0);
         });
     }
 

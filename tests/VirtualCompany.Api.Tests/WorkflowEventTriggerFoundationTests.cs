@@ -507,13 +507,14 @@ public sealed class WorkflowEventTriggerFoundationTests : IDisposable
 
     private async Task<WorkflowDefinitionDto> CreateEventDefinitionAsync(HttpClient client, Guid companyId, string code)
     {
+        const string predefinedCode = "INVOICE-APPROVAL-REVIEW";
         var response = await client.PostAsJsonAsync($"/api/companies/{companyId}/workflows/definitions", new
         {
-            code,
+            code = predefinedCode,
             name = code,
-            department = "Operations",
+            department = "Finance",
             triggerType = "event",
-            definitionJson = ValidDefinition("event-step")
+            definitionJson = PredefinedWorkflowCatalog.CloneDefinitionJson(predefinedCode)
         });
 
         response.EnsureSuccessStatusCode();

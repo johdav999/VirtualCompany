@@ -29,6 +29,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyInvitation> CompanyInvitations => Set<CompanyInvitation>();
     public DbSet<CompanyOutboxMessage> CompanyOutboxMessages => Set<CompanyOutboxMessage>();
     public DbSet<BackgroundExecution> BackgroundExecutions => Set<BackgroundExecution>();
+    public DbSet<BackgroundExecutionAttempt> BackgroundExecutionAttempts => Set<BackgroundExecutionAttempt>();
     public DbSet<ActivityEvent> ActivityEvents => Set<ActivityEvent>();
     public DbSet<ExecutionExceptionRecord> ExecutionExceptionRecords => Set<ExecutionExceptionRecord>();
     public DbSet<AuditEvent> AuditEvents => Set<AuditEvent>();
@@ -724,6 +725,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<BackgroundExecution>()
             .HasQueryFilter(execution =>
                 CurrentCompanyId != null && execution.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BackgroundExecutionAttempt>()
+            .HasQueryFilter(attempt =>
+                CurrentCompanyId != null && attempt.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ExecutionExceptionRecord>()
             .HasQueryFilter(executionException =>
                 CurrentCompanyId != null && executionException.CompanyId == CurrentCompanyId);
@@ -1235,6 +1239,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanySimulationRunHistory>()
             .HasQueryFilter(history =>
                 CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanySimulationState>()
+            .HasQueryFilter(state =>
+                CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CompanySimulationRunTransition>()
             .HasQueryFilter(transition =>
                 CurrentCompanyId != null && transition.CompanyId == CurrentCompanyId);
@@ -1473,6 +1480,10 @@ public sealed class VirtualCompanyDbContext : DbContext
             .ValueGeneratedNever()
             .IsConcurrencyToken();
         modelBuilder.Entity<FiscalPeriod>().Property(period => period.RowVersion)
+            .HasColumnType("BLOB")
+            .ValueGeneratedNever()
+            .IsConcurrencyToken();
+        modelBuilder.Entity<AccountingExportJob>().Property(job => job.RowVersion)
             .HasColumnType("BLOB")
             .ValueGeneratedNever()
             .IsConcurrencyToken();

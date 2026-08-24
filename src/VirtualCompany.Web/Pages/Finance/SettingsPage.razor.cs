@@ -146,7 +146,7 @@ public partial class SettingsPage : FinancePageBase, IDisposable
         return queryIndex >= 0 ? relativePath[..queryIndex] : relativePath;
     }
 
-    private static bool IsOwnedSettingsRoute(string route) =>
+    internal static bool IsOwnedSettingsRoute(string route) =>
         string.Equals(route, "finance/settings", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(route, "finance/settings/email-settings", StringComparison.OrdinalIgnoreCase) ||
         route.StartsWith("finance/settings/integrations/", StringComparison.OrdinalIgnoreCase) ||

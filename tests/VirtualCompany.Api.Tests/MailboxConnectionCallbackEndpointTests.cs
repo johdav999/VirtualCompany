@@ -101,8 +101,14 @@ public sealed class MailboxConnectionCallbackEndpointTests : IDisposable
             var connection = await dbContext.MailboxConnections.IgnoreQueryFilters().SingleAsync();
             Assert.Equal(MailboxPurpose.Support, connection.Purpose);
             Assert.Equal("ap@example.com", connection.EmailAddress);
-            Assert.NotNull(connection.EncryptedAccessToken);
-            Assert.NotNull(connection.EncryptedRefreshToken);
+            Assert.Null(connection.EncryptedAccessToken);
+            Assert.Null(connection.EncryptedRefreshToken);
+            Assert.NotNull(connection.ExternalAccountConnectionId);
+            var externalAccount = await dbContext.ExternalAccountConnections
+                .IgnoreQueryFilters()
+                .SingleAsync(x => x.Id == connection.ExternalAccountConnectionId);
+            Assert.NotNull(externalAccount.EncryptedAccessToken);
+            Assert.NotNull(externalAccount.EncryptedRefreshToken);
         });
     }
 

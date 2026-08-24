@@ -115,7 +115,7 @@ public sealed class CompanyKnowledgeDocumentTests
 
         var exception = Assert.Throws<InvalidOperationException>(() => document.MarkProcessed());
 
-        Assert.Contains("cannot transition", exception.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("cannot execute", exception.Message, StringComparison.OrdinalIgnoreCase);
     }
 
     [Fact]

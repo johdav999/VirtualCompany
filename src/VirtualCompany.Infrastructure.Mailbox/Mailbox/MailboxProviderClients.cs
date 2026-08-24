@@ -574,12 +574,18 @@ public sealed class GmailMailboxProviderClient : IMailboxProviderClient
             return null;
         }
 
-        return headers.EnumerateArray()
-            .FirstOrDefault(x => x.TryGetProperty("name", out var headerName) &&
-                string.Equals(headerName.GetString(), name, StringComparison.OrdinalIgnoreCase))
-            .TryGetProperty("value", out var value)
-                ? value.GetString()
-                : null;
+        foreach (var header in headers.EnumerateArray())
+        {
+            if (header.ValueKind == JsonValueKind.Object &&
+                header.TryGetProperty("name", out var headerName) &&
+                string.Equals(headerName.GetString(), name, StringComparison.OrdinalIgnoreCase) &&
+                header.TryGetProperty("value", out var value))
+            {
+                return value.GetString();
+            }
+        }
+
+        return null;
     }
 
     private static DateTime? TryParseGmailReceivedUtc(JsonElement root, string? dateHeader)

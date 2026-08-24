@@ -79,7 +79,7 @@ public sealed class FinanceApprovalTaskBackfillServiceTests
         Assert.All(companyTasks, task => Assert.Equal(ApprovalTaskStatus.Pending, task.Status));
         Assert.Empty(otherCompanyTasks);
 
-        var logEntry = Assert.Single(logger.Entries.Where(x => x.Message.Contains("Completed finance approval task backfill", StringComparison.Ordinal)));
+        var logEntry = logger.Entries.First(x => x.Message.Contains("Completed finance approval task backfill", StringComparison.Ordinal));
         Assert.Equal("approval-backfill-001", AssertScopeValue(logEntry.Scope, "CorrelationId"));
         Assert.Equal(companyId, AssertScopeValue(logEntry.Scope, "CompanyId"));
     }

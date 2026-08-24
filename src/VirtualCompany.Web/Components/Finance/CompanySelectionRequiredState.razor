@@ -33,6 +33,7 @@
                             <span class="finance-company-selection__copy d-grid flex-grow-1 text-start">
                                 <strong>@company.CompanyName</strong>
                                 <small>@FinanceText["CompanyFinanceAccess", membershipRole]</small>
+                                <small>@DescribeCompany(company)</small>
                             </span>
                             <svg class="finance-company-selection__chevron flex-shrink-0"
                                  viewBox="0 0 20 20"
@@ -94,4 +95,16 @@
             "tester" => FinanceText["MembershipFinanceTester"],
             _ => CommonText["MembershipMember"]
         };
+
+    private string DescribeCompany(FinanceCompanyOption company)
+    {
+        var setup = string.Equals(company.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["CompanySetupComplete"]
+            : string.Equals(company.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                ? CommonText["CompanySetupInProgress"]
+                : CommonText["CompanySetupNotStarted"];
+        return company.CompanyCreatedUtc is DateTime createdUtc
+            ? CommonText["CompanyCreatedDescription", LocalDateTime.DateTime(createdUtc), setup, company.CompanyId.ToString("N")[..8]]
+            : setup;
+    }
 }

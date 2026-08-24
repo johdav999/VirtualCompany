@@ -200,6 +200,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IEntityLinkResolutionService, EfEntityLinkResolutionService>();
         services.AddScoped<ICurrentUserCompanyService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
+        services.AddScoped<ICompanySelectionService, CompanySelectionService>();
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<AgentTemplateCatalogSeeder>();

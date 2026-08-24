@@ -127,7 +127,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Agent_profile_view_is_available_to_manager_but_hides_restricted_configuration()
+    public async Task Agent_profile_view_allows_manager_to_review_configuration()
     {
         var seed = await SeedManagerDirectoryAsync();
 
@@ -140,7 +140,7 @@ public sealed class AgentRosterAndProfileIntegrationTests : IDisposable
         Assert.NotNull(payload);
         Assert.False(payload!.Visibility.CanViewPermissions);
         Assert.False(payload.Visibility.CanViewThresholds);
-        Assert.False(payload.Visibility.CanEditAgent);
+        Assert.True(payload.Visibility.CanEditAgent);
         Assert.NotEmpty(payload.Objectives);
         Assert.NotEmpty(payload.WorkingHours);
         Assert.Empty(payload.ToolPermissions);

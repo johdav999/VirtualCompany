@@ -11,7 +11,6 @@ namespace VirtualCompany.Web.Services;
 public sealed partial class FinanceApiClient
 {
     private static readonly JsonSerializerOptions SerializerOptions = new(JsonSerializerDefaults.Web);
-    private const string FinanceDataSourceAll = "all";
     private const string FinanceDataSourceOperational = "operational";
     private const string FinanceDataSourceFortnox = "fortnox";
     private const string FinanceDataSourceSimulation = "simulation";
@@ -202,7 +201,6 @@ public sealed partial class FinanceApiClient
         var normalized = value.Trim().ToLowerInvariant();
         return normalized switch
         {
-            FinanceDataSourceAll => FinanceDataSourceAll,
             FinanceDataSourceOperational => FinanceDataSourceOperational,
             FinanceDataSourceFortnox => FinanceDataSourceFortnox,
             FinanceDataSourceSimulation => FinanceDataSourceSimulation,
@@ -495,6 +493,7 @@ public sealed class FinanceTransactionResponse
     public FinanceLinkedDocumentResponse? LinkedDocument { get; set; }
     public bool IsFlagged { get; set; }
     public string AnomalyState { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class FinancePaymentResponse
@@ -511,6 +510,7 @@ public sealed class FinancePaymentResponse
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
     public List<NormalizedFinanceInsightResponse> AgentInsights { get; set; } = [];
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class FinanceTransactionDetailResponse
@@ -534,6 +534,7 @@ public sealed class FinanceTransactionDetailResponse
     public FinanceActionPermissionsResponse Permissions { get; set; } = new();
     public FinanceLinkedDocumentAccessResponse LinkedDocument { get; set; } = new();
     public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class FinanceTransactionPaymentContextResponse
@@ -567,6 +568,7 @@ public sealed class FinanceInvoiceResponse
     public string AccountingStatus { get; set; } = "not_ready";
     public string AccountingStatusLabel { get; set; } = "Not ready";
     public Guid? AccountingLedgerEntryId { get; set; }
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class FinanceCounterpartyResponse
@@ -611,6 +613,33 @@ public sealed class FinanceInvoiceDetailResponse
     public FinanceTransactionPaymentContextResponse? PaymentContext { get; set; }
     public List<FinanceInvoiceRelatedTransactionResponse> RelatedTransactions { get; set; } = [];
     public CustomerInvoiceAccountingStateResponse? Accounting { get; set; }
+    public string Source { get; set; } = string.Empty;
+}
+
+public sealed class FinanceOperatingModeResponse
+{
+    public Guid CompanyId { get; set; }
+    public DateOnly AsOfDate { get; set; }
+    public string AccountingAuthority { get; set; } = string.Empty;
+    public Guid? AuthorityPeriodId { get; set; }
+    public string? ProviderKey { get; set; }
+    public bool AccountingSetupReady { get; set; }
+    public bool MigrationInProgress { get; set; }
+    public bool ProviderConnected { get; set; }
+    public bool SimulationFeatureEnabled { get; set; }
+    public bool SimulationActive { get; set; }
+    public string AllowedReadSource { get; set; } = string.Empty;
+    public string AllowedPostingSource { get; set; } = string.Empty;
+    public bool IsReadyForOperationalPosting { get; set; }
+    public string NextAction { get; set; } = string.Empty;
+    public IReadOnlyList<FinanceOperatingModeIssueResponse> Issues { get; set; } = [];
+}
+
+public sealed class FinanceOperatingModeIssueResponse
+{
+    public string Code { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public bool IsBlocking { get; set; }
 }
 
 public sealed class CustomerInvoiceAccountingStateResponse
@@ -851,6 +880,7 @@ public sealed class FinanceBillResponse
     public SupplierInvoiceDraftActionResponse? DraftAction { get; set; }
     public List<SupplierInvoiceCorrectionActionResponse> CorrectionActions { get; set; } = [];
     public SupplierInvoiceEnrichmentActionResponse? EnrichmentAction { get; set; }
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class FinanceBillDetailResponse
@@ -882,6 +912,7 @@ public sealed class FinanceBillDetailResponse
     public SupplierInvoiceEnrichmentActionResponse? EnrichmentAction { get; set; }
     public PaidSupplierBillExpenseAvailabilityResponse? PaidExpensePostingAvailability { get; set; }
     public SupplierBillAccountingStateResponse? Accounting { get; set; }
+    public string Source { get; set; } = string.Empty;
 }
 
 public sealed class PaidSupplierBillExpenseAvailabilityResponse

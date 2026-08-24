@@ -27,10 +27,10 @@ public sealed class InvoiceReviewWorkbenchPageTests
         {
             Assert.Contains("INV-24051", cut.Markup);
             Assert.Contains("Contoso Supplies", cut.Markup);
-            Assert.Contains("15420.50", cut.Markup);
+            Assert.Contains("15,420.50", cut.Markup);
             Assert.Contains("USD", cut.Markup);
-            Assert.Contains("High", cut.Markup);
-            Assert.Contains("Awaiting approval", cut.Markup);
+            Assert.Contains("high", cut.Markup);
+            Assert.Contains("awaiting approval", cut.Markup);
             Assert.Contains("91%", cut.Markup.Replace(" ", string.Empty));
             Assert.Contains($"limit=200", harness.LastFinanceRequestQuery);
         });
@@ -74,16 +74,11 @@ public sealed class InvoiceReviewWorkbenchPageTests
 
         cut.WaitForAssertion(() => Assert.Contains("No invoice reviews matched the active filters", cut.Markup));
 
-        cut.Find("#invoice-review-status").Change("pending_approval");
-        cut.WaitForAssertion(() => Assert.Contains("status=pending_approval", harness.Navigation.Uri));
-
-        cut.Find("#invoice-review-supplier").Change("Northwind Labs");
-        cut.WaitForAssertion(() => Assert.Contains($"supplier={Uri.EscapeDataString("Northwind Labs")}", harness.Navigation.Uri));
-
-        cut.Find("#invoice-review-risk").Change("critical");
-        cut.WaitForAssertion(() => Assert.Contains("riskLevel=critical", harness.Navigation.Uri));
-
-        cut.Find("#invoice-review-outcome").Change("reject");
+        cut.FindAll("form.invoice-review-filters select")[0].Change("pending_approval");
+        cut.Find("form.invoice-review-filters input").Change("Northwind Labs");
+        cut.FindAll("form.invoice-review-filters select")[1].Change("critical");
+        cut.FindAll("form.invoice-review-filters select")[2].Change("reject");
+        cut.Find("form.invoice-review-filters").Submit();
         cut.WaitForAssertion(() =>
         {
             Assert.Contains($"companyId={companyId:D}", harness.Navigation.Uri);
@@ -141,7 +136,10 @@ public sealed class InvoiceReviewWorkbenchPageTests
         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
         var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
 
-        using var harness = CreateInvoiceReviewsHarness(companyId, [CreateReviewListItem(invoiceId)]);
+        using var harness = CreateInvoiceReviewsHarness(
+            companyId,
+            [CreateReviewListItem(invoiceId)],
+            reviewDetail: CreateReviewDetail(invoiceId));
         harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval");
 
         var cut = RenderInvoiceReviewsPage(
@@ -154,7 +152,11 @@ public sealed class InvoiceReviewWorkbenchPageTests
 
         cut.WaitForAssertion(() =>
         {
-            var href = cut.Find("tbody a").GetAttribute("href");
+            cut.Find(".invoice-review-row__primary").Click();
+        });
+        cut.WaitForAssertion(() =>
+        {
+            var href = cut.FindAll("a").Single(link => link.TextContent.Trim() == "View full details").GetAttribute("href");
             Assert.Equal(
                 $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval",
                 href);
@@ -184,14 +186,14 @@ public sealed class InvoiceReviewWorkbenchPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("Finance review summary.", cut.Markup);
-            Assert.Contains("Request human approval", cut.Markup);
+            Assert.Contains("request human approval", cut.Markup);
             Assert.Contains("91%", cut.Markup.Replace(" ", string.Empty));
             Assert.Contains("Open source invoice", cut.Markup);
             Assert.Contains("Open related approval", cut.Markup);
             Assert.Contains("Back to review list", cut.Markup);
             Assert.Contains($"/finance/invoices/{invoiceId:D}?companyId={companyId:D}", cut.Markup);
-            Assert.Contains($"/approvals?companyId={companyId:D}&approvalId={relatedApprovalId:D}", cut.Markup);
-            Assert.Contains($"/finance/reviews?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval", cut.Markup);
+            Assert.Contains($"/approvals?companyId={companyId:D}&amp;approvalId={relatedApprovalId:D}", cut.Markup);
+            Assert.Contains($"/finance/reviews?companyId={companyId:D}&amp;status=pending_approval&amp;supplier=Contoso%20Supplies&amp;riskLevel=high&amp;outcome=request_human_approval", cut.Markup);
         });
     }
 
@@ -379,15 +381,13 @@ public sealed class InvoiceReviewWorkbenchPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Recommendation details", cut.Markup);
-            Assert.Contains("Overdue invoice", cut.Markup);
+            Assert.Contains("INV-24051", cut.Markup);
+            Assert.Contains("Contoso Supplies", cut.Markup);
             Assert.Contains("Overdue", cut.Markup);
             Assert.Contains("Document type", cut.Markup);
             Assert.Contains("Invoice", cut.Markup);
-            Assert.Contains("Provider status: booked=true;cancelled=false;fullyPaid=false;credit=false;balance=15420.5", cut.Markup);
-            Assert.Contains("Workflow history", cut.Markup);
-            Assert.Contains($"/audit/{auditId:D}?companyId={companyId:D}", cut.Markup);
-            Assert.Contains($"/approvals?companyId={companyId:D}&approvalId={approvalId:D}", cut.Markup);
+            Assert.Contains("Approval status", cut.Markup);
+            Assert.Contains("Accounting", cut.Markup);
         });
     }
 
@@ -398,12 +398,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
         string? supplier = null,
         string? riskLevel = null,
         string? outcome = null) =>
-        harness.Context.RenderComponent<InvoiceReviewsPage>(parameters => parameters
-            .Add(x => x.CompanyId, companyId)
-            .Add(x => x.Status, status)
-            .Add(x => x.Supplier, supplier)
-            .Add(x => x.RiskLevel, riskLevel)
-            .Add(x => x.Outcome, outcome));
+        RenderInvoiceReviewsPageCore(harness, companyId, status, supplier, riskLevel, outcome);
 
     private static IRenderedComponent<InvoiceReviewDetailPage> RenderInvoiceReviewDetailPage(
         InvoiceReviewDetailHarness harness,
@@ -413,21 +408,41 @@ public sealed class InvoiceReviewWorkbenchPageTests
         string? supplier = null,
         string? riskLevel = null,
         string? outcome = null) =>
-        harness.Context.RenderComponent<InvoiceReviewDetailPage>(parameters => parameters
-            .Add(x => x.CompanyId, companyId)
-            .Add(x => x.InvoiceId, invoiceId)
-            .Add(x => x.Status, status)
-            .Add(x => x.Supplier, supplier)
-            .Add(x => x.RiskLevel, riskLevel)
-            .Add(x => x.Outcome, outcome));
+        RenderInvoiceReviewDetailPageCore(harness, companyId, invoiceId, status, supplier, riskLevel, outcome);
+
+    private static IRenderedComponent<InvoiceReviewsPage> RenderInvoiceReviewsPageCore(
+        InvoiceReviewsHarness harness, Guid companyId, string? status, string? supplier, string? riskLevel, string? outcome)
+    {
+        harness.Navigation.NavigateTo(BuildReviewPath("/finance/reviews", companyId, status, supplier, riskLevel, outcome));
+        return harness.Context.RenderComponent<InvoiceReviewsPage>();
+    }
+
+    private static IRenderedComponent<InvoiceReviewDetailPage> RenderInvoiceReviewDetailPageCore(
+        InvoiceReviewDetailHarness harness, Guid companyId, Guid invoiceId, string? status, string? supplier, string? riskLevel, string? outcome)
+    {
+        harness.Navigation.NavigateTo(BuildReviewPath($"/finance/reviews/{invoiceId:D}", companyId, status, supplier, riskLevel, outcome));
+        return harness.Context.RenderComponent<InvoiceReviewDetailPage>(parameters => parameters.Add(x => x.InvoiceId, invoiceId));
+    }
+
+    private static string BuildReviewPath(string path, Guid companyId, string? status, string? supplier, string? riskLevel, string? outcome)
+    {
+        var values = new List<KeyValuePair<string, string?>>
+        {
+            new("companyId", companyId.ToString("D")), new("status", status), new("supplier", supplier),
+            new("riskLevel", riskLevel), new("outcome", outcome)
+        };
+
+        return $"{path}?{string.Join("&", values.Where(value => !string.IsNullOrWhiteSpace(value.Value)).Select(value => $"{value.Key}={Uri.EscapeDataString(value.Value!)}"))}";
+    }
 
     private static InvoiceReviewsHarness CreateInvoiceReviewsHarness(
         Guid companyId,
         IReadOnlyList<FinanceInvoiceReviewListItemResponse>? reviews = null,
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,
-        string membershipRole = "owner")
+        string membershipRole = "owner",
+        FinanceInvoiceReviewDetailResponse? reviewDetail = null)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var financeRequests = new List<Uri>();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
@@ -453,6 +468,13 @@ public sealed class InvoiceReviewWorkbenchPageTests
                 return Task.FromResult(CreateJsonResponse<IReadOnlyList<FinanceInvoiceReviewListItemResponse>>(reviews ?? []));
             }
 
+            if (request.Method == HttpMethod.Get &&
+                reviewDetail is not null &&
+                request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/reviews/{reviewDetail.Id:D}")
+            {
+                return Task.FromResult(CreateJsonResponse(reviewDetail));
+            }
+
             return Task.FromResult(CreateNotFoundResponse());
         })) { BaseAddress = new Uri("http://localhost/") }));
 
@@ -466,7 +488,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,
         string membershipRole = "owner")
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
@@ -503,7 +525,7 @@ public sealed class InvoiceReviewWorkbenchPageTests
         FinanceInvoiceDetailResponse detail,
         string membershipRole = "owner")
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>

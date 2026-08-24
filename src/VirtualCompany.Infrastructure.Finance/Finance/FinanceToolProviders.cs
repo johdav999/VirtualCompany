@@ -1,5 +1,7 @@
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Finance;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Options;
 
 namespace VirtualCompany.Infrastructure.Finance;
 
@@ -10,6 +12,48 @@ public sealed class FinanceToolProviderOptions
     public const string MockProvider = "mock";
 
     public string Provider { get; set; } = InternalProvider;
+    public bool AllowMockProvider { get; set; }
+}
+
+public sealed class FinanceToolProviderOptionsValidator : IValidateOptions<FinanceToolProviderOptions>
+{
+    private readonly IHostEnvironment? _hostEnvironment;
+
+    public FinanceToolProviderOptionsValidator(IHostEnvironment? hostEnvironment = null)
+    {
+        _hostEnvironment = hostEnvironment;
+    }
+
+    public ValidateOptionsResult Validate(string? name, FinanceToolProviderOptions options)
+    {
+        var provider = options.Provider?.Trim();
+        var allowsMockEnvironment = IsExplicitlySafeEnvironment(_hostEnvironment);
+        if (options.AllowMockProvider && !allowsMockEnvironment)
+        {
+            return ValidateOptionsResult.Fail(
+                "FinanceTools:AllowMockProvider is permitted only in Development, Testing, or Simulation environments. Production finance must use the internal provider.");
+        }
+
+        if (string.Equals(provider, FinanceToolProviderOptions.InternalProvider, StringComparison.OrdinalIgnoreCase))
+        {
+            return ValidateOptionsResult.Success;
+        }
+
+        if (string.Equals(provider, FinanceToolProviderOptions.MockProvider, StringComparison.OrdinalIgnoreCase) &&
+            options.AllowMockProvider &&
+            allowsMockEnvironment)
+        {
+            return ValidateOptionsResult.Success;
+        }
+
+        return ValidateOptionsResult.Fail(
+            "FinanceTools:Provider must be 'internal'. The mock provider is permitted only when FinanceTools:AllowMockProvider is explicitly true in a Development, Testing, or Simulation environment.");
+    }
+
+    private static bool IsExplicitlySafeEnvironment(IHostEnvironment? environment) =>
+        environment?.IsDevelopment() == true ||
+        string.Equals(environment?.EnvironmentName, "Testing", StringComparison.OrdinalIgnoreCase) ||
+        string.Equals(environment?.EnvironmentName, "Simulation", StringComparison.OrdinalIgnoreCase);
 }
 
 public sealed class InternalFinanceToolProvider : IFinanceToolProvider
@@ -329,6 +373,7 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
         GetFinanceAgentQueryQuery query,
         CancellationToken cancellationToken)
     {
+        var source = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
         var asOfUtc = query.AsOfUtc ?? DefaultAsOfUtc;
         if (!FinanceAgentQueryRouting.TryResolveIntent(query.QueryText, out var intent))
         {
@@ -378,7 +423,8 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
                         new FinanceAgentMetricComponentDto("recommended_payables_total", "Recommended payables total", 250m, null, 250m, "USD", [BillId]),
                         new FinanceAgentMetricComponentDto("scheduled_outgoing_this_week", "Scheduled outgoing this week", 125m, null, 125m, "USD", [AllocationId])
                     ],
-                    [AllocationId, BillId]),
+                    [AllocationId, BillId],
+                    source),
             var value when string.Equals(value, FinanceAgentQueryIntents.WhichCustomersAreOverdue, StringComparison.Ordinal) =>
                 new FinanceAgentQueryResultDto(
                     query.CompanyId,
@@ -406,7 +452,8 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
                             [new FinanceAgentMetricComponentDto("remaining_balance", "Remaining balance", 1500m, null, 1500m, "USD", [InvoiceId])])
                     ],
                     [new FinanceAgentMetricComponentDto("overdue_receivables_total", "Overdue receivables total", 1500m, null, 1500m, "USD", [InvoiceId])],
-                    [InvoiceId]),
+                    [InvoiceId],
+                    source),
             _ =>
                 new FinanceAgentQueryResultDto(
                     query.CompanyId,
@@ -422,7 +469,8 @@ public sealed class MockFinanceToolProvider : IFinanceToolProvider
                         new FinanceAgentMetricComponentDto("revenue", "Revenue", 1200m, 2000m, -800m, "USD", [PriorTransactionId, CurrentTransactionId]),
                         new FinanceAgentMetricComponentDto("payroll", "Payroll", -900m, -600m, -300m, "USD", [PayrollTransactionId])
                     ],
-                    [CurrentTransactionId, PayrollTransactionId, PriorTransactionId, SoftwareTransactionId])
+                    [CurrentTransactionId, PayrollTransactionId, PriorTransactionId, SoftwareTransactionId],
+                    source)
         });
     }
 

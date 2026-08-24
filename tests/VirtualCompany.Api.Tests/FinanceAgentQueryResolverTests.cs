@@ -38,23 +38,24 @@ public sealed class FinanceAgentQueryResolverTests
             CancellationToken.None);
 
         Assert.Equal(FinanceAgentQueryIntents.WhatShouldIPayThisWeek, result.Intent);
+        Assert.Equal(FinanceDataSources.Operational, result.Source);
         Assert.Equal(new[] { scenario.OverdueBillId, scenario.DueThisWeekBillId }, result.Items.Select(x => x.RecordId!.Value));
         Assert.All(result.Items, item => Assert.Contains(item.MetricComponents, component => component.ComponentKey == "remaining_balance"));
         Assert.Equal(
-            new[] { scenario.CompletedOutgoingAllocationId, scenario.OverdueBillId },
+            new[] { scenario.OverdueBillId, scenario.CompletedOutgoingAllocationId },
             result.Items[0].SourceRecordIds);
         Assert.Equal(
-            new[] { scenario.PendingOutgoingAllocationId, scenario.DueThisWeekBillId },
+            new[] { scenario.DueThisWeekBillId, scenario.PendingOutgoingAllocationId },
             result.Items[1].SourceRecordIds);
         Assert.Contains(
             result.MetricComponents,
             component => component.ComponentKey == "recommended_payables_total" &&
                          component.SourceRecordIds.SequenceEqual(new[]
                          {
-                             scenario.CompletedOutgoingAllocationId,
-                             scenario.PendingOutgoingAllocationId,
                              scenario.OverdueBillId,
-                             scenario.DueThisWeekBillId
+                             scenario.DueThisWeekBillId,
+                             scenario.CompletedOutgoingAllocationId,
+                             scenario.PendingOutgoingAllocationId
                          }));
         Assert.All(result.Items, item => Assert.Contains(item.SourceRecordIds, id => id == item.RecordId));
         Assert.All(
@@ -91,7 +92,7 @@ public sealed class FinanceAgentQueryResolverTests
         Assert.DoesNotContain(result.SourceRecordIds, id => id == scenario.OtherCompanyInvoiceId);
         Assert.All(result.Items, item => Assert.False(string.IsNullOrWhiteSpace(item.AgingBucket)));
         Assert.Equal(
-            new[] { scenario.CompletedIncomingAllocationId, scenario.OlderOverdueInvoiceId },
+            new[] { scenario.OlderOverdueInvoiceId, scenario.CompletedIncomingAllocationId },
             result.Items[0].SourceRecordIds);
         Assert.Equal(
             new[] { scenario.RecentOverdueInvoiceId },
@@ -99,7 +100,7 @@ public sealed class FinanceAgentQueryResolverTests
         Assert.Contains(
             result.MetricComponents,
             component => component.ComponentKey == "overdue_receivables_total" &&
-                         component.SourceRecordIds.SequenceEqual(new[] { scenario.CompletedIncomingAllocationId, scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId }));
+                         component.SourceRecordIds.SequenceEqual(new[] { scenario.OlderOverdueInvoiceId, scenario.RecentOverdueInvoiceId, scenario.CompletedIncomingAllocationId }));
     }
 
     [Fact]
@@ -133,10 +134,8 @@ public sealed class FinanceAgentQueryResolverTests
         Assert.Equal(
             new[]
             {
-                scenario.CurrentRevenueTransactionId,
-                scenario.CurrentPayrollTransactionId,
-                scenario.PreviousPayrollTransactionId,
-                scenario.PreviousRevenueTransactionId
+                scenario.PreviousRevenueTransactionId,
+                scenario.CurrentRevenueTransactionId
             },
             result.Items.Single(item => string.Equals(item.Reference, "revenue", StringComparison.Ordinal)).SourceRecordIds);
     }

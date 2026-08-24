@@ -110,7 +110,7 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
                 }
                 if (costAccount.AccountClass is not (FinanceAccountClassValues.Expense or FinanceAccountClassValues.Asset) ||
                     !costAccount.IsPostingEnabled || costAccount.EffectiveFrom > billDate || costAccount.EffectiveTo < billDate ||
-                    !string.IsNullOrWhiteSpace(costAccount.ControlAccountRole))
+                    costAccount.RestrictManualPosting)
                 {
                     Add(issues, SupplierBillAccountingReasonCodes.CostAccountInvalid,
                         $"{costAccount.Name} is not an active posting-enabled expense or asset account for the bill date.");

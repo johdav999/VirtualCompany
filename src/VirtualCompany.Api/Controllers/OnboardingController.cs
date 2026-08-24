@@ -28,11 +28,7 @@ public sealed class OnboardingController : ControllerBase
         CancellationToken cancellationToken)
     {
         try { return Ok(await _workshopService.StartOrResumeAsync(request,cancellationToken)); }
-        catch(CompanyOnboardingValidationException ex)
-        {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string,string[]>(ex.Errors))
-            { Title="Validation failed",Status=StatusCodes.Status400BadRequest });
-        }
+        catch(CompanyOnboardingValidationException ex) { return ValidationProblem(CreateValidationProblem(ex)); }
         catch(UnauthorizedAccessException) { return Forbid(); }
     }
 
@@ -49,11 +45,7 @@ public sealed class OnboardingController : ControllerBase
         }
         catch (CompanyOnboardingValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return ValidationProblem(CreateValidationProblem(ex));
         }
     }
 
@@ -82,10 +74,23 @@ public sealed class OnboardingController : ControllerBase
         [FromQuery] Guid? companyId,
         CancellationToken cancellationToken)
     {
-        var progress = companyId.HasValue
-            ? await _onboardingService.GetProgressAsync(companyId.Value, cancellationToken)
-            : await _onboardingService.GetProgressAsync(cancellationToken);
-        return Ok(progress);
+        try
+        {
+            var progress = companyId.HasValue
+                ? await _onboardingService.GetProgressAsync(companyId.Value, cancellationToken)
+                : await _onboardingService.GetProgressAsync(cancellationToken);
+            return Ok(progress);
+        }
+        catch (CompanySelectionRequiredException ex)
+        {
+            return Conflict(new ProblemDetails
+            {
+                Status = StatusCodes.Status409Conflict,
+                Title = "Choose a company",
+                Detail = ex.Message,
+                Extensions = { ["code"] = CompanyOnboardingErrorCodes.CompanySelectionRequired }
+            });
+        }
     }
 
     [EnableRateLimiting(PlatformRateLimitPolicyNames.Tasks)]
@@ -101,11 +106,7 @@ public sealed class OnboardingController : ControllerBase
         }
         catch (CompanyOnboardingValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return ValidationProblem(CreateValidationProblem(ex));
         }
     }
 
@@ -122,11 +123,7 @@ public sealed class OnboardingController : ControllerBase
         }
         catch (CompanyOnboardingValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return ValidationProblem(CreateValidationProblem(ex));
         }
         catch (UnauthorizedAccessException)
         {
@@ -147,11 +144,7 @@ public sealed class OnboardingController : ControllerBase
         }
         catch (CompanyOnboardingValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return ValidationProblem(CreateValidationProblem(ex));
         }
         catch (UnauthorizedAccessException)
         {
@@ -172,15 +165,26 @@ public sealed class OnboardingController : ControllerBase
         }
         catch (CompanyOnboardingValidationException ex)
         {
-            return ValidationProblem(new ValidationProblemDetails(new Dictionary<string, string[]>(ex.Errors))
-            {
-                Title = "Validation failed",
-                Status = StatusCodes.Status400BadRequest
-            });
+            return ValidationProblem(CreateValidationProblem(ex));
         }
         catch (UnauthorizedAccessException)
         {
             return Forbid();
         }
+    }
+
+    private static ValidationProblemDetails CreateValidationProblem(CompanyOnboardingValidationException exception)
+    {
+        var problem = new ValidationProblemDetails(new Dictionary<string, string[]>(exception.Errors))
+        {
+            Title = "Validation failed",
+            Status = StatusCodes.Status400BadRequest
+        };
+        if (!string.IsNullOrWhiteSpace(exception.Code))
+        {
+            problem.Extensions["code"] = exception.Code;
+        }
+
+        return problem;
     }
 }

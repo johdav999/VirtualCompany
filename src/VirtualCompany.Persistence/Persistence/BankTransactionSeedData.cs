@@ -98,9 +98,17 @@ public static class BankTransactionSeedData
         }
 
         var invoicesByReference = LoadInvoices(dbContext, companyId)
-            .ToDictionary(x => x.InvoiceNumber, x => x, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(x => x.InvoiceNumber, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(x => x.IssuedUtc).ThenBy(x => x.Id).First(),
+                StringComparer.OrdinalIgnoreCase);
         var billsByReference = LoadBills(dbContext, companyId)
-            .ToDictionary(x => x.BillNumber, x => x, StringComparer.OrdinalIgnoreCase);
+            .GroupBy(x => x.BillNumber, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.OrderByDescending(x => x.ReceivedUtc).ThenBy(x => x.Id).First(),
+                StringComparer.OrdinalIgnoreCase);
         var payments = LoadPayments(dbContext, companyId)
             .OrderBy(x => x.PaymentDate)
             .ThenBy(x => x.CounterpartyReference, StringComparer.OrdinalIgnoreCase)
@@ -249,6 +257,15 @@ public static class BankTransactionSeedData
         var local = dbContext.FinanceAccounts.Local
             .Where(x => x.CompanyId == companyId)
             .ToList();
+        // Mock-finance bootstrap adds the complete deterministic account set before it adds
+        // banking data. Prefer that tracked set so compatibility fixtures at an older migration
+        // do not ask the current EF model to materialize columns that do not exist until later
+        // migrations.
+        if (local.Count > 0 || IsAddedCompany(dbContext, companyId))
+        {
+            return local;
+        }
+
         var localIds = local.Select(x => x.Id).ToHashSet();
         var persisted = dbContext.FinanceAccounts
             .IgnoreQueryFilters()
@@ -266,6 +283,11 @@ public static class BankTransactionSeedData
         var local = dbContext.CompanyBankAccounts.Local
             .Where(x => x.CompanyId == companyId)
             .ToList();
+        if (IsAddedCompany(dbContext, companyId))
+        {
+            return local;
+        }
+
         var localIds = local.Select(x => x.Id).ToHashSet();
         var persisted = dbContext.CompanyBankAccounts
             .IgnoreQueryFilters()
@@ -284,6 +306,11 @@ public static class BankTransactionSeedData
         var local = dbContext.FinanceInvoices.Local
             .Where(x => x.CompanyId == companyId)
             .ToList();
+        if (IsAddedCompany(dbContext, companyId))
+        {
+            return local;
+        }
+
         var localIds = local.Select(x => x.Id).ToHashSet();
         var persisted = dbContext.FinanceInvoices
             .IgnoreQueryFilters()
@@ -302,6 +329,11 @@ public static class BankTransactionSeedData
         var local = dbContext.FinanceBills.Local
             .Where(x => x.CompanyId == companyId)
             .ToList();
+        if (IsAddedCompany(dbContext, companyId))
+        {
+            return local;
+        }
+
         var localIds = local.Select(x => x.Id).ToHashSet();
         var persisted = dbContext.FinanceBills
             .IgnoreQueryFilters()
@@ -320,6 +352,11 @@ public static class BankTransactionSeedData
         var local = dbContext.Payments.Local
             .Where(x => x.CompanyId == companyId)
             .ToList();
+        if (IsAddedCompany(dbContext, companyId))
+        {
+            return local;
+        }
+
         var localIds = local.Select(x => x.Id).ToHashSet();
         var persisted = dbContext.Payments
             .IgnoreQueryFilters()
@@ -331,6 +368,9 @@ public static class BankTransactionSeedData
         local.AddRange(persisted);
         return local;
     }
+
+    private static bool IsAddedCompany(VirtualCompanyDbContext dbContext, Guid companyId) =>
+        dbContext.Companies.Local.Any(x => x.Id == companyId && dbContext.Entry(x).State == EntityState.Added);
 
     private static BankTransaction CreateManual(
         Guid companyId,

@@ -88,9 +88,9 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
     public async Task RecommendedDefaults_returns_null_when_no_template_matches()
     {
         using var client = CreateAuthenticatedClient("no-match-user", "no-match@example.com", "No Match User");
-        var recommendation = await client.GetFromJsonAsync<RecommendationResponse?>("/api/onboarding/recommended-defaults?industry=Manufacturing&businessType=Distributor");
+        var response = await client.GetAsync("/api/onboarding/recommended-defaults?industry=Manufacturing&businessType=Distributor");
 
-        Assert.Null(recommendation);
+        Assert.Equal(HttpStatusCode.NoContent, response.StatusCode);
     }
 
     [Fact]
@@ -191,7 +191,8 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
         Assert.True(profile.Objectives["accuracy"].GetProperty("required").GetBoolean());
         Assert.True(profile.Objectives["riskDetection"].GetProperty("required").GetBoolean());
 
-        Assert.Equal(
+        var allowedTools = profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()).ToArray();
+        Assert.All(
             new[]
             {
                 "get_cash_balance",
@@ -206,7 +207,7 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
                 "approve_invoice",
                 "post_paid_supplier_bill_expense"
             },
-            profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()));
+            expected => Assert.Contains(expected, allowedTools));
         Assert.DoesNotContain("erp", profile.ToolPermissions["allowed"].EnumerateArray().Select(x => x.GetString()));
         Assert.Contains("erp", profile.ToolPermissions["denied"].EnumerateArray().Select(x => x.GetString()));
         Assert.Equal("finance", Assert.Single(profile.DataScopes["read"].EnumerateArray()).GetString());
@@ -363,6 +364,120 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
     }
 
     [Fact]
+    public async Task CreateWorkspace_requires_an_explicit_create_another_company_action_when_membership_exists()
+    {
+        using var client = CreateAuthenticatedClient("guarded-user", "guarded@example.com", "Guarded User");
+        var firstResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
+        {
+            Name = "Existing Company",
+            Industry = "Technology",
+            BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            CurrentStep = 2,
+            SelectedTemplateId = "saas-operations"
+        });
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        var secondResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
+        {
+            Name = "Accidental Duplicate",
+            Industry = "Technology",
+            BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            CurrentStep = 1,
+            SelectedTemplateId = "saas-operations"
+        });
+
+        Assert.Equal(HttpStatusCode.BadRequest, secondResponse.StatusCode);
+        var problem = await secondResponse.Content.ReadFromJsonAsync<ValidationProblemDetails>();
+        Assert.NotNull(problem);
+        Assert.Equal(
+            CompanyOnboardingErrorCodes.ExplicitNewCompanyRequired,
+            Assert.IsType<JsonElement>(problem!.Extensions["code"]).GetString());
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        Assert.Equal(1, await dbContext.Companies.CountAsync(x => x.Name == "Existing Company"));
+        Assert.DoesNotContain(await dbContext.Companies.ToListAsync(), x => x.Name == "Accidental Duplicate");
+    }
+
+    [Fact]
+    public async Task Unscoped_progress_requires_selection_when_multiple_memberships_have_no_preference()
+    {
+        var userId = Guid.NewGuid();
+        var firstCompanyId = Guid.NewGuid();
+        var secondCompanyId = Guid.NewGuid();
+        await _factory.SeedAsync(dbContext =>
+        {
+            dbContext.Users.Add(new User(userId, "ambiguous@example.com", "Ambiguous User", "dev-header", "ambiguous-user"));
+            dbContext.Companies.AddRange(
+                new Company(firstCompanyId, "Same Name"),
+                new Company(secondCompanyId, "Same Name"));
+            dbContext.CompanyMemberships.AddRange(
+                new CompanyMembership(Guid.NewGuid(), firstCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
+                new CompanyMembership(Guid.NewGuid(), secondCompanyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+            return Task.CompletedTask;
+        });
+
+        using var client = CreateAuthenticatedClient("ambiguous-user", "ambiguous@example.com", "Ambiguous User");
+        var response = await client.GetAsync("/api/onboarding/progress");
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        using var document = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+        Assert.Equal(
+            CompanyOnboardingErrorCodes.CompanySelectionRequired,
+            document.RootElement.GetProperty("code").GetString());
+    }
+
+    [Fact]
+    public async Task Explicit_create_another_company_action_creates_a_distinct_workspace()
+    {
+        using var client = CreateAuthenticatedClient("another-user", "another@example.com", "Another User");
+        var firstResponse = await client.PostAsJsonAsync("/api/onboarding/company", new
+        {
+            Name = "First Company",
+            Industry = "Technology",
+            BusinessType = "Software Company",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            SelectedTemplateId = "saas-operations"
+        });
+        Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
+
+        var secondResponse = await client.PostAsJsonAsync("/api/onboarding/workspace", new
+        {
+            Name = "Second Company",
+            Industry = "Services",
+            BusinessType = "Consultancy",
+            Timezone = "Europe/Stockholm",
+            Currency = "SEK",
+            Language = "sv-SE",
+            ComplianceRegion = "EU",
+            CurrentStep = 1,
+            SelectedTemplateId = "professional-services-agency",
+            ExplicitNewCompany = true
+        });
+
+        Assert.Equal(HttpStatusCode.OK, secondResponse.StatusCode);
+        var second = await secondResponse.Content.ReadFromJsonAsync<ProgressResponse>();
+        Assert.NotNull(second);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        Assert.Equal(2, await dbContext.Companies.CountAsync(x => x.Name == "First Company" || x.Name == "Second Company"));
+        var preference = await dbContext.UserPreferences.SingleAsync(x => x.User.AuthSubject == "another-user");
+        Assert.Equal(second!.CompanyId, preference.PreferredCompanyId);
+    }
+
+    [Fact]
     public async Task CreateCompany_rejects_blank_required_fields()
     {
         using var client = CreateAuthenticatedClient("validation-user", "validation@example.com", "Validation User");
@@ -452,6 +567,12 @@ public sealed class CompanyOnboardingIntegrationTests : IDisposable
             var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
             var company = await dbContext.Companies.SingleAsync(x => x.Id == created.CompanyId);
             Assert.NotNull(company.OnboardingCompletedUtc);
+            var auditActions = await dbContext.AuditEvents.IgnoreQueryFilters()
+                .Where(x => x.CompanyId == created.CompanyId)
+                .Select(x => x.Action)
+                .ToListAsync();
+            Assert.Contains("company.created", auditActions);
+            Assert.Contains("company.onboarding.completed", auditActions);
         }
 
         var progressAfterComplete = await client.GetFromJsonAsync<ProgressResponse>("/api/onboarding/progress");

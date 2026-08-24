@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
@@ -403,25 +404,7 @@ internal sealed class SupplierBillDueMonitoringFinancialCheck : IFinancialCheck
 
     public async Task<IReadOnlyList<FinancialCheckResult>> ExecuteAsync(FinancialCheckContext context, CancellationToken cancellationToken)
     {
-        var bills = await _dbContext.FinanceBills
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == context.CompanyId)
-            .Select(x => new BillDueRow(
-                x.Id,
-                x.CounterpartyId,
-                x.Counterparty == null ? "Unknown supplier" : x.Counterparty.Name,
-                x.BillNumber,
-                x.DueUtc,
-                x.Amount,
-                x.PaidAmount,
-                x.Currency,
-                x.Status,
-                x.PostingStatus,
-                x.SettlementStatus,
-                x.DueStatus,
-                x.DocumentKind))
-            .ToListAsync(cancellationToken);
+        var bills = await LoadBillsAsync(context, cancellationToken);
 
         var outgoingAllocations = await _dbContext.PaymentAllocations
             .IgnoreQueryFilters()
@@ -449,6 +432,98 @@ internal sealed class SupplierBillDueMonitoringFinancialCheck : IFinancialCheck
             .ThenBy(x => x.Bill.BillNumber, StringComparer.OrdinalIgnoreCase)
             .Select(x => MapResult(context, x.Bill, x.Outstanding))
             .ToArray();
+    }
+
+    private async Task<IReadOnlyList<BillDueRow>> LoadBillsAsync(
+        FinancialCheckContext context,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await _dbContext.FinanceBills
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == context.CompanyId)
+                .Select(x => new BillDueRow(
+                    x.Id,
+                    x.CounterpartyId,
+                    x.Counterparty == null ? "Unknown supplier" : x.Counterparty.Name,
+                    x.BillNumber,
+                    x.DueUtc,
+                    x.Amount,
+                    x.PaidAmount,
+                    x.Currency,
+                    x.Status,
+                    x.PostingStatus,
+                    x.SettlementStatus,
+                    x.DueStatus,
+                    x.DocumentKind))
+                .ToListAsync(cancellationToken);
+        }
+        catch (Exception exception) when (IsMissingSupplierBillLifecycleColumn(exception))
+        {
+            // Finance insights predate the richer supplier-bill lifecycle columns. During a
+            // rolling migration, derive their conservative legacy equivalents so the existing
+            // insight surface remains available until the schema upgrade completes.
+            var legacyBills = await _dbContext.FinanceBills
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == context.CompanyId)
+                .Select(x => new LegacyBillDueRow(
+                    x.Id,
+                    x.CounterpartyId,
+                    x.Counterparty == null ? "Unknown supplier" : x.Counterparty.Name,
+                    x.BillNumber,
+                    x.DueUtc,
+                    x.Amount,
+                    x.Currency,
+                    x.Status,
+                    x.SettlementStatus))
+                .ToListAsync(cancellationToken);
+
+            var dueSoonCutoff = context.AsOfUtc.Date.AddDays(context.PayableWindowDays + 1);
+            return legacyBills
+                .Select(x => new BillDueRow(
+                    x.Id,
+                    x.CounterpartyId,
+                    x.CounterpartyName,
+                    x.BillNumber,
+                    x.DueUtc,
+                    x.Amount,
+                    PaidAmount: 0m,
+                    x.Currency,
+                    x.Status,
+                    PostingStatus: FinanceDocumentPostingStatuses.Booked,
+                    x.SettlementStatus,
+                    DueStatus: x.DueUtc.Date < context.AsOfUtc.Date
+                        ? FinanceDocumentDueStatuses.Overdue
+                        : x.DueUtc < dueSoonCutoff
+                            ? FinanceDocumentDueStatuses.DueSoon
+                            : FinanceDocumentDueStatuses.NotDue,
+                    DocumentKind: FinanceDocumentKinds.SupplierInvoice))
+                .ToArray();
+        }
+    }
+
+    private static bool IsMissingSupplierBillLifecycleColumn(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (current is not SqlException { Number: 207 } sqlException)
+            {
+                continue;
+            }
+
+            if (sqlException.Message.Contains("'paid_amount'", StringComparison.OrdinalIgnoreCase) ||
+                sqlException.Message.Contains("'posting_status'", StringComparison.OrdinalIgnoreCase) ||
+                sqlException.Message.Contains("'due_status'", StringComparison.OrdinalIgnoreCase) ||
+                sqlException.Message.Contains("'document_kind'", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private static FinancialCheckResult MapResult(FinancialCheckContext context, BillDueRow bill, decimal outstanding)
@@ -547,6 +622,17 @@ internal sealed class SupplierBillDueMonitoringFinancialCheck : IFinancialCheck
         string SettlementStatus,
         string DueStatus,
         string DocumentKind);
+
+    private sealed record LegacyBillDueRow(
+        Guid Id,
+        Guid CounterpartyId,
+        string CounterpartyName,
+        string BillNumber,
+        DateTime DueUtc,
+        decimal Amount,
+        string Currency,
+        string Status,
+        string SettlementStatus);
 
     private sealed record AllocationRow(Guid DocumentId, decimal Amount);
 }

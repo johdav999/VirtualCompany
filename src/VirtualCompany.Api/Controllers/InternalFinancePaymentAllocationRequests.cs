@@ -6,8 +6,9 @@ public sealed record CreateFinancePaymentAllocationRequest(
     Guid? InvoiceId,
     Guid? BillId,
     decimal AllocatedAmount,
-    string Currency)
+    string Currency,
+    string? IdempotencyKey = null)
 {
     public CreateFinancePaymentAllocationDto ToDto(Guid paymentId) =>
-        new(paymentId, InvoiceId, BillId, AllocatedAmount, Currency);
+        new(paymentId, InvoiceId, BillId, AllocatedAmount, Currency, IdempotencyKey);
 }

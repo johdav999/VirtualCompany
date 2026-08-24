@@ -2,6 +2,7 @@ using System.Net;
 using Microsoft.Extensions.Logging;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Infrastructure.BackgroundJobs;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Application.Mailbox;
 using Xunit;
@@ -42,7 +43,7 @@ public sealed class BackgroundJobExecutorTests
     }
 
     [Fact]
-    public async Task ExecuteAsync_marks_policy_and_business_failures_blocked_without_retry()
+    public async Task ExecuteAsync_marks_authorization_failures_terminal_without_retry()
     {
         var logger = new ScopeCapturingLogger<BackgroundJobExecutor>();
         var executor = new BackgroundJobExecutor(logger, new DefaultBackgroundJobFailureClassifier());
@@ -53,9 +54,9 @@ public sealed class BackgroundJobExecutorTests
             TimeSpan.FromSeconds(5),
             CancellationToken.None);
 
-        Assert.Equal(BackgroundJobExecutionOutcome.Blocked, result.Outcome);
+        Assert.Equal(BackgroundJobExecutionOutcome.PermanentFailure, result.Outcome);
         Assert.Equal("Policy denied.", result.ErrorMessage);
-        Assert.Equal(BackgroundJobFailureClassification.PermanentPolicy, result.FailureClassification);
+        Assert.Equal(BackgroundJobFailureClassification.Authorization, result.FailureClassification);
         Assert.NotEqual("System.TimeoutException", result.ExceptionType);
 
         var entry = Assert.Single(logger.Entries);
@@ -134,7 +135,7 @@ public sealed class BackgroundJobExecutorTests
             CancellationToken.None);
 
         Assert.False(invoked);
-        Assert.Equal(BackgroundJobExecutionOutcome.PermanentFailure, result.Outcome);
+        Assert.Equal(BackgroundJobExecutionOutcome.Blocked, result.Outcome);
         Assert.Equal(BackgroundJobFailureClassification.PermanentBusinessRule, result.FailureClassification);
     }
 
@@ -146,7 +147,7 @@ public sealed class BackgroundJobExecutorTests
         using var cancellationTokenSource = new CancellationTokenSource();
         cancellationTokenSource.Cancel();
 
-        await Assert.ThrowsAsync<OperationCanceledException>(() => executor.ExecuteAsync(
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => executor.ExecuteAsync(
             new BackgroundJobExecutionContext("company-outbox:delivery", 1, 3),
             _ => Task.FromCanceled(cancellationTokenSource.Token),
             TimeSpan.Zero,
@@ -200,7 +201,7 @@ public sealed class BackgroundJobExecutorTests
         var classifier = new DefaultBackgroundJobFailureClassifier();
 
         Assert.Equal(
-            BackgroundJobFailureClassification.LockContention,
+            BackgroundJobFailureClassification.Concurrency,
             classifier.Classify(new DbUpdateConcurrencyException("stale row")));
         Assert.Equal(
             BackgroundJobFailureClassification.Validation,
@@ -219,7 +220,7 @@ public sealed class BackgroundJobExecutorTests
                 ["definitionJson"] = ["Invalid workflow definition."]
             })));
         Assert.Equal(
-            BackgroundJobFailureClassification.PermanentPolicy,
+            BackgroundJobFailureClassification.Authorization,
             classifier.Classify(new UnauthorizedAccessException("Policy denied.")));
         Assert.Equal(
             BackgroundJobFailureClassification.PermanentBusinessRule,
@@ -236,6 +237,29 @@ public sealed class BackgroundJobExecutorTests
         Assert.False(BackgroundJobFailureClassification.PermanentBusinessRule.IsRetryable());
         Assert.False(BackgroundJobFailureClassification.Configuration.IsRetryable());
         Assert.False(BackgroundJobFailureClassification.ApprovalRequired.IsRetryable());
+    }
+
+    [Fact]
+    public void Classifier_applies_finance_failure_contract_without_replaying_ambiguous_or_poison_work()
+    {
+        var classifier = new DefaultBackgroundJobFailureClassifier();
+
+        var ambiguous = classifier.Classify(new FinanceWorkerAmbiguousOutcomeException("Provider success is unknown."));
+        var poison = classifier.Classify(new FinanceWorkerPoisonPayloadException("Payload cannot be processed."));
+        var storage = classifier.Classify(new FinanceWorkerObjectStorageException("Artifact store unavailable."));
+        var cancelled = classifier.Classify(new OperationCanceledException("Work was stopped."));
+        var persistence = classifier.Classify(new DbUpdateException("Write failed."));
+
+        Assert.Equal(BackgroundJobFailureClassification.AmbiguousExternalResult, ambiguous);
+        Assert.Equal(BackgroundJobFailureDisposition.Block, ambiguous.GetDisposition());
+        Assert.Equal(BackgroundJobFailureClassification.PoisonPayload, poison);
+        Assert.Equal(BackgroundJobFailureDisposition.Fail, poison.GetDisposition());
+        Assert.Equal(BackgroundJobFailureClassification.ObjectStorage, storage);
+        Assert.True(storage.IsRetryable());
+        Assert.Equal(BackgroundJobFailureClassification.Cancellation, cancelled);
+        Assert.False(cancelled.IsRetryable());
+        Assert.Equal(BackgroundJobFailureClassification.Persistence, persistence);
+        Assert.True(persistence.IsRetryable());
     }
 
     [Fact]

@@ -32,7 +32,8 @@ public sealed partial class CompanyFinanceReadService
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
 
         if (!FinanceAgentQueryRouting.TryResolveIntent(query.QueryText, out var intent))
         {
@@ -47,10 +48,10 @@ public sealed partial class CompanyFinanceReadService
         return intent switch
         {
             var value when string.Equals(value, FinanceAgentQueryIntents.WhatShouldIPayThisWeek, StringComparison.Ordinal) =>
-                await ResolveWhatShouldIPayThisWeekAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, cancellationToken),
+                await ResolveWhatShouldIPayThisWeekAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, sourceFilter, cancellationToken),
             var value when string.Equals(value, FinanceAgentQueryIntents.WhichCustomersAreOverdue, StringComparison.Ordinal) =>
-                await ResolveWhichCustomersAreOverdueAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, cancellationToken),
-            _ => await ResolveWhyIsCashDownThisMonthAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, cancellationToken)
+                await ResolveWhichCustomersAreOverdueAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, sourceFilter, cancellationToken),
+            _ => await ResolveWhyIsCashDownThisMonthAsync(query.CompanyId, query.QueryText, asOfUtc, timeZone, sourceFilter, cancellationToken)
         };
     }
 
@@ -59,6 +60,7 @@ public sealed partial class CompanyFinanceReadService
         string queryText,
         DateTime asOfUtc,
         TimeZoneInfo timeZone,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         var weekWindow = ResolveCurrentWeekWindow(asOfUtc, timeZone);
@@ -68,19 +70,19 @@ public sealed partial class CompanyFinanceReadService
             PaymentTypes.Outgoing,
             null,
             asOfUtc.AddTicks(1),
-            cancellationToken);
+            sourceFilter, cancellationToken);
         var scheduledAllocations = await LoadBillAllocationSummariesAsync(
             companyId,
             PaymentStatuses.Pending,
             PaymentTypes.Outgoing,
             weekWindow.WindowStartUtc,
             weekWindow.WindowEndUtc,
-            cancellationToken);
+            sourceFilter, cancellationToken);
 
-        var rows = await _dbContext.FinanceBills
+        var rows = await ApplySourceFilter(_dbContext.FinanceBills
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.CompanyId == companyId), companyId, sourceFilter, "supplier_invoice", "bill")
             .Select(x => new AgentBillQueryRow(
                 x.Id,
                 x.CounterpartyId,
@@ -98,8 +100,12 @@ public sealed partial class CompanyFinanceReadService
             .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
             .Select(row =>
             {
-                var completed = completedAllocations.GetValueOrDefault(row.Id);
-                var scheduled = scheduledAllocations.GetValueOrDefault(row.Id);
+                var completed = completedAllocations.TryGetValue(row.Id, out var completedValue)
+                    ? completedValue
+                    : AllocationSummary.Empty;
+                var scheduled = scheduledAllocations.TryGetValue(row.Id, out var scheduledValue)
+                    ? scheduledValue
+                    : AllocationSummary.Empty;
                 var remaining = CalculateRemainingBalance(row.Amount, completed.Amount);
                 if (remaining <= 0m || row.DueUtc >= weekWindow.WindowEndUtc)
                 {
@@ -167,7 +173,8 @@ public sealed partial class CompanyFinanceReadService
                 new FinanceAgentMetricComponentDto("recommended_payables_count", "Recommended payables count", items.Length, null, items.Length, currency, sourceRecordIds),
                 new FinanceAgentMetricComponentDto("overdue_payables_count", "Overdue payables count", overdueCount, null, overdueCount, currency, DistinctIds(items.Where(x => x.DaysOverdue.HasValue).SelectMany(x => x.SourceRecordIds)))
             ],
-            sourceRecordIds);
+            sourceRecordIds,
+            sourceFilter);
     }
 
     private async Task<FinanceAgentQueryResultDto> ResolveWhichCustomersAreOverdueAsync(
@@ -175,6 +182,7 @@ public sealed partial class CompanyFinanceReadService
         string queryText,
         DateTime asOfUtc,
         TimeZoneInfo timeZone,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         var completedAllocations = await LoadInvoiceAllocationSummariesAsync(
@@ -183,12 +191,12 @@ public sealed partial class CompanyFinanceReadService
             PaymentTypes.Incoming,
             null,
             asOfUtc.AddTicks(1),
-            cancellationToken);
+            sourceFilter, cancellationToken);
 
-        var rows = await _dbContext.FinanceInvoices
+        var rows = await ApplySourceFilter(_dbContext.FinanceInvoices
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.CompanyId == companyId), companyId, sourceFilter, "invoice")
             .Select(x => new AgentInvoiceQueryRow(
                 x.Id,
                 x.CounterpartyId,
@@ -206,7 +214,9 @@ public sealed partial class CompanyFinanceReadService
             .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus) && x.DueUtc < asOfUtc)
             .Select(row =>
             {
-                var completed = completedAllocations.GetValueOrDefault(row.Id);
+                var completed = completedAllocations.TryGetValue(row.Id, out var completedValue)
+                    ? completedValue
+                    : AllocationSummary.Empty;
                 var remaining = CalculateRemainingBalance(row.Amount, completed.Amount);
                 if (remaining <= 0m)
                 {
@@ -260,7 +270,8 @@ public sealed partial class CompanyFinanceReadService
                 new FinanceAgentMetricComponentDto("overdue_receivables_total", "Overdue receivables total", totalOutstanding, null, totalOutstanding, currency, sourceRecordIds),
                 new FinanceAgentMetricComponentDto("overdue_receivables_count", "Overdue receivables count", items.Length, null, items.Length, currency, sourceRecordIds)
             ],
-            sourceRecordIds);
+            sourceRecordIds,
+            sourceFilter);
     }
 
     private async Task<FinanceAgentQueryResultDto> ResolveWhyIsCashDownThisMonthAsync(
@@ -268,6 +279,7 @@ public sealed partial class CompanyFinanceReadService
         string queryText,
         DateTime asOfUtc,
         TimeZoneInfo timeZone,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         var monthWindow = ResolveMonthToDateWindow(asOfUtc, timeZone);
@@ -289,8 +301,8 @@ public sealed partial class CompanyFinanceReadService
             .Select(x => x.Id)
             .ToArray();
 
-        var currentRows = await LoadCashMovementRowsAsync(companyId, cashAccountIds, monthWindow.WindowStartUtc, monthWindow.WindowEndUtc, cancellationToken);
-        var comparisonRows = await LoadCashMovementRowsAsync(companyId, cashAccountIds, monthWindow.ComparisonStartUtc!.Value, monthWindow.ComparisonEndUtc!.Value, cancellationToken);
+        var currentRows = await LoadCashMovementRowsAsync(companyId, cashAccountIds, monthWindow.WindowStartUtc, monthWindow.WindowEndUtc, sourceFilter, cancellationToken);
+        var comparisonRows = await LoadCashMovementRowsAsync(companyId, cashAccountIds, monthWindow.ComparisonStartUtc!.Value, monthWindow.ComparisonEndUtc!.Value, sourceFilter, cancellationToken);
 
         var currency = ResolveCurrency(
             currentRows.Select(x => new FinanceAmountRow(x.Amount, x.Currency))
@@ -360,7 +372,8 @@ public sealed partial class CompanyFinanceReadService
                 new FinanceAgentMetricComponentDto("cash_inflows", "Cash inflows", inflowsCurrent, inflowsPrevious, inflowsCurrent - inflowsPrevious, currency, DistinctIds(currentRows.Where(x => x.Amount > 0m).Select(x => x.Id).Concat(comparisonRows.Where(x => x.Amount > 0m).Select(x => x.Id)))),
                 new FinanceAgentMetricComponentDto("cash_outflows", "Cash outflows", -outflowsCurrent, -outflowsPrevious, outflowsPrevious - outflowsCurrent, currency, DistinctIds(currentRows.Where(x => x.Amount < 0m).Select(x => x.Id).Concat(comparisonRows.Where(x => x.Amount < 0m).Select(x => x.Id))))
             }.Concat(categoryComponents).ToArray(),
-            sourceRecordIds);
+            sourceRecordIds,
+            sourceFilter);
     }
 
 }

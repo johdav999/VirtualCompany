@@ -10,6 +10,7 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Finance.Tests;
 
+[Trait("Category", "SqlServer")]
 public sealed class AccountingPostingSqlServerIntegrationTests
 {
     private static readonly DateTime NowUtc = new(2026, 8, 19, 12, 0, 0, DateTimeKind.Utc);
@@ -252,7 +253,7 @@ public sealed class AccountingPostingSqlServerIntegrationTests
     private static VirtualCompanyDbContext CreateContext(string connectionString, ICompanyContextAccessor accessor)
     {
         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
-            .UseSqlServer(connectionString, sql => sql.MigrationsAssembly(typeof(VirtualCompanyDbContextFactory).Assembly.GetName().Name))
+            .UseSqlServer(connectionString, sql => sql.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection).Assembly.GetName().Name))
             .Options;
         return new VirtualCompanyDbContext(options, accessor);
     }

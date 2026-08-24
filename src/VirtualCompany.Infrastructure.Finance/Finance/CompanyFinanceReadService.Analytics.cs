@@ -1,4 +1,5 @@
 using System.Text.Json;
+using Microsoft.Data.SqlClient;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
@@ -510,14 +511,25 @@ public sealed partial class CompanyFinanceReadService
                 [companyEntity]));
         }
 
-        var summaryQueryService = new CompanyFinanceSummaryQueryService(
-            _dbContext,
-            _timeProvider ?? TimeProvider.System,
-            new FinanceSummaryConsistencyChecker(_dbContext));
-        var summary = await summaryQueryService.GetAsync(
-            new GetFinanceSummaryQuery(parameters.CompanyId, parameters.AsOfUtc, 5, IncludeConsistencyCheck: true),
-            cancellationToken);
-        if (summary.ConsistencyCheck is { IsConsistent: false } consistency)
+        FinanceSummaryDto? summary = null;
+        try
+        {
+            var summaryQueryService = new CompanyFinanceSummaryQueryService(
+                _dbContext,
+                _timeProvider ?? TimeProvider.System,
+                new FinanceSummaryConsistencyChecker(_dbContext));
+            summary = await summaryQueryService.GetAsync(
+                new GetFinanceSummaryQuery(parameters.CompanyId, parameters.AsOfUtc, 5, IncludeConsistencyCheck: true),
+                cancellationToken);
+        }
+        catch (Exception exception) when (IsLegacyFinanceSummarySchema(exception))
+        {
+            // Summary consistency was added after the original insight surface. It is an
+            // optional derived signal during a rolling migration; the checks supported by the
+            // legacy schema, including missing planning baselines, must still be returned.
+        }
+
+        if (summary?.ConsistencyCheck is { IsConsistent: false } consistency)
         {
             var mismatchCount = consistency.Metrics.Count(x => !x.IsMatch);
             results.Add(new FinancialCheckResult(
@@ -539,6 +551,22 @@ public sealed partial class CompanyFinanceReadService
         }
 
         return results;
+    }
+
+    private static bool IsLegacyFinanceSummarySchema(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (current is SqlException { Number: 207 } sqlException &&
+                (sqlException.Message.Contains("'source_type'", StringComparison.OrdinalIgnoreCase) ||
+                 sqlException.Message.Contains("'due_status'", StringComparison.OrdinalIgnoreCase) ||
+                 sqlException.Message.Contains("'settlement_status'", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private async Task<FinancePlanningAnalyticsDto> BuildPlanningAnalyticsAsync(

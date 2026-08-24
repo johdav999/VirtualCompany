@@ -11,7 +11,7 @@ internal sealed class SimulationCashDeltaRecordEntityConfiguration : IEntityType
         builder.ToTable("simulation_cash_delta_records");
         builder.ToTable(t =>
         {
-            t.HasCheckConstraint("CK_simulation_cash_delta_records_cash_snapshot", "cash_after = cash_before + cash_delta");
+            t.HasCheckConstraint("CK_simulation_cash_delta_records_cash_snapshot", "cash_after = ROUND(cash_before + cash_delta, 2)");
         });
 
         builder.HasKey(x => x.Id);

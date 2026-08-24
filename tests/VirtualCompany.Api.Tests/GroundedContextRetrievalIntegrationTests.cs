@@ -132,6 +132,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IDisposable
                     "payments",
                     ToolActionType.Execute,
                     "finance",
+                    thresholdContext: new Dictionary<string, JsonNode?> { ["amount"] = JsonValue.Create(100m) },
                     policyDecision: new Dictionary<string, JsonNode?>()));
 
             await Task.CompletedTask;
@@ -374,6 +375,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IDisposable
                     "payments",
                     ToolActionType.Execute,
                     "finance",
+                    thresholdContext: new Dictionary<string, JsonNode?> { ["amount"] = JsonValue.Create(100m) },
                     policyDecision: new Dictionary<string, JsonNode?>()));
 
             await Task.CompletedTask;
@@ -540,7 +542,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IDisposable
         Assert.Equal(GroundedContextSourceTypes.MemoryItem, persistedSource.SourceType);
         Assert.Null(persistedSource.ParentSourceType);
         Assert.Null(persistedSource.ParentSourceEntityId);
-        Assert.Contains("fact", persistedSource.Locator!, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("company_memory", persistedSource.Locator!, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("company_wide", persistedSource.Locator!, StringComparison.OrdinalIgnoreCase);
     }
 
@@ -1048,7 +1050,7 @@ public sealed class GroundedContextRetrievalIntegrationTests : IDisposable
             null,
             null,
             salience,
-            DateTime.UtcNow.AddHours(-1),
+            new DateTime(2026, 4, 1, 7, 0, 0, DateTimeKind.Utc),
             null,
             metadata);
     }
@@ -1064,8 +1066,8 @@ public sealed class GroundedContextRetrievalIntegrationTests : IDisposable
             null,
             null,
             salience,
-            DateTime.UtcNow.AddDays(-5),
-            DateTime.UtcNow.AddDays(-1));
+            new DateTime(2026, 3, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 3, 31, 0, 0, 0, DateTimeKind.Utc));
     }
 
     private static ToolExecutionAttempt CreateAttempt(

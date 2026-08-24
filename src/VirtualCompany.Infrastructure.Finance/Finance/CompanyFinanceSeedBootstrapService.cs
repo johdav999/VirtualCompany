@@ -87,6 +87,10 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
         if (command.ReplaceExisting)
         {
             await RemoveExistingFinanceSeedAsync(command.CompanyId, cancellationToken);
+            // Flush the replacement deletes inside the surrounding transaction before the
+            // deterministic generator queries for reusable records. Otherwise EF can return
+            // entities already marked Deleted and the new dataset inherits stale references.
+            await _dbContext.SaveChangesAsync(cancellationToken);
         }
 
         if (!command.ReplaceExisting && bootstrapState.RequiresBankingBootstrap)
@@ -124,10 +128,9 @@ public sealed class CompanyFinanceSeedBootstrapService : IFinanceSeedBootstrapSe
 
     private FinanceSeedDataset CreateDataset(FinanceSeedBootstrapCommand command)
     {
-        var allowNonSimulationTransactions = _transactionCreationOptions.AllowNonSimulationTransactionCreation;
-        var anomalyOptions = allowNonSimulationTransactions
-            ? new FinanceAnomalyInjectionOptions(command.InjectAnomalies, command.AnomalyScenarioProfile ?? "baseline")
-            : FinanceAnomalyInjectionOptions.Disabled;
+        var anomalyOptions = new FinanceAnomalyInjectionOptions(
+            command.InjectAnomalies,
+            command.AnomalyScenarioProfile ?? "baseline");
 
         return command.SeedAnchorUtc.HasValue
             ? DeterministicFinanceSeedDatasetGenerator.Generate(

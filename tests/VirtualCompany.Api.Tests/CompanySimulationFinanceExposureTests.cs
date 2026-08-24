@@ -59,15 +59,24 @@ public sealed class CompanySimulationFinanceExposureTests
         provider.Advance(TimeSpan.FromSeconds(160));
         _ = await stateService.GetStateAsync(new GetCompanySimulationStateQuery(companyId), CancellationToken.None);
 
-        var fullInvoice = await dbContext.FinanceInvoices
+        var invoiceAllocations = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.InvoiceNumber.EndsWith("-FULL", StringComparison.OrdinalIgnoreCase));
-        var partialInvoice = await dbContext.FinanceInvoices
-            .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.InvoiceNumber.EndsWith("-PART", StringComparison.OrdinalIgnoreCase));
+            .Where(x => x.CompanyId == companyId && x.InvoiceId.HasValue)
+            .Select(x => new { Invoice = x.Invoice!, x.AllocatedAmount })
+            .ToListAsync();
+        var fullInvoice = invoiceAllocations
+            .Where(x => x.AllocatedAmount == x.Invoice.Amount)
+            .OrderBy(x => x.Invoice.IssuedUtc)
+            .First().Invoice;
+        var partialInvoice = invoiceAllocations
+            .Where(x => x.AllocatedAmount > 0m && x.AllocatedAmount < x.Invoice.Amount)
+            .OrderBy(x => x.Invoice.IssuedUtc)
+            .First().Invoice;
         var unpaidInvoice = await dbContext.FinanceInvoices
             .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Unpaid);
+            .Where(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Unpaid)
+            .OrderBy(x => x.IssuedUtc)
+            .FirstAsync();
 
         var fullInvoiceAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
@@ -91,10 +100,14 @@ public sealed class CompanySimulationFinanceExposureTests
 
         var settledBill = await dbContext.FinanceBills
             .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Paid);
+            .Where(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Paid)
+            .OrderBy(x => x.ReceivedUtc)
+            .FirstAsync();
         var openBill = await dbContext.FinanceBills
             .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Unpaid);
+            .Where(x => x.CompanyId == companyId && x.SettlementStatus == FinanceSettlementStatuses.Unpaid)
+            .OrderBy(x => x.ReceivedUtc)
+            .FirstAsync();
 
         var settledBillAllocated = await dbContext.PaymentAllocations
             .IgnoreQueryFilters()
@@ -110,10 +123,14 @@ public sealed class CompanySimulationFinanceExposureTests
 
         var cashFundedAsset = await dbContext.FinanceAssets
             .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.FundingBehavior == FinanceAssetFundingBehaviors.Cash);
+            .Where(x => x.CompanyId == companyId && x.FundingBehavior == FinanceAssetFundingBehaviors.Cash)
+            .OrderBy(x => x.PurchasedUtc)
+            .FirstAsync();
         var payableFundedAsset = await dbContext.FinanceAssets
             .IgnoreQueryFilters()
-            .SingleAsync(x => x.CompanyId == companyId && x.FundingBehavior == FinanceAssetFundingBehaviors.Payable);
+            .Where(x => x.CompanyId == companyId && x.FundingBehavior == FinanceAssetFundingBehaviors.Payable)
+            .OrderBy(x => x.PurchasedUtc)
+            .FirstAsync();
 
         var cashAssetPaymentExists = await dbContext.Payments
             .IgnoreQueryFilters()

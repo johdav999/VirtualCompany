@@ -9,6 +9,7 @@ using StackExchange.Redis;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Application.BackgroundExecution;
 using VirtualCompany.Application.ExecutionExceptions;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Infrastructure.Observability;
@@ -29,7 +30,14 @@ public enum BackgroundJobFailureClassification
     Validation = 7,
     Configuration = 8,
     RateLimited = 9,
-    ApprovalRequired = 10
+    ApprovalRequired = 10,
+    Cancellation = 11,
+    Authorization = 12,
+    Concurrency = 13,
+    AmbiguousExternalResult = 14,
+    Persistence = 15,
+    ObjectStorage = 16,
+    PoisonPayload = 17
 }
 
 public static class BackgroundJobFailureClassificationExtensions
@@ -40,7 +48,10 @@ public static class BackgroundJobFailureClassificationExtensions
             or BackgroundJobFailureClassification.Unknown
             or BackgroundJobFailureClassification.RateLimited
             or BackgroundJobFailureClassification.ExternalDependencyTimeout
-            or BackgroundJobFailureClassification.ExternalDependencyUnavailable;
+            or BackgroundJobFailureClassification.ExternalDependencyUnavailable
+            or BackgroundJobFailureClassification.Concurrency
+            or BackgroundJobFailureClassification.Persistence
+            or BackgroundJobFailureClassification.ObjectStorage;
 
     public static BackgroundJobFailureDisposition GetDisposition(this BackgroundJobFailureClassification classification) =>
         classification.IsRetryable()
@@ -48,6 +59,7 @@ public static class BackgroundJobFailureClassificationExtensions
             : classification is BackgroundJobFailureClassification.PermanentPolicy
                 or BackgroundJobFailureClassification.PermanentBusinessRule
                 or BackgroundJobFailureClassification.ApprovalRequired
+                or BackgroundJobFailureClassification.AmbiguousExternalResult
                 ? BackgroundJobFailureDisposition.Block
                 : BackgroundJobFailureDisposition.Fail;
 }
@@ -171,6 +183,21 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
     {
         foreach (var current in Enumerate(exception))
         {
+            if (current is FinanceWorkerAmbiguousOutcomeException)
+            {
+                return BackgroundJobFailureClassification.AmbiguousExternalResult;
+            }
+
+            if (current is FinanceWorkerPoisonPayloadException)
+            {
+                return BackgroundJobFailureClassification.PoisonPayload;
+            }
+
+            if (current is FinanceWorkerObjectStorageException)
+            {
+                return BackgroundJobFailureClassification.ObjectStorage;
+            }
+
             if (current is WorkflowBlockedException)
             {
                 return BackgroundJobFailureClassification.ApprovalRequired;
@@ -183,7 +210,7 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
 
             if (current is UnauthorizedAccessException)
             {
-                return BackgroundJobFailureClassification.PermanentPolicy;
+                return BackgroundJobFailureClassification.Authorization;
             }
 
             if (current is VirtualCompany.Application.Mailbox.MailboxProviderExecutionException mailboxFailure)
@@ -203,9 +230,16 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
                 return BackgroundJobFailureClassification.PermanentBusinessRule;
             }
 
-            if (current is OperationCanceledException)
+            // HttpClient and several provider SDKs surface their own timeout as a
+            // TaskCanceledException even when the host token was not cancelled.
+            if (current is TaskCanceledException)
             {
                 return BackgroundJobFailureClassification.ExternalDependencyTimeout;
+            }
+
+            if (current is OperationCanceledException)
+            {
+                return BackgroundJobFailureClassification.Cancellation;
             }
 
             if (current is KeyNotFoundException)
@@ -215,7 +249,7 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
 
             if (current is DbUpdateConcurrencyException)
             {
-                return BackgroundJobFailureClassification.LockContention;
+                return BackgroundJobFailureClassification.Concurrency;
             }
 
             if (current is TimeoutException)
@@ -233,7 +267,12 @@ public sealed class DefaultBackgroundJobFailureClassifier : IBackgroundJobFailur
                 return BackgroundJobFailureClassification.ExternalDependencyUnavailable;
             }
 
-            if (current is IOException or SocketException or RedisException or DbUpdateException)
+            if (current is DbUpdateException)
+            {
+                return BackgroundJobFailureClassification.Persistence;
+            }
+
+            if (current is IOException or SocketException or RedisException)
             {
                 return BackgroundJobFailureClassification.ExternalDependencyUnavailable;
             }
@@ -327,7 +366,7 @@ public sealed class BackgroundJobExecutor : IBackgroundJobExecutor
 
             return BackgroundJobExecutionResult.Success(effectiveCorrelationId, effectiveIdempotencyKey);
         }
-        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested && ex.CancellationToken != cancellationToken)
+        catch (OperationCanceledException ex) when (!cancellationToken.IsCancellationRequested)
         {
             return HandleFailure(context, effectiveCorrelationId, effectiveIdempotencyKey, normalizedRetryDelay, ex);
         }
@@ -614,6 +653,13 @@ public sealed class BackgroundExecutionRecorder : IBackgroundExecutionRecorder
             BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
             BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
             BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
+            BackgroundJobFailureClassification.Cancellation => BackgroundExecutionFailureCategory.Cancellation,
+            BackgroundJobFailureClassification.Authorization => BackgroundExecutionFailureCategory.Authorization,
+            BackgroundJobFailureClassification.Concurrency => BackgroundExecutionFailureCategory.Concurrency,
+            BackgroundJobFailureClassification.AmbiguousExternalResult => BackgroundExecutionFailureCategory.AmbiguousExternalResult,
+            BackgroundJobFailureClassification.Persistence => BackgroundExecutionFailureCategory.Persistence,
+            BackgroundJobFailureClassification.ObjectStorage => BackgroundExecutionFailureCategory.ObjectStorage,
+            BackgroundJobFailureClassification.PoisonPayload => BackgroundExecutionFailureCategory.PoisonPayload,
             _ => BackgroundExecutionFailureCategory.TransientInfrastructure
         };
 

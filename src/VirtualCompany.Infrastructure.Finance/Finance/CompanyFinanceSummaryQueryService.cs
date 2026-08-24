@@ -34,7 +34,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     {
         EnsureTenant(query.CompanyId);
 
-        var effectiveAsOfUtc = await ResolveAsOfUtcAsync(query.CompanyId, query.AsOfUtc, cancellationToken);
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        var effectiveAsOfUtc = await ResolveAsOfUtcAsync(query.CompanyId, query.AsOfUtc, sourceFilter, cancellationToken);
         var recentAssetPurchaseLimit = Math.Clamp(
             query.RecentAssetPurchaseLimit <= 0 ? DefaultRecentAssetPurchaseLimit : query.RecentAssetPurchaseLimit,
             1,
@@ -56,7 +57,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         var accountQuery = ApplySourceFilter(_dbContext.FinanceAccounts
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId), query.CompanyId, query.SourceFilter, "account");
+            .Where(x => x.CompanyId == query.CompanyId), query.CompanyId, sourceFilter, "account");
 
         var accounts = await accountQuery
             .Select(x => new FinanceAccountRow(
@@ -76,13 +77,13 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             query.CompanyId,
             effectiveAsOfUtc,
             cashAccounts,
-            query.SourceFilter,
+            sourceFilter,
             cancellationToken);
 
         var invoiceQuery = ApplySourceFilter(_dbContext.FinanceInvoices
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc <= effectiveAsOfUtc), query.CompanyId, query.SourceFilter, "invoice");
+            .Where(x => x.CompanyId == query.CompanyId && x.IssuedUtc <= effectiveAsOfUtc), query.CompanyId, sourceFilter, "invoice");
         var invoiceRows = await invoiceQuery
             .Select(x => new InvoiceRow(
                 x.Id,
@@ -101,7 +102,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         var billQuery = ApplySourceFilter(_dbContext.FinanceBills
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.ReceivedUtc <= effectiveAsOfUtc), query.CompanyId, query.SourceFilter, "supplier_invoice", "bill");
+            .Where(x => x.CompanyId == query.CompanyId && x.ReceivedUtc <= effectiveAsOfUtc), query.CompanyId, sourceFilter, "supplier_invoice", "bill");
 
         var billRows = await billQuery
             .Select(x => new BillRow(
@@ -121,10 +122,12 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         var completedIncomingByInvoice = await LoadInvoiceAllocationLookupAsync(
             query.CompanyId,
             effectiveAsOfUtc,
+            sourceFilter,
             cancellationToken);
         var completedOutgoingByBill = await LoadBillAllocationLookupAsync(
             query.CompanyId,
             effectiveAsOfUtc,
+            sourceFilter,
             cancellationToken);
 
         var accountsReceivable = Round(invoiceRows
@@ -143,10 +146,13 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus) && IsOverdue(x.DueStatus, x.DueUtc, effectiveAsOfUtc))
             .Sum(x => CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id))));
 
-        var assetRows = await _dbContext.FinanceAssets
+        var assetRows = await ApplySourceFilter(_dbContext.FinanceAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.PurchasedUtc <= effectiveAsOfUtc)
+            .Where(x => x.CompanyId == query.CompanyId && x.PurchasedUtc <= effectiveAsOfUtc),
+            query.CompanyId,
+            sourceFilter,
+            "asset")
             .Select(x => new AssetRow(
                 x.Id,
                 x.ReferenceNumber,
@@ -226,6 +232,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             query.CompanyId,
             effectiveAsOfUtc,
             invoiceRows,
+            sourceFilter,
             cancellationToken);
 
         var financeIntelligence = FinanceIntelligenceHeuristics.Evaluate(
@@ -283,7 +290,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             recentAssetPurchaseCount,
             recentAssetPurchaseTotalAmount,
             recentAssetPurchases,
-            financeIntelligence);
+            financeIntelligence,
+            Source: sourceFilter);
 
         if (!query.IncludeConsistencyCheck)
         {
@@ -295,6 +303,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             effectiveAsOfUtc,
             recentAssetPurchaseLimit,
             summary,
+            sourceFilter,
             cancellationToken);
         return summary with { ConsistencyCheck = consistencyCheck };
     }
@@ -376,8 +385,9 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     private async Task<Dictionary<Guid, decimal>> LoadInvoiceAllocationLookupAsync(
         Guid companyId,
         DateTime asOfUtc,
+        string sourceFilter,
         CancellationToken cancellationToken) =>
-        await _dbContext.PaymentAllocations
+        await new FinanceRecordSourcePolicy(_dbContext).ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
@@ -385,7 +395,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.InvoiceId.HasValue &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
-                x.Payment.PaymentDate <= asOfUtc)
+                x.Payment.PaymentDate <= asOfUtc), companyId, sourceFilter)
             .GroupBy(x => x.InvoiceId!.Value)
             .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
@@ -393,8 +403,9 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     private async Task<Dictionary<Guid, decimal>> LoadBillAllocationLookupAsync(
         Guid companyId,
         DateTime asOfUtc,
+        string sourceFilter,
         CancellationToken cancellationToken) =>
-        await _dbContext.PaymentAllocations
+        await new FinanceRecordSourcePolicy(_dbContext).ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
@@ -402,7 +413,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.BillId.HasValue &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
-                x.Payment.PaymentDate <= asOfUtc)
+                x.Payment.PaymentDate <= asOfUtc), companyId, sourceFilter)
             .GroupBy(x => x.BillId!.Value)
             .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
@@ -411,9 +422,10 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         Guid companyId,
         DateTime asOfUtc,
         IReadOnlyList<InvoiceRow> invoiceRows,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
-        var allocationRows = await _dbContext.PaymentAllocations
+        var allocationRows = await new FinanceRecordSourcePolicy(_dbContext).ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
@@ -421,7 +433,7 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 x.InvoiceId.HasValue &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
-                x.Payment.PaymentDate <= asOfUtc)
+                x.Payment.PaymentDate <= asOfUtc), companyId, sourceFilter)
             .Select(x => new InvoicePaymentHistoryAllocationRow(
                 x.InvoiceId!.Value,
                 x.Payment.PaymentDate,
@@ -449,12 +461,18 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     private async Task<DateTime> ResolveAsOfUtcAsync(
         Guid companyId,
         DateTime? asOfUtc,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
         var normalizedAsOfUtc = NormalizeUtc(asOfUtc);
         if (normalizedAsOfUtc.HasValue)
         {
             return normalizedAsOfUtc.Value;
+        }
+
+        if (sourceFilter != FinanceDataSources.Simulation)
+        {
+            return _timeProvider.GetUtcNow().UtcDateTime;
         }
 
         var simulatedUtc = await _dbContext.CompanySimulationStates
@@ -475,35 +493,8 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         string? sourceFilter,
         params string[] externalEntityTypes)
         where TEntity : class
-    {
-        var normalized = FinanceDataSources.Normalize(sourceFilter);
-        if (normalized == FinanceDataSources.All)
-        {
-            return source;
-        }
-
-        return normalized switch
-        {
-            FinanceDataSources.Operational => source.Where(x =>
-                EF.Property<string>(x, "SourceType") != FinanceRecordSourceTypes.Simulation ||
-                externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
-            FinanceDataSources.Fortnox => source.Where(x =>
-                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Fortnox ||
-                EF.Property<string?>(x, "ProviderKey") == FinanceIntegrationProviderKeys.Fortnox ||
-                externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
-            FinanceDataSources.Simulation => source.Where(x =>
-                EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation &&
-                !externalEntityTypes.Any(entityType => HasFortnoxReference(companyId, entityType, EF.Property<Guid>(x, "Id")))),
-            _ => throw new ArgumentOutOfRangeException(nameof(sourceFilter), sourceFilter, "Source filter must be operational, all, fortnox, or simulation.")
-        };
-    }
-
-    private bool HasFortnoxReference(Guid companyId, string entityType, Guid internalRecordId) =>
-        _dbContext.FinanceExternalReferences.IgnoreQueryFilters().Any(reference =>
-            reference.CompanyId == companyId &&
-            reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
-            reference.EntityType == entityType &&
-            reference.InternalRecordId == internalRecordId);
+        => new FinanceRecordSourcePolicy(_dbContext)
+            .ApplyFilter(source, companyId, sourceFilter, externalEntityTypes);
 
     private void EnsureTenant(Guid companyId)
     {
@@ -553,25 +544,25 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
     private static bool IsIncludedReceivable(string status, string settlementStatus)
     {
         var normalizedSettlement = FinanceSettlementStatuses.Normalize(settlementStatus);
-        if (normalizedSettlement is FinanceSettlementStatuses.Paid or FinanceSettlementStatuses.Credited)
+        if (normalizedSettlement is FinanceSettlementStatuses.Credited)
         {
             return false;
         }
 
         var normalizedStatus = NormalizeStatus(status);
-        return normalizedStatus is not ("paid" or "cancelled" or "canceled" or "void" or "voided" or "written_off" or "rejected");
+        return normalizedStatus is not ("cancelled" or "canceled" or "void" or "voided" or "written_off" or "rejected");
     }
 
     private static bool IsIncludedPayable(string status, string settlementStatus)
     {
         var normalizedSettlement = FinanceSettlementStatuses.Normalize(settlementStatus);
-        if (normalizedSettlement is FinanceSettlementStatuses.Paid or FinanceSettlementStatuses.Credited)
+        if (normalizedSettlement is FinanceSettlementStatuses.Credited)
         {
             return false;
         }
 
         var normalizedStatus = NormalizeStatus(status);
-        return normalizedStatus is not ("paid" or "cancelled" or "canceled" or "void" or "voided");
+        return normalizedStatus is not ("cancelled" or "canceled" or "void" or "voided");
     }
 
     private static bool IsOpenPayableAsset(AssetRow row) =>
@@ -580,7 +571,6 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
         IsIncludedAssetCost(row.Status);
 
     private static bool IsOverdue(string dueStatus, DateTime dueUtc, DateTime asOfUtc) =>
-        string.Equals(FinanceDocumentDueStatuses.Normalize(dueStatus), FinanceDocumentDueStatuses.Overdue, StringComparison.Ordinal) ||
         dueUtc.Date < asOfUtc.Date;
 
     private static bool IsIncludedInMonthlyRevenue(string status)

@@ -133,8 +133,11 @@ public sealed class FinanceCommandServiceTests
         var accessor = new TestCompanyContextAccessor(companyAId);
         await using var dbContext = CreateContext(connection, accessor);
         await dbContext.Database.EnsureCreatedAsync();
+        accessor.SetCompanyId(companyBId);
         var seedB = SeedFinanceWriteScenario(dbContext, companyBId);
         await dbContext.SaveChangesAsync();
+        dbContext.ChangeTracker.Clear();
+        accessor.SetCompanyId(companyAId);
 
         var service = new CompanyFinanceCommandService(dbContext, accessor);
 
@@ -164,7 +167,7 @@ public sealed class FinanceCommandServiceTests
             new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
             CancellationToken.None);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<FinanceValidationException>(() =>
             service.UpdateInvoiceApprovalStatusAsync(
                 new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "open"),
                 CancellationToken.None));
@@ -194,7 +197,7 @@ public sealed class FinanceCommandServiceTests
 
         var service = new CompanyFinanceCommandService(dbContext, accessor);
 
-        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+        await Assert.ThrowsAsync<FinanceValidationException>(() =>
             service.UpdateInvoiceApprovalStatusAsync(
                 new UpdateFinanceInvoiceApprovalStatusCommand(companyId, seed.InvoiceId, "approved"),
                 CancellationToken.None));

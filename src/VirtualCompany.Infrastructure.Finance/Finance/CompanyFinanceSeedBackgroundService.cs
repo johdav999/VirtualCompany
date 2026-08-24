@@ -47,6 +47,35 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
     private readonly IOptions<FinanceSeedWorkerOptions> _options;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<CompanyFinanceSeedJobRunner> _logger;
+    private readonly FinanceBackgroundExecutionAttemptRecorder _attemptRecorder;
+
+    public CompanyFinanceSeedJobRunner(
+        VirtualCompanyDbContext dbContext,
+        IFinanceSeedBootstrapService bootstrapService,
+        IBackgroundJobExecutor backgroundJobExecutor,
+        IBackgroundExecutionRetryPolicy retryPolicy,
+        ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+        IFinanceSeedTelemetry financeSeedTelemetry,
+        IAuditEventWriter auditEventWriter,
+        IOptions<FinanceSeedBackfillWorkerOptions> backfillOptions,
+        IOptions<FinanceSeedWorkerOptions> options,
+        TimeProvider timeProvider,
+        FinanceBackgroundExecutionAttemptRecorder attemptRecorder,
+        ILogger<CompanyFinanceSeedJobRunner> logger)
+    {
+        _dbContext = dbContext;
+        _bootstrapService = bootstrapService;
+        _backgroundJobExecutor = backgroundJobExecutor;
+        _retryPolicy = retryPolicy;
+        _companyExecutionScopeFactory = companyExecutionScopeFactory;
+        _financeSeedTelemetry = financeSeedTelemetry;
+        _auditEventWriter = auditEventWriter;
+        _backfillOptions = backfillOptions;
+        _options = options;
+        _timeProvider = timeProvider;
+        _attemptRecorder = attemptRecorder;
+        _logger = logger;
+    }
 
     public CompanyFinanceSeedJobRunner(
         VirtualCompanyDbContext dbContext,
@@ -60,18 +89,10 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
         IOptions<FinanceSeedWorkerOptions> options,
         TimeProvider timeProvider,
         ILogger<CompanyFinanceSeedJobRunner> logger)
+        : this(dbContext, bootstrapService, backgroundJobExecutor, retryPolicy, companyExecutionScopeFactory,
+            financeSeedTelemetry, auditEventWriter, backfillOptions, options, timeProvider,
+            new FinanceBackgroundExecutionAttemptRecorder(dbContext, timeProvider), logger)
     {
-        _dbContext = dbContext;
-        _bootstrapService = bootstrapService;
-        _backgroundJobExecutor = backgroundJobExecutor;
-        _retryPolicy = retryPolicy;
-        _companyExecutionScopeFactory = companyExecutionScopeFactory;
-        _financeSeedTelemetry = financeSeedTelemetry;
-        _auditEventWriter = auditEventWriter;
-        _backfillOptions = backfillOptions;
-        _options = options;
-        _timeProvider = timeProvider;
-        _logger = logger;
     }
 
     public async Task<int> RunDueAsync(CancellationToken cancellationToken)
@@ -99,7 +120,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                     FinanceSeedingState.Seeding);
             }
             var startedAtUtc = _timeProvider.GetUtcNow().UtcDateTime;
-            execution.StartAttempt(execution.CorrelationId, attempt, maxAttempts);
+            var attemptRecord = await _attemptRecorder.StartAsync(execution, "finance-seed", cancellationToken);
             FinanceSeedingMetadata.MarkSeeding(
                 company,
                 startedAtUtc,
@@ -258,7 +279,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                 await ReconcileBackfillRunAsync(backfillAttempt.RunId, cancellationToken);
             }
 
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            await _attemptRecorder.CompleteAsync(execution, attemptRecord, cancellationToken);
 
             if (!string.IsNullOrWhiteSpace(terminalEventName))
             {
@@ -365,10 +386,13 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
     {
         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
         var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
+        var leaseExpiresUtc = nowUtc.AddSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds));
+        var claimToken = Guid.NewGuid().ToString("N");
         var candidateIds = await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
@@ -389,6 +413,7 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
             .IgnoreQueryFilters()
             .Where(x =>
                 candidateIds.Contains(x.Id) &&
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
@@ -396,19 +421,33 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
                   (x.HeartbeatUtc == null || x.HeartbeatUtc <= staleBeforeUtc))))
             .ExecuteUpdateAsync(setters => setters
                 .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
+                .SetProperty(x => x.LeaseOwner, claimToken)
+                .SetProperty(x => x.LeaseExpiresUtc, leaseExpiresUtc)
                 .SetProperty(x => x.StartedUtc, nowUtc)
                 .SetProperty(x => x.HeartbeatUtc, nowUtc)
                 .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
-                .SetProperty(x => x.UpdatedUtc, nowUtc),
+                .SetProperty(x => x.UpdatedUtc, nowUtc)
+                .SetProperty(x => x.Version, x => x.Version + 1),
                 cancellationToken);
+
+        // ExecuteUpdate bypasses the change tracker. Detach any instances left over from
+        // enqueueing or test setup so the claimed rows are reloaded with the incremented
+        // concurrency version before their attempt state is persisted.
+        foreach (var trackedExecution in _dbContext.ChangeTracker
+                     .Entries<BackgroundExecution>()
+                     .Where(entry => candidateIds.Contains(entry.Entity.Id)))
+        {
+            trackedExecution.State = EntityState.Detached;
+        }
 
         return await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .Where(x =>
                 candidateIds.Contains(x.Id) &&
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed &&
                 x.Status == BackgroundExecutionStatus.InProgress &&
-                x.StartedUtc == nowUtc)
+                x.LeaseOwner == claimToken)
             .OrderBy(x => x.CreatedUtc)
             .ToListAsync(cancellationToken);
     }
@@ -520,6 +559,13 @@ public sealed class CompanyFinanceSeedJobRunner : IFinanceSeedJobRunner
             BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
             BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
             BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
+            BackgroundJobFailureClassification.Cancellation => BackgroundExecutionFailureCategory.Cancellation,
+            BackgroundJobFailureClassification.Authorization => BackgroundExecutionFailureCategory.Authorization,
+            BackgroundJobFailureClassification.Concurrency => BackgroundExecutionFailureCategory.Concurrency,
+            BackgroundJobFailureClassification.AmbiguousExternalResult => BackgroundExecutionFailureCategory.AmbiguousExternalResult,
+            BackgroundJobFailureClassification.Persistence => BackgroundExecutionFailureCategory.Persistence,
+            BackgroundJobFailureClassification.ObjectStorage => BackgroundExecutionFailureCategory.ObjectStorage,
+            BackgroundJobFailureClassification.PoisonPayload => BackgroundExecutionFailureCategory.PoisonPayload,
             _ => BackgroundExecutionFailureCategory.TransientInfrastructure
         };
 

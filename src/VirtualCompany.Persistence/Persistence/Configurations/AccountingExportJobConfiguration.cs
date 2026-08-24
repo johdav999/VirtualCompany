@@ -34,6 +34,7 @@ internal sealed class AccountingExportJobConfiguration : IEntityTypeConfiguratio
         builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique();
         builder.HasIndex(x => new { x.Status, x.NextAttemptUtc, x.RequestedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.FiscalPeriodId, x.RequestedUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.ExpiresUtc });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.FiscalPeriod).WithMany().HasForeignKey(x => new { x.CompanyId, x.FiscalPeriodId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);

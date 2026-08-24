@@ -69,9 +69,7 @@ public sealed class FinanceTransactionsPageTests
         harness.Navigation.NavigateTo($"http://localhost/finance/transactions?companyId={companyId:D}&account=Operating%20Cash&search=license");
 
         var cut = harness.Context.RenderComponent<TransactionsPage>(parameters => parameters
-            .Add(x => x.CompanyId, companyId)
-            .Add(x => x.Account, "Operating Cash")
-            .Add(x => x.Search, "license"));
+            .Add(x => x.CompanyId, companyId));
 
         cut.WaitForAssertion(() =>
         {
@@ -155,7 +153,7 @@ public sealed class FinanceTransactionsPageTests
 
     private static TransactionsPageHarness CreateHarness(Guid companyId, List<FinanceTransactionResponse> transactions)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddOptions();
         context.Services.AddSingleton(new FinanceAccessResolver());
 

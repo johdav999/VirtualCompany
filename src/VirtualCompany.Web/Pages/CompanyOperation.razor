@@ -315,7 +315,7 @@
     {
         try
         {
-            var context = await OnboardingApi.GetCurrentUserContextAsync();
+            var context = await OnboardingApi.GetCurrentUserContextAsync(CompanyId);
             companyId = CompanyId ?? context?.ActiveCompany?.CompanyId;
             if (CompanyId is null && companyId.HasValue) Navigation.NavigateTo($"/company-operation?companyId={companyId:D}", true);
             await LoadAsync();

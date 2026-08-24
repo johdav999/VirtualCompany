@@ -22,7 +22,7 @@ public abstract class SupportPageBase : ComponentBase
 
         try
         {
-            var context = await OnboardingApiClient.GetCurrentUserContextAsync(cancellationToken);
+            var context = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId, cancellationToken);
             ResolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
             if (ResolvedCompanyId is not Guid companyId)
             {

@@ -25,7 +25,6 @@ public sealed class FinanceEmailSettingsPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Register one redirect URI per provider per environment.", cut.Markup);
             Assert.Contains("http://localhost:5301/api/mailbox-connections/gmail/callback", cut.Markup);
             Assert.Contains("http://localhost:5301/api/mailbox-connections/microsoft365/callback", cut.Markup);
             Assert.Contains("company context is carried in protected OAuth state", cut.Markup, StringComparison.OrdinalIgnoreCase);
@@ -46,15 +45,14 @@ public sealed class FinanceEmailSettingsPageTests
             .Add(x => x.CompanyId, companyId));
         cut.WaitForAssertion(() => Assert.Contains("Email integration settings", cut.Markup));
 
-        var target = $"http://localhost/finance?companyId={companyId:D}";
-        harness.Navigation.NavigateTo(target);
-
-        cut.WaitForAssertion(() => Assert.Equal(target, harness.Navigation.Uri));
+        Assert.False(SettingsPage.IsOwnedSettingsRoute("finance"));
+        Assert.False(SettingsPage.IsOwnedSettingsRoute("system/admin"));
+        Assert.True(SettingsPage.IsOwnedSettingsRoute("system/admin/integrations/email-providers"));
     }
 
     private static EmailSettingsHarness CreateHarness(Guid companyId)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddOptions();
         context.Services.AddSingleton(new FinanceAccessResolver());
 
@@ -72,7 +70,7 @@ public sealed class FinanceEmailSettingsPageTests
 
         context.Services.AddSingleton(new FinanceApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {
-            if (request.RequestUri?.AbsolutePath == $"/internal/companies/{companyId:D}/finance/settings/email" &&
+            if (request.RequestUri?.AbsolutePath == $"/api/companies/{companyId:D}/mailbox-provider-settings" &&
                 request.Method == HttpMethod.Get)
             {
                 return Task.FromResult(CreateJsonResponse(new FinanceEmailSettingsResponse

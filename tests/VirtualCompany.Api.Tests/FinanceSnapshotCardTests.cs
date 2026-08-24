@@ -12,7 +12,7 @@ public sealed class FinanceSnapshotCardTests
     [Fact]
     public void Finance_snapshot_card_shows_connect_accounting_cta_when_finance_data_is_missing()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var companyId = Guid.Parse("9e57e8b8-f4d9-4d2c-9f09-f58d25e26be9");
 
         var cut = context.RenderComponent<FinanceSnapshotCard>(parameters => parameters
@@ -44,7 +44,7 @@ public sealed class FinanceSnapshotCardTests
     [Fact]
     public void Finance_snapshot_card_shows_all_cash_metrics_when_finance_data_is_available()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var companyId = Guid.Parse("5d7ae44d-04db-43a0-ab8d-97a21544d9ba");
 
         var cut = context.RenderComponent<FinanceSnapshotCard>(parameters => parameters

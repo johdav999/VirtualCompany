@@ -281,10 +281,29 @@ public sealed class DocumentExtractionServiceTests
             ],
             [],
             BillValidationStatus.Valid,
-            new BillDuplicateCheckDto(Guid.Empty, BillDuplicateCheckStatus.NotDuplicate, [], "not duplicate", DateTime.UtcNow),
+            new BillDuplicateCheckDto(Guid.NewGuid(), BillDuplicateCheckStatus.NotDuplicate, [], "not duplicate", DateTime.UtcNow),
             false,
             false,
             true);
+
+        await using (var duplicateCheckSetup = new VirtualCompanyDbContext(options))
+        {
+            duplicateCheckSetup.BillDuplicateChecks.Add(new BillDuplicateCheck(
+                candidate.DuplicateCheck.Id,
+                companyId,
+                candidate.SupplierName,
+                candidate.SupplierOrgNumber,
+                candidate.InvoiceNumber,
+                candidate.TotalAmount,
+                candidate.Currency,
+                false,
+                [],
+                candidate.DuplicateCheck.CriteriaSummary,
+                candidate.SourceEmailId,
+                candidate.SourceAttachmentId,
+                candidate.DuplicateCheck.CheckedUtc));
+            await duplicateCheckSetup.SaveChangesAsync();
+        }
 
         await using (var db = new VirtualCompanyDbContext(options))
         {
@@ -342,9 +361,9 @@ public sealed class DocumentExtractionServiceTests
     public void Fortnox_supplier_creation_payload_uses_invoice_supplier_details()
     {
         var bill = CreateDetectedBillForFortnoxPayload("INV-2026-0412");
-        bill.AddField(CreateDetectedBillField(bill, "supplierEmail", "billing@nordicit.se"));
-        bill.AddField(CreateDetectedBillField(bill, "supplierPhone", "+46 8 123 456 78"));
-        bill.AddField(CreateDetectedBillField(bill, "supplierAddress", "Sveavagen 12, 111 57 Stockholm, Sweden"));
+        bill.AddField(CreateDetectedBillField(bill, "supplier_email", "billing@nordicit.se"));
+        bill.AddField(CreateDetectedBillField(bill, "supplier_phone", "+46 8 123 456 78"));
+        bill.AddField(CreateDetectedBillField(bill, "supplier_address", "Sveavagen 12, 111 57 Stockholm, Sweden"));
 
         var payload = BuildSupplierPayloadForTest(bill);
         var supplier = payload["Supplier"]!.AsObject();
@@ -354,8 +373,8 @@ public sealed class DocumentExtractionServiceTests
         Assert.Equal("billing@nordicit.se", supplier["Email"]!.GetValue<string>());
         Assert.Equal("+46 8 123 456 78", supplier["Phone1"]!.GetValue<string>());
         Assert.Equal("Sveavagen 12, 111 57 Stockholm, Sweden", supplier["Address1"]!.GetValue<string>());
-        Assert.Equal("SE4550000000000012345678", supplier["IBAN"]!.GetValue<string>());
-        Assert.Equal("ESSESESS", supplier["BIC"]!.GetValue<string>());
+        Assert.Equal("DE89370400440532013000", supplier["IBAN"]!.GetValue<string>());
+        Assert.Equal("DEUTDEFF", supplier["BIC"]!.GetValue<string>());
     }
 
     [Fact]
@@ -464,8 +483,8 @@ public sealed class DocumentExtractionServiceTests
             paymentReference,
             null,
             null,
-            "SE4550000000000012345678",
-            "ESSESESS",
+            "DE89370400440532013000",
+            "DEUTDEFF",
             0.95m,
             "high",
             "valid",

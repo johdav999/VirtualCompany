@@ -45,19 +45,19 @@ public sealed class FinanceAnomalyWorkbenchPageTests
             Assert.Equal(4, rows.Count);
 
             Assert.Contains("TXN-BOTH", rows[0].TextContent);
-            Assert.Contains("Dedup key: key-both", rows[0].TextContent);
+            Assert.Contains("Deduplication key: key-both", rows[0].TextContent);
             Assert.Contains("Window:", rows[0].TextContent);
 
             Assert.Contains("TXN-KEY", rows[1].TextContent);
-            Assert.Contains("Dedup key: key-only", rows[1].TextContent);
+            Assert.Contains("Deduplication key: key-only", rows[1].TextContent);
             Assert.DoesNotContain("Window:", rows[1].TextContent);
 
             Assert.Contains("TXN-WINDOW", rows[2].TextContent);
-            Assert.DoesNotContain("Dedup key:", rows[2].TextContent);
+            Assert.DoesNotContain("Deduplication key:", rows[2].TextContent);
             Assert.Contains("Window:", rows[2].TextContent);
 
             Assert.Contains("TXN-NONE", rows[3].TextContent);
-            Assert.DoesNotContain("Dedup key:", rows[3].TextContent);
+            Assert.DoesNotContain("Deduplication key:", rows[3].TextContent);
             Assert.DoesNotContain("Window:", rows[3].TextContent);
             Assert.DoesNotContain("null", rows[3].TextContent, StringComparison.OrdinalIgnoreCase);
         });
@@ -92,7 +92,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
             Assert.Contains("Deduplication metadata", cut.Markup);
             Assert.Contains("finance-transaction-anomaly:dedupe", cut.Markup);
             Assert.Contains("Window", cut.Markup);
-            Assert.Contains("/finance/anomalies?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&status=awaiting_approval&supplier=Contoso%20Supplies", cut.Markup);
+            Assert.Contains("/finance/issues?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&amp;status=awaiting_approval&amp;supplier=Contoso%20Supplies", cut.Markup);
         });
     }
 
@@ -131,17 +131,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
         DateTime? dateTo = null,
         int? page = null,
         int? pageSize = null) =>
-        harness.Context.RenderComponent<AnomaliesPage>(parameters => parameters
-            .Add(x => x.CompanyId, companyId)
-            .Add(x => x.Type, type)
-            .Add(x => x.Status, status)
-            .Add(x => x.ConfidenceMin, confidenceMin)
-            .Add(x => x.ConfidenceMax, confidenceMax)
-            .Add(x => x.Supplier, supplier)
-            .Add(x => x.DateFrom, dateFrom)
-            .Add(x => x.DateTo, dateTo)
-            .Add(x => x.Page, page)
-            .Add(x => x.PageSize, pageSize));
+        RenderAnomaliesPageCore(harness, companyId, type, status, confidenceMin, confidenceMax, supplier, dateFrom, dateTo, page, pageSize);
 
     private static IRenderedComponent<AnomalyDetailPage> RenderAnomalyDetailPage(
         AnomalyDetailHarness harness,
@@ -156,25 +146,46 @@ public sealed class FinanceAnomalyWorkbenchPageTests
         DateTime? dateTo = null,
         int? page = null,
         int? pageSize = null) =>
-        harness.Context.RenderComponent<AnomalyDetailPage>(parameters => parameters
-            .Add(x => x.CompanyId, companyId)
-            .Add(x => x.AnomalyId, anomalyId)
-            .Add(x => x.Type, type)
-            .Add(x => x.Status, status)
-            .Add(x => x.ConfidenceMin, confidenceMin)
-            .Add(x => x.ConfidenceMax, confidenceMax)
-            .Add(x => x.Supplier, supplier)
-            .Add(x => x.DateFrom, dateFrom)
-            .Add(x => x.DateTo, dateTo)
-            .Add(x => x.Page, page)
-            .Add(x => x.PageSize, pageSize));
+        RenderAnomalyDetailPageCore(harness, companyId, anomalyId, type, status, confidenceMin, confidenceMax, supplier, dateFrom, dateTo, page, pageSize);
+
+    private static IRenderedComponent<AnomaliesPage> RenderAnomaliesPageCore(
+        AnomaliesHarness harness, Guid companyId, string? type, string? status, decimal? confidenceMin, decimal? confidenceMax,
+        string? supplier, DateTime? dateFrom, DateTime? dateTo, int? page, int? pageSize)
+    {
+        harness.Navigation.NavigateTo(BuildFilteredPath("/finance/anomalies", companyId, type, status, confidenceMin, confidenceMax, supplier, dateFrom, dateTo, page, pageSize));
+        return harness.Context.RenderComponent<AnomaliesPage>();
+    }
+
+    private static IRenderedComponent<AnomalyDetailPage> RenderAnomalyDetailPageCore(
+        AnomalyDetailHarness harness, Guid companyId, Guid anomalyId, string? type, string? status, decimal? confidenceMin, decimal? confidenceMax,
+        string? supplier, DateTime? dateFrom, DateTime? dateTo, int? page, int? pageSize)
+    {
+        harness.Navigation.NavigateTo(BuildFilteredPath($"/finance/anomalies/{anomalyId:D}", companyId, type, status, confidenceMin, confidenceMax, supplier, dateFrom, dateTo, page, pageSize));
+        return harness.Context.RenderComponent<AnomalyDetailPage>(parameters => parameters.Add(x => x.AnomalyId, anomalyId));
+    }
+
+    private static string BuildFilteredPath(
+        string path, Guid companyId, string? type, string? status, decimal? confidenceMin, decimal? confidenceMax,
+        string? supplier, DateTime? dateFrom, DateTime? dateTo, int? page, int? pageSize)
+    {
+        var values = new List<KeyValuePair<string, string?>>
+        {
+            new("companyId", companyId.ToString("D")), new("type", type), new("status", status),
+            new("confidenceMin", confidenceMin?.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new("confidenceMax", confidenceMax?.ToString(System.Globalization.CultureInfo.InvariantCulture)),
+            new("supplier", supplier), new("dateFrom", dateFrom?.ToString("yyyy-MM-dd")),
+            new("dateTo", dateTo?.ToString("yyyy-MM-dd")), new("page", page?.ToString()), new("pageSize", pageSize?.ToString())
+        };
+
+        return $"{path}?{string.Join("&", values.Where(value => !string.IsNullOrWhiteSpace(value.Value)).Select(value => $"{value.Key}={Uri.EscapeDataString(value.Value!)}"))}";
+    }
 
     private static AnomaliesHarness CreateAnomaliesHarness(
         Guid companyId,
         FinanceAnomalyWorkbenchResponse workbench,
         string membershipRole = "owner")
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var financeRequests = new List<Uri>();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
@@ -208,7 +219,7 @@ public sealed class FinanceAnomalyWorkbenchPageTests
         FinanceAnomalyDetailResponse detail,
         string membershipRole = "owner")
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>

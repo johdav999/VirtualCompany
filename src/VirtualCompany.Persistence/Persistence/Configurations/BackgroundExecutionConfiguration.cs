@@ -39,6 +39,8 @@ internal sealed class BackgroundExecutionConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.StartedUtc).HasColumnName("started_at");
         builder.Property(x => x.HeartbeatUtc).HasColumnName("heartbeat_at");
         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+        builder.Property(x => x.LeaseOwner).HasColumnName("lease_owner").HasMaxLength(128);
+        builder.Property(x => x.LeaseExpiresUtc).HasColumnName("lease_expires_at");
         builder.Property(x => x.FailureCategory)
             .HasColumnName("failure_category")
             .HasConversion(
@@ -47,19 +49,58 @@ internal sealed class BackgroundExecutionConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.FailureCode).HasColumnName("failure_code").HasMaxLength(100);
         builder.Property(x => x.FailureMessage).HasColumnName("failure_message").HasMaxLength(4000);
         builder.Property(x => x.EscalationId).HasColumnName("escalation_id");
+        builder.Property(x => x.CancelledUtc).HasColumnName("cancelled_at");
+        builder.Property(x => x.CancelledByUserId).HasColumnName("cancelled_by_user_id");
+        builder.Property(x => x.CancellationReason).HasColumnName("cancellation_reason").HasMaxLength(1000);
+        builder.Property(x => x.AcknowledgedUtc).HasColumnName("acknowledged_at");
+        builder.Property(x => x.AcknowledgedByUserId).HasColumnName("acknowledged_by_user_id");
+        builder.Property(x => x.Acknowledgement).HasColumnName("acknowledgement").HasMaxLength(1000);
+        builder.Property(x => x.Version).HasColumnName("version").HasDefaultValue(0L).IsConcurrencyToken().IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.NextRetryUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.Status, x.CreatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.RelatedEntityType, x.RelatedEntityId });
         builder.HasIndex(x => new { x.CompanyId, x.ExecutionType, x.IdempotencyKey }).IsUnique();
         builder.HasIndex(x => new { x.Status, x.HeartbeatUtc });
+        builder.HasIndex(x => new { x.Status, x.LeaseExpiresUtc });
         builder.HasIndex(x => x.CorrelationId);
 
         builder.HasOne(x => x.Company)
             .WithMany()
             .HasForeignKey(x => x.CompanyId)
             .OnDelete(DeleteBehavior.Cascade);
+    }
+}
+
+internal sealed class BackgroundExecutionAttemptConfiguration : IEntityTypeConfiguration<BackgroundExecutionAttempt>
+{
+    public void Configure(EntityTypeBuilder<BackgroundExecutionAttempt> builder)
+    {
+        builder.ToTable("background_execution_attempts");
+        builder.HasKey(x => x.Id);
+        builder.Property(x => x.Id).HasColumnName("id");
+        builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
+        builder.Property(x => x.BackgroundExecutionId).HasColumnName("background_execution_id").IsRequired();
+        builder.Property(x => x.WorkerName).HasColumnName("worker_name").HasMaxLength(100).IsRequired();
+        builder.Property(x => x.AttemptNumber).HasColumnName("attempt_number").IsRequired();
+        builder.Property(x => x.LeaseOwner).HasColumnName("lease_owner").HasMaxLength(128).IsRequired();
+        builder.Property(x => x.LeaseExpiresUtc).HasColumnName("lease_expires_at").IsRequired();
+        builder.Property(x => x.Outcome).HasColumnName("outcome").HasMaxLength(32).IsRequired();
+        builder.Property(x => x.FailureCategory).HasColumnName("failure_category").HasMaxLength(64)
+            .HasConversion(value => value.HasValue ? value.Value.ToStorageValue() : null,
+                value => string.IsNullOrWhiteSpace(value) ? null : BackgroundExecutionFailureCategoryValues.Parse(value));
+        builder.Property(x => x.FailureCode).HasColumnName("failure_code").HasMaxLength(100);
+        builder.Property(x => x.SafeSummary).HasColumnName("safe_summary").HasMaxLength(2000);
+        builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
+        builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
+        builder.Property(x => x.DurationMilliseconds).HasColumnName("duration_ms");
+        builder.HasIndex(x => new { x.CompanyId, x.StartedUtc });
+        builder.HasIndex(x => new { x.BackgroundExecutionId, x.AttemptNumber }).IsUnique();
+        builder.HasIndex(x => new { x.Outcome, x.LeaseExpiresUtc });
+        builder.HasOne(x => x.BackgroundExecution).WithMany().HasForeignKey(x => x.BackgroundExecutionId).OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.NoAction);
     }
 }
 

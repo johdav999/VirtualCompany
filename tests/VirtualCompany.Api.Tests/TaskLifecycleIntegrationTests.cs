@@ -38,7 +38,10 @@ public sealed class TaskLifecycleIntegrationTests : IDisposable
         });
 
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
-        var task = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        var commandResult = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(commandResult);
+        var task = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{commandResult!.Id}");
 
         Assert.NotNull(task);
         Assert.Equal(seed.CompanyId, task!.CompanyId);
@@ -83,7 +86,10 @@ public sealed class TaskLifecycleIntegrationTests : IDisposable
             priority = "normal"
         });
 
-        var parent = await parentResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        var parentCommand = await parentResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(parentCommand);
+        var parent = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{parentCommand!.Id}");
         Assert.NotNull(parent);
 
         var childResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/tasks/{parent!.Id}/subtasks", new
@@ -95,7 +101,10 @@ public sealed class TaskLifecycleIntegrationTests : IDisposable
         });
 
         Assert.Equal(HttpStatusCode.Created, childResponse.StatusCode);
-        var child = await childResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        var childCommand = await childResponse.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(childCommand);
+        var child = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{childCommand!.Id}");
 
         Assert.NotNull(child);
         Assert.Equal(parent.Id, child!.ParentTaskId);
@@ -253,7 +262,10 @@ public sealed class TaskLifecycleIntegrationTests : IDisposable
         });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var task = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        var commandResult = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(commandResult);
+        var task = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{commandResult!.Id}");
 
         Assert.NotNull(task);
         Assert.Equal("completed", task!.Status);
@@ -275,7 +287,10 @@ public sealed class TaskLifecycleIntegrationTests : IDisposable
         });
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
-        var task = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        var commandResult = await response.Content.ReadFromJsonAsync<TaskDetailResponse>();
+        Assert.NotNull(commandResult);
+        var task = await client.GetFromJsonAsync<TaskDetailResponse>(
+            $"/api/companies/{seed.CompanyId}/tasks/{commandResult!.Id}");
 
         Assert.NotNull(task);
         Assert.Equal(seed.SecondAgentId, task!.AssignedAgentId);
@@ -320,7 +335,7 @@ public sealed class TaskLifecycleIntegrationTests : IDisposable
 
         using var scope = _factory.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
-        var task = await dbContext.WorkTasks.AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
+        var task = await dbContext.WorkTasks.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == seed.TaskId);
 
         Assert.Equal(seed.AgentId, task.AssignedAgentId);
     }

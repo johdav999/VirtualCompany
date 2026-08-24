@@ -287,7 +287,7 @@ public sealed class BriefingPreferenceIntegrationTests : IDisposable
         await _factory.SeedAsync(dbContext =>
         {
             dbContext.Agents.Add(new Agent(agentId, seed.CompanyId, "ops", "Avery Ops", "Operations Lead", "Operations", null, AgentSeniority.Lead, AgentStatus.Active));
-            var criticalAlert = new Alert(Guid.NewGuid(), seed.CompanyId, AlertType.Risk, AlertSeverity.Critical, "Critical margin risk", "Margin risk needs attention.", new Dictionary<string, JsonNode?>(), "pref-critical-alert", $"pref-critical-alert:{seed.CompanyId:N}", AlertStatus.Open);
+            var criticalAlert = new Alert(Guid.NewGuid(), seed.CompanyId, AlertType.Risk, AlertSeverity.Critical, "Critical margin risk", "Margin risk needs attention.", new Dictionary<string, JsonNode?> { ["source"] = "briefing-preference-test" }, "pref-critical-alert", $"pref-critical-alert:{seed.CompanyId:N}", AlertStatus.Open);
             dbContext.Alerts.Add(criticalAlert);
             var blockedTask = new WorkTask(Guid.NewGuid(), seed.CompanyId, "briefing", "Blocked vendor renewal", null, WorkTaskPriority.High, agentId, null, "user", seed.UserId);
             blockedTask.UpdateStatus(WorkTaskStatus.Blocked);

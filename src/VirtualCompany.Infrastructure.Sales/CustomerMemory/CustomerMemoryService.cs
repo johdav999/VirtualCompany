@@ -298,7 +298,10 @@ public sealed class CustomerMemoryService : ICustomerMemoryService
 
     private static IReadOnlyList<CustomerMemorySignal> BuildPriceSignals(IReadOnlyList<CustomerConversationMemory> conversations, IReadOnlyList<CustomerDealMemory> deals)
     {
-        var signals = conversations.Where(x => x.Summary.Contains("price", StringComparison.OrdinalIgnoreCase) || x.Summary.Contains("budget", StringComparison.OrdinalIgnoreCase))
+        var signals = conversations.Where(x =>
+                x.Summary.Contains("price", StringComparison.OrdinalIgnoreCase) ||
+                x.Summary.Contains("pricing", StringComparison.OrdinalIgnoreCase) ||
+                x.Summary.Contains("budget", StringComparison.OrdinalIgnoreCase))
             .Select(x => new CustomerMemorySignal("price_discussion", Trim(x.Summary, 180), 0.65m, x.OccurredUtc, x.SourceType))
             .ToList();
 

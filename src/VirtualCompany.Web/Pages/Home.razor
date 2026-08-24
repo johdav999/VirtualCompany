@@ -43,7 +43,7 @@ else
                             {
                                 <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
                                     <strong>@membership.CompanyName</strong>
-                                    <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
+                                    <div class="text-body-secondary mt-2">@DescribeCompany(membership)</div>
                                 </a>
                             }
                         </div>
@@ -98,12 +98,29 @@ else
             .ToList()
         ?? [];
 
+    private string DescribeCompany(CompanyMembershipViewModel membership)
+    {
+        var created = membership.CompanyCreatedUtc is DateTime createdUtc
+            ? LocalDateTime.DateTime(createdUtc)
+            : "date unavailable";
+        var setup = string.Equals(membership.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
+            ? "Setup complete"
+            : string.Equals(membership.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                ? "Setup in progress"
+                : "Setup not started";
+        return $"{setup} · Created {created} · {membership.MembershipRole} access";
+    }
+
     protected override async Task OnInitializedAsync()
     {
         try
         {
             currentUser = await ApiClient.GetCurrentUserContextAsync();
-            progress = await ApiClient.GetProgressAsync();
+            progress = currentUser?.ActiveCompany is { } activeCompany
+                ? await ApiClient.GetProgressAsync(activeCompany.CompanyId)
+                : currentUser?.Memberships.Count == 0
+                    ? await ApiClient.GetProgressAsync()
+                    : null;
 
             primaryDashboardPath = currentUser?.ActiveCompany is not null
                 ? $"/dashboard?companyId={currentUser.ActiveCompany.CompanyId}"

@@ -15,10 +15,15 @@ public sealed partial class CompanyFinanceReadService
             throw new ArgumentException("Bill id is required.", nameof(query));
         }
 
-        var row = await _dbContext.FinanceBills
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
+        var row = await ApplySourceFilter(_dbContext.FinanceBills
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.BillId)
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.BillId),
+            query.CompanyId,
+            sourceFilter,
+            "supplier_invoice", "bill")
             .Select(x => new FinanceBillRow(
                 x.Id,
                 x.CounterpartyId,
@@ -112,7 +117,9 @@ public sealed partial class CompanyFinanceReadService
             draftActions.GetValueOrDefault(row.Id),
             correctionActions.GetValueOrDefault(row.Id),
             enrichmentAction,
-            paidExpenseAvailability);
+            paidExpenseAvailability,
+            null,
+            ResolveFinanceSource(row.SourceType, row.ProviderKey, hasFortnoxReference));
     }
 
     private async Task<IReadOnlyList<NormalizedFinanceInsightDto>> LoadEntityAgentInsightsAsync(

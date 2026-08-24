@@ -41,7 +41,7 @@ public sealed class ExecutiveCockpitDashboardPageTests
             Assert.Contains("Average monthly burn is USD 18,500.00.", cut.Find("[data-testid='executive-cockpit-low-cash-alert']").TextContent);
 
             Assert.Equal(
-                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.BuildAlertDetailPath(alertId, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
+                DashboardRoutes.EnsureCompanyContext(FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, companyId), companyId, FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, companyId)),
                 cut.Find("[data-testid='executive-cockpit-low-cash-alert-open-detail']").GetAttribute("href"));
 
             Assert.Equal(
@@ -312,7 +312,10 @@ public sealed class ExecutiveCockpitDashboardPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Empty(cut.FindAll("[data-testid='executive-cockpit-finance-widget']"));
+            Assert.Single(cut.FindAll("[data-testid='executive-cockpit-finance-widget']"));
+            Assert.Empty(cut.FindAll("[data-testid='executive-cockpit-financial-health']"));
+            Assert.Empty(cut.FindAll("[data-testid='executive-cockpit-top-finance-actions']"));
+            Assert.Empty(cut.FindAll("[data-testid='executive-cockpit-finance-insights-feed']"));
             Assert.DoesNotContain("Review invoice", cut.Markup);
             Assert.DoesNotContain("Inspect anomaly", cut.Markup);
             Assert.DoesNotContain("View cash position", cut.Markup);
@@ -334,7 +337,7 @@ public sealed class ExecutiveCockpitDashboardPageTests
         Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>>? financeHandler = null,
         Func<DashboardFinanceSnapshotViewModel>? financeSnapshotFactory = null)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var financeRequests = new List<CapturedFinanceRequest>();
         context.Services.AddLogging();
 
@@ -467,15 +470,63 @@ public sealed class ExecutiveCockpitDashboardPageTests
             LowCashAlert = new ExecutiveCockpitFinanceAlertDetailViewModel
             {
                 AlertId = alertId,
-                Summary = "Cash runway needs review.",
+                Summary = "Cash runway dropped below the critical threshold.",
                 Severity = status,
+                ContributingFactors = ["Average monthly burn is USD 18,500.00."],
                 Route = $"/finance/cash-position?companyId={companyId:D}"
             },
+            FinancialHealth = new ExecutiveCockpitFinancialHealthViewModel
+            {
+                Status = status,
+                Title = "Cash position needs attention",
+                Summary = "Review the latest persisted finance signals.",
+                ActiveInsightCount = 2,
+                CriticalInsightCount = status == "critical" ? 1 : 0,
+                HighInsightCount = 1,
+                LastUpdatedUtc = DashboardGeneratedUtc
+            },
+            TopActions =
+            [
+                new ExecutiveCockpitFinanceInsightFeedItemViewModel
+                {
+                    GroupKey = "top-cash",
+                    Severity = status,
+                    Title = "Review cash runway",
+                    Summary = "Cash runway needs a finance decision.",
+                    Recommendation = "Open the cash-position review.",
+                    OccurrenceCount = 1,
+                    EntitySummary = "Cash position",
+                    LatestUpdatedUtc = DashboardGeneratedUtc,
+                    Route = $"/finance/cash-position?companyId={companyId:D}"
+                }
+            ],
+            InsightsFeed =
+            [
+                new ExecutiveCockpitFinanceInsightFeedItemViewModel
+                {
+                    GroupKey = "invoice-review",
+                    Severity = "high",
+                    Title = "Invoice review required",
+                    Summary = "One invoice is waiting for review.",
+                    Recommendation = "Review the invoice recommendation.",
+                    OccurrenceCount = 1,
+                    EntitySummary = "Invoice",
+                    LatestUpdatedUtc = DashboardGeneratedUtc,
+                    Route = $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}"
+                }
+            ],
+            DeepLinks =
+            [
+                new() { Key = "finance_workspace", Label = "Finance workspace", Route = $"/finance?companyId={companyId:D}" },
+                new() { Key = "anomaly_workbench", Label = "Anomaly workbench", Route = $"/finance/anomalies?companyId={companyId:D}" },
+                new() { Key = "cash_detail", Label = "Cash detail", Route = $"/finance/cash-position?companyId={companyId:D}" }
+            ],
             AvailableActions =
             [
-                new() { Key = "review_invoice", Label = "Review invoice", IsEnabled = true, TargetId = invoiceId, OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow", HttpMethod = "POST" },
-                new() { Key = "inspect_anomaly", Label = "Inspect anomaly", IsEnabled = true, TargetId = transactionId, OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/transactions/{transactionId:D}/anomaly-evaluation", HttpMethod = "POST" },
-                new() { Key = "view_cash_position", Label = "View cash position", IsEnabled = true, OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/cash-position/evaluation", HttpMethod = "POST" }
+                new() { Key = "review_invoice", Label = "Review invoice", IsEnabled = true, TargetId = invoiceId, Route = $"/finance/reviews/{invoiceId:D}?companyId={companyId:D}", OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/invoices/{invoiceId:D}/review-workflow", HttpMethod = "POST" },
+                new() { Key = "inspect_anomaly", Label = "Inspect anomaly", IsEnabled = true, TargetId = transactionId, Route = $"/finance/anomalies?companyId={companyId:D}", OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/transactions/{transactionId:D}/anomaly-evaluation", HttpMethod = "POST" },
+                new() { Key = "view_cash_position", Label = "View cash position", IsEnabled = true, Route = $"/finance/cash-position?companyId={companyId:D}", OrchestrationEndpoint = $"/internal/companies/{companyId:D}/finance/cash-position/evaluation", HttpMethod = "POST" },
+                new() { Key = "open_finance_summary", Label = "Open finance summary", IsEnabled = true, Route = $"/finance/monthly-summary?companyId={companyId:D}", HttpMethod = "GET" }
             ]
         };
 

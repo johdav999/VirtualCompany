@@ -59,6 +59,18 @@ public sealed class SupplierBillAccountingPolicyTests
     }
 
     [Fact]
+    public async Task Setup_role_tagged_operating_expense_is_valid_when_it_is_not_a_protected_control_account()
+    {
+        await using var fixture = await Fixture.CreateAsync("exempt", 100m, 0m, recoverable: false);
+        var accountId = await fixture.AddRoleTaggedExpenseAsync();
+
+        var preview = await fixture.PreviewAsync([new("Setup-created operating expense", 100m, accountId, "exempt")]);
+
+        Assert.True(preview.IsReady);
+        Assert.Contains(preview.JournalLines, x => x.FinanceAccountId == accountId && x.DebitAmount == 100m);
+    }
+
+    [Fact]
     public async Task Multi_line_rounding_remains_deterministic_and_balanced()
     {
         await using var fixture = await Fixture.CreateAsync("inclusive", 100m, 0.075m, recoverable: true);
@@ -120,6 +132,16 @@ public sealed class SupplierBillAccountingPolicyTests
 
         public Task<SupplierBillAccountingPreviewDto> PreviewAsync(IReadOnlyList<SupplierBillAccountingLineInput> lines) =>
             Policy.PreviewAsync(new(CompanyId, BillId, new(PeriodId, "G", null, lines), ActorId), CancellationToken.None);
+
+        public async Task<Guid> AddRoleTaggedExpenseAsync()
+        {
+            var id = Guid.NewGuid();
+            Context.FinanceAccounts.Add(Account(id, CompanyId, "5010", "Setup operating expense",
+                FinanceAccountClassValues.Expense, FinanceNormalBalanceValues.Debit,
+                new DateTime(2026, 8, 20, 8, 0, 0, DateTimeKind.Utc), "operating_expense"));
+            await Context.SaveChangesAsync();
+            return id;
+        }
 
         public static async Task<Fixture> CreateAsync(string method, decimal amount, decimal rate, bool recoverable,
             string documentKind = FinanceDocumentKinds.SupplierInvoice)

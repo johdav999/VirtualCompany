@@ -28,8 +28,8 @@ public sealed class CustomerInvoiceAccountingSurfaceTests
 
         var journalPage = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingJournalsPage.razor");
         var journalCode = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingJournalsPage.razor.cs");
-        Assert.Contains("Open source invoice", journalPage, StringComparison.Ordinal);
-        Assert.Contains("Open original journal", journalPage, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"OpenSourceInvoice\"]", journalPage, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"OpenOriginalJournal\"]", journalPage, StringComparison.Ordinal);
         Assert.Contains("SupplyParameterFromQuery", journalCode, StringComparison.Ordinal);
         Assert.Contains("journalId", journalCode, StringComparison.Ordinal);
     }

@@ -79,6 +79,7 @@ public sealed class GlobalExceptionHandlerTests
         context.Request.Path = "/api/test/missing";
         context.TraceIdentifier = "trace-404";
         context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-404";
+        context.RequestServices = new ServiceCollection().BuildServiceProvider();
 
         var handled = await handler.TryHandleAsync(
             context,
@@ -114,6 +115,7 @@ public sealed class GlobalExceptionHandlerTests
         context.Response.Body = new MemoryStream();
         context.TraceIdentifier = "trace-validation";
         context.Items[CorrelationIdMiddleware.HttpContextItemKey] = "corr-validation";
+        context.RequestServices = new ServiceCollection().BuildServiceProvider();
 
         var handled = await handler.TryHandleAsync(
             context,

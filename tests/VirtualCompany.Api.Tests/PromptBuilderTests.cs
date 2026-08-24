@@ -34,7 +34,7 @@ public sealed class PromptBuilderTests
     public void Build_handles_missing_memory_with_explicit_fallback()
     {
         var builder = new StructuredPromptBuilder();
-        var context = CreateRuntimeContext(groundedContext: null);
+        var context = CreateRuntimeContext(includeGroundedContext: false);
 
         var result = builder.Build(new PromptBuildRequest(context));
 
@@ -367,6 +367,7 @@ public sealed class PromptBuilderTests
 
     private static SingleAgentRuntimeContext CreateRuntimeContext(
         GroundedPromptContextDto? groundedContext = null,
+        bool includeGroundedContext = true,
         IReadOnlyList<ToolMetadataDto>? availableTools = null,
         string taskType = "finance_execution",
         Dictionary<string, JsonNode?>? inputPayload = null,
@@ -456,7 +457,9 @@ public sealed class PromptBuilderTests
                 "en",
                 "EU",
                 identityPolicy),
-            groundedContext ?? CreateGroundedContext(companyId, agentId, timestamp),
+            includeGroundedContext
+                ? groundedContext ?? CreateGroundedContext(companyId, agentId, timestamp)
+                : null,
             availableTools ??
             [
                 new ToolMetadataDto(

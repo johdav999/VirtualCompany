@@ -22,7 +22,7 @@ public sealed class ActivityFeedFilteringIntegrationTests : IDisposable
         using var client = CreateAuthenticatedClient();
 
         var agentAndTime = await GetFeedAsync(client, seed.CompanyId, $"agentId={seed.FinanceAgentId}&from={Escape(seed.BaseTime.AddMinutes(-1))}&to={Escape(seed.BaseTime.AddMinutes(2))}");
-        Assert.Equal([seed.FinanceStartedId, seed.FinanceCompletedId], agentAndTime.Items.Select(x => x.EventId).ToArray());
+        Assert.Equal([seed.FinanceCompletedId, seed.FinanceStartedId], agentAndTime.Items.Select(x => x.EventId).ToArray());
         Assert.All(agentAndTime.Items, item =>
         {
             Assert.Equal(seed.FinanceAgentId, item.AgentId);

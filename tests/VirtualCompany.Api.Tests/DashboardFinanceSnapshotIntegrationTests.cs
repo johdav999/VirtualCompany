@@ -98,7 +98,7 @@ public sealed class DashboardFinanceSnapshotIntegrationTests : IDisposable
 
         var groupedCollectionsInsight = Assert.Single(
             snapshot.InsightFeed,
-            x => string.Equals(x.GroupKey, "overdue_receivables|collections:customer-contoso", StringComparison.OrdinalIgnoreCase));
+            x => string.Equals(x.GroupKey, "overdue_receivables|collections:customer_contoso", StringComparison.OrdinalIgnoreCase));
 
         Assert.Equal(2, groupedCollectionsInsight.OccurrenceCount);
         Assert.Equal("overdue_receivables", groupedCollectionsInsight.Category);

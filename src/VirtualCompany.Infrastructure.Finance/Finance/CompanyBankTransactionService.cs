@@ -444,11 +444,22 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
             ?? throw new KeyNotFoundException("Bank transaction was not found.");
         try { transaction.EnsureSourceVersion(command.ExpectedSourceVersion); }
         catch (InvalidOperationException ex) { throw Validation(nameof(command.ExpectedSourceVersion), ex.Message); }
+        if (transaction.PostingStateRecord?.ReclassifiedLedgerEntryId is Guid reclassifiedLedgerEntryId)
+        {
+            var replayKey = $"{command.IdempotencyKey.Trim()}:replacement";
+            var isExactReplay = await _dbContext.LedgerEntries.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.CompanyId == command.CompanyId && x.Id == reclassifiedLedgerEntryId &&
+                    x.IdempotencyKey == replayKey && x.FiscalPeriodId == command.FiscalPeriodId &&
+                    x.PostingDate == command.PostingDate && x.CorrectionReason == command.Reason &&
+                    x.Lines.Any(line => line.FinanceAccountId == command.TargetFinanceAccountId), cancellationToken);
+            if (isExactReplay)
+                return (await GetReconciliationDetailAsync(new(command.CompanyId, transaction.Id), cancellationToken))!;
+
+            throw Validation(nameof(command.BankTransactionId), "This suspense transaction has already been reclassified.");
+        }
         var followUp = await _dbContext.BankReconciliationFollowUps.IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.BankTransactionId == transaction.Id && x.Status == BankReconciliationFollowUpStatuses.Open, cancellationToken)
             ?? throw Validation(nameof(command.BankTransactionId), "This bank transaction is not waiting for suspense reclassification.");
-        if (transaction.PostingStateRecord?.ReclassifiedLedgerEntryId is not null)
-            throw Validation(nameof(command.BankTransactionId), "This suspense transaction has already been reclassified.");
         if (string.IsNullOrWhiteSpace(command.Reason)) throw Validation(nameof(command.Reason), "A correction reason is required.");
 
         var reversed = await _postingService.ReverseAsync(new ReverseAccountingEntryCommand(command.CompanyId, followUp.LedgerEntryId,

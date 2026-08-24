@@ -89,7 +89,7 @@ public sealed class FocusEngineTests
             $"/work/{id}",
             sourceType,
             rawScore,
-            DateTime.UtcNow,
+            new DateTime(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc),
             stableSortKey ?? id);
 
     private sealed class StubSource : IFocusCandidateSource

@@ -124,6 +124,8 @@ public sealed class FinanceSeedBackfillOrchestratorTests
                 "USD",
                 1250m,
                 startedUtc.AddDays(-30)));
+            setupContext.Entry(setupContext.FinanceAccounts.Local.Single(x => x.CompanyId == partialCompany.Id))
+                .Property<string>("SourceType").CurrentValue = FinanceRecordSourceTypes.Simulation;
             var activeExecution = new BackgroundExecution(
                 Guid.NewGuid(),
                 activeExecutionCompany.Id,
@@ -296,6 +298,8 @@ public sealed class FinanceSeedBackfillOrchestratorTests
                 "USD",
                 900m,
                 seededAtUtc.AddDays(-14)));
+            setupContext.Entry(setupContext.FinanceAccounts.Local.Single(x => x.CompanyId == partialCompany.Id))
+                .Property<string>("SourceType").CurrentValue = FinanceRecordSourceTypes.Simulation;
             await setupContext.SaveChangesAsync();
 
             healthyCompanyId = healthyCompany.Id;

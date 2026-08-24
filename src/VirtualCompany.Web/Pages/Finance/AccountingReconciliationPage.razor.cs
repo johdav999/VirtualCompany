@@ -1,5 +1,6 @@
 using System.Globalization;
 using Microsoft.AspNetCore.Components;
+using Microsoft.AspNetCore.Components.Web;
 using VirtualCompany.Shared;
 using VirtualCompany.Web.Services;
 
@@ -34,14 +35,32 @@ public partial class AccountingReconciliationPage : FinancePageBase
     private bool CanManageAccounting => FinanceAccess.CanManageAccounting(AccessState.MembershipRole);
     private BankReconciliationCandidatePaymentResponse? SelectedPayment =>
         Selected?.CandidatePayments.FirstOrDefault(x => x.PaymentId == SelectedPaymentId);
+    private string LauraReconciliationAdvice => Selected?.State == "suspense"
+        ? FinanceText["LauraSuspenseAdvice"]
+        : Selected?.RemainingAmount > 0
+            ? FinanceText["LauraUnmatchedAdvice"]
+            : FinanceText["LauraTraceableAdvice"];
 
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
         await LoadWorkspaceAsync(companyId);
-        Accounts = await FinanceApiClient.GetAccountingAccountsAsync(companyId);
-        FiscalYears = await FinanceApiClient.GetAccountingFiscalYearsAsync(companyId);
+        if (!TransactionId.HasValue && Workspace.Items.Count == 0) return;
+
+        try
+        {
+            Accounts = await FinanceApiClient.GetAccountingAccountsAsync(companyId);
+            FiscalYears = await FinanceApiClient.GetAccountingFiscalYearsAsync(companyId);
+        }
+        catch (FinanceApiException)
+        {
+            Accounts = [];
+            FiscalYears = [];
+            ActionError ??= FinanceText["ReconciliationAccountingSetupRequired"];
+            return;
+        }
+
         if (TransactionId.HasValue) await SelectAsync(TransactionId.Value, navigate: false);
         else if (Workspace.Items.Count > 0) await SelectAsync(Workspace.Items[0].BankTransactionId, navigate: false);
     }
@@ -91,6 +110,9 @@ public partial class AccountingReconciliationPage : FinancePageBase
         finally { IsDetailLoading = false; }
     }
 
+    private Task HandleTransactionKeyAsync(KeyboardEventArgs args, Guid transactionId) =>
+        args.Key is "Enter" or " " ? SelectAsync(transactionId) : Task.CompletedTask;
+
     private Task MatchPaymentAsync() => SubmitReconciliationAsync("payment", SelectedPaymentId == Guid.Empty
         ? []
         : [new ReconcileBankTransactionPaymentApiRequest { PaymentId = SelectedPaymentId, AllocatedAmount = MatchAmount }]);
@@ -103,13 +125,13 @@ public partial class AccountingReconciliationPage : FinancePageBase
         if (!CanManageAccounting || AccessState.CompanyId is not Guid companyId || Selected is null) return;
         if (mode != "payment" && string.IsNullOrWhiteSpace(ReviewReason))
         {
-            ActionError = "Explain why this handling is appropriate before continuing.";
+            ActionError = FinanceText["HandlingReasonRequired"];
             return;
         }
         if ((AdjustmentDebit > 0m || AdjustmentCredit > 0m) &&
             (AdjustmentDebit > 0m == (AdjustmentCredit > 0m) || string.IsNullOrWhiteSpace(AdjustmentExplanation)))
         {
-            ActionError = "Enter either one debit or one credit and explain the difference.";
+            ActionError = FinanceText["AdjustmentValidation"];
             return;
         }
         IsSubmitting = true;
@@ -129,9 +151,9 @@ public partial class AccountingReconciliationPage : FinancePageBase
             });
             ActionMessage = mode switch
             {
-                "payment" => "The payment match was saved and any complete posting was created once.",
-                "suspense" => "The transaction was posted to suspense and follow-up work remains open.",
-                _ => "The transaction remains unmatched and visible for later review."
+                "payment" => FinanceText["PaymentMatchSaved"],
+                "suspense" => FinanceText["SuspensePostedMessage"],
+                _ => FinanceText["TransactionUnmatchedMessage"]
             };
             await LoadWorkspaceAsync(companyId);
             await SelectAsync(Selected.Transaction.Id, navigate: false);
@@ -156,7 +178,7 @@ public partial class AccountingReconciliationPage : FinancePageBase
         if (!CanManageAccounting || AccessState.CompanyId is not Guid companyId || Selected is null) return;
         if (ReclassificationAccountId == Guid.Empty || ReclassificationPeriodId == Guid.Empty || string.IsNullOrWhiteSpace(ReviewReason))
         {
-            ActionError = "Choose an account, open period, and correction reason.";
+            ActionError = FinanceText["ReclassificationValidation"];
             return;
         }
         IsSubmitting = true;
@@ -172,7 +194,7 @@ public partial class AccountingReconciliationPage : FinancePageBase
                 ExpectedSourceVersion = Selected.SourceVersion,
                 IdempotencyKey = $"bank-reclassify:{Selected.Transaction.Id:N}:{Selected.SourceVersion}"
             });
-            ActionMessage = "Suspense was corrected with linked reversal and replacement journals. The original remains unchanged.";
+            ActionMessage = FinanceText["SuspenseCorrectedMessage"];
             await LoadWorkspaceAsync(companyId);
         }
         catch (FinanceApiException ex) { ActionError = ex.Message; }
@@ -185,14 +207,14 @@ public partial class AccountingReconciliationPage : FinancePageBase
     private string PaymentHref(Guid paymentId) => FinanceRoutes.BuildPaymentDetailPath(paymentId, AccessState.CompanyId);
     private string InvoiceHref(Guid invoiceId) => FinanceRoutes.BuildInvoiceDetailPath(invoiceId, AccessState.CompanyId);
     private string BillHref(Guid billId) => FinanceRoutes.BuildBillDetailPath(billId, AccessState.CompanyId);
-    private static string StateLabel(string state) => state switch
+    private string StateLabel(string state) => FinanceText[state switch
     {
-        "partial" => "Partially matched",
-        "matched" => "Ready to post",
+        "partial" => "PartiallyMatched",
+        "matched" => "ReadyToPost",
         "posted" => "Posted",
-        "suspense" => "Suspense follow-up",
+        "suspense" => "SuspenseFollowUp",
         "conflict" => "Conflict",
         "correction" => "Corrected",
         _ => "Unmatched"
-    };
+    }];
 }

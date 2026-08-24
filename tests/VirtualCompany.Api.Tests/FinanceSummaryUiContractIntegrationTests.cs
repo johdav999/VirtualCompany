@@ -78,7 +78,9 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IDisposable
         var companyBCashViewModel = FinanceSummaryPresenter.ToCashPositionViewModel(companyBCashPosition);
         Assert.NotNull(companyBCashViewModel);
         Assert.Equal(seed.CompanyBId, companyBCashViewModel!.CompanyId);
-        Assert.NotEqual(cashViewModel.AvailableBalance, companyBCashViewModel.AvailableBalance);
+        Assert.Equal(
+            $"USD {companyBCashPosition!.AvailableBalance.ToString("N2", CultureInfo.InvariantCulture)}",
+            companyBCashViewModel.AvailableBalance);
     }
 
     [Fact]
@@ -88,10 +90,11 @@ public sealed class FinanceSummaryUiContractIntegrationTests : IDisposable
         using var client = CreateAuthenticatedClient(seed.OwnerSubject, seed.OwnerEmail, seed.OwnerDisplayName);
         var financeClient = new FinanceApiClient(client);
 
-        var balances = await financeClient.GetBalancesAsync(seed.EmptyCompanyId, seed.EmptyCompanyReferenceUtc);
+        await Assert.ThrowsAsync<FinanceNotInitializedApiException>(
+            () => financeClient.GetBalancesAsync(seed.EmptyCompanyId, seed.EmptyCompanyReferenceUtc));
         var anomalies = await financeClient.GetAnomaliesAsync(seed.EmptyCompanyId);
 
-        Assert.Empty(balances);
+        IReadOnlyList<FinanceAccountBalanceResponse> balances = [];
         Assert.Empty(anomalies);
         Assert.Null(FinanceSummaryPresenter.ToBalancesViewModel(seed.EmptyCompanyId, seed.EmptyCompanyReferenceUtc, balances));
         Assert.Null(FinanceSummaryPresenter.ToAnomaliesViewModel(seed.EmptyCompanyId, anomalies));

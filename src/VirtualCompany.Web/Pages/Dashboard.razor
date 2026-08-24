@@ -42,6 +42,7 @@ else if (CompanyId is null)
                             <a class="template-card text-decoration-none text-reset" href="@($"/dashboard?companyId={membership.CompanyId}")">
                                 <strong>@membership.CompanyName</strong>
                                 <div class="text-body-secondary mt-2">@CommonText["DashboardMembership", FormatMembershipRole(membership.MembershipRole), FormatMembershipStatus(membership.Status)]</div>
+                                <div class="text-body-secondary mt-1">@DescribeCompany(membership)</div>
                             </a>
                         }
                     </div>
@@ -222,6 +223,18 @@ else
             .ToList()
         ?? [];
 
+    private string DescribeCompany(CompanyMembershipViewModel membership)
+    {
+        var setup = string.Equals(membership.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["CompanySetupComplete"]
+            : string.Equals(membership.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                ? CommonText["CompanySetupInProgress"]
+                : CommonText["CompanySetupNotStarted"];
+        return membership.CompanyCreatedUtc is DateTime createdUtc
+            ? CommonText["CompanyCreatedDescription", LocalDateTime.DateTime(createdUtc), setup, membership.CompanyId.ToString("N")[..8]]
+            : setup;
+    }
+
     protected override async Task OnParametersSetAsync()
     {
         isLoading = true;
@@ -229,8 +242,13 @@ else
 
         try
         {
-            currentUser = await ApiClient.GetCurrentUserContextAsync();
-            onboardingProgress = await ApiClient.GetProgressAsync();
+            currentUser = await ApiClient.GetCurrentUserContextAsync(CompanyId);
+
+            onboardingProgress = CompanyId is Guid scopedCompanyId
+                ? await ApiClient.GetProgressAsync(scopedCompanyId)
+                : currentUser?.ActiveCompany is { } activeCompany
+                    ? await ApiClient.GetProgressAsync(activeCompany.CompanyId)
+                    : null;
             companyAccess = null;
             dashboardEntry = null;
             briefings = null;

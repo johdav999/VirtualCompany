@@ -1084,6 +1084,13 @@ public sealed class SingleAgentOrchestrationService : ISingleAgentOrchestrationS
 
     private static string? ResolveRetrievalPurpose(OrchestrationRequest request)
     {
+        if (request.ActorMetadata is not null &&
+            request.ActorMetadata.TryGetValue("entry_point", out var entryPointNode) &&
+            !string.IsNullOrWhiteSpace(entryPointNode?.ToString()))
+        {
+            return entryPointNode!.ToString().Trim();
+        }
+
         if (!string.IsNullOrWhiteSpace(request.IntentHint))
         {
             return request.IntentHint.Trim();

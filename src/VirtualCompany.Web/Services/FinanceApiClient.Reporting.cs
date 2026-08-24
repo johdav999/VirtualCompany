@@ -93,7 +93,7 @@ public sealed partial class FinanceApiClient
     public Task<FinanceTransactionDetailResponse?> GetTransactionDetailAsync(Guid companyId, Guid transactionId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? Task.FromResult<FinanceTransactionDetailResponse?>(null)
-            : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinanceTransactionDetailResponse>(companyId, $"internal/companies/{companyId}/finance/transactions/{transactionId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
     public Task<IReadOnlyList<FinancePaymentResponse>> GetPaymentsAsync(
         Guid companyId,
@@ -113,7 +113,7 @@ public sealed partial class FinanceApiClient
     public Task<FinancePaymentResponse?> GetPaymentDetailAsync(Guid companyId, Guid paymentId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? Task.FromResult<FinancePaymentResponse?>(null)
-            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinancePaymentResponse>(companyId, $"internal/companies/{companyId}/finance/payments/{paymentId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
 }
 

@@ -195,7 +195,7 @@ else if (detail is not null)
         {
             if (CompanyId is not Guid companyId)
             {
-                var currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+                var currentUser = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
                 if (currentUser?.ActiveCompany is not null)
                 {
                     Navigation.NavigateTo($"/audit/{AuditEventId}?companyId={currentUser.ActiveCompany.CompanyId}", replace: true);

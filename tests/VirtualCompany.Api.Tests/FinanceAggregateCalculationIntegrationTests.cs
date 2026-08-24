@@ -24,7 +24,7 @@ public sealed class FinanceAggregateCalculationIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, cashResponse.StatusCode);
         var cashBalance = await cashResponse.Content.ReadFromJsonAsync<CashBalanceResponse>();
         Assert.NotNull(cashBalance);
-        Assert.Equal(12950m, cashBalance!.Amount);
+        Assert.Equal(12900m, cashBalance!.Amount);
         Assert.Equal("USD", cashBalance.Currency);
 
         var positiveMonthResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/profit-and-loss/monthly?year=2026&month=3");
@@ -99,7 +99,7 @@ public sealed class FinanceAggregateCalculationIntegrationTests : IDisposable
         var balances = await balancesResponse.Content.ReadFromJsonAsync<List<AccountBalanceResponse>>();
         Assert.NotNull(balances);
         var operatingCash = Assert.Single(balances!, balance => balance.AccountName == "Operating Cash");
-        Assert.Equal(12950m, operatingCash.Amount);
+        Assert.Equal(12900m, operatingCash.Amount);
         Assert.Equal("USD", operatingCash.Currency);
     }
 
@@ -120,7 +120,9 @@ public sealed class FinanceAggregateCalculationIntegrationTests : IDisposable
             var aprilInvoiceId = Guid.NewGuid();
 
             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
-            dbContext.Companies.Add(new Company(companyId, "Finance Aggregate Company"));
+            var company = new Company(companyId, "Finance Aggregate Company");
+            company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+            dbContext.Companies.Add(company);
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
             dbContext.FinanceAccounts.Add(new FinanceAccount(
                 accountId,

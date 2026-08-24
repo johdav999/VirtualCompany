@@ -27,10 +27,15 @@ public sealed partial class CompanyFinanceReadService
             throw new ArgumentException("Invoice id is required.", nameof(query));
         }
 
-        var row = await _dbContext.FinanceInvoices
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
+        var row = await ApplySourceFilter(_dbContext.FinanceInvoices
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.InvoiceId)
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.InvoiceId),
+            query.CompanyId,
+            sourceFilter,
+            "invoice")
             .Select(x => new FinanceInvoiceRow(
                 x.Id,
                 x.CounterpartyId,
@@ -97,7 +102,8 @@ public sealed partial class CompanyFinanceReadService
             row.ProcessingStatus,
             paymentContext,
             relatedTransactions,
-            null);
+            null,
+            ResolveFinanceSource(row.SourceType, row.ProviderKey, hasFortnoxReference));
     }
 
     private async Task<Dictionary<Guid, List<FinanceSeedAnomalyDto>>> LoadTransactionAnomalyLookupAsync(

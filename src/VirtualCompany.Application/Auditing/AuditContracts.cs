@@ -162,6 +162,7 @@ public static class AuditActorTypes
 
 public static class AuditTargetTypes
 {
+    public const string Company = "company";
     public const string CompanyInvitation = "company_invitation";
     public const string CompanyMembership = "company_membership";
     public const string Agent = "agent";
@@ -219,6 +220,10 @@ public static class AuditEventOutcomes
 
 public static class AuditEventActions
 {
+    public const string CompanyCreated = "company.created";
+    public const string CompanySelected = "company.selected";
+    public const string CompanyOnboardingCompleted = "company.onboarding.completed";
+    public const string AccidentalCompaniesRemoved = "company.accidental_duplicates.removed";
     public const string CompanyInvitationCreated = "company.invitation.created";
     public const string CompanyInvitationResent = "company.invitation.resent";
     public const string CompanyInvitationRevoked = "company.invitation.revoked";
@@ -291,6 +296,7 @@ public static class AuditEventActions
     public const string ReportingPeriodReopened = "reporting_period.reopened";
     public const string AccountingTaxSummaryReviewed = "accounting.tax_summary.reviewed";
     public const string AccountingExportRequested = "accounting.export.requested";
+    public const string AccountingExportContentExpired = "accounting.export.content_expired";
     public const string IntegrationConnectionDisconnected = "integration.connection.disconnected";
     public const string AccountingConfigurationCreated = "accounting.configuration.created";
     public const string AccountingPolicyPackSelected = "accounting.policy_pack.selected";
@@ -385,6 +391,9 @@ public static class AuditEventActions
     public const string AccountingMigrationConflictResolved = "accounting.migration_conflict.resolved";
     public const string AccountingMigrationCompleted = "accounting.migration.completed";
     public const string AccountingRecoveryVerified = "accounting.recovery.verified";
+    public const string FinanceWorkerRetryRequested = "finance.worker.retry_requested";
+    public const string FinanceWorkerStopped = "finance.worker.stopped";
+    public const string FinanceWorkerFailureAcknowledged = "finance.worker.failure_acknowledged";
     public const string SalesLeadQualified = "sales.lead.qualified";
     public const string SalesLeadRejected = "sales.lead.rejected";
     public const string SalesLeadConverted = "sales.lead.converted";

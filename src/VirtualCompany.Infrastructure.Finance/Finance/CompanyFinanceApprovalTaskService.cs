@@ -57,16 +57,14 @@ public sealed class CompanyFinanceApprovalTaskService : IFinanceApprovalTaskServ
             ? ApprovalTaskStatus.Pending
             : ApprovalTaskStatus.Escalated;
 
-        _dbContext.ApprovalTasks.Add(new ApprovalTask(
+        return await TryCreateTaskAsync(new ApprovalTask(
             Guid.NewGuid(),
             command.CompanyId,
             command.TargetType,
             command.TargetId,
             assignee.UserId,
             command.DueDateUtc,
-            status));
-
-        return true;
+            status), cancellationToken);
     }
 
     public async Task<IReadOnlyList<FinancePendingApprovalTaskDto>> GetPendingTasksAsync(

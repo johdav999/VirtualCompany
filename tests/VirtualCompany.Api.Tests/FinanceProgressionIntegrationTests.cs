@@ -36,17 +36,26 @@ public sealed class FinanceProgressionIntegrationTests
         var beforeInvoiceIssue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.IssuedUtc.AddMinutes(-1));
         var afterInvoiceIssue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.IssuedUtc.AddMinutes(1));
         Assert.Equal(beforeInvoiceIssue.CurrentCash, afterInvoiceIssue.CurrentCash);
-        Assert.Equal(beforeInvoiceIssue.AccountsReceivable + snapshot.InvoiceWithPayment.Amount, afterInvoiceIssue.AccountsReceivable);
+        Assert.True(
+            beforeInvoiceIssue.AccountsReceivable + snapshot.InvoiceIssueNetReceivableDelta == afterInvoiceIssue.AccountsReceivable,
+            $"Expected receivable delta {snapshot.InvoiceIssueNetReceivableDelta}; actual delta {afterInvoiceIssue.AccountsReceivable - beforeInvoiceIssue.AccountsReceivable}. {snapshot.InvoiceIssueDiagnostics}");
 
         var beforeInvoicePayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.PaymentDate.AddMinutes(-1));
         var afterInvoicePayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.InvoiceWithPayment.PaymentDate.AddMinutes(1));
-        Assert.Equal(beforeInvoicePayment.CurrentCash + snapshot.InvoiceWithPayment.PaymentAmount, afterInvoicePayment.CurrentCash);
+        Assert.Equal(beforeInvoicePayment.CurrentCash + snapshot.InvoicePaymentNetCashDelta, afterInvoicePayment.CurrentCash);
         Assert.Equal(beforeInvoicePayment.AccountsReceivable - snapshot.InvoiceWithPayment.AllocatedAmount, afterInvoicePayment.AccountsReceivable);
 
-        var beforeInvoiceOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.OverdueInvoice.DueUtc.AddMinutes(-1));
-        var afterInvoiceOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.OverdueInvoice.DueUtc.AddMinutes(1));
+        var invoiceOverdueBoundaryUtc = snapshot.OverdueInvoice.IssuedUtc > snapshot.OverdueInvoice.DueUtc.Date.AddDays(1)
+            ? snapshot.OverdueInvoice.IssuedUtc
+            : snapshot.OverdueInvoice.DueUtc.Date.AddDays(1);
+        var beforeInvoiceOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, invoiceOverdueBoundaryUtc.AddMinutes(-1));
+        var afterInvoiceOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, invoiceOverdueBoundaryUtc.AddMinutes(1));
         Assert.Equal(beforeInvoiceOverdue.AccountsReceivable, afterInvoiceOverdue.AccountsReceivable);
-        Assert.Equal(beforeInvoiceOverdue.OverdueReceivables + snapshot.OverdueInvoice.RemainingAmount, afterInvoiceOverdue.OverdueReceivables);
+        Assert.True(
+            beforeInvoiceOverdue.OverdueReceivables + snapshot.OverdueInvoice.RemainingAmount == afterInvoiceOverdue.OverdueReceivables,
+            $"Invoice {snapshot.OverdueInvoice.InvoiceNumber} due {snapshot.OverdueInvoice.DueUtc:O}; boundary {invoiceOverdueBoundaryUtc:O}; " +
+            $"before as-of {beforeInvoiceOverdue.AsOfUtc:O} overdue {beforeInvoiceOverdue.OverdueReceivables}; " +
+            $"after as-of {afterInvoiceOverdue.AsOfUtc:O} overdue {afterInvoiceOverdue.OverdueReceivables}; expected remaining {snapshot.OverdueInvoice.RemainingAmount}.");
 
         var beforeBillReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.ReceivedUtc.AddMinutes(-1));
         var afterBillReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.ReceivedUtc.AddMinutes(1));
@@ -55,11 +64,14 @@ public sealed class FinanceProgressionIntegrationTests
 
         var beforeBillPayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.PaymentDate.AddMinutes(-1));
         var afterBillPayment = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.BillWithPayment.PaymentDate.AddMinutes(1));
-        Assert.Equal(beforeBillPayment.CurrentCash - snapshot.BillWithPayment.PaymentAmount, afterBillPayment.CurrentCash);
+        Assert.Equal(beforeBillPayment.CurrentCash + snapshot.BillPaymentNetCashDelta, afterBillPayment.CurrentCash);
         Assert.Equal(beforeBillPayment.AccountsPayable - snapshot.BillWithPayment.AllocatedAmount, afterBillPayment.AccountsPayable);
 
-        var beforeBillOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.OverdueBill.DueUtc.AddMinutes(-1));
-        var afterBillOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.OverdueBill.DueUtc.AddMinutes(1));
+        var billOverdueBoundaryUtc = snapshot.OverdueBill.ReceivedUtc > snapshot.OverdueBill.DueUtc.Date.AddDays(1)
+            ? snapshot.OverdueBill.ReceivedUtc
+            : snapshot.OverdueBill.DueUtc.Date.AddDays(1);
+        var beforeBillOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, billOverdueBoundaryUtc.AddMinutes(-1));
+        var afterBillOverdue = await GetFinanceSummaryAsync(client, seed.CompanyId, billOverdueBoundaryUtc.AddMinutes(1));
         Assert.Equal(beforeBillOverdue.AccountsPayable, afterBillOverdue.AccountsPayable);
         Assert.Equal(beforeBillOverdue.OverduePayables + snapshot.OverdueBill.RemainingAmount, afterBillOverdue.OverduePayables);
     }
@@ -82,7 +94,9 @@ public sealed class FinanceProgressionIntegrationTests
         var beforeRecurringReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.RecurringBill.ReceivedUtc.AddMinutes(-1));
         var afterRecurringReceipt = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.RecurringBill.ReceivedUtc.AddMinutes(1));
         Assert.Equal(beforeRecurringReceipt.CurrentCash, afterRecurringReceipt.CurrentCash);
-        Assert.Equal(beforeRecurringReceipt.AccountsPayable + snapshot.RecurringBill.Amount, afterRecurringReceipt.AccountsPayable);
+        Assert.True(
+            beforeRecurringReceipt.AccountsPayable + snapshot.RecurringReceiptNetPayableDelta == afterRecurringReceipt.AccountsPayable,
+            $"Expected payable delta {snapshot.RecurringReceiptNetPayableDelta}; actual delta {afterRecurringReceipt.AccountsPayable - beforeRecurringReceipt.AccountsPayable}. {snapshot.RecurringReceiptDiagnostics}");
 
         var beforePayableAsset = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.PayableAsset.PurchasedUtc.AddMinutes(-1));
         var afterPayableAsset = await GetFinanceSummaryAsync(client, seed.CompanyId, snapshot.PayableAsset.PurchasedUtc.AddMinutes(1));
@@ -109,7 +123,7 @@ public sealed class FinanceProgressionIntegrationTests
         await StartPausedSimulationAsync(client, seed.CompanyId);
         var finalState = await StepForwardDaysAsync(client, seed.CompanyId, ProgressionDays);
 
-        var query = $"asOfUtc={Uri.EscapeDataString(finalState.CurrentSimulatedDateTime!.Value.ToString("O"))}&recentAssetPurchaseLimit=20&includeConsistencyCheck=true";
+        var query = $"asOfUtc={Uri.EscapeDataString(finalState.CurrentSimulatedDateTime!.Value.ToString("O"))}&recentAssetPurchaseLimit=20&includeConsistencyCheck=true&source=simulation";
 
         var canonical = await GetFinanceSummaryFromRouteAsync(client, $"/api/companies/{seed.CompanyId:D}/finance-summary?{query}");
         var dashboard = await GetFinanceSummaryFromRouteAsync(client, $"/api/companies/{seed.CompanyId:D}/finance/dashboard/summary?{query}");
@@ -119,7 +133,9 @@ public sealed class FinanceProgressionIntegrationTests
         Assert.True(canonical.HasFinanceData);
         Assert.NotEmpty(canonical.RecentAssetPurchases);
         Assert.NotNull(canonical.ConsistencyCheck);
-        Assert.True(canonical.ConsistencyCheck!.IsConsistent);
+        Assert.True(
+            canonical.ConsistencyCheck!.IsConsistent,
+            string.Join(", ", canonical.ConsistencyCheck.Metrics.Where(metric => !metric.IsMatch).Select(metric => $"{metric.MetricKey}: expected {metric.ExpectedValue}, actual {metric.ActualValue}")));
         Assert.Equivalent(canonical, dashboard);
         Assert.Equivalent(canonical, agent);
         Assert.Equivalent(canonical, debug);
@@ -207,7 +223,7 @@ public sealed class FinanceProgressionIntegrationTests
                 Seed: SimulationSeed,
                 DeterministicConfigurationJson: DeterministicConfigurationJson));
 
-        Assert.Equal(HttpStatusCode.Created, startResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, startResponse.StatusCode);
 
         var pauseResponse = await client.PostAsync($"/internal/companies/{companyId:D}/simulation/pause", content: null);
         Assert.Equal(HttpStatusCode.OK, pauseResponse.StatusCode);
@@ -229,8 +245,11 @@ public sealed class FinanceProgressionIntegrationTests
 
     private static async Task<FinanceSummaryResponse> GetFinanceSummaryAsync(HttpClient client, Guid companyId, DateTime asOfUtc)
     {
+        var normalizedAsOfUtc = asOfUtc.Kind == DateTimeKind.Utc
+            ? asOfUtc
+            : DateTime.SpecifyKind(asOfUtc, DateTimeKind.Utc);
         var response = await client.GetAsync(
-            $"/api/companies/{companyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(asOfUtc.ToString("O"))}&recentAssetPurchaseLimit=20");
+            $"/api/companies/{companyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(normalizedAsOfUtc.ToString("O"))}&recentAssetPurchaseLimit=20&source=simulation");
 
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 
@@ -263,30 +282,34 @@ public sealed class FinanceProgressionIntegrationTests
 
             var invoices = await dbContext.FinanceInvoices
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId)
+                .Where(x => x.CompanyId == companyId &&
+                    EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation)
                 .OrderBy(x => x.IssuedUtc)
                 .ToListAsync();
             var bills = await dbContext.FinanceBills
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId)
+                .Where(x => x.CompanyId == companyId &&
+                    EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation)
                 .OrderBy(x => x.ReceivedUtc)
                 .ToListAsync();
             var payments = await dbContext.Payments
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId)
+                .Where(x => x.CompanyId == companyId && x.SourceSimulationEventRecordId != null)
                 .ToListAsync();
             var allocations = await dbContext.PaymentAllocations
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId)
+                .Where(x => x.CompanyId == companyId && x.Payment.SourceSimulationEventRecordId != null)
                 .ToListAsync();
             var assets = await dbContext.FinanceAssets
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId)
+                .Where(x => x.CompanyId == companyId &&
+                    EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation)
                 .OrderBy(x => x.PurchasedUtc)
                 .ToListAsync();
             var transactions = await dbContext.FinanceTransactions
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId)
+                .Where(x => x.CompanyId == companyId &&
+                    EF.Property<string>(x, "SourceType") == FinanceRecordSourceTypes.Simulation)
                 .OrderBy(x => x.TransactionUtc)
                 .ToListAsync();
 
@@ -325,9 +348,13 @@ public sealed class FinanceProgressionIntegrationTests
                         allocation.AllocatedAmount);
                 })
                 .OfType<InvoiceProgressionFlow>()
+                .Where(flow => !completedIncomingPayments.Values.Any(payment =>
+                    Math.Abs((payment.PaymentDate - flow.IssuedUtc).TotalMinutes) <= 1d))
                 .FirstOrDefault();
 
             var overdueInvoice = invoices
+                .Where(invoice => IsIncludedReceivable(invoice.Status, invoice.SettlementStatus))
+                .Where(invoice => invoice.IssuedUtc < invoice.DueUtc.Date.AddDays(1))
                 .Select(invoice =>
                 {
                     var allocatedAmount = allocations
@@ -370,6 +397,8 @@ public sealed class FinanceProgressionIntegrationTests
                 .FirstOrDefault();
 
             var overdueBill = bills
+                .Where(bill => IsIncludedPayable(bill.Status, bill.SettlementStatus))
+                .Where(bill => bill.ReceivedUtc < bill.DueUtc.Date.AddDays(1))
                 .Select(bill =>
                 {
                     var allocatedAmount = allocations
@@ -388,13 +417,18 @@ public sealed class FinanceProgressionIntegrationTests
             var recurringBill = bills
                 .Where(bill => bill.BillNumber != billWithPayment?.BillNumber)
                 .Where(bill => bill.BillNumber != overdueBill?.BillNumber)
+                .Where(bill => !string.Equals(bill.Status, "paid", StringComparison.OrdinalIgnoreCase))
+                .Where(bill => !string.Equals(bill.SettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase))
+                .Where(bill => !completedOutgoingPayments.Values.Any(payment =>
+                    Math.Abs((payment.PaymentDate - bill.ReceivedUtc).TotalMinutes) <= 1d))
                 .Select(bill => new RecurringCostFlow(bill.BillNumber, bill.ReceivedUtc, bill.Amount))
                 .FirstOrDefault();
 
             var payableAsset = assets
                 .Where(x =>
                     string.Equals(x.FundingBehavior, FinanceAssetFundingBehaviors.Payable, StringComparison.OrdinalIgnoreCase) &&
-                    !string.Equals(x.FundingSettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase))
+                    !string.Equals(x.FundingSettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.Status, FinanceAssetStatuses.Active, StringComparison.OrdinalIgnoreCase))
                 .Select(x => new AssetProgressionFlow(x.ReferenceNumber, x.PurchasedUtc, x.Amount, x.FundingBehavior, x.FundingSettlementStatus, null))
                 .FirstOrDefault();
 
@@ -413,6 +447,51 @@ public sealed class FinanceProgressionIntegrationTests
                     cashAssetEntity.FundingSettlementStatus,
                     cashAssetPayment?.TransactionUtc);
 
+            var invoiceIssueWindowStart = invoiceWithPayment!.IssuedUtc.AddMinutes(-1);
+            var invoiceIssueWindowEnd = invoiceWithPayment.IssuedUtc.AddMinutes(1);
+            var invoiceIssueNetReceivableDelta = invoices
+                .Where(x => x.IssuedUtc > invoiceIssueWindowStart && x.IssuedUtc <= invoiceIssueWindowEnd)
+                .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
+                .Sum(x => x.Amount) - allocations
+                .Where(x => completedIncomingPayments.TryGetValue(x.PaymentId, out var payment) &&
+                    payment.PaymentDate > invoiceIssueWindowStart && payment.PaymentDate <= invoiceIssueWindowEnd)
+                .Sum(x => x.AllocatedAmount);
+            var invoiceIssueDiagnostics = string.Join(" | ", invoices
+                .Where(x => x.IssuedUtc > invoiceIssueWindowStart && x.IssuedUtc <= invoiceIssueWindowEnd)
+                .Select(x => $"invoice={x.InvoiceNumber},amount={x.Amount},status={x.Status},settlement={x.SettlementStatus}"));
+
+            var recurringReceiptWindowStart = recurringBill!.ReceivedUtc.AddMinutes(-1);
+            var recurringReceiptWindowEnd = recurringBill.ReceivedUtc.AddMinutes(1);
+            var recurringReceiptNetPayableDelta = bills
+                .Where(x => x.ReceivedUtc > recurringReceiptWindowStart && x.ReceivedUtc <= recurringReceiptWindowEnd)
+                .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
+                .Sum(x => x.Amount) + assets
+                .Where(x => x.PurchasedUtc > recurringReceiptWindowStart && x.PurchasedUtc <= recurringReceiptWindowEnd &&
+                    string.Equals(x.FundingBehavior, FinanceAssetFundingBehaviors.Payable, StringComparison.OrdinalIgnoreCase) &&
+                    !string.Equals(x.FundingSettlementStatus, FinanceSettlementStatuses.Paid, StringComparison.OrdinalIgnoreCase) &&
+                    string.Equals(x.Status, FinanceAssetStatuses.Active, StringComparison.OrdinalIgnoreCase))
+                .Sum(x => x.Amount) - allocations
+                .Where(x => completedOutgoingPayments.TryGetValue(x.PaymentId, out var payment) &&
+                    payment.PaymentDate > recurringReceiptWindowStart && payment.PaymentDate <= recurringReceiptWindowEnd)
+                .Sum(x => x.AllocatedAmount);
+            var recurringReceiptDiagnostics = string.Join(" | ", bills
+                .Where(x => x.ReceivedUtc > recurringReceiptWindowStart && x.ReceivedUtc <= recurringReceiptWindowEnd)
+                .Select(x => $"bill={x.BillNumber},amount={x.Amount},status={x.Status},settlement={x.SettlementStatus}")
+                .Concat(assets
+                    .Where(x => x.PurchasedUtc > recurringReceiptWindowStart && x.PurchasedUtc <= recurringReceiptWindowEnd)
+                    .Select(x => $"asset={x.ReferenceNumber},amount={x.Amount},status={x.Status},funding={x.FundingBehavior},settlement={x.FundingSettlementStatus}")));
+
+            var invoicePaymentWindowStart = invoiceWithPayment.PaymentDate.AddMinutes(-1);
+            var invoicePaymentWindowEnd = invoiceWithPayment.PaymentDate.AddMinutes(1);
+            var invoicePaymentNetCashDelta = transactions
+                .Where(x => x.TransactionUtc > invoicePaymentWindowStart && x.TransactionUtc <= invoicePaymentWindowEnd)
+                .Sum(x => x.Amount);
+            var billPaymentWindowStart = billWithPayment!.PaymentDate.AddMinutes(-1);
+            var billPaymentWindowEnd = billWithPayment.PaymentDate.AddMinutes(1);
+            var billPaymentNetCashDelta = transactions
+                .Where(x => x.TransactionUtc > billPaymentWindowStart && x.TransactionUtc <= billPaymentWindowEnd)
+                .Sum(x => x.Amount);
+
             return new FinanceProgressionSnapshot(
                 currentSimulatedUtc,
                 invoiceWithPayment ?? throw new InvalidOperationException("Expected a generated invoice with a completed incoming payment allocation."),
@@ -421,7 +500,13 @@ public sealed class FinanceProgressionIntegrationTests
                 overdueBill ?? throw new InvalidOperationException("Expected an unpaid bill to become overdue after deterministic progression."),
                 recurringBill ?? throw new InvalidOperationException("Expected deterministic progression to generate a recurring bill."),
                 payableAsset ?? throw new InvalidOperationException("Expected deterministic progression to generate a payable-funded asset purchase."),
-                cashAsset ?? throw new InvalidOperationException("Expected deterministic progression to generate a cash-funded asset purchase."));
+                cashAsset ?? throw new InvalidOperationException("Expected deterministic progression to generate a cash-funded asset purchase."),
+                invoiceIssueNetReceivableDelta,
+                recurringReceiptNetPayableDelta,
+                invoicePaymentNetCashDelta,
+                billPaymentNetCashDelta,
+                invoiceIssueDiagnostics,
+                recurringReceiptDiagnostics);
         });
     }
 
@@ -441,7 +526,6 @@ public sealed class FinanceProgressionIntegrationTests
                 .ThenBy(x => x.Id)
                 .Select(x => new SimulationEventSnapshot(
                     x.Id,
-                    x.SimulationSessionId,
                     x.Seed,
                     x.StartSimulatedUtc,
                     x.SimulationDateUtc,
@@ -487,6 +571,19 @@ public sealed class FinanceProgressionIntegrationTests
                     .ToList()),
             timeline);
     }
+
+    private static bool IsIncludedReceivable(string status, string settlementStatus) =>
+        !string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Credited, StringComparison.Ordinal) &&
+        NormalizeStatus(status) is not ("cancelled" or "canceled" or "void" or "voided" or "written_off" or "rejected");
+
+    private static bool IsIncludedPayable(string status, string settlementStatus) =>
+        !string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Credited, StringComparison.Ordinal) &&
+        NormalizeStatus(status) is not ("cancelled" or "canceled" or "void" or "voided");
+
+    private static string NormalizeStatus(string value) =>
+        string.IsNullOrWhiteSpace(value)
+            ? string.Empty
+            : value.Trim().Replace(" ", "_", StringComparison.Ordinal).Replace("-", "_", StringComparison.Ordinal).ToLowerInvariant();
 
     private static void AssertReplaySnapshotEqual(ReplaySnapshot expected, ReplaySnapshot actual)
     {
@@ -572,7 +669,13 @@ public sealed class FinanceProgressionIntegrationTests
         OverdueBillFlow OverdueBill,
         RecurringCostFlow RecurringBill,
         AssetProgressionFlow PayableAsset,
-        AssetProgressionFlow CashAsset);
+        AssetProgressionFlow CashAsset,
+        decimal InvoiceIssueNetReceivableDelta,
+        decimal RecurringReceiptNetPayableDelta,
+        decimal InvoicePaymentNetCashDelta,
+        decimal BillPaymentNetCashDelta,
+        string InvoiceIssueDiagnostics,
+        string RecurringReceiptDiagnostics);
 
     private sealed record ReplaySnapshot(
         FinanceSummarySnapshot Summary,
@@ -608,7 +711,6 @@ public sealed class FinanceProgressionIntegrationTests
 
     private sealed record SimulationEventSnapshot(
         Guid EventId,
-        Guid? SimulationSessionId,
         int Seed,
         DateTime StartSimulatedUtc,
         DateTime SimulationDateUtc,

@@ -3,13 +3,16 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
+using VirtualCompany.Infrastructure.Companies;
 using Xunit;
 
 namespace VirtualCompany.Api.Tests;
@@ -21,9 +24,22 @@ public sealed class CashAnalyticsLatencyIntegrationTests : IDisposable
     private const double AgentQueryMedianTargetMilliseconds = 2000;
     private static readonly DateTime ScenarioAsOfUtc = new(2026, 4, 17, 12, 0, 0, DateTimeKind.Utc);
 
-    private readonly TestWebApplicationFactory _factory = new();
+    private readonly TestWebApplicationFactory _factory = new ProductionToolFactory();
 
     public void Dispose() => _factory.Dispose();
+
+    private sealed class ProductionToolFactory : TestWebApplicationFactory
+    {
+        protected override void ConfigureWebHost(IWebHostBuilder builder)
+        {
+            base.ConfigureWebHost(builder);
+            builder.ConfigureServices(services =>
+            {
+                services.RemoveAll<IInternalCompanyToolContract>();
+                services.AddScoped<IInternalCompanyToolContract, InternalCompanyToolContract>();
+            });
+        }
+    }
 
     [Fact]
     public async Task Dashboard_cash_snapshot_endpoint_meets_seeded_multi_company_latency_threshold()
@@ -89,9 +105,11 @@ public sealed class CashAnalyticsLatencyIntegrationTests : IDisposable
                 $"Finance agent query '{queryText}' median latency was {median:0.0} ms; target is {AgentQueryMedianTargetMilliseconds:0.0} ms.");
 
             Assert.True(response.Success, $"Finance agent query '{queryText}' failed with status {response.Status}.");
-            var result = response.Data["result"]!.Deserialize<FinanceAgentQueryResultDto>();
+            var resultNode = response.Data["result"]!;
+            var result = resultNode.Deserialize<FinanceAgentQueryResultDto>(
+                new JsonSerializerOptions(JsonSerializerDefaults.Web));
             Assert.NotNull(result);
-            Assert.Equal(seed.CompanyId, result!.CompanyId);
+            Assert.True(seed.CompanyId == result!.CompanyId, resultNode.ToJsonString());
             Assert.Equal(expectedIntent, result.Intent);
             Assert.NotEmpty(result.MetricComponents);
             Assert.NotEmpty(result.SourceRecordIds);
@@ -643,7 +661,7 @@ public sealed class CashAnalyticsLatencyIntegrationTests : IDisposable
     private static Guid CreateLineGuid(Guid entryId, int suffix)
     {
         var bytes = entryId.ToByteArray();
-        bytes[15] = (byte)suffix;
+        bytes[0] ^= checked((byte)suffix);
         return new Guid(bytes);
     }
 

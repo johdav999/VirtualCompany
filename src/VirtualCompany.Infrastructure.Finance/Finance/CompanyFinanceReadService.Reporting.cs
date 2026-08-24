@@ -23,7 +23,7 @@ public sealed partial class CompanyFinanceReadService
     {
         EnsureTenant(query.CompanyId);
         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
-        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
+        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? _timeProvider!.GetUtcNow().UtcDateTime;
 
         var accountBalances = await BuildAccountBalancesAsync(query.CompanyId, asOfUtc, cancellationToken);
         var cashAccounts = accountBalances
@@ -62,7 +62,7 @@ public sealed partial class CompanyFinanceReadService
     {
         EnsureTenant(query.CompanyId);
         await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
-        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? DateTime.UtcNow;
+        var asOfUtc = NormalizeUtc(query.AsOfUtc) ?? _timeProvider!.GetUtcNow().UtcDateTime;
         var cashBalance = await GetCashBalanceAsync(
             new GetFinanceCashBalanceQuery(query.CompanyId, asOfUtc),
             cancellationToken);
@@ -149,7 +149,7 @@ public sealed partial class CompanyFinanceReadService
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.TransactionUtc >= startUtc && x.TransactionUtc <= asOfUtc && x.Amount < 0)
-            .SumAsync(x => (decimal?)Math.Abs(x.Amount), cancellationToken) ?? 0m;
+            .SumAsync(x => (decimal?)-x.Amount, cancellationToken) ?? 0m;
         var months = Math.Max(1m, lookbackDays / 30m);
         return totalBurn / months;
     }

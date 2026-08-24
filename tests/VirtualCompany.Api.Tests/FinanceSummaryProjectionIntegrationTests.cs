@@ -24,7 +24,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
 
         var stopwatch = Stopwatch.StartNew();
-        var firstResponse = await client.GetAsync($"/api/companies/{seed.CompanyId:D}/finance-summary");
+        var firstResponse = await client.GetAsync($"/api/companies/{seed.CompanyId:D}/finance-summary?source=simulation");
         stopwatch.Stop();
 
         Assert.Equal(HttpStatusCode.OK, firstResponse.StatusCode);
@@ -35,7 +35,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
         AssertSummary(first!, seed.CompanyId);
 
         var second = await client.GetFromJsonAsync<FinanceSummaryResponse>(
-            $"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}");
+            $"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&source=simulation");
 
         Assert.NotNull(second);
         Assert.All(first!.RecentAssetPurchases, asset => Assert.Equal(seed.CompanyId, asset.CompanyId));
@@ -48,7 +48,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
         var seed = await SeedScenarioAsync();
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
 
-        var query = $"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&recentAssetPurchaseLimit=1";
+        var query = $"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&recentAssetPurchaseLimit=1&source=simulation";
 
         var canonical = await client.GetFromJsonAsync<FinanceSummaryResponse>(
             $"/api/companies/{seed.CompanyId:D}/finance-summary?{query}");
@@ -77,7 +77,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
         var seed = await SeedScenarioAsync();
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
 
-        var query = $"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&includeConsistencyCheck=true";
+        var query = $"asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&includeConsistencyCheck=true&source=simulation";
 
         var stopwatch = Stopwatch.StartNew();
         var firstResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId:D}/finance/debug/summary?{query}");
@@ -95,7 +95,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
         AssertSummary(first!, seed.CompanyId);
         Assert.NotNull(first.ConsistencyCheck);
         Assert.True(first.ConsistencyCheck!.IsConsistent);
-        Assert.Equal(11, first.ConsistencyCheck.SourceRecordCount);
+        Assert.Equal(12, first.ConsistencyCheck.SourceRecordCount);
         AssertConsistencyMetrics(first.ConsistencyCheck);
         Assert.Equivalent(first, second);
     }
@@ -107,7 +107,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName, seed.CompanyId);
 
         var summary = await client.GetFromJsonAsync<FinanceSummaryResponse>(
-            $"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}");
+            $"/api/companies/{seed.CompanyId:D}/finance-summary?asOfUtc={Uri.EscapeDataString(ScenarioAsOfUtc.ToString("O"))}&source=simulation");
 
         Assert.NotNull(summary);
         Assert.Equal(1125m, summary!.CurrentCash);
@@ -220,6 +220,15 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
             var partialBillId = Guid.NewGuid();
             var priorBillId = Guid.NewGuid();
             var futureBillId = Guid.NewGuid();
+            var balanceId = Guid.NewGuid();
+            var balanceEvent = CreateSimulationEvent(
+                balanceId,
+                "finance.balance.generated",
+                "finance_balance",
+                new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc),
+                cashBefore: 900m,
+                cashDelta: 0m,
+                cashAfter: 900m);
             dbContext.Companies.AddRange(
                 new Company(companyId, "Projection Finance Company"),
                 new Company(otherCompanyId, "Other Projection Company"));
@@ -244,9 +253,12 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
             dbContext.FinanceAccounts.AddRange(
                 new FinanceAccount(cashAccountId, companyId, "1000", "Operating Cash", "cash", "USD", 1000m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)),
                 new FinanceAccount(otherCashAccountId, otherCompanyId, "1000", "Other Cash", "cash", "USD", 9000m, new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+            dbContext.ChangeTracker.Entries<FinanceAccount>()
+                .Single(entry => entry.Entity.Id == cashAccountId)
+                .Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Simulation;
 
             dbContext.FinanceBalances.AddRange(
-                new FinanceBalance(Guid.NewGuid(), companyId, cashAccountId, new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc), 900m, "USD"),
+                new FinanceBalance(balanceId, companyId, cashAccountId, new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc), 900m, "USD", sourceSimulationEventRecordId: balanceEvent.Id),
                 new FinanceBalance(Guid.NewGuid(), otherCompanyId, otherCashAccountId, new DateTime(2026, 4, 15, 0, 0, 0, DateTimeKind.Utc), 9100m, "USD"));
 
             dbContext.FinanceCounterparties.AddRange(
@@ -287,6 +299,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
             var bankFeeEvent = CreateSimulationEvent(bankFeeTransactionId, "finance.transaction.posted", "finance_transaction", ScenarioAsOfUtc, 1150m, -25m, 1125m);
 
             dbContext.SimulationEventRecords.AddRange(
+                balanceEvent,
                 overdueInvoiceEvent,
                 partialInvoiceEvent,
                 priorInvoiceEvent,
@@ -420,7 +433,7 @@ public sealed class FinanceSummaryProjectionIntegrationTests : IDisposable
             "Pay now. BILL-OVERDUE-001 is overdue and should be cleared before lower-priority cash uses.",
             summary.Intelligence.DueSoonBills[0].RecommendationText);
         Assert.Equal(
-            "Delay. Preserve cash for higher-priority obligations and review BILL-PART-001 on 2026-04-28.",
+            "Delay. BILL-PART-001 is not yet urgent; review it again on 2026-04-28.",
             summary.Intelligence.DueSoonBills[2].RecommendationText);
         Assert.All(summary.RecentAssetPurchases, asset => Assert.Equal(companyId, asset.CompanyId));
         Assert.Collection(

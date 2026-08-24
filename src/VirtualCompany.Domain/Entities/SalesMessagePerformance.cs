@@ -183,5 +183,10 @@ public sealed class SalesMessagePerformance : ICompanyOwnedEntity
         ?? (stepOrder.HasValue ? $"step-order:{stepOrder.Value}" : null);
 
     private static DateTime NormalizeUtc(DateTime value) =>
-        value.Kind == DateTimeKind.Utc ? value : value.ToUniversalTime();
+        value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
 }

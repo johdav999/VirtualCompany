@@ -31,7 +31,7 @@ public sealed partial class InternalFinanceController
         [FromQuery] DateTime? endUtc,
         [FromQuery] int limit,
         CancellationToken cancellationToken,
-        [FromQuery] string source = FinanceDataSources.All) =>
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadAsync(
             () => _financeReadService.GetBillsAsync(
                 new GetFinanceBillsQuery(companyId, startUtc, endUtc, limit, source),
@@ -41,12 +41,13 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<FinanceBillDetailDto>> GetBillDetailAsync(
         Guid companyId,
         Guid billId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadOptionalAsync(
             async () =>
             {
                 var detail = await _financeReadService.GetBillDetailAsync(
-                    new GetFinanceBillDetailQuery(companyId, billId), cancellationToken);
+                    new GetFinanceBillDetailQuery(companyId, billId, source), cancellationToken);
                 if (detail is null) return null;
                 var accounting = await _supplierBillAccountingService.GetAsync(
                     new GetSupplierBillAccountingQuery(companyId, billId), cancellationToken);
@@ -285,10 +286,11 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetBillAllocationsAsync(
         Guid companyId,
         Guid billId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadOptionalAsync(
             () => _financePaymentReadService.GetAllocationsByBillAsync(
-                new GetFinanceBillAllocationsQuery(companyId, billId),
+                new GetFinanceBillAllocationsQuery(companyId, billId, source),
                 cancellationToken),
             "Finance bill was not found.");
 

@@ -19,6 +19,20 @@
             <GuidedWorkshopLaunch CompanyId="financeCompanyId" AgentDepartment="Finance" ArtifactType="finance_budget" />
         </div>
     }
+    @if (OperatingMode is not null)
+    {
+        <section class="alert @OperatingModeAlertClass mb-3" role="status" aria-label="Finance operating mode">
+            <div class="d-flex flex-wrap align-items-center gap-2">
+                <strong>Accounting authority: @OperatingModeAuthorityLabel</strong>
+                <span class="badge text-bg-light">Data source: @OperatingModeSourceLabel</span>
+                @if (!OperatingMode.IsReadyForOperationalPosting)
+                {
+                    <span class="badge text-bg-warning">Posting is paused</span>
+                }
+            </div>
+            <div class="small mt-1">@OperatingMode.NextAction</div>
+        </section>
+    }
     <FinanceDataState
         IsLoading="@IsOverviewLoading"
         IsEmpty="@IsOverviewEmpty"

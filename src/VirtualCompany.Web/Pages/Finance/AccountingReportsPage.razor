@@ -1,19 +1,21 @@
 @page "/finance/accounting/reports"
 @inherits FinancePageBase
 
-<PageTitle>Reports &amp; close</PageTitle>
+<PageTitle>@FinanceText["ReportsCloseTitle"]</PageTitle>
 
-<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="Reports & close" Description="Review the books, follow every total to posted evidence, and close periods with confidence." LoadingMessage="Loading accounting reports…">
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["ReportsCloseTitle"]" Description="@FinanceText["ReportsCloseDescription"]"
+                   LoadingMessage="@FinanceText["ReportsLoading"]">
     <AccountingNavigation CompanyId="@AccessState.CompanyId" />
 
     <div class="accounting-reports-heading">
         <div>
-            <span class="dashboard-kicker">Native accounting</span>
-            <h2>Reports &amp; close</h2>
-            <p>Posted journals are the source for every balance shown here.</p>
+            <span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span>
+            <h2>@FinanceText["ReportsCloseTitle"]</h2>
+            <p>@FinanceText["ReportsPostedSourceHelp"]</p>
         </div>
         <div class="accounting-reports-actions">
-            <label for="report-period">Fiscal period</label>
+            <label for="report-period">@FinanceText["FiscalPeriod"]</label>
             <select id="report-period" class="form-select" value="@SelectedPeriodId" @onchange="ChangePeriodAsync">
                 @foreach (var period in Periods)
                 {
@@ -22,114 +24,117 @@
             </select>
             @if (CanManageAccounting)
             {
-                <button class="btn btn-primary" type="button" @onclick="RequestExportAsync" disabled="@IsActing">Create export</button>
+                <button class="btn btn-primary" type="button" @onclick="RequestExportAsync" disabled="@IsActing">@FinanceText["CreateExport"]</button>
             }
         </div>
     </div>
 
-    <div class="accounting-compliance-notice" role="note">ⓘ @(TaxSummary?.ComplianceNotice ?? "Country-neutral bookkeeping summary — not a statutory return.")</div>
+    <div class="accounting-compliance-notice" role="note">ⓘ @(TaxSummary?.ComplianceNotice ?? FinanceText["CountryNeutralTaxNotice"])</div>
 
     @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
-    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>Action could not be completed.</strong><div>@ActionError</div></div> }
+    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div></div> }
 
-    <section class="accounting-report-kpis" aria-label="Report summary">
-        <button type="button" class="accounting-report-kpi @(View == "trial" ? "active" : null)" @onclick='() => View = "trial"'><span>⚖</span><small>Trial balance</small><strong>@Money(TrialBalance?.TotalClosingDebits, Currency)</strong><em class="@(TrialBalance?.IsBalanced == true ? "ok" : "warn")">@(TrialBalance?.IsBalanced == true ? "Balanced" : "Needs review")</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "profit-loss" ? "active" : null)" @onclick='() => View = "profit-loss"'><span>↗</span><small>Profit &amp; loss</small><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong><em>@(ProfitAndLoss?.UsedSnapshot == true ? "Stored snapshot" : "Posted journals")</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "balance-sheet" ? "active" : null)" @onclick='() => View = "balance-sheet"'><span>▣</span><small>Balance sheet</small><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency)</strong><em class="@(BalanceSheet?.IsBalanced == true ? "ok" : "warn")">@(BalanceSheet?.IsBalanced == true ? "Reconciled" : "Needs review")</em></button>
-        <button type="button" class="accounting-report-kpi @(View == "tax" ? "active" : null)" @onclick='() => View = "tax"'><span>◇</span><small>Tax summary</small><strong>@Money(TaxSummary?.Lines.Sum(x => x.TaxAmount), Currency)</strong><em class="@(TaxSummary?.IsReviewed == true ? "ok" : "warn")">@(TaxSummary?.IsReviewed == true ? "Reviewed" : "Review required")</em></button>
+    <section class="accounting-report-kpis" aria-label="@FinanceText["ReportSummary"]" aria-busy="@IsReportLoading">
+        <button type="button" class="accounting-report-kpi @(View == "trial" ? "active" : null)" aria-pressed="@(View == "trial")" @onclick='() => View = "trial"'><span aria-hidden="true">⚖</span><small>@FinanceText["TrialBalance"]</small><strong>@Money(TrialBalance?.TotalClosingDebits, Currency)</strong><em class="@(TrialBalance?.IsBalanced == true ? "ok" : "warn")">@FinanceText[TrialBalance?.IsBalanced == true ? "Balanced" : "NeedsReview"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => View = "profit-loss"'><span aria-hidden="true">↗</span><small>@FinanceText["ProfitAndLoss"]</small><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong><em>@FinanceText[ProfitAndLoss?.UsedSnapshot == true ? "StoredSnapshot" : "PostedJournals"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'><span aria-hidden="true">▣</span><small>@FinanceText["BalanceSheet"]</small><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency)</strong><em class="@(BalanceSheet?.IsBalanced == true ? "ok" : "warn")">@FinanceText[BalanceSheet?.IsBalanced == true ? "Reconciled" : "NeedsReview"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'><span aria-hidden="true">◇</span><small>@FinanceText["TaxSummary"]</small><strong>@Money(TaxSummary?.Lines.Sum(x => x.TaxAmount), Currency)</strong><em class="@(TaxSummary?.IsReviewed == true ? "ok" : "warn")">@FinanceText[TaxSummary?.IsReviewed == true ? "Reviewed" : "ReviewRequired"]</em></button>
     </section>
 
-    <nav class="accounting-report-tabs" aria-label="Report views">
-        <button class="@(View == "trial" ? "active" : null)" @onclick='() => View = "trial"'>Trial balance</button>
-        <button class="@(View == "ledger" ? "active" : null)" @onclick='() => View = "ledger"'>General ledger</button>
-        <button class="@(View == "profit-loss" ? "active" : null)" @onclick='() => View = "profit-loss"'>Profit &amp; loss</button>
-        <button class="@(View == "balance-sheet" ? "active" : null)" @onclick='() => View = "balance-sheet"'>Balance sheet</button>
-        <button class="@(View == "tax" ? "active" : null)" @onclick='() => View = "tax"'>Tax summary</button>
+    <nav class="accounting-report-tabs" aria-label="@FinanceText["ReportViews"]">
+        <button type="button" class="@(View == "trial" ? "active" : null)" aria-pressed="@(View == "trial")" @onclick='() => View = "trial"'>@FinanceText["TrialBalance"]</button>
+        <button type="button" class="@(View == "ledger" ? "active" : null)" aria-pressed="@(View == "ledger")" @onclick='() => View = "ledger"'>@FinanceText["GeneralLedger"]</button>
+        <button type="button" class="@(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => View = "profit-loss"'>@FinanceText["ProfitAndLoss"]</button>
+        <button type="button" class="@(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'>@FinanceText["BalanceSheet"]</button>
+        <button type="button" class="@(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'>@FinanceText["TaxSummary"]</button>
     </nav>
 
     <div class="accounting-report-workspace">
-        <section class="accounting-report-table-card">
+        <section class="accounting-report-table-card" aria-busy="@IsReportLoading">
             @if (IsReportLoading)
             {
-                <div class="accounting-report-state"><div class="spinner-border text-primary"></div><h3>Building report</h3><p>Reading posted journals for the selected period.</p></div>
+                <div class="accounting-report-state" role="status"><div class="spinner-border text-primary" aria-hidden="true"></div><h3>@FinanceText["BuildingReport"]</h3><p>@FinanceText["BuildingReportHelp"]</p></div>
             }
             else if (View == "trial")
             {
-                <ReportHeader Title="Trial balance" Detail="Opening, movement, and closing balances from posted journal lines." />
-                <div class="table-responsive"><table class="table accounting-report-table"><thead><tr><th>Account</th><th>Opening</th><th>Debit</th><th>Credit</th><th>Closing</th></tr></thead><tbody>
-                @foreach (var row in TrialBalance?.Accounts ?? []) { <tr class="@(SelectedAccountId == row.AccountId ? "selected" : null)" @onclick="() => SelectAccountAsync(row.AccountId)"><td><strong>@row.AccountCode</strong><span>@row.AccountName</span></td><td>@Money(row.OpeningBalance, row.Currency)</td><td>@Money(row.Debit, row.Currency)</td><td>@Money(row.Credit, row.Currency)</td><td><strong>@Money(row.ClosingBalance, row.Currency)</strong></td></tr> }
-                </tbody><tfoot><tr><th>Total</th><th></th><th>@Money(TrialBalance?.TotalDebits, Currency)</th><th>@Money(TrialBalance?.TotalCredits, Currency)</th><th>@(TrialBalance?.IsBalanced == true ? "Balanced" : "Out of balance")</th></tr></tfoot></table></div>
+                <ReportHeader Title="@FinanceText["TrialBalance"]" Detail="@FinanceText["TrialBalanceHelp"]" />
+                <div class="table-responsive"><table class="table accounting-report-table"><thead><tr><th>@FinanceText["Account"]</th><th>@FinanceText["Opening"]</th><th>@FinanceText["Debit"]</th><th>@FinanceText["Credit"]</th><th>@FinanceText["Closing"]</th></tr></thead><tbody>
+                @foreach (var row in TrialBalance?.Accounts ?? [])
+                {
+                    <tr class="@(SelectedAccountId == row.AccountId ? "selected" : null)" role="button" tabindex="0" aria-selected="@(SelectedAccountId == row.AccountId)" @onclick="() => SelectAccountAsync(row.AccountId)" @onkeydown="args => HandleAccountKeyAsync(args, row.AccountId)"><td><strong>@row.AccountCode</strong><span>@row.AccountName</span></td><td>@Money(row.OpeningBalance, row.Currency)</td><td>@Money(row.Debit, row.Currency)</td><td>@Money(row.Credit, row.Currency)</td><td><strong>@Money(row.ClosingBalance, row.Currency)</strong></td></tr>
+                }
+                </tbody><tfoot><tr><th>@FinanceText["Total"]</th><th></th><th>@Money(TrialBalance?.TotalDebits, Currency)</th><th>@Money(TrialBalance?.TotalCredits, Currency)</th><th>@FinanceText[TrialBalance?.IsBalanced == true ? "Balanced" : "OutOfBalance"]</th></tr></tfoot></table></div>
             }
             else if (View == "ledger")
             {
-                <ReportHeader Title="General ledger" Detail="Select an account to inspect its vouchers and running balance." />
+                <ReportHeader Title="@FinanceText["GeneralLedger"]" Detail="@FinanceText["GeneralLedgerSelectHelp"]" />
                 @foreach (var account in GeneralLedger?.Accounts ?? [])
                 {
-                    <button type="button" class="accounting-ledger-account" @onclick="() => SelectAccountAsync(account.AccountId)"><span><strong>@account.AccountCode · @account.AccountName</strong><small>@account.Lines.Count posted lines</small></span><span>@Money(account.ClosingBalance, account.Currency) ›</span></button>
+                    <button type="button" class="accounting-ledger-account" aria-pressed="@(SelectedAccountId == account.AccountId)" @onclick="() => SelectAccountAsync(account.AccountId)"><span><strong>@account.AccountCode · @account.AccountName</strong><small>@FinanceText["PostedLineCount", account.TotalLineCount]</small></span><span>@Money(account.ClosingBalance, account.Currency) <span aria-hidden="true">›</span></span></button>
                 }
             }
             else if (View == "profit-loss")
             {
-                <ReportHeader Title="Profit & loss" Detail="Revenue and expenses mapped from the same posted journals as the trial balance." />
-                <StatementLines Title="Revenue" Lines="@ProfitAndLoss?.RevenueLines" />
-                <StatementLines Title="Expenses" Lines="@ProfitAndLoss?.ExpenseLines" />
-                <div class="accounting-statement-total"><span>Net income</span><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong></div>
+                <ReportHeader Title="@FinanceText["ProfitAndLoss"]" Detail="@FinanceText["ProfitAndLossHelp"]" />
+                <StatementLines Title="@FinanceText["Revenue"]" Lines="@ProfitAndLoss?.RevenueLines" />
+                <StatementLines Title="@FinanceText["Expenses"]" Lines="@ProfitAndLoss?.ExpenseLines" />
+                <div class="accounting-statement-total"><span>@FinanceText["NetIncome"]</span><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong></div>
             }
             else if (View == "balance-sheet")
             {
-                <ReportHeader Title="Balance sheet" Detail="Assets, liabilities, and equity with stored evidence for closed periods." />
-                <StatementLines Title="Assets" Lines="@BalanceSheet?.AssetLines" />
-                <StatementLines Title="Liabilities" Lines="@BalanceSheet?.LiabilityLines" />
-                <StatementLines Title="Equity" Lines="@BalanceSheet?.EquityLines" />
-                <div class="accounting-statement-total"><span>Assets / liabilities and equity</span><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency) / @Money((BalanceSheet?.TotalLiabilities ?? 0) + (BalanceSheet?.TotalEquity ?? 0), BalanceSheet?.Currency)</strong></div>
+                <ReportHeader Title="@FinanceText["BalanceSheet"]" Detail="@FinanceText["BalanceSheetHelp"]" />
+                <StatementLines Title="@FinanceText["Assets"]" Lines="@BalanceSheet?.AssetLines" />
+                <StatementLines Title="@FinanceText["Liabilities"]" Lines="@BalanceSheet?.LiabilityLines" />
+                <StatementLines Title="@FinanceText["Equity"]" Lines="@BalanceSheet?.EquityLines" />
+                <div class="accounting-statement-total"><span>@FinanceText["AssetsLiabilitiesEquity"]</span><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency) / @Money((BalanceSheet?.TotalLiabilities ?? 0) + (BalanceSheet?.TotalEquity ?? 0), BalanceSheet?.Currency)</strong></div>
             }
             else
             {
-                <ReportHeader Title="Tax summary" Detail="Historical tax facts stay tied to the policy-pack version used when each voucher was posted." />
-                @if (TaxSummary?.Lines.Count == 0) { <div class="accounting-report-state"><span>◇</span><h3>No tax facts in this period</h3><p>Posted journals with configured tax facts will appear here.</p></div> }
-                else { <div class="table-responsive"><table class="table accounting-report-table"><thead><tr><th>Tax rule</th><th>Pack version</th><th>Taxable amount</th><th>Tax</th></tr></thead><tbody>@foreach (var row in TaxSummary?.Lines ?? []) { <tr><td><strong>@Friendly(row.TaxRuleKey)</strong><span>@Friendly(row.TaxTreatment)</span></td><td>@row.PolicyPackKey @row.PolicyPackVersion</td><td>@Money(row.TaxableAmount, row.Currency)</td><td><strong>@Money(row.TaxAmount, row.Currency)</strong></td></tr> }</tbody></table></div> }
-                @if (CanManageAccounting && TaxSummary?.IsReviewed == false) { <button class="btn btn-primary" @onclick="ReviewTaxAsync" disabled="@IsActing">Confirm tax review</button> }
+                <ReportHeader Title="@FinanceText["TaxSummary"]" Detail="@FinanceText["TaxSummaryHelp"]" />
+                @if (TaxSummary?.Lines.Count == 0) { <div class="accounting-report-state"><span aria-hidden="true">◇</span><h3>@FinanceText["NoTaxFacts"]</h3><p>@FinanceText["NoTaxFactsHelp"]</p></div> }
+                else { <div class="table-responsive"><table class="table accounting-report-table"><thead><tr><th>@FinanceText["TaxRule"]</th><th>@FinanceText["PackVersion"]</th><th>@FinanceText["TaxableAmount"]</th><th>@FinanceText["Tax"]</th></tr></thead><tbody>@foreach (var row in TaxSummary?.Lines ?? []) { <tr><td><strong>@Friendly(row.TaxRuleKey)</strong><span>@Friendly(row.TaxTreatment)</span></td><td>@row.PolicyPackKey @row.PolicyPackVersion</td><td>@Money(row.TaxableAmount, row.Currency)</td><td><strong>@Money(row.TaxAmount, row.Currency)</strong></td></tr> }</tbody></table></div> }
+                @if (CanManageAccounting && TaxSummary?.IsReviewed == false) { <button class="btn btn-primary" type="button" @onclick="ReviewTaxAsync" disabled="@IsActing">@FinanceText["ConfirmTaxReview"]</button> }
             }
         </section>
 
-        <aside class="accounting-evidence-card" aria-live="polite">
-            <div class="accounting-card-header"><div><span class="dashboard-kicker">Accountant evidence</span><h3>Immutable journal detail</h3></div><span class="status-badge status-badge-success">Posted</span></div>
+        <aside class="accounting-evidence-card" aria-live="polite" aria-busy="@IsReportLoading">
+            <div class="accounting-card-header"><div><span class="dashboard-kicker">@FinanceText["AccountantEvidence"]</span><h3>@FinanceText["ImmutableJournalDetail"]</h3></div><span class="status-badge status-badge-success">@FinanceText["Posted"]</span></div>
             @if (SelectedLedgerAccount is null)
             {
-                <div class="accounting-report-state"><span>⌕</span><h3>Select an account</h3><p>Choose a trial-balance or ledger row to see voucher and source evidence.</p></div>
+                <div class="accounting-report-state"><span aria-hidden="true">⌕</span><h3>@FinanceText["SelectAccount"]</h3><p>@FinanceText["SelectAccountEvidenceHelp"]</p></div>
             }
             else
             {
-                <div class="accounting-evidence-summary"><strong>@SelectedLedgerAccount.AccountCode · @SelectedLedgerAccount.AccountName</strong><span>@Money(SelectedLedgerAccount.ClosingBalance, SelectedLedgerAccount.Currency) closing balance</span></div>
+                <div class="accounting-evidence-summary"><strong>@SelectedLedgerAccount.AccountCode · @SelectedLedgerAccount.AccountName</strong><span>@FinanceText["ClosingBalanceValue", Money(SelectedLedgerAccount.ClosingBalance, SelectedLedgerAccount.Currency)]</span></div>
                 @foreach (var line in SelectedLedgerAccount.Lines.Take(8))
                 {
-                    <div class="accounting-evidence-entry"><div><strong>@line.VoucherNumber</strong><span>@line.PostingDate.ToString("d") · @(line.Description ?? "Posted journal")</span></div><strong>@Money(line.Debit - line.Credit, line.Currency)</strong>@if (line.Evidence.Count > 0) { <small>@line.Evidence.Count linked evidence item(s) · hash verified</small> }</div>
+                    <div class="accounting-evidence-entry"><div><strong>@line.VoucherNumber</strong><span>@line.PostingDate.ToString("d") · @(line.Description ?? FinanceText["PostedJournal"])</span></div><strong>@Money(line.Debit - line.Credit, line.Currency)</strong>@if (line.Evidence.Count > 0) { <small>@FinanceText["LinkedEvidenceVerified", line.Evidence.Count]</small> }</div>
                 }
-                @if (SelectedLedgerAccount.Lines.Count == 0) { <div class="accounting-report-state"><h3>Opening balance only</h3><p>No journal movement was posted in this period.</p></div> }
-                <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?accountId={SelectedLedgerAccount.AccountId:D}", AccessState.CompanyId)">View full audit trail</a>
+                @if (SelectedLedgerAccount.Lines.Count == 0) { <div class="accounting-report-state"><h3>@FinanceText["OpeningBalanceOnly"]</h3><p>@FinanceText["NoJournalMovement"]</p></div> }
+                <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?accountId={SelectedLedgerAccount.AccountId:D}", AccessState.CompanyId)">@FinanceText["ViewFullAuditTrail"]</a>
             }
-            <div class="accounting-laura-mini"><span aria-hidden="true">L</span><div><strong>Laura, Finance Manager</strong><p>@LauraAdvice</p></div></div>
+            <div class="accounting-laura-mini"><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraFinanceManager"]</strong><p>@LauraAdvice</p></div></div>
         </aside>
     </div>
 
     <div class="accounting-close-grid">
         <section class="accounting-close-card">
-            <div class="accounting-card-header"><div><h3>Period close checklist</h3><span>@CloseSummary</span></div><button class="btn btn-sm btn-outline-secondary" @onclick="ValidateCloseAsync" disabled="@IsActing">Run review</button></div>
-            @if (CloseValidation is null) { <div class="accounting-report-state compact"><p>Run the close review to check suspense, reconciliations, control accounts, mappings, tax review, and unposted work.</p></div> }
-            else if (CloseValidation.IsReadyToClose) { <div class="accounting-close-ready">✓ All configured close checks passed.</div> }
-            else { @foreach (var issue in CloseValidation.BlockingIssues) { <div class="accounting-close-issue"><span>!</span><div><strong>@Friendly(issue.Code)</strong><p>@issue.Message</p><small>@issue.Remediation</small></div><b>@(issue.Amount.HasValue ? Money(issue.Amount, issue.Currency) : issue.Count.ToString())</b></div> } }
+            <div class="accounting-card-header"><div><h3>@FinanceText["PeriodCloseChecklist"]</h3><span>@CloseSummary</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="ValidateCloseAsync" disabled="@IsActing">@FinanceText["RunReview"]</button></div>
+            @if (CloseValidation is null) { <div class="accounting-report-state compact"><p>@FinanceText["CloseReviewHelp"]</p></div> }
+            else if (CloseValidation.IsReadyToClose) { <div class="accounting-close-ready">✓ @FinanceText["AllCloseChecksPassed"]</div> }
+            else { @foreach (var issue in CloseValidation.BlockingIssues) { <div class="accounting-close-issue"><span aria-hidden="true">!</span><div><strong>@Friendly(issue.Code)</strong><p>@issue.Message</p><small>@issue.Remediation</small></div><b>@(issue.Amount.HasValue ? Money(issue.Amount, issue.Currency) : issue.Count.ToString())</b></div> } }
             @if (CanManageAccounting && SelectedPeriod is not null && !SelectedPeriod.IsClosed)
             {
-                <div class="accounting-close-action"><label for="close-reason">Close note</label><input id="close-reason" class="form-control" @bind="CloseReason" placeholder="Why this period is ready to close" /><button class="btn btn-primary" @onclick="CloseAndLockAsync" disabled="@(IsActing || CloseValidation?.IsReadyToClose != true)">Close and lock reports</button></div>
+                <div class="accounting-close-action"><label for="close-reason">@FinanceText["CloseNote"]</label><input id="close-reason" class="form-control" @bind="CloseReason" placeholder="@FinanceText["CloseNotePlaceholder"]" /><button class="btn btn-primary" type="button" @onclick="CloseAndLockAsync" disabled="@(IsActing || CloseValidation?.IsReadyToClose != true)">@FinanceText["CloseAndLockReports"]</button></div>
             }
             else if (CanReopen && SelectedPeriod?.IsClosed == true)
             {
-                <div class="accounting-close-action"><label for="reopen-reason">Exceptional reopen reason</label><input id="reopen-reason" class="form-control" @bind="ReopenReason" placeholder="Explain why reopening is required" /><button class="btn btn-outline-danger" @onclick="ReopenAsync" disabled="@(IsActing || ReopenReason.Trim().Length < 10)">Reopen period</button></div>
+                <div class="accounting-close-action"><label for="reopen-reason">@FinanceText["ExceptionalReopenReason"]</label><input id="reopen-reason" class="form-control" @bind="ReopenReason" placeholder="@FinanceText["ReopenReasonPlaceholder"]" /><button class="btn btn-outline-danger" type="button" @onclick="ReopenAsync" disabled="@(IsActing || ReopenReason.Trim().Length < 10)">@FinanceText["ReopenPeriod"]</button></div>
             }
         </section>
 
-        <section class="accounting-close-card"><div class="accounting-card-header"><div><h3>Lock history</h3><span>Close and reopen decisions remain visible.</span></div></div>@if (History.Count == 0) { <div class="accounting-report-state compact"><p>No close or reopen history yet.</p></div> } else { @foreach (var item in History) { <div class="accounting-history-row"><span class="@(item.Action == "reopened" ? "warn" : "ok")">●</span><div><strong>@Friendly(item.Action)</strong><p>@item.Reason</p><small>@LocalDateTime.DateTime(item.OccurredUtc) · @(item.SnapshotChecksum is null ? "History preserved" : $"Snapshot {item.SnapshotChecksum[..Math.Min(10, item.SnapshotChecksum.Length)]}…")</small></div></div> } }</section>
+        <section class="accounting-close-card"><div class="accounting-card-header"><div><h3>@FinanceText["LockHistory"]</h3><span>@FinanceText["LockHistoryHelp"]</span></div></div>@if (History.Count == 0) { <div class="accounting-report-state compact"><p>@FinanceText["NoLockHistory"]</p></div> } else { @foreach (var item in History) { <div class="accounting-history-row"><span class="@(item.Action == "reopened" ? "warn" : "ok")" aria-hidden="true">●</span><div><strong>@Friendly(item.Action)</strong><p>@item.Reason</p><small>@LocalDateTime.DateTime(item.OccurredUtc) · @(item.SnapshotChecksum is null ? FinanceText["HistoryPreserved"] : FinanceText["SnapshotPrefix", item.SnapshotChecksum[..Math.Min(10, item.SnapshotChecksum.Length)]])</small></div></div> } }</section>
 
-        <section class="accounting-close-card"><div class="accounting-card-header"><div><h3>Export jobs</h3><span>Country-neutral JSON with a hashed attachment manifest.</span></div><button class="btn btn-sm btn-outline-secondary" @onclick="RefreshExportsAsync">Refresh</button></div>@if (Exports.Count == 0) { <div class="accounting-report-state compact"><p>No exports requested for this period.</p></div> } else { @foreach (var job in Exports) { <div class="accounting-export-row"><div><strong>@Friendly(job.Status)</strong><span>@LocalDateTime.DateTime(job.RequestedUtc)</span>@if (!string.IsNullOrWhiteSpace(job.FailureSummary)) { <small class="text-danger">@job.FailureSummary</small> }</div>@if (job.CanDownload) { <a class="btn btn-sm btn-outline-primary" href="@ExportDownloadUrl(job.Id)">Download</a> } else { <span class="status-badge">@job.Status.Replace('_', ' ')</span> }</div> } }</section>
+        <section class="accounting-close-card"><div class="accounting-card-header"><div><h3>@FinanceText["ExportJobs"]</h3><span>@FinanceText["ExportJobsHelp"]</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="RefreshExportsAsync">@CommonText["Refresh"]</button></div>@if (Exports.Count == 0) { <div class="accounting-report-state compact"><p>@FinanceText["NoExportsForPeriod"]</p></div> } else { @foreach (var job in Exports) { <div class="accounting-export-row"><div><strong>@Friendly(job.Status)</strong><span>@LocalDateTime.DateTime(job.RequestedUtc)</span>@if (!string.IsNullOrWhiteSpace(job.FailureSummary)) { <small class="text-danger">@job.FailureSummary</small> }</div>@if (job.CanDownload) { <a class="btn btn-sm btn-outline-primary" href="@ExportDownloadUrl(job.Id)">@FinanceText["Download"]</a> } else { <span class="status-badge">@Friendly(job.Status)</span> }</div> } }</section>
     </div>
 </FinancePageLayout>

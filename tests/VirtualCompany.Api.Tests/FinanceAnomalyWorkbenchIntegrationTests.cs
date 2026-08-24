@@ -44,7 +44,8 @@ public sealed class FinanceAnomalyWorkbenchIntegrationTests : IDisposable
         Assert.NotNull(secondPage);
         Assert.Equal(2, secondPage!.TotalCount);
         Assert.Single(secondPage.Items);
-        Assert.Equal(seed.SecondAlertId, secondPage.Items[0].Id);
+        // The workbench is newest-first, so page two contains the older alert.
+        Assert.Equal(seed.FirstAlertId, secondPage.Items[0].Id);
 
         var detailResponse = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/anomalies/workbench/{seed.FirstAlertId}");
         Assert.Equal(HttpStatusCode.OK, detailResponse.StatusCode);
@@ -96,9 +97,11 @@ public sealed class FinanceAnomalyWorkbenchIntegrationTests : IDisposable
         await _factory.SeedAsync(dbContext =>
         {
             dbContext.Users.Add(new User(userId, email, displayName, "dev-header", subject));
-            dbContext.Companies.AddRange(
-                new Company(companyId, "Finance Anomaly Company"),
-                new Company(otherCompanyId, "Other Finance Anomaly Company"));
+            var company = new Company(companyId, "Finance Anomaly Company");
+            company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+            var otherCompany = new Company(otherCompanyId, "Other Finance Anomaly Company");
+            otherCompany.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+            dbContext.Companies.AddRange(company, otherCompany);
             dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, userId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
 
             FinanceSeedData.AddMockFinanceData(dbContext, companyId);

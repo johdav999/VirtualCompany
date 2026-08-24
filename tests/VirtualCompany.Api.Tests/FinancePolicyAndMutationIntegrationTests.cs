@@ -116,7 +116,7 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IDisposable
             $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.InvoiceId}/approval-status",
             new { Status = "pending_approval" });
 
-        Assert.Equal(HttpStatusCode.OK, updateResponse.StatusCode);
+        Assert.True(updateResponse.StatusCode == HttpStatusCode.OK, await updateResponse.Content.ReadAsStringAsync());
 
         var invoice = await updateResponse.Content.ReadFromJsonAsync<InvoiceResponse>();
         Assert.NotNull(invoice);
@@ -486,6 +486,9 @@ public sealed class FinancePolicyAndMutationIntegrationTests : IDisposable
         Guid invoiceId,
         Guid transactionId)
     {
+        dbContext.Companies.Local.Single(company => company.Id == companyId)
+            .SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+
         var accountId = Guid.NewGuid();
         var counterpartyId = Guid.NewGuid();
 

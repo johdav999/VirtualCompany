@@ -40,7 +40,7 @@ public sealed class BriefingUpdateJobRunnerTests
         Assert.True(first.Created);
         Assert.False(second.Created);
         Assert.Equal(first.JobId, second.JobId);
-        Assert.Equal(1, await fixture.DbContext.CompanyBriefingUpdateJobs.CountAsync());
+        Assert.Equal(1, await fixture.DbContext.CompanyBriefingUpdateJobs.IgnoreQueryFilters().CountAsync());
     }
 
     [Fact]
@@ -70,6 +70,7 @@ public sealed class BriefingUpdateJobRunnerTests
             CancellationToken.None);
 
         var job = await fixture.DbContext.CompanyBriefingUpdateJobs
+            .IgnoreQueryFilters()
             .AsNoTracking()
             .SingleAsync(x => x.Id == result.JobId);
 

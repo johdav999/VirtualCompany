@@ -153,7 +153,7 @@ public sealed class FinancePlanningEndpointsIntegrationTests : IDisposable
                 Currency = "USD"
             });
 
-        Assert.Equal(HttpStatusCode.NotFound, crossTenantUpdate.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, crossTenantUpdate.StatusCode);
     }
 
     private async Task<PlanningEndpointSeed> SeedAsync()

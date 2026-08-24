@@ -47,7 +47,7 @@ public abstract class FinancePageBase : ComponentBase
 
         try
         {
-            CurrentUserContext = await ApiClient.GetCurrentUserContextAsync();
+            CurrentUserContext = await ApiClient.GetCurrentUserContextAsync(CompanyId);
 
             AccessState = FinanceAccessResolver.Resolve(CurrentUserContext, CompanyId);
 

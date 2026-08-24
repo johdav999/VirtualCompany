@@ -24,7 +24,7 @@ public sealed class RateLimitingIntegrationTests : IDisposable
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var response = await client.PostAsJsonAsync("/api/onboarding/company", CreateCompanyRequest($"Rate Limited Company {attempt}"));
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True(response.StatusCode == HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
         }
 
         var throttledResponse = await client.PostAsJsonAsync("/api/onboarding/company", CreateCompanyRequest("Rate Limited Company 3"));
@@ -54,7 +54,7 @@ public sealed class RateLimitingIntegrationTests : IDisposable
         for (var attempt = 0; attempt < 2; attempt++)
         {
             var response = await firstClient.PostAsJsonAsync("/api/onboarding/company", CreateCompanyRequest($"Partition A {attempt}"));
-            Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+            Assert.True(response.StatusCode == HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
         }
 
         var throttledResponse = await firstClient.PostAsJsonAsync("/api/onboarding/company", CreateCompanyRequest("Partition A throttled"));
@@ -80,22 +80,16 @@ public sealed class RateLimitingIntegrationTests : IDisposable
         }
     }
 
-    private WebApplicationFactory<Program> CreateRateLimitedFactory() =>
-        _factory.WithWebHostBuilder(builder =>
+    private static WebApplicationFactory<Program> CreateRateLimitedFactory() =>
+        new TestWebApplicationFactory(new Dictionary<string, string?>
         {
-            builder.ConfigureAppConfiguration((_, configurationBuilder) =>
-            {
-                configurationBuilder.AddInMemoryCollection(new Dictionary<string, string?>
-                {
                     [$"{ObservabilityOptions.SectionName}:RateLimiting:Enabled"] = "true",
                     [$"{ObservabilityOptions.SectionName}:RateLimiting:Chat:PermitLimit"] = "2",
                     [$"{ObservabilityOptions.SectionName}:RateLimiting:Chat:WindowSeconds"] = "60",
                     [$"{ObservabilityOptions.SectionName}:RateLimiting:Chat:QueueLimit"] = "0",
                     [$"{ObservabilityOptions.SectionName}:RateLimiting:Tasks:PermitLimit"] = "2",
                     [$"{ObservabilityOptions.SectionName}:RateLimiting:Tasks:WindowSeconds"] = "60",
-                    [$"{ObservabilityOptions.SectionName}:RateLimiting:Tasks:QueueLimit"] = "0"
-                });
-            });
+            [$"{ObservabilityOptions.SectionName}:RateLimiting:Tasks:QueueLimit"] = "0"
         });
 
     private static HttpClient CreateAuthenticatedClient(
@@ -127,6 +121,7 @@ public sealed class RateLimitingIntegrationTests : IDisposable
         Currency = "SEK",
         Language = "sv-SE",
         ComplianceRegion = "EU",
-        SelectedTemplateId = "saas-operations"
+        SelectedTemplateId = (string?)null,
+        ExplicitNewCompany = true
     };
 }

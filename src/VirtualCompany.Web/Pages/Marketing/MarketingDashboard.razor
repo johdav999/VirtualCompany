@@ -761,7 +761,7 @@
         isLoading = true; errorMessage = null;
         try
         {
-            var context = await OnboardingApi.GetCurrentUserContextAsync();
+            var context = await OnboardingApi.GetCurrentUserContextAsync(CompanyId);
             resolvedCompanyId = CompanyId ?? context?.ActiveCompany?.CompanyId ?? context?.Memberships.FirstOrDefault()?.CompanyId;
             if (resolvedCompanyId is not Guid companyId) throw new MarketingApiException("Choose a company before opening Marketing.");
             if (CompanyId is null) Navigation.NavigateTo($"/marketing?companyId={companyId:D}", true);

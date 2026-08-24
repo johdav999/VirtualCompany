@@ -163,7 +163,7 @@ public sealed record GetFinanceSummaryQuery(
     DateTime? AsOfUtc = null,
     int RecentAssetPurchaseLimit = 5,
     bool IncludeConsistencyCheck = false,
-    string SourceFilter = FinanceDataSources.All);
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record FinanceTopExpenseItemDto(
     string Label,
@@ -251,7 +251,8 @@ public sealed record FinanceSummaryDto(
     decimal RecentAssetPurchaseTotalAmount,
     IReadOnlyList<FinanceSummaryAssetPurchaseDto> RecentAssetPurchases,
     FinanceIntelligenceSnapshotDto? Intelligence = null,
-    FinanceSummaryConsistencyResultDto? ConsistencyCheck = null);
+    FinanceSummaryConsistencyResultDto? ConsistencyCheck = null,
+    string Source = FinanceDataSources.Operational);
 
 public sealed record FinanceCashProjectionDto(
     int HorizonDays,

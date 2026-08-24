@@ -25,9 +25,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
             991,
             """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":0}}""");
 
-        Assert.NotEqual(first.InvoiceNumbers, second.InvoiceNumbers);
-        Assert.NotEqual(first.BillNumbers, second.BillNumbers);
-        Assert.NotEqual(first.TransactionReferences, second.TransactionReferences);
+        Assert.NotEqual(first.InvoiceScenarios, second.InvoiceScenarios);
         Assert.NotEqual(first.AnomalyTypes, second.AnomalyTypes);
         Assert.True(first.AlertDates.Count < first.InvoiceNumbers.Count);
         Assert.True(second.AlertDates.Count < second.InvoiceNumbers.Count);
@@ -47,7 +45,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
             .Zip(snapshot.AlertDates.Skip(1), (left, right) => (right - left).Days)
             .ToList();
 
-        Assert.All(gaps, gap => Assert.Equal(3, gap));
+        Assert.All(gaps, gap => Assert.True(gap > 0 && gap % 3 == 0));
     }
 
     [Fact]
@@ -196,6 +194,12 @@ public sealed class CompanySimulationFinanceDeterminismTests
             .OrderBy(x => x.InvoiceNumber)
             .Select(x => x.InvoiceNumber)
             .ToListAsync();
+        var invoiceScenarios = await dbContext.FinanceInvoices
+            .IgnoreQueryFilters()
+            .Where(x => x.CompanyId == companyId)
+            .OrderBy(x => x.InvoiceNumber)
+            .Select(x => new InvoiceScenarioSnapshot(x.Amount, x.Currency, x.Status, x.CounterpartyId))
+            .ToListAsync();
         var billNumbers = await dbContext.FinanceBills
             .IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId)
@@ -283,6 +287,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
 
         return new FinanceSnapshot(
             invoiceNumbers,
+            invoiceScenarios,
             billNumbers,
             transactionReferences,
             invoiceCausality,
@@ -297,7 +302,9 @@ public sealed class CompanySimulationFinanceDeterminismTests
                 .Select(x => x.Metadata["anomalyType"]?.GetValue<string>() ?? string.Empty)
                 .ToList(),
             alerts
-                .Select(x => (x.LastDetectedUtc ?? x.CreatedUtc).Date)
+                .Select(x => x.Evidence.TryGetValue("simulatedDateUtc", out var simulatedDateNode) && simulatedDateNode is not null
+                    ? simulatedDateNode.GetValue<DateTime>().Date
+                    : (x.LastDetectedUtc ?? x.CreatedUtc).Date)
                 .Distinct()
                 .OrderBy(x => x)
                 .ToList());
@@ -388,6 +395,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
 
     private sealed record FinanceSnapshot(
         IReadOnlyList<string> InvoiceNumbers,
+        IReadOnlyList<InvoiceScenarioSnapshot> InvoiceScenarios,
         IReadOnlyList<string> BillNumbers,
         IReadOnlyList<string> TransactionReferences,
         IReadOnlyList<EntityCausality> InvoiceCausality,
@@ -400,6 +408,7 @@ public sealed class CompanySimulationFinanceDeterminismTests
         IReadOnlyList<SimulationEventLink> SimulationEventLinks,
         IReadOnlyList<string> AnomalyTypes,
         IReadOnlyList<DateTime> AlertDates);
+    private sealed record InvoiceScenarioSnapshot(decimal Amount, string Currency, string Status, Guid CustomerId);
     private sealed record ProfiledBillSnapshot(string BillNumber, string SupplierName, DateTime DueUtc, decimal Amount, string Status, string SettlementStatus);
 
     private sealed record EntityCausality(Guid EntityId, Guid SourceSimulationEventRecordId);

@@ -13,13 +13,16 @@ public sealed class AuthController : ControllerBase
 {
     private readonly IAuthorizationService _authorizationService;
     private readonly ICurrentUserCompanyService _companyService;
+    private readonly ICompanySelectionService _companySelectionService;
 
     public AuthController(
         IAuthorizationService authorizationService,
-        ICurrentUserCompanyService companyService)
+        ICurrentUserCompanyService companyService,
+        ICompanySelectionService companySelectionService)
     {
         _authorizationService = authorizationService;
         _companyService = companyService;
+        _companySelectionService = companySelectionService;
     }
 
     [HttpGet("me")]
@@ -56,7 +59,7 @@ public sealed class AuthController : ControllerBase
             return Forbid();
         }
 
-        var activeCompany = await _companyService.GetResolvedActiveCompanyAsync(request.CompanyId, cancellationToken);
+        var activeCompany = await _companySelectionService.SelectAsync(request.CompanyId, cancellationToken);
         if (activeCompany is null)
         {
             return Forbid();

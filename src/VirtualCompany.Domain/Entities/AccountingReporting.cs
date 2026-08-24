@@ -181,6 +181,19 @@ public sealed class AccountingExportJob : ICompanyOwnedEntity
         UpdatedUtc = CompletedUtc.Value;
     }
 
+    public long ExpireContent(DateTime utcNow)
+    {
+        if (Status != AccountingExportStatuses.Completed || Content is null)
+        {
+            return 0;
+        }
+
+        var releasedBytes = Content.LongLength;
+        Content = null;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(utcNow, nameof(utcNow));
+        return releasedBytes;
+    }
+
     private static string Required(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value)) throw new ArgumentException($"{name} is required.", name);

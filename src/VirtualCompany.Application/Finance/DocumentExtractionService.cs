@@ -10,7 +10,7 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
     private static readonly FieldPattern[] FieldPatterns =
     [
         new("supplierName", @"(?:supplier|vendor|from|leverant(?:o|ö)r)\s*[:\-]\s*(?<value>[^\r\n]{2,120})", BillFieldConfidence.High),
-        new("supplierOrgNumber", @"(?:org(?:anisation)?(?:\.| number| no)?|organisationsnummer|vat no|tax id)\s*[:\-]?\s*(?<value>(?:SE)?\d{6}[- ]?\d{4}|\d{10,12})", BillFieldConfidence.High),
+        new("supplierOrgNumber", @"(?:org(?:anisation)?(?:\.?\s*(?:number|no|nr))?|organisationsnummer|vat no|tax id)\s*[:\-]?\s*(?<value>(?:SE)?\d{6}[- ]?\d{4}|\d{10,12})", BillFieldConfidence.High),
         new("invoiceNumber", @"(?:invoice\s*(?:number|no|#)|inv\s*#|faktura(?:nummer|nr)|bill\s*(?:number|no))\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\-\/]{2,63})", BillFieldConfidence.High),
         new("invoiceDate", @"(?:invoice\s*date|issued|fakturadatum|datum)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
         new("dueDate", @"(?:due\s*date|payment\s*due|pay\s*by|förfallodatum|forfallodatum|senast\s*betala)\s*[:\-]?\s*(?<value>\d{4}[-\/.]\d{1,2}[-\/.]\d{1,2}|\d{1,2}[-\/.]\d{1,2}[-\/.]\d{2,4})", BillFieldConfidence.High),
@@ -18,7 +18,7 @@ public sealed class DocumentExtractionService : IDocumentExtractionService
         new("totalAmount", @"(?:total\s*(?:amount)?(?:\s*due)?|amount\s*(?:to\s*)?pay|amount\s*due|att\s*betala|summa(?:\s*att\s*betala)?|totalt)\s*[:\-]?\s*(?<value>(?:SEK|EUR|USD|GBP|NOK|DKK|kr)?\s*-?\d[\d\s.,']*)", BillFieldConfidence.High),
         new("vatAmount", @"(?:vat|moms)(?:\s*\([^)]*\))?\s*[:\-]?\s*(?<value>-?\d[\d\s.,']*)", BillFieldConfidence.High),
         new("paymentReference", @"(?:ocr|payment\s*reference|reference|referens|meddelande)\s*[:#\-]?\s*(?<value>[A-Z0-9][A-Z0-9\- ]{2,64})", BillFieldConfidence.High),
-        new("bankgiro", @"(?:bankgiro|bg)\s*[:\-]?\s*(?<value>\d{3,4}[- ]?\d{4})", BillFieldConfidence.High),
+        new("bankgiro", @"(?:bankgiro|bg)\s*[:\-]?\s*(?<value>\d{2,8}(?:[- ]\d{1,4})?)", BillFieldConfidence.High),
         new("plusgiro", @"(?:plusgiro|pg)\s*[:\-]?\s*(?<value>\d{2,8}[- ]?\d{1,4})", BillFieldConfidence.High),
         new("iban", @"(?:iban)\s*[:\-]?\s*(?<value>[A-Z]{2}\d{2}[A-Z0-9 ]{8,30})", BillFieldConfidence.High),
         new("bic", @"(?:bic|swift)\s*[:\-]?\s*(?<value>[A-Z]{4}[A-Z]{2}[A-Z0-9]{2}(?:[A-Z0-9]{3})?)", BillFieldConfidence.High)

@@ -11,7 +11,7 @@ internal sealed class SimulationEventRecordEntityConfiguration : IEntityTypeConf
         builder.ToTable("simulation_event_records");
         builder.ToTable(t =>
         {
-            t.HasCheckConstraint("CK_simulation_event_records_cash_snapshot", "((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = cash_before + cash_delta))");
+            t.HasCheckConstraint("CK_simulation_event_records_cash_snapshot", "((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = ROUND(cash_before + cash_delta, 2)))");
             t.HasCheckConstraint("CK_simulation_event_records_sequence_number_positive", "sequence_number > 0");
         });
 

@@ -41,8 +41,6 @@ public static class ServiceCollectionExtensions
 
     public static IServiceCollection AddVirtualCompanyRateLimiting(this IServiceCollection services, IConfiguration configuration)
     {
-        var settings = configuration.GetSection(ObservabilityOptions.SectionName).Get<ObservabilityOptions>() ?? new ObservabilityOptions();
-
         services.AddRateLimiter(options =>
         {
             options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
@@ -92,15 +90,10 @@ public static class ServiceCollectionExtensions
                 await httpContext.Response.WriteAsJsonAsync(problemDetails, options: null, contentType: ProblemDetailsContentType, cancellationToken: cancellationToken);
             };
 
-            if (!settings.RateLimiting.Enabled)
-            {
-                options.AddPolicy(PlatformRateLimitPolicyNames.Chat, static _ => RateLimitPartition.GetNoLimiter(PlatformRateLimitPolicyNames.Chat));
-                options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, static _ => RateLimitPartition.GetNoLimiter(PlatformRateLimitPolicyNames.Tasks));
-                return;
-            }
-
-            options.AddPolicy(PlatformRateLimitPolicyNames.Chat, context => CreateFixedWindowPartition(context, PlatformRateLimitPolicyNames.Chat, settings.RateLimiting.Chat));
-            options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, context => CreateFixedWindowPartition(context, PlatformRateLimitPolicyNames.Tasks, settings.RateLimiting.Tasks));
+            options.AddPolicy(PlatformRateLimitPolicyNames.Chat, context =>
+                CreateConfiguredPartition(context, PlatformRateLimitPolicyNames.Chat, static settings => settings.Chat));
+            options.AddPolicy(PlatformRateLimitPolicyNames.Tasks, context =>
+                CreateConfiguredPartition(context, PlatformRateLimitPolicyNames.Tasks, static settings => settings.Tasks));
         });
 
         return services;
@@ -127,6 +120,17 @@ public static class ServiceCollectionExtensions
         RateLimitPartition.GetFixedWindowLimiter(
             GetPartitionKey(context, policyName),
             _ => CreateFixedWindowOptions(settings));
+
+    private static RateLimitPartition<string> CreateConfiguredPartition(
+        HttpContext context,
+        string policyName,
+        Func<RateLimitingOptions, RateLimitPolicyOptions> selectPolicy)
+    {
+        var configured = context.RequestServices.GetRequiredService<IOptions<ObservabilityOptions>>().Value.RateLimiting;
+        return configured.Enabled
+            ? CreateFixedWindowPartition(context, policyName, selectPolicy(configured))
+            : RateLimitPartition.GetNoLimiter(GetPartitionKey(context, policyName));
+    }
 
     private static FixedWindowRateLimiterOptions CreateFixedWindowOptions(RateLimitPolicyOptions settings)
     {

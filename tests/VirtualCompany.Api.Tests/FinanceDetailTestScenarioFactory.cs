@@ -66,8 +66,7 @@ internal static class FinanceDetailTestScenarioFactory
                 -89.42m,
                 templateTransaction.Currency,
                 "Missing linked document transaction",
-                $"missing-tx-{Guid.NewGuid():N}".Substring(0, 22),
-                Guid.NewGuid());
+                $"missing-tx-{Guid.NewGuid():N}".Substring(0, 22));
             dbContext.FinanceTransactions.Add(missingTransaction);
             missingTransactionId = missingTransaction.Id;
 
@@ -81,8 +80,7 @@ internal static class FinanceDetailTestScenarioFactory
                 templateInvoice.DueUtc.AddDays(3),
                 templateInvoice.Amount + 42m,
                 templateInvoice.Currency,
-                "pending_approval",
-                Guid.NewGuid());
+                "pending_approval");
             dbContext.FinanceInvoices.Add(missingInvoice);
             missingInvoiceId = missingInvoice.Id;
 

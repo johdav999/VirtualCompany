@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
@@ -9,21 +10,36 @@ using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Finance;
 
+public sealed class FinanceAnalyticsStartupRefreshOptions
+{
+    public const string SectionName = "FinanceAnalyticsStartupRefresh";
+    public bool Enabled { get; set; } = true;
+    public int CompanyBatchSize { get; set; } = 500;
+}
+
 public sealed class FinanceAnalyticsStartupRefreshBackgroundService : BackgroundService
 {
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<FinanceAnalyticsStartupRefreshBackgroundService> _logger;
+    private readonly IOptions<FinanceAnalyticsStartupRefreshOptions> _options;
 
     public FinanceAnalyticsStartupRefreshBackgroundService(
         IServiceScopeFactory scopeFactory,
+        IOptions<FinanceAnalyticsStartupRefreshOptions> options,
         ILogger<FinanceAnalyticsStartupRefreshBackgroundService> logger)
     {
         _scopeFactory = scopeFactory;
+        _options = options;
         _logger = logger;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
+        if (!_options.Value.Enabled)
+        {
+            _logger.LogInformation("Finance analytics startup refresh is disabled.");
+            return;
+        }
         try
         {
             using var scope = _scopeFactory.CreateScope();
@@ -37,6 +53,7 @@ public sealed class FinanceAnalyticsStartupRefreshBackgroundService : Background
                 .Where(x => x.FinanceSeedStatus == FinanceSeedingState.Seeded)
                 .OrderBy(x => x.CreatedUtc)
                 .Select(x => x.Id)
+                .Take(Math.Max(1, _options.Value.CompanyBatchSize))
                 .ToListAsync(stoppingToken);
 
             var queued = 0;

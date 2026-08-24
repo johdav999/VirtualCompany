@@ -179,9 +179,9 @@ public sealed partial class CompanyFinanceReadService
             ?? ExtractDecimal(alert.Evidence, "confidence")
             ?? 0m;
         var supplierName = NormalizeOptionalText(
-            invoice?.CounterpartyName
+            transaction?.CounterpartyName
+            ?? invoice?.CounterpartyName
             ?? bill?.CounterpartyName
-            ?? transaction?.CounterpartyName
             ?? ExtractString(alert.Evidence, "counterpartyName"));
         var affectedRecord = transaction is null
             ? null

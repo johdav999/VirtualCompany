@@ -46,7 +46,9 @@ public static class UpdateAgentOperatingProfileCommandValidator
     private static readonly HashSet<string> SupportedConditionValueTypes = new(StringComparer.OrdinalIgnoreCase) { "number", "string", "boolean", "datetime" };
     private static readonly HashSet<string> SupportedRepeatFiringModes = new(StringComparer.OrdinalIgnoreCase) { "falseToTrueTransition", "everyEvaluationWhileTrue" };
 
-    public static void ValidateAndThrow(UpdateAgentOperatingProfileCommand command)
+    public static void ValidateAndThrow(
+        UpdateAgentOperatingProfileCommand command,
+        bool allowOmittedSensitiveGovernance = false)
     {
         ArgumentNullException.ThrowIfNull(command);
 
@@ -75,11 +77,26 @@ public static class UpdateAgentOperatingProfileCommandValidator
         AddOptional(errors, nameof(command.RoleBrief), command.RoleBrief, RoleBriefMaxLength);
         ValidateObjectives(errors, nameof(command.Objectives), objectives);
         ValidateKpis(errors, nameof(command.Kpis), kpis);
-        ValidateToolPermissions(errors, nameof(command.ToolPermissions), toolPermissions);
-        ValidateDataScopes(errors, nameof(command.DataScopes), dataScopes);
-        ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), approvalThresholds);
-        ValidateEscalationRules(errors, nameof(command.EscalationRules), escalationRules);
-        ValidateTriggerLogic(errors, nameof(command.TriggerLogic), triggerLogic);
+        if (!allowOmittedSensitiveGovernance || command.ToolPermissions is not null)
+        {
+            ValidateToolPermissions(errors, nameof(command.ToolPermissions), toolPermissions);
+        }
+        if (!allowOmittedSensitiveGovernance || command.DataScopes is not null)
+        {
+            ValidateDataScopes(errors, nameof(command.DataScopes), dataScopes);
+        }
+        if (!allowOmittedSensitiveGovernance || command.ApprovalThresholds is not null)
+        {
+            ValidateApprovalThresholds(errors, nameof(command.ApprovalThresholds), approvalThresholds);
+        }
+        if (!allowOmittedSensitiveGovernance || command.EscalationRules is not null)
+        {
+            ValidateEscalationRules(errors, nameof(command.EscalationRules), escalationRules);
+        }
+        if (!allowOmittedSensitiveGovernance || command.TriggerLogic is not null)
+        {
+            ValidateTriggerLogic(errors, nameof(command.TriggerLogic), triggerLogic);
+        }
         ValidateWorkingHours(errors, nameof(command.WorkingHours), workingHours);
 
         ThrowIfAny(errors);

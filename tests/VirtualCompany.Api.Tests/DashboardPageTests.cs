@@ -16,35 +16,31 @@ public sealed class DashboardPageTests
         var companyId = Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72");
         using var context = CreateContext(companyId);
 
-        var cut = context.RenderComponent<Dashboard>(parameters => parameters
-            .Add(component => component.CompanyId, companyId));
+        context.Services.GetRequiredService<Microsoft.AspNetCore.Components.NavigationManager>()
+            .NavigateTo($"/dashboard?companyId={companyId:D}");
+
+        var cut = context.RenderComponent<Dashboard>();
 
         cut.WaitForAssertion(() =>
         {
-            Assert.NotNull(cut.Find("[data-testid='company-health-banner']"));
-            Assert.NotNull(cut.Find("[data-testid='today-focus-panel']"));
-            Assert.NotNull(cut.Find("[data-testid='top-actions-panel']"));
-            Assert.NotNull(cut.Find("[data-testid='dashboard-snapshot-grid']"));
-            Assert.NotNull(cut.Find("[data-testid='agent-activity-panel']"));
-            Assert.NotNull(cut.Find("[data-testid='department-cards-panel']"));
+            Assert.NotNull(cut.Find("[data-testid='dashboard-finance-strip']"));
+            Assert.NotNull(cut.Find("[data-testid='latest-briefing-panel']"));
+            Assert.NotNull(cut.Find("[data-testid='latest-briefing-summary-panel']"));
+            Assert.Contains("What to do next", cut.Markup);
         });
 
         Assert.True(
-            cut.Markup.IndexOf("data-testid=\"company-health-banner\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) &&
-            cut.Markup.IndexOf("data-testid=\"today-focus-panel\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal) &&
-            cut.Markup.IndexOf("data-testid=\"top-actions-panel\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"dashboard-snapshot-grid\"", StringComparison.Ordinal) &&
-            cut.Markup.IndexOf("data-testid=\"dashboard-snapshot-grid\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"agent-activity-panel\"", StringComparison.Ordinal) &&
-            cut.Markup.IndexOf("data-testid=\"agent-activity-panel\"", StringComparison.Ordinal) <
-            cut.Markup.IndexOf("data-testid=\"department-cards-panel\"", StringComparison.Ordinal));
+            cut.Markup.IndexOf("data-testid=\"dashboard-finance-strip\"", StringComparison.Ordinal) <
+            cut.Markup.IndexOf("data-testid=\"latest-briefing-panel\"", StringComparison.Ordinal) &&
+            cut.Markup.IndexOf("data-testid=\"latest-briefing-panel\"", StringComparison.Ordinal) <
+            cut.Markup.IndexOf("data-testid=\"latest-briefing-summary-panel\"", StringComparison.Ordinal) &&
+            cut.Markup.IndexOf("data-testid=\"latest-briefing-summary-panel\"", StringComparison.Ordinal) <
+            cut.Markup.IndexOf("What to do next", StringComparison.Ordinal));
     }
 
     private static TestContext CreateContext(Guid companyId)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddLogging();
         context.Services.AddScoped<IDashboardInteractionService, DashboardInteractionService>();
 

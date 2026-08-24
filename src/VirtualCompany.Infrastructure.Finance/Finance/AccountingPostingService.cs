@@ -1,5 +1,6 @@
 using System.Data;
 using System.Data.Common;
+using System.Diagnostics;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -21,19 +22,22 @@ public sealed class AccountingPostingService : IAccountingPostingService
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly TimeProvider _timeProvider;
     private readonly IAccountingAuthorityPolicy? _authorityPolicy;
+    private readonly AccountingOperationsTelemetry? _telemetry;
 
     public AccountingPostingService(
         VirtualCompanyDbContext dbContext,
         IAccountingJournalReadService readService,
         IAuditEventWriter auditEventWriter,
         TimeProvider timeProvider,
-        IAccountingAuthorityPolicy? authorityPolicy = null)
+        IAccountingAuthorityPolicy? authorityPolicy = null,
+        AccountingOperationsTelemetry? telemetry = null)
     {
         _dbContext = dbContext;
         _readService = readService;
         _auditEventWriter = auditEventWriter;
         _timeProvider = timeProvider;
         _authorityPolicy = authorityPolicy;
+        _telemetry = telemetry;
     }
 
     public async Task<AccountingPostingPreview> PreviewAsync(PreviewAccountingEntryCommand command, CancellationToken cancellationToken)
@@ -56,6 +60,8 @@ public sealed class AccountingPostingService : IAccountingPostingService
     {
         ArgumentNullException.ThrowIfNull(command);
         ArgumentNullException.ThrowIfNull(command.Entry);
+        var started = Stopwatch.GetTimestamp();
+        var outcome = "completed";
         try
         {
             return await ExecuteWithSqlRetryAsync(
@@ -65,8 +71,19 @@ public sealed class AccountingPostingService : IAccountingPostingService
         }
         catch (AccountingPostingException exception) when (exception.ReasonCode == AccountingPostingReasonCodes.AuthorityUnavailable)
         {
+            outcome = "blocked";
             await RecordFormerAuthorityPostingAttemptAsync(command, cancellationToken);
             throw;
+        }
+        catch
+        {
+            outcome = "failed";
+            throw;
+        }
+        finally
+        {
+            _telemetry?.OperationCompleted(command.Entry.CompanyId, "posting",
+                Stopwatch.GetElapsedTime(started), 750, outcome);
         }
     }
 

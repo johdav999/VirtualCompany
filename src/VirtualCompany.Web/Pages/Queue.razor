@@ -31,6 +31,7 @@ else if (CompanyId is null)
                     {
                         <a class="template-card text-decoration-none text-reset" href="@BuildQueueUri(membership.CompanyId, 1, DefaultPageSize)">
                             <strong>@membership.CompanyName</strong>
+                            <CompanyIdentityHint Membership="membership" />
                             <div class="text-body-secondary mt-2">Role: @membership.MembershipRole</div>
                         </a>
                     }
@@ -162,7 +163,7 @@ else
 
         try
         {
-            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
             if (CompanyId is null && currentUser?.ActiveCompany is not null)
             {
                 Navigation.NavigateTo(BuildQueueUri(currentUser.ActiveCompany.CompanyId, 1, NormalizePageSize(PageSize)), replace: true);

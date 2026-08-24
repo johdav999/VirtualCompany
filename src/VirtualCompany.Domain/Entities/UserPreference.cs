@@ -23,9 +23,11 @@ public sealed class UserPreference
     public Guid UserId { get; private set; }
     public string UiCulture { get; private set; } = null!;
     public string? FormattingCulture { get; private set; }
+    public Guid? PreferredCompanyId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public User User { get; private set; } = null!;
+    public Company? PreferredCompany { get; private set; }
 
     public bool Update(string uiCulture, string? formattingCulture)
     {
@@ -39,6 +41,23 @@ public sealed class UserPreference
 
         UiCulture = normalizedUiCulture;
         FormattingCulture = normalizedFormattingCulture;
+        UpdatedUtc = DateTime.UtcNow;
+        return true;
+    }
+
+    public bool SelectCompany(Guid companyId)
+    {
+        if (companyId == Guid.Empty)
+        {
+            throw new ArgumentException("CompanyId is required.", nameof(companyId));
+        }
+
+        if (PreferredCompanyId == companyId)
+        {
+            return false;
+        }
+
+        PreferredCompanyId = companyId;
         UpdatedUtc = DateTime.UtcNow;
         return true;
     }

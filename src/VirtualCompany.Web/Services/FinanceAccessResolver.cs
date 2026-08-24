@@ -9,7 +9,12 @@ public enum FinanceAccessStateKind
     CompanySelectionRequired = 3
 }
 
-public sealed record FinanceCompanyOption(Guid CompanyId, string CompanyName, string MembershipRole);
+public sealed record FinanceCompanyOption(
+    Guid CompanyId,
+    string CompanyName,
+    string MembershipRole,
+    DateTime? CompanyCreatedUtc = null,
+    string? OnboardingStatus = null);
 
 public sealed record FinanceAccessState(
     FinanceAccessStateKind Kind,
@@ -100,7 +105,9 @@ public sealed class FinanceAccessResolver
                     .Select(membership => new FinanceCompanyOption(
                         membership.CompanyId,
                         membership.CompanyName,
-                        membership.MembershipRole))
+                        membership.MembershipRole,
+                        membership.CompanyCreatedUtc,
+                        membership.OnboardingStatus))
                     .ToList());
         }
 

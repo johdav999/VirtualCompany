@@ -20,7 +20,8 @@ public enum BackgroundExecutionStatus
     RetryScheduled = 4,
     Failed = 5,
     Escalated = 6,
-    Blocked = 7
+    Blocked = 7,
+    Cancelled = 8
 }
 
 public enum BackgroundExecutionFailureCategory
@@ -35,7 +36,14 @@ public enum BackgroundExecutionFailureCategory
     Validation = 7,
     Configuration = 8,
     RateLimited = 9,
-    ApprovalRequired = 10
+    ApprovalRequired = 10,
+    Cancellation = 11,
+    Authorization = 12,
+    Concurrency = 13,
+    AmbiguousExternalResult = 14,
+    Persistence = 15,
+    ObjectStorage = 16,
+    PoisonPayload = 17
 }
 
 public enum CompanyOutboxMessageStatus
@@ -98,7 +106,8 @@ public static class BackgroundExecutionStatusValues
         [BackgroundExecutionStatus.RetryScheduled] = "retry_scheduled",
         [BackgroundExecutionStatus.Failed] = "failed",
         [BackgroundExecutionStatus.Escalated] = "escalated",
-        [BackgroundExecutionStatus.Blocked] = "blocked"
+        [BackgroundExecutionStatus.Blocked] = "blocked",
+        [BackgroundExecutionStatus.Cancelled] = "cancelled"
     };
 
     private static readonly IReadOnlyDictionary<string, BackgroundExecutionStatus> ReverseValues =
@@ -144,7 +153,14 @@ public static class BackgroundExecutionFailureCategoryValues
         [BackgroundExecutionFailureCategory.Validation] = "validation",
         [BackgroundExecutionFailureCategory.Configuration] = "configuration",
         [BackgroundExecutionFailureCategory.RateLimited] = "rate_limited",
-        [BackgroundExecutionFailureCategory.ApprovalRequired] = "approval_required"
+        [BackgroundExecutionFailureCategory.ApprovalRequired] = "approval_required",
+        [BackgroundExecutionFailureCategory.Cancellation] = "cancellation",
+        [BackgroundExecutionFailureCategory.Authorization] = "authorization",
+        [BackgroundExecutionFailureCategory.Concurrency] = "concurrency",
+        [BackgroundExecutionFailureCategory.AmbiguousExternalResult] = "ambiguous_external_result",
+        [BackgroundExecutionFailureCategory.Persistence] = "persistence",
+        [BackgroundExecutionFailureCategory.ObjectStorage] = "object_storage",
+        [BackgroundExecutionFailureCategory.PoisonPayload] = "poison_payload"
     };
 
     private static readonly IReadOnlyDictionary<string, BackgroundExecutionFailureCategory> ReverseValues =

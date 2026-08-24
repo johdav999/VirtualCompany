@@ -26,6 +26,7 @@ internal sealed class PaymentAllocationEntityConfiguration : IEntityTypeConfigur
         builder.Property(x => x.TargetSourceSimulationEventRecordId).HasColumnName("target_source_simulation_event_record_id");
         builder.Property(x => x.AllocatedAmount).HasColumnName("allocated_amount").HasColumnType("decimal(18,2)").IsRequired();
         builder.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
+        builder.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200);
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
@@ -35,6 +36,9 @@ internal sealed class PaymentAllocationEntityConfiguration : IEntityTypeConfigur
         builder.HasIndex(x => new { x.CompanyId, x.SourceSimulationEventRecordId });
         builder.HasIndex(x => new { x.CompanyId, x.PaymentSourceSimulationEventRecordId });
         builder.HasIndex(x => new { x.CompanyId, x.TargetSourceSimulationEventRecordId });
+        builder.HasIndex(x => new { x.CompanyId, x.IdempotencyKey })
+            .IsUnique()
+            .HasFilter("[idempotency_key] IS NOT NULL");
 
         builder.HasOne(x => x.Company)
             .WithMany()

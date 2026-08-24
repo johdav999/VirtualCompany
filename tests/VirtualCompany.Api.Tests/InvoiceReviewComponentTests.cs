@@ -15,7 +15,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_list_component_renders_loading_state()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewListContent>(parameters => parameters
             .Add(x => x.IsLoading, true));
@@ -26,7 +26,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_list_component_renders_empty_state()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewListContent>();
 
@@ -36,7 +36,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_list_component_renders_error_state()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewListContent>(parameters => parameters
             .Add(x => x.ErrorMessage, "Finance API failed."));
@@ -47,7 +47,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_list_component_renders_required_columns_and_navigation()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var invoiceId = Guid.Parse("89d7fe3e-3f44-43cf-b383-8f9b4f24cf4e");
 
         var cut = context.RenderComponent<InvoiceReviewListContent>(parameters => parameters
@@ -79,10 +79,10 @@ public sealed class InvoiceReviewComponentTests
         Assert.Contains("Last updated", cut.Markup);
         Assert.Contains("INV-24051", cut.Markup);
         Assert.Contains("Contoso Supplies", cut.Markup);
-        Assert.Contains("15420.50", cut.Markup);
+        Assert.Contains("15,420.50", cut.Markup);
         Assert.Contains("USD", cut.Markup);
-        Assert.Contains("High", cut.Markup);
-        Assert.Contains("Awaiting approval", cut.Markup);
+        Assert.Contains("high", cut.Markup);
+        Assert.Contains("awaiting approval", cut.Markup);
         Assert.Contains("91 %".Replace(" ", string.Empty), cut.Markup.Replace(" ", string.Empty));
         Assert.Equal($"/finance/reviews/{invoiceId:D}?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72", cut.Find("tbody a").GetAttribute("href"));
     }
@@ -90,7 +90,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_detail_component_renders_loading_empty_and_error_states()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var loading = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
             .Add(x => x.IsLoading, true));
@@ -107,7 +107,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_detail_component_only_shows_actions_when_permitted_and_actionable()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var hidden = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
             .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse
@@ -198,7 +198,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_detail_component_renders_structured_recommendation_details_and_workflow_history_links()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var approvalId = Guid.Parse("b1143925-4938-4e74-a421-7b5cb8855ff8");
         var auditId = Guid.Parse("db84057d-2d39-4322-8f57-bf0687cc748e");
 
@@ -244,18 +244,18 @@ public sealed class InvoiceReviewComponentTests
 
         Assert.Contains("Recommendation details", cut.Markup);
         Assert.Contains("Classification", cut.Markup);
-        Assert.Contains("Overdue invoice", cut.Markup);
+        Assert.Contains("overdue invoice", cut.Markup);
         Assert.Contains("Workflow history", cut.Markup);
         Assert.Contains("Tool event", cut.Markup);
         Assert.Contains("Approval", cut.Markup);
         Assert.Contains($"/audit/{auditId:D}?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72", cut.Markup);
-        Assert.Contains($"/approvals?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&approvalId={approvalId:D}", cut.Markup);
+        Assert.Contains($"/approvals?companyId=4c5cfd22-87fd-4214-b579-fc9e7554ab72&amp;approvalId={approvalId:D}", cut.Markup);
     }
 
     [Fact]
     public void Invoice_review_detail_component_normalizes_raw_workflow_history_before_rendering()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
             .Add(x => x.CompanyId, Guid.Parse("4c5cfd22-87fd-4214-b579-fc9e7554ab72"))
@@ -414,7 +414,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_detail_component_renders_non_blocking_empty_states_for_recommendation_and_history()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
             .Add(x => x.BackToListHref, "/finance/reviews?companyId=1")
@@ -434,7 +434,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_detail_component_omits_optional_navigation_links_when_related_records_are_unavailable()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
             .Add(x => x.Detail, new FinanceInvoiceReviewDetailResponse
@@ -456,7 +456,7 @@ public sealed class InvoiceReviewComponentTests
     [Fact]
     public void Invoice_review_detail_component_disables_visible_actions_while_submitting()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         var cut = context.RenderComponent<InvoiceReviewDetailContent>(parameters => parameters
             .Add(x => x.IsSubmitting, true)
@@ -507,11 +507,7 @@ public sealed class InvoiceReviewComponentTests
         harness.Navigation.NavigateTo($"http://localhost/finance/reviews?companyId={companyId:D}&status=pending_approval&supplier=Contoso%20Supplies&riskLevel=high&outcome=request_human_approval");
 
         var cut = harness.Context.RenderComponent<InvoiceReviewsPage>(parameters => parameters
-            .Add(x => x.CompanyId, companyId)
-            .Add(x => x.Status, "pending_approval")
-            .Add(x => x.Supplier, "Contoso Supplies")
-            .Add(x => x.RiskLevel, "high")
-            .Add(x => x.Outcome, "request_human_approval"));
+            .Add(x => x.CompanyId, companyId));
 
         cut.WaitForAssertion(() =>
         {
@@ -536,11 +532,11 @@ public sealed class InvoiceReviewComponentTests
 
         cut.WaitForAssertion(() => Assert.Contains("No invoice reviews matched the active filters", cut.Markup));
 
-        cut.Find("#invoice-review-status").Change("pending_approval");
+        cut.FindAll("select")[0].Change("pending_approval");
+        cut.Find("input[type='text']").Change("Northwind");
+        cut.Find("form.invoice-review-filters").Submit();
         cut.WaitForAssertion(() => Assert.Contains($"companyId={companyId:D}", harness.Navigation.Uri));
         cut.WaitForAssertion(() => Assert.Contains("status=pending_approval", harness.Navigation.Uri));
-
-        cut.Find("#invoice-review-supplier").Change("Northwind");
         cut.WaitForAssertion(() => Assert.Contains("supplier=Northwind", harness.Navigation.Uri));
     }
 
@@ -548,7 +544,7 @@ public sealed class InvoiceReviewComponentTests
         Guid companyId,
         IReadOnlyList<FinanceInvoiceReviewListItemResponse> reviews)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var financeRequests = new List<Uri>();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
@@ -606,7 +602,7 @@ public sealed class InvoiceReviewComponentTests
         string membershipRole,
         FinanceInvoiceReviewDetailResponse detail)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new StubHttpMessageHandler(request =>

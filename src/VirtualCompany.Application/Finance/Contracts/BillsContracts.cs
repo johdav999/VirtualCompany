@@ -13,11 +13,12 @@ public sealed record GetFinanceBillsQuery(
     DateTime? StartUtc = null,
     DateTime? EndUtc = null,
     int Limit = 100,
-    string SourceFilter = FinanceDataSources.All);
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinanceBillDetailQuery(
     Guid CompanyId,
-    Guid BillId);
+    Guid BillId,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record FinancePayablePressureInsightDto(
     decimal OverdueAmount,
@@ -128,7 +129,8 @@ public sealed record FinanceBillDetailDto(
     IReadOnlyList<SupplierInvoiceCorrectionActionDto>? CorrectionActions = null,
     SupplierInvoiceEnrichmentActionDto? EnrichmentAction = null,
     PaidSupplierBillExpenseAvailabilityDto? PaidExpensePostingAvailability = null,
-    SupplierBillAccountingStateDto? Accounting = null);
+    SupplierBillAccountingStateDto? Accounting = null,
+    string Source = FinanceDataSources.Manual);
 
 public sealed record PaidSupplierBillExpenseAvailabilityDto(
     bool CanPost,

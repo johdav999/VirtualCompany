@@ -88,7 +88,7 @@ public sealed class SharedAgentAiDomainTests
             .Where(x => x.Category == "Marketing")
             .ToArray();
 
-        Assert.Equal(7, marketing.Length);
+        Assert.Equal(9, marketing.Length);
         Assert.Contains(marketing, x => x.Id == AgentCapabilityIds.MarketingPlanning);
         Assert.Contains(marketing, x => x.Id == AgentCapabilityIds.MarketingContentAdvice);
         Assert.Contains(marketing, x => x.Id == AgentCapabilityIds.MarketingPerformanceAnalysis);

@@ -19,7 +19,7 @@ public sealed class LowCashAlertPageTests
         var invoiceId = Guid.Parse("7edb1408-42d4-4a79-9aa2-3a2d2c84da3f");
         var financeRequests = new List<CapturedFinanceRequest>();
 
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddSingleton(new FinanceAccessResolver());
         context.Services.AddSingleton(new OnboardingApiClient(new HttpClient(new AsyncStubHttpMessageHandler((request, _) =>
         {

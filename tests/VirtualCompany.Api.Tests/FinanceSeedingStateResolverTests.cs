@@ -213,10 +213,10 @@ public sealed class FinanceSeedingStateResolverTests
         var result = await resolver.ResolveAsync(companyId, CancellationToken.None);
 
         Assert.Equal(FinanceSeedingState.FullySeeded, result.State);
-        Assert.Equal(FinanceSeedingStateDerivedFromValues.RecordChecks, result.DerivedFrom);
+        Assert.Equal(FinanceSeedingStateDerivedFromValues.Metadata, result.DerivedFrom);
         Assert.True(result.Diagnostics.MetadataPresent);
         Assert.Equal(FinanceSeedingState.FullySeeded, result.Diagnostics.MetadataState);
-        Assert.False(result.Diagnostics.UsedFastPath);
+        Assert.True(result.Diagnostics.UsedFastPath);
         Assert.True(result.Diagnostics.MetadataIndicatesComplete);
     }
 

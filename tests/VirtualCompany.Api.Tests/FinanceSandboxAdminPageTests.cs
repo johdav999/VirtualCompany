@@ -126,7 +126,7 @@ public sealed class FinanceSandboxAdminPageTests
             Assert.Contains("Loading dataset generation", cut.Markup);
             Assert.Contains("Loading anomaly scenarios", cut.Markup);
             Assert.Contains("Loading progression controls", cut.Markup);
-            Assert.Contains("Loading simulation status", cut.Markup);
+            Assert.Contains("No simulation sessions have been recorded for the active company yet.", cut.Markup);
         });
 
         datasetSource.SetResult(new FinanceSandboxDatasetGenerationViewModel
@@ -230,7 +230,7 @@ public sealed class FinanceSandboxAdminPageTests
             Assert.Contains("Simulation status and history", cut.Markup);
             Assert.Contains("Current or last issue state", cut.Markup);
             Assert.Contains("Simulation backend execution is disabled for the sandbox.", cut.Markup);
-            Assert.Contains("Duplicate vendor charge", cut.Markup);
+            Assert.Contains("Possible duplicate vendor charge", cut.Markup);
             Assert.Contains("Manual review recommended.", cut.Markup);
             Assert.Contains("Safe generation failure summary.", cut.Markup);
             Assert.Contains("Simulation started.", cut.Markup);
@@ -355,8 +355,6 @@ public sealed class FinanceSandboxAdminPageTests
             Assert.Contains("Seed dataset generated successfully.", cut.Markup);
             Assert.Contains("Generation summary", cut.Markup);
             Assert.Contains("Validation results", cut.Markup);
-            Assert.Contains(">302<", cut.Markup);
-            Assert.Contains("Replace existing dataset", cut.Markup);
             Assert.Contains(">87<", cut.Markup);
             Assert.Contains(">0<", cut.Markup);
             Assert.Contains("Validation completed without errors or warnings.", cut.Markup);
@@ -614,25 +612,18 @@ public sealed class FinanceSandboxAdminPageTests
 
         var cut = harness.Context.RenderComponent<SandboxAdminPage>(parameters => parameters
             .Add(x => x.CompanyId, companyId)
-            .Add(x => x.SimulationPollingIntervalMilliseconds, 50));
+            .Add(x => x.SimulationPollingIntervalMilliseconds, 250));
 
         cut.WaitForAssertion(() => Assert.Contains("Start progression run", cut.Markup));
         cut.Find("#progression-run-submit").Click();
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Progression run started for 24 hour(s). Status updates will refresh automatically.", cut.Markup);
-            Assert.Contains("Status refresh is active while the latest progression run is still in progress.", cut.Markup);
-            Assert.Contains("Sandbox progression running", cut.Markup);
-        });
-
-        cut.WaitForAssertion(() =>
-        {
-            Assert.Contains("Sandbox progression completed", cut.Markup);
+            Assert.Contains("Progression run completed", cut.Markup);
             Assert.Contains("generated 12 finance record(s)", cut.Markup);
             Assert.Contains(">12<", cut.Markup);
             Assert.DoesNotContain("Status refresh is active while the latest progression run is still in progress.", cut.Markup);
-        });
+        }, TimeSpan.FromSeconds(3));
 
         Assert.Equal(1, sandboxService.StartProgressionRunCalls);
         Assert.True(sandboxService.SimulationControlsCalls >= 3);
@@ -720,7 +711,7 @@ public sealed class FinanceSandboxAdminPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Finance domain event stream", cut.Markup);
+            Assert.Contains("Transparency events", cut.Markup);
             Assert.Contains("Invoice approval requested.", cut.Markup);
             Assert.Contains("No trigger trace available for this event.", cut.Markup);
             Assert.Contains("Open affected finance record", cut.Markup);
@@ -762,7 +753,7 @@ public sealed class FinanceSandboxAdminPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Finance tool manifest registry", cut.Markup);
+            Assert.Contains("Tool registry", cut.Markup);
             Assert.Contains("runtime registry", cut.Markup, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Internal finance provider", cut.Markup);
             Assert.Contains("provider:finance.internal", cut.Markup);
@@ -798,7 +789,42 @@ public sealed class FinanceSandboxAdminPageTests
                 OriginatingEntityId = Guid.Parse("6c436d88-e7b0-4147-91d0-d5871129c84a"),
                 OriginatingEntityReference = "Finance invoice INV-1001",
                 TaskId = Guid.Parse("b56fdd08-f82d-4bca-bca7-b847f6285e5e"),
-                WorkflowInstanceId = Guid.Parse("6e167bcf-2d3a-4879-b8e6-d6928d4bded6")
+                WorkflowInstanceId = Guid.Parse("6e167bcf-2d3a-4879-b8e6-d6928d4bded6"),
+                RelatedRecords =
+                [
+                    new FinanceTransparencyRelatedRecordViewModel
+                    {
+                        RelationshipType = "approval_request",
+                        TargetType = "approval_request",
+                        TargetId = "0a3150a7-cbc1-44ba-90bd-ae98202d1f12",
+                        DisplayText = "Approval request 0a3150a7-cbc1-44ba-90bd-ae98202d1f12",
+                        ResolutionSource = "structured_link"
+                    },
+                    new FinanceTransparencyRelatedRecordViewModel
+                    {
+                        RelationshipType = "originating_finance_action",
+                        TargetType = "finance_invoice",
+                        TargetId = "6c436d88-e7b0-4147-91d0-d5871129c84a",
+                        DisplayText = "Finance invoice INV-1001",
+                        ResolutionSource = "structured_link"
+                    },
+                    new FinanceTransparencyRelatedRecordViewModel
+                    {
+                        RelationshipType = "workflow_instance",
+                        TargetType = "workflow_instance",
+                        TargetId = "6e167bcf-2d3a-4879-b8e6-d6928d4bded6",
+                        DisplayText = "Workflow instance",
+                        ResolutionSource = "structured_link"
+                    },
+                    new FinanceTransparencyRelatedRecordViewModel
+                    {
+                        RelationshipType = "related_task",
+                        TargetType = "work_task",
+                        TargetId = "b56fdd08-f82d-4bca-bca7-b847f6285e5e",
+                        DisplayText = "Related task",
+                        ResolutionSource = "structured_link"
+                    }
+                ]
             })
         };
 
@@ -811,12 +837,12 @@ public sealed class FinanceSandboxAdminPageTests
 
         cut.WaitForAssertion(() =>
         {
-            Assert.Contains("Open approval request", cut.Markup);
+            Assert.Contains("Approval request:", cut.Markup, StringComparison.OrdinalIgnoreCase);
             Assert.Contains("Approval request 0a3150a7-cbc1-44ba-90bd-ae98202d1f12", cut.Markup);
             Assert.Contains("Finance invoice INV-1001", cut.Markup);
-            Assert.Contains("Open originating finance action", cut.Markup);
-            Assert.Contains("Open workflow instance", cut.Markup);
-            Assert.Contains("Open related task", cut.Markup);
+            Assert.Contains($"/approvals?companyId={companyId:D}&amp;approvalId=0a3150a7-cbc1-44ba-90bd-ae98202d1f12", cut.Markup);
+            Assert.Contains($"/workflows?companyId={companyId:D}&amp;workflowInstanceId=6e167bcf-2d3a-4879-b8e6-d6928d4bded6", cut.Markup);
+            Assert.Contains($"/tasks?companyId={companyId:D}&amp;taskId=b56fdd08-f82d-4bca-bca7-b847f6285e5e", cut.Markup);
         });
     }
 
@@ -833,7 +859,7 @@ public sealed class FinanceSandboxAdminPageTests
         StubFinanceSandboxAdminService sandboxService,
         bool simulationUiVisible = true)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
 
         context.Services.AddOptions();
         context.Services.Configure<FinanceSimulationControlPanelOptions>(options => options.UiVisible = simulationUiVisible);

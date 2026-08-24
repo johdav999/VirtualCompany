@@ -99,10 +99,15 @@ public sealed partial class CompanyFinanceReadService
             throw new ArgumentException("Payment id is required.", nameof(query));
         }
 
-        var row = await _dbContext.Payments
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
+        var row = await ApplySourceFilter(_dbContext.Payments
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId)
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId),
+            query.CompanyId,
+            sourceFilter,
+            "payment")
             .Select(x => new FinancePaymentSourceRow(
                 x.Id,
                 x.CompanyId,
@@ -126,13 +131,6 @@ public sealed partial class CompanyFinanceReadService
         }
 
         var hasFortnoxReference = await HasFortnoxReferenceAsync(query.CompanyId, ["payment"], row.Id, cancellationToken);
-        await EnsureFinanceInitializedForRecordAsync(
-            query.CompanyId,
-            row.SourceType,
-            row.ProviderKey,
-            hasFortnoxReference,
-            cancellationToken);
-
         var agentInsights = await LoadEntityAgentInsightsAsync(query.CompanyId, "payment", row.Id, cancellationToken);
         return new FinancePaymentDto(
             row.Id,
@@ -155,25 +153,30 @@ public sealed partial class CompanyFinanceReadService
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
         if (query.PaymentId == Guid.Empty)
         {
             throw new ArgumentException("Payment id is required.", nameof(query));
         }
 
-        var exists = await _dbContext.Payments
+        var exists = await ApplySourceFilter(_dbContext.Payments
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .AnyAsync(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId, cancellationToken);
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.PaymentId),
+            query.CompanyId,
+            sourceFilter,
+            "payment")
+            .AnyAsync(cancellationToken);
         if (!exists)
         {
             throw new KeyNotFoundException("Finance payment was not found.");
         }
 
-        return await _dbContext.PaymentAllocations
+        return await _sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.PaymentId == query.PaymentId)
+            .Where(x => x.CompanyId == query.CompanyId && x.PaymentId == query.PaymentId), query.CompanyId, sourceFilter)
             .OrderBy(x => x.CreatedUtc)
             .ThenBy(x => x.Id)
             .ToListAsync(cancellationToken)
@@ -185,25 +188,30 @@ public sealed partial class CompanyFinanceReadService
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
         if (query.InvoiceId == Guid.Empty)
         {
             throw new ArgumentException("Invoice id is required.", nameof(query));
         }
 
-        var exists = await _dbContext.FinanceInvoices
+        var exists = await ApplySourceFilter(_dbContext.FinanceInvoices
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .AnyAsync(x => x.CompanyId == query.CompanyId && x.Id == query.InvoiceId, cancellationToken);
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.InvoiceId),
+            query.CompanyId,
+            sourceFilter,
+            "invoice")
+            .AnyAsync(cancellationToken);
         if (!exists)
         {
             throw new KeyNotFoundException("Finance invoice was not found.");
         }
 
-        return await _dbContext.PaymentAllocations
+        return await _sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId == query.InvoiceId)
+            .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId == query.InvoiceId), query.CompanyId, sourceFilter)
             .OrderBy(x => x.CreatedUtc)
             .ThenBy(x => x.Id)
             .ToListAsync(cancellationToken)
@@ -215,25 +223,30 @@ public sealed partial class CompanyFinanceReadService
         CancellationToken cancellationToken)
     {
         EnsureTenant(query.CompanyId);
-        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken);
+        var sourceFilter = FinanceDataSources.NormalizeOperationalRead(query.SourceFilter);
+        await EnsureFinanceInitializedAsync(query.CompanyId, cancellationToken, sourceFilter);
         if (query.BillId == Guid.Empty)
         {
             throw new ArgumentException("Bill id is required.", nameof(query));
         }
 
-        var exists = await _dbContext.FinanceBills
+        var exists = await ApplySourceFilter(_dbContext.FinanceBills
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .AnyAsync(x => x.CompanyId == query.CompanyId && x.Id == query.BillId, cancellationToken);
+            .Where(x => x.CompanyId == query.CompanyId && x.Id == query.BillId),
+            query.CompanyId,
+            sourceFilter,
+            "supplier_invoice", "bill")
+            .AnyAsync(cancellationToken);
         if (!exists)
         {
             throw new KeyNotFoundException("Finance bill was not found.");
         }
 
-        return await _dbContext.PaymentAllocations
+        return await _sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.BillId == query.BillId)
+            .Where(x => x.CompanyId == query.CompanyId && x.BillId == query.BillId), query.CompanyId, sourceFilter)
             .OrderBy(x => x.CreatedUtc)
             .ThenBy(x => x.Id)
             .ToListAsync(cancellationToken)

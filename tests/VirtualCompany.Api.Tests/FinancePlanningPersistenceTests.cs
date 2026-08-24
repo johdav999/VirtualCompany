@@ -94,7 +94,7 @@ public sealed class FinancePlanningPersistenceTests
 
         await dbContext.SaveChangesAsync();
 
-        Assert.Equal(2, await dbContext.Budgets.CountAsync());
+        Assert.Equal(2, await dbContext.Budgets.IgnoreQueryFilters().CountAsync());
     }
 
     [Fact]
@@ -127,16 +127,16 @@ public sealed class FinancePlanningPersistenceTests
         var inserted = await service.EnsureBaselineAsync(companyId, CancellationToken.None);
 
         Assert.Equal(46, inserted);
-        Assert.Equal(24, await dbContext.Budgets.CountAsync());
-        Assert.Equal(24, await dbContext.Forecasts.CountAsync());
+        Assert.Equal(24, await dbContext.Budgets.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(24, await dbContext.Forecasts.IgnoreQueryFilters().CountAsync());
         Assert.Equal(
             12,
-            await dbContext.Budgets.CountAsync(x =>
+            await dbContext.Budgets.IgnoreQueryFilters().CountAsync(x =>
                 x.CompanyId == companyId &&
                 x.FinanceAccountId == firstAccountId));
         Assert.Equal(
             12,
-            await dbContext.Forecasts.CountAsync(x =>
+            await dbContext.Forecasts.IgnoreQueryFilters().CountAsync(x =>
                 x.CompanyId == companyId &&
                 x.FinanceAccountId == firstAccountId));
     }
@@ -185,8 +185,8 @@ public sealed class FinancePlanningPersistenceTests
 
         Assert.True(insertedFirstRun > 0);
         Assert.Equal(0, insertedSecondRun);
-        Assert.Equal(24, await dbContext.Budgets.CountAsync());
-        Assert.Equal(24, await dbContext.Forecasts.CountAsync());
+        Assert.Equal(24, await dbContext.Budgets.IgnoreQueryFilters().CountAsync());
+        Assert.Equal(24, await dbContext.Forecasts.IgnoreQueryFilters().CountAsync());
     }
 
     [Fact]

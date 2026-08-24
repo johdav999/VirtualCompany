@@ -496,6 +496,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasIndex("CompanyId", "FiscalPeriodId", "RequestedUtc");
 
+                    b.HasIndex("CompanyId", "Status", "ExpiresUtc");
+
                     b.HasIndex("Status", "NextAttemptUtc", "RequestedUtc");
 
                     b.ToTable("accounting_export_jobs", (string)null);
@@ -5878,11 +5880,37 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("id");
 
+                    b.Property<Guid?>("AcknowledgedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("acknowledged_by_user_id");
+
+                    b.Property<DateTime?>("AcknowledgedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("acknowledged_at");
+
+                    b.Property<string>("Acknowledgement")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("acknowledgement");
+
                     b.Property<int>("AttemptCount")
                         .ValueGeneratedOnAdd()
                         .HasColumnType("int")
                         .HasDefaultValue(0)
                         .HasColumnName("attempt_count");
+
+                    b.Property<string>("CancellationReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("cancellation_reason");
+
+                    b.Property<Guid?>("CancelledByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("cancelled_by_user_id");
+
+                    b.Property<DateTime?>("CancelledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cancelled_at");
 
                     b.Property<Guid>("CompanyId")
                         .HasColumnType("uniqueidentifier")
@@ -5936,6 +5964,15 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(200)")
                         .HasColumnName("idempotency_key");
 
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
                     b.Property<int>("MaxAttempts")
                         .HasColumnType("int")
                         .HasColumnName("max_attempts");
@@ -5972,20 +6009,111 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("datetime2")
                         .HasColumnName("updated_at");
 
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasDefaultValue(0L)
+                        .HasColumnName("version");
+
                     b.HasKey("Id");
 
                     b.HasIndex("CorrelationId");
 
                     b.HasIndex("Status", "HeartbeatUtc");
 
+                    b.HasIndex("Status", "LeaseExpiresUtc");
+
                     b.HasIndex("CompanyId", "ExecutionType", "IdempotencyKey")
                         .IsUnique();
 
                     b.HasIndex("CompanyId", "RelatedEntityType", "RelatedEntityId");
 
+                    b.HasIndex("CompanyId", "Status", "CreatedUtc");
+
                     b.HasIndex("CompanyId", "Status", "NextRetryUtc");
 
                     b.ToTable("background_executions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BackgroundExecutionAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_number");
+
+                    b.Property<Guid>("BackgroundExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("background_execution_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<long?>("DurationMilliseconds")
+                        .HasColumnType("bigint")
+                        .HasColumnName("duration_ms");
+
+                    b.Property<string>("FailureCategory")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("failure_category");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<DateTime>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("WorkerName")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("worker_name");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("BackgroundExecutionId", "AttemptNumber")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "StartedUtc");
+
+                    b.HasIndex("Outcome", "LeaseExpiresUtc");
+
+                    b.ToTable("background_execution_attempts", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankReconciliationFollowUp", b =>
@@ -15481,6 +15609,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .IsUnique()
                         .HasFilter("voucher_series_id IS NOT NULL AND voucher_fiscal_year IS NOT NULL AND voucher_sequence_number IS NOT NULL");
 
+                    b.HasIndex("CompanyId", "FiscalPeriodId", "Status", "EntryUtc", "EntryNumber");
+
                     b.HasIndex("CompanyId", "SourceType", "SourceId", "SourceVersion", "PostingType");
 
                     b.ToTable("ledger_entries", (string)null);
@@ -15589,7 +15719,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
-                    b.HasIndex("CompanyId", "FinanceAccountId");
+                    b.HasIndex("CompanyId", "FinanceAccountId")
+                        .HasAnnotation("SqlServer:Include", new[] { "LedgerEntryId", "DebitAmount", "CreditAmount" });
 
                     b.HasIndex("CompanyId", "LedgerEntryId");
 
@@ -22229,6 +22360,11 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(3)")
                         .HasColumnName("currency");
 
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
                     b.Property<Guid?>("InvoiceId")
                         .HasColumnType("uniqueidentifier")
                         .HasColumnName("invoice_id");
@@ -22256,6 +22392,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CompanyId", "BillId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("[idempotency_key] IS NOT NULL");
 
                     b.HasIndex("CompanyId", "InvoiceId");
 
@@ -26772,7 +26912,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.ToTable("simulation_cash_delta_records", null, t =>
                         {
-                            t.HasCheckConstraint("CK_simulation_cash_delta_records_cash_snapshot", "cash_after = cash_before + cash_delta");
+                            t.HasCheckConstraint("CK_simulation_cash_delta_records_cash_snapshot", "cash_after = ROUND(cash_before + cash_delta, 2)");
                         });
                 });
 
@@ -26871,7 +27011,7 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
                     b.ToTable("simulation_event_records", null, t =>
                         {
-                            t.HasCheckConstraint("CK_simulation_event_records_cash_snapshot", "((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = cash_before + cash_delta))");
+                            t.HasCheckConstraint("CK_simulation_event_records_cash_snapshot", "((cash_before IS NULL AND cash_delta IS NULL AND cash_after IS NULL) OR (cash_before IS NOT NULL AND cash_delta IS NOT NULL AND cash_after IS NOT NULL AND cash_after = ROUND(cash_before + cash_delta, 2)))");
 
                             t.HasCheckConstraint("CK_simulation_event_records_sequence_number_positive", "sequence_number > 0");
                         });
@@ -29727,6 +29867,10 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnType("nvarchar(20)")
                         .HasColumnName("formatting_culture");
 
+                    b.Property<Guid?>("PreferredCompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("preferred_company_id");
+
                     b.Property<string>("UiCulture")
                         .IsRequired()
                         .ValueGeneratedOnAdd()
@@ -29740,6 +29884,8 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasColumnName("updated_utc");
 
                     b.HasKey("UserId");
+
+                    b.HasIndex("PreferredCompanyId");
 
                     b.ToTable("user_preferences", (string)null);
                 });
@@ -31591,6 +31737,25 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
                         .HasForeignKey("CompanyId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BackgroundExecutionAttempt", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BackgroundExecution", "BackgroundExecution")
+                        .WithMany()
+                        .HasForeignKey("BackgroundExecutionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("BackgroundExecution");
 
                     b.Navigation("Company");
                 });
@@ -35973,11 +36138,18 @@ namespace VirtualCompany.Infrastructure.Persistence.Migrations
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.UserPreference", b =>
                 {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "PreferredCompany")
+                        .WithMany()
+                        .HasForeignKey("PreferredCompanyId")
+                        .OnDelete(DeleteBehavior.SetNull);
+
                     b.HasOne("VirtualCompany.Domain.Entities.User", "User")
                         .WithOne()
                         .HasForeignKey("VirtualCompany.Domain.Entities.UserPreference", "UserId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+
+                    b.Navigation("PreferredCompany");
 
                     b.Navigation("User");
                 });

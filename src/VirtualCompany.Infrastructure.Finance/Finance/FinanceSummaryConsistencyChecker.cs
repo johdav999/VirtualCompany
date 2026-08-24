@@ -19,8 +19,11 @@ public sealed class FinanceSummaryConsistencyChecker
         DateTime asOfUtc,
         int recentAssetPurchaseLimit,
         FinanceSummaryDto summary,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
+        var normalizedSourceFilter = FinanceDataSources.NormalizeOperationalRead(sourceFilter);
+        var sourcePolicy = new FinanceRecordSourcePolicy(_dbContext);
         var normalizedRecentAssetPurchaseLimit = Math.Clamp(recentAssetPurchaseLimit, 1, 20);
         var monthStartUtc = new DateTime(asOfUtc.Year, asOfUtc.Month, 1, 0, 0, 0, DateTimeKind.Utc);
         var monthEndExclusiveUtc = monthStartUtc.AddMonths(1);
@@ -28,17 +31,19 @@ public sealed class FinanceSummaryConsistencyChecker
             ? asOfUtc.AddTicks(1)
             : monthEndExclusiveUtc;
 
-        var cashDeltaRows = await _dbContext.SimulationCashDeltaRecords
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.SimulationDateUtc <= asOfUtc)
-            .Select(x => new CashDeltaRow(x.SimulationDateUtc, x.CreatedUtc, x.CashAfter))
-            .ToListAsync(cancellationToken);
+        var cashDeltaRows = normalizedSourceFilter == FinanceDataSources.Simulation
+            ? await _dbContext.SimulationCashDeltaRecords
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == companyId && x.SimulationDateUtc <= asOfUtc)
+                .Select(x => new CashDeltaRow(x.SimulationDateUtc, x.CreatedUtc, x.CashAfter))
+                .ToListAsync(cancellationToken)
+            : [];
 
-        var invoiceRows = await _dbContext.FinanceInvoices
+        var invoiceRows = await sourcePolicy.ApplyFilter(_dbContext.FinanceInvoices
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.IssuedUtc <= asOfUtc)
+            .Where(x => x.CompanyId == companyId && x.IssuedUtc <= asOfUtc), companyId, normalizedSourceFilter, "invoice")
             .Select(x => new InvoiceRow(
                 x.Id,
                 x.IssuedUtc,
@@ -48,10 +53,10 @@ public sealed class FinanceSummaryConsistencyChecker
                 x.SettlementStatus))
             .ToListAsync(cancellationToken);
 
-        var billRows = await _dbContext.FinanceBills
+        var billRows = await sourcePolicy.ApplyFilter(_dbContext.FinanceBills
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.ReceivedUtc <= asOfUtc)
+            .Where(x => x.CompanyId == companyId && x.ReceivedUtc <= asOfUtc), companyId, normalizedSourceFilter, "supplier_invoice", "bill")
             .Select(x => new BillRow(
                 x.Id,
                 x.ReceivedUtc,
@@ -61,10 +66,10 @@ public sealed class FinanceSummaryConsistencyChecker
                 x.SettlementStatus))
             .ToListAsync(cancellationToken);
 
-        var assetRows = await _dbContext.FinanceAssets
+        var assetRows = await sourcePolicy.ApplyFilter(_dbContext.FinanceAssets
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.PurchasedUtc <= asOfUtc)
+            .Where(x => x.CompanyId == companyId && x.PurchasedUtc <= asOfUtc), companyId, normalizedSourceFilter, "asset")
             .Select(x => new AssetRow(
                 x.Id,
                 x.ReferenceNumber,
@@ -75,7 +80,7 @@ public sealed class FinanceSummaryConsistencyChecker
                 x.Status))
             .ToListAsync(cancellationToken);
 
-        var incomingAllocationRows = await _dbContext.PaymentAllocations
+        var incomingAllocationRows = await sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
@@ -83,11 +88,11 @@ public sealed class FinanceSummaryConsistencyChecker
                 x.InvoiceId.HasValue &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
-                x.Payment.PaymentDate <= asOfUtc)
+                x.Payment.PaymentDate <= asOfUtc), companyId, normalizedSourceFilter)
             .Select(x => new AllocationRow(x.InvoiceId!.Value, x.AllocatedAmount))
             .ToListAsync(cancellationToken);
 
-        var outgoingAllocationRows = await _dbContext.PaymentAllocations
+        var outgoingAllocationRows = await sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
@@ -95,7 +100,7 @@ public sealed class FinanceSummaryConsistencyChecker
                 x.BillId.HasValue &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
-                x.Payment.PaymentDate <= asOfUtc)
+                x.Payment.PaymentDate <= asOfUtc), companyId, normalizedSourceFilter)
             .Select(x => new AllocationRow(x.BillId!.Value, x.AllocatedAmount))
             .ToListAsync(cancellationToken);
 
@@ -106,14 +111,9 @@ public sealed class FinanceSummaryConsistencyChecker
             .GroupBy(x => x.DocumentId)
             .ToDictionary(x => x.Key, x => Round(x.Sum(y => y.Amount)));
 
-        // When simulation cash deltas exist they are the most direct point-in-time source record.
-        var expectedCurrentCash = cashDeltaRows.Count > 0
-            ? Round(cashDeltaRows
-                .OrderByDescending(x => x.SimulationDateUtc)
-                .ThenByDescending(x => x.CreatedUtc)
-                .Select(x => x.CashAfter)
-                .First())
-            : await CalculateLedgerCashFallbackAsync(companyId, asOfUtc, cancellationToken);
+        // The finance ledger and balance snapshots are authoritative for reporting. Simulation
+        // cash deltas remain audit evidence, but can represent an intermediate event within a day.
+        var expectedCurrentCash = await CalculateLedgerCashFallbackAsync(companyId, asOfUtc, normalizedSourceFilter, cancellationToken);
 
         var expectedAccountsReceivable = Round(invoiceRows
             .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
@@ -194,12 +194,14 @@ public sealed class FinanceSummaryConsistencyChecker
     private async Task<decimal> CalculateLedgerCashFallbackAsync(
         Guid companyId,
         DateTime asOfUtc,
+        string sourceFilter,
         CancellationToken cancellationToken)
     {
-        var cashAccounts = await _dbContext.FinanceAccounts
+        var sourcePolicy = new FinanceRecordSourcePolicy(_dbContext);
+        var cashAccounts = await sourcePolicy.ApplyFilter(_dbContext.FinanceAccounts
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId)
+            .Where(x => x.CompanyId == companyId), companyId, sourceFilter, "account")
             .Select(x => new CashAccountRow(x.Id, x.Code, x.Name, x.AccountType, x.OpeningBalance))
             .ToListAsync(cancellationToken);
 
@@ -212,17 +214,17 @@ public sealed class FinanceSummaryConsistencyChecker
 
         var cashAccountIds = cashAccounts.Select(x => x.Id).ToArray();
 
-        var balances = await _dbContext.FinanceBalances
+        var balances = await sourcePolicy.ApplyFilter(_dbContext.FinanceBalances
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.AsOfUtc <= asOfUtc)
+            .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.AsOfUtc <= asOfUtc), companyId, sourceFilter, "balance")
             .Select(x => new BalanceRow(x.AccountId, x.AsOfUtc, x.Amount))
             .ToListAsync(cancellationToken);
 
-        var transactions = await _dbContext.FinanceTransactions
+        var transactions = await sourcePolicy.ApplyFilter(_dbContext.FinanceTransactions
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.TransactionUtc <= asOfUtc)
+            .Where(x => x.CompanyId == companyId && cashAccountIds.Contains(x.AccountId) && x.TransactionUtc <= asOfUtc), companyId, sourceFilter, "voucher", "payment", "transaction")
             .Select(x => new TransactionRow(
                 x.AccountId,
                 x.TransactionUtc,

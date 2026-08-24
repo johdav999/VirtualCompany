@@ -45,7 +45,7 @@
             return;
         }
 
-        var context = await OnboardingApiClient.GetCurrentUserContextAsync();
+        var context = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
         if (context?.ActiveCompany is { } activeCompany)
         {
             Navigation.NavigateTo($"/settings?companyId={activeCompany.CompanyId:D}", replace: true);
@@ -60,7 +60,7 @@
         new(UiText["Automation"], UiText["AutomationDescription"], [new(UiText["Workflows"], $"/workflows?companyId={companyId:D}"), new(UiText["OutboundAutomation"], $"/agents/automation?companyId={companyId:D}")]),
         new(UiText["Briefings"], UiText["BriefingsDescription"], [new(UiText["BriefingDelivery"], $"/briefing-preferences?companyId={companyId:D}")]),
         new(UiText["DepartmentSettings"], UiText["DepartmentSettingsDescription"], [new(UiText["Finance"], $"/finance/settings?companyId={companyId:D}"), new(UiText["SupportSla"], $"/support/settings/sla?companyId={companyId:D}")]),
-        new(UiText["SecurityAudit"], UiText["SecurityAuditDescription"], [new(UiText["AuditLog"], $"/audit?companyId={companyId:D}")]),
+        new(UiText["SecurityAudit"], UiText["SecurityAuditDescription"], [new(UiText["AuditLog"], $"/audit?companyId={companyId:D}"), new("Finance work recovery", $"/system/admin/finance-work?companyId={companyId:D}")]),
         new(UiText["UserPreferences"], UiText["UserPreferencesDescription"], [new(UiText["ProfileLanguage"], $"/settings/profile?companyId={companyId:D}")])
     ];
 

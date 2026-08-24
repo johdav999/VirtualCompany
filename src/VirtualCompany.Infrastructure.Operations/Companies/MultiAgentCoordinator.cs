@@ -518,6 +518,7 @@ public sealed class MultiAgentCoordinator : IMultiAgentCoordinator
                 ["contributorRationaleSummaryCount"] = contributorRationaleSummaries.Count.ToString()
             },
             cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new MultiAgentCollaborationResultDto(
             planId,

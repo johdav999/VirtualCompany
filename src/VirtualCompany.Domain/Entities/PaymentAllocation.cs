@@ -20,7 +20,8 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         DateTime? updatedUtc = null,
         Guid? sourceSimulationEventRecordId = null,
         Guid? paymentSourceSimulationEventRecordId = null,
-        Guid? targetSourceSimulationEventRecordId = null)
+        Guid? targetSourceSimulationEventRecordId = null,
+        string? idempotencyKey = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId == Guid.Empty ? throw new ArgumentException("CompanyId is required.", nameof(companyId)) : companyId;
@@ -50,6 +51,7 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         SourceSimulationEventRecordId = sourceSimulationEventRecordId;
         PaymentSourceSimulationEventRecordId = paymentSourceSimulationEventRecordId;
         TargetSourceSimulationEventRecordId = targetSourceSimulationEventRecordId;
+        IdempotencyKey = NormalizeIdempotencyKey(idempotencyKey);
     }
 
     public Guid Id { get; private set; }
@@ -64,6 +66,7 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
     public Guid? SourceSimulationEventRecordId { get; private set; }
     public Guid? PaymentSourceSimulationEventRecordId { get; private set; }
     public Guid? TargetSourceSimulationEventRecordId { get; private set; }
+    public string? IdempotencyKey { get; private set; }
     public Company Company { get; private set; } = null!;
     public Payment Payment { get; private set; } = null!;
     public FinanceInvoice? Invoice { get; private set; }
@@ -146,5 +149,14 @@ public sealed class PaymentAllocation : ICompanyOwnedEntity
         {
             throw new ArgumentException("Allocation must reference either an invoice or a bill.");
         }
+    }
+
+    private static string? NormalizeIdempotencyKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = value.Trim();
+        return normalized.Length <= 200
+            ? normalized
+            : throw new ArgumentOutOfRangeException(nameof(value), "Idempotency key cannot exceed 200 characters.");
     }
 }

@@ -1,10 +1,12 @@
 using System.Net;
 using System.Net.Http.Json;
+using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Auth;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Shared;
 using Xunit;
 
@@ -37,7 +39,7 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         Assert.Equal([FinanceManualSeedModes.Replace], payload.SupportedModes);
 
         var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
-            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
+            await Task.FromResult(dbContext.BackgroundExecutions.IgnoreQueryFilters().Count(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
 
@@ -65,11 +67,11 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
 
         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
         {
-            var company = dbContext.Companies.Single(x => x.Id == seed.CompanyId);
-            var jobs = dbContext.BackgroundExecutions
+            var company = dbContext.Companies.IgnoreQueryFilters().Single(x => x.Id == seed.CompanyId);
+            var jobs = dbContext.BackgroundExecutions.IgnoreQueryFilters()
                 .Where(x => x.CompanyId == seed.CompanyId && x.ExecutionType == BackgroundExecutionType.FinanceSeed)
                 .ToList();
-            var audits = dbContext.AuditEvents
+            var audits = dbContext.AuditEvents.IgnoreQueryFilters()
                 .Where(x => x.CompanyId == seed.CompanyId && x.Action == "finance.seed.job.requested")
                 .ToList();
             return new { Company = company, Jobs = jobs, Audits = audits };
@@ -112,7 +114,7 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         Assert.True(secondPayload.SeedJobActive);
 
         var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
-            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
+            await Task.FromResult(dbContext.BackgroundExecutions.IgnoreQueryFilters().Count(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
 
@@ -141,13 +143,13 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
             await Task.FromResult(new
             {
-                JobCount = dbContext.BackgroundExecutions.Count(x =>
+                JobCount = dbContext.BackgroundExecutions.IgnoreQueryFilters().Count(x =>
                     x.CompanyId == seed.CompanyId &&
                     x.ExecutionType == BackgroundExecutionType.FinanceSeed),
-                RequestedAuditCount = dbContext.AuditEvents.Count(x =>
+                RequestedAuditCount = dbContext.AuditEvents.IgnoreQueryFilters().Count(x =>
                     x.CompanyId == seed.CompanyId &&
                     x.Action == "finance.seed.job.requested"),
-                CompanyState = dbContext.Companies.Single(x => x.Id == seed.CompanyId).FinanceSeedStatus
+                CompanyState = dbContext.Companies.IgnoreQueryFilters().Single(x => x.Id == seed.CompanyId).FinanceSeedStatus
             }));
 
         Assert.Equal(1, snapshot.JobCount);
@@ -165,14 +167,20 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
     {
         var seed = await SeedCompanyAsync(configureCompany: (dbContext, companyId) =>
         {
+            var identity = new DefaultBackgroundExecutionIdentityFactory().Create(
+                companyId,
+                "finance-seed",
+                "finance-seed-failed",
+                BackgroundExecutionType.FinanceSeed.ToStorageValue(),
+                companyId.ToString("N"));
             var execution = new BackgroundExecution(
                 Guid.NewGuid(),
                 companyId,
                 BackgroundExecutionType.FinanceSeed,
                 BackgroundExecutionRelatedEntityTypes.FinanceSeed,
                 companyId.ToString("D"),
-                "finance-seed-failed",
-                $"finance-seed:{companyId:N}",
+                identity.CorrelationId,
+                identity.IdempotencyKey,
                 maxAttempts: 1);
             execution.StartAttempt("finance-seed-failed", 1, 1);
             execution.MarkFailed(
@@ -204,7 +212,7 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         Assert.True(retryPayload.SeedJobEnqueued);
 
         var executionState = await _factory.ExecuteDbContextAsync(async dbContext =>
-            await Task.FromResult(dbContext.BackgroundExecutions.Single(x =>
+            await Task.FromResult(dbContext.BackgroundExecutions.IgnoreQueryFilters().Single(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
 
@@ -219,6 +227,8 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         var seed = await SeedCompanyAsync(configureCompany: (dbContext, companyId) =>
         {
             FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+            dbContext.Companies.Local.Single(x => x.Id == companyId)
+                .SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
         });
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
 
@@ -247,11 +257,11 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
 
         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
         {
-            var company = dbContext.Companies.Single(x => x.Id == seed.CompanyId);
-            var jobs = dbContext.BackgroundExecutions
+            var company = dbContext.Companies.IgnoreQueryFilters().Single(x => x.Id == seed.CompanyId);
+            var jobs = dbContext.BackgroundExecutions.IgnoreQueryFilters()
                 .Where(x => x.CompanyId == seed.CompanyId && x.ExecutionType == BackgroundExecutionType.FinanceSeed)
                 .ToList();
-            var audit = dbContext.AuditEvents.Single(x =>
+            var audit = dbContext.AuditEvents.IgnoreQueryFilters().Single(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.Action == "finance.seed.job.requested");
             return new { Company = company, Jobs = jobs, Audit = audit };
@@ -277,6 +287,8 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         var seed = await SeedCompanyAsync(configureCompany: (dbContext, companyId) =>
         {
             FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+            dbContext.Companies.Local.Single(x => x.Id == companyId)
+                .SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
         });
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
 
@@ -290,20 +302,20 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         var payload = await response.Content.ReadFromJsonAsync<FinanceEntryInitializationResponse>();
         Assert.NotNull(payload);
-        Assert.Equal(FinanceEntryInitializationContractValues.Initializing, payload!.InitializationStatus);
-        Assert.Equal(FinanceEntryProgressStateContractValues.SeedingRequested, payload.ProgressState);
-        Assert.Equal(FinanceSeedingStateContractValues.Seeding, payload.SeedingState);
+        Assert.Equal(FinanceEntryInitializationContractValues.Ready, payload!.InitializationStatus);
+        Assert.Equal(FinanceEntryProgressStateContractValues.Seeded, payload.ProgressState);
+        Assert.Equal(FinanceSeedingStateContractValues.Seeded, payload.SeedingState);
         Assert.True(payload.DataAlreadyExists);
         Assert.Equal(FinanceManualSeedModes.Replace, payload.SeedMode);
         Assert.Equal(FinanceSeedOperationContractValues.Rejected, payload.SeedOperation);
         Assert.True(payload.ConfirmationRequired);
-        Assert.True(payload.SeedJobEnqueued);
-        Assert.True(payload.SeedJobActive);
+        Assert.False(payload.SeedJobEnqueued);
+        Assert.False(payload.SeedJobActive);
 
         var snapshot = await _factory.ExecuteDbContextAsync(async dbContext =>
         {
-            var company = dbContext.Companies.Single(x => x.Id == seed.CompanyId);
-            var jobs = dbContext.BackgroundExecutions
+            var company = dbContext.Companies.IgnoreQueryFilters().Single(x => x.Id == seed.CompanyId);
+            var jobs = dbContext.BackgroundExecutions.IgnoreQueryFilters()
                 .Where(x => x.CompanyId == seed.CompanyId && x.ExecutionType == BackgroundExecutionType.FinanceSeed)
                 .ToList();
             return new { Company = company, Jobs = jobs };
@@ -316,7 +328,7 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
             .Where(x => x.EventName == FinanceSeedTelemetryEventNames.Requested && x.Context.CompanyId == seed.CompanyId));
 
         var rejectedAuditCount = await _factory.ExecuteDbContextAsync(async dbContext =>
-            await Task.FromResult(dbContext.AuditEvents.Count(x =>
+            await Task.FromResult(dbContext.AuditEvents.IgnoreQueryFilters().Count(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.Action == "finance.seed.job.rejected")));
 
@@ -329,6 +341,8 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         var seed = await SeedCompanyAsync(configureCompany: (dbContext, companyId) =>
         {
             FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+            dbContext.Companies.Local.Single(x => x.Id == companyId)
+                .SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
         });
         using var client = CreateAuthenticatedClient(seed.Subject, seed.Email, seed.DisplayName);
 
@@ -344,7 +358,7 @@ public sealed class FinanceEntryInitializationIntegrationTests : IDisposable
         Assert.False(payload.SeedJobEnqueued);
 
         var jobCount = await _factory.ExecuteDbContextAsync(async dbContext =>
-            await Task.FromResult(dbContext.BackgroundExecutions.Count(x =>
+            await Task.FromResult(dbContext.BackgroundExecutions.IgnoreQueryFilters().Count(x =>
                 x.CompanyId == seed.CompanyId &&
                 x.ExecutionType == BackgroundExecutionType.FinanceSeed)));
 

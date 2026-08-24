@@ -47,6 +47,7 @@ internal sealed class LedgerEntryConfiguration : IEntityTypeConfiguration<Ledger
         builder.Property(x => x.RowVersion).HasColumnName("row_version").IsRowVersion().IsConcurrencyToken();
 
         builder.HasIndex(x => new { x.CompanyId, x.FiscalPeriodId, x.EntryUtc });
+        builder.HasIndex(x => new { x.CompanyId, x.FiscalPeriodId, x.Status, x.EntryUtc, x.EntryNumber });
         builder.HasIndex(x => new { x.CompanyId, x.SourceType, x.SourceId, x.PostedAtUtc }).IsUnique().HasFilter("source_type IS NOT NULL AND source_id IS NOT NULL AND posted_at IS NOT NULL");
         builder.HasIndex(x => new { x.CompanyId, x.EntryNumber }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.EntryUtc });

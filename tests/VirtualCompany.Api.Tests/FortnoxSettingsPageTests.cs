@@ -14,10 +14,10 @@ public sealed class FinanceIntegrationSettingsPageTests
 {
     [Theory]
     [InlineData(null, "Not connected", "Connect accounting system")]
-    [InlineData("pending", "Connecting", "View sync history")]
+    [InlineData("pending", "Connecting", "Hide sync history")]
     [InlineData("connected", "Connected", "Sync data")]
     [InlineData("needs_reconnect", "Needs reconnect", "Reconnect")]
-    [InlineData("error", "Error", "Reconnect")]
+    [InlineData("error", "Needs attention", "Reconnect")]
     public void Provider_card_renders_connection_states_and_expected_actions(string? status, string label, string action)
     {
         var companyId = Guid.Parse("8c212fb5-71cd-42be-a237-5e893285f315");
@@ -38,12 +38,12 @@ public sealed class FinanceIntegrationSettingsPageTests
             Assert.Contains("Fortnox", cut.Markup);
             Assert.Contains(label, cut.Markup);
             Assert.Contains(action, cut.Markup);
-            Assert.Contains("View sync history", cut.Markup);
+            Assert.Contains("Hide sync history", cut.Markup);
             Assert.Contains("Approval-gated writes", cut.Markup);
             Assert.DoesNotContain("payload hash", cut.Markup, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain("Token expiry", cut.Markup);
             Assert.DoesNotContain("Last token refresh", cut.Markup);
-            Assert.DoesNotContain("needs_reconnect", cut.Markup);
+            Assert.DoesNotContain(">needs_reconnect<", cut.Markup);
         });
     }
 
@@ -60,7 +60,7 @@ public sealed class FinanceIntegrationSettingsPageTests
             Assert.Contains("Connected", cut.Markup);
             Assert.Contains("Sync data", cut.Markup);
             Assert.Contains("Disconnect", cut.Markup);
-            Assert.Contains("View sync history", cut.Markup);
+            Assert.Contains("Hide sync history", cut.Markup);
             Assert.DoesNotContain("Connect Fortnox", cut.Markup);
         });
     }
@@ -77,7 +77,7 @@ public sealed class FinanceIntegrationSettingsPageTests
         {
             Assert.Contains("Connected", cut.Markup);
             Assert.Contains("Company owner or admin access is required to connect, sync, reconnect, or disconnect Fortnox.", cut.Markup);
-            Assert.Contains("View sync history", cut.Markup);
+            Assert.Contains("Hide sync history", cut.Markup);
             Assert.DoesNotContain("Sync data", cut.Markup);
             Assert.DoesNotContain("Disconnect", cut.Markup);
             Assert.DoesNotContain("Reconnect", cut.Markup);
@@ -95,7 +95,7 @@ public sealed class FinanceIntegrationSettingsPageTests
         cut.WaitForAssertion(() =>
         {
             Assert.Contains("Connected", cut.Markup);
-            Assert.Contains("View sync history", cut.Markup);
+            Assert.Contains("Hide sync history", cut.Markup);
             Assert.DoesNotContain("Sync data", cut.Markup);
             Assert.DoesNotContain("Disconnect", cut.Markup);
             Assert.DoesNotContain(harness.Requests, request =>
@@ -133,7 +133,8 @@ public sealed class FinanceIntegrationSettingsPageTests
             Assert.Contains("Sync history", cut.Markup);
             Assert.Contains("Imported records", cut.Markup);
             Assert.Contains("Duration", cut.Markup);
-            Assert.Contains("Created 2, updated 1, skipped 3, errors 0.", cut.Markup);
+            Assert.Contains(">3<", cut.Markup);
+            Assert.Contains("1 minute", cut.Markup);
         });
     }
 
@@ -348,7 +349,7 @@ public sealed class FinanceIntegrationSettingsPageTests
         bool historyEmpty = false,
         string? historyFailureDetail = null)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var requests = new List<HttpRequestMessage>();
 
         context.Services.AddOptions();

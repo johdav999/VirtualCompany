@@ -311,6 +311,8 @@ public static class AvatarReferenceRules
         value.Contains("://", StringComparison.Ordinal) ||
         value.StartsWith("http:", StringComparison.OrdinalIgnoreCase) ||
         value.StartsWith("https:", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("http//", StringComparison.OrdinalIgnoreCase) ||
+        value.StartsWith("https//", StringComparison.OrdinalIgnoreCase) ||
         value.StartsWith("data:", StringComparison.OrdinalIgnoreCase) ||
         value.StartsWith("blob:", StringComparison.OrdinalIgnoreCase);
 }

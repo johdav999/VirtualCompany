@@ -37,6 +37,34 @@ else
             </div>
         </header>
 
+        @if (requiresCompanyChoice)
+        {
+            <section class="wizard-card onboarding-company-choice" aria-labelledby="onboarding-company-choice-title">
+                <span class="onboarding-eyebrow">@CommonText["CompanyChoiceKicker"]</span>
+                <h2 id="onboarding-company-choice-title">@CommonText["CompanyChoiceTitle"]</h2>
+                <p class="text-body-secondary">@CommonText["CompanyChoiceDescription"]</p>
+                <div class="template-grid mt-4">
+                    @foreach (var membership in ActiveMemberships)
+                    {
+                        <button type="button"
+                                class="template-card text-start"
+                                disabled="@isSubmitting"
+                                @onclick="() => SelectCompanyAsync(membership.CompanyId)">
+                            <strong>@membership.CompanyName</strong>
+                            <span class="text-body-secondary mt-2">@DescribeCompany(membership)</span>
+                        </button>
+                    }
+                </div>
+                <div class="mt-4 pt-3 border-top">
+                    <button type="button" class="btn btn-outline-primary" disabled="@isSubmitting" @onclick="StartAnotherWorkspace">
+                        @CommonText["CreateAnotherCompany"]
+                    </button>
+                </div>
+            </section>
+        }
+        else
+        {
+
         <ol class="onboarding-stepper" aria-label="@CommonText["OnboardingProgress"]">
             @for (var wizardStep = 1; wizardStep <= StepCount; wizardStep++)
             {
@@ -92,7 +120,10 @@ else
                             <strong>@CommonText["OnboardingAlreadyCompleted"]</strong>
                             <p>@CommonText["OnboardingCompletedDescription"]</p>
                         </div>
-                        <button type="button" class="btn btn-outline-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">@CommonText["OnboardingOpenDashboard"]</button>
+                        <div class="d-flex gap-2 flex-wrap">
+                            <button type="button" class="btn btn-outline-primary" @onclick="GoToDashboard" disabled="@string.IsNullOrWhiteSpace(completedDashboardPath)">@CommonText["OnboardingOpenDashboard"]</button>
+                            <button type="button" class="btn btn-outline-secondary" @onclick="StartAnotherWorkspace">@CommonText["CreateAnotherCompany"]</button>
+                        </div>
                     </div>
                 }
 
@@ -291,6 +322,7 @@ else
                 </div>
             </aside>
         </div>
+        }
     </section>
 }
 
@@ -362,6 +394,7 @@ else
     private OnboardingTemplateRecommendationViewModel? recommendedTemplate;
     private bool isLoading = true;
     private bool isSubmitting;
+    private bool explicitNewCompany;
     private string? statusMessage;
     private string? errorMessage;
     private string sessionStatus = "not_started";
@@ -370,6 +403,19 @@ else
     private List<string> savedGuidance = [];
     private string? completedDashboardPath;
     private string? lastSavedLabel;
+
+    private IReadOnlyList<CompanyMembershipViewModel> ActiveMemberships =>
+        currentUser?.Memberships
+            .Where(item => string.Equals(item.Status, "active", StringComparison.OrdinalIgnoreCase))
+            .OrderBy(item => item.CompanyName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(item => item.CompanyCreatedUtc)
+            .ToList()
+        ?? [];
+
+    private bool requiresCompanyChoice =>
+        currentUser?.CompanySelectionRequired == true &&
+        !explicitNewCompany &&
+        !model.CompanyId.HasValue;
 
     private OnboardingTemplateViewModel? SelectedTemplate => templates.FirstOrDefault(x => x.TemplateId == model.SelectedTemplateId);
     private IReadOnlyList<string> IndustryOptions => BuildOptionList(
@@ -416,7 +462,7 @@ else
         try
         {
             var request=new SaveOnboardingRequest{CompanyId=model.CompanyId,Name=model.Name,Industry=model.Industry,BusinessType=model.BusinessType,
-                Timezone=model.Timezone,Currency=model.Currency,Language=model.Language,ComplianceRegion=model.ComplianceRegion,CurrentStep=Math.Max(1,currentStep),SelectedTemplateId=GetEffectiveTemplateId()};
+                Timezone=model.Timezone,Currency=model.Currency,Language=model.Language,ComplianceRegion=model.ComplianceRegion,CurrentStep=Math.Max(1,currentStep),SelectedTemplateId=GetEffectiveTemplateId(),ExplicitNewCompany=explicitNewCompany};
             var result=await ApiClient.StartWorkshopAsync(request);
             Navigation.NavigateTo(result.Route, forceLoad: true);
         }
@@ -433,7 +479,9 @@ else
             templates = (await ApiClient.GetTemplatesAsync()).ToList();
             var progress = currentUser?.ActiveCompany is { } activeCompany
                 ? await ApiClient.GetProgressAsync(activeCompany.CompanyId)
-                : await ApiClient.GetProgressAsync();
+                : currentUser?.CompanySelectionRequired == true
+                    ? null
+                    : await ApiClient.GetProgressAsync();
 
             if (progress is null)
             {
@@ -607,7 +655,16 @@ else
 
     private void StartAnotherWorkspace()
     {
+        explicitNewCompany = true;
         model.CompanyId = null;
+        model.Name = string.Empty;
+        model.Industry = string.Empty;
+        model.BusinessType = string.Empty;
+        model.Timezone = string.Empty;
+        model.Currency = string.Empty;
+        model.Language = string.Empty;
+        model.ComplianceRegion = string.Empty;
+        model.SelectedTemplateId = null;
         currentStep = 1;
         sessionStatus = "not_started";
         manuallyEditedFields.Clear();
@@ -615,6 +672,37 @@ else
         lastSavedLabel = null;
         ClearMessages();
         statusMessage = CommonText["OnboardingStartingNew"];
+    }
+
+    private async Task SelectCompanyAsync(Guid companyId)
+    {
+        isSubmitting = true;
+        ClearMessages();
+        try
+        {
+            await ApiClient.SelectCompanyAsync(companyId);
+            Navigation.NavigateTo("/onboarding", forceLoad: true);
+        }
+        catch (OnboardingApiException ex)
+        {
+            errorMessage = ex.Message;
+        }
+        finally
+        {
+            isSubmitting = false;
+        }
+    }
+
+    private string DescribeCompany(CompanyMembershipViewModel membership)
+    {
+        var setup = string.Equals(membership.OnboardingStatus, "completed", StringComparison.OrdinalIgnoreCase)
+            ? CommonText["CompanySetupComplete"]
+            : string.Equals(membership.OnboardingStatus, "in_progress", StringComparison.OrdinalIgnoreCase)
+                ? CommonText["CompanySetupInProgress"]
+                : CommonText["CompanySetupNotStarted"];
+        return membership.CompanyCreatedUtc is DateTime createdUtc
+            ? CommonText["CompanyCreatedDescription", LocalDateTime.DateTime(createdUtc), setup, membership.CompanyId.ToString("N")[..8]]
+            : setup;
     }
 
     private void OnTemplateChanged(ChangeEventArgs args)
@@ -708,7 +796,8 @@ else
 
     private void ApplyProgress(OnboardingProgressViewModel progress, bool startFresh = false)
     {
-        model.CompanyId = startFresh || !progress.CanResume ? null : progress.CompanyId;
+        explicitNewCompany = false;
+        model.CompanyId = startFresh ? null : progress.CompanyId;
         model.Name = progress.Name;
         model.Industry = progress.Industry;
         model.BusinessType = progress.BusinessType;
@@ -770,7 +859,8 @@ else
             Language = model.Language,
             ComplianceRegion = model.ComplianceRegion,
             CurrentStep = step,
-            SelectedTemplateId = GetEffectiveTemplateId()
+            SelectedTemplateId = GetEffectiveTemplateId(),
+            ExplicitNewCompany = explicitNewCompany
         };
 
         return model.CompanyId.HasValue

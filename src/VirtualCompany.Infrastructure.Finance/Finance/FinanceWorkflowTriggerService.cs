@@ -376,7 +376,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
                     return false;
                 }
 
-                await _financeApprovalTaskService.EnsureTaskAsync(
+                var ensured = await _financeApprovalTaskService.EnsureTaskAsync(
                     new EnsureFinanceApprovalTaskCommand(
                         companyId,
                         ApprovalTargetType.Bill,
@@ -388,6 +388,10 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
                         eventId,
                         sourceEntityVersion),
                     cancellationToken);
+                if (!ensured)
+                {
+                    return false;
+                }
                 executedChecks.Add(FinanceWorkflowExecutedChecks.EnsureApprovalTask);
                 _logger.LogInformation(
                     "Finance approval-task check succeeded for company {CompanyId}. Check={CheckCode}. TriggerType={TriggerType}. TargetId={TargetId}.",
@@ -396,7 +400,6 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
                     triggerType,
                     bill.Id);
                 return true;
-                break;
             }
             case FinanceWorkflowTriggerTypes.Payment:
             {
@@ -409,7 +412,7 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
                     return false;
                 }
 
-                await _financeApprovalTaskService.EnsureTaskAsync(
+                var ensured = await _financeApprovalTaskService.EnsureTaskAsync(
                     new EnsureFinanceApprovalTaskCommand(
                         companyId,
                         ApprovalTargetType.Payment,
@@ -421,6 +424,10 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
                         eventId,
                         sourceEntityVersion),
                     cancellationToken);
+                if (!ensured)
+                {
+                    return false;
+                }
                 executedChecks.Add(FinanceWorkflowExecutedChecks.EnsureApprovalTask);
                 _logger.LogInformation(
                     "Finance approval-task check succeeded for company {CompanyId}. Check={CheckCode}. TriggerType={TriggerType}. TargetId={TargetId}.",
@@ -429,7 +436,6 @@ public sealed class FinanceWorkflowTriggerService : IFinanceWorkflowTriggerServi
                     triggerType,
                     payment.Id);
                 return true;
-                break;
             }
         }
 

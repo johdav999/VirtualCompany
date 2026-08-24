@@ -10,7 +10,7 @@ public sealed class BusinessSignalsPanelTests
     [Fact]
     public void Business_signals_panel_renders_signals_with_severity_classes_icons_and_no_legacy_kpis()
     {
-        using var context = new TestContext();
+        using var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         var detectedAtUtc = new DateTime(2026, 4, 19, 12, 0, 0, DateTimeKind.Utc);
 
         var signals = new List<BusinessSignalViewModel>

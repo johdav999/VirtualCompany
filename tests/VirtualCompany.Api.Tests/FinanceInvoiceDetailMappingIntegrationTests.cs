@@ -118,8 +118,10 @@ public sealed class FinanceInvoiceDetailMappingIntegrationTests : IDisposable
         Assert.Equal(
             detail.WorkflowHistory.Select(x => x.EventId).Where(x => !string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.OrdinalIgnoreCase).Count(),
             detail.WorkflowHistory.Count(x => !string.IsNullOrWhiteSpace(x.EventId)));
-        Assert.True(detail.WorkflowHistory.SequenceEqual(
-            InvoiceWorkflowPresentation.NormalizeWorkflowHistory(detail.WorkflowHistory)));
+        var normalizedHistory = InvoiceWorkflowPresentation.NormalizeWorkflowHistory(detail.WorkflowHistory);
+        Assert.Equal(
+            normalizedHistory.Select(ToHistoryValue).ToArray(),
+            detail.WorkflowHistory.Select(ToHistoryValue).ToArray());
         Assert.Contains(detail.WorkflowHistory, item => item.RelatedApprovalId == detail.WorkflowContext!.ApprovalRequestId);
         Assert.Equal("Linked document is no longer available.", detail.LinkedDocument.Message);
         Assert.False(detail.LinkedDocument.CanNavigate);
@@ -183,4 +185,8 @@ public sealed class FinanceInvoiceDetailMappingIntegrationTests : IDisposable
             $"/internal/companies/{seed.CompanyId}/finance/invoices/{seed.OtherCompanyInvoiceId}");
         Assert.Equal(HttpStatusCode.NotFound, crossTenantDetailResponse.StatusCode);
     }
+
+    private static (string EventId, string EventType, string Actor, DateTime OccurredAtUtc, Guid? AuditId, Guid? ApprovalId)
+        ToHistoryValue(FinanceInvoiceWorkflowHistoryItemResponse item) =>
+        (item.EventId, item.EventType, item.ActorOrSourceDisplayName, item.OccurredAtUtc, item.RelatedAuditId, item.RelatedApprovalId);
 }

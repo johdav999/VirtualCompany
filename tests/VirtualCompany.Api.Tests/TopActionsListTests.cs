@@ -119,7 +119,7 @@ public sealed class TopActionsListTests
 
     private static TestContext CreateContext(Func<HttpRequestMessage, HttpResponseMessage> responseFactory)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddLogging();
         context.Services.AddSingleton(new ActionInsightApiClient(
             new HttpClient(new AsyncStubHttpMessageHandler((request, _) => Task.FromResult(responseFactory(request))))

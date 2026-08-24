@@ -71,7 +71,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IDisposable
 
         var response = await client.GetAsync($"/internal/companies/{seed.CompanyId}/finance/sandbox-admin/dataset-generation");
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.StatusCode == HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
 
         var payload = await response.Content.ReadFromJsonAsync<FinanceSandboxDatasetGenerationResponse>();
         Assert.NotNull(payload);
@@ -97,7 +97,7 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IDisposable
                 GenerationMode = FinanceSandboxSeedGenerationModes.RefreshWithAnomalies
             });
 
-        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.True(response.StatusCode == HttpStatusCode.OK, await response.Content.ReadAsStringAsync());
 
         var payload = await response.Content.ReadFromJsonAsync<FinanceSandboxSeedGenerationResponse>();
         Assert.NotNull(payload);
@@ -391,6 +391,11 @@ public sealed class FinanceSandboxAdminEndpointIntegrationTests : IDisposable
                 new CompanyMembership(Guid.NewGuid(), companyId, employee.UserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
 
             var financeSeed = FinanceSeedData.AddMockFinanceData(dbContext, companyId);
+            foreach (var entry in dbContext.ChangeTracker.Entries()
+                         .Where(entry => entry.Metadata.FindProperty("SourceType")?.ClrType == typeof(string)))
+            {
+                entry.Property("SourceType").CurrentValue = FinanceRecordSourceTypes.Simulation;
+            }
             dbContext.FinanceSeedAnomalies.Add(new FinanceSeedAnomaly(
                 Guid.NewGuid(),
                 companyId,

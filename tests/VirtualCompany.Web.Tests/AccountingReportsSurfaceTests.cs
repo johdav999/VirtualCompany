@@ -11,13 +11,15 @@ public sealed class AccountingReportsSurfaceTests
         var client = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.AccountingReports.cs");
 
         Assert.Contains("@page \"/finance/accounting/reports\"", page, StringComparison.Ordinal);
-        Assert.Contains("Country-neutral bookkeeping summary", page, StringComparison.Ordinal);
-        Assert.Contains("Immutable journal detail", page, StringComparison.Ordinal);
-        Assert.Contains("Period close checklist", page, StringComparison.Ordinal);
-        Assert.Contains("Lock history", page, StringComparison.Ordinal);
-        Assert.Contains("Export jobs", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"CountryNeutralTaxNotice\"]", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"ImmutableJournalDetail\"]", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"PeriodCloseChecklist\"]", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"LockHistory\"]", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"ExportJobs\"]", page, StringComparison.Ordinal);
         Assert.Contains("role=\"alert\"", page, StringComparison.Ordinal);
         Assert.Contains("aria-live=\"polite\"", page, StringComparison.Ordinal);
+        Assert.Contains("role=\"button\" tabindex=\"0\"", page, StringComparison.Ordinal);
+        Assert.Contains("HandleAccountKeyAsync", code, StringComparison.Ordinal);
         Assert.Contains("CloseAndLockAccountingPeriodAsync", code, StringComparison.Ordinal);
         Assert.Contains("ReopenAccountingPeriodAsync", code, StringComparison.Ordinal);
         Assert.Contains("Idempotency", client, StringComparison.OrdinalIgnoreCase);

@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json.Nodes;
+using System.Text.Json.Serialization;
 using VirtualCompany.Application.Auditing;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Domain.Entities;
@@ -15,7 +16,7 @@ public sealed record GetFinanceTransactionsQuery(
     int Limit = 100,
     string? Category = null,
     string? FlaggedState = null,
-    string SourceFilter = FinanceDataSources.All);
+    string SourceFilter = FinanceDataSources.Operational);
 
 public static class FinanceDataSources
 {
@@ -26,12 +27,25 @@ public static class FinanceDataSources
     public const string Manual = "manual";
 
     public static string Normalize(string? value) =>
-        string.IsNullOrWhiteSpace(value) ? All : value.Trim().ToLowerInvariant();
+        string.IsNullOrWhiteSpace(value) ? Operational : value.Trim().ToLowerInvariant();
+
+    public static string NormalizeOperationalRead(string? value)
+    {
+        var normalized = Normalize(value);
+        return normalized == All
+            ? throw new ArgumentOutOfRangeException(nameof(value),
+                "A combined finance source is not allowed for an operational read. Select operational, fortnox, or simulation explicitly.")
+            : normalized is Operational or Fortnox or Simulation
+                ? normalized
+                : throw new ArgumentOutOfRangeException(nameof(value),
+                    "Source filter must be operational, fortnox, or simulation.");
+    }
 }
 
 public sealed record GetFinanceTransactionDetailQuery(
     Guid CompanyId,
-    Guid TransactionId);
+    Guid TransactionId,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record GetFinanceCounterpartiesQuery(
     Guid CompanyId,
@@ -52,7 +66,8 @@ public sealed record GetFinanceAnalyticsQuery(
 public sealed record GetFinanceAgentQueryQuery(
     Guid CompanyId,
     string QueryText,
-    DateTime? AsOfUtc = null);
+    DateTime? AsOfUtc = null,
+    string SourceFilter = FinanceDataSources.Operational);
 
 public sealed record UpdateFinanceTransactionCategoryCommand(
     Guid CompanyId,
@@ -381,7 +396,8 @@ public sealed record FinanceAgentQueryResultDto(
     FinanceAgentQueryPeriodDto Period,
     IReadOnlyList<FinanceAgentQueryItemDto> Items,
     IReadOnlyList<FinanceAgentMetricComponentDto> MetricComponents,
-    IReadOnlyList<Guid> SourceRecordIds);
+    IReadOnlyList<Guid> SourceRecordIds,
+    string Source = FinanceDataSources.Operational);
 
 public sealed record FinanceTransactionDto(
     Guid Id,
@@ -427,16 +443,21 @@ public sealed record FinanceTransactionDetailDto(
     IReadOnlyList<string> Flags,
     FinanceActionPermissionsDto Permissions,
     FinanceLinkedDocumentAccessDto LinkedDocument,
-    FinanceTransactionPaymentContextDto? PaymentContext = null);
+    FinanceTransactionPaymentContextDto? PaymentContext = null,
+    string Source = FinanceDataSources.Manual);
 
 public sealed record FinanceActionPermissionsDto(
+    [property: JsonPropertyName("canEditTransactionCategory")]
     bool CanChangeTransactionCategory,
     bool CanChangeInvoiceApprovalStatus,
+    [property: JsonPropertyName("canManagePolicyConfiguration")]
     bool CanManagePolicies);
 
 public sealed record FinanceLinkedDocumentAccessDto(
+    [property: JsonPropertyName("availability")]
     string AccessState,
     string Message,
+    [property: JsonPropertyName("canNavigate")]
     bool CanOpen,
     FinanceLinkedDocumentDto? Document);
 

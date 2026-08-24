@@ -153,6 +153,7 @@ public sealed class SalesPersistenceTenantIsolationTests : IDisposable
             .IgnoreQueryFilters()
             .FirstAsync(x => x.CompanyId == companyBId);
 
+        leadFromCompanyA.Qualify();
         leadFromCompanyA.ConvertToDeal(dealFromCompanyB.Id);
         await Assert.ThrowsAnyAsync<Exception>(() => dbContext.SaveChangesAsync());
     }

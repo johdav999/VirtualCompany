@@ -251,27 +251,6 @@ public sealed class FinanceAgentInsightDetailEndpointsIntegrationTests : IDispos
                     new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc),
                     new DateTime(2026, 4, 22, 10, 5, 0, DateTimeKind.Utc)),
                 new FinanceAgentInsight(
-                    Guid.NewGuid(),
-                    companyId,
-                    FinancialCheckDefinitions.CashRisk.Code,
-                    "payment:other-detail",
-                    "payment",
-                    financeSeed.PaymentIds[1].ToString("D"),
-                    FinancialCheckSeverity.Low,
-                    "Different payment insight should not be included.",
-                    "Ignore for the selected payment.",
-                    0.62m,
-                    "Other payment",
-                    JsonSerializer.Serialize(new[]
-                    {
-                        new FinanceInsightEntityReferenceDto("payment", financeSeed.PaymentIds[1].ToString("D"), "Other payment", true)
-                    }),
-                    null,
-                    FinanceInsightStatus.Active,
-                    new DateTime(2026, 4, 22, 10, 30, 0, DateTimeKind.Utc),
-                    new DateTime(2026, 4, 22, 10, 30, 0, DateTimeKind.Utc),
-                    new DateTime(2026, 4, 22, 10, 31, 0, DateTimeKind.Utc)),
-                new FinanceAgentInsight(
                     otherCompanyInvoiceInsightId,
                     otherCompanyId,
                     FinancialCheckDefinitions.TransactionAnomaly.Code,

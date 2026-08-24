@@ -37,7 +37,11 @@ public sealed class BillDuplicateCheckRepository : IBillDuplicateCheckRepository
                 .AsNoTracking()
                 .Where(x => x.CompanyId == request.CompanyId)
                 .Where(x => x.BillNumber == request.InvoiceNumber)
-                .Where(x => decimal.Round(x.Amount, 2) == amount)
+                // FinanceBill.Amount is persisted with two-decimal money precision. Keep the
+                // comparison provider-translatable instead of rounding the database column;
+                // SQLite cannot translate decimal.Round and SQL Server cannot use the amount
+                // index efficiently when the column is wrapped in a function.
+                .Where(x => x.Amount == amount)
                 .Where(x =>
                     string.IsNullOrWhiteSpace(supplierName) && string.IsNullOrWhiteSpace(supplierOrgNumber) ||
                     x.Counterparty.Name.ToLower() == supplierName ||

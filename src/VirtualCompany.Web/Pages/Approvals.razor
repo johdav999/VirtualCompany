@@ -32,6 +32,7 @@ else if (CompanyId is null)
                         {
                             <a class="template-card text-decoration-none text-reset" href="@BuildApprovalsUri(membership.CompanyId, null, null, null, Source)">
                                 <strong>@membership.CompanyName</strong>
+                                <CompanyIdentityHint Membership="membership" />
                                 <div class="text-body-secondary mt-2">Role: @membership.MembershipRole | Access: @membership.Status</div>
                             </a>
                         }
@@ -155,7 +156,7 @@ else
 
         try
         {
-            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync();
+            currentUser = await OnboardingApiClient.GetCurrentUserContextAsync(CompanyId);
             if (CompanyId is not Guid companyId)
             {
                 if (currentUser?.ActiveCompany is not null)

@@ -28,7 +28,8 @@ public sealed class Alert : ICompanyOwnedEntity
         string fingerprint,
         AlertStatus status = AlertStatus.Open,
         Guid? sourceAgentId = null,
-        IReadOnlyDictionary<string, JsonNode?>? metadata = null)
+        IReadOnlyDictionary<string, JsonNode?>? metadata = null,
+        DateTime? occurredUtc = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -53,7 +54,7 @@ public sealed class Alert : ICompanyOwnedEntity
         SourceAgentId = sourceAgentId;
         OccurrenceCount = 1;
         Metadata = CloneNodes(metadata);
-        CreatedUtc = DateTime.UtcNow;
+        CreatedUtc = NormalizeUtc(occurredUtc ?? DateTime.UtcNow);
         UpdatedUtc = CreatedUtc;
         LastDetectedUtc = CreatedUtc;
         ResolvedUtc = status == AlertStatus.Resolved ? CreatedUtc : null;
@@ -132,6 +133,14 @@ public sealed class Alert : ICompanyOwnedEntity
 
     public static string NormalizeFingerprint(string value) =>
         NormalizeRequired(value, nameof(Fingerprint), FingerprintMaxLength).ToLowerInvariant();
+
+    private static DateTime NormalizeUtc(DateTime value) =>
+        value.Kind switch
+        {
+            DateTimeKind.Utc => value,
+            DateTimeKind.Local => value.ToUniversalTime(),
+            _ => DateTime.SpecifyKind(value, DateTimeKind.Utc)
+        };
 
     private static string NormalizeRequired(string value, string name, int maxLength)
     {

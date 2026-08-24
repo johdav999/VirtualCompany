@@ -162,6 +162,20 @@ public sealed class AuthAndTenantIntegrationTests : IDisposable
         Assert.Equal(ids.CompanyBId, payload.ActiveCompany.CompanyId);
         Assert.Equal("employee", payload.ActiveCompany.MembershipRole);
         Assert.Equal("active", payload.ActiveCompany.Status);
+
+        var subsequentContext = await client.GetFromJsonAsync<CurrentUserContextResponse>("/api/auth/me");
+        Assert.NotNull(subsequentContext);
+        Assert.NotNull(subsequentContext!.ActiveCompany);
+        Assert.Equal(ids.CompanyBId, subsequentContext.ActiveCompany!.CompanyId);
+        Assert.False(subsequentContext.CompanySelectionRequired);
+
+        using var scope = _factory.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<VirtualCompanyDbContext>();
+        var preference = await dbContext.UserPreferences.SingleAsync(x => x.UserId == ids.UserId);
+        Assert.Equal(ids.CompanyBId, preference.PreferredCompanyId);
+        Assert.Contains(
+            await dbContext.AuditEvents.IgnoreQueryFilters().Where(x => x.CompanyId == ids.CompanyBId).ToListAsync(),
+            x => x.Action == "company.selected" && x.ActorId == ids.UserId);
     }
 
     [Fact]

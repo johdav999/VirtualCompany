@@ -10,9 +10,10 @@ public sealed partial class InternalFinanceController
     [Authorize(Policy = CompanyPolicies.AccountingView)]
     [HttpGet("accounting/reports/general-ledger")]
     public async Task<ActionResult<GeneralLedgerReportDto>> GetAccountingGeneralLedgerAsync(
-        Guid companyId, [FromQuery] Guid fiscalPeriodId, [FromQuery] Guid? accountId, CancellationToken cancellationToken) =>
+        Guid companyId, [FromQuery] Guid fiscalPeriodId, [FromQuery] Guid? accountId,
+        [FromQuery] int page = 1, [FromQuery] int pageSize = 200, CancellationToken cancellationToken = default) =>
         await ExecuteReadAsync(() => _accountingReportingService.GetGeneralLedgerAsync(
-            new GetGeneralLedgerQuery(companyId, fiscalPeriodId, accountId), cancellationToken));
+            new GetGeneralLedgerQuery(companyId, fiscalPeriodId, accountId, page, pageSize), cancellationToken));
 
     [Authorize(Policy = CompanyPolicies.AccountingView)]
     [HttpGet("accounting/reports/trial-balance")]
@@ -64,9 +65,10 @@ public sealed partial class InternalFinanceController
     [Authorize(Policy = CompanyPolicies.AccountingView)]
     [HttpGet("accounting/exports")]
     public async Task<ActionResult<IReadOnlyList<AccountingExportJobDto>>> ListAccountingExportsAsync(
-        Guid companyId, [FromQuery] Guid? fiscalPeriodId, CancellationToken cancellationToken) =>
+        Guid companyId, [FromQuery] Guid? fiscalPeriodId, [FromQuery] int page = 1,
+        [FromQuery] int pageSize = 100, CancellationToken cancellationToken = default) =>
         await ExecuteReadAsync(() => _accountingReportingService.ListExportsAsync(
-            new ListAccountingExportsQuery(companyId, fiscalPeriodId), cancellationToken));
+            new ListAccountingExportsQuery(companyId, fiscalPeriodId, page, pageSize), cancellationToken));
 
     [Authorize(Policy = CompanyPolicies.AccountingView)]
     [HttpGet("accounting/exports/{exportId:guid}/download")]

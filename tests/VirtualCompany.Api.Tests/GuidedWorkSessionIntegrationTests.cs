@@ -632,7 +632,7 @@ public sealed class GuidedWorkSessionIntegrationTests : IDisposable
         var colleagueSubject = $"guided-colleague-{Guid.NewGuid():N}";
         var outsiderSubject = $"guided-outsider-{Guid.NewGuid():N}";
         var tools = new Dictionary<string, JsonNode?> { ["knowledge.search"] = JsonValue.Create(true) };
-        var scopes = new Dictionary<string, JsonNode?> { ["read"] = new JsonArray("company") };
+        var scopes = new Dictionary<string, JsonNode?> { ["read"] = new JsonArray("company", "documents", "knowledge") };
         var status = AgentStatus.Active;
         var autonomy = AgentAutonomyLevel.Guided;
 

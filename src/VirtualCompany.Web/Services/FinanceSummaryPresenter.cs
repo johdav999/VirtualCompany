@@ -168,7 +168,7 @@ public static class FinanceSummaryPresenter
                 "All good",
                 [
                     "No alerts right now.",
-                    $"You have {formattedAvailableBalance} available. You spend about {formattedAverageMonthlyBurn} each month, so your cash can last about {estimatedRunway}.",
+                    BuildRunwayContext(response, formattedAvailableBalance, formattedAverageMonthlyBurn, estimatedRunway),
                     "We will let you know if anything changes."
                 ],
                 "Healthy",

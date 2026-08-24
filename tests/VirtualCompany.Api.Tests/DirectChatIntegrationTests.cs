@@ -297,7 +297,7 @@ public sealed class DirectChatIntegrationTests : IDisposable
 
         var sendResponse = await client.PostAsJsonAsync(
             $"/api/companies/{seed.CompanyId}/conversations/{conversation!.Id}/messages",
-            new SendDirectAgentMessageCommand("Use finance scoped memory."));
+            new SendDirectAgentMessageCommand("Use operations scoped memory."));
 
         Assert.Equal(HttpStatusCode.OK, sendResponse.StatusCode);
 
@@ -687,10 +687,7 @@ public sealed class DirectChatIntegrationTests : IDisposable
                     {
                         ["summary"] = JsonValue.Create("calm systems thinker")
                     },
-                    scopes: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["read"] = new JsonArray(JsonValue.Create("finance"))
-                    },
+                    scopes: ResponsibilityScopes("operations"),
                     roleBrief: "Keeps operational triage crisp and tenant-safe."),
                 new Agent(
                     secondAgentId,
@@ -706,10 +703,7 @@ public sealed class DirectChatIntegrationTests : IDisposable
                     {
                         ["summary"] = JsonValue.Create("market-focused strategist")
                     },
-                    scopes: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-                    {
-                        ["read"] = new JsonArray(JsonValue.Create("sales"))
-                    },
+                    scopes: ResponsibilityScopes("sales"),
                     roleBrief: "Frames choices around positioning, timing, and tradeoffs."),
                 new Agent(
                     otherCompanyAgentId,
@@ -720,7 +714,8 @@ public sealed class DirectChatIntegrationTests : IDisposable
                     "Operations",
                     null,
                     AgentSeniority.Lead,
-                    AgentStatus.Active));
+                    AgentStatus.Active,
+                    scopes: ResponsibilityScopes("operations")));
 
             dbContext.MemoryItems.AddRange(
                 new MemoryItem(
@@ -728,7 +723,7 @@ public sealed class DirectChatIntegrationTests : IDisposable
                     companyId,
                     agentId,
                     MemoryType.CompanyMemory,
-                    "Finance scoped memory for direct chat runtime.",
+                    "Operations scoped memory for direct chat runtime.",
                     null,
                     null,
                     0.95m,
@@ -736,14 +731,14 @@ public sealed class DirectChatIntegrationTests : IDisposable
                     null,
                     new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
                     {
-                        ["scope"] = JsonValue.Create("finance")
+                        ["scope"] = JsonValue.Create("operations")
                     }),
                 new MemoryItem(
                     outOfScopeMemoryId,
                     companyId,
                     agentId,
                     MemoryType.CompanyMemory,
-                    "HR scoped memory must not be available to the finance-scoped agent.",
+                    "HR scoped memory must not be available to the operations-scoped agent.",
                     null,
                     null,
                     0.99m,
@@ -771,6 +766,21 @@ public sealed class DirectChatIntegrationTests : IDisposable
             scopedMemoryId,
             outOfScopeMemoryId);
     }
+
+    private static Dictionary<string, JsonNode?> ResponsibilityScopes(string readScope) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["read"] = new JsonArray(JsonValue.Create(readScope)),
+            ["responsibilityPolicy"] = new JsonObject
+            {
+                ["allowedDomains"] = new JsonArray(JsonValue.Create("*")),
+                ["deniedDomains"] = new JsonArray(),
+                ["delegationTargets"] = new JsonObject
+                {
+                    ["default"] = JsonValue.Create("Human owner")
+                }
+            }
+        };
 
     private sealed record DirectChatSeed(
         Guid UserId,

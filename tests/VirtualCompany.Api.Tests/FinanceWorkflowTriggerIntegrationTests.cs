@@ -13,7 +13,8 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class FinanceWorkflowTriggerIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory = new();
+    private readonly TestWebApplicationFactory _factory = new(
+        new FixedTimeProvider(new DateTimeOffset(2026, 4, 22, 9, 0, 0, TimeSpan.Zero)));
 
     public void Dispose() => _factory.Dispose();
 
@@ -133,7 +134,14 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IDisposable
                 .IgnoreQueryFilters()
                 .Where(x => x.CompanyId == companyId && x.TargetType == ApprovalTargetType.Payment && x.TargetId == paymentId)
                 .ToListAsync();
-            Assert.Single(approvalTasks);
+            var allApprovalTasks = await dbContext.ApprovalTasks
+                .IgnoreQueryFilters()
+                .Where(x => x.CompanyId == companyId)
+                .Select(x => new { x.TargetType, x.TargetId, x.Status })
+                .ToListAsync();
+            Assert.True(
+                approvalTasks.Count == 1,
+                $"Expected one payment approval task for {paymentId:N}; found {approvalTasks.Count}. Company approval tasks: {string.Join(", ", allApprovalTasks.Select(x => $"{x.TargetType}/{x.TargetId:N}/{x.Status}"))}");
 
             var alerts = await dbContext.Alerts
                 .IgnoreQueryFilters()
@@ -226,5 +234,10 @@ public sealed class FinanceWorkflowTriggerIntegrationTests : IDisposable
             correlationId: correlationId,
             idempotencyKey: idempotencyKey,
             causationId: paymentId.ToString("N"));
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

@@ -245,7 +245,10 @@ public sealed class DashboardFocusEndpointIntegrationTests : IDisposable
 
             await dbContext.SaveChangesAsync();
 
-            var approvalEntry = await dbContext.ApprovalRequests.Include(request => request.Steps).SingleAsync(request => request.CompanyId == companyId);
+            var approvalEntry = await dbContext.ApprovalRequests
+                .IgnoreQueryFilters()
+                .Include(request => request.Steps)
+                .SingleAsync(request => request.CompanyId == companyId);
             var step = Assert.Single(approvalEntry.Steps);
             Assert.Equal(ApprovalStepApproverType.User, step.ApproverType);
         });
@@ -257,7 +260,7 @@ public sealed class DashboardFocusEndpointIntegrationTests : IDisposable
             approvalId,
             anomalyAlertId,
             financeAlertId,
-            "Approval required for task",
+            "Review and approve request",
             "Resolve blocked vendor payout",
             "Investigate unusual spend spike",
             "Cash runway dropped below threshold",

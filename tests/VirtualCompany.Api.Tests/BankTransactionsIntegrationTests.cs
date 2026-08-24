@@ -432,6 +432,21 @@ public sealed class BankTransactionsIntegrationTests : IDisposable
         Assert.Equal("resolved", corrected.FollowUp!.Status);
         Assert.Equal(3, corrected.Journals.Count);
 
+        var correctionReplay = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/bank-transactions/{seed.BankTransactionId}/reclassify-suspense",
+            new
+            {
+                TargetFinanceAccountId = seed.CategoryAccountId,
+                FiscalPeriodId = seed.FiscalPeriodId,
+                PostingDate = new DateOnly(2026, 4, 22),
+                Reason = "Evidence confirms other operating income.",
+                ExpectedSourceVersion = 1,
+                IdempotencyKey = $"suspense-correction:{seed.BankTransactionId:N}"
+            });
+        Assert.Equal(HttpStatusCode.OK, correctionReplay.StatusCode);
+        var replayed = await correctionReplay.Content.ReadFromJsonAsync<BankReconciliationDetailResponse>();
+        Assert.Equal(corrected.Journals.Select(x => x.LedgerEntryId), replayed!.Journals.Select(x => x.LedgerEntryId));
+
         var originalAfter = await _factory.ExecuteDbContextAsync(async db =>
         {
             var entry = await db.LedgerEntries.IgnoreQueryFilters().AsNoTracking().SingleAsync(x => x.Id == suspenseTransaction!.CashLedgerEntryId);

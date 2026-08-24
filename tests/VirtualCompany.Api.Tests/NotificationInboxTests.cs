@@ -100,7 +100,7 @@ public sealed class NotificationInboxTests
             .ToList();
 
         Assert.Same(unreadRoutine, ordered[0]);
-        Assert.Equal([CompanyNotificationStatus.Read, CompanyNotificationStatus.Actioned], ordered.Skip(1).Select(x => x.Status));
+        Assert.Equal([CompanyNotificationStatus.Actioned, CompanyNotificationStatus.Read], ordered.Skip(1).Select(x => x.Status));
     }
 
     [Fact]

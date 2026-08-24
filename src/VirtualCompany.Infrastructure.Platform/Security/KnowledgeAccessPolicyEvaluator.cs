@@ -38,7 +38,10 @@ public sealed class KnowledgeAccessPolicyEvaluator : IKnowledgeAccessPolicyEvalu
             return false;
         }
 
-        var hasKnowledgeManagementAccess = HasKnowledgeManagementAccess(accessContext.MembershipRole);
+        // Human knowledge managers may manage the library directly, but retrieval
+        // performed on behalf of an agent must still honor that agent's scopes.
+        var hasKnowledgeManagementAccess = !accessContext.AgentId.HasValue &&
+                                           HasKnowledgeManagementAccess(accessContext.MembershipRole);
         if (!hasKnowledgeManagementAccess &&
             (!EvaluateScopeConstraint(properties, accessContext.DataScopes) ||
              !EvaluateAgentConstraint(properties, accessContext.AgentId)))

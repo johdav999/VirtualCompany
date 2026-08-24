@@ -1,0 +1,33 @@
+# Production test matrix
+
+Run the matrix from the repository root with `./scripts/test-matrix.ps1`. Each project writes an independent TRX file and the runner writes `matrix-manifest.json` with the project, lane, duration, outcome, exit code, and artifact path. Results are stored below `artifacts/test-matrix/` and are intentionally local build artifacts.
+
+Use `-NoRestore` after a successful repository restore when the test environment has no network access. Use `-NoBuild` only when the exact tested revision has already been built; these switches never filter tests.
+
+| Lane | Command | Prerequisites | Expected duration | Purpose |
+| --- | --- | --- | --- | --- |
+| Hermetic | `./scripts/test-matrix.ps1 -Lane hermetic` | .NET SDK and restored packages | 8–12 minutes on a typical development workstation | Runs all normal test projects serially with isolated result artifacts. It must not require a running host, database, Docker daemon, or external provider. |
+| SQL Server | `$env:VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION='<dedicated server connection>'; ./scripts/test-matrix.ps1 -Lane sqlserver` | Dedicated disposable local or Docker SQL Server instance; the connection may name any catalog because each test creates and removes a unique database | 5–15 minutes, depending on database startup and migration time | Runs the `Category=SqlServer` accounting, migration, concurrency, rollback, recovery-compatibility, and full accounting-integrity API scenario in both Finance and API test projects. SQLite does not substitute for this lane. |
+| Accounting performance | `$env:VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION='<dedicated server connection>'; $env:VIRTUALCOMPANY_ACCOUNTING_PERF_PROFILE='small'; ./scripts/test-matrix.ps1 -Lane accounting-performance` | Dedicated disposable local or Docker SQL Server instance and an explicit `small` or `medium` profile | 10–45 minutes depending on profile and hardware | Generates the documented journal/line target deterministically in an isolated database, captures the representative tenant-scoped SQL plan, and measures bounded general-ledger and trial-balance p95 latency. |
+| Docker migration/restore | `./scripts/test-matrix.ps1 -Lane docker-migration-restore` | Docker SQL Server plus the repository restore scripts and a disposable backup | 10–30 minutes, depending on image and backup availability | Verifies fresh migration, representative upgrade, backup restore, and recovery compatibility. |
+| Browser | `./scripts/test-matrix.ps1 -Lane browser` | Owned local test host | 2–5 minutes after the host is ready | Runs browser smoke coverage. Never point it at an arbitrary developer host. |
+| Real provider | `./scripts/test-matrix.ps1 -Lane real-provider` | Explicit approval and dedicated non-production credentials | Provider-dependent; record the measured duration in the manifest | Performs opt-in provider checks; it is never part of the hermetic release result. |
+
+Use `-Lane all` to write a single manifest for the complete matrix. Lanes with external prerequisites remain visible as `not-run` until their documented environment is supplied; they are not silently treated as passing.
+
+The hermetic lane explicitly excludes `Category=SqlServer`. SQL Server tests remain discoverable in their owning test project, use an environment-aware fact attribute, and are executed by the SQL Server lane when its connection variable is present. A missing external prerequisite is recorded as `prerequisite-not-configured`, never as a passing result.
+
+The 2026-08-24 Prompt 5/6 final verification passed the 2,608-test hermetic inventory with zero failures and one intentional skip for the opt-in SQL Server performance fact: API 2,025 passed plus 1 skipped; Finance 173; Mailbox 5; Platform 2; Sales source 6; Support grounding 5; Web 376; Web contract 16. The manifest and TRX files are under `artifacts/test-matrix/20260824-prompt56-hermetic-final/`.
+
+The LocalDB-backed SQL Server lane passed all 8 tests: 7 Finance migration/concurrency/rollback/compatibility tests and the API accounting-integrity scenario. Its manifest, TRX files, and generated capacity-migration SQL are under `artifacts/test-matrix/20260824-prompt56-sqlserver-final-5/`. The equivalent Docker migration/restore lane was not run because Docker was unavailable on the workstation.
+
+The separate small SQL Server accounting-performance lane passed at 100,000 journals / 400,000 lines. The medium candidate lane retained a release-blocking trial-balance SLO failure at 1,000,000 journals / 5,000,000 lines. See [accounting-capacity-and-retention.md](accounting-capacity-and-retention.md); an opt-in lane is not counted as hermetic success merely because it is skipped there.
+
+The accounting integrity scenario is `AccountingIntegrityScenarioTests`. Its ordinary fact runs against isolated SQLite for fast hermetic feedback. Its `Category=SqlServer` fact creates a uniquely named database from the supplied local or Docker connection, applies all migrations, runs the same scenario, and removes only that database when complete. See [accounting-integrity-scenario.md](accounting-integrity-scenario.md) for the facts and control flow.
+
+## Failure triage
+
+1. Open `matrix-manifest.json`, then the project-specific TRX file.
+2. Classify the failure as production behavior, test fixture/isolation, contract drift, SQL Server/Docker prerequisite, browser environment, or real-provider environment.
+3. Fix production behavior or the isolated fixture first. Do not add retries, global filters, order dependencies, or broad timeouts.
+4. Keep an unrelated quarantine narrow, executable, dated, owned, and documented with evidence and a removal condition. Finance/accounting, tenant isolation, authorization, migration, recovery, and external-side-effect tests may not be quarantined.

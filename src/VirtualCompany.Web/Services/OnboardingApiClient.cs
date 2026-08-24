@@ -44,15 +44,41 @@ public sealed class OnboardingApiClient
             ? Task.FromResult(OfflineStore.GetProgress())
             : GetProgressCoreAsync(companyId, cancellationToken);
 
-    public async Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(CancellationToken cancellationToken = default)
+    public Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(CancellationToken cancellationToken = default) =>
+        GetCurrentUserContextAsync(selectedCompanyId: null, cancellationToken);
+
+    public async Task<CurrentUserContextViewModel?> GetCurrentUserContextAsync(
+        Guid? selectedCompanyId,
+        CancellationToken cancellationToken = default)
     {
         var context = _useOfflineMode
             ? OfflineStore.GetCurrentUserContext()
             : await GetCurrentUserContextCoreAsync(cancellationToken);
+        if (selectedCompanyId is Guid companyId &&
+            context?.ActiveCompany?.CompanyId != companyId &&
+            context?.Memberships.Any(membership =>
+                membership.CompanyId == companyId &&
+                string.Equals(membership.Status, "active", StringComparison.OrdinalIgnoreCase)) == true)
+        {
+            await SelectCompanyAsync(companyId, cancellationToken);
+            context = _useOfflineMode
+                ? OfflineStore.GetCurrentUserContext()
+                : await GetCurrentUserContextCoreAsync(cancellationToken);
+        }
+
         _presentationContext?.SetActiveCompany(context?.ActiveCompany?.Timezone, context?.ActiveCompany?.Currency);
         _presentationContext?.SetFormattingCulture(context?.User.FormattingCulture ?? context?.User.UiCulture);
         return context;
     }
+
+    public Task<CompanySelectionViewModel> SelectCompanyAsync(Guid companyId, CancellationToken cancellationToken = default) =>
+        _useOfflineMode
+            ? Task.FromResult(OfflineStore.SelectCompany(companyId))
+            : SendAsync<CompanySelectionViewModel>(
+                HttpMethod.Post,
+                "api/auth/select-company",
+                new SelectCompanyRequest { CompanyId = companyId },
+                cancellationToken);
 
     public Task<UserPreferenceViewModel> GetUserPreferencesAsync(CancellationToken cancellationToken = default) =>
         _useOfflineMode
@@ -527,6 +553,27 @@ public sealed class OnboardingApiClient
             }
         }
 
+        public CompanySelectionViewModel SelectCompany(Guid companyId)
+        {
+            var context = GetCurrentUserContext();
+            var membership = context.Memberships.SingleOrDefault(item => item.CompanyId == companyId)
+                ?? throw new OnboardingApiException("The selected company is unavailable.");
+            return new CompanySelectionViewModel
+            {
+                CompanyId = companyId,
+                HeaderName = "X-Company-Id",
+                HeaderValue = companyId.ToString(),
+                ActiveCompany = new ResolvedCompanyContextViewModel
+                {
+                    MembershipId = membership.MembershipId,
+                    CompanyId = membership.CompanyId,
+                    CompanyName = membership.CompanyName,
+                    MembershipRole = membership.MembershipRole,
+                    Status = membership.Status
+                }
+            };
+        }
+
         public CreateCompanyResultViewModel CreateCompany(CreateCompanyRequest request)
         {
             var companyId = Guid.NewGuid();
@@ -905,6 +952,7 @@ public sealed class CreateCompanyRequest
     public string? Language { get; set; }
     public string? ComplianceRegion { get; set; }
     public string? SelectedTemplateId { get; set; }
+    public bool ExplicitNewCompany { get; set; }
 }
 
 public sealed class SaveOnboardingRequest
@@ -919,6 +967,7 @@ public sealed class SaveOnboardingRequest
     public string? ComplianceRegion { get; set; }
     public int CurrentStep { get; set; }
     public string? SelectedTemplateId { get; set; }
+    public bool ExplicitNewCompany { get; set; }
 
     public CreateWorkspaceRequest ToCreateRequest() =>
         new()
@@ -932,7 +981,8 @@ public sealed class SaveOnboardingRequest
             Language = Language,
             ComplianceRegion = ComplianceRegion,
             CurrentStep = CurrentStep,
-            SelectedTemplateId = SelectedTemplateId
+            SelectedTemplateId = SelectedTemplateId,
+            ExplicitNewCompany = ExplicitNewCompany
         };
 }
 
@@ -948,6 +998,7 @@ public sealed class CreateWorkspaceRequest
     public string? ComplianceRegion { get; set; }
     public int CurrentStep { get; set; }
     public string? SelectedTemplateId { get; set; }
+    public bool ExplicitNewCompany { get; set; }
 }
 
 public sealed class CompleteOnboardingRequest
@@ -1062,6 +1113,19 @@ public sealed class CurrentUserContextViewModel
     public bool CompanySelectionRequired { get; set; }
 }
 
+public sealed class SelectCompanyRequest
+{
+    public Guid CompanyId { get; set; }
+}
+
+public sealed class CompanySelectionViewModel
+{
+    public Guid CompanyId { get; set; }
+    public string HeaderName { get; set; } = string.Empty;
+    public string HeaderValue { get; set; } = string.Empty;
+    public ResolvedCompanyContextViewModel ActiveCompany { get; set; } = new();
+}
+
 public sealed class CurrentUserViewModel
 {
     public Guid Id { get; set; }
@@ -1093,6 +1157,8 @@ public sealed class CompanyMembershipViewModel
     public string CompanyName { get; set; } = string.Empty;
     public string MembershipRole { get; set; } = string.Empty;
     public string Status { get; set; } = string.Empty;
+    public DateTime? CompanyCreatedUtc { get; set; }
+    public string? OnboardingStatus { get; set; }
 }
 
 public sealed class ResolvedCompanyContextViewModel

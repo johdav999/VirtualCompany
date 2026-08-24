@@ -216,7 +216,7 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.TransactionUtc >= expenseWindowStartUtc && x.TransactionUtc <= effectiveAsOfUtc && x.Amount < 0)
-            .Select(x => Math.Abs(x.Amount))
+            .Select(x => -x.Amount)
             .ToListAsync(cancellationToken);
 
         var totalExpenses = expenseAmounts.Sum();

@@ -53,7 +53,7 @@ public sealed class DealIntelligenceSignalTests
             SourceType: DealIntelligenceSignalSourceTypes.ConversationReanalysis,
             SourceThreadId: "thread-1"));
 
-        var signal = Assert.Single(result.Signals);
+        var signal = Assert.Single(result.Signals, x => x.SignalType == DealIntelligenceSignalTypes.Ghosting);
         Assert.Equal(DealIntelligenceSignalTypes.Ghosting, signal.SignalType);
         Assert.True(signal.Confidence >= 0.8m);
     }

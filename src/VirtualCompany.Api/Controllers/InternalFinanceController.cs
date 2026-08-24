@@ -1568,17 +1568,19 @@ public sealed partial class InternalFinanceController : ControllerBase
     {
         var orderedItems = items
             .Where(item => item is not null)
-            .Select(item => item with
+            .Select((item, index) => new { Item = item, Index = index })
+            .OrderBy(entry => entry.Item.OccurredAtUtc == default ? 1 : 0)
+            .ThenByDescending(entry => entry.Item.OccurredAtUtc)
+            .ThenByDescending(entry => GetWorkflowHistoryItemCompleteness(entry.Item))
+            .ThenBy(entry => NormalizeReviewText(entry.Item.EventType) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => NormalizeReviewText(entry.Item.ActorOrSourceDisplayName) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(entry => entry.Index)
+            .Select(entry => entry.Item with
             {
-                EventId = NormalizeWorkflowHistoryEventId(item.EventId) ?? string.Empty,
-                EventType = string.IsNullOrWhiteSpace(item.EventType) ? "Review" : item.EventType.Trim(),
-                ActorOrSourceDisplayName = string.IsNullOrWhiteSpace(item.ActorOrSourceDisplayName) ? "System" : item.ActorOrSourceDisplayName.Trim()
+                EventId = NormalizeWorkflowHistoryEventId(entry.Item.EventId) ?? string.Empty,
+                EventType = NormalizeReviewText(entry.Item.EventType) ?? "Review",
+                ActorOrSourceDisplayName = NormalizeReviewText(entry.Item.ActorOrSourceDisplayName) ?? "System"
             })
-            .OrderBy(item => item.OccurredAtUtc == default ? 1 : 0)
-            .OrderByDescending(item => item.OccurredAtUtc)
-            .ThenBy(item => item.EventType, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.ActorOrSourceDisplayName, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(item => item.EventId, StringComparer.OrdinalIgnoreCase)
             .ToList();
 
         var uniqueItems = new List<FinanceInvoiceWorkflowHistoryItemResponse>(orderedItems.Count);
@@ -1600,6 +1602,13 @@ public sealed partial class InternalFinanceController : ControllerBase
 
         return uniqueItems;
     }
+
+    private static int GetWorkflowHistoryItemCompleteness(FinanceInvoiceWorkflowHistoryItemResponse item) =>
+        (item.OccurredAtUtc == default ? 0 : 1) +
+        (string.IsNullOrWhiteSpace(item.EventType) ? 0 : 1) +
+        (string.IsNullOrWhiteSpace(item.ActorOrSourceDisplayName) ? 0 : 1) +
+        (item.RelatedAuditId.HasValue ? 1 : 0) +
+        (item.RelatedApprovalId.HasValue ? 1 : 0);
 
     private static string? NormalizeWorkflowHistoryEventId(string? value) =>
         string.IsNullOrWhiteSpace(value) ? null : value.Trim();
@@ -1659,17 +1668,18 @@ public sealed partial class InternalFinanceController : ControllerBase
         Guid companyId,
         Guid invoiceId,
         bool executeIfMissing,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string source = FinanceDataSources.Operational)
     {
         var invoice = await _financeReadService.GetInvoiceDetailAsync(
-            new GetFinanceInvoiceDetailQuery(companyId, invoiceId),
+            new GetFinanceInvoiceDetailQuery(companyId, invoiceId, source),
             cancellationToken);
         if (invoice is null)
         {
             return null;
         }
 
-        var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
+        var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken, source);
         if (review is null && executeIfMissing)
         {
             review = await _invoiceReviewWorkflowService.ExecuteAsync(
@@ -1681,7 +1691,8 @@ public sealed partial class InternalFinanceController : ControllerBase
                     new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
                     {
                         ["trigger"] = JsonValue.Create("review_detail_requested")
-                    }),
+                    },
+                    source),
                 cancellationToken);
         }
 
@@ -2160,6 +2171,7 @@ public sealed partial class InternalFinanceController : ControllerBase
                 CorrelationId: response.CorrelationId,
                 OccurredUtc: DateTime.UtcNow),
             HttpContext.RequestAborted);
+        await _dbContext.SaveChangesAsync(HttpContext.RequestAborted);
 
         return new ObjectResult(response) { StatusCode = response.Status };
     }
@@ -2507,7 +2519,8 @@ public sealed record FinanceInvoiceDetailResponse(
     string DueStatus = FinanceDocumentDueStatuses.NotDue,
     string DocumentKind = FinanceDocumentKinds.Invoice,
     string? ProviderStatus = null,
-    CustomerInvoiceAccountingStateDto? Accounting = null);
+    CustomerInvoiceAccountingStateDto? Accounting = null,
+    string Source = FinanceDataSources.Manual);
 
 public sealed record FinanceInvoiceReviewListItemResponse(
     Guid Id,

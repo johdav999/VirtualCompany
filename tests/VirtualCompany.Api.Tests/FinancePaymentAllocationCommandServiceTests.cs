@@ -13,6 +13,34 @@ namespace VirtualCompany.Api.Tests;
 public sealed class FinancePaymentAllocationCommandServiceTests
 {
     [Fact]
+    public async Task Create_allocation_replays_by_business_idempotency_key_and_rejects_changed_payload()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = await OpenConnectionAsync();
+        var accessor = new TestCompanyContextAccessor(companyId);
+        await using var dbContext = CreateContext(connection, accessor);
+        await dbContext.Database.EnsureCreatedAsync();
+        var seed = SeedAllocationScenario(dbContext, companyId);
+        await dbContext.SaveChangesAsync();
+        var service = new CompanyFinanceCommandService(dbContext, accessor);
+        var command = new CreateFinancePaymentAllocationCommand(companyId,
+            new CreateFinancePaymentAllocationDto(seed.IncomingPaymentId, seed.InvoiceAId, null, 40m, "USD", "allocation:invoice-a:part-1"));
+
+        var first = await service.CreateAllocationAsync(command, CancellationToken.None);
+        var replay = await service.CreateAllocationAsync(command, CancellationToken.None);
+        var conflict = await Assert.ThrowsAsync<FinanceValidationException>(() => service.CreateAllocationAsync(
+            new CreateFinancePaymentAllocationCommand(companyId,
+                new CreateFinancePaymentAllocationDto(seed.IncomingPaymentId, seed.InvoiceAId, null, 41m, "USD", "allocation:invoice-a:part-1")),
+            CancellationToken.None));
+
+        Assert.False(first.IsIdempotentReplay);
+        Assert.True(replay.IsIdempotentReplay);
+        Assert.Equal(first.Id, replay.Id);
+        Assert.Contains("different payment allocation", conflict.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Single(await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
+    }
+
+    [Fact]
     public async Task Create_allocation_rejects_payment_over_allocation()
     {
         var companyId = Guid.NewGuid();

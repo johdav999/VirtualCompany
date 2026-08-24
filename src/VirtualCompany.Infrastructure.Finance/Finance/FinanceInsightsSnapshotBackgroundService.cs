@@ -7,6 +7,7 @@ using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Infrastructure.BackgroundJobs;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Finance;
@@ -101,17 +102,26 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
     private readonly ICompanyExecutionScopeFactory _companyExecutionScopeFactory;
     private readonly IOptions<FinanceInsightsSnapshotWorkerOptions> _options;
     private readonly ILogger<FinanceInsightsSnapshotJobRunner> _logger;
+    private readonly IBackgroundJobExecutor _backgroundJobExecutor;
+    private readonly IBackgroundExecutionRetryPolicy _retryPolicy;
+    private readonly FinanceBackgroundExecutionAttemptRecorder _attemptRecorder;
 
     public FinanceInsightsSnapshotJobRunner(
         VirtualCompanyDbContext dbContext,
         IFinanceReadService financeReadService,
         ICompanyExecutionScopeFactory companyExecutionScopeFactory,
+        IBackgroundJobExecutor backgroundJobExecutor,
+        IBackgroundExecutionRetryPolicy retryPolicy,
+        FinanceBackgroundExecutionAttemptRecorder attemptRecorder,
         IOptions<FinanceInsightsSnapshotWorkerOptions> options,
         ILogger<FinanceInsightsSnapshotJobRunner> logger)
     {
         _dbContext = dbContext;
         _financeReadService = financeReadService;
         _companyExecutionScopeFactory = companyExecutionScopeFactory;
+        _backgroundJobExecutor = backgroundJobExecutor;
+        _retryPolicy = retryPolicy;
+        _attemptRecorder = attemptRecorder;
         _options = options;
         _logger = logger;
     }
@@ -124,8 +134,10 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
         foreach (var execution in executions)
         {
             using var tenantScope = _companyExecutionScopeFactory.BeginScope(execution.CompanyId);
-            execution.StartAttempt(execution.CorrelationId, execution.AttemptCount + 1, execution.MaxAttempts);
-            await _dbContext.SaveChangesAsync(cancellationToken);
+            var attempt = execution.AttemptCount + 1;
+            var maxAttempts = Math.Max(1, execution.MaxAttempts);
+            var retryDelay = _retryPolicy.GetRetryDelay(attempt);
+            var attemptRecord = await _attemptRecorder.StartAsync(execution, "insights-snapshot", cancellationToken);
 
             if (!FinanceInsightSnapshotExecutionDescriptor.TryParse(execution.RelatedEntityId, out var descriptor))
             {
@@ -133,28 +145,37 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
                     BackgroundExecutionFailureCategory.Validation,
                     "invalid_snapshot_descriptor",
                     "Finance insight snapshot execution does not contain a valid descriptor.");
-                await _dbContext.SaveChangesAsync(cancellationToken);
+                await _attemptRecorder.CompleteAsync(execution, attemptRecord, cancellationToken);
                 handled++;
                 continue;
             }
 
-            try
+            var result = await _backgroundJobExecutor.ExecuteAsync(
+                new BackgroundJobExecutionContext("finance-insights-snapshot", attempt, maxAttempts,
+                    execution.CompanyId, execution.CorrelationId, execution.IdempotencyKey, requireCompanyContext: true),
+                token => _financeReadService.RefreshInsightsSnapshotAsync(descriptor.ToCommand(execution.CompanyId), token),
+                retryDelay, cancellationToken);
+            switch (result.Outcome)
             {
-                await _financeReadService.RefreshInsightsSnapshotAsync(descriptor.ToCommand(execution.CompanyId), cancellationToken);
-                execution.MarkSucceeded();
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                handled++;
+                case BackgroundJobExecutionOutcome.Succeeded:
+                case BackgroundJobExecutionOutcome.IdempotentDuplicate:
+                    execution.MarkSucceeded();
+                    handled++;
+                    break;
+                case BackgroundJobExecutionOutcome.RetryScheduled:
+                    execution.ScheduleRetry(DateTime.UtcNow.Add(result.RetryDelay ?? TimeSpan.Zero),
+                        MapFailureCategory(result.FailureClassification), ResolveFailureCode(result), ResolveFailureMessage(result));
+                    break;
+                case BackgroundJobExecutionOutcome.Blocked:
+                    execution.MarkBlocked(MapFailureCategory(result.FailureClassification), ResolveFailureCode(result), ResolveFailureMessage(result));
+                    handled++;
+                    break;
+                default:
+                    execution.MarkFailed(MapFailureCategory(result.FailureClassification), ResolveFailureCode(result), ResolveFailureMessage(result));
+                    handled++;
+                    break;
             }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Finance insight snapshot refresh failed for company {CompanyId}.", execution.CompanyId);
-                execution.MarkFailed(
-                    BackgroundExecutionFailureCategory.TransientInfrastructure,
-                    ex.GetType().Name,
-                    string.IsNullOrWhiteSpace(ex.Message) ? "Finance insight snapshot refresh failed." : ex.Message);
-                await _dbContext.SaveChangesAsync(cancellationToken);
-                handled++;
-            }
+            await _attemptRecorder.CompleteAsync(execution, attemptRecord, cancellationToken);
         }
 
         return handled;
@@ -164,10 +185,13 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
     {
         var nowUtc = DateTime.UtcNow;
         var staleBeforeUtc = nowUtc.Subtract(TimeSpan.FromSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds)));
+        var leaseExpiresUtc = nowUtc.AddSeconds(Math.Max(30, _options.Value.ClaimTimeoutSeconds));
+        var claimToken = Guid.NewGuid().ToString("N");
         var candidateIds = await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .AsNoTracking()
             .Where(x =>
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
@@ -189,6 +213,7 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
             .IgnoreQueryFilters()
             .Where(x =>
                 candidateIds.Contains(x.Id) &&
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
                 (((x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled) &&
                   (x.NextRetryUtc == null || x.NextRetryUtc <= nowUtc)) ||
@@ -198,22 +223,53 @@ public sealed class FinanceInsightsSnapshotJobRunner : IFinanceInsightsSnapshotJ
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(x => x.Status, BackgroundExecutionStatus.InProgress)
+                    .SetProperty(x => x.LeaseOwner, claimToken)
+                    .SetProperty(x => x.LeaseExpiresUtc, leaseExpiresUtc)
                     .SetProperty(x => x.StartedUtc, nowUtc)
                     .SetProperty(x => x.HeartbeatUtc, nowUtc)
                     .SetProperty(x => x.NextRetryUtc, (DateTime?)null)
-                    .SetProperty(x => x.UpdatedUtc, nowUtc),
+                    .SetProperty(x => x.UpdatedUtc, nowUtc)
+                    .SetProperty(x => x.Version, x => x.Version + 1),
                 cancellationToken);
 
         return await _dbContext.BackgroundExecutions
             .IgnoreQueryFilters()
             .Where(x =>
                 candidateIds.Contains(x.Id) &&
+                x.CompanyId != Guid.Empty &&
                 x.ExecutionType == BackgroundExecutionType.FinanceInsightRefresh &&
                 x.Status == BackgroundExecutionStatus.InProgress &&
-                x.StartedUtc == nowUtc)
+                x.LeaseOwner == claimToken)
             .OrderBy(x => x.CreatedUtc)
             .ToListAsync(cancellationToken);
     }
+
+    private static string ResolveFailureCode(BackgroundJobExecutionResult result) =>
+        string.IsNullOrWhiteSpace(result.ExceptionType) ? result.Outcome.ToString() : result.ExceptionType;
+    private static string ResolveFailureMessage(BackgroundJobExecutionResult result) =>
+        string.IsNullOrWhiteSpace(result.ErrorMessage) ? "Finance insight snapshot refresh failed." : result.ErrorMessage;
+    private static BackgroundExecutionFailureCategory MapFailureCategory(BackgroundJobFailureClassification? classification) =>
+        classification switch
+        {
+            BackgroundJobFailureClassification.Unknown => BackgroundExecutionFailureCategory.Unknown,
+            BackgroundJobFailureClassification.LockContention => BackgroundExecutionFailureCategory.LockContention,
+            BackgroundJobFailureClassification.ExternalDependencyTimeout => BackgroundExecutionFailureCategory.ExternalDependencyTimeout,
+            BackgroundJobFailureClassification.ExternalDependencyUnavailable => BackgroundExecutionFailureCategory.ExternalDependencyUnavailable,
+            BackgroundJobFailureClassification.RateLimited => BackgroundExecutionFailureCategory.RateLimited,
+            BackgroundJobFailureClassification.PermanentBusinessRule or BackgroundJobFailureClassification.Permanent => BackgroundExecutionFailureCategory.PermanentBusinessRule,
+            BackgroundJobFailureClassification.PermanentPolicy => BackgroundExecutionFailureCategory.PermanentPolicy,
+            BackgroundJobFailureClassification.Validation => BackgroundExecutionFailureCategory.Validation,
+            BackgroundJobFailureClassification.ApprovalRequired => BackgroundExecutionFailureCategory.ApprovalRequired,
+            BackgroundJobFailureClassification.Configuration => BackgroundExecutionFailureCategory.Configuration,
+            BackgroundJobFailureClassification.Cancellation => BackgroundExecutionFailureCategory.Cancellation,
+            BackgroundJobFailureClassification.Authorization => BackgroundExecutionFailureCategory.Authorization,
+            BackgroundJobFailureClassification.Concurrency => BackgroundExecutionFailureCategory.Concurrency,
+            BackgroundJobFailureClassification.AmbiguousExternalResult => BackgroundExecutionFailureCategory.AmbiguousExternalResult,
+            BackgroundJobFailureClassification.Persistence => BackgroundExecutionFailureCategory.Persistence,
+            BackgroundJobFailureClassification.ObjectStorage => BackgroundExecutionFailureCategory.ObjectStorage,
+            BackgroundJobFailureClassification.PoisonPayload => BackgroundExecutionFailureCategory.PoisonPayload,
+            _ => BackgroundExecutionFailureCategory.TransientInfrastructure
+        };
 }
 
 public sealed class FinanceInsightsSnapshotBackgroundService : BackgroundService

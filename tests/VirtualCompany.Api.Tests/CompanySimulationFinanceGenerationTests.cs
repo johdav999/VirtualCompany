@@ -1,4 +1,5 @@
 using System.Text.Json.Nodes;
+using System.Text.RegularExpressions;
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -96,7 +97,7 @@ public sealed class CompanySimulationFinanceGenerationTests
             .ToListAsync();
         var audits = await dbContext.AuditEvents
             .IgnoreQueryFilters()
-            .Where(x => x.CompanyId == companyId && x.Action.StartsWith("finance.", StringComparison.OrdinalIgnoreCase))
+            .Where(x => x.CompanyId == companyId && EF.Functions.Like(x.Action, "finance.%"))
             .ToListAsync();
         var activity = await dbContext.ActivityEvents
             .IgnoreQueryFilters()
@@ -125,7 +126,9 @@ public sealed class CompanySimulationFinanceGenerationTests
             .Select(x => x.Evidence["transactionId"]?.GetValue<Guid>() ?? Guid.Empty)
             .First(x => x != Guid.Empty);
         var anomalyDetail = await readService.GetAnomalyDetailAsync(new GetFinanceAnomalyDetailQuery(companyId, alerts[0].Id), CancellationToken.None);
-        var transactionDetail = await readService.GetTransactionDetailAsync(new GetFinanceTransactionDetailQuery(companyId, firstAnomalyTransactionId), CancellationToken.None);
+        var transactionDetail = await readService.GetTransactionDetailAsync(
+            new GetFinanceTransactionDetailQuery(companyId, firstAnomalyTransactionId, FinanceDataSources.Simulation),
+            CancellationToken.None);
 
         Assert.Equal(16, invoices.Count);
         Assert.Equal(16, bills.Count);
@@ -273,13 +276,25 @@ public sealed class CompanySimulationFinanceGenerationTests
             await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.InvoiceNumber).Select(x => x.InvoiceNumber).ToListAsync(),
             await dbContext.FinanceBills.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.BillNumber).Select(x => x.BillNumber).ToListAsync(),
             await dbContext.FinanceTransactions.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.ExternalReference).Select(x => x.ExternalReference).ToListAsync(),
-            await dbContext.WorkTasks.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.CorrelationId).Select(x => x.CorrelationId!).ToListAsync(),
-            await dbContext.ApprovalRequests.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.TargetEntityId).Select(x => $"{x.ApprovalType}:{x.TargetEntityType}:{x.TargetEntityId:N}").ToListAsync(),
+            (await dbContext.WorkTasks.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.CorrelationId).Select(x => x.CorrelationId!).ToListAsync())
+                .Select(value => NormalizeTenantIdentity(value, companyId)).OrderBy(value => value).ToList(),
+            (await dbContext.ApprovalRequests.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.TargetEntityId).Select(x => $"{x.ApprovalType}:{x.TargetEntityType}:{x.TargetEntityId:N}").ToListAsync())
+                .Select(value => NormalizeTenantIdentity(value, companyId)).OrderBy(value => value).ToList(),
             await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.AnomalyType).ThenBy(x => x.CreatedUtc).Select(x => x.AnomalyType).ToListAsync(),
             await readService.GetAnomalyWorkbenchAsync(new GetFinanceAnomalyWorkbenchQuery(companyId, Page: 1, PageSize: 25), CancellationToken.None),
-            await dbContext.Alerts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.Fingerprint).Select(x => x.Fingerprint).ToListAsync(),
-            await dbContext.AuditEvents.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && x.Action.StartsWith("finance.", StringComparison.OrdinalIgnoreCase)).OrderBy(x => x.Action).ThenBy(x => x.TargetId).Select(x => $"{x.Action}:{x.TargetType}:{x.TargetId}").ToListAsync());
+            (await dbContext.Alerts.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).OrderBy(x => x.Fingerprint).Select(x => x.Fingerprint).ToListAsync())
+                .Select(value => NormalizeTenantIdentity(value, companyId)).OrderBy(value => value).ToList(),
+            (await dbContext.AuditEvents.IgnoreQueryFilters().Where(x => x.CompanyId == companyId && EF.Functions.Like(x.Action, "finance.%")).OrderBy(x => x.Action).ThenBy(x => x.TargetId).Select(x => $"{x.Action}:{x.TargetType}:{x.TargetId}").ToListAsync())
+                .Select(value => NormalizeTenantIdentity(value, companyId)).OrderBy(value => value).ToList());
     }
+
+    private static string NormalizeTenantIdentity(string value, Guid companyId) =>
+        Regex.Replace(
+            value
+            .Replace(companyId.ToString("N"), "{company}", StringComparison.OrdinalIgnoreCase)
+            .Replace(companyId.ToString("D"), "{company}", StringComparison.OrdinalIgnoreCase),
+            "[0-9a-fA-F]{32}",
+            "{id}");
 
     private static async Task<(int Invoices, int Bills, int Transactions, int Balances, int Tasks, int Approvals, int SeedAnomalies, int Alerts, int Audits)> CaptureCountsAsync(
         VirtualCompanyDbContext dbContext,
@@ -293,7 +308,7 @@ public sealed class CompanySimulationFinanceGenerationTests
             await dbContext.ApprovalRequests.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
             await dbContext.FinanceSeedAnomalies.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
             await dbContext.Alerts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId),
-            await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId && x.Action.StartsWith("finance.", StringComparison.OrdinalIgnoreCase))
+            await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId && EF.Functions.Like(x.Action, "finance.%"))
         );
 
     private static async Task<SqliteConnection> OpenConnectionAsync()

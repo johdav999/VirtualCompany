@@ -73,7 +73,7 @@ public sealed class DetectedBillModelTests
 
     private static VirtualCompanyDbContext CreateContext() =>
         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString("N"))
+            .UseSqlite("Data Source=:memory:")
             .Options);
 
     private static bool HasProperties(Microsoft.EntityFrameworkCore.Metadata.IReadOnlyIndex index, params string[] propertyNames)

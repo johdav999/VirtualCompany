@@ -36,6 +36,25 @@ internal sealed class FinancePaymentAllocationService
             var bill = await LoadBillAsync(command.CompanyId, command.Allocation.BillId, cancellationToken);
             var amount = NormalizeMoney(command.Allocation.AllocatedAmount);
             var currency = NormalizeCurrency(command.Allocation.Currency);
+            var idempotencyKey = NormalizeIdempotencyKey(command.Allocation.IdempotencyKey);
+
+            if (idempotencyKey is not null)
+            {
+                var existing = await _dbContext.PaymentAllocations
+                    .IgnoreQueryFilters()
+                    .AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.IdempotencyKey == idempotencyKey, cancellationToken);
+                if (existing is not null)
+                {
+                    if (existing.PaymentId != payment.Id || existing.InvoiceId != invoice?.Id || existing.BillId != bill?.Id ||
+                        existing.AllocatedAmount != amount || !string.Equals(existing.Currency, currency, StringComparison.Ordinal))
+                    {
+                        throw CreateValidationException("IdempotencyKey", "The idempotency key was already used for a different payment allocation.");
+                    }
+
+                    return Map(existing, true);
+                }
+            }
 
             await ValidateAsync(command.CompanyId, payment, invoice, bill, amount, currency, null, cancellationToken);
 
@@ -49,7 +68,8 @@ internal sealed class FinancePaymentAllocationService
                 currency,
                 sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
                 paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
-                targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
+                targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId,
+                idempotencyKey: idempotencyKey);
 
             _dbContext.PaymentAllocations.Add(allocation);
             await ApplyTargetSettlementStatusAsync(command.CompanyId, invoice, bill, amount, null, cancellationToken);
@@ -371,6 +391,8 @@ internal sealed class FinancePaymentAllocationService
             throw CreateValidationException("InvoiceId", "Allocation cannot reference both an invoice and a bill.");
         }
 
+        await EnsureSourceCompatibilityAsync(companyId, payment, invoice, bill, cancellationToken);
+
         if (!string.Equals(payment.Currency, currency, StringComparison.OrdinalIgnoreCase))
         {
             throw CreateValidationException("Currency", $"Allocation currency '{currency}' must match payment currency '{payment.Currency}'.");
@@ -428,6 +450,63 @@ internal sealed class FinancePaymentAllocationService
                 throw CreateValidationException("AllocatedAmount", $"Bill allocations cannot exceed the remaining open amount of {remainingOpenAmount:0.00}.");
             }
         }
+    }
+
+    private async Task EnsureSourceCompatibilityAsync(
+        Guid companyId,
+        Payment payment,
+        FinanceInvoice? invoice,
+        FinanceBill? bill,
+        CancellationToken cancellationToken)
+    {
+        var paymentSource = await ResolveRecordSourceAsync(
+            companyId,
+            payment.Id,
+            payment.SourceSimulationEventRecordId,
+            ["payment"],
+            cancellationToken);
+        var targetId = invoice?.Id ?? bill!.Id;
+        var targetSimulationEventId = invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId;
+        IReadOnlyCollection<string> targetEntityTypes = invoice is not null
+            ? ["invoice"]
+            : ["supplier_invoice", "bill"];
+        var targetSource = await ResolveRecordSourceAsync(
+            companyId,
+            targetId,
+            targetSimulationEventId,
+            targetEntityTypes,
+            cancellationToken);
+
+        if (!string.Equals(paymentSource, targetSource, StringComparison.OrdinalIgnoreCase))
+        {
+            throw CreateValidationException(
+                "PaymentId",
+                "Payments and the documents they settle must use the same accounting source. Create or import the payment in the selected source before allocating it.");
+        }
+    }
+
+    private async Task<string> ResolveRecordSourceAsync(
+        Guid companyId,
+        Guid recordId,
+        Guid? sourceSimulationEventRecordId,
+        IReadOnlyCollection<string> entityTypes,
+        CancellationToken cancellationToken)
+    {
+        var isFortnoxBacked = await _dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .AsNoTracking()
+            .AnyAsync(reference =>
+                reference.CompanyId == companyId &&
+                reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                entityTypes.Contains(reference.EntityType) &&
+                reference.InternalRecordId == recordId,
+                cancellationToken);
+
+        return isFortnoxBacked
+            ? FinanceDataSources.Fortnox
+            : sourceSimulationEventRecordId.HasValue
+                ? FinanceDataSources.Simulation
+                : FinanceDataSources.Manual;
     }
 
     private async Task ApplyTargetSettlementStatusAsync(
@@ -692,11 +771,20 @@ internal sealed class FinancePaymentAllocationService
     private static decimal NormalizeMoney(decimal value) =>
         decimal.Round(value, 2, MidpointRounding.AwayFromZero);
 
+    private static string? NormalizeIdempotencyKey(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var normalized = value.Trim();
+        if (normalized.Length > 200)
+            throw CreateValidationException("IdempotencyKey", "Idempotency key cannot exceed 200 characters.");
+        return normalized;
+    }
+
     private static bool ShouldBackfillPaidDocument(string status, string settlementStatus) =>
         string.Equals(FinanceSettlementStatuses.Normalize(settlementStatus), FinanceSettlementStatuses.Paid, StringComparison.Ordinal) ||
         string.Equals(status?.Trim(), "paid", StringComparison.OrdinalIgnoreCase);
 
-    private static FinancePaymentAllocationDto Map(PaymentAllocation allocation) =>
+    private static FinancePaymentAllocationDto Map(PaymentAllocation allocation, bool isIdempotentReplay = false) =>
         new(
             allocation.Id,
             allocation.CompanyId,
@@ -709,7 +797,9 @@ internal sealed class FinancePaymentAllocationService
             allocation.UpdatedUtc,
             allocation.SourceSimulationEventRecordId,
             allocation.PaymentSourceSimulationEventRecordId,
-            allocation.TargetSourceSimulationEventRecordId);
+            allocation.TargetSourceSimulationEventRecordId,
+            allocation.IdempotencyKey,
+            isIdempotentReplay);
 
     private async Task<TResult> ExecuteInTransactionAsync<TResult>(
         Func<Task<TResult>> action,

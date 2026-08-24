@@ -11,6 +11,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
     private int _overviewLoadVersion;
 
     protected FinanceOverviewViewModel? Overview { get; private set; }
+    protected FinanceOperatingModeResponse? OperatingMode { get; private set; }
     protected bool IsOverviewLoading { get; private set; }
     protected bool IsOverviewEmpty { get; private set; }
     protected string? OverviewErrorMessage { get; private set; }
@@ -76,8 +77,9 @@ public partial class FinancePage : FinancePageBase, IDisposable
             var anomaliesTask = UseFallbackWhenFinanceIsNotInitializedAsync(
                 FinanceApiClient.GetAnomalyWorkbenchAsync(companyId, pageSize: 25, cancellationToken: cancellationToken),
                 new FinanceAnomalyWorkbenchResponse());
+            var operatingModeTask = FinanceApiClient.GetOperatingModeAsync(companyId, cancellationToken: cancellationToken);
 
-            await Task.WhenAll(cashTask, monthlyTask, billsTask, billInboxTask, invoicesTask, invoiceReviewsTask, paymentsTask, transactionsTask, anomaliesTask);
+            await Task.WhenAll(cashTask, monthlyTask, billsTask, billInboxTask, invoicesTask, invoiceReviewsTask, paymentsTask, transactionsTask, anomaliesTask, operatingModeTask);
 
             if (loadVersion != _overviewLoadVersion || cancellationTokenSource.IsCancellationRequested)
             {
@@ -95,6 +97,7 @@ public partial class FinancePage : FinancePageBase, IDisposable
                 paymentsTask.Result,
                 transactionsTask.Result,
                 anomaliesTask.Result);
+            OperatingMode = operatingModeTask.Result;
             IsOverviewEmpty = Overview.HasNoFinanceActivity;
         }
         catch (OperationCanceledException) when (cancellationTokenSource.IsCancellationRequested)
@@ -1077,8 +1080,34 @@ public partial class FinancePage : FinancePageBase, IDisposable
         IsOverviewLoading = false;
     }
 
-    private void ResetOverviewState() =>
-        (Overview, IsOverviewEmpty, OverviewErrorMessage) = (null, false, null);
+    private void ResetOverviewState()
+    {
+        Overview = null;
+        OperatingMode = null;
+        IsOverviewEmpty = false;
+        OverviewErrorMessage = null;
+    }
+
+    protected string OperatingModeAlertClass => OperatingMode?.IsReadyForOperationalPosting == true
+        ? "alert-info"
+        : "alert-warning";
+
+    protected string OperatingModeAuthorityLabel => OperatingMode?.AccountingAuthority?.Trim().ToLowerInvariant() switch
+    {
+        "internal_ledger" => "Internal ledger",
+        "external_provider" => string.IsNullOrWhiteSpace(OperatingMode.ProviderKey)
+            ? "External provider"
+            : OperatingMode.ProviderKey,
+        "migration" => "Migration in progress",
+        _ => "Setup required"
+    };
+
+    protected string OperatingModeSourceLabel => OperatingMode?.AllowedReadSource?.Trim().ToLowerInvariant() switch
+    {
+        "simulation" => "Simulation",
+        "fortnox" => "Fortnox",
+        _ => "Operational"
+    };
 
     private void CancelOverviewLoad()
     {

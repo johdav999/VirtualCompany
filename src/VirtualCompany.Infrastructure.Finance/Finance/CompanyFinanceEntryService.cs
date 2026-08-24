@@ -96,9 +96,6 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
         DateTime checkedAtUtc,
         CancellationToken cancellationToken)
     {
-        var normalizedSeedMode = FinanceSeedRequestModes.Normalize(query.SeedMode);
-        var fallbackTriggered = string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase);
-
         if (_dbContext.Database.IsRelational())
         {
             var executionStrategy = _dbContext.Database.CreateExecutionStrategy();
@@ -122,11 +119,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
                     return recoveredResult;
                 }
 
-                return await CreateExistingSeedRequestResultAsync(
-                    query,
-                    normalizedSeedMode,
-                    fallbackTriggered,
-                    cancellationToken);
+                throw;
             }
         }
 
@@ -142,19 +135,9 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
             {
                 return recoveredResult;
             }
-        }
 
-        var existingState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
-        var existingExecution = await FindExecutionAsync(query.CompanyId, cancellationToken);
-        return (
-            existingState,
-            existingExecution,
-            false,
-            existingState.State == FinanceSeedingState.Seeded,
-            normalizedSeedMode,
-            existingExecution is null ? FinanceSeedOperationContractValues.Skipped : FinanceSeedOperationContractValues.Reused,
-            false,
-            fallbackTriggered);
+            throw;
+        }
     }
 
     private async Task AcquireFinanceSeedRequestLockAsync(Guid companyId, CancellationToken cancellationToken)
@@ -264,25 +247,6 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
             fallbackTriggered);
     }
 
-    private async Task<(FinanceSeedingStateResultDto State, BackgroundExecution? Execution, bool SeedJobEnqueued, bool DataAlreadyExists, string SeedMode, string SeedOperation, bool ConfirmationRequired, bool FallbackTriggered)> CreateExistingSeedRequestResultAsync(
-        GetFinanceEntryStateQuery query,
-        string normalizedSeedMode,
-        bool fallbackTriggered,
-        CancellationToken cancellationToken)
-    {
-        var existingState = await _financeSeedingStateService.GetCompanyFinanceSeedingStateAsync(query.CompanyId, cancellationToken);
-        var existingExecution = await FindExecutionAsync(query.CompanyId, cancellationToken);
-        return (
-            existingState,
-            existingExecution,
-            false,
-            existingState.State == FinanceSeedingState.Seeded,
-            normalizedSeedMode,
-            existingExecution is null ? FinanceSeedOperationContractValues.Skipped : FinanceSeedOperationContractValues.Reused,
-            false,
-            fallbackTriggered);
-    }
-
     private async Task<(FinanceSeedingStateResultDto State, BackgroundExecution? Execution, bool SeedJobEnqueued, bool DataAlreadyExists, string SeedMode, string SeedOperation, bool ConfirmationRequired, bool FallbackTriggered)> EnsureSeedRequestedCoreAsync(
         GetFinanceEntryStateQuery query,
         DateTime checkedAtUtc,
@@ -333,6 +297,7 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
                 {
                     ["confirmationRequired"] = "true", ["dataAlreadyExists"] = "true", ["seedStateBefore"] = seedStateBefore.ToStorageValue()
                 });
+            await _dbContext.SaveChangesAsync(cancellationToken);
             return (seedingState, execution, false, true, normalizedSeedMode, seedOperation, true, fallbackTriggered);
         }
 
@@ -856,8 +821,8 @@ public sealed class CompanyFinanceEntryService : IFinanceEntryService
     private static bool ShouldRetry(GetFinanceEntryStateQuery query, FinanceSeedingState seedingState, BackgroundExecution? execution) =>
         (query.RetryOnFailure ||
          string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase)) &&
-        seedingState == FinanceSeedingState.Failed &&
-        (execution is null || execution.Status is BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Blocked);
+        (execution?.Status is BackgroundExecutionStatus.Failed or BackgroundExecutionStatus.Blocked ||
+         (execution is null && seedingState == FinanceSeedingState.Failed));
 
     private static bool ShouldRepairStaleFallback(GetFinanceEntryStateQuery query, FinanceSeedingState seedingState, BackgroundExecution? execution, DateTime checkedAtUtc) =>
         string.Equals(query.Source, FinanceEntrySources.FallbackRead, StringComparison.OrdinalIgnoreCase) &&

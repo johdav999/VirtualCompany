@@ -18,6 +18,16 @@ public sealed class AccountingOperationsTelemetry
     private static readonly Counter<long> ProviderSwitchMonitoringViolations = Meter.CreateCounter<long>("accounting.provider_switch.monitoring_violations");
     private static readonly Histogram<double> MigrationDuration = Meter.CreateHistogram<double>("accounting.migration.duration", "ms");
     private static readonly Histogram<double> ProviderSwitchStageDuration = Meter.CreateHistogram<double>("accounting.provider_switch.stage_duration", "ms");
+    private static readonly Histogram<double> OperationDuration = Meter.CreateHistogram<double>("accounting.operation.duration", "ms");
+    private static readonly Counter<long> ServiceObjectiveBreaches = Meter.CreateCounter<long>("accounting.slo.breaches");
+    private static readonly Histogram<double> WorkerQueueAge = Meter.CreateHistogram<double>("accounting.worker.queue_age", "min");
+    private static readonly Histogram<double> ProviderSyncLag = Meter.CreateHistogram<double>("accounting.provider.sync_lag", "min");
+    private static readonly Histogram<long> ReconciliationBacklog = Meter.CreateHistogram<long>("accounting.reconciliation.backlog", "items");
+    private static readonly Histogram<long> ExpiredExportBytes = Meter.CreateHistogram<long>("accounting.export.expired_content", "By");
+    private static readonly Histogram<long> ObjectFailures = Meter.CreateHistogram<long>("accounting.object.failures", "items");
+    private static readonly Counter<long> RetentionCleanupOutcomes = Meter.CreateCounter<long>("accounting.cleanup.outcomes");
+    private static readonly Counter<long> RetentionCleanupItems = Meter.CreateCounter<long>("accounting.cleanup.items");
+    private static readonly Counter<long> RetentionCleanupBytes = Meter.CreateCounter<long>("accounting.cleanup.bytes", "By");
     private readonly ILogger<AccountingOperationsTelemetry> _logger;
 
     public AccountingOperationsTelemetry(ILogger<AccountingOperationsTelemetry> logger) => _logger = logger;
@@ -133,5 +143,58 @@ public sealed class AccountingOperationsTelemetry
         _logger.LogError(exception,
             "Accounting provider-switch monitoring {MonitoringRunId} for switch {SwitchId} in company {CompanyId} failed. FailureCode={FailureCode}, ConsecutiveFailures={ConsecutiveFailures}, CorrelationId={CorrelationId}.",
             monitoringRunId, switchId, companyId, failureCode, consecutiveFailures, correlationId);
+    }
+
+    public void OperationCompleted(Guid companyId, string operation, TimeSpan duration, double budgetMilliseconds,
+        string outcome)
+    {
+        var status = duration.TotalMilliseconds <= budgetMilliseconds ? "within_objective" : "breached";
+        OperationDuration.Record(duration.TotalMilliseconds, new("operation", operation), new("outcome", outcome),
+            new("status", status));
+        if (status == "breached")
+        {
+            ServiceObjectiveBreaches.Add(1,
+                new KeyValuePair<string, object?>[] { new("operation", operation) });
+            _logger.LogWarning(
+                "Accounting operation {Operation} breached its service objective for company {CompanyId}. DurationMs={DurationMs}, BudgetMs={BudgetMs}, Outcome={Outcome}.",
+                operation, companyId, duration.TotalMilliseconds, budgetMilliseconds, outcome);
+        }
+    }
+
+    public void CapacityObserved(Guid companyId, string profile, decimal queueAgeMinutes,
+        decimal syncLagMinutes, long reconciliationBacklog, long expiredExportBytes,
+        long objectFailures, int alertCount)
+    {
+        WorkerQueueAge.Record((double)queueAgeMinutes,
+            new KeyValuePair<string, object?>[] { new("profile", profile) });
+        ProviderSyncLag.Record((double)syncLagMinutes,
+            new KeyValuePair<string, object?>[] { new("profile", profile) });
+        ReconciliationBacklog.Record(reconciliationBacklog,
+            new KeyValuePair<string, object?>[] { new("profile", profile) });
+        ExpiredExportBytes.Record(expiredExportBytes,
+            new KeyValuePair<string, object?>[] { new("profile", profile) });
+        ObjectFailures.Record(objectFailures,
+            new KeyValuePair<string, object?>[] { new("object", "accounting_export") });
+        if (alertCount > 0)
+        {
+            ServiceObjectiveBreaches.Add(alertCount,
+                new KeyValuePair<string, object?>[] { new("operation", "capacity_snapshot") });
+            _logger.LogWarning(
+                "Accounting capacity snapshot for company {CompanyId} and profile {Profile} contains {AlertCount} remediation signals. QueueAgeMinutes={QueueAgeMinutes}, SyncLagMinutes={SyncLagMinutes}, ReconciliationBacklog={ReconciliationBacklog}, ExpiredExportBytes={ExpiredExportBytes}, ObjectFailures={ObjectFailures}.",
+                companyId, profile, alertCount, queueAgeMinutes, syncLagMinutes, reconciliationBacklog,
+                expiredExportBytes, objectFailures);
+        }
+    }
+
+    public void RetentionCleanup(Guid companyId, int processedCount, long releasedBytes, string outcome)
+    {
+        RetentionCleanupOutcomes.Add(1, new("retention_class", "generated_exports"), new("outcome", outcome));
+        RetentionCleanupItems.Add(processedCount,
+            new KeyValuePair<string, object?>[] { new("retention_class", "generated_exports") });
+        RetentionCleanupBytes.Add(releasedBytes,
+            new KeyValuePair<string, object?>[] { new("retention_class", "generated_exports") });
+        _logger.LogInformation(
+            "Accounting retention cleanup telemetry recorded for company {CompanyId}. Outcome={Outcome}, Processed={ProcessedCount}, ReleasedBytes={ReleasedBytes}.",
+            companyId, outcome, processedCount, releasedBytes);
     }
 }

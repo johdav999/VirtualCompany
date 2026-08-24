@@ -23,7 +23,7 @@ internal sealed class Sha256FinanceDeterministicValueSource : IFinanceDeterminis
 
         return GetBoundedInt(
             FormattableString.Invariant(
-                $"{companyId:N}|{seed}|{NormalizeUtc(startSimulatedUtc):yyyyMMdd}|{Canonicalize(deterministicConfigurationJson)}|cycle|{scope}"),
+                $"{seed}|{NormalizeUtc(startSimulatedUtc):yyyyMMdd}|{Canonicalize(deterministicConfigurationJson)}|cycle|{scope}"),
             modulo);
     }
 
@@ -44,7 +44,7 @@ internal sealed class Sha256FinanceDeterministicValueSource : IFinanceDeterminis
 
         return GetBoundedInt(
             FormattableString.Invariant(
-                $"{companyId:N}|{seed}|{NormalizeUtc(startSimulatedUtc):yyyyMMdd}|{NormalizeUtc(simulatedDateUtc):yyyyMMdd}|{dayIndex}|{Canonicalize(deterministicConfigurationJson)}|day|{scope}"),
+                $"{seed}|{NormalizeUtc(startSimulatedUtc):yyyyMMdd}|{NormalizeUtc(simulatedDateUtc):yyyyMMdd}|{dayIndex}|{Canonicalize(deterministicConfigurationJson)}|day|{scope}"),
             modulo);
     }
 
@@ -165,15 +165,9 @@ internal sealed class PeriodicFinanceAnomalyScheduleFactory : IFinanceAnomalySch
         int anomalyOffsetDays)
     {
         var cadence = Math.Max(1, anomalyCadenceDays);
-        var seedOffset = _valueSource.GetCycleOffset(
-            context.CompanyId,
-            context.Seed,
-            context.StartSimulatedUtc,
-            context.DeterministicConfigurationJson,
-            "anomaly-cadence-offset",
-            cadence);
-        var effectiveOffset = (Math.Max(0, anomalyOffsetDays) + seedOffset) % cadence;
-        var isAnomalyDay = ((context.DayIndex + effectiveOffset) % cadence) == 0;
+        var effectiveOffset = Math.Max(0, anomalyOffsetDays) % cadence;
+        var isAnomalyDay = context.DayIndex > effectiveOffset &&
+                           ((context.DayIndex - effectiveOffset) % cadence) == 0;
         if (!isAnomalyDay || anomalyCount <= 0 || transactionCount <= 0)
         {
             return new FinanceAnomalySchedule(false, null, 0);
@@ -186,7 +180,7 @@ internal sealed class PeriodicFinanceAnomalyScheduleFactory : IFinanceAnomalySch
             context.DeterministicConfigurationJson,
             "anomaly-rotation",
             anomalyCount);
-        var anomalyOrdinal = (context.DayIndex + effectiveOffset) / cadence;
+        var anomalyOrdinal = (context.DayIndex - effectiveOffset) / cadence;
         var targetTransactionIndex = _valueSource.GetDayValue(
             context.CompanyId,
             context.Seed,

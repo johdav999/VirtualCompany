@@ -76,7 +76,7 @@ public sealed partial class FinanceApiClient
     public Task<FinanceInvoiceDetailResponse?> GetInvoiceDetailAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
         _useOfflineMode
             ? Task.FromResult<FinanceInvoiceDetailResponse?>(null)
-            : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}", allowNotFound: true, cancellationToken);
+            : GetAsync<FinanceInvoiceDetailResponse>(companyId, $"internal/companies/{companyId}/finance/invoices/{invoiceId}{BuildQuery(("source", _financeDataSourceFilter))}", allowNotFound: true, cancellationToken);
 
     public Task<CustomerInvoiceAccountingReferenceDataResponse> GetCustomerInvoiceAccountingReferenceDataAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken = default) =>
         GetAsync<CustomerInvoiceAccountingReferenceDataResponse>(companyId,

@@ -120,8 +120,8 @@ public sealed class SingleAgentOrchestrationTests : IDisposable
         Assert.Equal("Finance", auditEvent.ResponsibilityDomain);
         Assert.NotNull(auditEvent.PromptProfileVersion);
         Assert.Equal(AuditBoundaryDecisionOutcomes.InScope, auditEvent.BoundaryDecisionOutcome);
-        Assert.Null(auditEvent.IdentityReasonCode);
-        Assert.False(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
+        Assert.Equal(AuditReasonCodes.IdentityFallbackMissingConfig, auditEvent.IdentityReasonCode);
+        Assert.True(await dbContext.AuditEvents.AsNoTracking().AnyAsync(x =>
             x.CompanyId == seed.CompanyId &&
             x.Action == AuditEventActions.AgentGeneration &&
             x.ActorId == seed.AgentId &&
@@ -364,7 +364,16 @@ public sealed class SingleAgentOrchestrationTests : IDisposable
 
         await _factory.SeedAsync(dbContext =>
         {
-            dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            var existingUser = dbContext.Users.IgnoreQueryFilters().SingleOrDefault(x =>
+                x.AuthProvider == "dev-header" && x.AuthSubject == "founder");
+            if (existingUser is null)
+            {
+                dbContext.Users.Add(new User(userId, "founder@example.com", "Founder", "dev-header", "founder"));
+            }
+            else
+            {
+                userId = existingUser.Id;
+            }
             dbContext.Companies.Add(new Company(companyId, "Company A"));
             dbContext.CompanyMemberships.Add(new CompanyMembership(
                 Guid.NewGuid(),

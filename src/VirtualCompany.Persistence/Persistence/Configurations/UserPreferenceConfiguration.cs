@@ -12,12 +12,18 @@ internal sealed class UserPreferenceConfiguration : IEntityTypeConfiguration<Use
         builder.HasKey(x => x.UserId);
         builder.Property(x => x.UiCulture).HasColumnName("ui_culture").HasMaxLength(20).IsRequired().HasDefaultValue("en-GB");
         builder.Property(x => x.FormattingCulture).HasColumnName("formatting_culture").HasMaxLength(20);
+        builder.Property(x => x.PreferredCompanyId).HasColumnName("preferred_company_id");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_utc").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_utc").IsRequired();
+        builder.HasIndex(x => x.PreferredCompanyId);
         builder.HasOne(x => x.User)
             .WithOne()
             .HasForeignKey<UserPreference>(x => x.UserId)
             .OnDelete(DeleteBehavior.Cascade);
+        builder.HasOne(x => x.PreferredCompany)
+            .WithMany()
+            .HasForeignKey(x => x.PreferredCompanyId)
+            .OnDelete(DeleteBehavior.SetNull);
     }
 }
 

@@ -3,7 +3,13 @@ namespace VirtualCompany.Web.Services;
 public sealed partial class FinanceApiClient
 {
     public Task<GeneralLedgerReportResponse?> GetAccountingGeneralLedgerAsync(Guid companyId, Guid periodId, Guid? accountId = null, CancellationToken cancellationToken = default) =>
-        GetAsync<GeneralLedgerReportResponse>(companyId, $"internal/companies/{companyId}/finance/accounting/reports/general-ledger?fiscalPeriodId={periodId:D}{(accountId.HasValue ? $"&accountId={accountId:D}" : string.Empty)}", false, cancellationToken);
+        GetAccountingGeneralLedgerPageAsync(companyId, periodId, accountId, 1, 200, cancellationToken);
+
+    public Task<GeneralLedgerReportResponse?> GetAccountingGeneralLedgerPageAsync(Guid companyId, Guid periodId,
+        Guid? accountId, int page, int pageSize, CancellationToken cancellationToken = default) =>
+        GetAsync<GeneralLedgerReportResponse>(companyId,
+            $"internal/companies/{companyId}/finance/accounting/reports/general-ledger?fiscalPeriodId={periodId:D}{(accountId.HasValue ? $"&accountId={accountId:D}" : string.Empty)}&page={Math.Max(1, page)}&pageSize={Math.Clamp(pageSize, 25, 1000)}",
+            false, cancellationToken);
 
     public Task<TrialBalanceReportResponse?> GetAccountingTrialBalanceAsync(Guid companyId, Guid periodId, CancellationToken cancellationToken = default) =>
         GetAsync<TrialBalanceReportResponse>(companyId, $"internal/companies/{companyId}/finance/accounting/reports/trial-balance?fiscalPeriodId={periodId:D}", false, cancellationToken);
@@ -59,8 +65,8 @@ public sealed partial class FinanceApiClient
         await GetAsync<List<AccountingExportJobResponse>>(companyId, $"internal/companies/{companyId}/finance/accounting/exports?fiscalPeriodId={periodId:D}", false, cancellationToken) ?? [];
 }
 
-public sealed class GeneralLedgerReportResponse { public Guid CompanyId { get; set; } public Guid FiscalPeriodId { get; set; } public string FiscalPeriodName { get; set; } = ""; public bool IsClosed { get; set; } public bool IsReportingLocked { get; set; } public List<GeneralLedgerAccountResponse> Accounts { get; set; } = []; }
-public sealed class GeneralLedgerAccountResponse { public Guid AccountId { get; set; } public string AccountCode { get; set; } = ""; public string AccountName { get; set; } = ""; public string AccountClass { get; set; } = ""; public string Currency { get; set; } = ""; public decimal OpeningBalance { get; set; } public decimal Debit { get; set; } public decimal Credit { get; set; } public decimal ClosingBalance { get; set; } public List<GeneralLedgerLineResponse> Lines { get; set; } = []; }
+public sealed class GeneralLedgerReportResponse { public Guid CompanyId { get; set; } public Guid FiscalPeriodId { get; set; } public string FiscalPeriodName { get; set; } = ""; public bool IsClosed { get; set; } public bool IsReportingLocked { get; set; } public int Page { get; set; } public int PageSize { get; set; } public long TotalLineCount { get; set; } public bool HasMore { get; set; } public List<GeneralLedgerAccountResponse> Accounts { get; set; } = []; }
+public sealed class GeneralLedgerAccountResponse { public Guid AccountId { get; set; } public string AccountCode { get; set; } = ""; public string AccountName { get; set; } = ""; public string AccountClass { get; set; } = ""; public string Currency { get; set; } = ""; public decimal OpeningBalance { get; set; } public decimal Debit { get; set; } public decimal Credit { get; set; } public decimal ClosingBalance { get; set; } public int TotalLineCount { get; set; } public List<GeneralLedgerLineResponse> Lines { get; set; } = []; }
 public sealed class GeneralLedgerLineResponse { public Guid LedgerEntryLineId { get; set; } public Guid LedgerEntryId { get; set; } public string VoucherNumber { get; set; } = ""; public DateOnly PostingDate { get; set; } public string? Description { get; set; } public decimal Debit { get; set; } public decimal Credit { get; set; } public decimal RunningBalance { get; set; } public string Currency { get; set; } = ""; public string? SourceType { get; set; } public string? SourceId { get; set; } public List<AccountingEvidenceReferenceResponse> Evidence { get; set; } = []; }
 public sealed class AccountingEvidenceReferenceResponse { public Guid DocumentId { get; set; } public string Title { get; set; } = ""; public string ContentHash { get; set; } = ""; }
 public sealed class TrialBalanceReportResponse { public Guid CompanyId { get; set; } public Guid FiscalPeriodId { get; set; } public string FiscalPeriodName { get; set; } = ""; public bool IsClosed { get; set; } public bool IsReportingLocked { get; set; } public string SourceMode { get; set; } = ""; public string Checksum { get; set; } = ""; public decimal TotalDebits { get; set; } public decimal TotalCredits { get; set; } public decimal TotalClosingDebits { get; set; } public decimal TotalClosingCredits { get; set; } public bool IsBalanced { get; set; } public List<TrialBalanceAccountResponse> Accounts { get; set; } = []; }

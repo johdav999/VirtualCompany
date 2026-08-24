@@ -317,8 +317,6 @@ public sealed class CompanyAgentService : ICompanyAgentService
     public async Task<AgentOperatingProfileDto> UpdateOperatingProfileAsync(Guid companyId, Guid agentId, UpdateAgentOperatingProfileCommand command, CancellationToken cancellationToken)
     {
         var membership = await EnsureOperatingProfileAccessAsync(companyId, cancellationToken);
-        Validate(command);
-
         var visibility = BuildProfileVisibility(membership.MembershipRole);
 
         var agent = await _dbContext.Agents
@@ -329,6 +327,7 @@ public sealed class CompanyAgentService : ICompanyAgentService
             throw new KeyNotFoundException("Agent not found.");
         }
 
+        Validate(command, allowOmittedSensitiveGovernance: !visibility.CanEditSensitiveGovernance);
         var beforeSnapshot = CreateOperatingProfileAuditSnapshot(agent);
         ValidateOperatingProfileUpdateAccess(command, agent, visibility);
 
@@ -1264,9 +1263,11 @@ public sealed class CompanyAgentService : ICompanyAgentService
         }
     }
 
-    private static void Validate(UpdateAgentOperatingProfileCommand command)
+    private static void Validate(
+        UpdateAgentOperatingProfileCommand command,
+        bool allowOmittedSensitiveGovernance = false)
     {
-        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command);
+        UpdateAgentOperatingProfileCommandValidator.ValidateAndThrow(command, allowOmittedSensitiveGovernance);
         var errors = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
         AgentCommunicationProfileJsonMapper.Validate(errors, nameof(command.CommunicationProfile), AgentCommunicationProfileJsonMapper.ToJsonDictionary(command.CommunicationProfile));
         if (errors.Count > 0)

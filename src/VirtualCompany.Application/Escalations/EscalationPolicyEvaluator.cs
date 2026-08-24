@@ -420,6 +420,14 @@ public sealed class EscalationPolicyEvaluationService : IEscalationPolicyEvaluat
             return true;
         }
 
+        if (node is JsonValue dateValue && dateValue.TryGetValue<DateTime>(out var dateTime))
+        {
+            value = new DateTimeOffset(
+                dateTime.Kind == DateTimeKind.Utc ? dateTime : dateTime.ToUniversalTime(),
+                TimeSpan.Zero);
+            return true;
+        }
+
         return TryGetString(node, out var text) &&
             DateTimeOffset.TryParse(text, CultureInfo.InvariantCulture, DateTimeStyles.AssumeUniversal, out value);
     }

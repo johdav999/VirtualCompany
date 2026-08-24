@@ -723,7 +723,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         {
             _isRefreshingSimulationControls = false;
 
-            if (!cancellationToken.IsCancellationRequested)
+            if (!cancellationToken.IsCancellationRequested || !IsNonTerminalProgressionStatus(_latestProgressionRun?.Status))
             {
                 await InvokeAsync(StateHasChanged);
             }
@@ -732,8 +732,18 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
     private void ApplySimulationControlsSnapshot(Guid companyId, FinanceSandboxSimulationControlsViewModel? simulation)
     {
+        var priorRunWasNonTerminal = IsNonTerminalProgressionStatus(_latestProgressionRun?.Status);
         _latestSimulationControls = simulation;
-        _latestProgressionRun = simulation?.CurrentRun ?? simulation?.RunHistory.FirstOrDefault();
+        // A status endpoint can legitimately lag the command response. Keep the
+        // command result visible until the backend returns a newer run snapshot.
+        _latestProgressionRun = simulation?.CurrentRun ?? simulation?.RunHistory.FirstOrDefault() ?? _latestProgressionRun;
+        if (priorRunWasNonTerminal && _latestProgressionRun is { } terminalRun && IsTerminalProgressionStatus(terminalRun.Status))
+        {
+            _simulationActionSuccessMessage = BuildSimulationSuccessMessage(
+                terminalRun.RunType,
+                terminalRun.AdvancedHours,
+                terminalRun.Status);
+        }
         _simulationRefreshErrorMessage = null;
         _lastSimulationRefreshUtc = DateTime.UtcNow;
         UpdateSimulationPolling(companyId, _latestProgressionRun);
@@ -744,6 +754,13 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
         if (IsNonTerminalProgressionStatus(latestRun?.Status))
         {
             EnsureSimulationPolling(companyId);
+            return;
+        }
+
+        // When the polling loop observes the terminal snapshot, let that loop
+        // render the snapshot before its finally block cancels the timer.
+        if (_isPollingSimulationControls && _simulationPollingCompanyId == companyId)
+        {
             return;
         }
 
@@ -773,9 +790,9 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
 
         try
         {
-            while (await timer.WaitForNextTickAsync(cancellationToken))
+            while (await timer.WaitForNextTickAsync(cancellationToken).ConfigureAwait(false))
             {
-                await RefreshSimulationControlsAsync(companyId, cancellationToken);
+                await RefreshSimulationControlsAsync(companyId, cancellationToken).ConfigureAwait(false);
 
                 if (!IsNonTerminalProgressionStatus(_latestProgressionRun?.Status))
                 {
@@ -791,6 +808,7 @@ public partial class SandboxAdminPage : FinancePageBase, IDisposable
             if (_simulationPollingCompanyId == companyId && !IsNonTerminalProgressionStatus(_latestProgressionRun?.Status))
             {
                 StopSimulationPolling();
+                await InvokeAsync(StateHasChanged);
             }
         }
     }

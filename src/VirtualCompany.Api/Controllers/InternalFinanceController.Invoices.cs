@@ -31,7 +31,7 @@ public sealed partial class InternalFinanceController
         [FromQuery] DateTime? endUtc,
         [FromQuery] int limit,
         CancellationToken cancellationToken,
-        [FromQuery] string source = FinanceDataSources.All) =>
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadAsync(
             () => _financeReadService.GetInvoicesAsync(
                 new GetFinanceInvoicesQuery(companyId, startUtc, endUtc, limit, source),
@@ -41,10 +41,11 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<IReadOnlyList<FinancePaymentAllocationDto>>> GetInvoiceAllocationsAsync(
         Guid companyId,
         Guid invoiceId,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteReadOptionalAsync(
             () => _financePaymentReadService.GetAllocationsByInvoiceAsync(
-                new GetFinanceInvoiceAllocationsQuery(companyId, invoiceId),
+                new GetFinanceInvoiceAllocationsQuery(companyId, invoiceId, source),
                 cancellationToken),
             "Finance invoice was not found.");
 
@@ -56,7 +57,8 @@ public sealed partial class InternalFinanceController
         [FromQuery] string? riskLevel,
         [FromQuery(Name = "outcome")] string? recommendationOutcome,
         [FromQuery] int limit,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational)
     {
         try
         {
@@ -67,13 +69,13 @@ public sealed partial class InternalFinanceController
             var normalizedLimit = NormalizeReviewLimit(limit);
 
             var invoices = await _financeReadService.GetInvoicesAsync(
-                new GetFinanceInvoicesQuery(companyId, null, null, normalizedLimit),
+                new GetFinanceInvoicesQuery(companyId, null, null, normalizedLimit, source),
                 cancellationToken);
 
             var items = new List<FinanceInvoiceReviewListItemResponse>(invoices.Count);
             foreach (var invoice in invoices)
             {
-                var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoice.Id, cancellationToken);
+                var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoice.Id, cancellationToken, source);
                 var item = MapInvoiceReviewListItem(invoice, review);
                 if (MatchesReviewFilters(item, normalizedStatus, normalizedSupplier, normalizedRiskLevel, normalizedOutcome))
                 {
@@ -108,11 +110,12 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<FinanceInvoiceReviewDetailResponse>> GetInvoiceReviewDetailAsync(
         Guid companyId,
         Guid invoiceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational)
     {
         try
         {
-            var detail = await BuildInvoiceReviewDetailResponseAsync(companyId, invoiceId, executeIfMissing: true, cancellationToken);
+            var detail = await BuildInvoiceReviewDetailResponseAsync(companyId, invoiceId, executeIfMissing: true, cancellationToken, source);
             return detail is null
                 ? NotFound(CreateProblemDetails("Finance invoice review was not found.", "Finance record was not found.", StatusCodes.Status404NotFound))
                 : Ok(detail);
@@ -139,19 +142,20 @@ public sealed partial class InternalFinanceController
     public async Task<ActionResult<FinanceInvoiceDetailResponse>> GetInvoiceDetailAsync(
         Guid companyId,
         Guid invoiceId,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational)
     {
         try
         {
             var detail = await _financeReadService.GetInvoiceDetailAsync(
-                new GetFinanceInvoiceDetailQuery(companyId, invoiceId),
+                new GetFinanceInvoiceDetailQuery(companyId, invoiceId, source),
                 cancellationToken);
             if (detail is null)
             {
                 return NotFound(CreateProblemDetails("Finance invoice was not found.", "Finance record was not found.", StatusCodes.Status404NotFound));
             }
 
-            var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken);
+            var review = await _invoiceReviewWorkflowService.GetLatestByInvoiceAsync(companyId, invoiceId, cancellationToken, source);
             var existingWorkflowContext = detail.WorkflowContext;
             var relatedApprovalId = review?.ApprovalRequestId ?? existingWorkflowContext?.ApprovalRequestId;
             var approval = await TryGetApprovalAsync(companyId, relatedApprovalId, cancellationToken);
@@ -205,7 +209,8 @@ public sealed partial class InternalFinanceController
                 detail.DueStatus,
                 detail.DocumentKind,
                 detail.ProviderStatus,
-                accounting));
+                accounting,
+                detail.Source));
         }
         catch (UnauthorizedAccessException)
         {
@@ -230,7 +235,8 @@ public sealed partial class InternalFinanceController
         Guid companyId,
         Guid invoiceId,
         [FromBody] ReviewFinanceInvoiceWorkflowRequest? request,
-        CancellationToken cancellationToken) =>
+        CancellationToken cancellationToken,
+        [FromQuery] string source = FinanceDataSources.Operational) =>
         await ExecuteWriteAsync(
             () => _invoiceReviewWorkflowService.ExecuteAsync(
                 new ReviewFinanceInvoiceWorkflowCommand(
@@ -238,7 +244,8 @@ public sealed partial class InternalFinanceController
                     invoiceId,
                     request?.WorkflowInstanceId,
                     request?.AgentId,
-                    request?.Payload),
+                    request?.Payload,
+                    source),
                 cancellationToken));
 
     [HttpPost("invoices/{invoiceId:guid}/fortnox-export")]

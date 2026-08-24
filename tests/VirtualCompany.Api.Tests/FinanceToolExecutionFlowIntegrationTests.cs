@@ -10,6 +10,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Approvals;
+using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -289,11 +290,13 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IDisposable
         var executePayload = await executeResponse.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
         Assert.NotNull(executePayload?.ApprovalRequestId);
 
-        var approval = await GetApprovalAsync(financeFactory.Services, seed.CompanyId, executePayload!.ApprovalRequestId!.Value);
+        var approval = await client.GetFromJsonAsync<ApprovalRequestDto>(
+            $"/api/companies/{seed.CompanyId}/approvals/{executePayload!.ApprovalRequestId!.Value}");
+        Assert.NotNull(approval);
         var decisionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{approval.Id}/decisions", new
         {
             decision = "approve",
-            stepId = approval.CurrentStep!.Id,
+            stepId = approval!.CurrentStep!.Id,
             comment = "Approved for categorization."
         });
 
@@ -342,11 +345,13 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IDisposable
         var executePayload = await executeResponse.Content.ReadFromJsonAsync<AgentToolExecutionResponse>();
         Assert.NotNull(executePayload?.ApprovalRequestId);
 
-        var approval = await GetApprovalAsync(financeFactory.Services, seed.CompanyId, executePayload!.ApprovalRequestId!.Value);
+        var approval = await client.GetFromJsonAsync<ApprovalRequestDto>(
+            $"/api/companies/{seed.CompanyId}/approvals/{executePayload!.ApprovalRequestId!.Value}");
+        Assert.NotNull(approval);
         var decisionResponse = await client.PostAsJsonAsync($"/api/companies/{seed.CompanyId}/approvals/{approval.Id}/decisions", new
         {
             decision = "reject",
-            stepId = approval.CurrentStep!.Id,
+            stepId = approval!.CurrentStep!.Id,
             comment = "Needs more evidence."
         });
 
@@ -541,15 +546,6 @@ public sealed class FinanceToolExecutionFlowIntegrationTests : IDisposable
 
         await dbContext.SaveChangesAsync();
         return new SeededFinanceRecord(transactionId, taskId);
-    }
-
-    private static async Task<ApprovalRequestDto> GetApprovalAsync(IServiceProvider services, Guid companyId, Guid approvalId)
-    {
-        using var scope = services.CreateScope();
-        var companyContextAccessor = scope.ServiceProvider.GetRequiredService<ICompanyContextAccessor>();
-        companyContextAccessor.SetCompanyId(companyId);
-        var service = scope.ServiceProvider.GetRequiredService<IApprovalRequestService>();
-        return await service.GetAsync(companyId, approvalId, CancellationToken.None);
     }
 
     private static HttpClient CreateAuthenticatedClient(WebApplicationFactory<Program> factory, SeededExecutionAgent seed)

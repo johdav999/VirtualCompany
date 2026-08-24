@@ -135,7 +135,7 @@ public sealed class FinanceCounterpartiesPageTests
         List<FinanceCounterpartyResponse> suppliers,
         Func<UpsertFinanceCounterpartyRequest, FinanceCounterpartyResponse>? onCreateSupplier = null)
     {
-        var context = new TestContext();
+        var context = new TestContext().AddVirtualCompanyWebPresentationServices();
         context.Services.AddOptions();
         context.Services.AddSingleton(new FinanceAccessResolver());
 

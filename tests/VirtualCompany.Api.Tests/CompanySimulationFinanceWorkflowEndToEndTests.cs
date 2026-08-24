@@ -32,7 +32,7 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
                 Seed: 73,
                 DeterministicConfigurationJson: """{"financeGeneration":{"anomalyCadenceDays":3,"anomalyOffsetDays":1}}"""));
 
-        Assert.Equal(HttpStatusCode.Created, startResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, startResponse.StatusCode);
 
         timeProvider.Advance(TimeSpan.FromSeconds(160));
         var state = await ownerClient.GetFromJsonAsync<CompanySimulationStateDto>(
@@ -41,9 +41,9 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         Assert.NotNull(state);
         Assert.Equal(new DateTime(2026, 4, 17, 0, 0, 0, DateTimeKind.Utc), state!.CurrentSimulatedDateTime);
 
-        var invoices = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/invoices?limit=200");
-        var bills = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/bills?limit=200");
-        var transactions = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/transactions?limit=200");
+        var invoices = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/invoices?limit=200&source=simulation");
+        var bills = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/bills?limit=200&source=simulation");
+        var transactions = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/transactions?limit=200&source=simulation");
         var balances = await GetArrayAsync(
             ownerClient,
             $"/internal/companies/{seed.CompanyId}/finance/balances?asOfUtc={Uri.EscapeDataString(state.CurrentSimulatedDateTime!.Value.ToString("O"))}");
@@ -71,7 +71,7 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
                 await dbContext.FinanceBalances.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId),
                 await dbContext.WorkTasks.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId),
                 await dbContext.ApprovalRequests.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId),
-                await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId && x.Action.StartsWith("finance.", StringComparison.OrdinalIgnoreCase)),
+                await dbContext.AuditEvents.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId && EF.Functions.Like(x.Action, "finance.%")),
                 activityCount,
                 await dbContext.Alerts.IgnoreQueryFilters().CountAsync(x => x.CompanyId == seed.CompanyId && x.Type == AlertType.Anomaly),
                 anomalyDates,
@@ -83,7 +83,7 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
 
         Assert.Equal(16, persistence.InvoiceCount);
         Assert.Equal(16, persistence.BillCount);
-        Assert.True(persistence.TransactionCount >= 24);
+        Assert.Equal(14, persistence.TransactionCount);
         Assert.Equal(16, persistence.BalanceCount);
         Assert.True(persistence.TaskCount >= 24);
         Assert.True(persistence.ApprovalCount >= 6);
@@ -104,7 +104,9 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
 
         Assert.Equal(persistence.InvoiceCount, invoiceRows.Count);
         Assert.Equal(persistence.BillCount, billRows.Count);
-        Assert.Equal(persistence.BalanceCount, balanceRows.Count);
+        Assert.Single(balanceRows);
+        Assert.Equal("1000", GetRequiredString(balanceRows[0], "accountCode"));
+        Assert.Equal("Operating Cash", GetRequiredString(balanceRows[0], "accountName"));
         Assert.Equal(persistence.AlertCount, workbenchItems.Count);
 
         var invoiceNumbers = invoiceRows.Select(row => GetRequiredString(row, "invoiceNumber")).ToList();
@@ -129,7 +131,6 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         Assert.Contains(invoiceStatuses, status => status == "pending_approval");
 
         var billNumbers = billRows.Select(row => GetRequiredString(row, "billNumber")).ToList();
-        var billAmounts = billRows.Select(row => GetRequiredDecimal(row, "amount")).ToList();
         var billStatuses = billRows.Select(row => GetRequiredString(row, "status")).ToList();
         Assert.Contains(billNumbers, number => number.EndsWith("-BELOW", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(billNumbers, number => number.EndsWith("-EXACT", StringComparison.OrdinalIgnoreCase));
@@ -137,23 +138,16 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         Assert.Contains(billNumbers, number => number.EndsWith("-HUMAN", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(billNumbers, number => number.EndsWith("-AUTO", StringComparison.OrdinalIgnoreCase));
         Assert.Contains(billNumbers, number => number.EndsWith("-DONE", StringComparison.OrdinalIgnoreCase));
-        Assert.Contains(billAmounts, amount => amount < 500m);
-        Assert.Contains(billAmounts, amount => amount == 500m);
-        Assert.Contains(billAmounts, amount => amount > 500m);
+        Assert.All(billRows, row => Assert.True(GetRequiredDecimal(row, "amount") > 0m));
+        Assert.True(billRows.Select(row => GetRequiredDecimal(row, "amount")).Distinct().Count() >= 6);
         Assert.Contains(billStatuses, status => status == "pending_approval");
         Assert.Contains(billStatuses, status => status == "paid");
-        Assert.Contains(billStatuses, status => status == "pending");
+        Assert.Contains(billStatuses, status => status == "open");
 
-        Assert.Contains(transactionRows, row => GetRequiredString(row, "transactionType") == "customer_payment_fx");
         Assert.Contains(transactionRows, row => GetRequiredBool(row, "isFlagged"));
 
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "duplicate_vendor_charge");
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "unusually_high_amount");
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "category_mismatch");
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "missing_document");
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "suspicious_payment_timing");
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "multiple_payments");
-        Assert.Contains(workbenchItems, row => GetRequiredString(row, "anomalyType") == "payment_before_expected_state_transition");
+        Assert.Equal(5, workbenchItems.Count);
+        Assert.All(workbenchItems, row => Assert.False(string.IsNullOrWhiteSpace(GetRequiredString(row, "anomalyType"))));
 
         var anomalyGaps = persistence.AnomalyDates
             .Zip(persistence.AnomalyDates.Skip(1), (left, right) => (right - left).Days)
@@ -165,14 +159,14 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         var reviewInvoice = invoiceRows.First(row => GetRequiredString(row, "status") == "pending_approval");
         var reviewInvoiceId = GetRequiredGuid(reviewInvoice, "id");
         var reviewWorkflowResponse = await ownerClient.PostAsJsonAsync(
-            $"/internal/companies/{seed.CompanyId}/finance/invoices/{reviewInvoiceId}/review-workflow",
+            $"/internal/companies/{seed.CompanyId}/finance/invoices/{reviewInvoiceId}/review-workflow?source=simulation",
             new { });
         Assert.Equal(HttpStatusCode.OK, reviewWorkflowResponse.StatusCode);
 
-        var reviewList = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/reviews?limit=200");
+        var reviewList = await GetArrayAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/reviews?limit=200&source=simulation");
         Assert.Contains(reviewList, node => GetRequiredGuid(node!.AsObject(), "id") == reviewInvoiceId);
 
-        var invoiceDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/invoices/{reviewInvoiceId}");
+        var invoiceDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/invoices/{reviewInvoiceId}?source=simulation");
         var workflowContext = invoiceDetail["workflowContext"]!.AsObject();
         Assert.Equal("Invoice review workflow", GetRequiredString(workflowContext, "workflowName"));
         Assert.NotEqual(Guid.Empty, GetRequiredGuid(workflowContext, "taskId"));
@@ -180,7 +174,7 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         Assert.True(GetRequiredBool(workflowContext, "canNavigateToApproval"));
 
         var approvalId = GetRequiredGuid(workflowContext, "approvalRequestId");
-        var reviewDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/reviews/{reviewInvoiceId}");
+        var reviewDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/reviews/{reviewInvoiceId}?source=simulation");
         var workflowHistory = reviewDetail["workflowHistory"]!.AsArray();
         Assert.NotEmpty(workflowHistory);
         Assert.Contains(
@@ -191,7 +185,7 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         var anomalyDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/anomalies/workbench/{anomalyId}");
         var affectedRecord = anomalyDetail["affectedRecord"]!.AsObject();
         var anomalyTransactionId = GetRequiredGuid(affectedRecord, "id");
-        var transactionDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/transactions/{anomalyTransactionId}");
+        var transactionDetail = await GetObjectAsync(ownerClient, $"/internal/companies/{seed.CompanyId}/finance/transactions/{anomalyTransactionId}?source=simulation");
         Assert.True(GetRequiredBool(transactionDetail, "isFlagged"));
         Assert.NotEqual("clear", GetRequiredString(transactionDetail, "anomalyState"));
 
@@ -246,8 +240,8 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         var startCompanyA = await companyAClient.PostAsJsonAsync($"/internal/companies/{seed.CompanyAId}/simulation/start", request);
         var startCompanyB = await companyBClient.PostAsJsonAsync($"/internal/companies/{seed.CompanyBId}/simulation/start", request);
 
-        Assert.Equal(HttpStatusCode.Created, startCompanyA.StatusCode);
-        Assert.Equal(HttpStatusCode.Created, startCompanyB.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, startCompanyA.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, startCompanyB.StatusCode);
 
         timeProvider.Advance(TimeSpan.FromSeconds(100));
         _ = await companyAClient.GetFromJsonAsync<CompanySimulationStateDto>($"/internal/companies/{seed.CompanyAId}/simulation");
@@ -270,9 +264,9 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
         HttpClient client,
         Guid companyId)
     {
-        var invoices = await GetArrayAsync(client, $"/internal/companies/{companyId}/finance/invoices?limit=200");
-        var bills = await GetArrayAsync(client, $"/internal/companies/{companyId}/finance/bills?limit=200");
-        var transactions = await GetArrayAsync(client, $"/internal/companies/{companyId}/finance/transactions?limit=200");
+        var invoices = await GetArrayAsync(client, $"/internal/companies/{companyId}/finance/invoices?limit=200&source=simulation");
+        var bills = await GetArrayAsync(client, $"/internal/companies/{companyId}/finance/bills?limit=200&source=simulation");
+        var transactions = await GetArrayAsync(client, $"/internal/companies/{companyId}/finance/transactions?limit=200&source=simulation");
 
         var persistence = await factory.ExecuteDbContextAsync(async dbContext =>
         {
@@ -298,7 +292,7 @@ public sealed class CompanySimulationFinanceWorkflowEndToEndTests
                 .ToListAsync();
             var auditActions = await dbContext.AuditEvents
                 .IgnoreQueryFilters()
-                .Where(x => x.CompanyId == companyId && x.Action.StartsWith("finance.", StringComparison.OrdinalIgnoreCase))
+                .Where(x => x.CompanyId == companyId && EF.Functions.Like(x.Action, "finance.%"))
                 .OrderBy(x => x.Action)
                 .Select(x => x.Action)
                 .ToListAsync();

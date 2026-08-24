@@ -75,7 +75,7 @@ public static class WorkTaskStatusValues
             return true;
         }
 
-        return Enum.TryParse(trimmed, ignoreCase: true, out status) && Values.ContainsKey(status);
+        return false;
     }
 
     public static WorkTaskStatus Parse(string value)

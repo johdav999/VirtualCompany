@@ -9,7 +9,8 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class ExecutiveCockpitFinanceIntegrationTests : IDisposable
 {
-    private readonly TestWebApplicationFactory _factory = new();
+    private readonly TestWebApplicationFactory _factory = new(
+        new FixedTimeProvider(new DateTimeOffset(2026, 4, 15, 12, 0, 0, TimeSpan.Zero)));
 
     public void Dispose() => _factory.Dispose();
 
@@ -29,7 +30,7 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IDisposable
         Assert.Equal("critical", dashboard.Finance!.Runway.Status, ignoreCase: true);
         Assert.Equal("Critical", dashboard.Finance.Runway.StatusLabel);
         Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.Runway.DisplayValue));
-        Assert.Equal("USD 400.00", dashboard.Finance.CashPosition.DisplayValue);
+        Assert.Equal("USD -1,400.00", dashboard.Finance.CashPosition.DisplayValue);
         Assert.False(string.IsNullOrWhiteSpace(dashboard.Finance.CashPosition.TrendDisplay));
         Assert.NotEqual(default, dashboard.Finance.CashPosition.LastRefreshedUtc);
         Assert.NotNull(dashboard.Finance.LowCashAlert);
@@ -39,9 +40,9 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IDisposable
         Assert.Equal("critical", dashboard.Finance.FinancialHealth.Status, ignoreCase: true);
         Assert.Equal(4, dashboard.Finance.FinancialHealth.ActiveInsightCount);
         Assert.Equal(2, dashboard.Finance.FinancialHealth.CriticalInsightCount);
-        Assert.Equal(1, dashboard.Finance.TopActions.Count);
+        Assert.Equal(3, dashboard.Finance.TopActions.Count);
         Assert.Equal(3, dashboard.Finance.InsightsFeed.Count);
-        Assert.Equal("transaction_anomaly:duplicate-payment-risk", dashboard.Finance.InsightsFeed[0].GroupKey);
+        Assert.Equal("transaction_anomaly|duplicate_payment_risk", dashboard.Finance.InsightsFeed[0].GroupKey);
         Assert.Equal(2, dashboard.Finance.InsightsFeed[0].OccurrenceCount);
         Assert.Contains("/finance/payments/", dashboard.Finance.InsightsFeed[0].Route, StringComparison.OrdinalIgnoreCase);
         Assert.Contains(dashboard.Finance.DeepLinks, x => x.Key == "finance_workspace" && x.Route.Contains("/finance?companyId=", StringComparison.OrdinalIgnoreCase));
@@ -171,7 +172,9 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IDisposable
             dbContext.Users.AddRange(
                 new User(ownerUserId, ownerEmail, ownerDisplayName, "dev-header", ownerSubject),
                 new User(employeeUserId, employeeEmail, employeeDisplayName, "dev-header", employeeSubject));
-            dbContext.Companies.Add(new Company(companyId, "Cockpit Finance Company"));
+            var company = new Company(companyId, "Cockpit Finance Company");
+            company.SetFinanceSeedStatus(FinanceSeedingState.Seeded, DateTime.UtcNow, DateTime.UtcNow);
+            dbContext.Companies.Add(company);
             dbContext.CompanyMemberships.AddRange(
                 new CompanyMembership(Guid.NewGuid(), companyId, ownerUserId, CompanyMembershipRole.Owner, CompanyMembershipStatus.Active),
                 new CompanyMembership(Guid.NewGuid(), companyId, employeeUserId, CompanyMembershipRole.Employee, CompanyMembershipStatus.Active));
@@ -423,5 +426,10 @@ public sealed class ExecutiveCockpitFinanceIntegrationTests : IDisposable
         public string GroupKey { get; set; } = string.Empty;
         public int OccurrenceCount { get; set; }
         public string? Route { get; set; }
+    }
+
+    private sealed class FixedTimeProvider(DateTimeOffset utcNow) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => utcNow;
     }
 }

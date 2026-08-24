@@ -224,13 +224,20 @@ public sealed class PlanningBaselineService : IPlanningBaselineService
         {
             await using var command = connection.CreateCommand();
             command.Transaction = _dbContext.Database.CurrentTransaction?.GetDbTransaction();
-            command.CommandText = """
-                SELECT CASE WHEN EXISTS (
-                    SELECT 1
-                    FROM sys.tables AS t
-                    WHERE t.name = @tableName
-                ) THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END
-                """;
+            command.CommandText = _dbContext.Database.ProviderName switch
+            {
+                "Microsoft.EntityFrameworkCore.Sqlite" =>
+                    "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = @tableName;",
+                "Npgsql.EntityFrameworkCore.PostgreSQL" =>
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = @tableName);",
+                _ => """
+                    SELECT CASE WHEN EXISTS (
+                        SELECT 1
+                        FROM sys.tables AS t
+                        WHERE t.name = @tableName
+                    ) THEN CAST(1 AS bit) ELSE CAST(0 AS bit) END
+                    """
+            };
 
             var parameter = command.CreateParameter();
             parameter.ParameterName = "@tableName";
@@ -238,7 +245,12 @@ public sealed class PlanningBaselineService : IPlanningBaselineService
             command.Parameters.Add(parameter);
 
             var result = await command.ExecuteScalarAsync(cancellationToken);
-            return result is bool exists && exists;
+            return result switch
+            {
+                bool exists => exists,
+                null or DBNull => false,
+                _ => Convert.ToInt64(result) > 0
+            };
         }
         finally
         {

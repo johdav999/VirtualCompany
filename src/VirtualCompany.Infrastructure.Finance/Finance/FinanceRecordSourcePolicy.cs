@@ -7,6 +7,37 @@ namespace VirtualCompany.Infrastructure.Finance;
 
 internal sealed class FinanceRecordSourcePolicy(VirtualCompanyDbContext dbContext)
 {
+    public IQueryable<PaymentAllocation> ApplyPaymentAllocationFilter(
+        IQueryable<PaymentAllocation> source,
+        Guid companyId,
+        string? sourceFilter)
+    {
+        var normalized = FinanceDataSources.NormalizeOperationalRead(sourceFilter);
+        var fortnoxPaymentIds = dbContext.FinanceExternalReferences
+            .IgnoreQueryFilters()
+            .Where(reference =>
+                reference.CompanyId == companyId &&
+                reference.ProviderKey == FinanceIntegrationProviderKeys.Fortnox &&
+                reference.EntityType == "payment")
+            .Select(reference => reference.InternalRecordId);
+
+        return normalized switch
+        {
+            FinanceDataSources.Operational => source.Where(allocation =>
+                allocation.Payment.SourceSimulationEventRecordId == null ||
+                fortnoxPaymentIds.Contains(allocation.PaymentId)),
+            FinanceDataSources.Fortnox => source.Where(allocation =>
+                fortnoxPaymentIds.Contains(allocation.PaymentId)),
+            FinanceDataSources.Simulation => source.Where(allocation =>
+                allocation.Payment.SourceSimulationEventRecordId != null &&
+                !fortnoxPaymentIds.Contains(allocation.PaymentId)),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(sourceFilter),
+                sourceFilter,
+                "Source filter must be operational, fortnox, or simulation.")
+        };
+    }
+
     public IQueryable<TEntity> ApplyFilter<TEntity>(
         IQueryable<TEntity> source,
         Guid companyId,
@@ -14,11 +45,7 @@ internal sealed class FinanceRecordSourcePolicy(VirtualCompanyDbContext dbContex
         params string[] externalEntityTypes)
         where TEntity : class
     {
-        var normalized = FinanceDataSources.Normalize(sourceFilter);
-        if (normalized == FinanceDataSources.All)
-        {
-            return source;
-        }
+        var normalized = FinanceDataSources.NormalizeOperationalRead(sourceFilter);
 
         var fortnoxReferenceIds = dbContext.FinanceExternalReferences
             .IgnoreQueryFilters()

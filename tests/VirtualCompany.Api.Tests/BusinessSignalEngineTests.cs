@@ -43,7 +43,7 @@ public sealed class BusinessSignalEngineTests : IDisposable
                     "user",
                     userId,
                     "threshold",
-                    new Dictionary<string, JsonNode?>(),
+                    new Dictionary<string, JsonNode?> { ["source"] = "business-signal-test" },
                     null,
                     userId,
                     []));
@@ -139,7 +139,7 @@ public sealed class BusinessSignalEngineTests : IDisposable
                     "user",
                     userId,
                     "threshold",
-                    new Dictionary<string, JsonNode?>(),
+                    new Dictionary<string, JsonNode?> { ["source"] = "business-signal-test" },
                     null,
                     userId,
                     []),
@@ -151,7 +151,7 @@ public sealed class BusinessSignalEngineTests : IDisposable
                     "user",
                     otherUserId,
                     "threshold",
-                    new Dictionary<string, JsonNode?>(),
+                    new Dictionary<string, JsonNode?> { ["source"] = "business-signal-test" },
                     null,
                     otherUserId,
                     []));

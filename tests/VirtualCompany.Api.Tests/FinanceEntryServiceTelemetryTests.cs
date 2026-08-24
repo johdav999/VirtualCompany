@@ -95,7 +95,7 @@ public sealed class FinanceEntryServiceTelemetryTests
     }
 
     [Fact]
-    public async Task Fallback_request_repairs_stale_seeded_metadata_without_active_execution()
+    public async Task Fallback_request_trusts_completed_seed_state_without_reseeding()
     {
         var companyId = Guid.NewGuid();
 
@@ -118,17 +118,12 @@ public sealed class FinanceEntryServiceTelemetryTests
                 SeedMode: FinanceSeedRequestModes.Replace),
             CancellationToken.None);
 
-        Assert.True(state.SeedJobEnqueued);
-        Assert.True(state.SeedJobActive);
-        Assert.Equal(FinanceSeedOperationContractValues.Started, state.SeedOperation);
-        Assert.Equal(FinanceEntryProgressStates.SeedingRequested, state.ProgressState);
-        Assert.Equal(FinanceSeedingState.Seeding, state.SeedingState);
-
-        var telemetryEvent = Assert.Single(telemetry.Events);
-        Assert.Equal(FinanceSeedTelemetryEventNames.Requested, telemetryEvent.EventName);
-        Assert.Equal(FinanceEntrySources.FallbackRead, telemetryEvent.Context.TriggerSource);
-        Assert.Equal(FinanceSeedingState.Seeding, telemetryEvent.Context.SeedStateBefore);
-        Assert.Equal(FinanceSeedingState.Seeding, telemetryEvent.Context.SeedStateAfter);
+        Assert.False(state.SeedJobEnqueued);
+        Assert.False(state.SeedJobActive);
+        Assert.Equal(FinanceSeedOperationContractValues.Skipped, state.SeedOperation);
+        Assert.Equal(FinanceEntryProgressStates.Seeded, state.ProgressState);
+        Assert.Equal(FinanceSeedingState.Seeded, state.SeedingState);
+        Assert.Empty(telemetry.Events);
     }
 
     [Fact]
