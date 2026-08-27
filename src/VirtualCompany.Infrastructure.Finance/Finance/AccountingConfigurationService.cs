@@ -33,8 +33,8 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         ValidateCompanyId(query.CompanyId);
         var configuration = await LoadConfigurationAsync(query.CompanyId, tracking: false, cancellationToken);
         return configuration is null
-            ? BuildMissingStatus(query.CompanyId)
-            : BuildStatus(configuration);
+            ? await BuildMissingStatusAsync(query.CompanyId, cancellationToken)
+            : await BuildStatusAsync(configuration, cancellationToken);
     }
 
     public async Task<AccountingSetupStatusDto> CreateInitialAsync(
@@ -45,6 +45,26 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         ValidateActor(command.ActorUserId);
         var pack = _packResolver.Resolve(command.PolicyPackKey, command.PolicyPackVersion);
         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+
+        if (string.Equals(pack.Definition.CountryOrRegion, "SE", StringComparison.OrdinalIgnoreCase))
+        {
+            var profile = await _dbContext.CompanyStatutoryProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.CompanyId == command.CompanyId, cancellationToken);
+            var statutoryStatus = CompanyStatutoryProfileService.BuildStatus(command.CompanyId, profile);
+            if (!statutoryStatus.IsCompleteForSelectedPolicyPack)
+            {
+                throw new CompanyStatutoryProfileException(
+                    CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                    "Complete and attest the Swedish statutory profile before creating this accounting configuration.");
+            }
+            if (!string.Equals(profile!.AccountingCurrency, command.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new CompanyStatutoryProfileException(
+                    CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                    "The accounting configuration currency must match the statutory profile currency.");
+            }
+            EnsureSwedishVatLaunchScope(pack, profile);
+        }
 
         if (await _dbContext.AccountingConfigurations.AnyAsync(
                 configuration => configuration.CompanyId == command.CompanyId,
@@ -57,7 +77,7 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         }
 
         var assignments = NormalizeAssignments(command.AccountRoleAssignments);
-        await ValidateRoleAssignmentsAsync(command.CompanyId, pack, assignments, cancellationToken);
+        await ValidateRoleAssignmentsAsync(command.CompanyId, pack, assignments, command.EffectiveFrom, cancellationToken);
 
         var configuration = new AccountingConfiguration(
             Guid.NewGuid(),
@@ -157,7 +177,7 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
                 isConflict: true);
         }
 
-        return BuildStatus(configuration);
+        return await BuildStatusAsync(configuration, cancellationToken);
     }
 
     public async Task<AccountingPolicyPackImpactPreviewDto> PreviewPolicyPackSelectionAsync(
@@ -195,7 +215,18 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
                 IsBlocking: true));
         }
 
-        issues.AddRange(await BuildRoleAssignmentIssuesAsync(query.CompanyId, targetPack, assignments, cancellationToken));
+        issues.AddRange(await BuildRoleAssignmentIssuesAsync(query.CompanyId, targetPack, assignments, query.EffectiveFrom, cancellationToken));
+        if (string.Equals(targetPack.Definition.CountryOrRegion, "SE", StringComparison.OrdinalIgnoreCase))
+        {
+            var profile = await _dbContext.CompanyStatutoryProfiles.AsNoTracking()
+                .SingleOrDefaultAsync(item => item.CompanyId == query.CompanyId, cancellationToken);
+            var statutoryStatus = CompanyStatutoryProfileService.BuildStatus(query.CompanyId, profile);
+            issues.AddRange(statutoryStatus.MissingFacts.Select(fact => new AccountingConfigurationIssueDto(
+                CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                ExplainMissingFact(fact),
+                fact)));
+            AddSwedishVatLaunchScopeIssues(targetPack, profile, issues);
+        }
         var warnings = BuildWarnings(targetPack);
         var currentRoleKeys = currentPack.Definition.AccountRoles.Select(role => role.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var targetRoleKeys = targetPack.Definition.AccountRoles.Select(role => role.Key).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -332,7 +363,7 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
             throw ConcurrencyConflict();
         }
 
-        return BuildStatus(configuration);
+        return await BuildStatusAsync(configuration, cancellationToken);
     }
 
     public async Task<AccountingSetupStatusDto> ValidateAsync(
@@ -342,8 +373,8 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         ValidateCompanyId(query.CompanyId);
         var configuration = await LoadConfigurationAsync(query.CompanyId, tracking: false, cancellationToken);
         return configuration is null
-            ? BuildMissingStatus(query.CompanyId)
-            : BuildStatus(configuration);
+            ? await BuildMissingStatusAsync(query.CompanyId, cancellationToken)
+            : await BuildStatusAsync(configuration, cancellationToken);
     }
 
     public async Task<AccountingCapabilityDecisionDto> GetCapabilityAsync(
@@ -375,11 +406,25 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
             pack.Definition.Version);
     }
 
-    private AccountingSetupStatusDto BuildStatus(AccountingConfiguration configuration)
+    private async Task<AccountingSetupStatusDto> BuildStatusAsync(
+        AccountingConfiguration configuration,
+        CancellationToken cancellationToken)
     {
         var pack = _packResolver.Resolve(configuration.PolicyPackKey, configuration.PolicyPackVersion);
-        var issues = BuildIssues(pack, configuration.AccountRoles.Select(role => role.RoleKey));
+        var issues = BuildIssues(pack, configuration.AccountRoles.Select(role => role.RoleKey)).ToList();
         var warnings = BuildWarnings(pack);
+        var statutoryProfile = await _dbContext.CompanyStatutoryProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(profile => profile.CompanyId == configuration.CompanyId, cancellationToken);
+        var statutoryStatus = CompanyStatutoryProfileService.BuildStatus(configuration.CompanyId, statutoryProfile);
+        var isSwedishPack = string.Equals(pack.Definition.CountryOrRegion, "SE", StringComparison.OrdinalIgnoreCase);
+        if (isSwedishPack)
+        {
+            issues.AddRange(statutoryStatus.MissingFacts.Select(fact => new AccountingConfigurationIssueDto(
+                CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                ExplainMissingFact(fact),
+                fact)));
+            AddSwedishVatLaunchScopeIssues(pack, statutoryProfile, issues);
+        }
         var rolesByKey = configuration.AccountRoles.ToDictionary(role => role.RoleKey, StringComparer.OrdinalIgnoreCase);
         var roleDtos = pack.Definition.AccountRoles
             .OrderBy(role => role.Key, StringComparer.OrdinalIgnoreCase)
@@ -441,7 +486,13 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
             configuration.SetupState,
             dto,
             issues,
-            warnings);
+            warnings,
+            statutoryStatus,
+            pack.Definition.IsStatutoryComplianceValidated ? "reviewer_validated" : isSwedishPack ? "review_pending" : "general_only",
+            isSwedishPack ? statutoryStatus.MissingFacts : [],
+            isSwedishPack
+                ? statutoryStatus.NextActions
+                : ["Select a jurisdiction-specific policy pack only when its rules and review state match the company."]);
     }
 
     private async Task<AccountingConfiguration?> LoadConfigurationAsync(
@@ -466,9 +517,10 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         Guid companyId,
         IAccountingPolicyPack pack,
         IReadOnlyDictionary<string, Guid> assignments,
+        DateOnly effectiveFrom,
         CancellationToken cancellationToken)
     {
-        var issues = await BuildRoleAssignmentIssuesAsync(companyId, pack, assignments, cancellationToken);
+        var issues = await BuildRoleAssignmentIssuesAsync(companyId, pack, assignments, effectiveFrom, cancellationToken);
         var issue = issues.FirstOrDefault(item => item.IsBlocking && item.ReasonCode == AccountingConfigurationReasonCodes.InvalidAccountRole);
         if (issue is not null)
         {
@@ -480,6 +532,7 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         Guid companyId,
         IAccountingPolicyPack pack,
         IReadOnlyDictionary<string, Guid> assignments,
+        DateOnly effectiveFrom,
         CancellationToken cancellationToken)
     {
         var issues = new List<AccountingConfigurationIssueDto>();
@@ -493,20 +546,37 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         }
 
         var accountIds = assignments.Values.Distinct().ToArray();
-        var validAccountIds = accountIds.Length == 0
-            ? new HashSet<Guid>()
+        var accounts = accountIds.Length == 0
+            ? new Dictionary<Guid, FinanceAccount>()
             : (await _dbContext.FinanceAccounts
                 .AsNoTracking()
                 .Where(account => account.CompanyId == companyId && accountIds.Contains(account.Id))
-                .Select(account => account.Id)
                 .ToListAsync(cancellationToken))
-                .ToHashSet();
-        foreach (var assignment in assignments.Where(assignment => !validAccountIds.Contains(assignment.Value)))
+                .ToDictionary(account => account.Id);
+        foreach (var assignment in assignments.Where(assignment => !accounts.ContainsKey(assignment.Value)))
         {
             issues.Add(new(
                 AccountingConfigurationReasonCodes.InvalidAccountRole,
                 $"The account assigned to role '{assignment.Key}' is not available for this company.",
                 assignment.Key));
+        }
+
+        var expectedByRole = pack.Definition.ChartTemplates.SelectMany(chart => chart.Accounts)
+            .Where(account => !string.IsNullOrWhiteSpace(account.DefaultRoleKey))
+            .GroupBy(account => account.DefaultRoleKey!, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        foreach (var assignment in assignments.Where(assignment => accounts.ContainsKey(assignment.Value)))
+        {
+            var account = accounts[assignment.Value];
+            if (!account.IsPostingEnabled || account.EffectiveFrom > effectiveFrom || account.EffectiveTo < effectiveFrom)
+                issues.Add(new(AccountingConfigurationReasonCodes.InvalidAccountRole,
+                    $"The account assigned to role '{assignment.Key}' is not active on the policy effective date.", assignment.Key));
+            if (expectedByRole.TryGetValue(assignment.Key, out var expected) &&
+                (!string.Equals(FinanceAccountClassValues.NormalizeOptional(account.AccountClass),
+                        FinanceAccountClassValues.NormalizeOptional(expected.AccountClass), StringComparison.OrdinalIgnoreCase) ||
+                 !string.Equals(account.NormalBalance, expected.NormalBalance, StringComparison.OrdinalIgnoreCase)))
+                issues.Add(new(AccountingConfigurationReasonCodes.InvalidAccountRole,
+                    $"The account assigned to role '{assignment.Key}' has an incompatible class or normal balance.", assignment.Key));
         }
 
         foreach (var role in pack.Definition.AccountRoles.Where(role => role.IsRequired && !assignments.ContainsKey(role.Key)))
@@ -518,6 +588,33 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
         }
 
         return issues;
+    }
+
+    private static bool IsSwedishVatLaunchPack(IAccountingPolicyPack pack) =>
+        pack.Definition.PolicyMetadata?.ContainsKey("tax_specification") == true;
+
+    private static void EnsureSwedishVatLaunchScope(IAccountingPolicyPack pack, CompanyStatutoryProfile profile)
+    {
+        if (!IsSwedishVatLaunchPack(pack)) return;
+        if (profile.CountryCode != "SE" || profile.AccountingCurrency != "SEK" ||
+            profile.BookkeepingMethod != StatutoryBookkeepingMethodValues.Accrual)
+            throw new CompanyStatutoryProfileException(CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                "The Swedish VAT launch policy requires a Swedish company using SEK and the invoice/accrual bookkeeping method.");
+    }
+
+    private static void AddSwedishVatLaunchScopeIssues(IAccountingPolicyPack pack, CompanyStatutoryProfile? profile,
+        ICollection<AccountingConfigurationIssueDto> issues)
+    {
+        if (!IsSwedishVatLaunchPack(pack) || profile is null) return;
+        if (profile.CountryCode != "SE")
+            issues.Add(new(CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                "The Swedish VAT launch policy requires a company established in Sweden.", StatutoryProfileFactKeys.CountryCode));
+        if (profile.AccountingCurrency != "SEK")
+            issues.Add(new(CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                "The Swedish VAT launch policy requires SEK accounting.", StatutoryProfileFactKeys.AccountingCurrency));
+        if (profile.BookkeepingMethod != StatutoryBookkeepingMethodValues.Accrual)
+            issues.Add(new(CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                "The Swedish VAT launch policy supports only the invoice/accrual bookkeeping method.", StatutoryProfileFactKeys.BookkeepingMethod));
     }
 
     private static IReadOnlyList<AccountingConfigurationIssueDto> BuildIssues(
@@ -543,8 +640,31 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
                 AccountingPolicyCapabilityKeys.CountrySpecificReporting,
                 IsBlocking: false)];
 
-    private static AccountingSetupStatusDto BuildMissingStatus(Guid companyId) =>
-        new(
+    private async Task<AccountingSetupStatusDto> BuildMissingStatusAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        var companyRegion = await _dbContext.Companies.AsNoTracking()
+            .Where(company => company.Id == companyId)
+            .Select(company => company.ComplianceRegion)
+            .SingleOrDefaultAsync(cancellationToken);
+        var swedishCompany = string.Equals(companyRegion, "SE", StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(companyRegion, "Sweden", StringComparison.OrdinalIgnoreCase);
+        var profile = await _dbContext.CompanyStatutoryProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(item => item.CompanyId == companyId, cancellationToken);
+        var statutoryStatus = CompanyStatutoryProfileService.BuildStatus(companyId, profile);
+        var issues = new List<AccountingConfigurationIssueDto>
+        {
+            new(AccountingConfigurationReasonCodes.IncompleteConfiguration,
+                "Create the accounting configuration before using the internal ledger.")
+        };
+        if (swedishCompany)
+        {
+            issues.AddRange(statutoryStatus.MissingFacts.Select(fact => new AccountingConfigurationIssueDto(
+                CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                ExplainMissingFact(fact),
+                fact)));
+        }
+
+        return new(
             companyId,
             IsConfigured: false,
             CanUseInternalLedger: false,
@@ -553,10 +673,31 @@ public sealed class AccountingConfigurationService : IAccountingConfigurationSer
             AccountingAuthorityValues.InternalLedger,
             AccountingSetupStateValues.Incomplete,
             Configuration: null,
-            Issues: [new AccountingConfigurationIssueDto(
-                AccountingConfigurationReasonCodes.IncompleteConfiguration,
-                "Create the accounting configuration before using the internal ledger.")],
-            Warnings: []);
+            Issues: issues,
+            Warnings: [],
+            StatutoryProfile: statutoryStatus,
+            PolicyPackValidationState: "not_selected",
+            MissingLegalFacts: swedishCompany ? statutoryStatus.MissingFacts : [],
+            NextActions: swedishCompany
+                ? ["Complete the Swedish statutory profile, then preview an accounting policy pack before setup."]
+                : ["Preview and create an accounting configuration."]);
+    }
+
+    private static string ExplainMissingFact(string fact) => fact switch
+    {
+        StatutoryProfileFactKeys.LegalName => "Add the company's registered legal name.",
+        StatutoryProfileFactKeys.OrganisationNumber => "Add a structurally valid Swedish organisation number. This checks format only, not registry status.",
+        StatutoryProfileFactKeys.RegisteredAddress => "Complete the registered address.",
+        StatutoryProfileFactKeys.CountryCode => "Set the statutory country code to SE for the Swedish candidate pack.",
+        StatutoryProfileFactKeys.AccountingCurrency => "Set the accounting currency to SEK for the Swedish candidate pack.",
+        StatutoryProfileFactKeys.FiscalYearBasis => "Select the company's fiscal-year basis.",
+        StatutoryProfileFactKeys.BookkeepingMethod => "Select the bookkeeping method that applies to the company.",
+        StatutoryProfileFactKeys.OrganisationRegistrationDate => "Add the organisation registration effective date.",
+        StatutoryProfileFactKeys.VatRegistrationNumber => "Add the VAT registration number for a VAT-registered company.",
+        StatutoryProfileFactKeys.VatRegistrationDate => "Add the VAT registration effective date.",
+        StatutoryProfileFactKeys.UserAttestation => "Review and attest the supplied legal facts. Attestation is not government verification.",
+        _ => "Complete the missing statutory profile fact."
+    };
 
     private Task WriteAuditAsync(
         Guid companyId,

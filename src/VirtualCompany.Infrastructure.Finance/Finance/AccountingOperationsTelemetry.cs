@@ -28,6 +28,14 @@ public sealed class AccountingOperationsTelemetry
     private static readonly Counter<long> RetentionCleanupOutcomes = Meter.CreateCounter<long>("accounting.cleanup.outcomes");
     private static readonly Counter<long> RetentionCleanupItems = Meter.CreateCounter<long>("accounting.cleanup.items");
     private static readonly Counter<long> RetentionCleanupBytes = Meter.CreateCounter<long>("accounting.cleanup.bytes", "By");
+    private static readonly Counter<long> StatutoryProfileChanges = Meter.CreateCounter<long>("accounting.statutory_profile.changes");
+    private static readonly Counter<long> BlockedTaxDecisions = Meter.CreateCounter<long>("accounting.tax_decision.blocks");
+    private static readonly Counter<long> StatutoryDocumentSeriesChanges = Meter.CreateCounter<long>("accounting.statutory_document.series_changes");
+    private static readonly Counter<long> StatutoryDocumentAllocations = Meter.CreateCounter<long>("accounting.statutory_document.allocations");
+    private static readonly Counter<long> StatutoryDocumentRegistrations = Meter.CreateCounter<long>("accounting.statutory_document.registrations");
+    private static readonly Counter<long> StatutoryDocumentBlocks = Meter.CreateCounter<long>("accounting.statutory_document.blocks");
+    private static readonly Counter<long> VatReturnCalculations = Meter.CreateCounter<long>("accounting.vat_return.calculations");
+    private static readonly Counter<long> VatReturnFinalizations = Meter.CreateCounter<long>("accounting.vat_return.finalizations");
     private readonly ILogger<AccountingOperationsTelemetry> _logger;
 
     public AccountingOperationsTelemetry(ILogger<AccountingOperationsTelemetry> logger) => _logger = logger;
@@ -196,5 +204,64 @@ public sealed class AccountingOperationsTelemetry
         _logger.LogInformation(
             "Accounting retention cleanup telemetry recorded for company {CompanyId}. Outcome={Outcome}, Processed={ProcessedCount}, ReleasedBytes={ReleasedBytes}.",
             companyId, outcome, processedCount, releasedBytes);
+    }
+
+    public void StatutoryProfileChanged(Guid companyId, string operation, bool formatComplete,
+        bool userAttested, string verificationStatus, string? correlationId)
+    {
+        StatutoryProfileChanges.Add(1, new("operation", operation), new("format_complete", formatComplete),
+            new("user_attested", userAttested), new("verification_status", verificationStatus));
+        _logger.LogInformation(
+            "Statutory profile {Operation} for company {CompanyId}. FormatComplete={FormatComplete}, UserAttested={UserAttested}, VerificationStatus={VerificationStatus}, CorrelationId={CorrelationId}.",
+            operation, companyId, formatComplete, userAttested, verificationStatus, correlationId);
+    }
+
+    public void TaxDecisionBlocked(Guid companyId, string direction, string reasonCode,
+        string policyPackKey, string policyPackVersion)
+    {
+        BlockedTaxDecisions.Add(1, new("direction", direction), new("reason_code", reasonCode),
+            new("policy_pack", policyPackKey), new("policy_version", policyPackVersion));
+        _logger.LogWarning(
+            "Tax decision blocked for company {CompanyId}. Direction={Direction}, ReasonCode={ReasonCode}, PolicyPack={PolicyPackKey}, PolicyVersion={PolicyPackVersion}.",
+            companyId, direction, reasonCode, policyPackKey, policyPackVersion);
+    }
+
+    public void StatutoryDocumentSeriesChanged(Guid companyId, string operation, string documentType, string? correlationId)
+    {
+        StatutoryDocumentSeriesChanges.Add(1, new("operation", operation), new("document_type", documentType));
+        _logger.LogInformation("Statutory document series {Operation} for company {CompanyId}. DocumentType={DocumentType}, CorrelationId={CorrelationId}.", operation, companyId, documentType, correlationId);
+    }
+
+    public void StatutoryDocumentNumberAllocated(Guid companyId, string documentType, string outcome, string? correlationId)
+    {
+        StatutoryDocumentAllocations.Add(1, new("document_type", documentType), new("outcome", outcome));
+        _logger.LogInformation("Statutory document number allocation recorded for company {CompanyId}. DocumentType={DocumentType}, Outcome={Outcome}, CorrelationId={CorrelationId}.", companyId, documentType, outcome, correlationId);
+    }
+
+    public void StatutoryDocumentRegistered(Guid companyId, string documentType, string authority, string? correlationId)
+    {
+        StatutoryDocumentRegistrations.Add(1, new("document_type", documentType), new("authority", authority));
+        _logger.LogInformation("Statutory document registered for company {CompanyId}. DocumentType={DocumentType}, Authority={Authority}, CorrelationId={CorrelationId}.", companyId, documentType, authority, correlationId);
+    }
+
+    public void StatutoryDocumentBlocked(Guid companyId, string documentType, string reasonCode)
+    {
+        StatutoryDocumentBlocks.Add(1, new("document_type", documentType), new("reason_code", reasonCode));
+        _logger.LogWarning("Statutory document decision blocked for company {CompanyId}. DocumentType={DocumentType}, ReasonCode={ReasonCode}.", companyId, documentType, reasonCode);
+    }
+
+    public void VatReturnCalculated(Guid companyId, string status, int sourceCount, int issueCount)
+    {
+        VatReturnCalculations.Add(1, new("status", status), new("has_issues", issueCount > 0));
+        _logger.LogInformation("VAT return calculated for company {CompanyId}. Status={Status}, SourceCount={SourceCount}, IssueCount={IssueCount}.",
+            companyId, status, sourceCount, issueCount);
+    }
+
+    public void VatReturnFinalized(Guid companyId, Guid vatReturnId, int version, string checksum)
+    {
+        VatReturnFinalizations.Add(1,
+            new KeyValuePair<string, object?>[] { new("status", "locked") });
+        _logger.LogInformation("VAT return {VatReturnId} version {Version} finalized for company {CompanyId}. PackageChecksum={PackageChecksum}.",
+            vatReturnId, version, companyId, checksum);
     }
 }

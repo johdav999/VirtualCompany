@@ -26,6 +26,8 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguratio
         builder.Property(x => x.CreditLimit).HasColumnName("credit_limit").HasColumnType("decimal(18,2)");
         builder.Property(x => x.PreferredPaymentMethod).HasColumnName("preferred_payment_method").HasMaxLength(64);
         builder.Property(x => x.DefaultAccountMapping).HasColumnName("default_account_mapping").HasMaxLength(64);
+        builder.Property(x => x.MergedIntoCounterpartyId).HasColumnName("merged_into_counterparty_id");
+        builder.Property(x => x.MergedUtc).HasColumnName("merged_at");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
@@ -33,6 +35,7 @@ internal sealed class FinanceCounterpartyConfiguration : IEntityTypeConfiguratio
         builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType, x.Name });
         builder.HasIndex(x => new { x.CompanyId, x.Email });
         builder.HasIndex(x => new { x.CompanyId, x.CounterpartyType });
+        builder.HasIndex(x => new { x.CompanyId, x.MergedIntoCounterpartyId });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
     }
 }

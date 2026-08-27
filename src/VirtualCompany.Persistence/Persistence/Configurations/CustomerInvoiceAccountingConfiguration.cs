@@ -85,6 +85,7 @@ internal sealed class CustomerInvoiceAccountingLineConfiguration : IEntityTypeCo
         builder.Property(x => x.NetBaseAmount).HasColumnName("net_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.TaxBaseAmount).HasColumnName("tax_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.TaxPayableAccountId).HasColumnName("tax_payable_account_id");
+        builder.Property(x => x.TaxFactsJson).HasColumnName("tax_facts_json").HasMaxLength(8000).IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.ProfileId, x.Sequence }).IsUnique();
         builder.HasOne(x => x.Profile).WithMany(x => x.Lines).HasForeignKey(x => new { x.CompanyId, x.ProfileId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);

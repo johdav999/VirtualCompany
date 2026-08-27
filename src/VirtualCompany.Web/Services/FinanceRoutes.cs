@@ -35,6 +35,10 @@ public static class FinanceRoutes
     public const string BillInbox = "/finance/bill-inbox";
     public const string BillInboxDetail = "/finance/bill-inbox/{BillId:guid}";
     public const string Invoices = "/finance/invoices";
+    public const string InvoiceDraftNew = "/finance/invoices/new";
+    public const string InvoiceDraft = "/finance/invoices/drafts/{DraftId:guid}";
+    public const string Receivables = "/finance/receivables";
+    public const string CustomerBilling = "/finance/customers/{CustomerId:guid}";
     public const string Reviews = "/finance/reviews";
     public const string ReviewDetail = "/finance/reviews/{InvoiceId:guid}";
     public const string InvoiceDetail = "/finance/invoices/{InvoiceId:guid}";
@@ -82,7 +86,7 @@ public static class FinanceRoutes
         [
             new("Overview", Home, "Review key finance actions and open the operational finance workspace."),
             new("Cash", CashPosition, "Track cash, liquidity, balances, and monthly results.", ActivePathPrefixes: [CashPosition, Balances, MonthlySummary]),
-            new("Customer invoices", Invoices, "Track invoice review and collection workflows.", ActivePathPrefixes: [Invoices, Reviews]),
+            new("Customer invoices", Invoices, "Track invoice review and collection workflows.", ActivePathPrefixes: [Invoices, Reviews, Receivables, "/finance/customers"]),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
             new("Subscriptions", SupplierSubscriptions, "Track recurring supplier agreements and bill matching."),
             new("Payments", Payments, "Track money coming in and going out."),
@@ -127,6 +131,12 @@ public static class FinanceRoutes
 
     public static string BuildInvoiceDetailPath(Guid invoiceId, Guid? companyId) =>
         WithCompanyContext($"/finance/invoices/{invoiceId:D}", companyId);
+
+    public static string BuildInvoiceDraftPath(Guid draftId, Guid? companyId) =>
+        WithCompanyContext($"/finance/invoices/drafts/{draftId:D}", companyId);
+
+    public static string BuildCustomerBillingPath(Guid customerId, Guid? companyId) =>
+        WithCompanyContext($"/finance/customers/{customerId:D}", companyId);
 
     public static string BuildInvoiceReviewDetailPath(Guid invoiceId, Guid? companyId) =>
         WithCompanyContext($"/finance/reviews/{invoiceId:D}", companyId);

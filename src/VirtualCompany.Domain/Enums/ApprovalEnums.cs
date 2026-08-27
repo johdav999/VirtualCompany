@@ -16,7 +16,11 @@ public enum ApprovalTargetEntityType
     AccountingProviderSwitchMappingDecision = 12,
     AccountingProviderSwitchCutoverPlan = 13,
     AccountingProviderSwitchActivation = 14,
-    AccountingProviderSwitchClosure = 15
+    AccountingProviderSwitchClosure = 15,
+    VatReturn = 16,
+    CustomerInvoiceDraft = 17,
+    CustomerInvoiceSchedule = 18,
+    CustomerCollectionReminder = 19
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -37,7 +41,11 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.AccountingProviderSwitchMappingDecision] = "accounting_provider_switch_mapping_decision",
         [ApprovalTargetEntityType.AccountingProviderSwitchCutoverPlan] = "accounting_provider_switch_cutover_plan",
         [ApprovalTargetEntityType.AccountingProviderSwitchActivation] = "accounting_provider_switch_activation",
-        [ApprovalTargetEntityType.AccountingProviderSwitchClosure] = "accounting_provider_switch_closure"
+        [ApprovalTargetEntityType.AccountingProviderSwitchClosure] = "accounting_provider_switch_closure",
+        [ApprovalTargetEntityType.VatReturn] = "vat_return",
+        [ApprovalTargetEntityType.CustomerInvoiceDraft] = "customer_invoice_draft",
+        [ApprovalTargetEntityType.CustomerInvoiceSchedule] = "customer_invoice_schedule",
+        [ApprovalTargetEntityType.CustomerCollectionReminder] = "customer_collection_reminder"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

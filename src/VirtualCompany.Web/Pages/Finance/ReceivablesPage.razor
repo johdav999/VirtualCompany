@@ -1,0 +1,151 @@
+@page "/finance/receivables"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["Receivables"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["Receivables"]" Description="@FinanceText["ReceivablesDescription"]"
+                   LoadingMessage="@FinanceText["LoadingReceivables"]" ShowShellHeader="false" ShowShellNavigation="false">
+    <section class="receivables-workspace" aria-labelledby="receivables-title">
+        <header class="receivables-header">
+            <div><span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span><h1 id="receivables-title">@FinanceText["Receivables"]</h1><p>@FinanceText["ReceivablesDescription"]</p></div>
+            <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.InvoiceDraftNew, AccessState.CompanyId)">@FinanceText["NewInvoice"]</a>
+        </header>
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+        @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+        @if (!string.IsNullOrWhiteSpace(WorkspaceError)) { <div class="alert alert-danger" role="alert">@WorkspaceError <button class="btn btn-sm btn-outline-danger ms-2" @onclick="ReloadAsync">@CommonText["Retry"]</button></div> }
+
+        <div class="receivables-kpis" aria-label="@FinanceText["ReceivablesSummary"]">
+            <article><span>@FinanceText["Outstanding"]</span><strong>@Money(Aging?.TotalOpen ?? Metrics?.OpenReceivables ?? 0m, Currency)</strong><small>@FinanceText["OpenInvoiceCount", Aging?.TotalCount ?? 0]</small></article>
+            <article class="is-danger"><span>@FinanceText["Overdue"]</span><strong>@Money(Metrics?.OverdueValue ?? AgingOverdue, Currency)</strong><small>@FinanceText["NeedsFollowUp"]</small></article>
+            <article><span>@FinanceText["DueThisWeek"]</span><strong>@Money(DueThisWeek, Currency)</strong><small>@FinanceText["PlanCustomerContact"]</small></article>
+            <article class="is-warning"><span>@FinanceText["PromisesDue"]</span><strong>@Money(PromisesDueAmount, Currency)</strong><small>@FinanceText["PromiseCount", PromisesDueCount]</small></article>
+        </div>
+
+        <ReceivablesNavigation CompanyId="@AccessState.CompanyId!.Value" ActiveView="@View" />
+
+        @if (IsWorkspaceLoading)
+        {
+            <FinanceLoadingState Title="@FinanceText["LoadingReceivables"]" Message="@FinanceText["LoadingReceivablesHelp"]" />
+        }
+        else if (View == "operations")
+        {
+            <section class="operations-banner @((Readiness?.IsReady ?? false) ? "is-ready" : "is-blocked")" role="status">
+                <div class="operations-banner__icon" aria-hidden="true">@((Readiness?.IsReady ?? false) ? "✓" : "!")</div>
+                <div><h2>@((Readiness?.IsReady ?? false) ? FinanceText["ReceivablesOperationallyReady"] : FinanceText["ReceivablesReleaseBlocked"])</h2><p>@((Readiness?.IsReady ?? false) ? FinanceText["ReceivablesOperationallyReadyHelp"] : FinanceText["ReceivablesReleaseBlockedHelp"])</p></div>
+            </section>
+            <div class="operations-summary" aria-label="@FinanceText["ReceivablesReadinessSummary"]">
+                <article class="is-blocking"><span>@FinanceText["ReceivablesBlockingIssues"]</span><strong>@(Readiness?.BlockingCheckCount ?? 0)</strong><small>@FinanceText["ReceivablesBlockingIssuesHelp"]</small></article>
+                <article class="is-attention"><span>@FinanceText["NeedsAttention"]</span><strong>@(Readiness?.AttentionCheckCount ?? 0)</strong><small>@FinanceText["NeedsAttentionHelp"]</small></article>
+                <article class="is-healthy"><span>@FinanceText["HealthyChecks"]</span><strong>@(Readiness?.HealthyCheckCount ?? 0)</strong><small>@FinanceText["HealthyChecksHelp"]</small></article>
+            </div>
+            <div class="operations-layout">
+                <section class="receivables-card operations-queue">
+                    <div class="receivables-card__heading"><div><h2>@FinanceText["OperatorQueue"]</h2><p>@FinanceText["OperatorQueueHelp"]</p></div><button class="btn btn-outline-secondary btn-sm" @onclick="ReloadAsync">@CommonText["Refresh"]</button></div>
+                    @if (Readiness?.Signals.Count > 0)
+                    {
+                        <div class="operations-checks">
+                            @foreach (var signal in Readiness.Signals)
+                            {
+                                <article class="operations-check is-@signal.Status">
+                                    <span class="operations-check__mark" aria-hidden="true">@(signal.Status == "healthy" ? "✓" : "!")</span>
+                                    <div><div class="operations-check__title"><h3>@ReadinessTitle(signal.Key)</h3><span class="status-pill @StatusTone(signal.Status)">@ReadinessStatusLabel(signal.Status)</span></div><p>@signal.Explanation</p><small>@signal.OperatorAction</small></div>
+                                    <strong>@ReadinessValue(signal)</strong>
+                                </article>
+                            }
+                        </div>
+                    }
+                    else
+                    {
+                        <FinanceEmptyState Title="@FinanceText["NoReadinessEvidence"]" Message="@FinanceText["NoReadinessEvidenceHelp"]" />
+                    }
+                </section>
+                <aside class="receivables-card evidence-recovery">
+                    <h2>@FinanceText["EvidenceAndRecovery"]</h2>
+                    <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingSetup, AccessState.CompanyId)"><strong>@FinanceText["MigrationAndSetupStatus"]</strong><small>@FinanceText["MigrationAndSetupStatusHelp"]</small></a>
+                    <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReconciliation, AccessState.CompanyId)"><strong>@FinanceText["RestoreAndControlVerification"]</strong><small>@FinanceText["RestoreAndControlVerificationHelp"]</small></a>
+                    <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReports, AccessState.CompanyId)"><strong>@FinanceText["ReportsAndExports"]</strong><small>@FinanceText["ReportsAndExportsHelp"]</small></a>
+                    <div class="delivery-proof-note"><strong>@FinanceText["ExternalEvidenceRequired"]</strong><p>@FinanceText["ProviderAcceptanceNotDelivery"]</p></div>
+                    @if (Readiness is not null) { <small>@FinanceText["ReadinessEvaluated", FormatDateTime(Readiness.EvaluatedUtc)]</small> }
+                </aside>
+            </div>
+        }
+        else if (View == "drafts")
+        {
+            <section class="receivables-card">
+                <div class="receivables-card__heading"><div><h2>@FinanceText["InvoiceDrafts"]</h2><p>@FinanceText["InvoiceDraftsHelp"]</p></div><a class="btn btn-primary btn-sm" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.InvoiceDraftNew, AccessState.CompanyId)">@FinanceText["NewInvoice"]</a></div>
+                @if (Drafts.Count == 0) { <FinanceEmptyState Title="@FinanceText["NoInvoiceDrafts"]" Message="@FinanceText["NoInvoiceDraftsHelp"]" /> }
+                else { <div class="receivables-list">@foreach (var draft in Drafts) { <a class="receivables-row" href="@FinanceRoutes.BuildInvoiceDraftPath(draft.Id, AccessState.CompanyId)"><span class="row-icon">D</span><span><strong>@draft.CustomerName</strong><small>@FinanceText["DraftUpdated", FormatDateTime(draft.UpdatedUtc)]</small></span><span class="row-meta"><strong>@Money(draft.Totals.GrossTotal, draft.Currency)</strong><span class="status-pill @StatusTone(draft.Status)">@FriendlyStatus(draft.Status)</span></span><span aria-hidden="true">›</span></a> }</div> }
+            </section>
+        }
+        else if (View == "recurring")
+        {
+            <div class="receivables-split">
+                <section class="receivables-card">
+                    <div class="receivables-card__heading"><div><h2>@FinanceText["RecurringBilling"]</h2><p>@FinanceText["RecurringBillingHelp"]</p></div><span>@Schedules.Count</span></div>
+                    @if (Schedules.Count == 0) { <FinanceEmptyState Title="@FinanceText["NoRecurringSchedules"]" Message="@FinanceText["NoRecurringSchedulesHelp"]" /> }
+                    else { <div class="receivables-list">@foreach (var schedule in Schedules) { <button type="button" class="receivables-row @(SelectedSchedule?.Id == schedule.Id ? "is-selected" : null)" @onclick="() => SelectScheduleAsync(schedule)"><span class="row-icon">R</span><span><strong>@schedule.Name</strong><small>@schedule.CustomerName · @FriendlyCadence(schedule.Cadence)</small></span><span class="row-meta"><strong>@FinanceText["NextDate", schedule.NextOccurrenceDate.ToString("d") ]</strong><span class="status-pill @StatusTone(schedule.Status)">@FriendlyStatus(schedule.Status)</span></span><span aria-hidden="true">›</span></button> }</div> }
+                </section>
+                <aside class="receivables-card">
+                    @if (SelectedSchedule is null) { <FinanceEmptyState Title="@FinanceText["NoScheduleSelected"]" Message="@FinanceText["SelectScheduleHelp"]" /> }
+                    else
+                    {
+                        <div class="receivables-card__heading"><div><h2>@SelectedSchedule.Name</h2><p>@SelectedSchedule.CustomerName</p></div><span class="status-pill @StatusTone(SelectedSchedule.Status)">@FriendlyStatus(SelectedSchedule.Status)</span></div>
+                        <dl class="receivables-details"><div><dt>@FinanceText["NextOccurrence"]</dt><dd>@SelectedSchedule.NextOccurrenceDate.ToString("d")</dd></div><div><dt>@FinanceText["PaymentTerms"]</dt><dd>@FinanceText["NetDays", SelectedSchedule.PaymentTermDays]</dd></div><div><dt>@FinanceText["Delivery"]</dt><dd>@FriendlyDelivery(SelectedSchedule.DeliveryIntent)</dd></div><div><dt>@FinanceText["Approval"]</dt><dd>@(SelectedSchedule.Approval is null ? FinanceText["NotRequested"] : FriendlyStatus(SelectedSchedule.Approval.Status))</dd></div></dl>
+                        <div class="schedule-actions">
+                            <button class="btn btn-outline-secondary" @onclick='() => ChangeScheduleStatusAsync("pause")' disabled="@(SelectedSchedule.Status != "active" || IsActionBusy)">@FinanceText["Pause"]</button>
+                            <button class="btn btn-outline-primary" @onclick='() => ChangeScheduleStatusAsync("resume")' disabled="@(SelectedSchedule.Status != "paused" || IsActionBusy)">@FinanceText["Resume"]</button>
+                            @if (!ConfirmEndSchedule) { <button class="btn btn-outline-danger" @onclick="() => ConfirmEndSchedule = true" disabled="@IsActionBusy">@FinanceText["EndSchedule"]</button> }
+                            else { <div class="destructive-confirm"><strong>@FinanceText["EndScheduleConfirm"]</strong><button class="btn btn-danger btn-sm" @onclick='() => ChangeScheduleStatusAsync("end")'>@CommonText["Confirm"]</button><button class="btn btn-outline-secondary btn-sm" @onclick="() => ConfirmEndSchedule = false">@CommonText["Cancel"]</button></div> }
+                        </div>
+                        <h3>@FinanceText["UpcomingOccurrences"]</h3>
+                        @if (SchedulePreview?.Occurrences.Count > 0) { <ol class="occurrence-list">@foreach (var occurrence in SchedulePreview.Occurrences) { <li><span><strong>@occurrence.IssueDate.ToString("d")</strong><small>@occurrence.RuleExplanation</small></span><span><strong>@Money(occurrence.ExpectedGrossAmount, occurrence.Currency)</strong>@if (occurrence.Blockers.Count > 0){<small class="text-danger">@occurrence.Blockers[0].Explanation</small>}</span></li> }</ol> }
+                        else { <p class="text-body-secondary">@FinanceText["NoUpcomingOccurrences"]</p> }
+                        <h3>@FinanceText["GeneratedDrafts"]</h3>
+                        @foreach (var occurrence in SelectedSchedule.RecentOccurrences.Where(x => x.DraftId.HasValue)) { <a class="related-link" href="@FinanceRoutes.BuildInvoiceDraftPath(occurrence.DraftId!.Value, AccessState.CompanyId)">@occurrence.OccurrenceDate.ToString("d") · @FriendlyStatus(occurrence.Status)</a> }
+                    }
+                </aside>
+            </div>
+        }
+        else
+        {
+            <div class="receivables-split receivables-split--collections">
+                <section class="receivables-card collections-queue">
+                    <div class="receivables-card__heading"><div><h2>@FinanceText["CollectionsQueue"]</h2><p>@FinanceText["CollectionsQueueHelp"]</p></div><span>@FilteredAgingItems.Count</span></div>
+                    <div class="collections-filter" role="search"><label><span class="visually-hidden">@CommonText["Search"]</span><input class="form-control" placeholder="@FinanceText["SearchCustomersInvoices"]" @bind="SearchText" @bind:event="oninput" /></label><select class="form-select" @bind="QueueFilter"><option value="all">@FinanceText["AllOpenItems"]</option><option value="promise">@FinanceText["PromisesDue"]</option><option value="dispute">@FinanceText["Disputes"]</option><option value="hold">@FinanceText["OnHold"]</option></select></div>
+                    @if (FilteredAgingItems.Count == 0) { <FinanceEmptyState Title="@FinanceText["NoCollectionItems"]" Message="@FinanceText["NoCollectionItemsHelp"]" /> }
+                    else { <div class="receivables-list">@foreach (var item in FilteredAgingItems) { <button type="button" class="receivables-row collection-row @(SelectedAgingItem?.InvoiceId == item.InvoiceId ? "is-selected" : null)" @onclick="() => SelectAgingItem(item)"><span class="row-icon @AgingTone(item)">@Math.Max(0, item.DaysOverdue)</span><span><strong>@item.CustomerName</strong><small>@item.InvoiceNumber · @AgeLabel(item)</small><small>@NextActionLabel(item)</small></span><span class="row-meta"><strong>@Money(item.OpenAmount, item.Currency)</strong><span class="status-pill @CollectionStatusTone(item)">@CollectionStatusLabel(item)</span></span><span aria-hidden="true">›</span></button> }</div> }
+                </section>
+
+                <aside class="collections-detail">
+                    @if (SelectedAgingItem is null) { <section class="receivables-card"><FinanceEmptyState Title="@FinanceText["NoCollectionItemSelected"]" Message="@FinanceText["SelectCollectionItemHelp"]" /></section> }
+                    else
+                    {
+                        <section class="receivables-card collections-summary">
+                            <div class="receivables-card__heading"><div><h2>@SelectedAgingItem.CustomerName</h2><p>@SelectedAgingItem.InvoiceNumber</p></div><strong>@Money(SelectedAgingItem.OpenAmount, SelectedAgingItem.Currency)</strong></div>
+                            <div class="collections-actions"><button class="btn btn-outline-secondary btn-sm" @onclick="GenerateStatementAsync" disabled="@(!CanManage || IsActionBusy)">@FinanceText["CreateStatement"]</button><button class="btn btn-outline-secondary btn-sm" @onclick="PrepareReminderAsync" disabled="@(!CanManage || IsActionBusy)">@FinanceText["PrepareReminder"]</button><button class="btn btn-outline-secondary btn-sm" @onclick='() => ActionPanel = "dispute"' disabled="@(!CanManage)">@FinanceText["RecordDispute"]</button><button class="btn btn-outline-secondary btn-sm" @onclick='() => ActionPanel = "promise"' disabled="@(!CanManage)">@FinanceText["RecordPromise"]</button></div>
+                            @if (ActionPanel == "dispute") { <div class="inline-action-form"><label>@FinanceText["DisputedAmount"]<input class="form-control" type="number" step="0.01" @bind="ActionAmount" /></label><label>@FinanceText["Reason"]<input class="form-control" @bind="ActionReason" /></label><button class="btn btn-primary btn-sm" @onclick="RecordDisputeAsync">@CommonText["Save"]</button><button class="btn btn-outline-secondary btn-sm" @onclick="CloseActionPanel">@CommonText["Cancel"]</button></div> }
+                            @if (ActionPanel == "promise") { <div class="inline-action-form"><label>@FinanceText["PromisedAmount"]<input class="form-control" type="number" step="0.01" @bind="ActionAmount" /></label><label>@FinanceText["PromiseDueDate"]<input class="form-control" type="date" @bind="PromiseDueDate" /></label><button class="btn btn-primary btn-sm" @onclick="RecordPromiseAsync">@CommonText["Save"]</button><button class="btn btn-outline-secondary btn-sm" @onclick="CloseActionPanel">@CommonText["Cancel"]</button></div> }
+                            @if (PreparedReminder is not null) { <div class="prepared-reminder"><strong>@FinanceText["ReminderPrepared"]</strong><span>@PreparedReminder.Subject · @Money(PreparedReminder.PreparedOpenAmount, PreparedReminder.Currency)</span>@if (PreparedReminder.ApprovalRequestId is Guid approvalId){<a href="@BuildApprovalHref(approvalId)">@FinanceText["OpenApproval"]</a>}else{<button class="btn btn-primary btn-sm" @onclick="QueueReminderAsync" disabled="@IsActionBusy">@FinanceText["QueueReminderEmail"]</button>}</div> }
+                        </section>
+
+                        <section class="receivables-card detail-columns">
+                            <div><h3>@FinanceText["InvoiceDetails"]</h3><dl class="receivables-details"><div><dt>@FinanceText["IssuedDate"]</dt><dd>@SelectedAgingItem.IssuedDate.ToString("d")</dd></div><div><dt>@FinanceText["DueDate"]</dt><dd>@SelectedAgingItem.DueDate.ToString("d")</dd></div><div><dt>@FinanceText["OriginalAmount"]</dt><dd>@Money(SelectedAgingItem.OriginalAmount, SelectedAgingItem.Currency)</dd></div><div><dt>@FinanceText["PaidAndAllocated"]</dt><dd>@Money(SelectedAgingItem.AllocatedAmount, SelectedAgingItem.Currency)</dd></div></dl><a href="@FinanceRoutes.BuildInvoiceDetailPath(SelectedAgingItem.InvoiceId, AccessState.CompanyId)">@FinanceText["OpenInvoiceDetail"]</a></div>
+                            <div><h3>@FinanceText["CurrentCollectionState"]</h3>@if (SelectedCase is null){<p>@FinanceText["NoDisputePromiseHold"]</p>}else{<dl class="receivables-details"><div><dt>@FinanceText["Status"]</dt><dd>@FriendlyStatus(SelectedCase.Status)</dd></div><div><dt>@FinanceText["Dispute"]</dt><dd>@FriendlyOptionalStatus(SelectedCase.DisputeStatus)</dd></div><div><dt>@FinanceText["Promise"]</dt><dd>@FriendlyOptionalStatus(SelectedCase.PromiseStatus)</dd></div><div><dt>@FinanceText["FollowUp"]</dt><dd>@FormatOptionalDate(SelectedCase.FollowUpDueUtc)</dd></div></dl>}</div>
+                            <div><h3>@FinanceText["Statements"]</h3>@foreach (var statement in CustomerStatements.Take(3)){<div class="detail-event"><strong>@statement.FileName</strong><small>@FinanceText["ClosingBalanceLabel", Money(statement.ClosingBalance, statement.Currency)]</small></div>}@if (CustomerStatements.Count == 0){<p>@FinanceText["NoStatementsYet"]</p>}</div>
+                        </section>
+
+                        <section class="receivables-card laura-collection-card">
+                            <div class="laura-avatar" aria-hidden="true">L</div><div><h3>@FinanceText["LauraFinanceManager"]</h3><strong>@FinanceText["LauraRecommendation"]</strong><p>@SelectedAgingItem.RecommendedAction</p><small>@FinanceText["LauraDoesNotExecuteSensitiveActions"]</small></div><div><h3>@FinanceText["DataUsed"]</h3>@foreach (var citation in SelectedAgingItem.EvidenceCitations.Take(4)){<span class="citation">@FriendlyCitation(citation)</span>}</div>
+                        </section>
+
+                        <section class="receivables-card timeline-card"><h3>@FinanceText["Timeline"]</h3>@foreach (var item in Timeline){<div class="timeline-event"><span aria-hidden="true"></span><div><strong>@item.Title</strong><small>@item.Detail</small><time>@FormatDateTime(item.AtUtc)</time></div></div>}@if (Timeline.Count == 0){<p>@FinanceText["NoCollectionTimeline"]</p>}</section>
+
+                        <section class="receivables-card sensitive-actions"><div><strong>@FinanceText["SensitiveActionsNeedConfirmation"]</strong><small>@FinanceText["LauraDoesNotExecuteSensitiveActions"]</small></div><a class="btn btn-outline-primary" href="@FinanceRoutes.BuildInvoiceDetailPath(SelectedAgingItem.InvoiceId, AccessState.CompanyId)">@FinanceText["ReviewCreditRefundWriteOff"]</a></section>
+                    }
+                </aside>
+            </div>
+        }
+    </section>
+</FinancePageLayout>

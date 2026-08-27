@@ -18,9 +18,24 @@ public static class FinanceModuleRegistration
     {
         services.AddSingleton<IAccountingPolicyPack, CountryNeutralAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPack, CountryNeutralBankingAccountingPolicyPack>();
+        services.AddSingleton<IAccountingPolicyPack, SwedishCandidateAccountingPolicyPack>();
+        services.AddSingleton<IAccountingPolicyPack, SwedishStatutoryDocumentCandidatePack>();
+        services.AddSingleton<IAccountingPolicyPack, SwedishStatutoryArchiveCandidatePack>();
+        services.AddSingleton<IAccountingPolicyPack, SwedishFoundationAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPackResolver, AccountingPolicyPackResolver>();
+        foreach (var evidence in AccountingPolicyPackValidationEvidenceCatalog.All)
+            services.AddSingleton(evidence);
+        services.AddSingleton<IAccountingPolicyPackValidationRegistry, AccountingPolicyPackValidationRegistry>();
         services.AddHostedService<AccountingPolicyPackCatalogStartupValidator>();
         services.AddScoped<IAccountingConfigurationService, AccountingConfigurationService>();
+        services.AddScoped<ICompanyStatutoryProfileService, CompanyStatutoryProfileService>();
+        services.AddSingleton<CustomerBillingTelemetry>();
+        services.AddScoped<ICustomerBillingProfileService, CustomerBillingProfileService>();
+        services.AddScoped<ICustomerBillingProviderSyncGuard>(provider =>
+            (CustomerBillingProfileService)provider.GetRequiredService<ICustomerBillingProfileService>());
+        services.AddScoped<StatutoryDocumentPolicy>();
+        services.AddScoped<IStatutoryDocumentPolicy>(provider => provider.GetRequiredService<StatutoryDocumentPolicy>());
+        services.AddScoped<IStatutoryDocumentService, StatutoryDocumentService>();
         services.AddOptions<AccountingMigrationWorkerOptions>()
             .Bind(configuration.GetSection(AccountingMigrationWorkerOptions.SectionName));
         services.PostConfigure<AccountingMigrationWorkerOptions>(options =>
@@ -48,6 +63,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IAccountingMigrationJobRunner>(provider => provider.GetRequiredService<AccountingHistoricalMigrationService>());
         services.AddScoped<IAccountingReadinessService, AccountingReadinessService>();
         services.AddScoped<IAccountingOperationsReadService, AccountingOperationsReadService>();
+        services.AddScoped<INativeReceivablesReadinessService, NativeReceivablesReadinessService>();
         services.AddScoped<IAccountingRecoveryVerificationService, AccountingRecoveryVerificationService>();
         services.AddOptions<FinanceWorkerRecoveryOptions>()
             .Bind(configuration.GetSection(FinanceWorkerRecoveryOptions.SectionName))
@@ -59,6 +75,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceWorkerOperationsService, FinanceWorkerOperationsService>();
         services.AddScoped<FinanceBackgroundExecutionAttemptRecorder>();
         services.AddHealthChecks().AddCheck<FinanceWorkerReadinessHealthCheck>("finance-workers", tags: ["ready"]);
+        services.AddHealthChecks().AddCheck<SwedishAccountingValidationHealthCheck>("swedish-accounting-validation", tags: ["ready"]);
         services.AddScoped<AccountingAuthorityPolicy>();
         services.AddScoped<IAccountingAuthorityPolicy>(provider => provider.GetRequiredService<AccountingAuthorityPolicy>());
         services.AddScoped<AccountingAuthorityService>();
@@ -173,9 +190,31 @@ public static class FinanceModuleRegistration
         services.AddScoped<IAccountingJournalReadService, AccountingJournalReadService>();
         services.AddScoped<IManualJournalPolicy, ManualJournalPolicy>();
         services.AddScoped<IManualJournalService, ManualJournalService>();
+        services.AddSingleton<CustomerInvoiceDraftTelemetry>();
+        services.AddScoped<ICustomerInvoiceDraftCalculationPolicy, CustomerInvoiceDraftCalculationPolicy>();
+        services.AddScoped<ICustomerInvoiceDraftReadinessPolicy, CustomerInvoiceDraftReadinessPolicy>();
+        services.AddScoped<ICustomerInvoiceDraftService, CustomerInvoiceDraftService>();
+        services.AddSingleton<CustomerInvoiceScheduleTelemetry>();
+        services.AddScoped<ICustomerInvoiceScheduleOccurrencePolicy, CustomerInvoiceScheduleOccurrencePolicy>();
+        services.AddScoped<ICustomerInvoiceScheduleService, CustomerInvoiceScheduleService>();
+        services.AddScoped<ICustomerInvoiceScheduleGenerationRunner, CustomerInvoiceScheduleGenerationRunner>();
+        services.AddScoped<CustomerInvoiceDeliveryService>();
+        services.AddScoped<ICustomerInvoiceDeliveryService>(provider => provider.GetRequiredService<CustomerInvoiceDeliveryService>());
+        services.AddScoped<ICustomerInvoiceDeliveryDispatcher>(provider => provider.GetRequiredService<CustomerInvoiceDeliveryService>());
+        services.AddScoped<CustomerCollectionsService>();
+        services.AddSingleton<CustomerCollectionsTelemetry>();
+        services.AddScoped<ICustomerCollectionsService>(provider => provider.GetRequiredService<CustomerCollectionsService>());
+        services.AddScoped<ICustomerCollectionWorkerRunner, CustomerCollectionWorkerRunner>();
+        services.AddScoped<ICustomerReminderDeliveryDispatcher, CustomerReminderDeliveryService>();
         services.AddScoped<CustomerInvoiceAccountingPolicy>();
         services.AddScoped<ICustomerInvoiceAccountingPolicy>(provider => provider.GetRequiredService<CustomerInvoiceAccountingPolicy>());
+        services.AddSingleton<IAccountingTaxDecisionPolicy, AccountingTaxDecisionPolicy>();
         services.AddScoped<ICustomerInvoiceAccountingService, CustomerInvoiceAccountingService>();
+        services.AddScoped<ICustomerInvoiceCorrectionPolicy, CustomerInvoiceCorrectionPolicy>();
+        services.AddSingleton<CustomerInvoiceCorrectionTelemetry>();
+        services.AddScoped<ICustomerInvoiceCorrectionService, CustomerInvoiceCorrectionService>();
+        services.AddScoped<ICustomerInvoiceRefundExecutionRunner, CustomerInvoiceRefundExecutionRunner>();
+        services.AddHostedService<CustomerInvoiceRefundExecutionBackgroundService>();
         services.AddScoped<SupplierBillAccountingPolicy>();
         services.AddScoped<ISupplierBillAccountingPolicy>(provider => provider.GetRequiredService<SupplierBillAccountingPolicy>());
         services.AddScoped<ISupplierBillAccountingService, SupplierBillAccountingService>();
@@ -237,6 +276,37 @@ public static class FinanceModuleRegistration
         services.AddOptions<FortnoxOptions>()
             .Bind(configuration.GetSection(FortnoxOptions.SectionName))
             .ValidateOnStart();
+        services.TryAddEnumerable(ServiceDescriptor.Singleton<IValidateOptions<B2BRouterOptions>, B2BRouterOptionsValidator>());
+        services.AddOptions<B2BRouterOptions>()
+            .Bind(configuration.GetSection(B2BRouterOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.Environment = options.Environment?.Trim().ToLowerInvariant() ?? string.Empty;
+                options.ApiBaseUrl = options.ApiBaseUrl?.Trim() ?? string.Empty;
+                options.ApiVersion = options.ApiVersion?.Trim() ?? string.Empty;
+                  options.AccountId = options.AccountId?.Trim() ?? string.Empty;
+                  options.CompanyAccountIds = (options.CompanyAccountIds ?? new Dictionary<string, string>())
+                      .ToDictionary(x => x.Key.Trim(), x => x.Value?.Trim() ?? string.Empty,
+                          StringComparer.OrdinalIgnoreCase);
+                options.ApiKey = options.ApiKey?.Trim() ?? string.Empty;
+                options.PaymentAccountId = options.PaymentAccountId?.Trim();
+                options.PaymentAccountName = options.PaymentAccountName?.Trim();
+                options.PaymentServiceProviderId = options.PaymentServiceProviderId?.Trim();
+                options.WebhookSecret = options.WebhookSecret?.Trim() ?? string.Empty;
+            })
+            .ValidateOnStart();
+        services.AddHttpClient(B2BRouterOptions.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptionsMonitor<B2BRouterOptions>>().CurrentValue;
+            client.BaseAddress = new Uri(options.ApiBaseUrl, UriKind.Absolute);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("X-B2B-API-Key", options.ApiKey);
+            client.DefaultRequestHeaders.TryAddWithoutValidation("X-B2B-API-Version", options.ApiVersion);
+            client.Timeout = TimeSpan.FromSeconds(30);
+        });
+        services.AddScoped<B2BRouterCustomerInvoiceElectronicDeliveryProvider>();
+        services.AddScoped<ICustomerInvoiceElectronicDeliveryProvider>(provider => provider.GetRequiredService<B2BRouterCustomerInvoiceElectronicDeliveryProvider>());
+        services.AddSingleton<B2BRouterTelemetry>();
+        services.AddHealthChecks().AddCheck<B2BRouterHealthCheck>("b2brouter-peppol", tags: ["ready", "finance", "integration"]);
         services.AddSingleton<IFinanceIntegrationApplicationDefinition, FortnoxFinanceIntegrationApplicationDefinition>();
         services.AddScoped<FinanceIntegrationApplicationManagementService>();
         services.AddScoped<IFinanceIntegrationApplicationManagementService>(
@@ -295,6 +365,20 @@ public static class FinanceModuleRegistration
         services.AddOptions<AccountingExportWorkerOptions>()
             .Bind(configuration.GetSection(AccountingExportWorkerOptions.SectionName))
             .PostConfigure(options => options.PollIntervalMilliseconds = Math.Max(100, options.PollIntervalMilliseconds));
+        services.AddOptions<CustomerInvoiceScheduleGenerationWorkerOptions>()
+            .Bind(configuration.GetSection(CustomerInvoiceScheduleGenerationWorkerOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.PollIntervalMilliseconds = Math.Clamp(options.PollIntervalMilliseconds, 250, 60000);
+                options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 100);
+                options.LeaseSeconds = Math.Clamp(options.LeaseSeconds, 30, 900);
+                options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 20);
+                options.BaseRetryDelaySeconds = Math.Clamp(options.BaseRetryDelaySeconds, 1, 3600);
+                options.MaximumRetryDelaySeconds = Math.Clamp(
+                    options.MaximumRetryDelaySeconds,
+                    options.BaseRetryDelaySeconds,
+                    86400);
+            });
         services.AddOptions<FinanceAnalyticsStartupRefreshOptions>()
             .Bind(configuration.GetSection(FinanceAnalyticsStartupRefreshOptions.SectionName))
             .PostConfigure(options => options.CompanyBatchSize = Math.Clamp(options.CompanyBatchSize, 1, 5000));
@@ -347,6 +431,21 @@ public static class FinanceModuleRegistration
                 options.MaxRetryDelaySeconds = Math.Max(options.BaseRetryDelaySeconds, options.MaxRetryDelaySeconds);
             })
             .ValidateOnStart();
+        services.AddOptions<CustomerCollectionWorkerOptions>()
+            .Bind(configuration.GetSection(CustomerCollectionWorkerOptions.SectionName))
+            .Validate(x => x.PollIntervalMilliseconds >= 10000 && x.PollIntervalMilliseconds <= 3600000,
+                "Customer collection polling must be between 10 seconds and 1 hour.")
+            .Validate(x => x.BatchSize is >= 1 and <= 200,
+                "Customer collection batch size must be between 1 and 200.")
+            .Validate(x => x.LeaseSeconds is >= 30 and <= 900,
+                "Customer collection lease duration must be between 30 and 900 seconds.")
+            .Validate(x => x.MaximumAttempts is >= 1 and <= 20,
+                "Customer collection maximum attempts must be between 1 and 20.")
+            .Validate(x => x.BaseRetryDelaySeconds is >= 1 and <= 3600 &&
+                x.MaximumRetryDelaySeconds >= x.BaseRetryDelaySeconds && x.MaximumRetryDelaySeconds <= 86400,
+                "Customer collection retry delays are outside the supported bounds.")
+            .ValidateOnStart();
+        services.AddHostedService<CustomerCollectionBackgroundService>();
         services.AddHttpClient(OpenAiPdfOcrTextExtractor.ClientName);
         services.AddScoped<InternalFinanceToolProvider>();
         if (configuration.GetValue<bool>("FinanceTools:AllowMockProvider"))
@@ -384,6 +483,7 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
         services.AddScoped<IAccountingReportingService, AccountingReportingService>();
+        services.AddScoped<IVatReturnService, VatReturnService>();
         services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
         services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
         services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
@@ -442,6 +542,7 @@ public static class FinanceModuleRegistration
         services.AddHostedService<AccountingProviderSwitchCutoverBackgroundService>();
         services.AddHostedService<AccountingProviderSwitchMonitoringBackgroundService>();
         services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
+        services.AddHostedService<CustomerInvoiceScheduleGenerationBackgroundService>();
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
         services.AddHostedService<FinanceIntegrationStartupSyncBackgroundService>();

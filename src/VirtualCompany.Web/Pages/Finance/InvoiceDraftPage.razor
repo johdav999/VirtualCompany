@@ -1,0 +1,197 @@
+@page "/finance/invoices/new"
+@page "/finance/invoices/drafts/{DraftId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText[DraftId.HasValue ? "EditInvoiceDraft" : "NewCustomerInvoice"]</PageTitle>
+
+<FinancePageLayout
+    IsLoading="@IsLoading"
+    AccessState="@AccessState"
+    ErrorMessage="@ErrorMessage"
+    Title="@FinanceText[DraftId.HasValue ? "EditInvoiceDraft" : "NewCustomerInvoice"]"
+    Description="@FinanceText["InvoiceDraftDescription"]"
+    LoadingMessage="@FinanceText["LoadingInvoiceDraft"]"
+    ShowShellHeader="false"
+    ShowShellNavigation="false">
+    <section class="native-draft-page" aria-labelledby="native-draft-title">
+        <header class="native-draft-header">
+            <div>
+                <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                <h1 id="native-draft-title">@FinanceText[DraftId.HasValue ? "EditInvoiceDraft" : "NewCustomerInvoice"]</h1>
+                <p>@FinanceText["InvoiceDraftDescription"]</p>
+            </div>
+            <a class="btn btn-outline-secondary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Receivables + "?view=drafts", AccessState.CompanyId)">@FinanceText["BackToReceivables"]</a>
+        </header>
+
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+        <ReceivablesNavigation CompanyId="@AccessState.CompanyId!.Value" ActiveView="drafts" />
+
+        @if (!string.IsNullOrWhiteSpace(WorkflowMessage))
+        {
+            <div class="alert alert-success" role="status">@WorkflowMessage</div>
+        }
+        @if (!string.IsNullOrWhiteSpace(ValidationMessage))
+        {
+            <div class="alert alert-danger" role="alert">@ValidationMessage</div>
+        }
+
+        <div class="native-draft-grid">
+            <ol class="native-draft-steps" aria-label="@FinanceText["InvoiceDraftSteps"]">
+                @foreach (var step in Steps)
+                {
+                    <li class="@(step.IsCurrent ? "is-current" : step.IsComplete ? "is-complete" : null)">
+                        <span>@step.Number</span>
+                        <strong>@step.Label</strong>
+                    </li>
+                }
+            </ol>
+
+            <EditForm Model="@Editor" OnValidSubmit="@SaveAndPreviewAsync" class="native-draft-editor" style="display:grid;gap:1rem;min-width:0">
+                <section class="receivables-card">
+                    <div class="receivables-card__heading">
+                        <div><h2>@FinanceText["InvoiceDetails"]</h2><p>@FinanceText["InvoiceDetailsHelp"]</p></div>
+                        @if (Draft is not null)
+                        {
+                            <span class="status-pill status-pill--neutral">@FormatStatus(Draft.Status)</span>
+                        }
+                    </div>
+                    <div class="native-form-grid">
+                        <label><span>@FinanceText["Customer"]</span>
+                            <InputSelect class="form-select" @bind-Value="Editor.CustomerId" disabled="@(!CanEditDraft)">
+                                <option value="@Guid.Empty">@FinanceText["SelectCustomer"]</option>
+                                @foreach (var customer in Customers)
+                                {
+                                    <option value="@customer.Id">@customer.Name</option>
+                                }
+                            </InputSelect>
+                        </label>
+                        <label><span>@FinanceText["IssuedDate"]</span><InputDate class="form-control" @bind-Value="Editor.IssueDate" disabled="@(!CanEditDraft)" /></label>
+                        <label><span>@FinanceText["DueDate"]</span><InputDate class="form-control" @bind-Value="Editor.DueDate" disabled="@(!CanEditDraft)" /></label>
+                        <label><span>@FinanceText["PaymentTerms"]</span>
+                            <InputSelect class="form-select" @bind-Value="Editor.PaymentTermDays" disabled="@(!CanEditDraft)">
+                                <option value="10">@FinanceText["NetDays", 10]</option><option value="20">@FinanceText["NetDays", 20]</option><option value="30">@FinanceText["NetDays", 30]</option>
+                            </InputSelect>
+                        </label>
+                        <label><span>@FinanceText["BuyerReference"]</span><InputText class="form-control" @bind-Value="Editor.BuyerReference" disabled="@(!CanEditDraft)" /></label>
+                        <label><span>@FinanceText["Currency"]</span><InputSelect class="form-select" @bind-Value="Editor.Currency" disabled="@(!CanEditDraft)"><option value="SEK">SEK</option><option value="USD">USD</option><option value="EUR">EUR</option></InputSelect></label>
+                        <label class="native-form-grid__wide"><span>@FinanceText["EvidenceDocumentIds"]</span><InputText class="form-control" @bind-Value="Editor.EvidenceDocumentIds" disabled="@(!CanEditDraft)" /><small>@FinanceText["EvidenceDocumentIdsHelp"]</small></label>
+                        <label class="native-form-grid__wide"><span>@FinanceText["Notes"]</span><InputTextArea class="form-control" @bind-Value="Editor.Notes" disabled="@(!CanEditDraft)" /></label>
+                    </div>
+                </section>
+
+                <section class="receivables-card native-lines-card">
+                    <div class="receivables-card__heading">
+                        <div><h2>@FinanceText["LineItems"]</h2><p>@FinanceText["LineItemsHelp"]</p></div>
+                        <button type="button" class="btn btn-outline-primary btn-sm" @onclick="AddLine" disabled="@(!CanEditDraft)">@FinanceText["AddLine"]</button>
+                    </div>
+                    <div class="table-responsive">
+                        <table class="native-lines-table">
+                            <thead><tr><th>@FinanceText["Description"]</th><th>@FinanceText["Quantity"]</th><th>@FinanceText["UnitPrice"]</th><th>@FinanceText["Discount"]</th><th>@FinanceText["VatTreatment"]</th><th>@FinanceText["Dimension"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead>
+                            <tbody>
+                                @for (var index = 0; index < Editor.Lines.Count; index++)
+                                {
+                                    var line = Editor.Lines[index];
+                                    <tr @key="line.Key">
+                                        <td><InputText class="form-control" aria-label="@FinanceText["Description"]" @bind-Value="line.Description" disabled="@(!CanEditDraft)" /></td>
+                                        <td><InputNumber class="form-control" aria-label="@FinanceText["Quantity"]" @bind-Value="line.Quantity" disabled="@(!CanEditDraft)" /></td>
+                                        <td><InputNumber class="form-control" aria-label="@FinanceText["UnitPrice"]" @bind-Value="line.UnitPrice" disabled="@(!CanEditDraft)" /></td>
+                                        <td><InputNumber class="form-control" aria-label="@FinanceText["Discount"]" @bind-Value="line.DiscountPercent" disabled="@(!CanEditDraft)" /></td>
+                                        <td><InputSelect class="form-select" aria-label="@FinanceText["VatTreatment"]" @bind-Value="line.TaxRuleKey" disabled="@(!CanEditDraft)"><option value="se_domestic_sales_25">@FinanceText["DomesticVat25"]</option></InputSelect></td>
+                                        <td><InputText class="form-control" aria-label="@FinanceText["Dimension"]" @bind-Value="line.DimensionCode" disabled="@(!CanEditDraft)" /></td>
+                                        <td><button type="button" class="btn btn-sm btn-outline-danger" @onclick="() => RemoveLine(line)" disabled="@(!CanEditDraft || Editor.Lines.Count == 1)" aria-label="@FinanceText["RemoveLine"]">×</button></td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="native-draft-editor__actions">
+                        <button type="submit" class="btn btn-primary" disabled="@(!CanEditDraft || IsWorking)">@(IsWorking ? FinanceText["Saving"] : FinanceText["SaveAndRecalculate"])</button>
+                        @if (Draft is not null)
+                        {
+                            <button type="button" class="btn btn-outline-secondary" @onclick="SubmitForApprovalAsync" disabled="@(!CanSubmitForApproval)">@FinanceText["RequestApproval"]</button>
+                        }
+                    </div>
+                </section>
+            </EditForm>
+
+            <aside class="native-draft-sidebar">
+                <section class="receivables-card native-preview" aria-live="polite">
+                    <div class="receivables-card__heading">
+                        <div><h2>@FinanceText["InvoicePreview"]</h2><p>@FinanceText["CalculatedByVirtualCompany"]</p></div>
+                        @if (IsPreviewStale)
+                        {
+                            <span class="status-pill status-pill--warning">@FinanceText["PreviewOutOfDate"]</span>
+                        }
+                    </div>
+                    @if (Draft is null)
+                    {
+                        <FinanceEmptyState Title="@FinanceText["PreviewNotReady"]" Message="@FinanceText["PreviewNotReadyHelp"]" />
+                    }
+                    else
+                    {
+                        <dl class="native-totals">
+                            <div><dt>@FinanceText["NetTotal"]</dt><dd>@Money(Draft.Totals.NetTotal, Draft.Currency)</dd></div>
+                            <div><dt>@FinanceText["Vat"]</dt><dd>@Money(Draft.Totals.TaxTotal, Draft.Currency)</dd></div>
+                            <div><dt>@FinanceText["Rounding"]</dt><dd>@Money(Draft.Totals.RoundingAmount, Draft.Currency)</dd></div>
+                            <div class="native-totals__grand"><dt>@FinanceText["InvoiceTotal"]</dt><dd>@Money(Draft.Totals.GrossTotal, Draft.Currency)</dd></div>
+                        </dl>
+                    }
+                </section>
+
+                <section class="receivables-card">
+                    <div class="receivables-card__heading"><div><h2>@FinanceText["Readiness"]</h2><p>@FinanceText["ReadinessHelp"]</p></div></div>
+                    @if (Readiness is null)
+                    {
+                        <p class="text-body-secondary">@FinanceText["SaveToCheckReadiness"]</p>
+                    }
+                    else if (Readiness.IsAllowed)
+                    {
+                        <div class="readiness-message readiness-message--success"><strong>@FinanceText["ReadyForNextStep"]</strong><span>@Readiness.Explanation</span></div>
+                    }
+                    else
+                    {
+                        <div class="readiness-message readiness-message--warning"><strong>@FinanceText["AttentionRequired"]</strong><span>@Readiness.Explanation</span></div>
+                    }
+                    @foreach (var blocker in Draft?.Blockers ?? [])
+                    {
+                        <div class="native-blocker"><strong>@FinanceText["ResolveBeforeIssue"]</strong><span>@blocker.Explanation</span></div>
+                    }
+                    @foreach (var warning in Draft?.Warnings ?? [])
+                    {
+                        <div class="native-warning"><strong>@FinanceText["ReviewBeforeContinuing"]</strong><span>@warning.Explanation</span></div>
+                    }
+                </section>
+
+                <section class="receivables-card">
+                    <div class="receivables-card__heading"><div><h2>@FinanceText["ApprovalAndIssue"]</h2><p>@FinanceText["ApprovalAndIssueHelp"]</p></div></div>
+                    @if (Draft?.Approval is { } approval)
+                    {
+                        <div class="approval-summary"><span class="status-pill @StatusTone(approval.Status)">@FormatStatus(approval.Status)</span><span>@(approval.IsCurrent ? FinanceText["ApprovalMatchesDraft"] : FinanceText["ApprovalOutOfDate"])</span></div>
+                        <a class="btn btn-outline-secondary btn-sm" href="@BuildApprovalHref(approval.Id)">@FinanceText["OpenApproval"]</a>
+                    }
+                    else
+                    {
+                        <p class="text-body-secondary">@FinanceText["ApprovalNotRequested"]</p>
+                    }
+                    <div class="native-issue-fields">
+                        <label><span>@FinanceText["InvoiceNumberSeries"]</span><select class="form-select" @bind="SelectedSeriesId"><option value="@Guid.Empty">@FinanceText["SelectNumberSeries"]</option>@foreach (var series in Series){<option value="@series.Id">@series.Code · @series.Prefix</option>}</select></label>
+                        <label><span>@FinanceText["AccountingPeriod"]</span><select class="form-select" @bind="SelectedPeriodId"><option value="@Guid.Empty">@FinanceText["SelectAccountingPeriod"]</option>@foreach (var period in Periods){<option value="@period.Id">@period.Name</option>}</select></label>
+                        <label><span>@FinanceText["VoucherSeries"]</span><input class="form-control" @bind="VoucherSeriesCode" /></label>
+                    </div>
+                    <button type="button" class="btn btn-primary w-100" @onclick="IssueAsync" disabled="@(!CanIssue)">@FinanceText["IssueInvoice"]</button>
+                    <small>@FinanceText["IssueInvoiceConfirmationHelp"]</small>
+                </section>
+
+                @if (IssueResult is not null)
+                {
+                    <section class="receivables-card native-issued-result" role="status">
+                        <h2>@FinanceText["InvoiceIssued"]</h2>
+                        <strong>@IssueResult.DocumentNumber</strong>
+                        <ol><li>@FinanceText["NumberAllocated"]</li><li>@FinanceText["JournalPosted"]</li><li>@FinanceText["PdfQueued"]</li><li>@FinanceText["DeliveryNotYetComplete"]</li></ol>
+                        <a class="btn btn-outline-primary" href="@FinanceRoutes.BuildInvoiceDetailPath(IssueResult.InvoiceId, AccessState.CompanyId)">@FinanceText["OpenIssuedInvoice"]</a>
+                    </section>
+                }
+            </aside>
+        </div>
+    </section>
+</FinancePageLayout>

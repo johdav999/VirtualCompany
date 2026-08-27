@@ -196,6 +196,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly IBriefingUpdateJobProducer _briefingUpdateJobProducer;
     private readonly ISupportMemoryUpdateService? _supportMemory;
     private readonly ISupportReplyDeliveryDispatcher? _supportReplyDelivery;
+    private readonly ICustomerInvoiceDeliveryDispatcher? _customerInvoiceDelivery;
+    private readonly ICustomerReminderDeliveryDispatcher? _customerReminderDelivery;
     private readonly ISalesMeetingInvitationDeliveryDispatcher? _salesMeetingInvitationDelivery;
     private readonly ISalesMeetingChangeDeliveryDispatcher? _salesMeetingChangeDelivery;
     private readonly ISalesMeetingConfirmationDeliveryDispatcher? _salesMeetingConfirmationDelivery;
@@ -221,6 +223,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ILogger<CompanyOutboxProcessor> logger,
         ISupportMemoryUpdateService? supportMemory = null,
         ISupportReplyDeliveryDispatcher? supportReplyDelivery = null,
+        ICustomerInvoiceDeliveryDispatcher? customerInvoiceDelivery = null,
+        ICustomerReminderDeliveryDispatcher? customerReminderDelivery = null,
         ISalesMeetingInvitationDeliveryDispatcher? salesMeetingInvitationDelivery = null,
         ISalesMeetingChangeDeliveryDispatcher? salesMeetingChangeDelivery = null,
         ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null,
@@ -245,6 +249,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _logger = logger;
         _supportMemory = supportMemory;
         _supportReplyDelivery = supportReplyDelivery;
+        _customerInvoiceDelivery = customerInvoiceDelivery;
+        _customerReminderDelivery = customerReminderDelivery;
         _salesMeetingInvitationDelivery = salesMeetingInvitationDelivery;
         _salesMeetingChangeDelivery = salesMeetingChangeDelivery;
         _salesMeetingConfirmationDelivery = salesMeetingConfirmationDelivery;
@@ -548,6 +554,48 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
                 await _supportReplyDelivery.DispatchAsync(
                     payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId },
                     cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.CustomerInvoiceRenderRequested:
+            {
+                var payload = Deserialize<CustomerInvoiceRenderRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Invoice rendering payload tenant does not match the outbox message tenant.");
+                if (_customerInvoiceDelivery is null) throw new InvalidOperationException("Customer invoice rendering is not configured.");
+                await _customerInvoiceDelivery.RenderAsync(payload.CompanyId, payload.ArtifactId, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.CustomerInvoiceEmailDeliveryRequested:
+            {
+                var payload = Deserialize<CustomerInvoiceEmailDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Invoice delivery payload tenant does not match the outbox message tenant.");
+                if (_customerInvoiceDelivery is null) throw new InvalidOperationException("Customer invoice delivery is not configured.");
+                await _customerInvoiceDelivery.DeliverAsync(payload.CompanyId, payload.DeliveryId, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.CustomerInvoiceElectronicDeliveryRequested:
+            {
+                var payload = Deserialize<CustomerInvoiceElectronicDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Electronic invoice delivery payload tenant does not match the outbox message tenant.");
+                if (_customerInvoiceDelivery is null) throw new InvalidOperationException("Electronic invoice delivery is not configured.");
+                await _customerInvoiceDelivery.DeliverElectronicAsync(payload.CompanyId, payload.DeliveryId,
+                    payload.ProviderKey, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.CustomerInvoiceElectronicReconciliationRequested:
+            {
+                var payload = Deserialize<CustomerInvoiceElectronicReconciliationRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Electronic invoice reconciliation payload tenant does not match the outbox message tenant.");
+                if (_customerInvoiceDelivery is null) throw new InvalidOperationException("Electronic invoice reconciliation is not configured.");
+                await _customerInvoiceDelivery.ReconcileElectronicAsync(payload.CompanyId, payload.DeliveryId,
+                    payload.ProviderKey, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.CustomerReminderEmailDeliveryRequested:
+            {
+                var payload = Deserialize<CustomerReminderEmailDeliveryRequestedMessage>(message);
+                if (payload.CompanyId != message.CompanyId) throw new CompanyOutboxPermanentException("Customer reminder delivery payload tenant does not match the outbox message tenant.");
+                if (_customerReminderDelivery is null) throw new InvalidOperationException("Customer reminder delivery is not configured.");
+                await _customerReminderDelivery.DeliverAsync(payload.CompanyId, payload.DeliveryId, cancellationToken);
                 break;
             }
             case CompanyOutboxTopics.SalesMeetingInvitationDeliveryRequested:

@@ -57,7 +57,11 @@ public sealed record AccountingSetupPreviewDto(
     IReadOnlyList<AccountingSetupPeriodPreviewDto> Periods,
     IReadOnlyList<AccountingVoucherSeriesPreviewDto> VoucherSeries,
     IReadOnlyList<AccountingConfigurationIssueDto> Issues,
-    IReadOnlyList<AccountingConfigurationIssueDto> Warnings);
+    IReadOnlyList<AccountingConfigurationIssueDto> Warnings,
+    CompanyStatutoryProfileStatusDto? StatutoryProfile = null,
+    string PolicyPackValidationState = "unvalidated",
+    IReadOnlyList<string>? MissingLegalFacts = null,
+    IReadOnlyList<string>? NextActions = null);
 
 public sealed record PreviewAccountingSetupQuery(
     Guid CompanyId,

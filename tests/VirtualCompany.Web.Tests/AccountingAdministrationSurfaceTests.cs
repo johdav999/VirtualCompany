@@ -21,6 +21,12 @@ public sealed class AccountingAdministrationSurfaceTests
         Assert.Contains("IdempotencyKey", setupCode, StringComparison.Ordinal);
         Assert.Contains("CountryNeutralNotice", setup, StringComparison.Ordinal);
         Assert.Contains("LauraAccountingSetupAdvice", setup, StringComparison.Ordinal);
+        Assert.Contains("StatutoryReadinessSummary", setup, StringComparison.Ordinal);
+        Assert.Contains("LegalIdentityStep", setupCode, StringComparison.Ordinal);
+        Assert.Contains("VatRegistrationStep", setupCode, StringComparison.Ordinal);
+        Assert.Contains("DocumentSeriesStep", setupCode, StringComparison.Ordinal);
+        Assert.Contains("SaveStatutoryProfileAsync", setupCode, StringComparison.Ordinal);
+        Assert.Contains("CreateDocumentSeriesAsync", setupCode, StringComparison.Ordinal);
         Assert.Contains("CurrentStep < Steps.Count && Preview?.Issues.Any(issue => issue.IsBlocking) == true", setup, StringComparison.Ordinal);
         Assert.Contains("if (Preview is null)", setupCode, StringComparison.Ordinal);
         Assert.DoesNotContain("if (Preview?.IsValid != true)", setupCode, StringComparison.Ordinal);
@@ -52,10 +58,15 @@ public sealed class AccountingAdministrationSurfaceTests
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "accounting-setup-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "chart-of-accounts-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "fiscal-periods-reference.png")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "swedish-accounting-setup-reference.png")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "swedish-vat-statutory-reporting-reference.png")));
         var prompts = Read("docs", "design", "references", "accounting-administration-reference-prompts.md");
         Assert.Contains("Accounting setup", prompts, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Chart of accounts", prompts, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Fiscal periods", prompts, StringComparison.OrdinalIgnoreCase);
+        var swedishPrompts = Read("docs", "design", "references", "swedish-accounting-reference-prompts.md");
+        Assert.Contains("Swedish accounting setup", swedishPrompts, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("VAT and statutory reporting", swedishPrompts, StringComparison.OrdinalIgnoreCase);
     }
 
     private static string Read(params string[] segments) => File.ReadAllText(Path.Combine([RepositoryRoot(), .. segments]));

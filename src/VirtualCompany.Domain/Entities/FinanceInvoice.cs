@@ -28,7 +28,10 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         string? documentKind = null,
         string? providerStatus = null,
         string? processingStatus = null,
-        decimal paidAmount = 0m)
+        decimal paidAmount = 0m,
+        string? authority = null,
+        Guid? sourceDraftId = null,
+        long? sourceDraftVersion = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -61,6 +64,11 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         DocumentKind = NormalizeDocumentKind(documentKind ?? FinanceDocumentKinds.Invoice);
         ProviderStatus = NormalizeOptional(providerStatus, nameof(providerStatus), 128);
         ProcessingStatus = ResolveInitialProcessingStatus(processingStatus);
+        Authority = NormalizeAuthority(authority);
+        SourceDraftId = sourceDraftId;
+        SourceDraftVersion = sourceDraftVersion;
+        if (sourceDraftId.HasValue != sourceDraftVersion.HasValue || sourceDraftVersion is <= 0)
+            throw new ArgumentException("Native draft source identity requires both a draft id and positive version.");
         DocumentId = documentId;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? IssuedUtc, nameof(createdUtc));
         UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? CreatedUtc, nameof(updatedUtc));
@@ -88,6 +96,9 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
     public string DocumentKind { get; private set; } = null!;
     public string? ProviderStatus { get; private set; }
     public string ProcessingStatus { get; private set; } = null!;
+    public string Authority { get; private set; } = null!;
+    public Guid? SourceDraftId { get; private set; }
+    public long? SourceDraftVersion { get; private set; }
     public Guid? DocumentId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
@@ -96,6 +107,13 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
     public Company Company { get; private set; } = null!;
     public FinanceCounterparty Counterparty { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
+
+    public void ReassignCounterpartyForApprovedMerge(Guid targetCounterpartyId)
+    {
+        CounterpartyId = targetCounterpartyId == Guid.Empty
+            ? throw new ArgumentException("Target counterparty id is required.", nameof(targetCounterpartyId))
+            : targetCounterpartyId;
+    }
     public ICollection<PaymentAllocation> Allocations { get; } = new List<PaymentAllocation>();
     public CompanyKnowledgeDocument? Document { get; private set; }
 
@@ -158,6 +176,17 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
         SettlementStatus = NormalizeSettlementStatus(settlementStatus);
         DueStatus = ResolveDueStatus(DueUtc, SettlementStatus);
         UpdatedUtc = DateTime.UtcNow;
+    }
+
+    public void CancelForReceivablesCorrection(DateTime cancelledUtc)
+    {
+        if (PostingStatus != FinanceDocumentPostingStatuses.Draft || PaidAmount != 0m ||
+            SettlementStatus != FinanceSettlementStatuses.Unpaid)
+            throw new InvalidOperationException("Only an unpaid, unposted invoice can be cancelled.");
+        Status = "void";
+        PostingStatus = FinanceDocumentPostingStatuses.Cancelled;
+        DueStatus = FinanceDocumentDueStatuses.NotDue;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(cancelledUtc, nameof(cancelledUtc));
     }
 
     private static bool IsValidApprovalStatusTransition(string current, string next)
@@ -322,5 +351,14 @@ public sealed class FinanceInvoice : ICompanyOwnedEntity
             ? normalized
             : throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported finance document kind.");
     }
+
+    private static string NormalizeAuthority(string? value) => string.IsNullOrWhiteSpace(value)
+        ? "imported" : value.Trim().ToLowerInvariant() switch
+        {
+            "native" => "native",
+            "provider" => "provider",
+            "imported" => "imported",
+            _ => throw new ArgumentOutOfRangeException(nameof(value), "Unsupported invoice authority.")
+        };
 }
 

@@ -210,6 +210,25 @@ The accounting operations response reports these bounded signals:
 - Do not claim a pack is statutory-compliant without local review evidence.
 - If the effective date or historical pack is uncertain, retain a migration conflict instead of assigning the new pack retroactively.
 
+### Swedish statutory validation and release gate
+
+Swedish policy-pack review evidence is release-controlled metadata, not tenant configuration. Register it only in `AccountingPolicyPackValidationEvidenceCatalog` and only for a new immutable pack version. The record must identify the exact pack key, version, definition SHA-256, attributable qualified reviewer, reviewer reference, reviewed scope/date, evidence document reference and SHA-256, approved fixture identifiers, limitations, expiry if any, and revalidation triggers. Do not store confidential reviewer documents, credentials, personal identity numbers, or unrestricted correspondence in the catalog.
+
+The startup validator refuses any pack that declares `IsStatutoryComplianceValidated = true` unless current evidence matches its exact definition hash. A candidate without evidence may start, but company accounting readiness remains `blocked` and the UI/API must continue to use review-pending wording. `/health/ready` reports that the gate is operational and exposes only bounded pack identities, hashes, states, and counts; it does not turn missing professional review into an infrastructure outage.
+
+Treat any of these as mandatory revalidation triggers: definition-hash change, VAT rule or fixture change, statutory document-rule change, SIE/archive format change, reviewed limitation or capability change, evidence expiry, or a relevant authoritative-rule change. Never attach old evidence to a changed definition and never mutate an already selected historical pack.
+
+Release enablement order:
+
+1. Complete and retain the automated golden, negative, authorization, tenant, concurrency, idempotency, worker, ambiguity, migration, recovery, volume, and browser evidence.
+2. Give the reviewer the exact proposed new pack definition hash, fixture manifest, document rules, SIE/archive format, scope, and limitations.
+3. Retain the signed or attributable evidence document in the controlled release evidence system and record its SHA-256 and bounded reference.
+4. Add a new pack version that declares statutory validation and register the exact evidence metadata in the same release.
+5. Run startup validation, all release suites, local and Docker restore rehearsals, authenticated English/Swedish browser verification, and the pending-model check again.
+6. Enable the new version only for companies whose statutory profile and readiness signals are complete. Preserve older candidates and historical selections.
+
+Rollback keeps all additive schema and evidence. Disable selection of the new version and forward-fix with another version. Do not down-migrate statutory tables, delete review evidence, edit historical tax facts, reopen finalized VAT returns, replace exports, or renumber documents. Customer-facing wording may describe only the exact reviewed scope and limitations; it must not imply government approval, universal Swedish compliance, automated filing, or support for an explicitly unsupported case.
+
 ## Provider ambiguity and export recovery
 
 - Native ledger authority does not depend on a provider connection. Providers remain adapters.
@@ -247,11 +266,13 @@ Then:
 3. Apply EF migrations using the Persistence.Migrations project and API startup project.
 4. Start the API and require `/health/ready` to pass, including database and configured object-storage health.
 5. Run `verify-accounting-recovery.ps1 -CompanyId <id> -VerifyObjectContent -RequireReady -ExpectedChecksum <preBackupChecksum>` for every restored company.
-6. Require valid voucher uniqueness, balanced lines, source mappings, evidence hashes, journal audit references, snapshots, provider references, and the exact deterministic checksum.
+6. Require valid voucher uniqueness, balanced lines, source mappings, evidence hashes, journal audit references, snapshots, provider references, statutory-export manifests and hashes, finalized VAT-package hashes, and the exact deterministic checksum.
 7. Compare every period cutover report and financial statement to the retained release/backup evidence.
 8. Do not promote the restore if any object is missing, any hash or checksum differs, a provider outcome is ambiguous, or readiness is not `ready`.
 
 Recovery verification writes an audit event and returns no document content. A failed verification is a safe, explicit stop condition.
+
+For a Swedish statutory archive, also open the ZIP after hash verification and retain `archive-manifest.json` and `checksums.sha256.json` with the recovery evidence. Confirm that `accounting.sie`, `source-manifest.json`, and `archive-manifest.json` match their entry checksums; then confirm every VAT-package and evidence object reference in the source manifest exists under the restored storage root and matches its retained SHA-256. Apply `20260825092127_AddSwedishStatutoryAccountingArchive` through the same migrations assembly for both local and Docker SQL Server. Never promote a restore containing SQL archive metadata without its matching object snapshot.
 
 ## Deployment, rollback, and forward-fix
 
@@ -280,3 +301,35 @@ Recovery boundaries are deliberately asymmetric. Before target activation, use t
 The operations read model reports stuck workflows, expired approvals, stale freezes, exhausted retries, ambiguous outcomes, and unreconciled totals. Treat any non-zero critical category as a release or closure stop. Metrics and structured logs are emitted under `VirtualCompany.Accounting` with company, switch, monitoring run, check sequence, failure code, and correlation ID; credentials, tokens, and document contents are excluded.
 
 For backup and restore, include the three `accounting_provider_switch_monitoring_*` tables, approval and task rows, audit events, and matching archive/object evidence in the coordinated SQL/object manifest. Both local SQL Server and Docker SQL Server use the same EF migration. After restore, require the latest migration-history row, tenant-scoped foreign keys, unique incident fingerprints, retained closure approval/evidence hash, and a successful readiness check before enabling the monitoring worker.
+
+## Native receivables release operations
+
+The Receivables **Operations** view and `GET /api/companies/{companyId}/finance/receivables/readiness` are the operator entry points for Release 2. The projection is read-only, company-scoped, authorization guarded, evaluated from current persisted evidence, and capped at 25 subject identifiers per check. A healthy internal projection does not replace real mailbox, e-invoice, bank, object-storage, backup, or restore evidence.
+
+Review these checks before deployment and every day during launch monitoring:
+
+1. Replace expired or seven-day-old invoice, schedule, reminder, and posting approvals from current source evidence.
+2. Review every statutory number gap, its reason, failed issue attempt, and audit chain. Never reuse a gap.
+3. Correct PDF generation or object-storage failures, then re-render only from the immutable issued snapshot. A re-render creates or reuses the deterministic artifact identity; it does not edit an issued document.
+4. Reconcile uncertain email, reminder, or e-invoice outcomes against provider evidence before resend. Provider acceptance is not proof of recipient delivery.
+5. Correct the current customer, tax, evidence, approval, or lease blocker for a recurring occurrence before an explicit retry. Do not delete occurrences or generated drafts.
+6. Review e-invoice rejection evidence and participant/profile facts. Use email fallback only when the retained provider outcome makes fallback safe.
+7. Confirm ambiguous or abandoned refunds against bank/provider evidence before retry or allocation release. Manual instruction is not proof of money movement.
+8. Require a zero accounts-receivable control difference before collection communication, close, export, or release approval.
+9. Reassign and update overdue collection follow-ups; an open dispute, promise, exception, or hold remains authoritative.
+10. Preserve failed archive/export records. Correct storage or inputs and create a new checksum-verifiable archive rather than overwriting evidence.
+
+### Deployment and recovery order
+
+1. Back up SQL and object storage under one manifest and record both checksums.
+2. Apply the additive Release 2 migrations through `VirtualCompany.Persistence.Migrations` with receivables workers and external delivery disabled.
+3. Verify the migration history, object access, accounting readiness, receivables readiness, AR control, and recovery verifier.
+4. Enable native draft/issue reads and writes, then PDF rendering, recurring generation, collections preparation, email delivery, refund execution, and e-invoice submission in that order. Keep any externally unavailable capability disabled and visible as unavailable.
+5. Run a bounded production-shaped scenario and reconcile the invoice snapshot, journal, payment/allocation, delivery evidence, statements, audit, reports, and object hashes.
+6. Enable normal worker cadence only after queue age, expired leases, duplicate claims, and ambiguous outcomes are clean.
+
+Application rollback does not reverse additive schema or delete issued records. Disable the affected worker or feature, preserve number allocations, snapshots, journals, PDFs, acknowledgements, statements, approvals, audits, and provider references, then forward-fix. A data restore is permitted only from a coordinated SQL/object pair with an explicit decision covering all post-backup writes.
+
+### Supported volumes and performance
+
+The accounting-capacity endpoint now measures native invoice drafts, rendered artifacts, delivery attempts, recurring occurrences, statements, and collection cases against the `small` and `medium` profiles. The published Release 2 objectives cover invoice lists, 100-line draft preview, concurrent atomic issue, 25-page PDF rendering, aging, a 5,000-item statement, the first 250 collection items, and the ten-check operations projection. Latency objectives are `not_measured` unless the SQL Server performance lane exports real observations; absence of a measurement must not be reported as a pass.

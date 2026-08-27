@@ -1,0 +1,265 @@
+{
+  "schemaVersion": "1.0",
+  "specificationKey": "sweden-domestic-vat-launch-2026.1",
+  "currency": "SEK",
+  "roundingPrecision": 2,
+  "fixtures": [
+    {
+      "fixtureId": "domestic-sale-25-exclusive",
+      "input": {
+        "ruleKey": "se_domestic_sales_25",
+        "accountingDate": "2026-08-24",
+        "direction": "sales",
+        "documentType": "customer_invoice",
+        "lineClassification": "standard_goods_or_services",
+        "lineAmount": 100.00,
+        "amountMeaning": "vat_exclusive",
+        "companyVatRegistrationStatus": "registered",
+        "counterpartyJurisdiction": "SE",
+        "evidenceClassifications": [
+          "operator_classified_domestic_standard_25"
+        ]
+      },
+      "expectedDecision": {
+        "isAllowed": true,
+        "reasonCode": "tax_decision_allowed",
+        "ruleVersion": "2026.1",
+        "taxableBasis": 100.00,
+        "taxAmount": 25.00,
+        "grossAmount": 125.00,
+        "rate": 0.25,
+        "recoverability": "none",
+        "vatBoxes": {
+          "05": 100.00,
+          "10": 25.00
+        }
+      },
+      "expectedJournal": [
+        {
+          "accountRole": "accounts_receivable",
+          "accountNumber": 1510,
+          "debit": 125.00,
+          "credit": 0.00
+        },
+        {
+          "accountRole": "revenue",
+          "accountNumber": 3001,
+          "debit": 0.00,
+          "credit": 100.00
+        },
+        {
+          "accountRole": "tax_output_25",
+          "accountNumber": 2611,
+          "debit": 0.00,
+          "credit": 25.00
+        }
+      ]
+    },
+    {
+      "fixtureId": "domestic-purchase-25-inclusive-full-recovery",
+      "input": {
+        "ruleKey": "se_domestic_purchase_25_full_recovery",
+        "accountingDate": "2026-08-24",
+        "direction": "purchase",
+        "documentType": "supplier_invoice",
+        "lineClassification": "expense",
+        "lineAmount": 125.00,
+        "amountMeaning": "vat_inclusive",
+        "companyVatRegistrationStatus": "registered",
+        "counterpartyJurisdiction": "SE",
+        "evidenceClassifications": [
+          "operator_classified_domestic_standard_25",
+          "business_use_full_recovery"
+        ]
+      },
+      "expectedDecision": {
+        "isAllowed": true,
+        "reasonCode": "tax_decision_allowed",
+        "ruleVersion": "2026.1",
+        "taxableBasis": 100.00,
+        "taxAmount": 25.00,
+        "grossAmount": 125.00,
+        "rate": 0.25,
+        "recoverability": "full",
+        "vatBoxes": {
+          "48": 25.00
+        }
+      },
+      "expectedJournal": [
+        {
+          "accountRole": "operating_expense",
+          "accountNumber": 4000,
+          "debit": 100.00,
+          "credit": 0.00
+        },
+        {
+          "accountRole": "tax_input",
+          "accountNumber": 2641,
+          "debit": 25.00,
+          "credit": 0.00
+        },
+        {
+          "accountRole": "accounts_payable",
+          "accountNumber": 2440,
+          "debit": 0.00,
+          "credit": 125.00
+        }
+      ]
+    },
+    {
+      "fixtureId": "domestic-sale-credit-note-reversal",
+      "input": {
+        "ruleKey": "se_domestic_sales_25",
+        "accountingDate": "2026-08-24",
+        "direction": "sales",
+        "documentType": "customer_credit_note",
+        "lineClassification": "standard_goods_or_services",
+        "lineAmount": 100.00,
+        "amountMeaning": "vat_exclusive",
+        "companyVatRegistrationStatus": "registered",
+        "originalFixtureId": "domestic-sale-25-exclusive",
+        "evidenceClassifications": [
+          "operator_classified_domestic_standard_25"
+        ]
+      },
+      "expectedDecision": {
+        "isAllowed": true,
+        "taxableBasis": 100.00,
+        "taxAmount": 25.00,
+        "grossAmount": 125.00,
+        "correctionBehavior": "reverse_original_signs_and_retain_original_rule_identity"
+      },
+      "expectedJournal": [
+        {
+          "accountRole": "revenue",
+          "accountNumber": 3001,
+          "debit": 100.00,
+          "credit": 0.00
+        },
+        {
+          "accountRole": "tax_output_25",
+          "accountNumber": 2611,
+          "debit": 25.00,
+          "credit": 0.00
+        },
+        {
+          "accountRole": "accounts_receivable",
+          "accountNumber": 1510,
+          "debit": 0.00,
+          "credit": 125.00
+        }
+      ]
+    },
+    {
+      "fixtureId": "blocked-before-effective-date",
+      "input": {
+        "ruleKey": "se_domestic_sales_25",
+        "accountingDate": "2025-12-31",
+        "direction": "sales",
+        "documentType": "customer_invoice",
+        "lineClassification": "standard_goods_or_services",
+        "lineAmount": 100.00,
+        "companyVatRegistrationStatus": "registered",
+        "evidenceClassifications": [
+          "operator_classified_domestic_standard_25"
+        ]
+      },
+      "expectedDecision": {
+        "isAllowed": false,
+        "reasonCode": "tax_rule_unavailable",
+        "taxableBasis": 0.00,
+        "taxAmount": 0.00,
+        "grossAmount": 0.00
+      }
+    },
+    {
+      "fixtureId": "blocked-unregistered-company",
+      "input": {
+        "ruleKey": "se_domestic_sales_25",
+        "accountingDate": "2026-08-24",
+        "direction": "sales",
+        "documentType": "customer_invoice",
+        "lineClassification": "standard_goods_or_services",
+        "lineAmount": 100.00,
+        "companyVatRegistrationStatus": "not_registered",
+        "evidenceClassifications": [
+          "operator_classified_domestic_standard_25"
+        ]
+      },
+      "expectedDecision": {
+        "isAllowed": false,
+        "reasonCode": "company_vat_registration_required",
+        "taxableBasis": 0.00,
+        "taxAmount": 0.00,
+        "grossAmount": 0.00
+      }
+    },
+    {
+      "fixtureId": "blocked-missing-purchase-recovery-evidence",
+      "input": {
+        "ruleKey": "se_domestic_purchase_25_full_recovery",
+        "accountingDate": "2026-08-24",
+        "direction": "purchase",
+        "documentType": "supplier_invoice",
+        "lineClassification": "expense",
+        "lineAmount": 125.00,
+        "companyVatRegistrationStatus": "registered",
+        "evidenceClassifications": [
+          "operator_classified_domestic_standard_25"
+        ]
+      },
+      "expectedDecision": {
+        "isAllowed": false,
+        "reasonCode": "tax_evidence_missing",
+        "missingEvidence": [
+          "business_use_full_recovery"
+        ],
+        "taxableBasis": 0.00,
+        "taxAmount": 0.00,
+        "grossAmount": 0.00
+      }
+    },
+    {
+      "fixtureId": "blocked-reduced-rate",
+      "input": {
+        "ruleKey": "se_reduced_rate_12",
+        "accountingDate": "2026-08-24",
+        "direction": "sales",
+        "documentType": "customer_invoice",
+        "lineClassification": "restaurant_service",
+        "lineAmount": 100.00,
+        "companyVatRegistrationStatus": "registered",
+        "evidenceClassifications": []
+      },
+      "expectedDecision": {
+        "isAllowed": false,
+        "reasonCode": "tax_rule_unavailable",
+        "taxableBasis": 0.00,
+        "taxAmount": 0.00,
+        "grossAmount": 0.00
+      }
+    },
+    {
+      "fixtureId": "blocked-eu-sale",
+      "input": {
+        "ruleKey": "se_eu_sale",
+        "accountingDate": "2026-08-24",
+        "direction": "sales",
+        "documentType": "customer_invoice",
+        "lineClassification": "goods",
+        "lineAmount": 100.00,
+        "companyVatRegistrationStatus": "registered",
+        "counterpartyJurisdiction": "DE",
+        "counterpartyVatStatus": "registered",
+        "evidenceClassifications": []
+      },
+      "expectedDecision": {
+        "isAllowed": false,
+        "reasonCode": "tax_rule_unavailable",
+        "taxableBasis": 0.00,
+        "taxAmount": 0.00,
+        "grossAmount": 0.00
+      }
+    }
+  ]
+}

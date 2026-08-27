@@ -54,15 +54,26 @@ public sealed partial class FinanceApiClient
             $"internal/companies/{companyId}/finance/fiscal-periods/{periodId:D}/reporting/reopen", new { reason }, cancellationToken);
     }
 
-    public Task<AccountingExportJobResponse> RequestAccountingExportAsync(Guid companyId, Guid periodId, string idempotencyKey, CancellationToken cancellationToken = default)
+    public Task<AccountingExportJobResponse> RequestAccountingExportAsync(Guid companyId, Guid periodId, string idempotencyKey, CancellationToken cancellationToken = default) =>
+        RequestAccountingExportAsync(companyId, periodId, idempotencyKey, AccountingExportApiValues.GenericJson, null, cancellationToken);
+
+    public Task<AccountingExportJobResponse> RequestAccountingExportAsync(Guid companyId, Guid periodId, string idempotencyKey,
+        string exportType, string? correlationId = null, CancellationToken cancellationToken = default)
     {
         EnsureOnlineMutation();
         return SendCompanyScopedAsync<object, AccountingExportJobResponse>(companyId, HttpMethod.Post,
-            $"internal/companies/{companyId}/finance/accounting/exports", new { fiscalPeriodId = periodId, idempotencyKey }, cancellationToken);
+            $"internal/companies/{companyId}/finance/accounting/exports", new { fiscalPeriodId = periodId, idempotencyKey, exportType, correlationId }, cancellationToken);
     }
 
     public async Task<IReadOnlyList<AccountingExportJobResponse>> GetAccountingExportsAsync(Guid companyId, Guid periodId, CancellationToken cancellationToken = default) =>
         await GetAsync<List<AccountingExportJobResponse>>(companyId, $"internal/companies/{companyId}/finance/accounting/exports?fiscalPeriodId={periodId:D}", false, cancellationToken) ?? [];
+
+    public static string GetAccountingExportDownloadUrl(Guid companyId, Guid exportId)
+    {
+        ArgumentOutOfRangeException.ThrowIfEqual(companyId, Guid.Empty);
+        ArgumentOutOfRangeException.ThrowIfEqual(exportId, Guid.Empty);
+        return $"internal/companies/{companyId}/finance/accounting/exports/{exportId:D}/download";
+    }
 }
 
 public sealed class GeneralLedgerReportResponse { public Guid CompanyId { get; set; } public Guid FiscalPeriodId { get; set; } public string FiscalPeriodName { get; set; } = ""; public bool IsClosed { get; set; } public bool IsReportingLocked { get; set; } public int Page { get; set; } public int PageSize { get; set; } public long TotalLineCount { get; set; } public bool HasMore { get; set; } public List<GeneralLedgerAccountResponse> Accounts { get; set; } = []; }
@@ -82,4 +93,11 @@ public sealed class ReportingPeriodCloseValidationResponse { public bool IsReady
 public sealed class ReportingPeriodBlockingIssueResponse { public string Code { get; set; } = ""; public string Message { get; set; } = ""; public int Count { get; set; } public List<string> SampleReferences { get; set; } = []; public decimal? Amount { get; set; } public string? Currency { get; set; } public List<string> RecordLinks { get; set; } = []; public string? Remediation { get; set; } }
 public sealed class ReportingPeriodLockStateResponse { public Guid FiscalPeriodId { get; set; } public bool IsClosed { get; set; } public bool IsReportingLocked { get; set; } public DateTime? ReportingLockedAtUtc { get; set; } public DateTime? ReportingUnlockedAtUtc { get; set; } }
 public sealed class AccountingPeriodHistoryResponse { public Guid Id { get; set; } public string Action { get; set; } = ""; public Guid ActorUserId { get; set; } public string Reason { get; set; } = ""; public string? SnapshotChecksum { get; set; } public DateTime OccurredUtc { get; set; } }
-public sealed class AccountingExportJobResponse { public Guid Id { get; set; } public Guid FiscalPeriodId { get; set; } public string Status { get; set; } = ""; public int AttemptCount { get; set; } public DateTime RequestedUtc { get; set; } public DateTime? StartedUtc { get; set; } public DateTime? CompletedUtc { get; set; } public DateTime ExpiresUtc { get; set; } public string? Checksum { get; set; } public string? FileName { get; set; } public long? ContentLength { get; set; } public string? FailureCode { get; set; } public string? FailureSummary { get; set; } public bool CanDownload { get; set; } }
+public sealed class AccountingExportJobResponse { public Guid Id { get; set; } public Guid FiscalPeriodId { get; set; } public string Status { get; set; } = ""; public int AttemptCount { get; set; } public DateTime RequestedUtc { get; set; } public DateTime? StartedUtc { get; set; } public DateTime? CompletedUtc { get; set; } public DateTime ExpiresUtc { get; set; } public string? Checksum { get; set; } public string? FileName { get; set; } public string? MediaType { get; set; } public long? ContentLength { get; set; } public string? FailureCode { get; set; } public string? FailureSummary { get; set; } public bool CanDownload { get; set; } public string ExportType { get; set; } = AccountingExportApiValues.GenericJson; public string? SpecificationVersion { get; set; } public string? InputChecksum { get; set; } public string? EncodingName { get; set; } public int? SourceAccountCount { get; set; } public int? SourceJournalCount { get; set; } public int? SourceLineCount { get; set; } public decimal? SourceDebitTotal { get; set; } public decimal? SourceCreditTotal { get; set; } public string? CorrelationId { get; set; } }
+
+public static class AccountingExportApiValues
+{
+    public const string GenericJson = "generic_json";
+    public const string Sie4B = "sie_4b";
+    public const string SwedishStatutoryArchive = "swedish_statutory_archive";
+}

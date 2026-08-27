@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "1.0",
+  "specificationKey": "sweden-domestic-vat-launch-2026.1",
+  "jurisdiction": "SE",
+  "accountingCurrency": "SEK",
+  "accountingMethod": "invoice_method",
+  "reviewState": "review_pending",
+  "rounding": {
+    "precisionSource": "selected_accounting_configuration",
+    "modeSource": "selected_accounting_configuration",
+    "taxAndBasisPreserveOre": true,
+    "paymentRoundingMustNotChangeTax": true,
+    "paymentRoundingAccountRole": "rounding_difference",
+    "sourceRefs": [
+      "SKV-VAT-ROUNDING-2026.12"
+    ]
+  },
+  "rules": [
+    {
+      "key": "se_domestic_sales_25",
+      "ruleVersion": "2026.1",
+      "displayName": "Domestic sales, standard VAT 25%",
+      "effectiveFrom": "2026-01-01",
+      "effectiveTo": null,
+      "direction": "sales",
+      "jurisdiction": "SE",
+      "companyVatRegistrationStatuses": [
+        "registered"
+      ],
+      "documentTypes": [
+        "customer_invoice",
+        "customer_credit_note"
+      ],
+      "lineClassifications": [
+        "standard_goods_or_services"
+      ],
+      "rate": 0.25,
+      "amountMethod": "exclusive",
+      "taxableBasisMethod": "line_amount",
+      "treatment": "taxable",
+      "liabilityAccountRoleKey": "tax_output_25",
+      "recoverableAccountRoleKey": null,
+      "recoverability": "none",
+      "vatBoxMappings": [
+        {
+          "box": "05",
+          "fact": "taxable_basis"
+        },
+        {
+          "box": "10",
+          "fact": "output_vat"
+        }
+      ],
+      "requiredEvidence": [
+        "operator_classified_domestic_standard_25"
+      ],
+      "creditNotePolicy": "reverse_original_rule_facts_through_linked_correction",
+      "sourceRefs": [
+        "SE-ML-2023-200-CURRENT-2026-08-24",
+        "SKV-VAT-RATES-2026-08-24",
+        "SKV-VAT-RETURN-BOXES-2026-08-24",
+        "BAS-CHART-2026-V1.1"
+      ]
+    },
+    {
+      "key": "se_domestic_purchase_25_full_recovery",
+      "ruleVersion": "2026.1",
+      "displayName": "Domestic purchase, standard VAT 25%, fully deductible",
+      "effectiveFrom": "2026-01-01",
+      "effectiveTo": null,
+      "direction": "purchase",
+      "jurisdiction": "SE",
+      "companyVatRegistrationStatuses": [
+        "registered"
+      ],
+      "documentTypes": [
+        "supplier_invoice",
+        "supplier_credit_note"
+      ],
+      "lineClassifications": [
+        "expense",
+        "asset"
+      ],
+      "rate": 0.25,
+      "amountMethod": "inclusive",
+      "taxableBasisMethod": "line_amount",
+      "treatment": "taxable",
+      "liabilityAccountRoleKey": null,
+      "recoverableAccountRoleKey": "tax_input",
+      "recoverability": "full",
+      "vatBoxMappings": [
+        {
+          "box": "48",
+          "fact": "deductible_input_vat"
+        }
+      ],
+      "requiredEvidence": [
+        "operator_classified_domestic_standard_25",
+        "business_use_full_recovery"
+      ],
+      "creditNotePolicy": "reverse_original_rule_facts_through_linked_correction",
+      "sourceRefs": [
+        "SE-ML-2023-200-CURRENT-2026-08-24",
+        "SKV-VAT-RATES-2026-08-24",
+        "SKV-VAT-RETURN-BOXES-2026-08-24",
+        "SKV-INPUT-VAT-DEDUCTION-2026-08-24",
+        "BAS-CHART-2026-V1.1"
+      ]
+    }
+  ]
+}

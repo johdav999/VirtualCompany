@@ -81,6 +81,33 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             cancellationToken);
         var roleAssignments = BuildRoleAssignments(pack, chart, query.AccountRoleCodeAssignments, issues);
         var endExclusive = query.FiscalYearStart.AddYears(1);
+        var statutoryProfile = await _dbContext.CompanyStatutoryProfiles.AsNoTracking()
+            .SingleOrDefaultAsync(profile => profile.CompanyId == query.CompanyId, cancellationToken);
+        var statutoryStatus = CompanyStatutoryProfileService.BuildStatus(query.CompanyId, statutoryProfile);
+        var isSwedishPack = string.Equals(pack.Definition.CountryOrRegion, "SE", StringComparison.OrdinalIgnoreCase);
+        if (isSwedishPack)
+        {
+            issues.AddRange(statutoryStatus.MissingFacts.Select(fact => new AccountingConfigurationIssueDto(
+                CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                "Complete the statutory profile fact before selecting the Swedish candidate pack.",
+                fact)));
+            if (statutoryProfile is not null &&
+                !string.Equals(statutoryProfile.AccountingCurrency, currency, StringComparison.OrdinalIgnoreCase))
+            {
+                issues.Add(new AccountingConfigurationIssueDto(
+                    CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                    "The setup currency must match the statutory profile accounting currency.",
+                    StatutoryProfileFactKeys.AccountingCurrency));
+            }
+            if (pack.Definition.PolicyMetadata?.ContainsKey("tax_specification") == true && statutoryProfile is not null &&
+                statutoryProfile.BookkeepingMethod != StatutoryBookkeepingMethodValues.Accrual)
+            {
+                issues.Add(new AccountingConfigurationIssueDto(
+                    CompanyStatutoryProfileReasonCodes.InvalidProfile,
+                    "The Swedish VAT launch policy supports only the invoice/accrual bookkeeping method.",
+                    StatutoryProfileFactKeys.BookkeepingMethod));
+            }
+        }
 
         var existingConfiguration = await _dbContext.AccountingConfigurations
             .AsNoTracking()
@@ -114,7 +141,7 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             }
         }
 
-        if (pack.Definition.IsCountryNeutral)
+        if (!pack.Definition.IsStatutoryComplianceValidated)
         {
             warnings.Add(new AccountingConfigurationIssueDto(
                 AccountingConfigurationReasonCodes.CountrySpecificCapabilityUnavailable,
@@ -158,7 +185,13 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             periods,
             DefaultVoucherSeries,
             issues,
-            warnings);
+            warnings,
+            statutoryStatus,
+            pack.Definition.IsStatutoryComplianceValidated ? "reviewer_validated" : isSwedishPack ? "review_pending" : "general_only",
+            isSwedishPack ? statutoryStatus.MissingFacts : [],
+            isSwedishPack
+                ? statutoryStatus.NextActions
+                : ["Confirm the general bookkeeping setup. Country-specific statutory capabilities remain unavailable."]);
     }
 
     public async Task<AccountingSetupCompletionDto> CompleteSetupAsync(

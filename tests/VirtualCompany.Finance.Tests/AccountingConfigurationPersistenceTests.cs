@@ -173,6 +173,8 @@ public sealed class AccountingConfigurationPersistenceTests
             var pack = new CountryNeutralAccountingPolicyPack();
             foreach (var role in pack.Definition.AccountRoles)
             {
+                var templateAccount = pack.Definition.ChartTemplates.SelectMany(chart => chart.Accounts)
+                    .FirstOrDefault(account => string.Equals(account.DefaultRoleKey, role.Key, StringComparison.OrdinalIgnoreCase));
                 context.FinanceAccounts.Add(new FinanceAccount(
                     Guid.NewGuid(),
                     companyId,
@@ -181,7 +183,11 @@ public sealed class AccountingConfigurationPersistenceTests
                     role.Key,
                     "USD",
                     0m,
-                    NowUtc));
+                    NowUtc,
+                    accountClass: templateAccount?.AccountClass,
+                    normalBalance: templateAccount?.NormalBalance,
+                    effectiveFrom: DateOnly.FromDateTime(NowUtc),
+                    isPostingEnabled: true));
             }
 
             await context.SaveChangesAsync();

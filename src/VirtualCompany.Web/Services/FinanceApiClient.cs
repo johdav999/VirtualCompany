@@ -783,6 +783,16 @@ public sealed class CustomerInvoiceAccountingLineApiRequest
     public string Description { get; set; } = string.Empty;
     public decimal Amount { get; set; }
     public string TaxRuleKey { get; set; } = string.Empty;
+    public string? LineClassification { get; set; }
+    public string? CounterpartyJurisdiction { get; set; }
+    public string? CounterpartyVatStatus { get; set; }
+    public List<AccountingTaxEvidenceApiRequest> TaxEvidence { get; set; } = [];
+}
+
+public sealed class AccountingTaxEvidenceApiRequest
+{
+    public string Classification { get; set; } = string.Empty;
+    public string? SourceReference { get; set; }
 }
 
 public sealed class PostCustomerInvoiceAccountingApiRequest

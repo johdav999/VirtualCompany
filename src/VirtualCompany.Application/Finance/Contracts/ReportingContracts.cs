@@ -111,6 +111,10 @@ public static class ReportingPeriodBlockingIssueCodes
     public const string ReconciliationConflicts = "reconciliation_conflicts";
     public const string ControlAccountDifference = "control_account_difference";
     public const string TaxReviewIncomplete = "tax_review_incomplete";
+    public const string VatReturnMissing = "vat_return_missing";
+    public const string VatReturnStale = "vat_return_stale";
+    public const string VatReturnBlocking = "vat_return_blocking";
+    public const string VatReturnUnreviewed = "vat_return_unreviewed";
     public const string StoredReportsStale = "stored_reports_stale";
 }
 

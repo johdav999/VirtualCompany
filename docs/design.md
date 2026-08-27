@@ -228,6 +228,11 @@ The current consolidation references are stored in `docs/design/references/`:
 - `support-cases-reference.png`
 - `support-knowledge-reference.png`
 - `settings-hub-reference.png`
+- `swedish-accounting-setup-reference.png`
+- `swedish-vat-statutory-reporting-reference.png`
+- `native-invoice-editor-issue-reference.png`
+- `native-receivables-collections-reference.png`
+- `native-receivables-operations-reference.png`
 
 ---
 

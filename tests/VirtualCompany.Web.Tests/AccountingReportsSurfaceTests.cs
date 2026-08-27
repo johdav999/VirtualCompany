@@ -9,6 +9,8 @@ public sealed class AccountingReportsSurfaceTests
         var code = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingReportsPage.razor.cs");
         var css = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingReportsPage.razor.css");
         var client = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.AccountingReports.cs");
+        var app = Read("src", "VirtualCompany.Web", "App.razor");
+        var globalCss = Read("src", "VirtualCompany.Web", "wwwroot", "css", "app.css");
 
         Assert.Contains("@page \"/finance/accounting/reports\"", page, StringComparison.Ordinal);
         Assert.Contains("FinanceText[\"CountryNeutralTaxNotice\"]", page, StringComparison.Ordinal);
@@ -16,6 +18,10 @@ public sealed class AccountingReportsSurfaceTests
         Assert.Contains("FinanceText[\"PeriodCloseChecklist\"]", page, StringComparison.Ordinal);
         Assert.Contains("FinanceText[\"LockHistory\"]", page, StringComparison.Ordinal);
         Assert.Contains("FinanceText[\"ExportJobs\"]", page, StringComparison.Ordinal);
+        Assert.Contains("VatReturnWorkspace", page, StringComparison.Ordinal);
+        Assert.Contains("AllowedActions", Read("src", "VirtualCompany.Web", "Components", "Finance", "VatReturnWorkspace.razor"), StringComparison.Ordinal);
+        Assert.Contains("RequestStatutoryExportAsync", code, StringComparison.Ordinal);
+        Assert.Contains("GetVatReturnPackageDownloadUrl", code, StringComparison.Ordinal);
         Assert.Contains("role=\"alert\"", page, StringComparison.Ordinal);
         Assert.Contains("aria-live=\"polite\"", page, StringComparison.Ordinal);
         Assert.Contains("role=\"button\" tabindex=\"0\"", page, StringComparison.Ordinal);
@@ -24,6 +30,9 @@ public sealed class AccountingReportsSurfaceTests
         Assert.Contains("ReopenAccountingPeriodAsync", code, StringComparison.Ordinal);
         Assert.Contains("Idempotency", client, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("@media(max-width:800px)", css, StringComparison.Ordinal);
+        Assert.Contains("20260825-swedish-statutory-reporting", app, StringComparison.Ordinal);
+        Assert.Contains("grid-template-columns: minmax(0, 1fr);", globalCss, StringComparison.Ordinal);
+        Assert.Contains(".finance-module-shell__content > *", globalCss, StringComparison.Ordinal);
         Assert.DoesNotContain("tenant", page, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("enum", page, StringComparison.OrdinalIgnoreCase);
     }

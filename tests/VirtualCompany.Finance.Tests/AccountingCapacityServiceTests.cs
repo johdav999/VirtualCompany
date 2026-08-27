@@ -61,6 +61,13 @@ public sealed class AccountingCapacityServiceTests
         var exportVolume = Assert.Single(capacity.Volumes, x => x.Resource == "exports");
         Assert.Equal(2, exportVolume.CurrentCount);
         Assert.DoesNotContain(capacity.Volumes, x => x.CurrentCount == 3);
+        Assert.Contains(capacity.Volumes, x => x.Resource == "invoice_drafts" && x.CurrentCount == 0);
+        Assert.Contains(capacity.Volumes, x => x.Resource == "delivery_attempts" && x.CurrentCount == 0);
+        Assert.Contains(capacity.Volumes, x => x.Resource == "recurring_occurrences" && x.CurrentCount == 0);
+        Assert.Contains(capacity.Volumes, x => x.Resource == "customer_statements" && x.CurrentCount == 0);
+        Assert.Contains(capacity.Volumes, x => x.Resource == "collection_cases" && x.CurrentCount == 0);
+        Assert.Contains(capacity.Objectives, x => x.Key == "invoice_issue_p95" && x.Objective == 1_500);
+        Assert.Contains(capacity.Objectives, x => x.Key == "receivables_readiness_p95" && x.Objective == 1_000);
         Assert.Contains(capacity.RetentionClasses, x => x.Key == AccountingRetentionClassKeys.AccountingTruth &&
             x.Mode == AccountingRetentionModes.Preserve);
 

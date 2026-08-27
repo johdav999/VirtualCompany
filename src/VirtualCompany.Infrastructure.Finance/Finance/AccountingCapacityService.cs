@@ -4,6 +4,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Documents;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -35,12 +36,16 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
             ("customer_invoices", 100_000), ("supplier_bills", 100_000), ("payments", 100_000),
             ("allocations", 200_000), ("bank_rows", 250_000), ("evidence_links", 500_000),
             ("audits", 1_000_000), ("provider_references", 500_000), ("exports", 10_000),
+            ("invoice_drafts", 100_000), ("rendered_artifacts", 100_000), ("delivery_attempts", 250_000),
+            ("recurring_occurrences", 250_000), ("customer_statements", 100_000), ("collection_cases", 100_000),
             ("worker_backlog", 25_000)),
         Profile(AccountingCapacityProfileKeys.Medium, "Medium launch company", 100, 30,
             ("accounts", 1_000), ("fiscal_periods", 240), ("journals", 1_000_000), ("journal_lines", 5_000_000),
             ("customer_invoices", 1_000_000), ("supplier_bills", 1_000_000), ("payments", 1_000_000),
             ("allocations", 2_000_000), ("bank_rows", 2_500_000), ("evidence_links", 5_000_000),
             ("audits", 10_000_000), ("provider_references", 5_000_000), ("exports", 100_000),
+            ("invoice_drafts", 1_000_000), ("rendered_artifacts", 1_000_000), ("delivery_attempts", 2_500_000),
+            ("recurring_occurrences", 2_500_000), ("customer_statements", 1_000_000), ("collection_cases", 1_000_000),
             ("worker_backlog", 250_000))
     ];
 
@@ -73,7 +78,23 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
         Objective("expired_export_binary", "Expired export binary content", "bytes", 0, 1,
             "Expired completed export content", "Preview and run the authorized bounded export-content cleanup."),
         Objective("failed_export_jobs", "Failed export jobs", "items", 0, 1,
-            "Terminal export failures", "Inspect the safe failure and request a new export after remediation.")
+            "Terminal export failures", "Inspect the safe failure and request a new export after remediation."),
+        Objective("invoice_list_p95", "Customer invoice list p95", "milliseconds", 500, 1_000,
+            "Bounded first page at the selected supported volume", "Inspect company/status/date indexes and avoid unbounded delivery fan-out."),
+        Objective("draft_preview_p95", "Invoice draft preview p95", "milliseconds", 750, 1_500,
+            "One current draft with 100 lines", "Inspect tax-policy resolution, evidence loading, and line calculation allocation."),
+        Objective("invoice_issue_p95", "Native invoice issue p95", "milliseconds", 1_500, 3_000,
+            "Committed number, invoice, and journal transaction under supported concurrency", "Inspect number-series contention, transaction duration, and posting evidence queries."),
+        Objective("invoice_render_p95", "Invoice PDF render p95", "milliseconds", 3_000, 6_000,
+            "A 25-page immutable issued snapshot", "Inspect renderer pagination, font work, and object-storage latency."),
+        Objective("receivables_aging_p95", "Receivables aging p95", "milliseconds", 1_500, 3_000,
+            "One bounded company cutoff and currency", "Inspect invoice, allocation, correction, and collection-case indexes."),
+        Objective("customer_statement_p95", "Customer statement generation p95", "milliseconds", 3_000, 6_000,
+            "One customer with 5,000 bounded statement items", "Inspect source projection, deterministic rendering, and checksum allocation."),
+        Objective("collections_queue_p95", "Collections queue p95", "milliseconds", 750, 1_500,
+            "Prioritized first 250 open items", "Inspect due-date, customer, status, and follow-up indexes."),
+        Objective("receivables_readiness_p95", "Receivables readiness p95", "milliseconds", 1_000, 2_000,
+            "Ten bounded operator checks for one company", "Inspect status/updated indexes and retain the 25-item evidence cap.")
     ];
 
     private static readonly IReadOnlyList<AccountingRetentionClassDto> RetentionClasses =
@@ -102,6 +123,7 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
     private readonly AccountingOperationsTelemetry _telemetry;
     private readonly TimeProvider _timeProvider;
     private readonly ILogger<AccountingCapacityService> _logger;
+    private readonly ICompanyDocumentStorage? _documentStorage;
 
     public AccountingCapacityService(
         VirtualCompanyDbContext db,
@@ -109,7 +131,8 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
         IAuditEventWriter audit,
         AccountingOperationsTelemetry telemetry,
         TimeProvider timeProvider,
-        ILogger<AccountingCapacityService> logger)
+        ILogger<AccountingCapacityService> logger,
+        ICompanyDocumentStorage? documentStorage = null)
     {
         _db = db;
         _options = options;
@@ -117,6 +140,7 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
         _telemetry = telemetry;
         _timeProvider = timeProvider;
         _logger = logger;
+        _documentStorage = documentStorage;
     }
 
     public async Task<AccountingCapacityReadModel> GetAsync(
@@ -141,6 +165,14 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
             ["audits"] = await _db.AuditEvents.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
             ["provider_references"] = await _db.AccountingProviderExports.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
             ["exports"] = await _db.AccountingExportJobs.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
+            ["invoice_drafts"] = await _db.CustomerInvoiceDrafts.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
+            ["rendered_artifacts"] = await _db.CustomerInvoiceRenderedArtifacts.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
+            ["delivery_attempts"] = await _db.CustomerInvoiceEmailDeliveries.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken)
+                + await _db.CustomerInvoiceElectronicDeliveries.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken)
+                + await _db.CustomerReminderDeliveries.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
+            ["recurring_occurrences"] = await _db.CustomerInvoiceScheduleOccurrences.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
+            ["customer_statements"] = await _db.CustomerStatementSnapshots.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
+            ["collection_cases"] = await _db.CustomerCollectionCases.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x => x.CompanyId == query.CompanyId, cancellationToken),
             ["worker_backlog"] = await _db.BackgroundExecutions.IgnoreQueryFilters().AsNoTracking().LongCountAsync(x =>
                 x.CompanyId == query.CompanyId && FinanceExecutionTypes.Contains(x.ExecutionType) &&
                 (x.Status == BackgroundExecutionStatus.Pending || x.Status == BackgroundExecutionStatus.RetryScheduled), cancellationToken)
@@ -173,7 +205,7 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
             .LongCountAsync(x => x.CompanyId == query.CompanyId && x.ProviderReconciliationRequired, cancellationToken);
         var expiredExportBytes = await _db.AccountingExportJobs.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && x.Status == AccountingExportStatuses.Completed &&
-                x.ExpiresUtc <= now && x.Content != null)
+                x.ExpiresUtc <= now && (x.Content != null || x.StorageKey != null))
             .SumAsync(x => x.ContentLength ?? 0L, cancellationToken);
         var failedExportJobs = await _db.AccountingExportJobs.IgnoreQueryFilters().AsNoTracking()
             .LongCountAsync(x => x.CompanyId == query.CompanyId && x.Status == AccountingExportStatuses.Failed, cancellationToken);
@@ -245,6 +277,12 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
         long releasedBytes = 0;
         foreach (var target in targets)
         {
+            if (!string.IsNullOrWhiteSpace(target.StorageKey))
+            {
+                if (_documentStorage is null)
+                    throw new InvalidOperationException("Object storage is required to expire a statutory accounting export.");
+                await _documentStorage.DeleteAsync(target.StorageKey, cancellationToken);
+            }
             releasedBytes += target.ExpireContent(now);
         }
 
@@ -295,7 +333,7 @@ public sealed class AccountingCapacityService : IAccountingCapacityService
     private IQueryable<AccountingExportJob> EligibleExports(Guid companyId, DateTime now) =>
         _db.AccountingExportJobs.IgnoreQueryFilters()
             .Where(x => x.CompanyId == companyId && x.Status == AccountingExportStatuses.Completed &&
-                x.ExpiresUtc <= now && x.Content != null);
+                x.ExpiresUtc <= now && (x.Content != null || x.StorageKey != null));
 
     private static async Task<List<AccountingExportJob>> LoadTargetsAsync(
         IQueryable<AccountingExportJob> query,

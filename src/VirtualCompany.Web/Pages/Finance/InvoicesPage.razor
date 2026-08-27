@@ -21,16 +21,15 @@
                 <p class="finance-overview-subtitle">@FinanceText["InvoicesDescription"]</p>
             </div>
             <div class="finance-overview-header__actions">
-                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
+                <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.InvoiceDraftNew, AccessState.CompanyId)">@FinanceText["NewInvoice"]</a>
+                <a class="btn finance-overview-button finance-overview-button--secondary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
                 <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
             </div>
         </div>
 
         <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
-        <div class="finance-subtab-nav" aria-label="@FinanceText["Invoices"]">
-            <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Invoices, AccessState.CompanyId)">@FinanceText["Invoices"]</a>
-            <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId)">@FinanceText["Review"]</a>
-        </div>
+        <ReceivablesNavigation CompanyId="@AccessState.CompanyId!.Value" ActiveView="invoices" />
+        <div class="finance-subtab-nav" aria-label="@FinanceText["InvoiceReviewsTitle"]"><a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Reviews, AccessState.CompanyId)">@FinanceText["Review"]</a></div>
 
         <div class="invoices-layout">
             <article class="invoice-list-card">
@@ -304,6 +303,8 @@
                             </div>
                         }
                     </section>
+
+                    <NativeInvoiceLifecyclePanel CompanyId="@AccessState.CompanyId!.Value" Invoice="@SelectedInvoice" MembershipRole="@AccessState.MembershipRole" />
 
                     <section class="invoice-detail-section">
                         <h3>@FinanceText["ReviewNotes"]</h3>

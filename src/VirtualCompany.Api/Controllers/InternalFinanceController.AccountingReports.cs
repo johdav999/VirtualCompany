@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using VirtualCompany.Application.Authorization;
 using VirtualCompany.Application.Finance;
+using VirtualCompany.Domain.Entities;
 
 namespace VirtualCompany.Api.Controllers;
 
@@ -58,7 +59,7 @@ public sealed partial class InternalFinanceController
         var result = await ExecuteWriteAsync(() => _accountingReportingService.RequestExportAsync(
             new RequestAccountingExportCommand(companyId, request.FiscalPeriodId,
                 ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required."),
-                request.IdempotencyKey), cancellationToken));
+                request.IdempotencyKey, request.ExportType, request.CorrelationId ?? ResolveCorrelationId()), cancellationToken));
         return result.Result is null ? Accepted(result.Value) : result;
     }
 
@@ -94,4 +95,6 @@ public class AccountingPeriodRequest
 public sealed class RequestAccountingExportRequest : AccountingPeriodRequest
 {
     public string IdempotencyKey { get; set; } = string.Empty;
+    public string ExportType { get; set; } = AccountingExportTypeValues.GenericJson;
+    public string? CorrelationId { get; set; }
 }

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
@@ -84,6 +85,9 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         if (!plan.IsReady)
         {
             var first = plan.Issues.First(x => x.IsBlocking);
+            if (first.ReasonCode == CustomerInvoiceAccountingReasonCodes.TaxRuleUnsupported)
+                await RecordBlockedTaxDecisionAsync(command.CompanyId, command.InvoiceId, command.ActorUserId,
+                    command.CorrelationId, plan, first, cancellationToken);
             throw Error(first.ReasonCode, first.Explanation);
         }
 
@@ -132,7 +136,7 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                 profile.Lines.Add(new CustomerInvoiceAccountingLine(Guid.NewGuid(), command.CompanyId, profile.Id,
                     line.Sequence, line.Description, line.TaxRuleKey, line.TaxMethod, line.TaxRate,
                     line.NetAmount, line.TaxAmount, line.GrossAmount, line.NetBaseAmount, line.TaxBaseAmount,
-                    line.TaxPayableAccountId));
+                    line.TaxPayableAccountId, SerializeTaxFacts(line, plan, command.ActorUserId)));
         }
 
         var approval = ApprovalRequest.CreateForTarget(Guid.NewGuid(), command.CompanyId,
@@ -232,7 +236,11 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             _dbContext.FinanceInvoices.Add(credit);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
-            var plan = await _policy.BuildPlanAsync(new(command.CompanyId, credit.Id, command.Accounting, command.ActorUserId), cancellationToken);
+            var originalInput = ToInput(originalProfile);
+            var creditInput = new CustomerInvoiceAccountingInput(command.Accounting.FiscalPeriodId,
+                command.Accounting.VoucherSeriesCode, command.Accounting.ExchangeRate ?? originalProfile.ExchangeRate,
+                originalInput.Lines);
+            var plan = await _policy.BuildPlanAsync(new(command.CompanyId, credit.Id, creditInput, command.ActorUserId), cancellationToken);
             if (!plan.IsReady)
             {
                 var first = plan.Issues.First(x => x.IsBlocking);
@@ -250,13 +258,13 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                 profile.Lines.Add(new CustomerInvoiceAccountingLine(Guid.NewGuid(), command.CompanyId, profile.Id,
                     line.Sequence, line.Description, line.TaxRuleKey, line.TaxMethod, line.TaxRate,
                     line.NetAmount, line.TaxAmount, line.GrossAmount, line.NetBaseAmount, line.TaxBaseAmount,
-                    line.TaxPayableAccountId));
+                    line.TaxPayableAccountId, SerializeTaxFacts(line, plan, command.ActorUserId)));
             _dbContext.CustomerInvoiceAccountingProfiles.Add(profile);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
             // Rebuild once the original-invoice link exists so the approval hash binds that correction relationship.
             var linkedPlan = await _policy.BuildPlanAsync(
-                new(command.CompanyId, credit.Id, command.Accounting, command.ActorUserId), cancellationToken);
+                new(command.CompanyId, credit.Id, creditInput, command.ActorUserId), cancellationToken);
             if (!linkedPlan.IsReady)
             {
                 var first = linkedPlan.Issues.First(x => x.IsBlocking);
@@ -265,7 +273,7 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             profile.SetPayloadHash(linkedPlan.PayloadHash);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
-            var submitted = await SubmitAsync(new(command.CompanyId, credit.Id, command.Accounting, profile.Version,
+            var submitted = await SubmitAsync(new(command.CompanyId, credit.Id, creditInput, profile.Version,
                 command.IdempotencyKey, command.ActorUserId, command.CorrelationId), cancellationToken);
             await _audit.WriteAsync(new AuditEventWriteRequest(command.CompanyId, AuditActorTypes.User,
                 command.ActorUserId, AuditEventActions.AccountingCustomerCreditNoteCreated,
@@ -331,22 +339,14 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         foreach (var line in ordered)
         {
             var revenue = line.NetBaseAmount + (line.Sequence == ordered[^1].Sequence ? profile.RoundingBaseAmount : 0m);
+            var retainedTaxFacts = ParseTaxFacts(line.TaxFactsJson);
+            retainedTaxFacts["documentCurrency"] = profile.DocumentCurrency;
             lines.Add(new(profile.RevenueAccountId, isCredit ? revenue : 0m, isCredit ? 0m : revenue,
-                profile.BaseCurrency, line.Description, TaxFacts: new Dictionary<string, string>
-                {
-                    ["taxRuleKey"] = line.TaxRuleKey, ["taxMethod"] = line.TaxMethod,
-                    ["taxRate"] = line.TaxRate.ToString(CultureInfo.InvariantCulture),
-                    ["documentCurrency"] = profile.DocumentCurrency
-                }));
+                profile.BaseCurrency, line.Description, TaxFacts: retainedTaxFacts));
             if (line.TaxBaseAmount > 0m && line.TaxPayableAccountId.HasValue)
                 lines.Add(new(line.TaxPayableAccountId.Value, isCredit ? line.TaxBaseAmount : 0m,
                     isCredit ? 0m : line.TaxBaseAmount, profile.BaseCurrency, $"Tax · {line.Description}",
-                    TaxFacts: new Dictionary<string, string>
-                    {
-                        ["taxRuleKey"] = line.TaxRuleKey, ["taxMethod"] = line.TaxMethod,
-                        ["taxRate"] = line.TaxRate.ToString(CultureInfo.InvariantCulture),
-                        ["documentTaxAmount"] = line.TaxAmount.ToString(CultureInfo.InvariantCulture)
-                    }));
+                    TaxFacts: retainedTaxFacts));
         }
 
         var evidence = new List<ProposedAccountingEvidence>();
@@ -427,14 +427,19 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         var ordered = profile.Lines.OrderBy(x => x.Sequence).ToArray();
         foreach (var line in ordered)
         {
+            var taxFacts = ParseTaxFacts(line.TaxFactsJson);
             var revenueAmount = line.NetBaseAmount + (line.Sequence == ordered[^1].Sequence ? profile.RoundingBaseAmount : 0m);
             result.Add(new(revenue.Id, "revenue", revenue.Code, revenue.Name,
                 isCredit ? revenueAmount : 0m, isCredit ? 0m : revenueAmount,
-                profile.BaseCurrency, line.Description, line.TaxRuleKey));
+                profile.BaseCurrency, line.Description, line.TaxRuleKey,
+                taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
+                taxFacts.GetValueOrDefault("evidenceClassification")));
             if (line.TaxBaseAmount > 0m && line.TaxPayableAccountId.HasValue && accounts.TryGetValue(line.TaxPayableAccountId.Value, out var tax))
-                result.Add(new(tax.Id, "tax_payable", tax.Code, tax.Name,
+                result.Add(new(tax.Id, taxFacts.GetValueOrDefault("liabilityAccountRole") ?? "tax_payable", tax.Code, tax.Name,
                     isCredit ? line.TaxBaseAmount : 0m, isCredit ? 0m : line.TaxBaseAmount,
-                    profile.BaseCurrency, "Tax payable", line.TaxRuleKey));
+                    profile.BaseCurrency, "Tax payable", line.TaxRuleKey,
+                    taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
+                    taxFacts.GetValueOrDefault("evidenceClassification")));
         }
         return result;
     }
@@ -454,6 +459,24 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             string.Equals(hash, profile.PayloadHash, StringComparison.OrdinalIgnoreCase);
     }
 
+    private static CustomerInvoiceAccountingInput ToInput(CustomerInvoiceAccountingProfile profile) => new(
+        profile.FiscalPeriodId, profile.VoucherSeriesCode, CanonicalInputDecimal(profile.ExchangeRate),
+        profile.Lines.OrderBy(line => line.Sequence).Select(line => new CustomerInvoiceAccountingLineInput(
+            line.Description,
+            CanonicalInputDecimal(line.TaxMethod == CustomerInvoiceTaxMethodValues.Inclusive
+                ? line.GrossAmount
+                : line.NetAmount),
+            line.TaxRuleKey,
+            ReadTaxFact(line.TaxFactsJson, "lineClassification"),
+            ReadTaxFact(line.TaxFactsJson, "counterpartyJurisdiction"),
+            ReadTaxFact(line.TaxFactsJson, "counterpartyVatStatus"),
+            DeserializeEvidence(line.TaxFactsJson))).ToArray());
+
+    private static decimal CanonicalInputDecimal(decimal value) => decimal.Parse(
+        value.ToString("0.############################", CultureInfo.InvariantCulture),
+        NumberStyles.Number,
+        CultureInfo.InvariantCulture);
+
     private static bool IsApproved(string status) => status.Trim().ToLowerInvariant() is "approved" or "paid";
     private static string StatusLabel(string status) => status switch
     {
@@ -470,5 +493,70 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         if (companyId == Guid.Empty || invoiceId == Guid.Empty || actorId == Guid.Empty)
             throw Error(CustomerInvoiceAccountingReasonCodes.InvoiceNotFound, "The customer invoice could not be found.");
     }
+    private static string SerializeTaxFacts(CustomerInvoiceAccountingLinePlan line, CustomerInvoiceAccountingPlan plan, Guid actorUserId) =>
+        JsonSerializer.Serialize(new Dictionary<string, string>
+    {
+        ["schemaVersion"] = "2.0",
+        ["specificationKey"] = ResolveSpecificationKey(plan.PolicyPack),
+        ["policyPackKey"] = plan.Configuration?.PolicyPackKey ?? "unknown",
+        ["policyPackVersion"] = plan.Configuration?.PolicyPackVersion ?? "unknown",
+        ["policyDefinitionHash"] = plan.PolicyPack?.DefinitionHash ?? "unknown",
+        ["taxRuleKey"] = line.TaxRuleKey, ["taxRuleVersion"] = line.TaxRuleVersion,
+        ["accountingDate"] = DateOnly.FromDateTime(plan.Invoice.IssuedUtc).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        ["direction"] = AccountingTaxDirectionValues.Sales,
+        ["documentType"] = plan.Invoice.DocumentKind == FinanceDocumentKinds.CreditNote ? "customer_credit_note" : "customer_invoice",
+        ["lineClassification"] = line.LineClassification,
+        ["counterpartyJurisdiction"] = line.CounterpartyJurisdiction,
+        ["counterpartyVatStatus"] = line.CounterpartyVatStatus,
+        ["inputAmount"] = line.InputAmount.ToString(CultureInfo.InvariantCulture),
+        ["documentCurrency"] = plan.Invoice.Currency,
+        ["taxMethod"] = line.TaxMethod, ["taxTreatment"] = line.TaxTreatment,
+        ["taxRate"] = line.TaxRate.ToString(CultureInfo.InvariantCulture),
+        ["taxableBasis"] = line.NetAmount.ToString(CultureInfo.InvariantCulture),
+        ["taxAmount"] = line.TaxAmount.ToString(CultureInfo.InvariantCulture),
+        ["grossAmount"] = line.GrossAmount.ToString(CultureInfo.InvariantCulture),
+        ["liabilityAccountRole"] = line.LiabilityAccountRoleKey ?? "none",
+        ["recoverableAccountRole"] = line.RecoverableAccountRoleKey ?? "none",
+        ["recoverability"] = line.Recoverability,
+        ["vatBoxes"] = line.VatBoxMappings is { Count: > 0 } ? string.Join(",", line.VatBoxMappings) : "none",
+        ["evidenceClassification"] = line.EvidenceClassification,
+        ["evidence"] = JsonSerializer.Serialize(line.SuppliedEvidence ?? []),
+        ["evidenceAttestedByUserId"] = actorUserId.ToString("N"),
+        ["roundingPrecision"] = (plan.Configuration?.RoundingPrecision ?? 2).ToString(CultureInfo.InvariantCulture),
+        ["roundingMode"] = plan.Configuration?.RoundingMode ?? AccountingRoundingModeValues.MidpointToEven
+    });
+    private static string ResolveSpecificationKey(IAccountingPolicyPack? pack) =>
+        pack?.Definition.PolicyMetadata?.GetValueOrDefault("tax_specification") ?? "none";
+    private static string? ReadTaxFact(string json, string key) =>
+        ParseTaxFacts(json).GetValueOrDefault(key) is { Length: > 0 } value && value != "unknown" ? value : null;
+    private static IReadOnlyList<AccountingTaxEvidenceInput> DeserializeEvidence(string json)
+    {
+        var raw = ParseTaxFacts(json).GetValueOrDefault("evidence");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : JsonSerializer.Deserialize<IReadOnlyList<AccountingTaxEvidenceInput>>(raw) ?? [];
+    }
+    private async Task RecordBlockedTaxDecisionAsync(Guid companyId, Guid invoiceId, Guid actorUserId,
+        string? correlationId, CustomerInvoiceAccountingPlan plan, CustomerInvoiceAccountingIssueDto issue,
+        CancellationToken cancellationToken)
+    {
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.User, actorUserId,
+            AuditEventActions.AccountingTaxDecisionBlocked, AuditTargetTypes.CustomerInvoiceAccounting,
+            invoiceId.ToString("N"), AuditEventOutcomes.Blocked,
+            "Customer invoice accounting was blocked by the tax policy.",
+            ["finance_invoice", "accounting_policy_pack"], new Dictionary<string, string?>
+            {
+                ["documentId"] = invoiceId.ToString("N"), ["direction"] = AccountingTaxDirectionValues.Sales,
+                ["reasonCode"] = issue.PolicyReasonCode ?? issue.ReasonCode, ["policyPackKey"] = plan.Configuration?.PolicyPackKey,
+                ["policyPackVersion"] = plan.Configuration?.PolicyPackVersion
+            }, correlationId, _timeProvider.GetUtcNow().UtcDateTime), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+    private static Dictionary<string, string> ParseTaxFacts(string json) =>
+        JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
+    private static IReadOnlyList<string> ParseList(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value == "none"
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     private static CustomerInvoiceAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
 }

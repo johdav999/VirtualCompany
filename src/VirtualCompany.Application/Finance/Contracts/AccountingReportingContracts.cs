@@ -1,3 +1,5 @@
+using VirtualCompany.Domain.Entities;
+
 namespace VirtualCompany.Application.Finance;
 
 public sealed record GetGeneralLedgerQuery(
@@ -10,7 +12,13 @@ public sealed record GetTrialBalanceQuery(Guid CompanyId, Guid FiscalPeriodId);
 public sealed record GetAccountingTaxSummaryQuery(Guid CompanyId, Guid FiscalPeriodId);
 public sealed record GetControlAccountReconciliationQuery(Guid CompanyId, Guid FiscalPeriodId);
 public sealed record ReviewAccountingTaxSummaryCommand(Guid CompanyId, Guid FiscalPeriodId, Guid ActorUserId);
-public sealed record RequestAccountingExportCommand(Guid CompanyId, Guid FiscalPeriodId, Guid ActorUserId, string IdempotencyKey);
+public sealed record RequestAccountingExportCommand(
+    Guid CompanyId,
+    Guid FiscalPeriodId,
+    Guid ActorUserId,
+    string IdempotencyKey,
+    string ExportType = AccountingExportTypeValues.GenericJson,
+    string? CorrelationId = null);
 public sealed record GetAccountingExportQuery(Guid CompanyId, Guid ExportId);
 public sealed record ListAccountingExportsQuery(
     Guid CompanyId,
@@ -78,9 +86,27 @@ public sealed record AccountingExportJobDto(
     Guid Id, Guid CompanyId, Guid FiscalPeriodId, string Status, int AttemptCount,
     DateTime RequestedUtc, DateTime? StartedUtc, DateTime? CompletedUtc, DateTime ExpiresUtc,
     string? Checksum, string? FileName, string? MediaType, long? ContentLength,
-    string? FailureCode, string? FailureSummary, bool CanDownload);
+    string? FailureCode, string? FailureSummary, bool CanDownload,
+    string ExportType = AccountingExportTypeValues.GenericJson,
+    string? SpecificationVersion = null,
+    string? InputChecksum = null,
+    string? EncodingName = null,
+    int? SourceAccountCount = null,
+    int? SourceJournalCount = null,
+    int? SourceLineCount = null,
+    decimal? SourceDebitTotal = null,
+    decimal? SourceCreditTotal = null,
+    string? CorrelationId = null);
 
 public sealed record AccountingExportDownloadDto(string FileName, string MediaType, byte[] Content, string Checksum);
+
+public class AccountingExportException(string reasonCode, string message, bool isConflict = false) : Exception(message)
+{
+    public string ReasonCode { get; } = string.IsNullOrWhiteSpace(reasonCode)
+        ? throw new ArgumentException("An export reason code is required.", nameof(reasonCode))
+        : reasonCode.Trim().ToLowerInvariant();
+    public bool IsConflict { get; } = isConflict;
+}
 
 public interface IAccountingReportingService
 {

@@ -364,6 +364,25 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 throw Error(AccountingPostingReasonCodes.ApprovalInvalid, "The manual journal changed after approval.", true);
             draft.MarkPosted(ledgerEntryId, entry.ActorUserId, nowUtc);
         }
+        else if (string.Equals(entry.SourceType, "customer_invoice_draft", StringComparison.OrdinalIgnoreCase) &&
+                 Guid.TryParse(entry.SourceId, out var nativeDraftId))
+        {
+            var draft = await _dbContext.CustomerInvoiceDrafts.Include(x => x.ApprovalRequest)
+                .SingleOrDefaultAsync(x => x.CompanyId == entry.CompanyId && x.Id == nativeDraftId, cancellationToken)
+                ?? throw Error(AccountingPostingReasonCodes.InvalidSource, "The native customer invoice draft could not be found.");
+            var nativeInvoiceId = await _dbContext.FinanceInvoices.Where(x => x.CompanyId == entry.CompanyId &&
+                x.SourceDraftId == draft.Id).Select(x => (Guid?)x.Id).SingleOrDefaultAsync(cancellationToken);
+            var profile = await _dbContext.CustomerInvoiceAccountingProfiles.SingleOrDefaultAsync(x =>
+                x.CompanyId == entry.CompanyId && x.InvoiceId == nativeInvoiceId, cancellationToken)
+                ?? throw Error(AccountingPostingReasonCodes.InvalidSource, "The native invoice accounting profile could not be found.");
+            if (!string.Equals(draft.Version.ToString(CultureInfo.InvariantCulture), entry.SourceVersion, StringComparison.Ordinal) ||
+                !string.Equals(draft.ResultHash, entry.ApprovalPayloadHash, StringComparison.OrdinalIgnoreCase) ||
+                draft.ApprovalRequestId != entry.ApprovalRequestId ||
+                draft.ApprovalRequest?.TargetEntityType != ApprovalTargetEntityType.CustomerInvoiceDraft.ToStorageValue() ||
+                draft.ApprovalRequest.TargetEntityId != draft.Id)
+                throw Error(AccountingPostingReasonCodes.ApprovalInvalid, "The native invoice draft changed after approval.", true);
+            profile.MarkPosted(ledgerEntryId, entry.ActorUserId, nowUtc);
+        }
         else if (string.Equals(entry.SourceType, "customer_invoice", StringComparison.OrdinalIgnoreCase) &&
                  Guid.TryParse(entry.SourceId, out var customerInvoiceId))
         {
@@ -562,10 +581,17 @@ public sealed class AccountingPostingService : IAccountingPostingService
             var approvedPayloadHash = approval?.ThresholdContext.TryGetValue("payloadHash", out var hashNode) == true
                 ? hashNode?.ToString()
                 : null;
+            if (string.Equals(entry.SourceType, "customer_invoice_draft", StringComparison.OrdinalIgnoreCase) &&
+                approval?.ThresholdContext.TryGetValue("resultHash", out var resultHashNode) == true)
+                approvedPayloadHash = resultHashNode?.ToString();
             var approvalTargetsSource = true;
             if (string.Equals(entry.SourceType, "manual_journal_draft", StringComparison.OrdinalIgnoreCase))
                 approvalTargetsSource = Guid.TryParse(entry.SourceId, out var approvalDraftId) &&
                     approval?.TargetEntityType == ApprovalTargetEntityType.ManualJournalDraft.ToStorageValue() && approval.TargetEntityId == approvalDraftId;
+            else if (string.Equals(entry.SourceType, "customer_invoice_draft", StringComparison.OrdinalIgnoreCase))
+                approvalTargetsSource = Guid.TryParse(entry.SourceId, out var approvalNativeDraftId) &&
+                    approval?.TargetEntityType == ApprovalTargetEntityType.CustomerInvoiceDraft.ToStorageValue() &&
+                    approval.TargetEntityId == approvalNativeDraftId;
             else if (string.Equals(entry.SourceType, "customer_invoice", StringComparison.OrdinalIgnoreCase))
             {
                 var profileId = Guid.TryParse(entry.SourceId, out var approvalInvoiceId)

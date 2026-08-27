@@ -11,15 +11,18 @@ public sealed class AccountingReadinessService : IAccountingReadinessService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IAccountingPolicyPackValidationRegistry _validationRegistry;
     private readonly TimeProvider _timeProvider;
 
     public AccountingReadinessService(
         VirtualCompanyDbContext dbContext,
         IAccountingPolicyPackResolver packResolver,
+        IAccountingPolicyPackValidationRegistry validationRegistry,
         TimeProvider timeProvider)
     {
         _dbContext = dbContext;
         _packResolver = packResolver;
+        _validationRegistry = validationRegistry;
         _timeProvider = timeProvider;
     }
 
@@ -27,18 +30,64 @@ public sealed class AccountingReadinessService : IAccountingReadinessService
     {
         if (companyId == Guid.Empty) throw new ArgumentException("CompanyId is required.", nameof(companyId));
         var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        var today = DateOnly.FromDateTime(nowUtc);
         var signals = new List<AccountingReadinessSignalDto>();
         var configuration = await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
+        IAccountingPolicyPack? selectedPack = null;
+        var selectedPackAvailable = configuration is not null &&
+            _packResolver.TryResolve(configuration.PolicyPackKey, configuration.PolicyPackVersion, out selectedPack);
         var configurationValid = configuration is not null &&
             configuration.SetupState == AccountingSetupStateValues.Ready &&
-            _packResolver.TryResolve(configuration.PolicyPackKey, configuration.PolicyPackVersion, out _);
+            selectedPackAvailable;
         signals.Add(Signal("configuration", configurationValid ? AccountingReadinessStatuses.Ready : AccountingReadinessStatuses.Blocked,
             configurationValid ? 0 : 1, null,
             configurationValid
                 ? "Accounting setup and its policy-pack version are available."
                 : "Accounting setup is incomplete or its selected policy-pack version is unavailable.",
             "Complete accounting setup and validate the selected policy pack.", configuration?.Id));
+
+        var isSwedishPack = string.Equals(selectedPack?.Definition.CountryOrRegion, "SE", StringComparison.OrdinalIgnoreCase);
+        if (isSwedishPack)
+        {
+            var validation = _validationRegistry.Evaluate(selectedPack!, today);
+            signals.Add(Signal("policy_pack_validation",
+                validation.IsValidated ? AccountingReadinessStatuses.Ready : AccountingReadinessStatuses.Blocked,
+                validation.IsValidated ? 0 : 1,
+                null,
+                validation.Explanation,
+                validation.IsValidated
+                    ? "Revalidate after any policy, fixture, document-rule, export-format, or reviewed-scope change."
+                    : "Keep Swedish statutory claims disabled and obtain qualified review for a new immutable pack version whose exact hash is recorded.",
+                configuration?.Id));
+
+            var profile = await _dbContext.CompanyStatutoryProfiles.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
+            var missingFacts = CompanyStatutoryProfileService.BuildMissingFacts(profile);
+            signals.Add(Signal("statutory_profile_completeness",
+                missingFacts.Count == 0 ? AccountingReadinessStatuses.Ready : AccountingReadinessStatuses.Blocked,
+                missingFacts.Count,
+                null,
+                missingFacts.Count == 0
+                    ? "The Swedish statutory profile contains the required formatted and user-attested facts."
+                    : $"The Swedish statutory profile is missing {missingFacts.Count} required fact(s): {string.Join(", ", missingFacts)}.",
+                "Complete and attest the company statutory profile before enabling Swedish statutory workflows.",
+                profile?.Id));
+
+            var unsupportedCapabilities = selectedPack!.Definition.CapabilityStates?
+                .Where(entry => entry.Value.StartsWith("unsupported", StringComparison.OrdinalIgnoreCase))
+                .Select(entry => entry.Key)
+                .OrderBy(key => key, StringComparer.OrdinalIgnoreCase)
+                .ToArray() ?? [];
+            signals.Add(Signal("unsupported_configured_capabilities",
+                unsupportedCapabilities.Length == 0 ? AccountingReadinessStatuses.Ready : AccountingReadinessStatuses.Attention,
+                unsupportedCapabilities.Length,
+                null,
+                unsupportedCapabilities.Length == 0
+                    ? "The selected Swedish pack has no explicitly unsupported configured capability."
+                    : $"The selected Swedish pack explicitly does not support: {string.Join(", ", unsupportedCapabilities)}.",
+                "Do not use unsupported cases; select a later reviewed pack only after its exact scope is approved."));
+        }
 
         var latestRun = await _dbContext.AccountingMigrationRuns.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId).OrderByDescending(x => x.RequestedUtc)
@@ -110,6 +159,20 @@ public sealed class AccountingReadinessService : IAccountingReadinessService
             draftJournalIds.Length == 0 ? "No draft journal is blocking period-close review." : "Draft journals need posting, correction, or removal before close.",
             "Review the close checklist for each open period and resolve the linked records.", draftJournalIds));
 
+        var staleVatReturnIds = await _dbContext.VatReturns.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.FilingPeriod.EndDate < today &&
+                x.Status != VatReturnStatuses.Locked && x.Status != VatReturnStatuses.Corrected)
+            .OrderBy(x => x.FilingPeriod.EndDate).Take(25).Select(x => x.Id).ToArrayAsync(cancellationToken);
+        signals.Add(Signal("stale_vat_returns",
+            staleVatReturnIds.Length == 0 ? AccountingReadinessStatuses.Ready : AccountingReadinessStatuses.Attention,
+            staleVatReturnIds.Length,
+            null,
+            staleVatReturnIds.Length == 0
+                ? "No ended VAT filing period has an unfinished return."
+                : "One or more ended VAT filing periods have an unfinished return.",
+            "Recalculate, review, approve, and finalize each current VAT return or complete its correction workflow.",
+            staleVatReturnIds));
+
         var exportIds = await _dbContext.AccountingExportJobs.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.Status != AccountingExportStatuses.Completed)
             .OrderBy(x => x.RequestedUtc).Take(25).Select(x => x.Id).ToArrayAsync(cancellationToken);
@@ -125,6 +188,23 @@ public sealed class AccountingReadinessService : IAccountingReadinessService
             exportIds.Length + providerExportIds.Length, null,
             allExportIds.Length == 0 ? "No accounting export or provider reconciliation is outstanding." : "Accounting exports or provider outcomes still need completion.",
             "Retry safe failures and reconcile ambiguous provider outcomes before treating delivery as complete.", allExportIds));
+
+        var failedOrExpiredStatutoryExportIds = await _dbContext.AccountingExportJobs.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId &&
+                (x.ExportType == AccountingExportTypeValues.Sie4B ||
+                 x.ExportType == AccountingExportTypeValues.SwedishStatutoryArchive) &&
+                (x.Status == AccountingExportStatuses.Failed ||
+                 x.Status == AccountingExportStatuses.Completed && x.ExpiresUtc <= nowUtc))
+            .OrderBy(x => x.ExpiresUtc).Take(25).Select(x => x.Id).ToArrayAsync(cancellationToken);
+        signals.Add(Signal("failed_or_expired_statutory_exports",
+            failedOrExpiredStatutoryExportIds.Length == 0 ? AccountingReadinessStatuses.Ready : AccountingReadinessStatuses.Attention,
+            failedOrExpiredStatutoryExportIds.Length,
+            null,
+            failedOrExpiredStatutoryExportIds.Length == 0
+                ? "No failed or expired Swedish statutory export is recorded."
+                : "A Swedish statutory export failed or its retained downloadable content expired.",
+            "Regenerate from immutable accounting facts, verify the new checksum, and retain the prior export metadata and failure evidence.",
+            failedOrExpiredStatutoryExportIds));
 
         var snapshotFailureIds = await _dbContext.BackgroundExecutions.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && x.ExecutionType == BackgroundExecutionType.FinanceReportRegeneration &&

@@ -33,6 +33,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
     private readonly ISupplierSubscriptionService? _supplierSubscriptionService;
     private readonly TimeProvider _timeProvider;
     private readonly IFortnoxIntegrationDiagnostics? _diagnostics;
+    private readonly ICustomerBillingProviderSyncGuard? _customerBillingProviderSyncGuard;
 
     public FortnoxSyncService(
         VirtualCompanyDbContext dbContext,
@@ -41,7 +42,8 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         ILogger<FortnoxSyncService> logger,
         TimeProvider timeProvider,
         ISupplierSubscriptionService? supplierSubscriptionService = null,
-        IFortnoxIntegrationDiagnostics? diagnostics = null)
+        IFortnoxIntegrationDiagnostics? diagnostics = null,
+        ICustomerBillingProviderSyncGuard? customerBillingProviderSyncGuard = null)
     {
         _dbContext = dbContext;
         _apiClient = apiClient;
@@ -50,6 +52,7 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
         _timeProvider = timeProvider;
         _supplierSubscriptionService = supplierSubscriptionService;
         _diagnostics = diagnostics;
+        _customerBillingProviderSyncGuard = customerBillingProviderSyncGuard;
     }
 
     public async Task<FortnoxSupplierInvoiceRepairResult> RepairDanglingSupplierInvoicesAsync(
@@ -895,7 +898,14 @@ public sealed class FortnoxSyncService : IFortnoxSyncService
             AttachSource(counterparty, model.CounterpartyType, model.ExternalId, existing.Id);
             return SyncMutationResult.FromCreated(model.ExternalUpdatedUtc);
         }
-        counterparty.UpdateMasterData(model.Name, model.CounterpartyType, model.Email, taxId: model.TaxId);
+        if (model.CounterpartyType == "customer")
+            await CustomerInvoiceSnapshotWriter.CaptureBeforeLegacyMasterChangeAsync(_dbContext, companyId, counterparty, cancellationToken);
+        var applyProviderMasterData = model.CounterpartyType != "customer" || _customerBillingProviderSyncGuard is null ||
+            await _customerBillingProviderSyncGuard.ApplyOrDetectConflictAsync(companyId, counterparty, model.Name,
+                model.Email, model.TaxId, $"fortnox:{connectionId:D}:{model.ExternalId}",
+                _timeProvider.GetUtcNow().UtcDateTime, cancellationToken);
+        if (applyProviderMasterData)
+            counterparty.UpdateMasterData(model.Name, model.CounterpartyType, model.Email, taxId: model.TaxId);
         existing.Refresh(model.ExternalNumber, model.ExternalUpdatedUtc, _timeProvider.GetUtcNow().UtcDateTime);
         AttachSource(counterparty, model.CounterpartyType, model.ExternalId, existing.Id);
         return SyncMutationResult.FromUpdated(model.ExternalUpdatedUtc);

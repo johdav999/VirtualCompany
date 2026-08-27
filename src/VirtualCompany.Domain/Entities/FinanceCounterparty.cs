@@ -51,12 +51,25 @@ public sealed class FinanceCounterparty : ICompanyOwnedEntity
     public decimal? CreditLimit { get; private set; }
     public string? PreferredPaymentMethod { get; private set; }
     public string? DefaultAccountMapping { get; private set; }
+    public Guid? MergedIntoCounterpartyId { get; private set; }
+    public DateTime? MergedUtc { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public ICollection<FinanceTransaction> Transactions { get; } = new List<FinanceTransaction>();
     public ICollection<FinanceInvoice> Invoices { get; } = new List<FinanceInvoice>();
     public ICollection<FinanceBill> Bills { get; } = new List<FinanceBill>();
+
+    public void MarkMergedInto(Guid targetCounterpartyId, DateTime mergedUtc)
+    {
+        if (targetCounterpartyId == Guid.Empty || targetCounterpartyId == Id)
+            throw new ArgumentException("A different merge target is required.", nameof(targetCounterpartyId));
+        if (MergedIntoCounterpartyId.HasValue && MergedIntoCounterpartyId != targetCounterpartyId)
+            throw new InvalidOperationException("This counterparty already redirects to another customer.");
+        MergedIntoCounterpartyId = targetCounterpartyId;
+        MergedUtc = EntityTimestampNormalizer.NormalizeUtc(mergedUtc, nameof(mergedUtc));
+        UpdatedUtc = MergedUtc.Value;
+    }
 
     public void UpdateMasterData(
         string name,

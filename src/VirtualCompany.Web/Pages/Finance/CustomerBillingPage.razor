@@ -1,0 +1,88 @@
+@page "/finance/customers/{CustomerId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["CustomerBillingProfile"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["CustomerBillingProfile"]" Description="@FinanceText["CustomerBillingProfileDescription"]"
+                   LoadingMessage="@FinanceText["LoadingCustomerBillingProfile"]" ShowShellHeader="false" ShowShellNavigation="false">
+    <section class="customer-billing-page" aria-labelledby="customer-billing-title">
+        <header class="customer-billing-header"><div><span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span><h1 id="customer-billing-title">@Customer?.Name</h1><p>@FinanceText["CustomerBillingProfileDescription"]</p></div><a class="btn btn-outline-secondary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Counterparties, AccessState.CompanyId)">@FinanceText["BackToCustomers"]</a></header>
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+        <ReceivablesNavigation CompanyId="@AccessState.CompanyId!.Value" ActiveView="customers" />
+
+        @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+        @if (!string.IsNullOrWhiteSpace(ValidationMessage)) { <div class="alert alert-danger" role="alert">@ValidationMessage</div> }
+
+        <div class="customer-billing-summary">
+            <article><span>@FinanceText["DataSource"]</span><strong>@FriendlySource(Editor.SourceKind)</strong><small>@FinanceText["DataSourceHelp"]</small></article>
+            <article><span>@FinanceText["Verification"]</span><strong>@FriendlyVerification(Editor.IdentityValidationState)</strong><small>@VerificationExplanation</small></article>
+            <article><span>@FinanceText["Conflicts"]</span><strong>@OpenConflicts.Count</strong><small>@FinanceText[OpenConflicts.Count == 0 ? "NoSourceConflicts" : "SourceConflictsNeedReview"]</small></article>
+            <article><span>@FinanceText["PossibleDuplicates"]</span><strong>@RelatedDuplicateCandidates.Count</strong><small>@FinanceText[RelatedDuplicateCandidates.Count == 0 ? "NoDuplicateCandidates" : "DuplicateCandidatesNeedDecision"]</small></article>
+        </div>
+
+        <div class="customer-billing-layout">
+            <EditForm Model="@Editor" OnValidSubmit="SaveAsync" class="customer-billing-form">
+                <section class="billing-card">
+                    <div class="billing-card__heading"><div><h2>@FinanceText["LegalIdentity"]</h2><p>@FinanceText["LegalIdentityHelp"]</p></div><span class="source-badge">@FriendlySource(Editor.SourceKind)</span></div>
+                    <div class="billing-grid">
+                        <label><span>@FinanceText["LegalName"]</span><InputText class="form-control" @bind-Value="Editor.LegalName" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["DisplayName"]</span><InputText class="form-control" @bind-Value="Editor.DisplayName" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["CustomerType"]</span><InputSelect class="form-select" @bind-Value="Editor.PartyKind" disabled="@(!CanManage)"><option value="organization">@FinanceText["Organization"]</option><option value="person">@FinanceText["Person"]</option></InputSelect></label>
+                        <label><span>@FinanceText["TaxId"]</span><InputText class="form-control" @bind-Value="Editor.TaxIdentifier" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["VatIdentifier"]</span><InputText class="form-control" @bind-Value="Editor.VatIdentifier" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["Verification"]</span><InputSelect class="form-select" @bind-Value="Editor.IdentityValidationState" disabled="@(!CanManage)"><option value="format_valid">@FinanceText["FormatChecked"]</option><option value="user_attested">@FinanceText["ConfirmedByYourTeam"]</option><option value="externally_verified">@FinanceText["ExternallyVerified"]</option></InputSelect></label>
+                    </div>
+                </section>
+
+                <section class="billing-card">
+                    <div class="billing-card__heading"><div><h2>@FinanceText["BillingAndDelivery"]</h2><p>@FinanceText["BillingAndDeliveryHelp"]</p></div></div>
+                    <div class="billing-grid">
+                        <label class="billing-grid__wide"><span>@FinanceText["AddressLine1"]</span><InputText class="form-control" @bind-Value="Editor.AddressLine1" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["PostalCode"]</span><InputText class="form-control" @bind-Value="Editor.PostalCode" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["City"]</span><InputText class="form-control" @bind-Value="Editor.City" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["Country"]</span><InputText class="form-control" maxlength="2" @bind-Value="Editor.CountryCode" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["Language"]</span><InputSelect class="form-select" @bind-Value="Editor.LanguageCode" disabled="@(!CanManage)"><option value="en-US">English</option><option value="sv-SE">Svenska</option></InputSelect></label>
+                        <label><span>@FinanceText["Currency"]</span><InputText class="form-control" maxlength="3" @bind-Value="Editor.CurrencyCode" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["PaymentTerms"]</span><InputNumber class="form-control" @bind-Value="Editor.PaymentTermDays" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["PaymentMethodShort"]</span><InputSelect class="form-select" @bind-Value="Editor.PaymentMethod" disabled="@(!CanManage)"><option value="bank_transfer">@FinanceText["BankTransfer"]</option></InputSelect></label>
+                        <label><span>@FinanceText["InvoiceDelivery"]</span><InputSelect class="form-select" @bind-Value="Editor.InvoiceDeliveryChannel" disabled="@(!CanManage)"><option value="email">@FinanceText["EmailWithPdf"]</option><option value="e_invoice">@FinanceText["ElectronicInvoice"]</option></InputSelect></label>
+                        <label><span>@FinanceText["InvoiceEmail"]</span><InputText class="form-control" type="email" @bind-Value="Editor.InvoiceDeliveryEmail" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["BuyerReference"]</span><InputText class="form-control" @bind-Value="Editor.BuyerReference" disabled="@(!CanManage)" /></label>
+                        <label><span>@FinanceText["EInvoiceIdentifier"]</span><InputText class="form-control" @bind-Value="Editor.EInvoiceIdentifier" disabled="@(!CanManage)" /></label>
+                    </div>
+                </section>
+
+                <section class="billing-card">
+                    <div class="billing-card__heading"><div><h2>@FinanceText["CreditAndAccountingDefaults"]</h2><p>@FinanceText["CreditAndAccountingDefaultsHelp"]</p></div></div>
+                    <div class="billing-grid"><label><span>@FinanceText["CreditLimit"]</span><InputNumber class="form-control" @bind-Value="Editor.CreditLimit" disabled="@(!CanManage)" /></label><label><span>@FinanceText["CreditStatus"]</span><InputSelect class="form-select" @bind-Value="Editor.CreditStatus" disabled="@(!CanManage)"><option value="active">@FinanceText["Active"]</option><option value="on_hold">@FinanceText["OnHold"]</option><option value="blocked">@FinanceText["Blocked"]</option></InputSelect></label><label><span>@FinanceText["DefaultAccountMapping"]</span><InputText class="form-control" @bind-Value="Editor.DefaultAccountMapping" disabled="@(!CanManage)" /></label><label><span>@FinanceText["DefaultDimension"]</span><InputText class="form-control" @bind-Value="Editor.DefaultDimensionCode" disabled="@(!CanManage)" /></label><label><span>@FinanceText["EffectiveFrom"]</span><InputDate class="form-control" @bind-Value="Editor.EffectiveFrom" disabled="@(!CanManage)" /></label><label><span>@FinanceText["EffectiveTo"]</span><InputDate class="form-control" @bind-Value="Editor.EffectiveTo" disabled="@(!CanManage)" /></label></div>
+                    <div class="billing-actions"><button type="submit" class="btn btn-primary" disabled="@(!CanManage || IsBusy)">@(IsBusy ? FinanceText["Saving"] : CommonText["Save"])</button><span>@FinanceText["CustomerBillingSaveHelp"]</span></div>
+                </section>
+            </EditForm>
+
+            <aside class="customer-governance">
+                <section class="billing-card">
+                    <div class="billing-card__heading"><div><h2>@FinanceText["SourceConflicts"]</h2><p>@FinanceText["SourceConflictsHelp"]</p></div></div>
+                    @if (OpenConflicts.Count == 0) { <FinanceEmptyState Title="@FinanceText["NoSourceConflicts"]" Message="@FinanceText["NoSourceConflictsHelp"]" /> }
+                    @foreach (var conflict in OpenConflicts)
+                    {
+                        <article class="governance-item"><strong>@FinanceText["FieldsChanged", string.Join(", ", conflict.ChangedFields.Select(FriendlyField))]</strong><p>@FinanceText["SourceConflictExplanation", FriendlySource(conflict.ExistingSourceKind), FriendlySource(conflict.IncomingSourceKind)]</p><label>@FinanceText["DecisionReason"]<input class="form-control" @bind="GovernanceReason" /></label><div><button class="btn btn-outline-secondary btn-sm" @onclick="() => ResolveConflictAsync(conflict, false)" disabled="@(!CanManage || IsBusy)">@FinanceText["KeepCurrentValues"]</button><button class="btn btn-primary btn-sm" @onclick="() => ResolveConflictAsync(conflict, true)" disabled="@(!CanManage || IsBusy)">@FinanceText["UseIncomingValues"]</button></div></article>
+                    }
+                </section>
+
+                <section class="billing-card">
+                    <div class="billing-card__heading"><div><h2>@FinanceText["PossibleDuplicates"]</h2><p>@FinanceText["PossibleDuplicatesHelp"]</p></div></div>
+                    @if (RelatedDuplicateCandidates.Count == 0) { <FinanceEmptyState Title="@FinanceText["NoDuplicateCandidates"]" Message="@FinanceText["NoDuplicateCandidatesHelp"]" /> }
+                    @foreach (var candidate in RelatedDuplicateCandidates)
+                    {
+                        var otherId = candidate.FirstCounterpartyId == CustomerId ? candidate.SecondCounterpartyId : candidate.FirstCounterpartyId;
+                        var otherName = candidate.FirstCounterpartyId == CustomerId ? candidate.SecondCustomerName : candidate.FirstCustomerName;
+                        <article class="governance-item"><div class="duplicate-heading"><strong>@otherName</strong><span>@FinanceText["DuplicateConfidence", candidate.Score]</span></div>@foreach (var evidence in candidate.Evidence){<p class="evidence-line"><strong>@FriendlyField(evidence.Fact)</strong> · @evidence.Explanation</p>}<label>@FinanceText["DecisionReason"]<input class="form-control" @bind="GovernanceReason" /></label>@if (MergeCandidateId == candidate.Id){<div class="merge-confirm"><strong>@FinanceText["MergeCustomerConfirm", otherName]</strong><p>@FinanceText["MergeCustomerConfirmHelp"]</p><button class="btn btn-danger btn-sm" @onclick='() => DecideDuplicateAsync(candidate, "merge", CustomerId, otherId)' disabled="@IsBusy">@CommonText["Confirm"]</button><button class="btn btn-outline-secondary btn-sm" @onclick="() => MergeCandidateId = null">@CommonText["Cancel"]</button></div>}else{<div><button class="btn btn-outline-secondary btn-sm" @onclick='() => DecideDuplicateAsync(candidate, "keep_separate", null, null)' disabled="@(!CanManage || IsBusy)">@FinanceText["KeepSeparate"]</button><button class="btn btn-outline-danger btn-sm" @onclick="() => MergeCandidateId = candidate.Id" disabled="@(!CanManage || IsBusy)">@FinanceText["ReviewMerge"]</button></div>}</article>
+                    }
+                </section>
+
+                <section class="billing-card"><div class="billing-card__heading"><div><h2>@FinanceText["ChangeHistory"]</h2><p>@FinanceText["ChangeHistoryHelp"]</p></div></div>@foreach (var version in History.Take(8)){<div class="history-row"><span class="history-dot" aria-hidden="true"></span><div><strong>@FriendlySource(version.SourceKind)</strong><p>@(version.ChangedFields.Count == 0 ? FinanceText["ProfileCreated"] : string.Join(", ", version.ChangedFields.Select(FriendlyField)))</p><time>@version.CreatedUtc.ToLocalTime().ToString("g")</time></div></div>}@if (History.Count == 0){<p class="text-body-secondary">@FinanceText["NoChangeHistory"]</p>}</section>
+            </aside>
+        </div>
+    </section>
+</FinancePageLayout>

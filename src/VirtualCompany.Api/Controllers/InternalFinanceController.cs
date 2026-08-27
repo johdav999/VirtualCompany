@@ -52,6 +52,7 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IAuditQueryService _auditQueryService;
     private readonly IFinancePolicyConfigurationService _financePolicyConfigurationService;
     private readonly IAccountingConfigurationService _accountingConfigurationService;
+    private readonly ICompanyStatutoryProfileService _companyStatutoryProfileService;
     private readonly IAccountingAuthorityService _accountingAuthorityService;
     private readonly IAccountingProviderSwitchService _accountingProviderSwitchService;
     private readonly IAccountingProviderSwitchAssessmentService _accountingProviderSwitchAssessmentService;
@@ -70,8 +71,12 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IAccountingPostingService _accountingPostingService;
     private readonly IAccountingJournalReadService _accountingJournalReadService;
     private readonly IAccountingReportingService _accountingReportingService;
+    private readonly IVatReturnService _vatReturnService;
     private readonly IManualJournalService _manualJournalService;
+    private readonly ICustomerInvoiceDraftService _customerInvoiceDraftService;
+    private readonly ICustomerInvoiceScheduleService _customerInvoiceScheduleService;
     private readonly ICustomerInvoiceAccountingService _customerInvoiceAccountingService;
+    private readonly ICustomerInvoiceCorrectionService _customerInvoiceCorrectionService;
     private readonly ISupplierBillAccountingService _supplierBillAccountingService;
     private readonly IFinanceSeedBootstrapService _financeSeedBootstrapService;
     private readonly IFinanceEntryService _financeEntryService;
@@ -108,6 +113,7 @@ public sealed partial class InternalFinanceController : ControllerBase
         IAuditQueryService auditQueryService,
         IFinancePolicyConfigurationService financePolicyConfigurationService,
         IAccountingConfigurationService accountingConfigurationService,
+        ICompanyStatutoryProfileService companyStatutoryProfileService,
         IAccountingAuthorityService accountingAuthorityService,
         IAccountingProviderSwitchService accountingProviderSwitchService,
         IAccountingProviderSwitchAssessmentService accountingProviderSwitchAssessmentService,
@@ -126,8 +132,12 @@ public sealed partial class InternalFinanceController : ControllerBase
         IAccountingPostingService accountingPostingService,
         IAccountingJournalReadService accountingJournalReadService,
         IAccountingReportingService accountingReportingService,
+        IVatReturnService vatReturnService,
         IManualJournalService manualJournalService,
+        ICustomerInvoiceDraftService customerInvoiceDraftService,
+        ICustomerInvoiceScheduleService customerInvoiceScheduleService,
         ICustomerInvoiceAccountingService customerInvoiceAccountingService,
+        ICustomerInvoiceCorrectionService customerInvoiceCorrectionService,
         ISupplierBillAccountingService supplierBillAccountingService,
         IFinanceEntryService financeEntryService,
         IFinanceSeedBootstrapService financeSeedBootstrapService,
@@ -165,6 +175,7 @@ public sealed partial class InternalFinanceController : ControllerBase
         _auditQueryService = auditQueryService;
         _financePolicyConfigurationService = financePolicyConfigurationService;
         _accountingConfigurationService = accountingConfigurationService;
+        _companyStatutoryProfileService = companyStatutoryProfileService;
         _accountingAuthorityService = accountingAuthorityService;
         _accountingProviderSwitchService = accountingProviderSwitchService;
         _accountingProviderSwitchAssessmentService = accountingProviderSwitchAssessmentService;
@@ -183,8 +194,12 @@ public sealed partial class InternalFinanceController : ControllerBase
         _accountingPostingService = accountingPostingService;
         _accountingJournalReadService = accountingJournalReadService;
         _accountingReportingService = accountingReportingService;
+        _vatReturnService = vatReturnService;
         _manualJournalService = manualJournalService;
+        _customerInvoiceDraftService = customerInvoiceDraftService;
+        _customerInvoiceScheduleService = customerInvoiceScheduleService;
         _customerInvoiceAccountingService = customerInvoiceAccountingService;
+        _customerInvoiceCorrectionService = customerInvoiceCorrectionService;
         _supplierBillAccountingService = supplierBillAccountingService;
         _financeEntryService = financeEntryService;
         _financeSeedBootstrapService = financeSeedBootstrapService;
@@ -1844,6 +1859,29 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("read_accounting_configuration", ex);
             return CreateAccountingConfigurationErrorResult<T>(ex);
         }
+        catch (AccountingExportException ex)
+        {
+            LogHandledFinanceException("read_accounting_export", ex);
+            var status = ex.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+            return new ObjectResult(StableProblemDetails.Create(HttpContext, status, ex.ReasonCode,
+                ex.IsConflict ? "Accounting export conflict" : "Accounting export request was rejected", ex.Message))
+            { StatusCode = status };
+        }
+        catch (CompanyStatutoryProfileException ex)
+        {
+            LogHandledFinanceException("read_company_statutory_profile", ex);
+            return CreateCompanyStatutoryProfileErrorResult<T>(ex);
+        }
+        catch (StatutoryDocumentException ex)
+        {
+            LogHandledFinanceException("read_statutory_document", ex);
+            return CreateStatutoryDocumentErrorResult<T>(ex);
+        }
+        catch (VatReturnOperationException ex)
+        {
+            LogHandledFinanceException("read_vat_return", ex);
+            return Conflict(CreateVatReturnProblemDetails(ex));
+        }
         catch (AccountingAuthorityException ex)
         {
             LogHandledFinanceException("read_accounting_authority", ex);
@@ -1859,10 +1897,30 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("read_manual_journal", ex);
             return CreateManualJournalErrorResult<T>(ex);
         }
+        catch (CustomerInvoiceDraftException ex)
+        {
+            LogHandledFinanceException("read_customer_invoice_draft", ex);
+            return CreateCustomerInvoiceDraftErrorResult<T>(ex);
+        }
+        catch (CustomerInvoiceScheduleException ex)
+        {
+            LogHandledFinanceException("read_customer_invoice_schedule", ex);
+            return CreateCustomerInvoiceScheduleErrorResult<T>(ex);
+        }
         catch (CustomerInvoiceAccountingException ex)
         {
             LogHandledFinanceException("read_customer_invoice_accounting", ex);
             return CreateCustomerInvoiceAccountingErrorResult<T>(ex);
+        }
+        catch (CustomerInvoiceCorrectionException ex)
+        {
+            LogHandledFinanceException("read_customer_invoice_correction", ex);
+            return CreateCustomerInvoiceCorrectionErrorResult<T>(ex);
+        }
+        catch (CustomerCollectionException ex)
+        {
+            LogHandledFinanceException("read_customer_collections", ex);
+            return CreateCustomerCollectionErrorResult<T>(ex);
         }
         catch (SupplierBillAccountingException ex)
         {
@@ -1955,6 +2013,29 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("write_accounting_configuration", ex);
             return CreateAccountingConfigurationErrorResult<T>(ex);
         }
+        catch (AccountingExportException ex)
+        {
+            LogHandledFinanceException("write_accounting_export", ex);
+            var status = ex.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+            return new ObjectResult(StableProblemDetails.Create(HttpContext, status, ex.ReasonCode,
+                ex.IsConflict ? "Accounting export conflict" : "Accounting export request was rejected", ex.Message))
+            { StatusCode = status };
+        }
+        catch (CompanyStatutoryProfileException ex)
+        {
+            LogHandledFinanceException("write_company_statutory_profile", ex);
+            return CreateCompanyStatutoryProfileErrorResult<T>(ex);
+        }
+        catch (StatutoryDocumentException ex)
+        {
+            LogHandledFinanceException("write_statutory_document", ex);
+            return CreateStatutoryDocumentErrorResult<T>(ex);
+        }
+        catch (VatReturnOperationException ex)
+        {
+            LogHandledFinanceException("write_vat_return", ex);
+            return Conflict(CreateVatReturnProblemDetails(ex));
+        }
         catch (AccountingAuthorityException ex)
         {
             LogHandledFinanceException("write_accounting_authority", ex);
@@ -1970,10 +2051,30 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("write_manual_journal", ex);
             return CreateManualJournalErrorResult<T>(ex);
         }
+        catch (CustomerInvoiceDraftException ex)
+        {
+            LogHandledFinanceException("write_customer_invoice_draft", ex);
+            return CreateCustomerInvoiceDraftErrorResult<T>(ex);
+        }
+        catch (CustomerInvoiceScheduleException ex)
+        {
+            LogHandledFinanceException("write_customer_invoice_schedule", ex);
+            return CreateCustomerInvoiceScheduleErrorResult<T>(ex);
+        }
         catch (CustomerInvoiceAccountingException ex)
         {
             LogHandledFinanceException("write_customer_invoice_accounting", ex);
             return CreateCustomerInvoiceAccountingErrorResult<T>(ex);
+        }
+        catch (CustomerInvoiceCorrectionException ex)
+        {
+            LogHandledFinanceException("write_customer_invoice_correction", ex);
+            return CreateCustomerInvoiceCorrectionErrorResult<T>(ex);
+        }
+        catch (CustomerCollectionException ex)
+        {
+            LogHandledFinanceException("write_customer_collections", ex);
+            return CreateCustomerCollectionErrorResult<T>(ex);
         }
         catch (SupplierBillAccountingException ex)
         {
@@ -2088,6 +2189,13 @@ public sealed partial class InternalFinanceController : ControllerBase
 
     private ProblemDetails CreateSimulationExecutionDisabledProblemDetails(string detail) =>
         CreateProblemDetails(detail, "Simulation execution is disabled.", StatusCodes.Status409Conflict);
+
+    private ProblemDetails CreateVatReturnProblemDetails(VatReturnOperationException exception)
+    {
+        var problem = CreateProblemDetails(exception.Message, "VAT return operation blocked.", StatusCodes.Status409Conflict);
+        problem.Extensions["code"] = exception.Code;
+        return problem;
+    }
 
     private async Task<ActionResult<T>> CreateFinanceNotInitializedResultAsync<T>(FinanceNotInitializedException exception)
     {
@@ -2217,6 +2325,38 @@ public sealed partial class InternalFinanceController : ControllerBase
         return new ObjectResult(problem) { StatusCode = status };
     }
 
+    private ActionResult<T> CreateCompanyStatutoryProfileErrorResult<T>(CompanyStatutoryProfileException exception)
+    {
+        var status = exception.ReasonCode == CompanyStatutoryProfileReasonCodes.NotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict
+                ? StatusCodes.Status409Conflict
+                : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(
+            HttpContext,
+            status,
+            exception.ReasonCode,
+            status == StatusCodes.Status409Conflict
+                ? "Statutory profile conflict"
+                : status == StatusCodes.Status404NotFound
+                    ? "Statutory profile was not found"
+                    : "Statutory profile request was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateStatutoryDocumentErrorResult<T>(StatutoryDocumentException exception)
+    {
+        var status = exception.ReasonCode is StatutoryDocumentReasonCodes.SeriesNotFound or StatutoryDocumentReasonCodes.SourceNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Statutory document conflict" :
+            status == StatusCodes.Status404NotFound ? "Statutory document record was not found" : "Statutory document request was rejected",
+            exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
     private ActionResult<T> CreateAccountingPostingErrorResult<T>(AccountingPostingException exception)
     {
         var status = exception.ReasonCode == AccountingPostingReasonCodes.JournalNotFound
@@ -2277,6 +2417,31 @@ public sealed partial class InternalFinanceController : ControllerBase
         return new ObjectResult(problem) { StatusCode = status };
     }
 
+    private ActionResult<T> CreateCustomerInvoiceScheduleErrorResult<T>(CustomerInvoiceScheduleException exception)
+    {
+        var status = exception.ReasonCode == CustomerInvoiceScheduleReasonCodes.NotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        return new ObjectResult(StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            exception.IsConflict ? "Invoice schedule conflict" : "Invoice schedule request was rejected", exception.Message))
+        { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateCustomerInvoiceDraftErrorResult<T>(CustomerInvoiceDraftException exception)
+    {
+        var status = exception.ReasonCode is CustomerInvoiceDraftReasonCodes.NotFound
+            or CustomerInvoiceDraftReasonCodes.CustomerNotFound
+            or CustomerInvoiceDraftReasonCodes.EvidenceNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Customer invoice draft conflict" :
+            status == StatusCodes.Status404NotFound ? "Customer invoice draft record was not found" :
+            "Customer invoice draft request was rejected", exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
     private ActionResult<T> CreateCustomerInvoiceAccountingErrorResult<T>(CustomerInvoiceAccountingException exception)
     {
         var status = exception.ReasonCode == CustomerInvoiceAccountingReasonCodes.InvoiceNotFound
@@ -2286,6 +2451,33 @@ public sealed partial class InternalFinanceController : ControllerBase
             status == StatusCodes.Status409Conflict ? "Customer invoice accounting conflict" :
             status == StatusCodes.Status404NotFound ? "Customer invoice was not found" : "Customer invoice accounting was rejected",
             exception.Message);
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateCustomerInvoiceCorrectionErrorResult<T>(CustomerInvoiceCorrectionException exception)
+    {
+        var status = exception.ReasonCode == CustomerInvoiceCorrectionReasonCodes.InvoiceNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Customer invoice correction conflict" :
+            status == StatusCodes.Status404NotFound ? "Customer invoice correction was not found" :
+            "Customer invoice correction was rejected", exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateCustomerCollectionErrorResult<T>(CustomerCollectionException exception)
+    {
+        var status = exception.ReasonCode is CustomerCollectionReasonCodes.NotFound or
+            CustomerCollectionReasonCodes.CustomerNotFound or CustomerCollectionReasonCodes.InvoiceNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            exception.IsConflict ? "Customer collection conflict" :
+            status == StatusCodes.Status404NotFound ? "Customer collection record was not found" :
+            "Customer collection request was rejected", exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
         return new ObjectResult(problem) { StatusCode = status };
     }
 

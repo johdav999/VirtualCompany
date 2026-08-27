@@ -63,6 +63,31 @@ public sealed class AccountingReportingDomainTests
     }
 
     [Fact]
+    public void Statutory_export_lease_can_only_be_reclaimed_after_expiry_and_persists_object_metadata()
+    {
+        var now = new DateTime(2026, 8, 20, 12, 0, 0, DateTimeKind.Utc);
+        var job = new AccountingExportJob(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid(),
+            "statutory:2026", now, now.AddDays(30), AccountingExportTypeValues.SwedishStatutoryArchive, "corr-1");
+
+        job.Start("worker-1", now.AddMinutes(5), now);
+        Assert.Throws<InvalidOperationException>(() => job.Start("worker-2", now.AddMinutes(6), now.AddMinutes(1)));
+        job.Start("worker-2", now.AddMinutes(11), now.AddMinutes(6));
+        job.Complete(null, new string('a', 64), "archive.zip", "application/zip", "companies/c/archive.zip",
+            "Virtual Company Swedish statutory archive 1.0", new string('b', 64), "zip", 4, 2, 6,
+            1250m, 1250m, "{}", now.AddMinutes(7));
+        job.SetStoredContentLength(4096);
+
+        Assert.Equal(2, job.AttemptCount);
+        Assert.Equal(AccountingExportTypeValues.SwedishStatutoryArchive, job.ExportType);
+        Assert.Equal("corr-1", job.CorrelationId);
+        Assert.Null(job.Content);
+        Assert.Equal("companies/c/archive.zip", job.StorageKey);
+        Assert.Equal(4096, job.ContentLength);
+        Assert.Null(job.LeaseOwner);
+        Assert.Null(job.LeaseExpiresUtc);
+    }
+
+    [Fact]
     public void Tax_review_replacement_binds_review_to_the_current_summary_checksum()
     {
         var actor = Guid.NewGuid();

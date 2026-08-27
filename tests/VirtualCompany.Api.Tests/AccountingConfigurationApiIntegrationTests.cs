@@ -6,6 +6,7 @@ using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Api.Controllers;
 
 namespace VirtualCompany.Api.Tests;
 
@@ -14,6 +15,94 @@ public sealed class AccountingConfigurationApiIntegrationTests : IDisposable
     private readonly TestWebApplicationFactory _factory = new();
 
     public void Dispose() => _factory.Dispose();
+
+    [Fact]
+    public async Task Owner_can_create_read_and_version_update_statutory_profile_while_stale_write_is_rejected()
+    {
+        var seed = await SeedCompaniesAsync();
+        using var client = CreateClient(seed.OwnerSubject, seed.OwnerEmail);
+        using var created = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/statutory-profile",
+            StatutoryProfileRequest());
+        using var createdJson = JsonDocument.Parse(await created.Content.ReadAsStringAsync());
+        var version = createdJson.RootElement.GetProperty("profile").GetProperty("version").GetInt64();
+
+        var updateRequest = StatutoryProfileRequest();
+        updateRequest.ExpectedVersion = version;
+        updateRequest.LegalName = "Updated Legal AB";
+        using var updated = await client.PutAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/statutory-profile", updateRequest);
+        using var read = await client.GetAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/statutory-profile");
+
+        var staleRequest = StatutoryProfileRequest();
+        staleRequest.ExpectedVersion = version;
+        staleRequest.LegalName = "Stale Legal AB";
+        using var stale = await client.PutAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/statutory-profile", staleRequest);
+        using var staleJson = JsonDocument.Parse(await stale.Content.ReadAsStringAsync());
+        using var readJson = JsonDocument.Parse(await read.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, updated.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, read.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, stale.StatusCode);
+        Assert.Equal(CompanyStatutoryProfileReasonCodes.ConcurrencyConflict, staleJson.RootElement.GetProperty("code").GetString());
+        Assert.Equal("Updated Legal AB", readJson.RootElement.GetProperty("profile").GetProperty("legalName").GetString());
+        Assert.False(readJson.RootElement.GetProperty("isExternallyVerified").GetBoolean());
+
+        var auditActions = await _factory.ExecuteDbContextAsync(db => db.AuditEvents.IgnoreQueryFilters()
+            .Where(item => item.CompanyId == seed.CompanyId && item.TargetType == AuditTargetTypes.CompanyStatutoryProfile)
+            .Select(item => item.Action)
+            .ToListAsync());
+        Assert.Equal(2, auditActions.Count);
+        Assert.Contains(AuditEventActions.CompanyStatutoryProfileCreated, auditActions);
+        Assert.Contains(AuditEventActions.CompanyStatutoryProfileUpdated, auditActions);
+    }
+
+    [Fact]
+    public async Task Statutory_profile_endpoints_enforce_admin_and_company_scope()
+    {
+        var seed = await SeedCompaniesAsync();
+        using var employee = CreateClient(seed.EmployeeSubject, seed.EmployeeEmail);
+        using var owner = CreateClient(seed.OwnerSubject, seed.OwnerEmail);
+
+        using var employeeCreate = await employee.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/statutory-profile", StatutoryProfileRequest());
+        using var crossCompanyRead = await owner.GetAsync(
+            $"/internal/companies/{seed.UnownedCompanyId:D}/finance/accounting/statutory-profile");
+        using var crossCompanyWrite = await owner.PostAsJsonAsync(
+            $"/internal/companies/{seed.UnownedCompanyId:D}/finance/accounting/statutory-profile", StatutoryProfileRequest());
+
+        Assert.Equal(HttpStatusCode.Forbidden, employeeCreate.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, crossCompanyRead.StatusCode);
+        Assert.Equal(HttpStatusCode.Forbidden, crossCompanyWrite.StatusCode);
+        Assert.Equal(0, await _factory.ExecuteDbContextAsync(db => db.CompanyStatutoryProfiles.IgnoreQueryFilters().CountAsync()));
+    }
+
+    [Fact]
+    public async Task Swedish_company_without_profile_gets_explicit_missing_facts_without_mutation()
+    {
+        var seed = await SeedCompaniesAsync();
+        await _factory.ExecuteDbContextAsync(async db =>
+        {
+            var company = await db.Companies.SingleAsync(item => item.Id == seed.SecondOwnedCompanyId);
+            company.UpdateWorkspaceProfile(company.Name, null, null, "Europe/Stockholm", "SEK", "sv-SE", "SE");
+            await db.SaveChangesAsync();
+        });
+        using var client = CreateClient(seed.OwnerSubject, seed.OwnerEmail);
+
+        using var response = await client.GetAsync(
+            $"/internal/companies/{seed.SecondOwnedCompanyId:D}/finance/accounting/setup-status");
+        using var json = JsonDocument.Parse(await response.Content.ReadAsStringAsync());
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.False(json.RootElement.GetProperty("isConfigured").GetBoolean());
+        Assert.Contains(json.RootElement.GetProperty("missingLegalFacts").EnumerateArray(),
+            item => item.GetString() == StatutoryProfileFactKeys.OrganisationNumber);
+        Assert.Equal(0, await _factory.ExecuteDbContextAsync(db => db.CompanyStatutoryProfiles.IgnoreQueryFilters()
+            .CountAsync(item => item.CompanyId == seed.SecondOwnedCompanyId)));
+    }
 
     [Fact]
     public async Task Owner_can_create_country_neutral_internal_ledger_configuration_without_a_provider()
@@ -202,6 +291,26 @@ public sealed class AccountingConfigurationApiIntegrationTests : IDisposable
         client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.DisplayNameHeader, subject);
         return client;
     }
+
+    private static SaveCompanyStatutoryProfileRequest StatutoryProfileRequest() => new()
+    {
+        LegalName = "Example Legal AB",
+        SwedishOrganisationNumber = "556016-0680",
+        VatRegistrationNumber = "SE556016068001",
+        VatRegistrationStatus = StatutoryVatRegistrationStatusValues.Registered,
+        RegisteredAddress = new StatutoryAddressDto("Examplegatan 1", null, "111 22", "Stockholm", "SE"),
+        CountryCode = "SE",
+        AccountingCurrency = "SEK",
+        FiscalYearBasis = StatutoryFiscalYearBasisValues.CalendarYear,
+        BookkeepingMethod = StatutoryBookkeepingMethodValues.Accrual,
+        OrganisationRegistrationEffectiveFrom = new DateOnly(2000, 1, 1),
+        VatRegistrationEffectiveFrom = new DateOnly(2000, 1, 1),
+        IsUserAttested = true,
+        VerificationStatus = StatutoryVerificationStatusValues.Unverified,
+        SourceKind = "user_entry",
+        SourceReference = "accounting-setup",
+        SourceCapturedUtc = new DateTime(2026, 8, 24, 8, 0, 0, DateTimeKind.Utc)
+    };
 
     private sealed record Seed(
         Guid CompanyId,

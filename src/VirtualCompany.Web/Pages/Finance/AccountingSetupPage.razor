@@ -4,16 +4,19 @@
 
 <PageTitle>@FinanceText["AccountingSetupTitle"]</PageTitle>
 
-<FinancePageLayout
-    IsLoading="@IsLoading"
-    AccessState="@AccessState"
-    ErrorMessage="@ErrorMessage"
-    Title="@FinanceText["AccountingSetupTitle"]"
-    Description="@FinanceText["AccountingSetupDescription"]"
-    LoadingMessage="@FinanceText["AccountingSetupLoading"]">
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["AccountingSetupTitle"]" Description="@FinanceText["AccountingSetupDescription"]"
+                   LoadingMessage="@FinanceText["AccountingSetupLoading"]">
     <AccountingNavigation CompanyId="@AccessState.CompanyId" />
 
-    @if (SetupStatus?.IsConfigured == true)
+    @if (IsSwedishExperience)
+    {
+        <StatutoryReadinessSummary Status="@SetupStatus?.StatutoryProfile"
+                                   PolicyPackValidationState="@(SetupStatus?.PolicyPackValidationState ?? string.Empty)"
+                                   CanEdit="@CanManageAccounting" OnEdit="BeginSwedishEdit" />
+    }
+
+    @if (SetupStatus?.IsConfigured == true && !ShowSetupEditor)
     {
         <section class="accounting-complete-card" aria-labelledby="accounting-setup-complete-title">
             <div class="accounting-complete-card__icon" aria-hidden="true">✓</div>
@@ -33,6 +36,7 @@
                 <div class="d-flex flex-wrap gap-2 mt-3">
                     <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingAccounts, AccessState.CompanyId)">@FinanceText["ReviewAccounts"]</a>
                     <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingPeriods, AccessState.CompanyId)">@FinanceText["ReviewPeriods"]</a>
+                    @if (IsSwedishExperience && CanManageAccounting) { <button class="btn btn-outline-primary" type="button" @onclick="BeginSwedishEdit">@FinanceText["ReviewSwedishSetup"]</button> }
                     <button class="btn btn-outline-secondary" type="button" @onclick="ReloadAsync">@CommonText["Refresh"]</button>
                 </div>
             </div>
@@ -45,8 +49,7 @@
                 @foreach (var step in Steps)
                 {
                     <button class="@GetStepClass(step.Number)" type="button" @onclick="() => GoToStep(step.Number)" disabled="@(step.Number > HighestAvailableStep)">
-                        <span>@step.Number</span>
-                        <strong>@FinanceText[step.ResourceKey]</strong>
+                        <span>@step.Number</span><strong>@FinanceText[step.ResourceKey]</strong>
                     </button>
                 }
             </aside>
@@ -54,196 +57,116 @@
             <main class="accounting-setup-main">
                 @if (!string.IsNullOrWhiteSpace(ActionError))
                 {
-                    <div class="alert alert-danger" role="alert">
-                        <strong>@FinanceText["AccountingActionFailed"]</strong>
-                        <div>@ActionError</div>
-                        <button class="btn btn-sm btn-outline-danger mt-2" type="button" @onclick="ReloadPreviewAsync">@CommonText["TryAgain"]</button>
-                    </div>
+                    <div class="alert alert-danger" role="alert"><strong>@FinanceText["AccountingActionFailed"]</strong><div>@ActionError</div><button class="btn btn-sm btn-outline-danger mt-2" type="button" @onclick="ReloadAsync">@CommonText["TryAgain"]</button></div>
                 }
+                @if (!string.IsNullOrWhiteSpace(SuccessMessage)) { <div class="alert alert-success" role="status">@SuccessMessage</div> }
 
-                @if (!string.IsNullOrWhiteSpace(SuccessMessage))
+                @if (IsSwedishExperience && CurrentStep == 1)
                 {
-                    <div class="alert alert-success" role="status">@SuccessMessage</div>
-                }
-
-                @if (CurrentStep == 1)
-                {
-                    <section class="accounting-panel" aria-labelledby="setup-basics-title">
-                        <div class="accounting-panel__header">
-                            <div>
-                                <span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span>
-                                <h2 id="setup-basics-title">@FinanceText["AccountingBasicsTitle"]</h2>
-                                <p>@FinanceText["AccountingBasicsDescription"]</p>
-                            </div>
-                        </div>
+                    <section class="accounting-panel" aria-labelledby="legal-identity-title">
+                        <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="legal-identity-title">@FinanceText["LegalIdentityTitle"]</h2><p>@FinanceText["LegalIdentityDescription"]</p></div></div>
                         <div class="accounting-form-grid">
-                            <div class="accounting-field-card">
-                                <label for="accounting-ledger">@FinanceText["AccountingLedger"]</label>
-                                <input id="accounting-ledger" class="form-control" value="@FinanceText["InternalLedger"]" disabled />
-                                <small>@FinanceText["InternalLedgerHelp"]</small>
-                            </div>
-                            <div class="accounting-field-card">
-                                <label for="base-currency">@FinanceText["BaseCurrency"]</label>
-                                <InputText id="base-currency" class="form-control text-uppercase" maxlength="3" @bind-Value="Draft.BaseCurrency" />
-                                <small>@FinanceText["BaseCurrencyHelp"]</small>
-                            </div>
-                            <div class="accounting-field-card">
-                                <label for="fiscal-year-start">@FinanceText["FiscalYearStarts"]</label>
-                                <InputDate id="fiscal-year-start" class="form-control" @bind-Value="Draft.FiscalYearStart" />
-                                <small>@FinanceText["FiscalYearStartHelp"]</small>
-                            </div>
-                            <div class="accounting-field-card">
-                                <label for="policy-pack">@FinanceText["AccountingPolicy"]</label>
-                                <InputSelect id="policy-pack" class="form-select" @bind-Value="Draft.PolicyPackIdentity">
-                                    @foreach (var pack in PolicyPacks)
-                                    {
-                                        <option value="@PackIdentity(pack)">@pack.DisplayName</option>
-                                    }
-                                </InputSelect>
-                                <small>@FinanceText["AccountingPolicyHelp"]</small>
-                            </div>
-                            <div class="accounting-field-card accounting-field-card--wide">
-                                <label for="chart-template">@FinanceText["ChartTemplate"]</label>
-                                <InputSelect id="chart-template" class="form-select" @bind-Value="Draft.ChartTemplateKey">
-                                    @foreach (var template in SelectedPackTemplates)
-                                    {
-                                        <option value="@template.TemplateKey">@template.DisplayName (@FinanceText["AccountCount", template.AccountCount])</option>
-                                    }
-                                </InputSelect>
-                                <small>@FinanceText["ChartTemplateHelp"]</small>
-                            </div>
+                            <div class="accounting-field-card"><label for="legal-name">@FinanceText["LegalName"]</label><InputText id="legal-name" class="form-control" @bind-Value="ProfileDraft.LegalName" /><small>@FinanceText["LegalNameHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="organisation-number">@FinanceText["OrganisationNumber"]</label><InputText id="organisation-number" class="form-control" @bind-Value="ProfileDraft.OrganisationNumber" /><small>@FinanceText["OrganisationNumberHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="registration-effective">@FinanceText["RegistrationEffectiveDate"]</label><InputDate id="registration-effective" class="form-control" @bind-Value="ProfileDraft.OrganisationRegistrationEffectiveFrom" /><small>@FinanceText["RegistrationEffectiveDateHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="accounting-currency">@FinanceText["AccountingCurrency"]</label><InputText id="accounting-currency" class="form-control" maxlength="3" @bind-Value="ProfileDraft.AccountingCurrency" /><small>@FinanceText["SwedishCurrencyHelp"]</small></div>
+                            <div class="accounting-field-card accounting-field-card--wide"><h3>@FinanceText["RegisteredAddress"]</h3><div class="accounting-address-grid"><div><label for="registered-address-1">@FinanceText["Address"]</label><InputText id="registered-address-1" class="form-control" @bind-Value="ProfileDraft.RegisteredAddress.AddressLine1" /></div><div><label for="registered-address-2">@FinanceText["AddressLine2"]</label><InputText id="registered-address-2" class="form-control" @bind-Value="ProfileDraft.RegisteredAddress.AddressLine2" /></div><div><label for="registered-postal">@FinanceText["PostalCode"]</label><InputText id="registered-postal" class="form-control" @bind-Value="ProfileDraft.RegisteredAddress.PostalCode" /></div><div><label for="registered-city">@FinanceText["City"]</label><InputText id="registered-city" class="form-control" @bind-Value="ProfileDraft.RegisteredAddress.City" /></div></div></div>
                         </div>
-                        <div class="accounting-notice accounting-notice--warning" role="note">
-                            <span aria-hidden="true">!</span>
-                            <div><strong>@FinanceText["CountryNeutralNoticeTitle"]</strong><p>@FinanceText["CountryNeutralNotice"]</p></div>
-                        </div>
+                        <div class="accounting-notice accounting-notice--info" role="note"><span aria-hidden="true">i</span><div><strong>@FinanceText["FormatCheckOnly"]</strong><p>@FinanceText["FormatCheckOnlyHelp"]</p></div></div>
                     </section>
                 }
-                else if (CurrentStep == 2)
+                else if (CurrentStep == AccountingSettingsStep)
+                {
+                    <section class="accounting-panel" aria-labelledby="setup-basics-title">
+                        <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="setup-basics-title">@FinanceText["AccountingBasicsTitle"]</h2><p>@FinanceText["AccountingBasicsDescription"]</p></div></div>
+                        <div class="accounting-form-grid">
+                            <div class="accounting-field-card"><label for="accounting-ledger">@FinanceText["AccountingLedger"]</label><input id="accounting-ledger" class="form-control" value="@FinanceText["InternalLedger"]" disabled /><small>@FinanceText["InternalLedgerHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="base-currency">@FinanceText["BaseCurrency"]</label><InputText id="base-currency" class="form-control text-uppercase" maxlength="3" @bind-Value="Draft.BaseCurrency" /><small>@FinanceText["BaseCurrencyHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="fiscal-year-start">@FinanceText["FiscalYearStarts"]</label><InputDate id="fiscal-year-start" class="form-control" @bind-Value="Draft.FiscalYearStart" /><small>@FinanceText["FiscalYearStartHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="policy-pack">@FinanceText["AccountingPolicy"]</label><InputSelect id="policy-pack" class="form-select" @bind-Value="Draft.PolicyPackIdentity" @bind-Value:after="PolicyPackChangedAsync">@foreach (var pack in PolicyPacks) { <option value="@PackIdentity(pack)">@pack.DisplayName</option> }</InputSelect><small>@FinanceText["AccountingPolicyHelp"]</small></div>
+                            @if (IsSwedishExperience)
+                            {
+                                <div class="accounting-field-card"><label for="fiscal-year-basis">@FinanceText["FiscalYearBasis"]</label><InputSelect id="fiscal-year-basis" class="form-select" @bind-Value="ProfileDraft.FiscalYearBasis"><option value="calendar_year">@FinanceText["CalendarYear"]</option><option value="non_calendar_year">@FinanceText["NonCalendarYear"]</option></InputSelect><small>@FinanceText["FiscalYearBasisHelp"]</small></div>
+                                <div class="accounting-field-card"><label for="bookkeeping-method">@FinanceText["BookkeepingMethod"]</label><InputSelect id="bookkeeping-method" class="form-select" @bind-Value="ProfileDraft.BookkeepingMethod"><option value="accrual">@FinanceText["AccrualBookkeeping"]</option><option value="cash">@FinanceText["CashBookkeeping"]</option></InputSelect><small>@FinanceText["BookkeepingMethodHelp"]</small></div>
+                            }
+                            <div class="accounting-field-card accounting-field-card--wide"><label for="chart-template">@FinanceText["ChartTemplate"]</label><InputSelect id="chart-template" class="form-select" @bind-Value="Draft.ChartTemplateKey">@foreach (var template in SelectedPackTemplates) { <option value="@template.TemplateKey">@template.DisplayName (@FinanceText["AccountCount", template.AccountCount])</option> }</InputSelect><small>@FinanceText["ChartTemplateHelp"]</small></div>
+                        </div>
+                        @if (IsSwedishExperience) { <div class="accounting-notice accounting-notice--warning" role="note"><span aria-hidden="true">!</span><div><strong>@FinanceText["IndependentReviewPending"]</strong><p>@FinanceText["NoIndependentValidationClaim"]</p></div></div> }
+                        else { <div class="accounting-notice accounting-notice--warning" role="note"><span aria-hidden="true">!</span><div><strong>@FinanceText["CountryNeutralNoticeTitle"]</strong><p>@FinanceText["CountryNeutralNotice"]</p></div></div> }
+                    </section>
+                }
+                else if (CurrentStep == ChartStep)
                 {
                     <section class="accounting-panel" aria-labelledby="setup-accounts-title">
-                        <div class="accounting-panel__header">
-                            <div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="setup-accounts-title">@FinanceText["ReviewChartTitle"]</h2><p>@FinanceText["ReviewChartDescription"]</p></div>
-                            <button class="btn btn-outline-secondary" type="button" @onclick="ReloadPreviewAsync" disabled="@IsPreviewLoading">@CommonText["Refresh"]</button>
-                        </div>
+                        <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="setup-accounts-title">@FinanceText["ReviewChartTitle"]</h2><p>@FinanceText["ReviewChartDescription"]</p></div><button class="btn btn-outline-secondary" type="button" @onclick="ReloadPreviewAsync" disabled="@IsPreviewLoading">@CommonText["Refresh"]</button></div>
                         <FinanceDataState IsLoading="@IsPreviewLoading" IsEmpty="@(Preview is not null && Preview.Accounts.Count == 0)" ErrorMessage="@PreviewError" LoadingTitle="@FinanceText["AccountingPreviewLoading"]" LoadingMessage="@FinanceText["AccountingPreviewLoadingHelp"]" EmptyTitle="@FinanceText["NoAccountsInTemplate"]" EmptyMessage="@FinanceText["NoAccountsInTemplateHelp"]" OnRetry="ReloadPreviewAsync">
-                            <div class="table-responsive">
-                                <table class="table accounting-table align-middle">
-                                    <thead><tr><th>@FinanceText["AccountCode"]</th><th>@FinanceText["AccountName"]</th><th>@FinanceText["AccountClass"]</th><th>@FinanceText["ControlRole"]</th><th>@FinanceText["Reporting"]</th></tr></thead>
-                                    <tbody>
-                                        @foreach (var account in Preview?.Accounts ?? [])
-                                        {
-                                            <tr><td><strong>@account.Code</strong></td><td>@account.Name</td><td>@FinanceText[AccountingPresentation.AccountClassResourceKey(account.AccountClass)]</td><td>@(account.RoleName ?? FinanceText["NoControlRole"])</td><td>@account.ReportingPlacement</td></tr>
-                                        }
-                                    </tbody>
-                                </table>
-                            </div>
-                            <div class="accounting-summary-grid mt-3">
-                                <div><span>@FinanceText["TaxBehavior"]</span><strong>@Preview?.TaxBehavior</strong></div>
-                                <div><span>@FinanceText["ControlAccounts"]</span><strong>@(Preview?.Accounts.Count(account => account.IsControlAccount) ?? 0)</strong></div>
-                                <div><span>@FinanceText["ChartTemplate"]</span><strong>@Preview?.ChartTemplateName</strong></div>
-                            </div>
+                            <div class="table-responsive"><table class="table accounting-table align-middle"><thead><tr><th>@FinanceText["AccountCode"]</th><th>@FinanceText["AccountName"]</th><th>@FinanceText["AccountClass"]</th><th>@FinanceText["ControlRole"]</th><th>@FinanceText["Reporting"]</th></tr></thead><tbody>@foreach (var account in Preview?.Accounts ?? []) { <tr><td><strong>@account.Code</strong></td><td>@account.Name</td><td>@FinanceText[AccountingPresentation.AccountClassResourceKey(account.AccountClass)]</td><td>@(account.RoleName ?? FinanceText["NoControlRole"])</td><td>@account.ReportingPlacement</td></tr> }</tbody></table></div>
+                            <div class="accounting-summary-grid mt-3"><div><span>@FinanceText["TaxBehavior"]</span><strong>@Preview?.TaxBehavior</strong></div><div><span>@FinanceText["RequiredAccountRoles"]</span><strong>@(Preview?.Accounts.Count(account => account.IsControlAccount) ?? 0)</strong></div><div><span>@FinanceText["ChartTemplate"]</span><strong>@Preview?.ChartTemplateName</strong></div></div>
                         </FinanceDataState>
                     </section>
                 }
-                else if (CurrentStep == 3)
+                else if (IsSwedishExperience && CurrentStep == 4)
+                {
+                    <section class="accounting-panel" aria-labelledby="vat-registration-title">
+                        <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="vat-registration-title">@FinanceText["VatRegistrationTitle"]</h2><p>@FinanceText["VatRegistrationDescription"]</p></div></div>
+                        <div class="accounting-form-grid">
+                            <div class="accounting-field-card"><label for="vat-registration-status">@FinanceText["VatRegistrationStatus"]</label><InputSelect id="vat-registration-status" class="form-select" @bind-Value="ProfileDraft.VatRegistrationStatus"><option value="not_registered">@FinanceText["NotRegisteredForVat"]</option><option value="pending">@FinanceText["VatRegistrationPending"]</option><option value="registered">@FinanceText["RegisteredForVat"]</option></InputSelect></div>
+                            <div class="accounting-field-card"><label for="vat-registration-number">@FinanceText["VatRegistrationNumber"]</label><InputText id="vat-registration-number" class="form-control" @bind-Value="ProfileDraft.VatRegistrationNumber" /><small>@FinanceText["VatRegistrationNumberHelp"]</small></div>
+                            <div class="accounting-field-card"><label for="vat-effective-from">@FinanceText["VatRegistrationEffectiveDate"]</label><InputDate id="vat-effective-from" class="form-control" @bind-Value="ProfileDraft.VatRegistrationEffectiveFrom" /></div>
+                            <div class="accounting-field-card"><label for="vat-effective-to">@FinanceText["VatRegistrationEndDate"]</label><InputDate id="vat-effective-to" class="form-control" @bind-Value="ProfileDraft.VatRegistrationEffectiveTo" /></div>
+                            <div class="accounting-field-card accounting-field-card--wide"><div class="form-check"><InputCheckbox id="business-facts-attested" class="form-check-input" @bind-Value="ProfileDraft.IsUserAttested" /><label class="form-check-label" for="business-facts-attested">@FinanceText["TeamConfirmationStatement"]</label></div><small>@FinanceText["TeamConfirmationHelp"]</small></div>
+                        </div>
+                        <div class="accounting-notice accounting-notice--info" role="note"><span aria-hidden="true">i</span><div><strong>@FinanceText["SeparateVerificationStates"]</strong><p>@FinanceText["SeparateVerificationStatesHelp"]</p></div></div>
+                    </section>
+                }
+                else if (CurrentStep == PeriodsOrSeriesStep)
                 {
                     <section class="accounting-panel" aria-labelledby="setup-periods-title">
-                        <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="setup-periods-title">@FinanceText["ReviewPeriodsAndSeriesTitle"]</h2><p>@FinanceText["ReviewPeriodsAndSeriesDescription"]</p></div></div>
-                        <div class="accounting-review-columns">
-                            <div>
-                                <h3>@FinanceText["MonthlyPeriods"]</h3>
-                                <div class="accounting-period-preview">
-                                    @foreach (var period in Preview?.Periods ?? [])
-                                    {
-                                        <div><strong>@period.Name</strong><span>@period.StartDate.ToString("d") – @period.EndDate.ToString("d")</span></div>
-                                    }
-                                </div>
-                            </div>
-                            <div>
-                                <h3>@FinanceText["VoucherSeries"]</h3>
-                                <div class="accounting-series-list">
-                                    @foreach (var series in Preview?.VoucherSeries ?? [])
-                                    {
-                                        <div><span class="accounting-code">@series.NumberPrefix</span><div><strong>@series.DisplayName</strong><small>@FinanceText["SequentialNumberingHelp"]</small></div></div>
-                                    }
-                                </div>
-                            </div>
-                        </div>
+                        <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="setup-periods-title">@(IsSwedishExperience ? FinanceText["DocumentSeriesTitle"] : FinanceText["ReviewPeriodsAndSeriesTitle"])</h2><p>@(IsSwedishExperience ? FinanceText["DocumentSeriesDescription"] : FinanceText["ReviewPeriodsAndSeriesDescription"])</p></div></div>
+                        @if (IsSwedishExperience)
+                        {
+                            <div class="accounting-series-existing">@if (DocumentSeries.Count == 0) { <div class="accounting-empty-inline"><strong>@FinanceText["NoDocumentSeries"]</strong><p>@FinanceText["NoDocumentSeriesHelp"]</p></div> } else { @foreach (var series in DocumentSeries) { <article><span class="accounting-code">@series.Prefix</span><div><strong>@series.Code · @(series.DocumentType == "customer_invoice" ? FinanceText["CustomerInvoices"] : FinanceText["CustomerCredits"])</strong><small>@FinanceText["NextDocumentNumber", series.NextNumber] · @series.FiscalYearStart.ToString("d")–@series.FiscalYearEnd.ToString("d")</small></div><span class="status-badge @(series.IsActive ? "status-badge-success" : null)">@(series.IsActive ? FinanceText["Active"] : FinanceText["Inactive"])</span></article> } }</div>
+                            @if (CanManageAccounting)
+                            {
+                                <div class="accounting-series-form"><div><label for="series-code">@FinanceText["SeriesCode"]</label><InputText id="series-code" class="form-control" @bind-Value="SeriesDraft.Code" /></div><div><label for="series-type">@FinanceText["DocumentType"]</label><InputSelect id="series-type" class="form-select" @bind-Value="SeriesDraft.DocumentType"><option value="customer_invoice">@FinanceText["CustomerInvoices"]</option><option value="customer_credit_note">@FinanceText["CustomerCredits"]</option></InputSelect></div><div><label for="series-prefix">@FinanceText["NumberPrefix"]</label><InputText id="series-prefix" class="form-control" @bind-Value="SeriesDraft.Prefix" /></div><div><label for="series-first-number">@FinanceText["FirstNumber"]</label><InputNumber id="series-first-number" class="form-control" @bind-Value="SeriesDraft.FirstNumber" /></div><button class="btn btn-outline-primary" type="button" @onclick="CreateDocumentSeriesAsync" disabled="@IsSaving">@FinanceText["AddDocumentSeries"]</button></div>
+                            }
+                        }
+                        else
+                        {
+                            <div class="accounting-review-columns"><div><h3>@FinanceText["MonthlyPeriods"]</h3><div class="accounting-period-preview">@foreach (var period in Preview?.Periods ?? []) { <div><strong>@period.Name</strong><span>@period.StartDate.ToString("d") – @period.EndDate.ToString("d")</span></div> }</div></div><div><h3>@FinanceText["VoucherSeries"]</h3><div class="accounting-series-list">@foreach (var series in Preview?.VoucherSeries ?? []) { <div><span class="accounting-code">@series.NumberPrefix</span><div><strong>@series.DisplayName</strong><small>@FinanceText["SequentialNumberingHelp"]</small></div></div> }</div></div></div>
+                        }
                     </section>
                 }
                 else
                 {
                     <section class="accounting-panel" aria-labelledby="setup-review-title">
                         <div class="accounting-panel__header"><div><span class="dashboard-kicker">@FinanceText["AccountingStep", CurrentStep, Steps.Count]</span><h2 id="setup-review-title">@FinanceText["ConfirmAccountingSetupTitle"]</h2><p>@FinanceText["ConfirmAccountingSetupDescription"]</p></div></div>
-                        @if (Preview?.Warnings.Count > 0)
-                        {
-                            @foreach (var warning in Preview.Warnings)
-                            {
-                                <div class="accounting-notice accounting-notice--warning" role="note"><span aria-hidden="true">!</span><div><strong>@FinanceText["ImportantDecision"]</strong><p>@warning.Explanation</p></div></div>
-                            }
-                        }
-                        @if (Preview?.Issues.Count > 0)
-                        {
-                            <div class="accounting-notice accounting-notice--danger" role="alert">
-                                <span aria-hidden="true">×</span>
-                                <div>
-                                    <strong>@FinanceText["SetupNeedsChanges"]</strong>
-                                    @foreach (var issue in Preview.Issues)
-                                    {
-                                        <p>@issue.Explanation</p>
-                                    }
-                                </div>
-                            </div>
-                        }
-                        <dl class="accounting-summary-list accounting-summary-list--review">
-                            <div><dt>@FinanceText["AccountingLedger"]</dt><dd>@FinanceText["InternalLedger"]</dd></div>
-                            <div><dt>@FinanceText["BaseCurrency"]</dt><dd>@Preview?.BaseCurrency</dd></div>
-                            <div><dt>@FinanceText["FiscalYear"]</dt><dd>@Preview?.FiscalYearStart.ToString("d") – @Preview?.FiscalYearEnd.ToString("d")</dd></div>
-                            <div><dt>@FinanceText["AccountingPolicy"]</dt><dd>@Preview?.PolicyPackName</dd></div>
-                            <div><dt>@FinanceText["Accounts"]</dt><dd>@FinanceText["AccountCount", Preview?.Accounts.Count ?? 0]</dd></div>
-                            <div><dt>@FinanceText["MonthlyPeriods"]</dt><dd>@FinanceText["PeriodCount", Preview?.Periods.Count ?? 0]</dd></div>
-                            <div><dt>@FinanceText["VoucherSeries"]</dt><dd>@FinanceText["SeriesCount", Preview?.VoucherSeries.Count ?? 0]</dd></div>
-                            <div><dt>@FinanceText["TaxBehavior"]</dt><dd>@Preview?.TaxBehavior</dd></div>
-                        </dl>
+                        @foreach (var warning in Preview?.Warnings ?? []) { <div class="accounting-notice accounting-notice--warning" role="note"><span aria-hidden="true">!</span><div><strong>@FinanceText["ImportantDecision"]</strong><p>@warning.Explanation</p></div></div> }
+                        @if (Preview?.Issues.Count > 0) { <div class="accounting-notice accounting-notice--danger" role="alert"><span aria-hidden="true">×</span><div><strong>@FinanceText["SetupNeedsChanges"]</strong>@foreach (var issue in Preview.Issues) { <p>@issue.Explanation</p> }</div></div> }
+                        <dl class="accounting-summary-list accounting-summary-list--review"><div><dt>@FinanceText["AccountingLedger"]</dt><dd>@FinanceText["InternalLedger"]</dd></div><div><dt>@FinanceText["BaseCurrency"]</dt><dd>@(Preview?.BaseCurrency ?? Draft.BaseCurrency)</dd></div><div><dt>@FinanceText["FiscalYear"]</dt><dd>@Draft.FiscalYearStart.ToString("d") – @Draft.FiscalYearStart.AddYears(1).AddDays(-1).ToString("d")</dd></div><div><dt>@FinanceText["AccountingPolicy"]</dt><dd>@(Preview?.PolicyPackName ?? DisplayPolicyName)</dd></div><div><dt>@FinanceText["Accounts"]</dt><dd>@FinanceText["AccountCount", Preview?.Accounts.Count ?? 0]</dd></div><div><dt>@FinanceText["DocumentSeries"]</dt><dd>@FinanceText["SeriesCount", IsSwedishExperience ? DocumentSeries.Count : Preview?.VoucherSeries.Count ?? 0]</dd></div></dl>
+                        @if (IsSwedishExperience) { <div class="accounting-notice accounting-notice--info" role="note"><span aria-hidden="true">i</span><div><strong>@FinanceText["IndependentReviewPending"]</strong><p>@FinanceText["NoIndependentValidationClaim"]</p></div></div> }
                     </section>
                 }
 
                 @if (CurrentStep < Steps.Count && Preview?.Issues.Any(issue => issue.IsBlocking) == true)
                 {
-                    <div class="accounting-notice accounting-notice--danger" role="alert">
-                        <span aria-hidden="true">×</span>
-                        <div>
-                            <strong>@FinanceText["SetupNeedsChanges"]</strong>
-                            @foreach (var issue in Preview.Issues.Where(issue => issue.IsBlocking))
-                            {
-                                <p>@issue.Explanation</p>
-                            }
-                        </div>
-                    </div>
+                    <div class="accounting-notice accounting-notice--danger" role="alert"><span aria-hidden="true">×</span><div><strong>@FinanceText["SetupNeedsChanges"]</strong>@foreach (var issue in Preview.Issues.Where(issue => issue.IsBlocking)) { <p>@issue.Explanation</p> }</div></div>
                 }
 
                 <footer class="accounting-setup-actions">
                     <button class="btn btn-outline-secondary" type="button" @onclick="PreviousStep" disabled="@(CurrentStep == 1 || IsSaving)">@FinanceText["Back"]</button>
-                    @if (CurrentStep < Steps.Count)
-                    {
-                        <button class="btn btn-primary" type="button" @onclick="NextStepAsync" disabled="@(IsPreviewLoading || IsSaving)">@(IsPreviewLoading ? FinanceText["Reviewing"] : FinanceText["Continue"])</button>
-                    }
-                    else
-                    {
-                        <button class="btn btn-primary" type="button" @onclick="CompleteSetupAsync" disabled="@(!CanManageAccounting || IsSaving || Preview?.IsValid != true)">@(IsSaving ? FinanceText["CompletingSetup"] : FinanceText["CompleteSetup"])</button>
-                    }
+                    @if (CurrentStep < Steps.Count) { <button class="btn btn-primary" type="button" @onclick="NextStepAsync" disabled="@(IsPreviewLoading || IsSaving || !CanManageAccounting)">@(IsSaving ? FinanceText["Saving"] : IsPreviewLoading ? FinanceText["Reviewing"] : FinanceText["Continue"])</button> }
+                    else if (SetupStatus?.IsConfigured == true) { <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReports, AccessState.CompanyId)">@FinanceText["OpenReportsAndVat"]</a> }
+                    else { <button class="btn btn-primary" type="button" @onclick="CompleteSetupAsync" disabled="@(!CanManageAccounting || IsSaving || !CanCompleteSetup)">@(IsSaving ? FinanceText["CompletingSetup"] : FinanceText["CompleteSetup"])</button> }
                 </footer>
             </main>
 
             <aside class="accounting-laura-card">
                 <div class="accounting-laura-card__identity"><span aria-hidden="true">L</span><div><strong>@FinanceText["Laura"]</strong><small>@FinanceText["FinanceManager"]</small></div></div>
-                <p>@FinanceText["LauraAccountingSetupAdvice"]</p>
+                <p>@FinanceText[IsSwedishExperience ? "LauraSwedishSetupAdvice" : "LauraAccountingSetupAdvice"]</p>
                 <ul><li>@FinanceText["SetupBenefitBooks"]</li><li>@FinanceText["SetupBenefitReports"]</li><li>@FinanceText["SetupBenefitReview"]</li></ul>
-                @if (!CanManageAccounting)
-                {
-                    <div class="accounting-notice accounting-notice--info"><span aria-hidden="true">i</span><p>@FinanceText["AccountingAdminRequired"]</p></div>
-                }
+                <a class="btn btn-outline-primary w-100" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReports, AccessState.CompanyId)">@FinanceText["ViewAccountingSources"]</a>
+                @if (!CanManageAccounting) { <div class="accounting-notice accounting-notice--info"><span aria-hidden="true">i</span><p>@FinanceText["AccountingAdminRequired"]</p></div> }
             </aside>
         </div>
     }

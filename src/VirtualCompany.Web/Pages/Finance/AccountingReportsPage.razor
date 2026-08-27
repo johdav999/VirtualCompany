@@ -22,14 +22,14 @@
                     <option value="@period.Id">@period.Name · @period.StartDate.ToString("d")–@period.EndDate.ToString("d")</option>
                 }
             </select>
-            @if (CanManageAccounting)
+            @if (CanManageAccounting && View != "vat")
             {
                 <button class="btn btn-primary" type="button" @onclick="RequestExportAsync" disabled="@IsActing">@FinanceText["CreateExport"]</button>
             }
         </div>
     </div>
 
-    <div class="accounting-compliance-notice" role="note">ⓘ @(TaxSummary?.ComplianceNotice ?? FinanceText["CountryNeutralTaxNotice"])</div>
+    @if (View != "vat") { <div class="accounting-compliance-notice" role="note">ⓘ @(TaxSummary?.ComplianceNotice ?? FinanceText["CountryNeutralTaxNotice"])</div> }
 
     @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
     @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div></div> }
@@ -39,6 +39,7 @@
         <button type="button" class="accounting-report-kpi @(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => View = "profit-loss"'><span aria-hidden="true">↗</span><small>@FinanceText["ProfitAndLoss"]</small><strong>@Money(ProfitAndLoss?.NetIncome, ProfitAndLoss?.Currency)</strong><em>@FinanceText[ProfitAndLoss?.UsedSnapshot == true ? "StoredSnapshot" : "PostedJournals"]</em></button>
         <button type="button" class="accounting-report-kpi @(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'><span aria-hidden="true">▣</span><small>@FinanceText["BalanceSheet"]</small><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency)</strong><em class="@(BalanceSheet?.IsBalanced == true ? "ok" : "warn")">@FinanceText[BalanceSheet?.IsBalanced == true ? "Reconciled" : "NeedsReview"]</em></button>
         <button type="button" class="accounting-report-kpi @(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'><span aria-hidden="true">◇</span><small>@FinanceText["TaxSummary"]</small><strong>@Money(TaxSummary?.Lines.Sum(x => x.TaxAmount), Currency)</strong><em class="@(TaxSummary?.IsReviewed == true ? "ok" : "warn")">@FinanceText[TaxSummary?.IsReviewed == true ? "Reviewed" : "ReviewRequired"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => View = "vat"'><span aria-hidden="true">%</span><small>@FinanceText["VatReturn"]</small><strong>@Money(CurrentVatReturn?.SettlementExact, CurrentVatReturn?.Currency)</strong><em class="@(CurrentVatReturn?.Issues.Any(x => x.IsBlocking) == true ? "warn" : "ok")">@(CurrentVatReturn is null ? FinanceText["NotCalculated"] : CurrentVatReturn.IsStale ? FinanceText["StaleData"] : FinanceText["ReadyForReview"])</em></button>
     </section>
 
     <nav class="accounting-report-tabs" aria-label="@FinanceText["ReportViews"]">
@@ -47,8 +48,21 @@
         <button type="button" class="@(View == "profit-loss" ? "active" : null)" aria-pressed="@(View == "profit-loss")" @onclick='() => View = "profit-loss"'>@FinanceText["ProfitAndLoss"]</button>
         <button type="button" class="@(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'>@FinanceText["BalanceSheet"]</button>
         <button type="button" class="@(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'>@FinanceText["TaxSummary"]</button>
+        <button type="button" class="@(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => View = "vat"'>@FinanceText["VatAndStatutoryExports"]</button>
     </nav>
 
+    @if (View == "vat")
+    {
+        <VatReturnWorkspace CompanyId="@AccessState.CompanyId" IsLoading="@IsReportLoading" IsActing="@IsActing" CanManage="@CanManageAccounting" ErrorMessage="@VatError"
+                            FilingPeriods="@VatFilingPeriods" SelectedFilingPeriodId="@SelectedVatFilingPeriodId" CurrentReturn="@CurrentVatReturn"
+                            RelatedReturns="@VatReturns.Where(x => x.CorrectionOfVatReturnId.HasValue).ToArray()" ControlAccounts="@ControlAccounts"
+                            Exports="@Exports" PackageDownloadUrl="@VatPackageDownloadUrl" JournalHref="@JournalEntryUrl" ExportDownloadUrl="@ExportDownloadUrl"
+                            OnPeriodChanged="ChangeVatPeriodAsync" OnCalculate="CalculateVatAsync" OnRequestApproval="RequestVatApprovalAsync"
+                            OnFinalize="FinalizeVatAsync" OnCreateCorrection="CreateVatCorrectionAsync" OnRequestExport="RequestStatutoryExportAsync"
+                            OnRetryExport="RetryStatutoryExportAsync" OnRefreshExports="RefreshExportsAsync" />
+    }
+    else
+    {
     <div class="accounting-report-workspace">
         <section class="accounting-report-table-card" aria-busy="@IsReportLoading">
             @if (IsReportLoading)
@@ -92,7 +106,7 @@
             {
                 <ReportHeader Title="@FinanceText["TaxSummary"]" Detail="@FinanceText["TaxSummaryHelp"]" />
                 @if (TaxSummary?.Lines.Count == 0) { <div class="accounting-report-state"><span aria-hidden="true">◇</span><h3>@FinanceText["NoTaxFacts"]</h3><p>@FinanceText["NoTaxFactsHelp"]</p></div> }
-                else { <div class="table-responsive"><table class="table accounting-report-table"><thead><tr><th>@FinanceText["TaxRule"]</th><th>@FinanceText["PackVersion"]</th><th>@FinanceText["TaxableAmount"]</th><th>@FinanceText["Tax"]</th></tr></thead><tbody>@foreach (var row in TaxSummary?.Lines ?? []) { <tr><td><strong>@Friendly(row.TaxRuleKey)</strong><span>@Friendly(row.TaxTreatment)</span></td><td>@row.PolicyPackKey @row.PolicyPackVersion</td><td>@Money(row.TaxableAmount, row.Currency)</td><td><strong>@Money(row.TaxAmount, row.Currency)</strong></td></tr> }</tbody></table></div> }
+                else { <div class="table-responsive"><table class="table accounting-report-table"><thead><tr><th>@FinanceText["TaxRule"]</th><th>@FinanceText["PackVersion"]</th><th>@FinanceText["TaxableAmount"]</th><th>@FinanceText["Tax"]</th></tr></thead><tbody>@foreach (var row in TaxSummary?.Lines ?? []) { <tr><td><strong>@Friendly(row.TaxRuleKey)</strong><span>@Friendly(row.TaxTreatment)</span></td><td>@row.PolicyPackVersion</td><td>@Money(row.TaxableAmount, row.Currency)</td><td><strong>@Money(row.TaxAmount, row.Currency)</strong></td></tr> }</tbody></table></div> }
                 @if (CanManageAccounting && TaxSummary?.IsReviewed == false) { <button class="btn btn-primary" type="button" @onclick="ReviewTaxAsync" disabled="@IsActing">@FinanceText["ConfirmTaxReview"]</button> }
             }
         </section>
@@ -137,4 +151,5 @@
 
         <section class="accounting-close-card"><div class="accounting-card-header"><div><h3>@FinanceText["ExportJobs"]</h3><span>@FinanceText["ExportJobsHelp"]</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="RefreshExportsAsync">@CommonText["Refresh"]</button></div>@if (Exports.Count == 0) { <div class="accounting-report-state compact"><p>@FinanceText["NoExportsForPeriod"]</p></div> } else { @foreach (var job in Exports) { <div class="accounting-export-row"><div><strong>@Friendly(job.Status)</strong><span>@LocalDateTime.DateTime(job.RequestedUtc)</span>@if (!string.IsNullOrWhiteSpace(job.FailureSummary)) { <small class="text-danger">@job.FailureSummary</small> }</div>@if (job.CanDownload) { <a class="btn btn-sm btn-outline-primary" href="@ExportDownloadUrl(job.Id)">@FinanceText["Download"]</a> } else { <span class="status-badge">@Friendly(job.Status)</span> }</div> } }</section>
     </div>
+    }
 </FinancePageLayout>

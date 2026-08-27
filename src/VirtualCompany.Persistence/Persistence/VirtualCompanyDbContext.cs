@@ -107,6 +107,12 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AccountingConfiguration> AccountingConfigurations => Set<AccountingConfiguration>();
     public DbSet<AccountingConfigurationAccountRole> AccountingConfigurationAccountRoles => Set<AccountingConfigurationAccountRole>();
     public DbSet<AccountingPolicyPackSelection> AccountingPolicyPackSelections => Set<AccountingPolicyPackSelection>();
+    public DbSet<CompanyStatutoryProfile> CompanyStatutoryProfiles => Set<CompanyStatutoryProfile>();
+    public DbSet<StatutoryDocumentSeries> StatutoryDocumentSeries => Set<StatutoryDocumentSeries>();
+    public DbSet<StatutoryDocumentNumberAllocation> StatutoryDocumentNumberAllocations => Set<StatutoryDocumentNumberAllocation>();
+    public DbSet<IssuedStatutoryDocument> IssuedStatutoryDocuments => Set<IssuedStatutoryDocument>();
+    public DbSet<CustomerInvoiceElectronicDelivery> CustomerInvoiceElectronicDeliveries => Set<CustomerInvoiceElectronicDelivery>();
+    public DbSet<CustomerInvoiceElectronicDeliveryEvent> CustomerInvoiceElectronicDeliveryEvents => Set<CustomerInvoiceElectronicDeliveryEvent>();
     public DbSet<AccountingAuthorityPeriod> AccountingAuthorityPeriods => Set<AccountingAuthorityPeriod>();
     public DbSet<AccountingProviderSwitch> AccountingProviderSwitches => Set<AccountingProviderSwitch>();
     public DbSet<AccountingProviderSwitchAssessment> AccountingProviderSwitchAssessments => Set<AccountingProviderSwitchAssessment>();
@@ -163,6 +169,36 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
     public DbSet<FinanceCounterparty> FinanceCounterparties => Set<FinanceCounterparty>();
+    public DbSet<CustomerBillingProfile> CustomerBillingProfiles => Set<CustomerBillingProfile>();
+    public DbSet<CustomerBillingProfileVersion> CustomerBillingProfileVersions => Set<CustomerBillingProfileVersion>();
+    public DbSet<CustomerBillingSourceConflict> CustomerBillingSourceConflicts => Set<CustomerBillingSourceConflict>();
+    public DbSet<CustomerDuplicateCandidate> CustomerDuplicateCandidates => Set<CustomerDuplicateCandidate>();
+    public DbSet<CustomerCounterpartyRedirect> CustomerCounterpartyRedirects => Set<CustomerCounterpartyRedirect>();
+    public DbSet<CustomerInvoiceCustomerSnapshot> CustomerInvoiceCustomerSnapshots => Set<CustomerInvoiceCustomerSnapshot>();
+    public DbSet<CustomerInvoiceDraft> CustomerInvoiceDrafts => Set<CustomerInvoiceDraft>();
+    public DbSet<CustomerInvoiceDraftLine> CustomerInvoiceDraftLines => Set<CustomerInvoiceDraftLine>();
+    public DbSet<CustomerInvoiceDraftEvidenceLink> CustomerInvoiceDraftEvidenceLinks => Set<CustomerInvoiceDraftEvidenceLink>();
+    public DbSet<CustomerInvoiceDraftOperation> CustomerInvoiceDraftOperations => Set<CustomerInvoiceDraftOperation>();
+    public DbSet<CustomerInvoiceSchedule> CustomerInvoiceSchedules => Set<CustomerInvoiceSchedule>();
+    public DbSet<CustomerInvoiceScheduleLine> CustomerInvoiceScheduleLines => Set<CustomerInvoiceScheduleLine>();
+    public DbSet<CustomerInvoiceScheduleEvidenceLink> CustomerInvoiceScheduleEvidenceLinks => Set<CustomerInvoiceScheduleEvidenceLink>();
+    public DbSet<CustomerInvoiceScheduleOccurrence> CustomerInvoiceScheduleOccurrences => Set<CustomerInvoiceScheduleOccurrence>();
+    public DbSet<CustomerInvoiceScheduleOperation> CustomerInvoiceScheduleOperations => Set<CustomerInvoiceScheduleOperation>();
+    public DbSet<CustomerInvoiceRenderedArtifact> CustomerInvoiceRenderedArtifacts => Set<CustomerInvoiceRenderedArtifact>();
+    public DbSet<CustomerInvoiceEmailDelivery> CustomerInvoiceEmailDeliveries => Set<CustomerInvoiceEmailDelivery>();
+    public DbSet<CustomerInvoiceCorrection> CustomerInvoiceCorrections => Set<CustomerInvoiceCorrection>();
+    public DbSet<CustomerInvoiceRefundExecution> CustomerInvoiceRefundExecutions => Set<CustomerInvoiceRefundExecution>();
+    public DbSet<CustomerInvoiceCorrectionAllocationAdjustment> CustomerInvoiceCorrectionAllocationAdjustments => Set<CustomerInvoiceCorrectionAllocationAdjustment>();
+    public DbSet<CustomerCollectionPolicy> CustomerCollectionPolicies => Set<CustomerCollectionPolicy>();
+    public DbSet<CustomerCollectionPolicyStage> CustomerCollectionPolicyStages => Set<CustomerCollectionPolicyStage>();
+    public DbSet<CustomerCollectionPolicyException> CustomerCollectionPolicyExceptions => Set<CustomerCollectionPolicyException>();
+    public DbSet<CustomerStatementSnapshot> CustomerStatementSnapshots => Set<CustomerStatementSnapshot>();
+    public DbSet<CustomerStatementItem> CustomerStatementItems => Set<CustomerStatementItem>();
+    public DbSet<CustomerCollectionCase> CustomerCollectionCases => Set<CustomerCollectionCase>();
+    public DbSet<CustomerCollectionAction> CustomerCollectionActions => Set<CustomerCollectionAction>();
+    public DbSet<CustomerReminderDraft> CustomerReminderDrafts => Set<CustomerReminderDraft>();
+    public DbSet<CustomerReminderDelivery> CustomerReminderDeliveries => Set<CustomerReminderDelivery>();
+    public DbSet<CustomerCollectionWorkerLease> CustomerCollectionWorkerLeases => Set<CustomerCollectionWorkerLease>();
     public DbSet<FinanceBill> FinanceBills => Set<FinanceBill>();
     public DbSet<SupplierSubscription> SupplierSubscriptions => Set<SupplierSubscription>();
     public DbSet<SupplierSubscriptionBillMatch> SupplierSubscriptionBillMatches => Set<SupplierSubscriptionBillMatch>();
@@ -197,6 +233,12 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<FinancialStatementSnapshot> FinancialStatementSnapshots => Set<FinancialStatementSnapshot>();
     public DbSet<FinancialStatementSnapshotLine> FinancialStatementSnapshotLines => Set<FinancialStatementSnapshotLine>();
     public DbSet<AccountingTaxReview> AccountingTaxReviews => Set<AccountingTaxReview>();
+    public DbSet<VatFilingPeriod> VatFilingPeriods => Set<VatFilingPeriod>();
+    public DbSet<VatReturn> VatReturns => Set<VatReturn>();
+    public DbSet<VatReturnBoxResult> VatReturnBoxResults => Set<VatReturnBoxResult>();
+    public DbSet<VatReturnSourceContribution> VatReturnSourceContributions => Set<VatReturnSourceContribution>();
+    public DbSet<VatReturnValidationIssue> VatReturnValidationIssues => Set<VatReturnValidationIssue>();
+    public DbSet<VatReturnReview> VatReturnReviews => Set<VatReturnReview>();
     public DbSet<AccountingPeriodHistory> AccountingPeriodHistory => Set<AccountingPeriodHistory>();
     public DbSet<AccountingExportJob> AccountingExportJobs => Set<AccountingExportJob>();
     public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
@@ -538,6 +580,7 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is AccountingConfiguration ||
                 entry.Entity is AccountingConfigurationAccountRole ||
                 entry.Entity is AccountingPolicyPackSelection ||
+                entry.Entity is CompanyStatutoryProfile ||
                 entry.Entity is AccountingAuthorityPeriod ||
                 entry.Entity is AccountingProviderSwitch ||
                 entry.Entity is AccountingProviderSwitchAssessment ||
@@ -592,6 +635,19 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceAsset ||
                 entry.Entity is FinanceBalance ||
                 entry.Entity is FinanceCounterparty ||
+                entry.Entity is CustomerInvoiceDraft ||
+                entry.Entity is CustomerInvoiceDraftLine ||
+                entry.Entity is CustomerInvoiceDraftEvidenceLink ||
+                entry.Entity is CustomerInvoiceDraftOperation ||
+                entry.Entity is CustomerInvoiceSchedule ||
+                entry.Entity is CustomerInvoiceScheduleLine ||
+                entry.Entity is CustomerInvoiceScheduleEvidenceLink ||
+                entry.Entity is CustomerInvoiceScheduleOccurrence ||
+                entry.Entity is CustomerInvoiceScheduleOperation ||
+                entry.Entity is CustomerInvoiceRenderedArtifact ||
+                entry.Entity is CustomerInvoiceEmailDelivery ||
+                entry.Entity is CustomerInvoiceElectronicDelivery ||
+                entry.Entity is CustomerInvoiceElectronicDeliveryEvent ||
                 entry.Entity is FinancePolicyConfiguration ||
                 entry.Entity is FinanceSeedAnomaly ||
                 entry.Entity is FinanceSimulationStepLog ||
@@ -616,6 +672,12 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinancialStatementSnapshot ||
                 entry.Entity is FinancialStatementSnapshotLine ||
                 entry.Entity is AccountingTaxReview ||
+                entry.Entity is VatFilingPeriod ||
+                entry.Entity is VatReturn ||
+                entry.Entity is VatReturnBoxResult ||
+                entry.Entity is VatReturnSourceContribution ||
+                entry.Entity is VatReturnValidationIssue ||
+                entry.Entity is VatReturnReview ||
                 entry.Entity is AccountingPeriodHistory ||
                 entry.Entity is AccountingExportJob ||
                 entry.Entity is MailboxConnection ||
@@ -772,6 +834,29 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SupplierSubscriptionIntakeProposal>()
             .HasQueryFilter(proposal =>
                 CurrentCompanyId != null && proposal.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerBillingProfile>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerBillingProfileVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerBillingSourceConflict>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerDuplicateCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCounterpartyRedirect>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceCustomerSnapshot>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceRenderedArtifact>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceEmailDelivery>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceElectronicDelivery>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceElectronicDeliveryEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceCorrection>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceRefundExecution>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceCorrectionAllocationAdjustment>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCollectionPolicy>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCollectionPolicyStage>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCollectionPolicyException>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerStatementSnapshot>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerStatementItem>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCollectionCase>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCollectionAction>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerReminderDraft>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerReminderDelivery>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerCollectionWorkerLease>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<SalesMeetingInvitation>()
             .HasQueryFilter(invitation =>
                 CurrentCompanyId != null && invitation.CompanyId == CurrentCompanyId);
@@ -951,6 +1036,18 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<AccountingPolicyPackSelection>()
             .HasQueryFilter(selection =>
                 CurrentCompanyId != null && selection.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyStatutoryProfile>()
+            .HasQueryFilter(profile =>
+                CurrentCompanyId != null && profile.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<StatutoryDocumentSeries>()
+            .HasQueryFilter(series =>
+                CurrentCompanyId != null && series.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<StatutoryDocumentNumberAllocation>()
+            .HasQueryFilter(allocation =>
+                CurrentCompanyId != null && allocation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<IssuedStatutoryDocument>()
+            .HasQueryFilter(document =>
+                CurrentCompanyId != null && document.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingAuthorityPeriod>()
             .HasQueryFilter(period =>
                 CurrentCompanyId != null && period.CompanyId == CurrentCompanyId);
@@ -1145,6 +1242,24 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ManualJournalOperation>()
             .HasQueryFilter(operation => CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceDraft>()
+            .HasQueryFilter(draft => CurrentCompanyId != null && draft.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceDraftLine>()
+            .HasQueryFilter(line => CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceDraftEvidenceLink>()
+            .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceDraftOperation>()
+            .HasQueryFilter(operation => CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceSchedule>()
+            .HasQueryFilter(schedule => CurrentCompanyId != null && schedule.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceScheduleLine>()
+            .HasQueryFilter(line => CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceScheduleEvidenceLink>()
+            .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceScheduleOccurrence>()
+            .HasQueryFilter(occurrence => CurrentCompanyId != null && occurrence.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CustomerInvoiceScheduleOperation>()
+            .HasQueryFilter(operation => CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<LedgerEntryEvidenceLink>()
             .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerInvoiceAccountingProfile>()
@@ -1165,6 +1280,18 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(line =>
                 CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingTaxReview>()
+            .HasQueryFilter(review => CurrentCompanyId != null && review.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VatFilingPeriod>()
+            .HasQueryFilter(period => CurrentCompanyId != null && period.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VatReturn>()
+            .HasQueryFilter(vatReturn => CurrentCompanyId != null && vatReturn.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VatReturnBoxResult>()
+            .HasQueryFilter(box => CurrentCompanyId != null && box.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VatReturnSourceContribution>()
+            .HasQueryFilter(contribution => CurrentCompanyId != null && contribution.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VatReturnValidationIssue>()
+            .HasQueryFilter(issue => CurrentCompanyId != null && issue.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<VatReturnReview>()
             .HasQueryFilter(review => CurrentCompanyId != null && review.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingPeriodHistory>()
             .HasQueryFilter(history => CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
@@ -1484,6 +1611,10 @@ public sealed class VirtualCompanyDbContext : DbContext
             .ValueGeneratedNever()
             .IsConcurrencyToken();
         modelBuilder.Entity<AccountingExportJob>().Property(job => job.RowVersion)
+            .HasColumnType("BLOB")
+            .ValueGeneratedNever()
+            .IsConcurrencyToken();
+        modelBuilder.Entity<VatReturn>().Property(vatReturn => vatReturn.RowVersion)
             .HasColumnType("BLOB")
             .ValueGeneratedNever()
             .IsConcurrencyToken();

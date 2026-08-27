@@ -13,7 +13,13 @@ namespace VirtualCompany.Infrastructure.Finance;
 internal sealed record CustomerInvoiceAccountingLinePlan(
     int Sequence, string Description, string TaxRuleKey, string TaxMethod, decimal TaxRate,
     decimal NetAmount, decimal TaxAmount, decimal GrossAmount, decimal NetBaseAmount, decimal TaxBaseAmount,
-    Guid? TaxPayableAccountId);
+    Guid? TaxPayableAccountId, string TaxTreatment = AccountingTaxTreatmentValues.Legacy,
+    string TaxRuleVersion = "1", IReadOnlyList<string>? VatBoxMappings = null,
+    string EvidenceClassification = "none", decimal InputAmount = 0m,
+    string LineClassification = "unknown", string CounterpartyJurisdiction = "unknown",
+    string CounterpartyVatStatus = "unknown", IReadOnlyList<AccountingTaxEvidenceInput>? SuppliedEvidence = null,
+    string? LiabilityAccountRoleKey = null, string? RecoverableAccountRoleKey = null,
+    string Recoverability = AccountingTaxRecoverabilityValues.Legacy);
 
 internal sealed record CustomerInvoiceAccountingPlan(
     FinanceInvoice Invoice,
@@ -47,11 +53,23 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IAccountingTaxDecisionPolicy _taxPolicy;
+    private readonly AccountingOperationsTelemetry? _telemetry;
+
+    public CustomerInvoiceAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver,
+        IAccountingTaxDecisionPolicy taxPolicy, AccountingOperationsTelemetry telemetry)
+    {
+        _dbContext = dbContext;
+        _packResolver = packResolver;
+        _taxPolicy = taxPolicy;
+        _telemetry = telemetry;
+    }
 
     public CustomerInvoiceAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver)
     {
         _dbContext = dbContext;
         _packResolver = packResolver;
+        _taxPolicy = new AccountingTaxDecisionPolicy();
     }
 
     public async Task<CustomerInvoiceAccountingPreviewDto> PreviewAsync(
@@ -106,6 +124,13 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
         var period = input.FiscalPeriodId == Guid.Empty ? null : await _dbContext.FiscalPeriods.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == input.FiscalPeriodId, cancellationToken);
         var issueDate = DateOnly.FromDateTime(invoice.IssuedUtc);
+        var statutoryProfile = pack?.Definition.CountryOrRegion == "SE"
+            ? await _dbContext.CompanyStatutoryProfiles.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId, cancellationToken)
+            : null;
+        var vatRegistrationStatus = IsVatRegistered(statitoryProfile: statutoryProfile, issueDate)
+            ? StatutoryVatRegistrationStatusValues.Registered
+            : statutoryProfile?.VatRegistrationStatus ?? "unknown";
         if (period is null || period.IsClosed || period.IsReportingLocked || issueDate < DateOnly.FromDateTime(period.StartUtc) || issueDate >= DateOnly.FromDateTime(period.EndUtc))
             Add(issues, CustomerInvoiceAccountingReasonCodes.PeriodUnavailable, "The invoice date must fall in an open accounting period.");
         var seriesCode = string.IsNullOrWhiteSpace(input.VoucherSeriesCode) ? "G" : input.VoucherSeriesCode.Trim().ToUpperInvariant();
@@ -131,6 +156,15 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
         if (pack is not null && !pack.Definition.InvoicePolicy.SupportedDocumentTypes.Contains(
                 isCredit ? "credit_note" : "invoice", StringComparer.OrdinalIgnoreCase))
             Add(issues, CustomerInvoiceAccountingReasonCodes.RequiredFieldMissing, "The selected accounting policy does not support this document type.");
+        if (pack?.Definition.SupportedCapabilities.Contains("native_statutory_invoice_issuance", StringComparer.OrdinalIgnoreCase) == true)
+        {
+            var issued = await _dbContext.IssuedStatutoryDocuments.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                x.CompanyId == query.CompanyId && x.SourceRecordId == invoice.Id &&
+                x.DocumentType == (isCredit ? StatutoryDocumentTypes.CustomerCredit : StatutoryDocumentTypes.CustomerInvoice), cancellationToken);
+            if (!issued)
+                Add(issues, CustomerInvoiceAccountingReasonCodes.RequiredFieldMissing,
+                    "Register or issue the immutable statutory customer document before posting it.");
+        }
 
         var calculated = new List<CustomerInvoiceAccountingLinePlan>();
         if (input.Lines is null || input.Lines.Count == 0)
@@ -147,42 +181,40 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
                     continue;
                 }
 
-                var rule = pack?.Definition.TaxRules.FirstOrDefault(x =>
-                    string.Equals(x.Key, line.TaxRuleKey?.Trim(), StringComparison.OrdinalIgnoreCase) && x.EffectiveFrom <= issueDate);
-                if (rule is null)
+                if (pack is null)
                 {
                     Add(issues, CustomerInvoiceAccountingReasonCodes.TaxRuleUnsupported, $"Invoice line {sequence} uses an unavailable tax rule.");
                     continue;
                 }
-
-                string method;
-                try { method = CustomerInvoiceTaxMethodValues.Normalize(rule.AmountMethod); }
-                catch (ArgumentException)
+                var decision = _taxPolicy.Decide(pack, new(
+                    line.TaxRuleKey, issueDate, AccountingTaxDirectionValues.Sales,
+                    isCredit ? "customer_credit_note" : "customer_invoice", line.LineClassification ?? "unknown", line.Amount,
+                    configuration?.RoundingPrecision ?? 2, configuration?.RoundingMode ?? AccountingRoundingModeValues.MidpointToEven,
+                    vatRegistrationStatus, CounterpartyJurisdiction: line.CounterpartyJurisdiction ?? "unknown",
+                    CounterpartyVatStatus: line.CounterpartyVatStatus ?? "unknown",
+                    CompanyCountryCode: statutoryProfile?.CountryCode ?? "unknown",
+                    AccountingCurrency: statutoryProfile?.AccountingCurrency ?? configuration?.BaseCurrency ?? "unknown",
+                    BookkeepingMethod: statutoryProfile?.BookkeepingMethod ?? "unknown",
+                    DocumentCurrency: invoice.Currency,
+                    Evidence: line.TaxEvidence));
+                if (!decision.IsAllowed)
                 {
-                    Add(issues, CustomerInvoiceAccountingReasonCodes.TaxTreatmentUnsupported, $"Tax rule {rule.DisplayName} has an unsupported amount method.");
+                    _telemetry?.TaxDecisionBlocked(query.CompanyId, AccountingTaxDirectionValues.Sales,
+                        decision.ReasonCode, pack.Definition.PackKey, pack.Definition.Version);
+                    issues.Add(new(CustomerInvoiceAccountingReasonCodes.TaxRuleUnsupported,
+                        $"Invoice line {sequence}: {decision.Explanation}", PolicyReasonCode: decision.ReasonCode));
                     continue;
                 }
-                var rate = method == CustomerInvoiceTaxMethodValues.Exempt ? 0m : rule.Rate.GetValueOrDefault();
-                if (rate < 0m || rate > 1m || method != CustomerInvoiceTaxMethodValues.Exempt && rule.Rate is null)
-                {
-                    Add(issues, CustomerInvoiceAccountingReasonCodes.TaxTreatmentUnsupported, $"Tax rule {rule.DisplayName} does not define a supported rate.");
-                    continue;
-                }
-                if (rate > 0m && string.IsNullOrWhiteSpace(rule.LiabilityAccountRoleKey))
-                    Add(issues, CustomerInvoiceAccountingReasonCodes.AccountRoleMissing, $"Tax rule {rule.DisplayName} does not identify a payable-tax account role.");
-                var taxAccount = rate > 0m ? FindRole(configuration, rule.LiabilityAccountRoleKey!, issues) : null;
-
-                var amount = Round(line.Amount, configuration);
-                var net = method == CustomerInvoiceTaxMethodValues.Inclusive ? Round(amount / (1m + rate), configuration) : amount;
-                var tax = method switch
-                {
-                    CustomerInvoiceTaxMethodValues.Exclusive => Round(net * rate, configuration),
-                    CustomerInvoiceTaxMethodValues.Inclusive => Round(amount - net, configuration),
-                    _ => 0m
-                };
-                var gross = method == CustomerInvoiceTaxMethodValues.Exclusive ? Round(net + tax, configuration) : amount;
-                calculated.Add(new(sequence, line.Description.Trim(), rule.Key, method, rate, net, tax, gross,
-                    Round(net * exchangeRate, configuration), Round(tax * exchangeRate, configuration), taxAccount?.Id));
+                if (decision.TaxAmount > 0m && string.IsNullOrWhiteSpace(decision.LiabilityAccountRoleKey))
+                    Add(issues, CustomerInvoiceAccountingReasonCodes.AccountRoleMissing, "The selected tax rule does not identify a payable-tax account role.");
+                var taxAccount = decision.TaxAmount > 0m ? FindRole(configuration, decision.LiabilityAccountRoleKey!, issues) : null;
+                calculated.Add(new(sequence, line.Description.Trim(), decision.RuleKey!, decision.AmountMethod!, decision.Rate!.Value,
+                    decision.TaxableBasis, decision.TaxAmount, decision.GrossAmount,
+                    Round(decision.TaxableBasis * exchangeRate, configuration), Round(decision.TaxAmount * exchangeRate, configuration), taxAccount?.Id,
+                    decision.Treatment!, decision.RuleVersion!, decision.VatBoxMappings, decision.EvidenceClassification,
+                    line.Amount, line.LineClassification ?? "unknown", line.CounterpartyJurisdiction ?? "unknown",
+                    line.CounterpartyVatStatus ?? "unknown", decision.SuppliedEvidence,
+                    decision.LiabilityAccountRoleKey, decision.RecoverableAccountRoleKey, decision.Recoverability));
             }
         }
 
@@ -207,14 +239,15 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
             {
                 var baseNet = line.NetBaseAmount + (line.Sequence == calculated.Last().Sequence ? rounding : 0m);
                 journalLines.Add(new(revenue.Id, "revenue", revenue.Code, revenue.Name,
-                    isCredit ? baseNet : 0m, isCredit ? 0m : baseNet, baseCurrency, line.Description, line.TaxRuleKey));
+                    isCredit ? baseNet : 0m, isCredit ? 0m : baseNet, baseCurrency, line.Description, line.TaxRuleKey,
+                    line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification));
                 if (line.TaxBaseAmount > 0m && pack is not null)
                 {
-                    var rule = pack.Definition.TaxRules.Single(x => string.Equals(x.Key, line.TaxRuleKey, StringComparison.OrdinalIgnoreCase));
                     var taxAccount = configuration?.AccountRoles.FirstOrDefault(x => x.FinanceAccountId == line.TaxPayableAccountId)?.FinanceAccount;
                     if (taxAccount is not null)
-                        journalLines.Add(new(taxAccount.Id, rule.LiabilityAccountRoleKey!, taxAccount.Code, taxAccount.Name,
-                            isCredit ? line.TaxBaseAmount : 0m, isCredit ? 0m : line.TaxBaseAmount, baseCurrency, rule.DisplayName, line.TaxRuleKey));
+                        journalLines.Add(new(taxAccount.Id, line.LiabilityAccountRoleKey ?? "tax_payable", taxAccount.Code, taxAccount.Name,
+                            isCredit ? line.TaxBaseAmount : 0m, isCredit ? 0m : line.TaxBaseAmount, baseCurrency, "Tax", line.TaxRuleKey,
+                            line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification));
                 }
             }
         }
@@ -267,6 +300,10 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
             configuration?.RoundingMode == AccountingRoundingModeValues.AwayFromZero ? MidpointRounding.AwayFromZero : MidpointRounding.ToEven);
 
     private static bool IsApproved(string status) => status.Trim().ToLowerInvariant() is "approved" or "paid";
+    private static bool IsVatRegistered(CompanyStatutoryProfile? statitoryProfile, DateOnly accountingDate) =>
+        statitoryProfile is { IsUserAttested: true, VatRegistrationStatus: StatutoryVatRegistrationStatusValues.Registered } &&
+        statitoryProfile.VatRegistrationEffectiveFrom <= accountingDate &&
+        (!statitoryProfile.VatRegistrationEffectiveTo.HasValue || accountingDate <= statitoryProfile.VatRegistrationEffectiveTo.Value);
     private static void Add(ICollection<CustomerInvoiceAccountingIssueDto> issues, string code, string message) => issues.Add(new(code, message));
     private static CustomerInvoiceAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
 
@@ -278,7 +315,9 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
             invoice.Id, invoice.InvoiceNumber, invoice.IssuedUtc, invoice.Amount, invoice.Currency, invoice.DocumentKind,
             PeriodId = periodId, Series = seriesCode, ExchangeRate = exchangeRate,
             PackKey = packKey, PackVersion = packVersion, OriginalInvoiceId = originalInvoiceId,
-            Lines = lines.Select(x => new { x.Sequence, x.Description, x.TaxRuleKey, x.TaxMethod, x.TaxRate, x.NetAmount, x.TaxAmount, x.GrossAmount })
+            Lines = lines.Select(x => new { x.Sequence, x.Description, x.TaxRuleKey, x.TaxRuleVersion, x.TaxMethod,
+                x.TaxTreatment, x.TaxRate, x.InputAmount, x.NetAmount, x.TaxAmount, x.GrossAmount, x.VatBoxMappings,
+                x.LineClassification, x.CounterpartyJurisdiction, x.CounterpartyVatStatus, x.SuppliedEvidence })
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
     }

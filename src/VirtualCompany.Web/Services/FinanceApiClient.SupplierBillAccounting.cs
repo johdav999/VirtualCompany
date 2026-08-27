@@ -207,6 +207,10 @@ public sealed class SupplierBillAccountingLineApiRequest
     public decimal Amount { get; set; }
     public Guid CostAccountId { get; set; }
     public string TaxRuleKey { get; set; } = string.Empty;
+    public string? LineClassification { get; set; }
+    public string? CounterpartyJurisdiction { get; set; }
+    public string? CounterpartyVatStatus { get; set; }
+    public List<AccountingTaxEvidenceApiRequest> TaxEvidence { get; set; } = [];
 }
 
 public sealed class PostSupplierBillAccountingApiRequest

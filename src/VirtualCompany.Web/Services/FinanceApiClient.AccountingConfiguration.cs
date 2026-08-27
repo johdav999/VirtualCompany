@@ -2,6 +2,37 @@ namespace VirtualCompany.Web.Services;
 
 public sealed partial class FinanceApiClient
 {
+    public Task<CompanyStatutoryProfileStatusResponse?> GetCompanyStatutoryProfileAsync(
+        Guid companyId,
+        CancellationToken cancellationToken = default) =>
+        GetAsync<CompanyStatutoryProfileStatusResponse>(
+            companyId,
+            $"internal/companies/{companyId}/finance/accounting/statutory-profile",
+            allowNotFound: false,
+            cancellationToken);
+
+    public Task<CompanyStatutoryProfileStatusResponse> CreateCompanyStatutoryProfileAsync(
+        Guid companyId,
+        SaveCompanyStatutoryProfileApiRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<SaveCompanyStatutoryProfileApiRequest, CompanyStatutoryProfileStatusResponse>(
+            companyId, HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/accounting/statutory-profile", request, cancellationToken);
+    }
+
+    public Task<CompanyStatutoryProfileStatusResponse> UpdateCompanyStatutoryProfileAsync(
+        Guid companyId,
+        SaveCompanyStatutoryProfileApiRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<SaveCompanyStatutoryProfileApiRequest, CompanyStatutoryProfileStatusResponse>(
+            companyId, HttpMethod.Put,
+            $"internal/companies/{companyId}/finance/accounting/statutory-profile", request, cancellationToken);
+    }
+
     public Task<AccountingSetupStatusResponse?> GetAccountingSetupStatusAsync(
         Guid companyId,
         CancellationToken cancellationToken = default) =>
@@ -115,6 +146,92 @@ public sealed class AccountingSetupStatusResponse
     public AccountingConfigurationResponse? Configuration { get; set; }
     public List<AccountingConfigurationIssueResponse> Issues { get; set; } = [];
     public List<AccountingConfigurationIssueResponse> Warnings { get; set; } = [];
+    public CompanyStatutoryProfileStatusResponse? StatutoryProfile { get; set; }
+    public string PolicyPackValidationState { get; set; } = string.Empty;
+    public List<string> MissingLegalFacts { get; set; } = [];
+    public List<string> NextActions { get; set; } = [];
+}
+
+public sealed class SaveCompanyStatutoryProfileApiRequest
+{
+    public long? ExpectedVersion { get; set; }
+    public string? LegalName { get; set; }
+    public string? SwedishOrganisationNumber { get; set; }
+    public string? VatRegistrationNumber { get; set; }
+    public string VatRegistrationStatus { get; set; } = "not_registered";
+    public StatutoryAddressResponse RegisteredAddress { get; set; } = new();
+    public StatutoryAddressResponse? CorrespondenceAddress { get; set; }
+    public string CountryCode { get; set; } = "SE";
+    public string AccountingCurrency { get; set; } = "SEK";
+    public string FiscalYearBasis { get; set; } = "calendar_year";
+    public string BookkeepingMethod { get; set; } = "not_specified";
+    public DateOnly? OrganisationRegistrationEffectiveFrom { get; set; }
+    public DateOnly? VatRegistrationEffectiveFrom { get; set; }
+    public DateOnly? VatRegistrationEffectiveTo { get; set; }
+    public bool IsUserAttested { get; set; }
+    public string VerificationStatus { get; set; } = "unverified";
+    public string SourceKind { get; set; } = "user_entry";
+    public string? SourceReference { get; set; }
+    public DateTime? SourceCapturedUtc { get; set; }
+    public string? ExternalVerifier { get; set; }
+    public DateTime? ExternallyVerifiedUtc { get; set; }
+}
+
+public sealed class StatutoryAddressResponse
+{
+    public string? AddressLine1 { get; set; }
+    public string? AddressLine2 { get; set; }
+    public string? PostalCode { get; set; }
+    public string? City { get; set; }
+    public string? CountryCode { get; set; }
+}
+
+public sealed class CompanyStatutoryProfileStatusResponse
+{
+    public Guid CompanyId { get; set; }
+    public bool Exists { get; set; }
+    public bool IsFormatComplete { get; set; }
+    public bool IsUserAttested { get; set; }
+    public bool IsExternallyVerified { get; set; }
+    public bool IsCompleteForSelectedPolicyPack { get; set; }
+    public string VerificationExplanation { get; set; } = string.Empty;
+    public List<string> MissingFacts { get; set; } = [];
+    public List<string> NextActions { get; set; } = [];
+    public CompanyStatutoryProfileResponse? Profile { get; set; }
+}
+
+public sealed class CompanyStatutoryProfileResponse
+{
+    public Guid Id { get; set; }
+    public Guid CompanyId { get; set; }
+    public string? LegalName { get; set; }
+    public string? SwedishOrganisationNumber { get; set; }
+    public string? VatRegistrationNumber { get; set; }
+    public string VatRegistrationStatus { get; set; } = string.Empty;
+    public StatutoryAddressResponse RegisteredAddress { get; set; } = new();
+    public StatutoryAddressResponse CorrespondenceAddress { get; set; } = new();
+    public string CountryCode { get; set; } = string.Empty;
+    public string AccountingCurrency { get; set; } = string.Empty;
+    public string FiscalYearBasis { get; set; } = string.Empty;
+    public string BookkeepingMethod { get; set; } = string.Empty;
+    public DateOnly? OrganisationRegistrationEffectiveFrom { get; set; }
+    public DateOnly? VatRegistrationEffectiveFrom { get; set; }
+    public DateOnly? VatRegistrationEffectiveTo { get; set; }
+    public bool IsFormatComplete { get; set; }
+    public bool IsUserAttested { get; set; }
+    public Guid? AttestedByUserId { get; set; }
+    public DateTime? AttestedUtc { get; set; }
+    public string VerificationStatus { get; set; } = string.Empty;
+    public string SourceKind { get; set; } = string.Empty;
+    public string? SourceReference { get; set; }
+    public DateTime SourceCapturedUtc { get; set; }
+    public string? ExternalVerifier { get; set; }
+    public DateTime? ExternallyVerifiedUtc { get; set; }
+    public long Version { get; set; }
+    public Guid CreatedByUserId { get; set; }
+    public Guid UpdatedByUserId { get; set; }
+    public DateTime CreatedUtc { get; set; }
+    public DateTime UpdatedUtc { get; set; }
 }
 
 public sealed class AccountingConfigurationResponse

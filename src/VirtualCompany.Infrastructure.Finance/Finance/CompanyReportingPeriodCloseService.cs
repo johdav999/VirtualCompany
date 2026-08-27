@@ -22,19 +22,25 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
     private readonly ICurrentUserAccessor _currentUserAccessor;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly IAccountingReportingService _accountingReportingService;
+    private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IVatReturnService _vatReturnService;
 
     public CompanyReportingPeriodCloseService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver membershipContextResolver,
         ICurrentUserAccessor currentUserAccessor,
         IAuditEventWriter auditEventWriter,
-        IAccountingReportingService accountingReportingService)
+        IAccountingReportingService accountingReportingService,
+        IAccountingPolicyPackResolver packResolver,
+        IVatReturnService vatReturnService)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
         _currentUserAccessor = currentUserAccessor;
         _auditEventWriter = auditEventWriter;
         _accountingReportingService = accountingReportingService;
+        _packResolver = packResolver;
+        _vatReturnService = vatReturnService;
     }
 
     public async Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(
@@ -997,18 +1003,76 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 "Open the account drill-down and correct unauthorized manual or unmatched source postings."));
         }
 
-        var tax = await _accountingReportingService.GetTaxSummaryAsync(
-            new GetAccountingTaxSummaryQuery(companyId, fiscalPeriodId), cancellationToken);
-        if (tax.Lines.Count > 0 && !tax.IsReviewed)
+        var configuration = await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
+        var hasVatReturnPolicy = configuration is not null &&
+            _packResolver.TryResolve(configuration.PolicyPackKey, configuration.PolicyPackVersion, out var configuredPack) &&
+            configuredPack!.Definition.SupportedCapabilities.Contains(
+                AccountingPolicyCapabilityKeys.CountrySpecificReporting, StringComparer.OrdinalIgnoreCase);
+        if (hasVatReturnPolicy)
         {
-            issues.Add(new ReportingPeriodBlockingIssueDto(
-                ReportingPeriodBlockingIssueCodes.TaxReviewIncomplete,
-                "The configured tax summary has not been reviewed for this ledger version.",
-                1, [tax.Checksum], tax.Lines.Sum(x => Math.Abs(x.TaxAmount)),
-                ResolveCurrency(tax.Lines.Select(x => x.Currency)),
-                [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=tax"],
-                "Review the tax summary and confirm it before closing the period.",
-                new Dictionary<string, string> { ["taxSummaryChecksum"] = tax.Checksum }));
+            var filingPeriods = await _dbContext.VatFilingPeriods.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == companyId && x.FiscalPeriodId == fiscalPeriodId)
+                .OrderBy(x => x.StartDate).ToListAsync(cancellationToken);
+            if (filingPeriods.Count == 0)
+            {
+                issues.Add(new ReportingPeriodBlockingIssueDto(
+                    ReportingPeriodBlockingIssueCodes.VatReturnMissing,
+                    "No VAT filing period is configured for this Swedish fiscal period.", 1,
+                    [fiscalPeriodId.ToString("D")], RecordLinks: [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=vat"],
+                    Remediation: "Configure the applicable non-overlapping VAT filing period and calculate its return."));
+            }
+            foreach (var filing in filingPeriods)
+            {
+                var latestId = await _dbContext.VatReturns.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.CompanyId == companyId && x.FilingPeriodId == filing.Id)
+                    .OrderByDescending(x => x.Version).Select(x => (Guid?)x.Id).FirstOrDefaultAsync(cancellationToken);
+                if (!latestId.HasValue)
+                {
+                    issues.Add(new ReportingPeriodBlockingIssueDto(
+                        ReportingPeriodBlockingIssueCodes.VatReturnMissing,
+                        $"VAT filing period {filing.PeriodCode} has no calculated return.", 1,
+                        [filing.Id.ToString("D")], RecordLinks: [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=vat"],
+                        Remediation: "Calculate the VAT return from posted tax facts."));
+                    continue;
+                }
+                var vat = await _vatReturnService.GetAsync(new GetVatReturnQuery(companyId, latestId.Value), cancellationToken);
+                if (vat.IsStale)
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.VatReturnStale,
+                        $"VAT return {filing.PeriodCode} is stale because posted source evidence changed.", 1,
+                        [vat.Id.ToString("D")], vat.SettlementExact, vat.Currency,
+                        [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=vat&vatReturnId={vat.Id:D}"],
+                        "Recalculate the return and complete a new approval before closing."));
+                else if (vat.Issues.Any(x => x.IsBlocking))
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.VatReturnBlocking,
+                        $"VAT return {filing.PeriodCode} has blocking validation or reconciliation issues.",
+                        vat.Issues.Count(x => x.IsBlocking), vat.Issues.Where(x => x.IsBlocking).Select(x => x.Code).Take(5).ToArray(),
+                        vat.SettlementExact, vat.Currency,
+                        [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=vat&vatReturnId={vat.Id:D}"],
+                        "Resolve every source and control-account issue, then recalculate the return."));
+                else if (vat.Status != VatReturnStatusValues.Locked)
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.VatReturnUnreviewed,
+                        $"VAT return {filing.PeriodCode} has not been approved and finalized for its current evidence.",
+                        1, [vat.Id.ToString("D")], vat.SettlementExact, vat.Currency,
+                        [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=vat&vatReturnId={vat.Id:D}"],
+                        "Complete separate finance approval and finalize the human-filing package."));
+            }
+        }
+        else
+        {
+            var tax = await _accountingReportingService.GetTaxSummaryAsync(
+                new GetAccountingTaxSummaryQuery(companyId, fiscalPeriodId), cancellationToken);
+            if (tax.Lines.Count > 0 && !tax.IsReviewed)
+            {
+                issues.Add(new ReportingPeriodBlockingIssueDto(
+                    ReportingPeriodBlockingIssueCodes.TaxReviewIncomplete,
+                    "The configured tax summary has not been reviewed for this ledger version.",
+                    1, [tax.Checksum], tax.Lines.Sum(x => Math.Abs(x.TaxAmount)),
+                    ResolveCurrency(tax.Lines.Select(x => x.Currency)),
+                    [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=tax"],
+                    "Review the tax summary and confirm it before closing the period.",
+                    new Dictionary<string, string> { ["taxSummaryChecksum"] = tax.Checksum }));
+            }
         }
 
         var failedRegenerations = await _dbContext.BackgroundExecutions.IgnoreQueryFilters().AsNoTracking()

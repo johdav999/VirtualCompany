@@ -1,0 +1,204 @@
+@inject FinanceApiClient FinanceApiClient
+
+@if (IsNativeCandidate)
+{
+    <section class="invoice-lifecycle" aria-labelledby="native-invoice-lifecycle-title">
+        <div class="invoice-lifecycle__header">
+            <div><h3 id="native-invoice-lifecycle-title">@FinanceText["IssuedInvoiceLifecycle"]</h3><p>@FinanceText["IssuedInvoiceLifecycleHelp"]</p></div>
+            <span class="lifecycle-badge lifecycle-badge--success">@FinanceText["ImmutableIssuedInvoice"]</span>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(Message)) { <div class="alert alert-success" role="status">@Message</div> }
+        @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert">@ActionError</div> }
+
+        <div class="invoice-lifecycle__facts">
+            <div><span>@FinanceText["Approval"]</span><strong>@ApprovalLabel</strong></div>
+            <div><span>@FinanceText["Journal"]</span>@if (Invoice.Accounting?.LedgerEntryId is Guid){<a href="@JournalHref">@FinanceText["OpenPostedJournal"]</a>}else{<strong>@FinanceText["JournalUnavailable"]</strong>}</div>
+            <div><span>@FinanceText["Pdf"]</span><strong>@(Artifact is null ? FinanceText["NotRequested"] : FriendlyStatus(Artifact.Status))</strong></div>
+            <div><span>@FinanceText["Delivery"]</span><strong>@DeliveryLabel</strong></div>
+        </div>
+
+        <div class="invoice-lifecycle__columns">
+            <article>
+                <div class="invoice-lifecycle__section-heading"><div><h4>@FinanceText["InvoicePdf"]</h4><p>@FinanceText["InvoicePdfHelp"]</p></div></div>
+                @if (Artifact is null)
+                {
+                    <button class="btn btn-outline-primary btn-sm" @onclick="RequestRenderAsync" disabled="@(!CanManage || IsBusy)">@FinanceText["GeneratePdf"]</button>
+                }
+                else
+                {
+                    <div class="lifecycle-state"><span class="lifecycle-badge @StateTone(Artifact.Status)">@FriendlyStatus(Artifact.Status)</span><span>@Artifact.FileName</span></div>
+                    @if (Artifact.Status == "rendered") { <a class="btn btn-outline-primary btn-sm" href="@ArtifactDownloadHref">@FinanceText["OpenPdf"]</a> }
+                    else { <button class="btn btn-outline-secondary btn-sm" @onclick="RefreshArtifactAsync" disabled="@IsBusy">@CommonText["Refresh"]</button> }
+                }
+            </article>
+
+            <article>
+                <div class="invoice-lifecycle__section-heading"><div><h4>@FinanceText["DeliveryChannels"]</h4><p>@FinanceText["DeliveryChannelsHelp"]</p></div></div>
+                @if (ElectronicCapability is { Enabled: false })
+                {
+                    <div class="channel-unavailable"><strong>@FinanceText["ElectronicInvoiceUnavailable"]</strong><span>@ElectronicCapability.SafeMessage</span><small>@FinanceText["EmailPdfFallbackAvailable"]</small></div>
+                }
+                else if (ElectronicCapability is { Enabled: true })
+                {
+                    <div class="channel-available"><strong>@FinanceText["ElectronicInvoiceAvailable"]</strong><span>@FinanceText["ProviderAcknowledgementWillBeTracked"]</span></div>
+                }
+                @if (Artifact?.Status == "rendered" && PreferredDelivery is null)
+                {
+                    <label class="delivery-recipient"><span>@FinanceText["RecipientEmailOptional"]</span><input class="form-control" type="email" @bind="RecipientEmail" /></label>
+                    <button class="btn btn-primary btn-sm" @onclick="QueuePreferredDeliveryAsync" disabled="@(!CanManage || IsBusy)">@FinanceText["QueuePreferredDelivery"]</button>
+                }
+                @if (PreferredDelivery is not null)
+                {
+                    <div class="lifecycle-state"><span class="lifecycle-badge @StateTone(PreferredDelivery.Status)">@FriendlyStatus(PreferredDelivery.Status)</span><span>@DeliveryChannelLabel</span></div>
+                }
+                @if (EmailDelivery is not null)
+                {
+                    <div class="delivery-attempt"><strong>@FinanceText["EmailDelivery"]</strong><span>@FriendlyStatus(EmailDelivery.Status)</span><small>@DeliveryAttemptExplanation</small>@if (CanResend){<button class="btn btn-outline-secondary btn-sm" @onclick="ResendAsync" disabled="@IsBusy">@FinanceText["RetryEmail"]</button>}</div>
+                }
+            </article>
+        </div>
+
+        <article class="invoice-corrections">
+            <div class="invoice-lifecycle__section-heading"><div><h4>@FinanceText["CreditsRefundsWriteOffs"]</h4><p>@FinanceText["CreditsRefundsWriteOffsHelp"]</p></div></div>
+            @if (Corrections.Count > 0)
+            {
+                <div class="correction-list">@foreach (var correction in Corrections){<div><span class="lifecycle-badge @StateTone(correction.Status)">@FriendlyStatus(correction.Status)</span><strong>@FriendlyCorrection(correction.CorrectionType)</strong><span>@Money(correction.Amount, correction.Currency)</span>@if (correction.ApprovalRequestId is Guid approvalId){<a href="@BuildApprovalHref(approvalId)">@FinanceText["OpenApproval"]</a>}@if (!string.IsNullOrWhiteSpace(correction.FailureSummary)){<small>@correction.FailureSummary</small>}</div>}</div>
+            }
+            <div class="correction-actions">
+                <label><span>@FinanceText["CorrectionAction"]</span><select class="form-select" @bind="CorrectionType"><option value="refund">@FinanceText["Refund"]</option><option value="write_off">@FinanceText["WriteOff"]</option></select></label>
+                <label><span>@FinanceText["Amount"]</span><input class="form-control" type="number" min="0.01" step="0.01" @bind="CorrectionAmount" /></label>
+                <label><span>@FinanceText["Reason"]</span><input class="form-control" @bind="CorrectionReason" /></label>
+                <label><span>@FinanceText["EvidenceReference"]</span><input class="form-control" @bind="CorrectionEvidence" /></label>
+                @if (CorrectionType == "refund") { <label><span>@FinanceText["BeneficiaryReference"]</span><input class="form-control" @bind="BeneficiaryReference" /></label><label><span>@FinanceText["PaymentEvidence"]</span><input class="form-control" @bind="PaymentEvidenceReference" /></label> }
+                <button class="btn btn-outline-primary btn-sm" @onclick="CheckCorrectionAsync" disabled="@(!CanManage || IsBusy)">@FinanceText["CheckAvailability"]</button>
+            </div>
+            @if (CorrectionPolicy is not null)
+            {
+                <div class="correction-decision @(CorrectionPolicy.IsAllowed ? "is-allowed" : "is-blocked")"><strong>@(CorrectionPolicy.IsAllowed ? FinanceText["ActionAvailable"] : FinanceText["ActionUnavailable"])</strong><span>@CorrectionPolicy.Explanation</span><small>@FinanceText["MaximumAvailable", Money(CorrectionPolicy.MaximumAllowedAmount, CorrectionPolicy.Currency)]</small>@if (CorrectionPolicy.IsAllowed && !ConfirmCorrection){<button class="btn btn-outline-danger btn-sm" @onclick="() => ConfirmCorrection = true">@FinanceText["ContinueToConfirmation"]</button>}else if (CorrectionPolicy.IsAllowed){<div><strong>@FinanceText["CorrectionConfirmation"]</strong><button class="btn btn-danger btn-sm" @onclick="ProposeCorrectionAsync" disabled="@IsBusy">@CommonText["Confirm"]</button><button class="btn btn-outline-secondary btn-sm" @onclick="() => ConfirmCorrection = false">@CommonText["Cancel"]</button></div>}</div>
+            }
+            <p class="credit-guidance">@FinanceText["CreditNoteGuidance"]</p>
+        </article>
+
+        <article class="invoice-timeline"><h4>@FinanceText["Timeline"]</h4>@foreach (var item in Timeline){<div><span aria-hidden="true"></span><p><strong>@item.Title</strong><small>@item.Detail</small><time>@item.AtUtc.ToLocalTime().ToString("g")</time></p></div>}</article>
+    </section>
+}
+
+@code {
+    [Parameter, EditorRequired] public Guid CompanyId { get; set; }
+    [Parameter, EditorRequired] public FinanceInvoiceDetailResponse Invoice { get; set; } = default!;
+    [Parameter] public string? MembershipRole { get; set; }
+
+    private CustomerInvoiceArtifactResponse? Artifact { get; set; }
+    private CustomerInvoicePreferredDeliveryResponse? PreferredDelivery { get; set; }
+    private CustomerInvoiceEmailDeliveryResponse? EmailDelivery { get; set; }
+    private CustomerInvoiceElectronicProviderCapabilityResponse? ElectronicCapability { get; set; }
+    private IReadOnlyList<CustomerInvoiceCorrectionResponse> Corrections { get; set; } = [];
+    private CustomerInvoiceCorrectionPolicyResponse? CorrectionPolicy { get; set; }
+    private string? RecipientEmail { get; set; }
+    private string CorrectionType { get; set; } = "refund";
+    private decimal CorrectionAmount { get; set; }
+    private string CorrectionReason { get; set; } = string.Empty;
+    private string CorrectionEvidence { get; set; } = string.Empty;
+    private string BeneficiaryReference { get; set; } = string.Empty;
+    private string PaymentEvidenceReference { get; set; } = string.Empty;
+    private bool ConfirmCorrection { get; set; }
+    private bool IsBusy { get; set; }
+    private string? Message { get; set; }
+    private string? ActionError { get; set; }
+    private Guid? _loadedInvoice;
+    private string? _renderKey;
+    private string? _deliveryKey;
+    private string? _correctionKey;
+
+    private bool IsNativeCandidate => string.Equals(Invoice.Source, "manual", StringComparison.OrdinalIgnoreCase) && Invoice.Accounting?.LedgerEntryId is not null;
+    private bool CanManage => VirtualCompany.Shared.FinanceAccess.CanEdit(MembershipRole);
+    private bool CanResend => EmailDelivery?.Status is "failed" or "permanent_failure";
+    private string ApprovalLabel => Invoice.Accounting?.Approval is { } approval ? FriendlyStatus(approval.Status) : FinanceText["ApprovedAtIssue"];
+    private string DeliveryLabel => EmailDelivery is not null ? FriendlyStatus(EmailDelivery.Status) : PreferredDelivery is not null ? FriendlyStatus(PreferredDelivery.Status) : FinanceText["NotQueued"];
+    private string DeliveryChannelLabel => PreferredDelivery?.SelectedChannel switch { "email" => FinanceText["EmailWithPdf"], "electronic" or "e_invoice" => FinanceText["ElectronicInvoice"], _ => FinanceText["DeliveryQueued"] };
+    private string DeliveryAttemptExplanation => EmailDelivery?.Status switch { "accepted" => FinanceText["ProviderAcceptedNotRecipientProof"], "reconciliation_required" => FinanceText["DeliveryNeedsCheckingHelp"], "failed" or "permanent_failure" => EmailDelivery.FailureSummary ?? FinanceText["DeliveryFailedHelp"], _ => FinanceText["DeliveryQueuedHelp"] };
+    private string JournalHref => FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal + $"?ledgerEntryId={Invoice.Accounting?.LedgerEntryId:D}", CompanyId);
+    private string ArtifactDownloadHref => $"internal/companies/{CompanyId:D}/finance/accounting/customer-invoices/artifacts/{Artifact!.Id:D}/download";
+    private IReadOnlyList<TimelineItem> Timeline
+    {
+        get
+        {
+            var items = new List<TimelineItem> { new(FinanceText["InvoiceIssued"], FinanceText["InvoiceIssuedTimeline", Invoice.InvoiceNumber], Invoice.IssuedUtc) };
+            if (Artifact is not null) items.Add(new(FinanceText["InvoicePdf"], FriendlyStatus(Artifact.Status), Artifact.UpdatedUtc));
+            if (EmailDelivery is not null) items.Add(new(FinanceText["EmailDelivery"], DeliveryAttemptExplanation, EmailDelivery.UpdatedUtc));
+            items.AddRange(Corrections.Select(x => new TimelineItem(FriendlyCorrection(x.CorrectionType), FriendlyStatus(x.Status), x.UpdatedUtc)));
+            return items.OrderByDescending(x => x.AtUtc).ToArray();
+        }
+    }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (!IsNativeCandidate || _loadedInvoice == Invoice.Id) return;
+        _loadedInvoice = Invoice.Id; CorrectionAmount = Invoice.PaymentContext?.RemainingAmount ?? Invoice.Amount;
+        try
+        {
+            var capabilityTask = FinanceApiClient.GetCustomerInvoiceElectronicProviderAsync(CompanyId);
+            var correctionsTask = FinanceApiClient.GetCustomerInvoiceCorrectionsAsync(CompanyId, Invoice.Id, take: 100);
+            await Task.WhenAll(capabilityTask, correctionsTask);
+            ElectronicCapability = await capabilityTask; Corrections = (await correctionsTask)?.Items ?? [];
+        }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+    }
+
+    private async Task RequestRenderAsync()
+    {
+        if (!CanManage) return; IsBusy = true; ActionError = null; Message = null;
+        try { _renderKey ??= $"invoice-render:{CompanyId:N}:{Invoice.Id:N}"; Artifact = await FinanceApiClient.RequestCustomerInvoiceRenderAsync(CompanyId, Invoice.Id, new()); Message = FinanceText["PdfGenerationQueued"]; }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsBusy = false; }
+    }
+
+    private async Task RefreshArtifactAsync()
+    {
+        if (Artifact is null) return; IsBusy = true; ActionError = null;
+        try { Artifact = await FinanceApiClient.GetCustomerInvoiceArtifactAsync(CompanyId, Artifact.Id); }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsBusy = false; }
+    }
+
+    private async Task QueuePreferredDeliveryAsync()
+    {
+        if (!CanManage || Artifact?.Status != "rendered") return; IsBusy = true; ActionError = null; Message = null;
+        try { _deliveryKey ??= $"invoice-delivery:{CompanyId:N}:{Invoice.Id:N}:{Artifact.Id:N}:{Guid.NewGuid():N}"; PreferredDelivery = await FinanceApiClient.RequestCustomerInvoicePreferredDeliveryAsync(CompanyId, Invoice.Id, new(Artifact.Id, RecipientEmail, true, "Invoice delivery approved from the issued invoice workspace.", _deliveryKey)); EmailDelivery = PreferredDelivery.EmailDelivery; _deliveryKey = null; Message = FinanceText["DeliveryRequestQueued"]; }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsBusy = false; }
+    }
+
+    private async Task ResendAsync()
+    {
+        if (!CanManage || EmailDelivery is null) return; IsBusy = true; ActionError = null;
+        try { EmailDelivery = await FinanceApiClient.ResendCustomerInvoiceEmailAsync(CompanyId, EmailDelivery.Id, new("Retry requested after reviewing the safe delivery failure.", $"invoice-email-resend:{CompanyId:N}:{EmailDelivery.Id:N}:{EmailDelivery.Attempts}:{Guid.NewGuid():N}")); Message = FinanceText["EmailRetryQueued"]; }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsBusy = false; }
+    }
+
+    private async Task CheckCorrectionAsync()
+    {
+        if (!CanManage || CorrectionAmount <= 0) return; IsBusy = true; ActionError = null; ConfirmCorrection = false;
+        try { CorrectionPolicy = await FinanceApiClient.EvaluateCustomerInvoiceCorrectionAsync(CompanyId, Invoice.Id, CorrectionType, CorrectionAmount, Invoice.Currency); }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsBusy = false; }
+    }
+
+    private async Task ProposeCorrectionAsync()
+    {
+        if (!CanManage || CorrectionPolicy?.IsAllowed != true || string.IsNullOrWhiteSpace(CorrectionReason) || string.IsNullOrWhiteSpace(CorrectionEvidence)) { ActionError = FinanceText["CorrectionReasonEvidenceRequired"]; return; }
+        IsBusy = true; ActionError = null;
+        try { _correctionKey ??= $"invoice-correction:{CompanyId:N}:{Invoice.Id:N}:{CorrectionType}:{Guid.NewGuid():N}"; var result = await FinanceApiClient.ProposeCustomerInvoiceCorrectionAsync(CompanyId, Invoice.Id, new(CorrectionType, CorrectionAmount, Invoice.Currency, CorrectionReason.Trim(), CorrectionEvidence.Trim(), _correctionKey, string.IsNullOrWhiteSpace(BeneficiaryReference) ? null : BeneficiaryReference.Trim(), string.IsNullOrWhiteSpace(PaymentEvidenceReference) ? null : PaymentEvidenceReference.Trim())); _correctionKey = null; ConfirmCorrection = false; CorrectionPolicy = null; Message = result.ApprovalRequestId.HasValue ? FinanceText["CorrectionApprovalRequested"] : FinanceText["CorrectionProposed"]; Corrections = (await FinanceApiClient.GetCustomerInvoiceCorrectionsAsync(CompanyId, Invoice.Id, take: 100))?.Items ?? []; }
+        catch (FinanceApiException ex) { ActionError = ex.Message; }
+        finally { IsBusy = false; }
+    }
+
+    private string BuildApprovalHref(Guid approvalId) => $"/approvals?companyId={CompanyId:D}&approvalId={approvalId:D}";
+    private static string FriendlyStatus(string? value) => string.IsNullOrWhiteSpace(value) ? "Not set" : string.Join(' ', value.Split('_', StringSplitOptions.RemoveEmptyEntries)).ToLowerInvariant() is { Length: > 0 } label ? char.ToUpperInvariant(label[0]) + label[1..] : "Not set";
+    private string FriendlyCorrection(string value) => value switch { "refund" => FinanceText["Refund"], "write_off" => FinanceText["WriteOff"], "credit_note" or "credit" => FinanceText["CreditNote"], _ => FriendlyStatus(value) };
+    private static string StateTone(string? status) => status?.ToLowerInvariant() switch { "rendered" or "accepted" or "delivered" or "completed" or "executed" => "lifecycle-badge--success", "failed" or "permanent_failure" or "rejected" => "lifecycle-badge--danger", "reconciliation_required" or "ambiguous" => "lifecycle-badge--warning", _ => "lifecycle-badge--neutral" };
+    private static string Money(decimal amount, string currency) => $"{currency} {amount:N2}";
+    private sealed record TimelineItem(string Title, string Detail, DateTime AtUtc);
+}

@@ -212,7 +212,8 @@ public sealed class SupplierBillAccountingLine : ICompanyOwnedEntity
         Guid costAccountId, string accountClassification, string taxRuleKey, string taxMethod,
         string taxTreatment, decimal taxRate, decimal netAmount, decimal taxAmount,
         decimal recoverableTaxAmount, decimal nonRecoverableTaxAmount, decimal grossAmount,
-        decimal costBaseAmount, decimal recoverableTaxBaseAmount, Guid? recoverableTaxAccountId)
+        decimal costBaseAmount, decimal recoverableTaxBaseAmount, Guid? recoverableTaxAccountId,
+        string taxFactsJson = "{}")
     {
         if (companyId == Guid.Empty || profileId == Guid.Empty || costAccountId == Guid.Empty || sequence < 1)
             throw new ArgumentException("Company, profile, cost account, and sequence are required.");
@@ -235,6 +236,7 @@ public sealed class SupplierBillAccountingLine : ICompanyOwnedEntity
         CostBaseAmount = decimal.Round(costBaseAmount, 6, MidpointRounding.ToEven);
         RecoverableTaxBaseAmount = decimal.Round(recoverableTaxBaseAmount, 6, MidpointRounding.ToEven);
         RecoverableTaxAccountId = recoverableTaxAccountId;
+        TaxFactsJson = Normalize(taxFactsJson, nameof(taxFactsJson), 8000);
     }
 
     public Guid Id { get; private set; }
@@ -256,6 +258,7 @@ public sealed class SupplierBillAccountingLine : ICompanyOwnedEntity
     public decimal CostBaseAmount { get; private set; }
     public decimal RecoverableTaxBaseAmount { get; private set; }
     public Guid? RecoverableTaxAccountId { get; private set; }
+    public string TaxFactsJson { get; private set; } = "{}";
     public SupplierBillAccountingProfile Profile { get; private set; } = null!;
 
     private static string Normalize(string value, string name, int maxLength)

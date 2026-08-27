@@ -93,6 +93,7 @@ internal sealed class SupplierBillAccountingLineConfiguration : IEntityTypeConfi
         builder.Property(x => x.CostBaseAmount).HasColumnName("cost_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.RecoverableTaxBaseAmount).HasColumnName("recoverable_tax_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.RecoverableTaxAccountId).HasColumnName("recoverable_tax_account_id");
+        builder.Property(x => x.TaxFactsJson).HasColumnName("tax_facts_json").HasMaxLength(8000).IsRequired();
         builder.HasIndex(x => new { x.CompanyId, x.ProfileId, x.Sequence }).IsUnique();
         builder.HasOne(x => x.Profile).WithMany(x => x.Lines).HasForeignKey(x => new { x.CompanyId, x.ProfileId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);

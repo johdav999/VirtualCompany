@@ -863,6 +863,10 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.VatReturn => await _dbContext.VatReturns
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
         };
 
@@ -1589,6 +1593,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchCutoverPlan.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration cutover plan",
             var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchActivation.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration activation",
             var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchClosure.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration closure",
+            var value when string.Equals(value, ApprovalTargetEntityType.VatReturn.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "VAT return",
             var value when string.Equals(value, "fortnox_write", StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             _ => entityType
         };

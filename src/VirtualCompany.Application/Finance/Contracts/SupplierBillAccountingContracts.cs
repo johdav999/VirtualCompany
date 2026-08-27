@@ -37,7 +37,11 @@ public sealed record SupplierBillAccountingLineInput(
     string Description,
     decimal Amount,
     Guid CostAccountId,
-    string TaxRuleKey);
+    string TaxRuleKey,
+    string? LineClassification = null,
+    string? CounterpartyJurisdiction = null,
+    string? CounterpartyVatStatus = null,
+    IReadOnlyList<AccountingTaxEvidenceInput>? TaxEvidence = null);
 
 public sealed record SupplierBillAccountingInput(
     Guid FiscalPeriodId,
@@ -45,7 +49,11 @@ public sealed record SupplierBillAccountingInput(
     decimal? ExchangeRate,
     IReadOnlyList<SupplierBillAccountingLineInput> Lines);
 
-public sealed record SupplierBillAccountingIssueDto(string ReasonCode, string Explanation, bool IsBlocking = true);
+public sealed record SupplierBillAccountingIssueDto(
+    string ReasonCode,
+    string Explanation,
+    bool IsBlocking = true,
+    string? PolicyReasonCode = null);
 
 public sealed record SupplierBillDuplicateEvidenceDto(
     Guid MatchedBillId,
@@ -66,7 +74,10 @@ public sealed record SupplierBillAccountingJournalLineDto(
     string Currency,
     string Description,
     string? TaxRuleKey = null,
-    string? TaxTreatment = null);
+    string? TaxTreatment = null,
+    string? TaxRuleVersion = null,
+    IReadOnlyList<string>? VatBoxMappings = null,
+    string? EvidenceClassification = null);
 
 public sealed record SupplierBillAccountingPreviewDto(
     Guid BillId,

@@ -43,7 +43,14 @@ public static class CustomerInvoiceAccountingReasonCodes
     public const string CreditNoteInvalid = "customer_credit_note_invalid";
 }
 
-public sealed record CustomerInvoiceAccountingLineInput(string Description, decimal Amount, string TaxRuleKey);
+public sealed record CustomerInvoiceAccountingLineInput(
+    string Description,
+    decimal Amount,
+    string TaxRuleKey,
+    string? LineClassification = null,
+    string? CounterpartyJurisdiction = null,
+    string? CounterpartyVatStatus = null,
+    IReadOnlyList<AccountingTaxEvidenceInput>? TaxEvidence = null);
 
 public sealed record CustomerInvoiceAccountingInput(
     Guid FiscalPeriodId,
@@ -51,7 +58,11 @@ public sealed record CustomerInvoiceAccountingInput(
     decimal? ExchangeRate,
     IReadOnlyList<CustomerInvoiceAccountingLineInput> Lines);
 
-public sealed record CustomerInvoiceAccountingIssueDto(string ReasonCode, string Explanation, bool IsBlocking = true);
+public sealed record CustomerInvoiceAccountingIssueDto(
+    string ReasonCode,
+    string Explanation,
+    bool IsBlocking = true,
+    string? PolicyReasonCode = null);
 
 public sealed record CustomerInvoiceAccountingJournalLineDto(
     Guid FinanceAccountId,
@@ -62,7 +73,10 @@ public sealed record CustomerInvoiceAccountingJournalLineDto(
     decimal CreditAmount,
     string Currency,
     string Description,
-    string? TaxRuleKey = null);
+    string? TaxRuleKey = null,
+    string? TaxRuleVersion = null,
+    IReadOnlyList<string>? VatBoxMappings = null,
+    string? EvidenceClassification = null);
 
 public sealed record CustomerInvoiceAccountingPreviewDto(
     Guid InvoiceId,

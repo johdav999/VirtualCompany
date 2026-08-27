@@ -13,6 +13,9 @@ public sealed class FinanceApiClientAccountingConfigurationTests
         var transport = new RecordingTransport();
         var client = new FinanceApiClient(transport, useOfflineMode: false);
 
+        await client.GetCompanyStatutoryProfileAsync(companyId);
+        await client.CreateCompanyStatutoryProfileAsync(companyId, new SaveCompanyStatutoryProfileApiRequest());
+        await client.UpdateCompanyStatutoryProfileAsync(companyId, new SaveCompanyStatutoryProfileApiRequest { ExpectedVersion = 1 });
         await client.GetAccountingSetupStatusAsync(companyId);
         await client.CreateAccountingConfigurationAsync(companyId, new CreateAccountingConfigurationApiRequest
         {
@@ -36,6 +39,9 @@ public sealed class FinanceApiClientAccountingConfigurationTests
 
         Assert.Collection(
             transport.Requests,
+            request => AssertRequest(request, companyId, HttpMethod.Get, $"internal/companies/{companyId}/finance/accounting/statutory-profile"),
+            request => AssertRequest(request, companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/statutory-profile"),
+            request => AssertRequest(request, companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/accounting/statutory-profile"),
             request => AssertRequest(request, companyId, HttpMethod.Get, $"internal/companies/{companyId}/finance/accounting/setup-status"),
             request => AssertRequest(request, companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/configuration"),
             request => AssertRequest(request, companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/policy-pack/preview"),
@@ -51,6 +57,8 @@ public sealed class FinanceApiClientAccountingConfigurationTests
 
         await Assert.ThrowsAsync<FinanceApiException>(() =>
             client.CreateAccountingConfigurationAsync(Guid.NewGuid(), new CreateAccountingConfigurationApiRequest()));
+        await Assert.ThrowsAsync<FinanceApiException>(() =>
+            client.CreateCompanyStatutoryProfileAsync(Guid.NewGuid(), new SaveCompanyStatutoryProfileApiRequest()));
     }
 
     [Fact]

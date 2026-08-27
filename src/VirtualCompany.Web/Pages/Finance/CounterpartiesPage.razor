@@ -10,6 +10,7 @@
     Title="@FinanceText["FinanceCounterparties"]"
     Description="@FinanceText["CounterpartiesDescription"]"
     LoadingMessage="@FinanceText["LoadingCounterparties"]">
+    <ReceivablesNavigation CompanyId="@AccessState.CompanyId!.Value" ActiveView="customers" />
     <div class="row g-4 align-items-start">
         <div class="col-lg-5">
             <div class="wizard-card wizard-card--compact">
@@ -126,6 +127,10 @@
                         <div class="col-12 d-flex gap-2">
                             <button type="submit" class="btn btn-primary" disabled="@(!CanEdit || IsSaving)">@(IsSaving ? FinanceText["Saving"] : CommonText["Save"])</button>
                             <button type="button" class="btn btn-outline-secondary" @onclick="HandleNewAsync">@FinanceText["Reset"]</button>
+                            @if (!IsCreatingNew && SelectedType == "customer" && SelectedId is Guid customerId)
+                            {
+                                <a class="btn btn-outline-primary" href="@FinanceRoutes.BuildCustomerBillingPath(customerId, AccessState.CompanyId)">@FinanceText["OpenBillingProfile"]</a>
+                            }
                         </div>
                     </div>
                 </EditForm>

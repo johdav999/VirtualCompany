@@ -216,6 +216,10 @@ public sealed class AccountingSetupPreviewResponse
     public List<AccountingVoucherSeriesPreviewResponse> VoucherSeries { get; set; } = [];
     public List<AccountingConfigurationIssueResponse> Issues { get; set; } = [];
     public List<AccountingConfigurationIssueResponse> Warnings { get; set; } = [];
+    public CompanyStatutoryProfileStatusResponse? StatutoryProfile { get; set; }
+    public string PolicyPackValidationState { get; set; } = string.Empty;
+    public List<string> MissingLegalFacts { get; set; } = [];
+    public List<string> NextActions { get; set; } = [];
 }
 
 public sealed class AccountingSetupAccountPreviewResponse

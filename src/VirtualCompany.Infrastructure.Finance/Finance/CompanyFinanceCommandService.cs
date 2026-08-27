@@ -264,6 +264,9 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
         EnsureRecordTenant(counterparty, command.CompanyId, "counterparty");
         EnsureCounterpartyType(counterparty!, normalizedType);
 
+        await CustomerInvoiceSnapshotWriter.CaptureBeforeLegacyMasterChangeAsync(
+            _dbContext, command.CompanyId, counterparty!, cancellationToken);
+
         counterparty!.UpdateMasterData(
             command.Counterparty.Name,
             normalizedType,

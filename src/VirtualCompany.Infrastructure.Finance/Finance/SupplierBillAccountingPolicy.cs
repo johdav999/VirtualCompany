@@ -14,11 +14,23 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IAccountingTaxDecisionPolicy _taxPolicy;
+    private readonly AccountingOperationsTelemetry? _telemetry;
+
+    public SupplierBillAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver,
+        IAccountingTaxDecisionPolicy taxPolicy, AccountingOperationsTelemetry telemetry)
+    {
+        _dbContext = dbContext;
+        _packResolver = packResolver;
+        _taxPolicy = taxPolicy;
+        _telemetry = telemetry;
+    }
 
     public SupplierBillAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver)
     {
         _dbContext = dbContext;
         _packResolver = packResolver;
+        _taxPolicy = new AccountingTaxDecisionPolicy();
     }
 
     public async Task<SupplierBillAccountingPreviewDto> PreviewAsync(
@@ -57,6 +69,13 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         var period = input.FiscalPeriodId == Guid.Empty ? null : await _dbContext.FiscalPeriods.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == input.FiscalPeriodId, cancellationToken);
         var billDate = DateOnly.FromDateTime(bill.ReceivedUtc);
+        var statutoryProfile = pack?.Definition.CountryOrRegion == "SE"
+            ? await _dbContext.CompanyStatutoryProfiles.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId, cancellationToken)
+            : null;
+        var vatRegistrationStatus = IsVatRegistered(statutoryProfile, billDate)
+            ? StatutoryVatRegistrationStatusValues.Registered
+            : statutoryProfile?.VatRegistrationStatus ?? "unknown";
         if (period is null || period.IsClosed || period.IsReportingLocked ||
             billDate < DateOnly.FromDateTime(period.StartUtc) || billDate >= DateOnly.FromDateTime(period.EndUtc))
             Add(issues, SupplierBillAccountingReasonCodes.PeriodUnavailable, "The bill date must fall in an open accounting period.");
@@ -82,6 +101,15 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         if (pack is not null && !pack.Definition.InvoicePolicy.SupportedDocumentTypes.Contains(
                 isCredit ? "credit_note" : "invoice", StringComparer.OrdinalIgnoreCase))
             Add(issues, SupplierBillAccountingReasonCodes.RequiredFieldMissing, "The selected accounting policy does not support this document type.");
+        if (pack?.Definition.SupportedCapabilities.Contains("native_statutory_invoice_issuance", StringComparer.OrdinalIgnoreCase) == true)
+        {
+            var issued = await _dbContext.IssuedStatutoryDocuments.IgnoreQueryFilters().AsNoTracking().AnyAsync(x =>
+                x.CompanyId == query.CompanyId && x.SourceRecordId == bill.Id &&
+                x.DocumentType == (isCredit ? StatutoryDocumentTypes.SupplierCredit : StatutoryDocumentTypes.SupplierInvoice), cancellationToken);
+            if (!issued)
+                Add(issues, SupplierBillAccountingReasonCodes.RequiredFieldMissing,
+                    "Register the immutable supplier document before posting it.");
+        }
 
         var requestedAccountIds = (input.Lines ?? []).Select(x => x.CostAccountId).Where(x => x != Guid.Empty).Distinct().ToArray();
         var accounts = await _dbContext.FinanceAccounts.IgnoreQueryFilters().AsNoTracking()
@@ -117,55 +145,57 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
                     continue;
                 }
 
-                var rule = pack?.Definition.TaxRules.FirstOrDefault(x =>
-                    string.Equals(x.Key, line.TaxRuleKey?.Trim(), StringComparison.OrdinalIgnoreCase) && x.EffectiveFrom <= billDate);
-                if (rule is null)
+                if (pack is null)
                 {
                     Add(issues, SupplierBillAccountingReasonCodes.TaxRuleUnsupported, $"Bill line {sequence} uses an unavailable tax rule.");
                     continue;
                 }
-
-                string method;
-                try { method = CustomerInvoiceTaxMethodValues.Normalize(rule.AmountMethod); }
-                catch (ArgumentException)
+                var decision = _taxPolicy.Decide(pack, new(
+                    line.TaxRuleKey, billDate, AccountingTaxDirectionValues.Purchase,
+                    isCredit ? "supplier_credit_note" : "supplier_invoice",
+                    line.LineClassification ?? (pack.Definition.CountryOrRegion == "SE" ? "unknown" : costAccount.AccountClass!), line.Amount,
+                    configuration?.RoundingPrecision ?? 2, configuration?.RoundingMode ?? AccountingRoundingModeValues.MidpointToEven,
+                    vatRegistrationStatus, CounterpartyJurisdiction: line.CounterpartyJurisdiction ?? "unknown",
+                    CounterpartyVatStatus: line.CounterpartyVatStatus ?? "unknown",
+                    CompanyCountryCode: statutoryProfile?.CountryCode ?? "unknown",
+                    AccountingCurrency: statutoryProfile?.AccountingCurrency ?? configuration?.BaseCurrency ?? "unknown",
+                    BookkeepingMethod: statutoryProfile?.BookkeepingMethod ?? "unknown",
+                    DocumentCurrency: bill.Currency,
+                    Evidence: line.TaxEvidence));
+                if (!decision.IsAllowed)
                 {
-                    Add(issues, SupplierBillAccountingReasonCodes.TaxTreatmentUnsupported, $"Tax rule {rule.DisplayName} has an unsupported amount method.");
-                    continue;
-                }
-                var rate = method == CustomerInvoiceTaxMethodValues.Exempt ? 0m : rule.Rate.GetValueOrDefault();
-                if (rate < 0m || rate > 1m || method != CustomerInvoiceTaxMethodValues.Exempt && rule.Rate is null)
-                {
-                    Add(issues, SupplierBillAccountingReasonCodes.TaxTreatmentUnsupported, $"Tax rule {rule.DisplayName} does not define a supported rate.");
+                    _telemetry?.TaxDecisionBlocked(query.CompanyId, AccountingTaxDirectionValues.Purchase,
+                        decision.ReasonCode, pack.Definition.PackKey, pack.Definition.Version);
+                    issues.Add(new(SupplierBillAccountingReasonCodes.TaxRuleUnsupported,
+                        $"Bill line {sequence}: {decision.Explanation}", PolicyReasonCode: decision.ReasonCode));
                     continue;
                 }
 
                 FinanceAccount? recoverableTaxAccount = null;
                 var treatment = SupplierBillTaxTreatmentValues.Exempt;
-                if (rate > 0m && !string.IsNullOrWhiteSpace(rule.RecoverableAccountRoleKey))
+                if (decision.TaxAmount > 0m && !string.IsNullOrWhiteSpace(decision.RecoverableAccountRoleKey))
                 {
                     treatment = SupplierBillTaxTreatmentValues.Recoverable;
-                    recoverableTaxAccount = FindRole(configuration, rule.RecoverableAccountRoleKey!, issues);
+                    recoverableTaxAccount = FindRole(configuration, decision.RecoverableAccountRoleKey!, issues);
                 }
-                else if (rate > 0m)
+                else if (decision.TaxAmount > 0m)
                 {
                     treatment = SupplierBillTaxTreatmentValues.NonRecoverable;
                 }
 
-                var amount = Round(line.Amount, configuration);
-                var net = method == CustomerInvoiceTaxMethodValues.Inclusive ? Round(amount / (1m + rate), configuration) : amount;
-                var tax = method switch
-                {
-                    CustomerInvoiceTaxMethodValues.Exclusive => Round(net * rate, configuration),
-                    CustomerInvoiceTaxMethodValues.Inclusive => Round(amount - net, configuration),
-                    _ => 0m
-                };
-                var gross = method == CustomerInvoiceTaxMethodValues.Exclusive ? Round(net + tax, configuration) : amount;
+                var net = decision.TaxableBasis;
+                var tax = decision.TaxAmount;
+                var gross = decision.GrossAmount;
                 var recoverable = treatment == SupplierBillTaxTreatmentValues.Recoverable ? tax : 0m;
                 var nonRecoverable = treatment == SupplierBillTaxTreatmentValues.NonRecoverable ? tax : 0m;
                 calculated.Add(new(sequence, line.Description.Trim(), costAccount.Id, costAccount.Code, costAccount.Name,
-                    costAccount.AccountClass!, rule.Key, method, treatment, rate, net, tax, recoverable,
+                    costAccount.AccountClass!, decision.RuleKey!, decision.AmountMethod!, treatment, decision.Rate!.Value, net, tax, recoverable,
                     nonRecoverable, gross, Round((net + nonRecoverable) * exchangeRate, configuration),
-                    Round(recoverable * exchangeRate, configuration), recoverableTaxAccount?.Id));
+                    Round(recoverable * exchangeRate, configuration), recoverableTaxAccount?.Id,
+                    decision.RuleVersion!, decision.VatBoxMappings, decision.EvidenceClassification,
+                    line.Amount, line.LineClassification ?? (pack.Definition.CountryOrRegion == "SE" ? "unknown" : costAccount.AccountClass!),
+                    line.CounterpartyJurisdiction ?? "unknown", line.CounterpartyVatStatus ?? "unknown", decision.SuppliedEvidence,
+                    decision.LiabilityAccountRoleKey, decision.RecoverableAccountRoleKey, decision.Recoverability));
             }
         }
 
@@ -193,16 +223,18 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
                 var cost = line.CostBaseAmount + (line.Sequence == calculated[^1].Sequence ? rounding : 0m);
                 journalLines.Add(new(line.CostAccountId, line.AccountClassification, line.CostAccountCode,
                     line.CostAccountName, isCredit ? 0m : cost, isCredit ? cost : 0m, baseCurrency,
-                    line.Description, line.TaxRuleKey, line.TaxTreatment));
+                    line.Description, line.TaxRuleKey, line.TaxTreatment, line.TaxRuleVersion,
+                    line.VatBoxMappings, line.EvidenceClassification));
                 if (line.RecoverableTaxBaseAmount > 0m && line.RecoverableTaxAccountId.HasValue)
                 {
                     var taxAccount = configuration?.AccountRoles.FirstOrDefault(x =>
                         x.FinanceAccountId == line.RecoverableTaxAccountId.Value)?.FinanceAccount;
                     if (taxAccount is not null)
-                        journalLines.Add(new(taxAccount.Id, "tax_recoverable", taxAccount.Code, taxAccount.Name,
+                        journalLines.Add(new(taxAccount.Id, line.RecoverableAccountRoleKey ?? "tax_recoverable", taxAccount.Code, taxAccount.Name,
                             isCredit ? 0m : line.RecoverableTaxBaseAmount,
                             isCredit ? line.RecoverableTaxBaseAmount : 0m, baseCurrency,
-                            $"Tax · {line.Description}", line.TaxRuleKey, line.TaxTreatment));
+                            $"Tax · {line.Description}", line.TaxRuleKey, line.TaxTreatment,
+                            line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification));
                 }
             }
         }
@@ -313,6 +345,10 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
                 : MidpointRounding.ToEven);
 
     private static bool IsApproved(string status) => status.Trim().ToLowerInvariant() is "approved" or "paid" or "booked";
+    private static bool IsVatRegistered(CompanyStatutoryProfile? profile, DateOnly accountingDate) =>
+        profile is { IsUserAttested: true, VatRegistrationStatus: StatutoryVatRegistrationStatusValues.Registered } &&
+        profile.VatRegistrationEffectiveFrom <= accountingDate &&
+        (!profile.VatRegistrationEffectiveTo.HasValue || accountingDate <= profile.VatRegistrationEffectiveTo.Value);
     private static void Add(ICollection<SupplierBillAccountingIssueDto> issues, string code, string message) => issues.Add(new(code, message));
     private static SupplierBillAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
 
@@ -330,7 +366,9 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
             Lines = lines.Select(x => new
             {
                 x.Sequence, x.Description, x.CostAccountId, x.AccountClassification, x.TaxRuleKey,
-                x.TaxMethod, x.TaxTreatment, x.TaxRate, x.NetAmount, x.TaxAmount, x.GrossAmount
+                x.TaxRuleVersion, x.TaxMethod, x.TaxTreatment, x.TaxRate, x.InputAmount, x.NetAmount, x.TaxAmount,
+                x.GrossAmount, x.VatBoxMappings, x.LineClassification, x.CounterpartyJurisdiction,
+                x.CounterpartyVatStatus, x.SuppliedEvidence
             })
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(json))).ToLowerInvariant();
@@ -342,7 +380,13 @@ internal sealed record SupplierBillAccountingLinePlan(
     string AccountClassification, string TaxRuleKey, string TaxMethod, string TaxTreatment,
     decimal TaxRate, decimal NetAmount, decimal TaxAmount, decimal RecoverableTaxAmount,
     decimal NonRecoverableTaxAmount, decimal GrossAmount, decimal CostBaseAmount,
-    decimal RecoverableTaxBaseAmount, Guid? RecoverableTaxAccountId);
+    decimal RecoverableTaxBaseAmount, Guid? RecoverableTaxAccountId,
+    string TaxRuleVersion = "1", IReadOnlyList<string>? VatBoxMappings = null,
+    string EvidenceClassification = "none", decimal InputAmount = 0m,
+    string LineClassification = "unknown", string CounterpartyJurisdiction = "unknown",
+    string CounterpartyVatStatus = "unknown", IReadOnlyList<AccountingTaxEvidenceInput>? SuppliedEvidence = null,
+    string? LiabilityAccountRoleKey = null, string? RecoverableAccountRoleKey = null,
+    string Recoverability = AccountingTaxRecoverabilityValues.Legacy);
 
 internal sealed record SupplierBillAccountingPlan(
     FinanceBill Bill,

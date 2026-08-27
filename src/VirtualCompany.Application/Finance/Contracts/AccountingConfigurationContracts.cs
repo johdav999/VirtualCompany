@@ -7,6 +7,9 @@ public static class AccountingPolicyPackDefaults
     public const string CountryNeutralPackKey = "country-neutral";
     public const string CountryNeutralVersion = "1.0.0";
     public const string CountryNeutralBankingVersion = "1.1.0";
+    public const string SwedishCandidatePackKey = "sweden-statutory-candidate";
+    public const string SwedishFoundationVersion = "1.0.0";
+    public const string SwedishCandidateVersion = "1.1.0";
 }
 
 public static class AccountingAccountRoleKeys
@@ -21,6 +24,8 @@ public static class AccountingAccountRoleKeys
     public const string ExchangeLoss = "exchange_loss";
     public const string SettlementDiscount = "settlement_discount";
     public const string Suspense = "suspense";
+    public const string TaxOutput25 = "tax_output_25";
+    public const string TaxInput = "tax_input";
 
     public static IReadOnlySet<string> BankAdjustmentRoles { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -87,7 +92,21 @@ public sealed record AccountingTaxRuleDefinition(
     decimal? Rate,
     string? LiabilityAccountRoleKey,
     string? RecoverableAccountRoleKey,
-    string AmountMethod = CustomerInvoiceTaxMethodValues.Exclusive);
+    string AmountMethod = CustomerInvoiceTaxMethodValues.Exclusive,
+    DateOnly? EffectiveTo = null,
+    string Direction = AccountingTaxDirectionValues.Both,
+    string Treatment = AccountingTaxTreatmentValues.Legacy,
+    string RuleVersion = "1",
+    string? Jurisdiction = null,
+    IReadOnlyList<string>? CounterpartyJurisdictions = null,
+    IReadOnlyList<string>? CounterpartyVatStatuses = null,
+    IReadOnlyList<string>? DocumentTypes = null,
+    IReadOnlyList<string>? LineClassifications = null,
+    IReadOnlyList<string>? VatBoxMappings = null,
+    string Recoverability = AccountingTaxRecoverabilityValues.Legacy,
+    IReadOnlyList<string>? RequiredEvidence = null,
+    string TaxableBasisMethod = AccountingTaxableBasisMethodValues.LineAmount,
+    string? ReverseChargeCounterpartRuleKey = null);
 
 public sealed record AccountingInvoicePolicyDefinition(
     bool RequiresSequentialNumbers,
@@ -121,7 +140,9 @@ public sealed record AccountingPolicyPackDefinition(
     IReadOnlyDictionary<string, string> Terminology,
     AccountingRetentionAndLockPolicyDefinition RetentionAndLockPolicy,
     IReadOnlyList<string> SupportedExports,
-    IReadOnlyList<string> SupportedCapabilities);
+    IReadOnlyList<string> SupportedCapabilities,
+    IReadOnlyDictionary<string, string>? PolicyMetadata = null,
+    IReadOnlyDictionary<string, string>? CapabilityStates = null);
 
 public interface IAccountingPolicyPack
 {
@@ -134,6 +155,42 @@ public interface IAccountingPolicyPackResolver
     IAccountingPolicyPack Resolve(string packKey, string version);
     bool TryResolve(string packKey, string version, out IAccountingPolicyPack? pack);
     IReadOnlyList<IAccountingPolicyPack> GetAll();
+}
+
+public static class AccountingPolicyPackValidationStates
+{
+    public const string NotApplicable = "not_applicable";
+    public const string MissingEvidence = "missing_evidence";
+    public const string DefinitionHashMismatch = "definition_hash_mismatch";
+    public const string EvidenceExpired = "evidence_expired";
+    public const string Validated = "validated";
+}
+
+public sealed record AccountingPolicyPackValidationEvidence(
+    string PackKey,
+    string PackVersion,
+    string DefinitionHash,
+    string ReviewerDisplayName,
+    string ReviewerReference,
+    string ReviewScope,
+    DateOnly ReviewedOn,
+    string EvidenceDocumentReference,
+    string EvidenceDocumentHash,
+    IReadOnlyList<string> ApprovedFixtureIds,
+    IReadOnlyList<string> Limitations,
+    DateOnly? ExpiresOn,
+    IReadOnlyList<string> RevalidationTriggers);
+
+public sealed record AccountingPolicyPackValidationDecision(
+    string State,
+    bool IsValidated,
+    string Explanation,
+    AccountingPolicyPackValidationEvidence? Evidence);
+
+public interface IAccountingPolicyPackValidationRegistry
+{
+    AccountingPolicyPackValidationDecision Evaluate(IAccountingPolicyPack pack, DateOnly evaluationDate);
+    IReadOnlyList<AccountingPolicyPackValidationEvidence> GetAll();
 }
 
 public sealed record AccountingConfigurationIssueDto(
@@ -194,7 +251,11 @@ public sealed record AccountingSetupStatusDto(
     string SetupState,
     AccountingConfigurationDto? Configuration,
     IReadOnlyList<AccountingConfigurationIssueDto> Issues,
-    IReadOnlyList<AccountingConfigurationIssueDto> Warnings);
+    IReadOnlyList<AccountingConfigurationIssueDto> Warnings,
+    CompanyStatutoryProfileStatusDto? StatutoryProfile = null,
+    string PolicyPackValidationState = "not_selected",
+    IReadOnlyList<string>? MissingLegalFacts = null,
+    IReadOnlyList<string>? NextActions = null);
 
 public sealed record AccountingPolicyPackImpactPreviewDto(
     Guid CompanyId,

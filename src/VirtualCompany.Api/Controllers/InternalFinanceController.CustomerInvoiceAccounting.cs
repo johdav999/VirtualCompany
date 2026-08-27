@@ -65,7 +65,10 @@ public class CustomerInvoiceAccountingRequest
     public decimal? ExchangeRate { get; set; }
     public List<CustomerInvoiceAccountingLineRequest> Lines { get; set; } = [];
     public CustomerInvoiceAccountingInput ToInput() => new(FiscalPeriodId, VoucherSeriesCode, ExchangeRate,
-        Lines.Select(x => new CustomerInvoiceAccountingLineInput(x.Description, x.Amount, x.TaxRuleKey)).ToArray());
+        Lines.Select(x => new CustomerInvoiceAccountingLineInput(x.Description, x.Amount, x.TaxRuleKey,
+            x.LineClassification, x.CounterpartyJurisdiction, x.CounterpartyVatStatus,
+            x.TaxEvidence.Select(evidence => new AccountingTaxEvidenceInput(
+                evidence.Classification, evidence.SourceReference)).ToArray())).ToArray());
 }
 
 public sealed class SubmitCustomerInvoiceAccountingRequest : CustomerInvoiceAccountingRequest
@@ -79,6 +82,16 @@ public sealed class CustomerInvoiceAccountingLineRequest
     public string Description { get; set; } = string.Empty;
     public decimal Amount { get; set; }
     public string TaxRuleKey { get; set; } = string.Empty;
+    public string? LineClassification { get; set; }
+    public string? CounterpartyJurisdiction { get; set; }
+    public string? CounterpartyVatStatus { get; set; }
+    public List<AccountingTaxEvidenceRequest> TaxEvidence { get; set; } = [];
+}
+
+public sealed class AccountingTaxEvidenceRequest
+{
+    public string Classification { get; set; } = string.Empty;
+    public string? SourceReference { get; set; }
 }
 
 public sealed class PostCustomerInvoiceAccountingRequest

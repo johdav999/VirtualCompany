@@ -38,8 +38,17 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         Assert.True(await TableExistsAsync(connection, "forecasts"));
         Assert.True(await TableExistsAsync(connection, "financial_statement_snapshots"));
         Assert.True(await TableExistsAsync(connection, "financial_statement_snapshot_lines"));
+        Assert.True(await TableExistsAsync(connection, "customer_billing_profiles"));
+        Assert.True(await TableExistsAsync(connection, "customer_billing_profile_versions"));
+        Assert.True(await TableExistsAsync(connection, "customer_billing_source_conflicts"));
+        Assert.True(await TableExistsAsync(connection, "customer_duplicate_candidates"));
+        Assert.True(await TableExistsAsync(connection, "customer_counterparty_redirects"));
+        Assert.True(await TableExistsAsync(connection, "customer_invoice_customer_snapshots"));
         Assert.True(await IndexExistsAsync(connection, "IX_budgets_company_id_period_start_at_finance_account_id_version_null_cost_center"));
         Assert.True(await IndexExistsAsync(connection, "IX_forecasts_company_id_period_start_at_finance_account_id_version_null_cost_center"));
+        Assert.True(await IndexExistsAsync(connection, "IX_customer_billing_profiles_company_id_counterparty_id"));
+        Assert.True(await IndexExistsAsync(connection, "IX_customer_duplicate_candidates_company_id_first_counterparty_id_second_counterparty_id"));
+        Assert.True(await IndexExistsAsync(connection, "IX_customer_invoice_customer_snapshots_company_id_invoice_id"));
     }
 
     [SqlServerFact]

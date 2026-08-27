@@ -91,6 +91,13 @@ public sealed class FinanceTransaction : ICompanyOwnedEntity
     public string Description { get; private set; } = null!;
     public string ExternalReference { get; private set; } = null!;
     public DateTime CreatedUtc { get; private set; }
+
+    public void ReassignCounterpartyForApprovedMerge(Guid targetCounterpartyId)
+    {
+        CounterpartyId = targetCounterpartyId == Guid.Empty
+            ? throw new ArgumentException("Target counterparty id is required.", nameof(targetCounterpartyId))
+            : targetCounterpartyId;
+    }
     public Guid? SourceSimulationEventRecordId { get; private set; }
     public SimulationEventRecord? SourceSimulationEventRecord { get; private set; }
     public Company Company { get; private set; } = null!;

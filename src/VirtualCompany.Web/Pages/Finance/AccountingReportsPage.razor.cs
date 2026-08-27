@@ -1,6 +1,7 @@
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Web;
 using VirtualCompany.Shared;
+using VirtualCompany.Web.Components.Finance;
 using VirtualCompany.Web.Services;
 
 namespace VirtualCompany.Web.Pages.Finance;
@@ -8,6 +9,7 @@ namespace VirtualCompany.Web.Pages.Finance;
 public partial class AccountingReportsPage : FinancePageBase
 {
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
+    [SupplyParameterFromQuery(Name = "view")] public string? RequestedView { get; set; }
     private List<AccountingPeriodResponse> Periods { get; set; } = [];
     private Guid SelectedPeriodId { get; set; }
     private AccountingPeriodResponse? SelectedPeriod => Periods.FirstOrDefault(x => x.Id == SelectedPeriodId);
@@ -20,6 +22,13 @@ public partial class AccountingReportsPage : FinancePageBase
     private ReportingPeriodCloseValidationResponse? CloseValidation { get; set; }
     private IReadOnlyList<AccountingPeriodHistoryResponse> History { get; set; } = [];
     private IReadOnlyList<AccountingExportJobResponse> Exports { get; set; } = [];
+    private IReadOnlyList<VatFilingPeriodResponse> VatFilingPeriods { get; set; } = [];
+    private IReadOnlyList<VatReturnResponse> VatReturns { get; set; } = [];
+    private Guid? SelectedVatFilingPeriodId { get; set; }
+    private VatReturnResponse? CurrentVatReturn => VatReturns
+        .Where(x => x.FilingPeriodId == SelectedVatFilingPeriodId && !x.IsSuperseded)
+        .OrderByDescending(x => x.Version)
+        .FirstOrDefault();
     private Guid? SelectedAccountId { get; set; }
     private GeneralLedgerAccountResponse? SelectedLedgerAccount { get; set; }
     private string View { get; set; } = "trial";
@@ -29,6 +38,7 @@ public partial class AccountingReportsPage : FinancePageBase
     private string ReopenReason { get; set; } = "";
     private string? ActionMessage { get; set; }
     private string? ActionError { get; set; }
+    private string? VatError { get; set; }
     private bool CanManageAccounting => FinanceAccess.CanManageAccounting(AccessState.MembershipRole);
     private bool CanReopen => AccessState.MembershipRole is "owner" or "admin";
     private string? Currency => TrialBalance?.Accounts.Select(x => x.Currency).Distinct().Count() == 1 ? TrialBalance.Accounts.FirstOrDefault()?.Currency : null;
@@ -38,6 +48,7 @@ public partial class AccountingReportsPage : FinancePageBase
     protected override async Task OnParametersSetAsync()
     {
         await base.OnParametersSetAsync();
+        if (string.Equals(RequestedView, "vat", StringComparison.OrdinalIgnoreCase)) View = "vat";
         if (string.IsNullOrWhiteSpace(CloseReason)) CloseReason = FinanceText["DefaultCloseReason"];
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
         try
@@ -71,9 +82,14 @@ public partial class AccountingReportsPage : FinancePageBase
             var control = FinanceApiClient.GetAccountingControlReconciliationAsync(companyId, SelectedPeriodId);
             var history = FinanceApiClient.GetAccountingPeriodHistoryAsync(companyId, SelectedPeriodId);
             var exports = FinanceApiClient.GetAccountingExportsAsync(companyId, SelectedPeriodId);
-            await Task.WhenAll(trial, ledger, profit, balance, tax, control, history, exports);
+            var vatPeriods = FinanceApiClient.GetVatFilingPeriodsAsync(companyId);
+            await Task.WhenAll(trial, ledger, profit, balance, tax, control, history, exports, vatPeriods);
             TrialBalance = await trial; GeneralLedger = await ledger; ProfitAndLoss = await profit; BalanceSheet = await balance;
             TaxSummary = await tax; ControlAccounts = await control; History = await history; Exports = await exports;
+            VatFilingPeriods = await vatPeriods;
+            SelectedVatFilingPeriodId = VatFilingPeriods.FirstOrDefault(x => x.FiscalPeriodId == SelectedPeriodId)?.Id
+                ?? VatFilingPeriods.FirstOrDefault()?.Id;
+            await LoadVatReturnsAsync(companyId);
             SelectedAccountId = null; SelectedLedgerAccount = null;
         }
         catch (FinanceApiException exception) { ActionError = exception.Message; }
@@ -104,12 +120,69 @@ public partial class AccountingReportsPage : FinancePageBase
     private async Task CloseAndLockAsync() => await ActAsync(async companyId => { await FinanceApiClient.CloseAndLockAccountingPeriodAsync(companyId, SelectedPeriodId, CloseReason); ActionMessage = FinanceText["PeriodClosedMessage"]; await ReloadAsync(companyId); });
     private async Task ReopenAsync() => await ActAsync(async companyId => { await FinanceApiClient.ReopenAccountingPeriodAsync(companyId, SelectedPeriodId, ReopenReason); ActionMessage = FinanceText["PeriodReopenedMessage"]; ReopenReason = ""; await ReloadAsync(companyId); });
     private async Task RequestExportAsync() => await ActAsync(async companyId => { await FinanceApiClient.RequestAccountingExportAsync(companyId, SelectedPeriodId, $"accountant-export:{companyId:N}:{SelectedPeriodId:N}:{DateTime.UtcNow:yyyyMMddHHmm}"); ActionMessage = FinanceText["ExportQueuedMessage"]; await RefreshExportsCoreAsync(companyId); });
+    private async Task ChangeVatPeriodAsync(Guid filingPeriodId) => await ActAsync(async companyId => { SelectedVatFilingPeriodId = filingPeriodId; await LoadVatReturnsAsync(companyId); });
+    private async Task CalculateVatAsync() => await ActAsync(async companyId =>
+    {
+        var filingPeriodId = await EnsureVatFilingPeriodAsync(companyId);
+        var current = CurrentVatReturn;
+        await FinanceApiClient.CalculateVatReturnAsync(companyId, filingPeriodId, current?.Id,
+            $"vat-calculate:{companyId:N}:{filingPeriodId:N}:{current?.Version ?? 0}:{DateTime.UtcNow:yyyyMMddHHmm}");
+        ActionMessage = FinanceText["VatCalculatedMessage"];
+        await LoadVatReturnsAsync(companyId);
+    });
+    private async Task RequestVatApprovalAsync() => await ActAsync(async companyId =>
+    {
+        if (CurrentVatReturn?.InputHash is not { Length: > 0 } inputHash) return;
+        await FinanceApiClient.RequestVatReturnApprovalAsync(companyId, CurrentVatReturn.Id, inputHash);
+        ActionMessage = FinanceText["VatApprovalRequestedMessage"];
+        await LoadVatReturnsAsync(companyId);
+    });
+    private async Task FinalizeVatAsync() => await ActAsync(async companyId =>
+    {
+        if (CurrentVatReturn?.InputHash is not { Length: > 0 } inputHash) return;
+        await FinanceApiClient.FinalizeVatReturnAsync(companyId, CurrentVatReturn.Id, inputHash);
+        ActionMessage = FinanceText["VatFinalizedMessage"];
+        await LoadVatReturnsAsync(companyId);
+    });
+    private async Task CreateVatCorrectionAsync(VatReturnCorrectionDraft draft) => await ActAsync(async companyId =>
+    {
+        if (CurrentVatReturn is null) return;
+        await FinanceApiClient.CreateVatReturnCorrectionAsync(companyId, CurrentVatReturn.Id, draft.Reason,
+            draft.EvidenceReference, $"vat-correction:{CurrentVatReturn.Id:N}:{CurrentVatReturn.Version + 1}:{Guid.NewGuid():N}");
+        ActionMessage = FinanceText["VatCorrectionCreatedMessage"];
+        await LoadVatReturnsAsync(companyId);
+    });
+    private async Task RequestStatutoryExportAsync(string exportType) => await ActAsync(async companyId =>
+    {
+        await FinanceApiClient.RequestAccountingExportAsync(companyId, SelectedPeriodId,
+            $"statutory-export:{companyId:N}:{SelectedPeriodId:N}:{exportType}:{Guid.NewGuid():N}", exportType);
+        ActionMessage = FinanceText["ExportQueuedMessage"];
+        await RefreshExportsCoreAsync(companyId);
+    });
+    private Task RetryStatutoryExportAsync(AccountingExportJobResponse job) => RequestStatutoryExportAsync(job.ExportType);
     private async Task RefreshExportsAsync() => await ActAsync(RefreshExportsCoreAsync);
     private async Task RefreshExportsCoreAsync(Guid companyId) => Exports = await FinanceApiClient.GetAccountingExportsAsync(companyId, SelectedPeriodId);
+    private async Task LoadVatReturnsAsync(Guid companyId)
+    {
+        VatError = null;
+        try { VatReturns = SelectedVatFilingPeriodId is Guid filingPeriodId ? await FinanceApiClient.GetVatReturnsAsync(companyId, filingPeriodId) : []; }
+        catch (FinanceApiException exception) { VatReturns = []; VatError = exception.Message; }
+    }
+    private async Task<Guid> EnsureVatFilingPeriodAsync(Guid companyId)
+    {
+        if (SelectedVatFilingPeriodId is Guid existing) return existing;
+        var period = SelectedPeriod ?? throw new InvalidOperationException(FinanceText["VatFiscalPeriodRequired"]);
+        var created = await FinanceApiClient.CreateVatFilingPeriodAsync(companyId, period.Name, period.StartDate, period.EndDate, period.Id);
+        VatFilingPeriods = [.. VatFilingPeriods, created];
+        SelectedVatFilingPeriodId = created.Id;
+        return created.Id;
+    }
     private async Task ValidateCloseCoreAsync(Guid companyId) => CloseValidation = await FinanceApiClient.ValidateAccountingPeriodCloseAsync(companyId, SelectedPeriodId);
     private async Task ReloadAsync(Guid companyId) { var years = await FinanceApiClient.GetAccountingFiscalYearsAsync(companyId); Periods = years.SelectMany(x => x.Periods).OrderByDescending(x => x.StartDate).ToList(); await LoadReportsAsync(companyId); CloseValidation = await FinanceApiClient.ValidateAccountingPeriodCloseAsync(companyId, SelectedPeriodId); }
-    private async Task ActAsync(Func<Guid, Task> action) { if (AccessState.CompanyId is not Guid companyId) return; IsActing = true; ActionError = null; ActionMessage = null; try { await action(companyId); } catch (FinanceApiException exception) { ActionError = exception.Message; } finally { IsActing = false; } }
-    private string ExportDownloadUrl(Guid id) => $"internal/companies/{AccessState.CompanyId}/finance/accounting/exports/{id:D}/download";
+    private async Task ActAsync(Func<Guid, Task> action) { if (AccessState.CompanyId is not Guid companyId) return; IsActing = true; ActionError = null; ActionMessage = null; try { await action(companyId); } catch (Exception exception) when (exception is FinanceApiException or InvalidOperationException) { ActionError = exception.Message; } finally { IsActing = false; } }
+    private string ExportDownloadUrl(Guid id) => AccessState.CompanyId is Guid companyId ? FinanceApiClient.GetAccountingExportDownloadUrl(companyId, id) : "#";
+    private string VatPackageDownloadUrl => AccessState.CompanyId is Guid companyId && CurrentVatReturn is not null ? FinanceApiClient.GetVatReturnPackageDownloadUrl(companyId, CurrentVatReturn.Id) : "#";
+    private string JournalEntryUrl(Guid ledgerEntryId) => FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingJournal}?entryId={ledgerEntryId:D}", AccessState.CompanyId);
     private string Friendly(string value)
     {
         var key = $"Value_{value.Replace('-', '_').Replace('.', '_')}";

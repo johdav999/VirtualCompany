@@ -1,0 +1,18 @@
+<nav class="receivables-tabs" aria-label="@FinanceText["ReceivablesViews"]">
+    <a class="@LinkClass("invoices")" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Invoices, CompanyId)">@FinanceText["Invoices"]</a>
+    <a class="@LinkClass("drafts")" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Receivables + "?view=drafts", CompanyId)">@FinanceText["Drafts"]</a>
+    <a class="@LinkClass("recurring")" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Receivables + "?view=recurring", CompanyId)">@FinanceText["Recurring"]</a>
+    <a class="@LinkClass("collections")" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Receivables + "?view=collections", CompanyId)">@FinanceText["Collections"]</a>
+    <a class="@LinkClass("operations")" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Receivables + "?view=operations", CompanyId)">@FinanceText["Operations"]</a>
+    <a class="@LinkClass("customers")" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Counterparties, CompanyId)">@FinanceText["Customers"]</a>
+</nav>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public string ActiveView { get; set; } = "invoices";
+
+    private string LinkClass(string view) =>
+        string.Equals(view, ActiveView, StringComparison.OrdinalIgnoreCase)
+            ? "receivables-tabs__link active"
+            : "receivables-tabs__link";
+}

@@ -11,6 +11,7 @@ public sealed class AccountingPolicyPackResolver : IAccountingPolicyPackResolver
     {
         ArgumentNullException.ThrowIfNull(packs);
         var resolved = new Dictionary<(string Key, string Version), IAccountingPolicyPack>(PolicyPackIdentityComparer.Instance);
+        var hashes = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var pack in packs)
         {
             ArgumentNullException.ThrowIfNull(pack);
@@ -19,6 +20,18 @@ public sealed class AccountingPolicyPackResolver : IAccountingPolicyPackResolver
             {
                 throw new InvalidOperationException(
                     $"Duplicate accounting policy-pack registration for key '{identity.Key}' and version '{identity.Version}'.");
+            }
+
+            if (pack.DefinitionHash.Length != 64 || pack.DefinitionHash.Any(character => !Uri.IsHexDigit(character)))
+            {
+                throw new InvalidOperationException(
+                    $"Accounting policy pack '{identity.Key}' version '{identity.Version}' has an invalid SHA-256 definition hash.");
+            }
+
+            if (!hashes.Add(pack.DefinitionHash))
+            {
+                throw new InvalidOperationException(
+                    $"Duplicate accounting policy-pack definition hash for key '{identity.Key}' and version '{identity.Version}'. Each catalog entry must identify a distinct immutable definition.");
             }
         }
 
@@ -82,11 +95,42 @@ public sealed class AccountingPolicyPackResolver : IAccountingPolicyPackResolver
     }
 }
 
-public sealed class AccountingPolicyPackCatalogStartupValidator(IAccountingPolicyPackResolver resolver) : IHostedService
+public sealed class AccountingPolicyPackCatalogStartupValidator(
+    IAccountingPolicyPackResolver resolver,
+    IAccountingTaxDecisionPolicy taxDecisionPolicy,
+    IAccountingPolicyPackValidationRegistry validationRegistry,
+    TimeProvider timeProvider) : IHostedService
 {
     public Task StartAsync(CancellationToken cancellationToken)
     {
-        _ = resolver.GetAll();
+        var today = DateOnly.FromDateTime(timeProvider.GetUtcNow().UtcDateTime);
+        foreach (var pack in resolver.GetAll())
+        {
+            var issues = taxDecisionPolicy.Validate(pack).Where(x => x.IsBlocking).ToArray();
+            if (issues.Length > 0)
+                throw new InvalidOperationException(
+                    $"Accounting policy pack '{pack.Definition.PackKey}' version '{pack.Definition.Version}' has invalid tax configuration: " +
+                    string.Join(" ", issues.Select(x => x.Explanation)));
+
+            var validation = validationRegistry.Evaluate(pack, today);
+            if (pack.Definition.IsStatutoryComplianceValidated && !validation.IsValidated)
+                throw new InvalidOperationException(
+                    $"Accounting policy pack '{pack.Definition.PackKey}' version '{pack.Definition.Version}' declares statutory validation but exact qualified reviewer evidence is not current: {validation.State}.");
+        }
+
+        foreach (var evidence in validationRegistry.GetAll())
+        {
+            if (!resolver.TryResolve(evidence.PackKey, evidence.PackVersion, out var reviewedPack) || reviewedPack is null)
+                throw new InvalidOperationException(
+                    $"Accounting policy-pack validation evidence references unavailable pack '{evidence.PackKey}' version '{evidence.PackVersion}'.");
+            if (!reviewedPack.Definition.IsStatutoryComplianceValidated)
+                throw new InvalidOperationException(
+                    $"Accounting policy-pack validation evidence references unvalidated historical pack '{evidence.PackKey}' version '{evidence.PackVersion}'. Introduce a new reviewed version instead.");
+            var validation = validationRegistry.Evaluate(reviewedPack, today);
+            if (!validation.IsValidated)
+                throw new InvalidOperationException(
+                    $"Accounting policy-pack validation evidence for '{evidence.PackKey}' version '{evidence.PackVersion}' is not current: {validation.State}.");
+        }
         return Task.CompletedTask;
     }
 

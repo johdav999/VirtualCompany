@@ -14,6 +14,11 @@ public static class CompanyOutboxTopics
     public const string NotificationDeliveryRequested = "company.notification.delivery_requested";
     public const string SupportMemoryUpdateRequested = "support.memory.update_requested";
     public const string SupportReplyDeliveryRequested = "support.reply.delivery_requested";
+    public const string CustomerInvoiceRenderRequested = "finance.customer_invoice.render_requested";
+    public const string CustomerInvoiceEmailDeliveryRequested = "finance.customer_invoice.email_delivery_requested";
+    public const string CustomerInvoiceElectronicDeliveryRequested = "finance.customer_invoice.electronic_delivery_requested";
+    public const string CustomerInvoiceElectronicReconciliationRequested = "finance.customer_invoice.electronic_reconciliation_requested";
+    public const string CustomerReminderEmailDeliveryRequested = "finance.customer_reminder.email_delivery_requested";
     public const string SalesMeetingInvitationDeliveryRequested = "sales.meeting_invitation.delivery_requested";
     public const string SalesMeetingChangeDeliveryRequested = "sales.meeting_change.delivery_requested";
     public const string SalesMeetingConfirmationDeliveryRequested = "sales.meeting_confirmation.delivery_requested";
@@ -97,6 +102,12 @@ public sealed record SupportReplyDeliveryRequestedMessage(
     string? InternetMessageId,
     string IdempotencyKey,
     string? CorrelationId);
+
+public sealed record CustomerInvoiceRenderRequestedMessage(Guid CompanyId, Guid ArtifactId, string? CorrelationId);
+public sealed record CustomerInvoiceEmailDeliveryRequestedMessage(Guid CompanyId, Guid DeliveryId, string? CorrelationId);
+public sealed record CustomerInvoiceElectronicDeliveryRequestedMessage(Guid CompanyId, Guid DeliveryId, string ProviderKey, string? CorrelationId);
+public sealed record CustomerInvoiceElectronicReconciliationRequestedMessage(Guid CompanyId, Guid DeliveryId, string ProviderKey, string? CorrelationId);
+public sealed record CustomerReminderEmailDeliveryRequestedMessage(Guid CompanyId, Guid DeliveryId, string? CorrelationId);
 
 public sealed record CompanyInvitationSendResult(string? ProviderMessageId);
 

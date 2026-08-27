@@ -1,0 +1,86 @@
+<section class="statutory-readiness" aria-labelledby="statutory-readiness-title">
+    <header>
+        <div>
+            <span class="dashboard-kicker">@FinanceText["SwedishReadinessKicker"]</span>
+            <h2 id="statutory-readiness-title">@FinanceText["SwedishReadinessTitle"]</h2>
+            <p>@FinanceText["SwedishReadinessDescription"]</p>
+        </div>
+        @if (CanEdit)
+        {
+            <button type="button" class="btn btn-outline-primary" @onclick="OnEdit">@FinanceText["ReviewBusinessFacts"]</button>
+        }
+    </header>
+
+    <div class="statutory-readiness__states">
+        <article class="@StateClass(Status?.IsFormatComplete == true)">
+            <span aria-hidden="true">@(Status?.IsFormatComplete == true ? "✓" : "1")</span>
+            <div><strong>@FinanceText["FormatComplete"]</strong><small>@FinanceText[Status?.IsFormatComplete == true ? "FormatCompleteHelp" : "FormatIncompleteHelp"]</small></div>
+        </article>
+        <article class="@StateClass(Status?.IsUserAttested == true)">
+            <span aria-hidden="true">@(Status?.IsUserAttested == true ? "✓" : "2")</span>
+            <div><strong>@FinanceText["ConfirmedByTeam"]</strong><small>@FinanceText[Status?.IsUserAttested == true ? "TeamConfirmedHelp" : "TeamConfirmationPendingHelp"]</small></div>
+        </article>
+        <article class="@StateClass(IsIndependentReviewComplete)">
+            <span aria-hidden="true">@(IsIndependentReviewComplete ? "✓" : "3")</span>
+            <div><strong>@FinanceText["IndependentReview"]</strong><small>@FinanceText[IsIndependentReviewComplete ? "IndependentReviewRecorded" : "IndependentReviewPending"]</small></div>
+        </article>
+    </div>
+
+    @if (Status?.MissingFacts.Count > 0)
+    {
+        <div class="statutory-readiness__attention" role="status">
+            <span aria-hidden="true">!</span>
+            <div>
+                <strong>@FinanceText["BusinessFactsNeedAttention"]</strong>
+                <p>@FinanceText["BusinessFactsNeedAttentionHelp"]</p>
+                <ul>
+                    @foreach (var fact in Status.MissingFacts)
+                    {
+                        <li>@FactLabel(fact)</li>
+                    }
+                </ul>
+                <p><strong>@FinanceText["NextAction"]:</strong> @NextAction</p>
+            </div>
+        </div>
+    }
+    else if (!IsIndependentReviewComplete)
+    {
+        <div class="statutory-readiness__notice" role="note">@FinanceText["NoIndependentValidationClaim"]</div>
+    }
+</section>
+
+@code {
+    [Parameter] public CompanyStatutoryProfileStatusResponse? Status { get; set; }
+    [Parameter] public string PolicyPackValidationState { get; set; } = string.Empty;
+    [Parameter] public bool CanEdit { get; set; }
+    [Parameter] public EventCallback OnEdit { get; set; }
+
+    private bool IsIndependentReviewComplete => Status?.IsExternallyVerified == true &&
+        string.Equals(PolicyPackValidationState, "reviewer_validated", StringComparison.OrdinalIgnoreCase);
+
+    private string NextAction => Status?.IsFormatComplete != true
+        ? FinanceText["CompleteMissingBusinessFacts"]
+        : Status.IsUserAttested != true
+            ? FinanceText["ConfirmBusinessFacts"]
+            : FinanceText["WaitForIndependentReview"];
+
+    private static string StateClass(bool complete) => complete
+        ? "statutory-readiness__state complete"
+        : "statutory-readiness__state pending";
+
+    private string FactLabel(string fact) => fact switch
+    {
+        "legal_name" => FinanceText["LegalName"],
+        "swedish_organisation_number" => FinanceText["OrganisationNumber"],
+        "registered_address" => FinanceText["RegisteredAddress"],
+        "country_code" => FinanceText["Country"],
+        "accounting_currency" => FinanceText["AccountingCurrency"],
+        "fiscal_year_basis" => FinanceText["FiscalYearBasis"],
+        "bookkeeping_method" => FinanceText["BookkeepingMethod"],
+        "organisation_registration_effective_from" => FinanceText["RegistrationEffectiveDate"],
+        "vat_registration_number" => FinanceText["VatRegistrationNumber"],
+        "vat_registration_effective_from" => FinanceText["VatRegistrationEffectiveDate"],
+        "user_attestation" => FinanceText["TeamConfirmation"],
+        _ => FinanceText["BusinessFact"]
+    };
+}

@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auditing;
@@ -98,6 +99,9 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         if (!plan.IsReady)
         {
             var first = plan.Issues.First(x => x.IsBlocking);
+            if (first.ReasonCode == SupplierBillAccountingReasonCodes.TaxRuleUnsupported)
+                await RecordBlockedTaxDecisionAsync(command.CompanyId, command.BillId, command.ActorUserId,
+                    command.CorrelationId, plan, first, cancellationToken);
             throw Error(first.ReasonCode, first.Explanation);
         }
 
@@ -148,7 +152,8 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                     line.Sequence, line.Description, line.CostAccountId, line.AccountClassification,
                     line.TaxRuleKey, line.TaxMethod, line.TaxTreatment, line.TaxRate, line.NetAmount,
                     line.TaxAmount, line.RecoverableTaxAmount, line.NonRecoverableTaxAmount, line.GrossAmount,
-                    line.CostBaseAmount, line.RecoverableTaxBaseAmount, line.RecoverableTaxAccountId));
+                    line.CostBaseAmount, line.RecoverableTaxBaseAmount, line.RecoverableTaxAccountId,
+                    SerializeTaxFacts(line, plan, command.ActorUserId)));
         }
 
         var approval = ApprovalRequest.CreateForTarget(Guid.NewGuid(), command.CompanyId,
@@ -278,7 +283,8 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                     line.Sequence, line.Description, line.CostAccountId, line.AccountClassification,
                     line.TaxRuleKey, line.TaxMethod, line.TaxTreatment, line.TaxRate, line.NetAmount,
                     line.TaxAmount, line.RecoverableTaxAmount, line.NonRecoverableTaxAmount, line.GrossAmount,
-                    line.CostBaseAmount, line.RecoverableTaxBaseAmount, line.RecoverableTaxAccountId));
+                    line.CostBaseAmount, line.RecoverableTaxBaseAmount, line.RecoverableTaxAccountId,
+                    SerializeTaxFacts(line, plan, command.ActorUserId)));
             _dbContext.SupplierBillAccountingProfiles.Add(profile);
             await _dbContext.SaveChangesAsync(cancellationToken);
 
@@ -354,26 +360,15 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         foreach (var line in ordered)
         {
             var cost = line.CostBaseAmount + (line.Sequence == ordered[^1].Sequence ? profile.RoundingBaseAmount : 0m);
+            var retainedTaxFacts = ParseTaxFacts(line.TaxFactsJson);
+            retainedTaxFacts["documentCurrency"] = profile.DocumentCurrency;
             lines.Add(new(line.CostAccountId, isCredit ? 0m : cost, isCredit ? cost : 0m,
-                profile.BaseCurrency, line.Description, TaxFacts: new Dictionary<string, string>
-                {
-                    ["taxRuleKey"] = line.TaxRuleKey,
-                    ["taxMethod"] = line.TaxMethod,
-                    ["taxTreatment"] = line.TaxTreatment,
-                    ["taxRate"] = line.TaxRate.ToString(CultureInfo.InvariantCulture),
-                    ["documentCurrency"] = profile.DocumentCurrency
-                }));
+                profile.BaseCurrency, line.Description, TaxFacts: retainedTaxFacts));
             if (line.RecoverableTaxBaseAmount > 0m && line.RecoverableTaxAccountId.HasValue)
                 lines.Add(new(line.RecoverableTaxAccountId.Value,
                     isCredit ? 0m : line.RecoverableTaxBaseAmount,
                     isCredit ? line.RecoverableTaxBaseAmount : 0m,
-                    profile.BaseCurrency, $"Tax · {line.Description}", TaxFacts: new Dictionary<string, string>
-                    {
-                        ["taxRuleKey"] = line.TaxRuleKey,
-                        ["taxMethod"] = line.TaxMethod,
-                        ["taxTreatment"] = line.TaxTreatment,
-                        ["documentTaxAmount"] = line.TaxAmount.ToString(CultureInfo.InvariantCulture)
-                    }));
+                    profile.BaseCurrency, $"Tax · {line.Description}", TaxFacts: retainedTaxFacts));
         }
 
         var evidence = new List<ProposedAccountingEvidence>();
@@ -468,16 +463,21 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         foreach (var line in ordered)
         {
             if (!accounts.TryGetValue(line.CostAccountId, out var costAccount)) continue;
+            var taxFacts = ParseTaxFacts(line.TaxFactsJson);
             var cost = line.CostBaseAmount + (line.Sequence == ordered[^1].Sequence ? profile.RoundingBaseAmount : 0m);
             result.Add(new(costAccount.Id, line.AccountClassification, costAccount.Code, costAccount.Name,
                 isCredit ? 0m : cost, isCredit ? cost : 0m, profile.BaseCurrency,
-                line.Description, line.TaxRuleKey, line.TaxTreatment));
+                line.Description, line.TaxRuleKey, line.TaxTreatment,
+                taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
+                taxFacts.GetValueOrDefault("evidenceClassification")));
             if (line.RecoverableTaxBaseAmount > 0m && line.RecoverableTaxAccountId.HasValue &&
                 accounts.TryGetValue(line.RecoverableTaxAccountId.Value, out var taxAccount))
-                result.Add(new(taxAccount.Id, "tax_recoverable", taxAccount.Code, taxAccount.Name,
+                result.Add(new(taxAccount.Id, taxFacts.GetValueOrDefault("recoverableAccountRole") ?? "tax_recoverable", taxAccount.Code, taxAccount.Name,
                     isCredit ? 0m : line.RecoverableTaxBaseAmount,
                     isCredit ? line.RecoverableTaxBaseAmount : 0m, profile.BaseCurrency,
-                    "Recoverable tax", line.TaxRuleKey, line.TaxTreatment));
+                    "Recoverable tax", line.TaxRuleKey, line.TaxTreatment,
+                    taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
+                    taxFacts.GetValueOrDefault("evidenceClassification")));
         }
         return result;
     }
@@ -518,7 +518,11 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                 ? x.GrossAmount
                 : x.NetAmount),
             x.CostAccountId,
-            x.TaxRuleKey)).ToArray());
+            x.TaxRuleKey,
+            ReadTaxFact(x.TaxFactsJson, "lineClassification"),
+            ReadTaxFact(x.TaxFactsJson, "counterpartyJurisdiction"),
+            ReadTaxFact(x.TaxFactsJson, "counterpartyVatStatus"),
+            DeserializeEvidence(x.TaxFactsJson))).ToArray());
 
     // SQL Server preserves the declared decimal column scale on materialization (for example,
     // 1 becomes 1.00000000). The approval hash is JSON-based, so rebuild the submitted input
@@ -570,5 +574,71 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         if (companyId == Guid.Empty || billId == Guid.Empty || actorId == Guid.Empty)
             throw Error(SupplierBillAccountingReasonCodes.BillNotFound, "The supplier bill could not be found.");
     }
+    private static string SerializeTaxFacts(SupplierBillAccountingLinePlan line, SupplierBillAccountingPlan plan, Guid actorUserId) =>
+        JsonSerializer.Serialize(new Dictionary<string, string>
+    {
+        ["schemaVersion"] = "2.0",
+        ["specificationKey"] = ResolveSpecificationKey(plan.PolicyPack),
+        ["policyPackKey"] = plan.Configuration?.PolicyPackKey ?? "unknown",
+        ["policyPackVersion"] = plan.Configuration?.PolicyPackVersion ?? "unknown",
+        ["policyDefinitionHash"] = plan.PolicyPack?.DefinitionHash ?? "unknown",
+        ["taxRuleKey"] = line.TaxRuleKey, ["taxRuleVersion"] = line.TaxRuleVersion,
+        ["accountingDate"] = DateOnly.FromDateTime(plan.Bill.ReceivedUtc).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+        ["direction"] = AccountingTaxDirectionValues.Purchase,
+        ["documentType"] = plan.Bill.DocumentKind == FinanceDocumentKinds.SupplierCreditNote ? "supplier_credit_note" : "supplier_invoice",
+        ["lineClassification"] = line.LineClassification,
+        ["counterpartyJurisdiction"] = line.CounterpartyJurisdiction,
+        ["counterpartyVatStatus"] = line.CounterpartyVatStatus,
+        ["inputAmount"] = line.InputAmount.ToString(CultureInfo.InvariantCulture),
+        ["documentCurrency"] = plan.Bill.Currency,
+        ["taxMethod"] = line.TaxMethod, ["taxTreatment"] = line.TaxTreatment,
+        ["taxRate"] = line.TaxRate.ToString(CultureInfo.InvariantCulture),
+        ["taxableBasis"] = line.NetAmount.ToString(CultureInfo.InvariantCulture),
+        ["taxAmount"] = line.TaxAmount.ToString(CultureInfo.InvariantCulture),
+        ["grossAmount"] = line.GrossAmount.ToString(CultureInfo.InvariantCulture),
+        ["recoverableTaxAmount"] = line.RecoverableTaxAmount.ToString(CultureInfo.InvariantCulture),
+        ["liabilityAccountRole"] = line.LiabilityAccountRoleKey ?? "none",
+        ["recoverableAccountRole"] = line.RecoverableAccountRoleKey ?? "none",
+        ["recoverability"] = line.Recoverability,
+        ["vatBoxes"] = line.VatBoxMappings is { Count: > 0 } ? string.Join(",", line.VatBoxMappings) : "none",
+        ["evidenceClassification"] = line.EvidenceClassification,
+        ["evidence"] = JsonSerializer.Serialize(line.SuppliedEvidence ?? []),
+        ["evidenceAttestedByUserId"] = actorUserId.ToString("N"),
+        ["roundingPrecision"] = (plan.Configuration?.RoundingPrecision ?? 2).ToString(CultureInfo.InvariantCulture),
+        ["roundingMode"] = plan.Configuration?.RoundingMode ?? AccountingRoundingModeValues.MidpointToEven
+    });
+    private static string ResolveSpecificationKey(IAccountingPolicyPack? pack) =>
+        pack?.Definition.PolicyMetadata?.GetValueOrDefault("tax_specification") ?? "none";
+    private static string? ReadTaxFact(string json, string key) =>
+        ParseTaxFacts(json).GetValueOrDefault(key) is { Length: > 0 } value && value != "unknown" ? value : null;
+    private static IReadOnlyList<AccountingTaxEvidenceInput> DeserializeEvidence(string json)
+    {
+        var raw = ParseTaxFacts(json).GetValueOrDefault("evidence");
+        return string.IsNullOrWhiteSpace(raw)
+            ? []
+            : JsonSerializer.Deserialize<IReadOnlyList<AccountingTaxEvidenceInput>>(raw) ?? [];
+    }
+    private async Task RecordBlockedTaxDecisionAsync(Guid companyId, Guid billId, Guid actorUserId,
+        string? correlationId, SupplierBillAccountingPlan plan, SupplierBillAccountingIssueDto issue,
+        CancellationToken cancellationToken)
+    {
+        await _audit.WriteAsync(new AuditEventWriteRequest(companyId, AuditActorTypes.User, actorUserId,
+            AuditEventActions.AccountingTaxDecisionBlocked, AuditTargetTypes.SupplierBillAccounting,
+            billId.ToString("N"), AuditEventOutcomes.Blocked,
+            "Supplier bill accounting was blocked by the tax policy.",
+            ["finance_bill", "accounting_policy_pack"], new Dictionary<string, string?>
+            {
+                ["documentId"] = billId.ToString("N"), ["direction"] = AccountingTaxDirectionValues.Purchase,
+                ["reasonCode"] = issue.PolicyReasonCode ?? issue.ReasonCode, ["policyPackKey"] = plan.Configuration?.PolicyPackKey,
+                ["policyPackVersion"] = plan.Configuration?.PolicyPackVersion
+            }, correlationId, _timeProvider.GetUtcNow().UtcDateTime), cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+    }
+    private static Dictionary<string, string> ParseTaxFacts(string json) =>
+        JsonSerializer.Deserialize<Dictionary<string, string>>(json) ?? [];
+    private static IReadOnlyList<string> ParseList(string? value) =>
+        string.IsNullOrWhiteSpace(value) || value == "none"
+            ? []
+            : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     private static SupplierBillAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
 }

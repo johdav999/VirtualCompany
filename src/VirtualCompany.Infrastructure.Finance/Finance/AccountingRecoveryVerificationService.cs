@@ -74,7 +74,27 @@ public sealed class AccountingRecoveryVerificationService : IAccountingRecoveryV
             .Where(x => x.CompanyId == command.CompanyId && x.TargetType == AuditTargetTypes.AccountingJournal)
             .Select(x => x.TargetId).ToArrayAsync(cancellationToken);
         var auditTargetSet = auditTargets.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var statutoryExportsQuery = _dbContext.AccountingExportJobs.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == command.CompanyId && x.Status == AccountingExportStatuses.Completed &&
+                (x.ExportType == AccountingExportTypeValues.Sie4B || x.ExportType == AccountingExportTypeValues.SwedishStatutoryArchive));
+        if (command.FiscalPeriodId.HasValue) statutoryExportsQuery = statutoryExportsQuery.Where(x => x.FiscalPeriodId == command.FiscalPeriodId.Value);
+        var statutoryExports = await statutoryExportsQuery.OrderBy(x => x.RequestedUtc)
+            .Select(x => new RecoveryArchiveRow(x.Id, x.FiscalPeriodId, x.ExportType, x.StorageKey, x.Checksum,
+                x.InputChecksum, x.ManifestJson, x.ContentLength)).ToArrayAsync(cancellationToken);
+        var vatPackageQuery = _dbContext.VatReturns.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == command.CompanyId && x.Status == VatReturnStatuses.Locked);
+        if (command.FiscalPeriodId.HasValue) vatPackageQuery = vatPackageQuery.Where(x => x.FilingPeriod.FiscalPeriodId == command.FiscalPeriodId.Value);
+        var vatPackages = await vatPackageQuery.OrderBy(x => x.FinalizedUtc)
+            .Select(x => new RecoveryVatPackageRow(x.Id, x.FilingPeriodId, x.PackageStorageKey, x.PackageChecksum, x.PackageContentLength))
+            .ToArrayAsync(cancellationToken);
         var issues = new List<AccountingRecoveryIssueDto>();
+
+        foreach (var export in statutoryExports.Where(x => string.IsNullOrWhiteSpace(x.StorageKey) ||
+                     string.IsNullOrWhiteSpace(x.Checksum) || string.IsNullOrWhiteSpace(x.InputChecksum) ||
+                     string.IsNullOrWhiteSpace(x.ManifestJson) || x.ContentLength is null or <= 0))
+            issues.Add(Issue(AccountingOperationsReasonCodes.RestoreStatutoryArchiveMetadataMissing,
+                "A restored statutory export is missing its object reference, checksums, manifest, or content length.",
+                "accounting_export", export.Id));
 
         foreach (var duplicate in entries.Where(x => x.VoucherSeriesId.HasValue && x.VoucherFiscalYear.HasValue && x.VoucherSequenceNumber.HasValue)
                      .GroupBy(x => new { x.VoucherSeriesId, x.VoucherFiscalYear, x.VoucherSequenceNumber })
@@ -122,6 +142,19 @@ public sealed class AccountingRecoveryVerificationService : IAccountingRecoveryV
                         "The restored source document cannot be opened from object storage.", "document", evidence.DocumentId));
                 }
             }
+            foreach (var export in statutoryExports.Where(x => !string.IsNullOrWhiteSpace(x.StorageKey) && !string.IsNullOrWhiteSpace(x.Checksum)))
+                await VerifyStoredObjectAsync(export.StorageKey!, export.Checksum!, export.Id,
+                    AccountingOperationsReasonCodes.RestoreStatutoryArchiveMissing,
+                    AccountingOperationsReasonCodes.RestoreStatutoryArchiveHashMismatch,
+                    "accounting_export", issues, cancellationToken);
+            foreach (var package in vatPackages.Where(x => !string.IsNullOrWhiteSpace(x.StorageKey) && !string.IsNullOrWhiteSpace(x.Checksum)))
+                await VerifyStoredObjectAsync(package.StorageKey!, package.Checksum!, package.Id,
+                    AccountingOperationsReasonCodes.RestoreVatPackageMissing,
+                    AccountingOperationsReasonCodes.RestoreVatPackageHashMismatch,
+                    "vat_return", issues, cancellationToken);
+            foreach (var package in vatPackages.Where(x => string.IsNullOrWhiteSpace(x.StorageKey) || string.IsNullOrWhiteSpace(x.Checksum) || x.ContentLength is null or <= 0))
+                issues.Add(Issue(AccountingOperationsReasonCodes.RestoreVatPackageMissing,
+                    "A finalized VAT package is missing its object reference, checksum, or content length.", "vat_return", package.Id));
         }
 
         var periods = command.FiscalPeriodId.HasValue
@@ -175,7 +208,9 @@ public sealed class AccountingRecoveryVerificationService : IAccountingRecoveryV
                 .Select(x => new { x.LedgerEntryId, x.DocumentId, x.ContentHash, x.StorageKey }),
             auditTargets = auditTargets.OrderBy(x => x),
             snapshotCount,
-            providerReferenceCount
+            providerReferenceCount,
+            statutoryExports,
+            vatPackages
         });
         var verifiedUtc = _timeProvider.GetUtcNow().UtcDateTime;
         var result = new AccountingRecoveryVerificationDto(command.CompanyId, command.FiscalPeriodId,
@@ -191,7 +226,7 @@ public sealed class AccountingRecoveryVerificationService : IAccountingRecoveryV
             result.IsValid
                 ? "Accounting database and evidence integrity verification completed successfully."
                 : "Accounting recovery verification found operator-visible integrity issues.",
-            ["ledger_entries", "ledger_entry_lines", "source_documents", "audit_events", "report_snapshots", "provider_references"],
+            ["ledger_entries", "ledger_entry_lines", "source_documents", "audit_events", "report_snapshots", "provider_references", "statutory_archives", "vat_packages"],
             new Dictionary<string, string?>
             {
                 ["fiscalPeriodId"] = command.FiscalPeriodId?.ToString("D"),
@@ -219,6 +254,23 @@ public sealed class AccountingRecoveryVerificationService : IAccountingRecoveryV
         return Convert.ToHexString(hasher.GetHashAndReset()).ToLowerInvariant();
     }
 
+    private async Task VerifyStoredObjectAsync(string storageKey, string expectedHash, Guid entityId,
+        string missingCode, string mismatchCode, string entityType, List<AccountingRecoveryIssueDto> issues,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await using var stream = await _documentStorage.OpenReadAsync(storageKey, cancellationToken);
+            var actualHash = await ComputeSha256Async(stream, cancellationToken);
+            if (!string.Equals(actualHash, expectedHash, StringComparison.OrdinalIgnoreCase))
+                issues.Add(Issue(mismatchCode, "A restored statutory archive object does not match its retained SHA-256 checksum.", entityType, entityId));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidOperationException)
+        {
+            issues.Add(Issue(missingCode, "A restored statutory archive object cannot be opened from object storage.", entityType, entityId));
+        }
+    }
+
     private static string Sha256(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value))).ToLowerInvariant();
 
@@ -230,4 +282,8 @@ public sealed class AccountingRecoveryVerificationService : IAccountingRecoveryV
         decimal DebitAmount, decimal CreditAmount, string Currency, string? TaxFactsJson);
     private sealed record RecoveryEvidenceRow(Guid Id, Guid LedgerEntryId, Guid DocumentId,
         string ContentHash, string StorageKey, string OriginalFileName);
+    private sealed record RecoveryArchiveRow(Guid Id, Guid FiscalPeriodId, string ExportType, string? StorageKey,
+        string? Checksum, string? InputChecksum, string? ManifestJson, long? ContentLength);
+    private sealed record RecoveryVatPackageRow(Guid Id, Guid FilingPeriodId, string? StorageKey,
+        string? Checksum, long? ContentLength);
 }

@@ -1,0 +1,188 @@
+<section class="vat-workspace" aria-labelledby="vat-workspace-title" aria-busy="@IsLoading">
+    <header class="vat-workspace__header">
+        <div>
+            <span class="dashboard-kicker">@FinanceText["SwedishVatKicker"]</span>
+            <h2 id="vat-workspace-title">@FinanceText["VatAndStatutoryExports"]</h2>
+            <p>@FinanceText["VatWorkspaceDescription"]</p>
+        </div>
+        <div class="vat-workspace__period">
+            <label for="vat-filing-period">@FinanceText["VatFilingPeriod"]</label>
+            <select id="vat-filing-period" class="form-select" value="@SelectedFilingPeriodId" @onchange="ChangePeriodAsync" disabled="@(FilingPeriods.Count == 0 || IsLoading)">
+                @if (FilingPeriods.Count == 0)
+                {
+                    <option value="">@FinanceText["NoVatPeriods"]</option>
+                }
+                @foreach (var period in FilingPeriods)
+                {
+                    <option value="@period.Id">@period.PeriodCode · @period.StartDate.ToString("d")–@period.EndDate.ToString("d")</option>
+                }
+            </select>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="alert alert-danger" role="alert"><strong>@FinanceText["VatWorkspaceUnavailable"]</strong><div>@ErrorMessage</div></div>
+    }
+
+    <nav class="vat-workspace__tabs" aria-label="@FinanceText["VatWorkspaceViews"]">
+        <button type="button" class="@(ActiveTab == "return" ? "active" : null)" aria-pressed="@(ActiveTab == "return")" @onclick='() => ActiveTab = "return"'>@FinanceText["VatReturn"]</button>
+        <button type="button" class="@(ActiveTab == "sources" ? "active" : null)" aria-pressed="@(ActiveTab == "sources")" @onclick='() => ActiveTab = "sources"'>@FinanceText["SourcesAndReconciliation"]</button>
+        <button type="button" class="@(ActiveTab == "corrections" ? "active" : null)" aria-pressed="@(ActiveTab == "corrections")" @onclick='() => ActiveTab = "corrections"'>@FinanceText["Corrections"]</button>
+        <button type="button" class="@(ActiveTab == "exports" ? "active" : null)" aria-pressed="@(ActiveTab == "exports")" @onclick='() => ActiveTab = "exports"'>@FinanceText["StatutoryExports"]</button>
+    </nav>
+
+    @if (IsLoading)
+    {
+        <div class="vat-workspace__state" role="status"><div class="spinner-border text-primary" aria-hidden="true"></div><h3>@FinanceText["LoadingVatWorkspace"]</h3><p>@FinanceText["LoadingVatWorkspaceHelp"]</p></div>
+    }
+    else if (ActiveTab == "exports")
+    {
+        <div class="vat-export-layout">
+            <section class="vat-card">
+                <div class="vat-card__header"><div><h3>@FinanceText["StatutoryExports"]</h3><p>@FinanceText["StatutoryExportsHelp"]</p></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="OnRefreshExports" disabled="@IsActing">@CommonText["Refresh"]</button></div>
+                @if (CanManage)
+                {
+                    <div class="vat-export-actions">
+                        <button class="btn btn-primary" type="button" @onclick='() => OnRequestExport.InvokeAsync(AccountingExportApiValues.Sie4B)' disabled="@IsActing">@FinanceText["CreateSieExport"]</button>
+                        <button class="btn btn-outline-primary" type="button" @onclick='() => OnRequestExport.InvokeAsync(AccountingExportApiValues.SwedishStatutoryArchive)' disabled="@IsActing">@FinanceText["CreateStatutoryArchive"]</button>
+                    </div>
+                }
+                @if (StatutoryExports.Count == 0)
+                {
+                    <div class="vat-workspace__state compact"><span aria-hidden="true">⇩</span><h3>@FinanceText["NoStatutoryExports"]</h3><p>@FinanceText["NoStatutoryExportsHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="vat-export-list" role="list">
+                        @foreach (var job in StatutoryExports)
+                        {
+                            <article role="listitem">
+                                <div><strong>@ExportTypeLabel(job.ExportType)</strong><span>@FinanceText["RequestedAt", LocalDateTime.DateTime(job.RequestedUtc)]</span><small>@FinanceText["ExportAttempt", job.AttemptCount] · @FinanceText["AvailableUntil", LocalDateTime.DateTime(job.ExpiresUtc)]</small>@if (!string.IsNullOrWhiteSpace(job.FailureSummary)) { <p class="text-danger">@job.FailureSummary</p> }</div>
+                                <div class="vat-export-list__actions"><span class="status-badge @StatusClass(job.Status)">@StatusLabel(job.Status)</span>@if (job.CanDownload) { <a class="btn btn-sm btn-outline-primary" href="@ExportDownloadUrl(job.Id)">@FinanceText["Download"]</a> } else if (CanManage && string.Equals(job.Status, "failed", StringComparison.OrdinalIgnoreCase)) { <button class="btn btn-sm btn-outline-primary" type="button" @onclick="() => OnRetryExport.InvokeAsync(job)" disabled="@IsActing">@FinanceText["TryAgain"]</button> }</div>
+                            </article>
+                        }
+                    </div>
+                }
+            </section>
+            @LauraCard
+        </div>
+    }
+    else if (CurrentReturn is null)
+    {
+        <div class="vat-workspace__state"><span aria-hidden="true">◇</span><h3>@FinanceText["NoVatReturn"]</h3><p>@FinanceText["NoVatReturnHelp"]</p>@if (CanManage) { <button class="btn btn-primary" type="button" @onclick="OnCalculate" disabled="@IsActing">@FinanceText["CalculateVatReturn"]</button> }</div>
+    }
+    else if (ActiveTab == "sources")
+    {
+        <div class="vat-source-layout">
+            <section class="vat-card">
+                <div class="vat-card__header"><div><h3>@FinanceText["SourceDrillDown"]</h3><p>@FinanceText["SourceDrillDownHelp", CurrentReturn.IncludedSourceCount]</p></div></div>
+                @if (CurrentReturn.Contributions.Count == 0)
+                {
+                    <div class="vat-workspace__state compact"><h3>@FinanceText["NoVatSources"]</h3><p>@FinanceText["NoVatSourcesHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="table-responsive"><table class="table vat-table"><thead><tr><th>@FinanceText["Voucher"]</th><th>@FinanceText["Date"]</th><th>@FinanceText["VatBox"]</th><th>@FinanceText["Amount"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead><tbody>@foreach (var source in CurrentReturn.Contributions) { <tr><td><strong>@source.VoucherNumber</strong></td><td>@source.PostingDate.ToString("d")</td><td>@source.BoxCode</td><td>@Money(source.ExactAmount, source.Currency)</td><td><a href="@JournalHref(source.LedgerEntryId)" aria-label="@FinanceText["OpenVoucher", source.VoucherNumber]">@FinanceText["OpenSource"]</a></td></tr> }</tbody></table></div>
+                }
+            </section>
+            <aside class="vat-card vat-reconciliation">
+                <h3>@FinanceText["LedgerReconciliation"]</h3>
+                <strong class="@(ControlAccounts?.IsReconciled == true ? "ok" : "warn")">@FinanceText[ControlAccounts?.IsReconciled == true ? "Reconciled" : "NeedsReview"]</strong>
+                <dl><div><dt>@FinanceText["ControlAccounts"]</dt><dd>@(ControlAccounts?.Accounts.Count ?? 0)</dd></div><div><dt>@FinanceText["Difference"]</dt><dd>@Money(ControlAccounts?.Accounts.Sum(x => Math.Abs(x.Difference)), CurrentReturn.Currency)</dd></div></dl>
+                <p>@FinanceText[ControlAccounts?.IsReconciled == true ? "VatReconciliationCompleteHelp" : "VatReconciliationBlockedHelp"]</p>
+            </aside>
+        </div>
+    }
+    else if (ActiveTab == "corrections")
+    {
+        <div class="vat-source-layout">
+            <section class="vat-card">
+                <div class="vat-card__header"><div><h3>@FinanceText["CorrectionHistory"]</h3><p>@FinanceText["CorrectionHistoryHelp"]</p></div></div>
+                @if (RelatedReturns.Count == 0)
+                {
+                    <div class="vat-workspace__state compact"><span aria-hidden="true">✓</span><h3>@FinanceText["NoVatCorrections"]</h3><p>@FinanceText["NoVatCorrectionsHelp"]</p></div>
+                }
+                else
+                {
+                    @foreach (var correction in RelatedReturns.OrderByDescending(x => x.Version))
+                    {
+                        <article class="vat-correction"><div><strong>@FinanceText["CorrectionVersion", correction.Version]</strong><span>@StatusLabel(correction.Status)</span></div><p>@(correction.CorrectionReason ?? FinanceText["CorrectionReasonUnavailable"])</p><small>@(correction.CorrectionEvidenceReference ?? FinanceText["CorrectionEvidenceUnavailable"])</small></article>
+                    }
+                }
+            </section>
+            <aside class="vat-card">
+                <h3>@FinanceText["CreateCorrection"]</h3>
+                <p>@FinanceText["CreateCorrectionHelp"]</p>
+                <label for="vat-correction-reason">@FinanceText["CorrectionReason"]</label><textarea id="vat-correction-reason" class="form-control" rows="3" @bind="CorrectionReason"></textarea>
+                <label for="vat-correction-evidence">@FinanceText["EvidenceReference"]</label><input id="vat-correction-evidence" class="form-control" @bind="CorrectionEvidence" />
+                <button class="btn btn-primary" type="button" @onclick="SubmitCorrectionAsync" disabled="@(!CanSubmitCorrection)">@FinanceText["CreateCorrection"]</button>
+                @if (!HasAction("create_correction")) { <small>@FinanceText["ActionUnavailableFromReturnState"]</small> }
+            </aside>
+        </div>
+    }
+    else
+    {
+        <div class="vat-overview-grid">
+            <section class="vat-card vat-summary-card">
+                <div class="vat-card__header"><div><span class="status-badge @StatusClass(CurrentReturn.Status)">@StatusLabel(CurrentReturn.Status)</span><h3>@FinanceText["VatReturnForPeriod", CurrentReturn.PeriodCode]</h3></div>@if (CurrentReturn.IsStale) { <span class="status-badge status-badge-warning">@FinanceText["StaleData"]</span> }</div>
+                <span>@FinanceText[CurrentReturn.SettlementExact >= 0 ? "VatPayable" : "VatRefundable"]</span><strong class="vat-settlement">@Money(Math.Abs(CurrentReturn.SettlementExact), CurrentReturn.Currency)</strong><small>@FinanceText["VatFilingRounded", CurrentReturn.SettlementFilingAmount]</small>
+            </section>
+            <section class="vat-card"><h3>@FinanceText["ReadinessSummary"]</h3><dl class="vat-readiness-list"><div><dt>@FinanceText["IncludedSources"]</dt><dd>@CurrentReturn.IncludedSourceCount</dd></div><div><dt>@FinanceText["ExcludedSources"]</dt><dd>@CurrentReturn.ExcludedSourceCount</dd></div><div><dt>@FinanceText["ApprovalStatus"]</dt><dd>@(string.IsNullOrWhiteSpace(CurrentReturn.ApprovalStatus) ? FinanceText["NotRequested"] : StatusLabel(CurrentReturn.ApprovalStatus))</dd></div><div><dt>@FinanceText["Reconciliation"]</dt><dd>@FinanceText[ControlAccounts?.IsReconciled == true ? "Reconciled" : "NeedsReview"]</dd></div></dl></section>
+            <section class="vat-card vat-action-card"><h3>@FinanceText["WhatYouCanDo"]</h3><p>@NextActionText</p><div class="vat-action-card__buttons">@if (CanManage && HasAction("calculate")) { <button class="btn btn-primary" @onclick="OnCalculate" disabled="@IsActing">@FinanceText["CalculateVatReturn"]</button> }@if (CanManage && HasAction("recalculate")) { <button class="btn btn-primary" @onclick="OnCalculate" disabled="@IsActing">@FinanceText["RecalculateVatReturn"]</button> }@if (CanManage && HasAction("request_approval")) { <button class="btn btn-primary" @onclick="OnRequestApproval" disabled="@IsActing">@FinanceText["RequestApproval"]</button> }@if (CanManage && HasAction("finalize")) { <button class="btn btn-primary" @onclick="OnFinalize" disabled="@IsActing">@FinanceText["FinalizeVatReturn"]</button> }@if (HasAction("download_package") && CurrentReturn.CanDownloadPackage) { <a class="btn btn-outline-primary" href="@PackageDownloadUrl">@FinanceText["DownloadVatPackage"]</a> }</div>@if (!CanManage) { <small>@FinanceText["AccountingAdminRequiredForVatActions"]</small> } else if (!HasAnyPrimaryAction) { <small>@FinanceText["ActionUnavailableFromReturnState"]</small> }</section>
+        </div>
+
+        @if (CurrentReturn.IsStale || CurrentReturn.Issues.Count > 0)
+        {
+            <section class="vat-card vat-issues" aria-labelledby="vat-blocking-title"><div class="vat-card__header"><div><h3 id="vat-blocking-title">@FinanceText["BlockingIssues"]</h3><p>@FinanceText["BlockingIssuesHelp"]</p></div><span>@CurrentReturn.Issues.Count(x => x.IsBlocking)</span></div>@if (CurrentReturn.IsStale) { <div class="vat-issue"><span aria-hidden="true">!</span><div><strong>@FinanceText["VatReturnIsStale"]</strong><p>@FinanceText["VatReturnIsStaleHelp"]</p></div></div> }@foreach (var issue in CurrentReturn.Issues) { <div class="vat-issue"><span aria-hidden="true">@(issue.IsBlocking ? "!" : "i")</span><div><strong>@(issue.IsBlocking ? FinanceText["BlocksFinalization"] : FinanceText["NeedsReview"])</strong><p>@issue.Explanation</p>@if (issue.LedgerEntryId is Guid ledgerId) { <a href="@JournalHref(ledgerId)">@FinanceText["OpenSource"]</a> }</div></div> }</section>
+        }
+
+        <div class="vat-results-layout">
+            <section class="vat-card"><div class="vat-card__header"><div><h3>@FinanceText["VatBoxResults"]</h3><p>@FinanceText["VatBoxResultsHelp"]</p></div></div>@if (CurrentReturn.Boxes.Count == 0) { <div class="vat-workspace__state compact"><h3>@FinanceText["NoVatBoxResults"]</h3><p>@FinanceText["NoVatBoxResultsHelp"]</p></div> } else { <div class="table-responsive"><table class="table vat-table"><thead><tr><th>@FinanceText["VatBox"]</th><th>@FinanceText["Description"]</th><th>@FinanceText["Sources"]</th><th>@FinanceText["ExactAmount"]</th><th>@FinanceText["FilingAmount"]</th></tr></thead><tbody>@foreach (var box in CurrentReturn.Boxes) { <tr><td><strong>@box.BoxCode</strong></td><td>@BoxDescription(box)</td><td>@box.SourceCount</td><td>@Money(box.ExactAmount, CurrentReturn.Currency)</td><td><strong>@Money(box.FilingAmount, CurrentReturn.Currency)</strong></td></tr> }</tbody></table></div> }</section>
+            @LauraCard
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public bool IsActing { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public IReadOnlyList<VatFilingPeriodResponse> FilingPeriods { get; set; } = [];
+    [Parameter] public Guid? SelectedFilingPeriodId { get; set; }
+    [Parameter] public VatReturnResponse? CurrentReturn { get; set; }
+    [Parameter] public IReadOnlyList<VatReturnResponse> RelatedReturns { get; set; } = [];
+    [Parameter] public ControlAccountReconciliationResponse? ControlAccounts { get; set; }
+    [Parameter] public IReadOnlyList<AccountingExportJobResponse> Exports { get; set; } = [];
+    [Parameter] public string PackageDownloadUrl { get; set; } = string.Empty;
+    [Parameter] public Func<Guid, string> JournalHref { get; set; } = _ => "#";
+    [Parameter] public Func<Guid, string> ExportDownloadUrl { get; set; } = _ => "#";
+    [Parameter] public EventCallback<Guid> OnPeriodChanged { get; set; }
+    [Parameter] public EventCallback OnCalculate { get; set; }
+    [Parameter] public EventCallback OnRequestApproval { get; set; }
+    [Parameter] public EventCallback OnFinalize { get; set; }
+    [Parameter] public EventCallback<VatReturnCorrectionDraft> OnCreateCorrection { get; set; }
+    [Parameter] public EventCallback<string> OnRequestExport { get; set; }
+    [Parameter] public EventCallback<AccountingExportJobResponse> OnRetryExport { get; set; }
+    [Parameter] public EventCallback OnRefreshExports { get; set; }
+
+    private string ActiveTab { get; set; } = "return";
+    private string CorrectionReason { get; set; } = string.Empty;
+    private string CorrectionEvidence { get; set; } = string.Empty;
+    private IReadOnlyList<AccountingExportJobResponse> StatutoryExports => Exports.Where(x => x.ExportType is AccountingExportApiValues.Sie4B or AccountingExportApiValues.SwedishStatutoryArchive).OrderByDescending(x => x.RequestedUtc).ToArray();
+    private bool HasAnyPrimaryAction => CurrentReturn?.AllowedActions.Any(x => x is "calculate" or "recalculate" or "request_approval" or "finalize" or "download_package") == true;
+    private bool CanSubmitCorrection => CanManage && !IsActing && HasAction("create_correction") && CorrectionReason.Trim().Length >= 10 && CorrectionEvidence.Trim().Length >= 3;
+    private string NextActionText => CurrentReturn is null ? FinanceText["CalculateVatReturnNext"] : CurrentReturn.IsStale ? FinanceText["RecalculateVatReturnNext"] : CurrentReturn.AllowedActions.Contains("request_approval", StringComparer.OrdinalIgnoreCase) ? FinanceText["RequestVatApprovalNext"] : CurrentReturn.AllowedActions.Contains("finalize", StringComparer.OrdinalIgnoreCase) ? FinanceText["FinalizeVatReturnNext"] : CurrentReturn.CanDownloadPackage ? FinanceText["DownloadVatPackageNext"] : FinanceText["ReviewVatIssuesNext"];
+    private RenderFragment LauraCard => @<aside class="vat-card vat-laura-card"><div><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraFinanceManager"]</strong><small>@FinanceText["FinanceManager"]</small></div></div><p>@FinanceText["LauraVatAdvice"]</p><ul><li>@FinanceText["LauraVatGrounded"]</li><li>@FinanceText["LauraCannotFinalizeVat"]</li><li><a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, CompanyId)">@FinanceText["ViewSourceJournals"]</a></li></ul></aside>;
+
+    private bool HasAction(string action) => CurrentReturn?.AllowedActions.Contains(action, StringComparer.OrdinalIgnoreCase) == true;
+    private Task ChangePeriodAsync(ChangeEventArgs args) => Guid.TryParse(args.Value?.ToString(), out var id) ? OnPeriodChanged.InvokeAsync(id) : Task.CompletedTask;
+    private async Task SubmitCorrectionAsync() { if (!CanSubmitCorrection) return; await OnCreateCorrection.InvokeAsync(new(CorrectionReason.Trim(), CorrectionEvidence.Trim())); CorrectionReason = string.Empty; CorrectionEvidence = string.Empty; }
+    private string StatusLabel(string status) => FinanceStatusPresenter.Present(status, FinanceText, CommonText);
+    private static string StatusClass(string status) => status.Trim().ToLowerInvariant() switch { "approved" or "locked" or "completed" => "status-badge-success", "failed" => "status-badge-danger", "needs_review" or "retry_scheduled" => "status-badge-warning", _ => "" };
+    private string ExportTypeLabel(string value) => value switch { AccountingExportApiValues.Sie4B => FinanceText["Sie4BExport"], AccountingExportApiValues.SwedishStatutoryArchive => FinanceText["SwedishStatutoryArchive"], _ => FinanceText["AccountingExport"] };
+    private string BoxDescription(VatReturnBoxResultResponse box) => FinanceText["VatBoxDescription", box.BoxCode, StatusLabel(box.FactType)];
+    private static string Money(decimal? amount, string? currency) => amount.HasValue ? $"{amount.Value:N2} {currency}".Trim() : "—";
+}

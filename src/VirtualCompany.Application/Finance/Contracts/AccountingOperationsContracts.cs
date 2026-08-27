@@ -13,6 +13,11 @@ public static class AccountingOperationsReasonCodes
     public const string RestoreSourceLinkMissing = "accounting_restore_source_link_missing";
     public const string RestoreAuditReferenceMissing = "accounting_restore_audit_reference_missing";
     public const string RestoreSnapshotMismatch = "accounting_restore_snapshot_mismatch";
+    public const string RestoreStatutoryArchiveMetadataMissing = "accounting_restore_statutory_archive_metadata_missing";
+    public const string RestoreStatutoryArchiveMissing = "accounting_restore_statutory_archive_missing";
+    public const string RestoreStatutoryArchiveHashMismatch = "accounting_restore_statutory_archive_hash_mismatch";
+    public const string RestoreVatPackageMissing = "accounting_restore_vat_package_missing";
+    public const string RestoreVatPackageHashMismatch = "accounting_restore_vat_package_hash_mismatch";
 }
 
 public static class AccountingReadinessStatuses

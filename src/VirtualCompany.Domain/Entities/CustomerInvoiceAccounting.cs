@@ -234,7 +234,8 @@ public sealed class CustomerInvoiceAccountingLine : ICompanyOwnedEntity
     public CustomerInvoiceAccountingLine(
         Guid id, Guid companyId, Guid profileId, int sequence, string description,
         string taxRuleKey, string taxMethod, decimal taxRate, decimal netAmount,
-        decimal taxAmount, decimal grossAmount, decimal netBaseAmount, decimal taxBaseAmount, Guid? taxPayableAccountId)
+        decimal taxAmount, decimal grossAmount, decimal netBaseAmount, decimal taxBaseAmount, Guid? taxPayableAccountId,
+        string taxFactsJson = "{}")
     {
         if (companyId == Guid.Empty || profileId == Guid.Empty || sequence < 1) throw new ArgumentException("Company, profile, and sequence are required.");
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -251,6 +252,7 @@ public sealed class CustomerInvoiceAccountingLine : ICompanyOwnedEntity
         NetBaseAmount = decimal.Round(netBaseAmount, 6, MidpointRounding.ToEven);
         TaxBaseAmount = decimal.Round(taxBaseAmount, 6, MidpointRounding.ToEven);
         TaxPayableAccountId = taxPayableAccountId;
+        TaxFactsJson = Normalize(taxFactsJson, nameof(taxFactsJson), 8000);
     }
 
     public Guid Id { get; private set; }
@@ -267,6 +269,7 @@ public sealed class CustomerInvoiceAccountingLine : ICompanyOwnedEntity
     public decimal NetBaseAmount { get; private set; }
     public decimal TaxBaseAmount { get; private set; }
     public Guid? TaxPayableAccountId { get; private set; }
+    public string TaxFactsJson { get; private set; } = "{}";
     public CustomerInvoiceAccountingProfile Profile { get; private set; } = null!;
 
     private static string Normalize(string value, string name, int maxLength)
