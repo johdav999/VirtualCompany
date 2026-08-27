@@ -5,17 +5,17 @@ using VirtualCompany.Application.Finance;
 
 namespace VirtualCompany.Infrastructure.Finance;
 
-public sealed class SwedishCandidateAccountingPolicyPack : IAccountingPolicyPack
+public sealed class SwedishDomesticVatCandidatePackV1_1 : IAccountingPolicyPack
 {
     public const string ChartTemplateKey = "swedish-domestic-vat-candidate-v2";
     public const string DomesticSales25RuleKey = "se_domestic_sales_25";
     public const string DomesticPurchase25RuleKey = "se_domestic_purchase_25_full_recovery";
 
-    public SwedishCandidateAccountingPolicyPack()
+    public SwedishDomesticVatCandidatePackV1_1()
     {
         Definition = new AccountingPolicyPackDefinition(
             AccountingPolicyPackDefaults.SwedishCandidatePackKey,
-            AccountingPolicyPackDefaults.SwedishCandidateVersion,
+            AccountingPolicyPackDefaults.SwedishDomesticVatCandidateVersion,
             "Sweden statutory foundation candidate",
             CountryOrRegion: "SE",
             IsCountryNeutral: false,
@@ -123,17 +123,7 @@ public sealed class SwedishCandidateAccountingPolicyPack : IAccountingPolicyPack
                 "Swedish retention duration and period-reopening behavior are unverified in this candidate. Statutory archive capabilities remain disabled."),
             SupportedExports: ["generic_csv", "generic_json"],
             SupportedCapabilities: ["double_entry_bookkeeping", "generic_financial_statements", "swedish_statutory_profile", AccountingPolicyCapabilityKeys.CountrySpecificTax, AccountingPolicyCapabilityKeys.CountrySpecificReporting],
-            PolicyMetadata: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
-            {
-                ["jurisdiction"] = "SE",
-                ["chart_template"] = ChartTemplateKey,
-                ["tax_specification"] = "sweden-domestic-vat-launch-2026.1",
-                ["tax_scope"] = "domestic_standard_25_sales_and_full_recovery_purchases",
-                ["review_state"] = "review_pending",
-                ["invoice_policy_hook"] = "unverified",
-                ["retention_policy"] = "unverified",
-                ["lock_policy"] = "unverified"
-            },
+            PolicyMetadata: CreatePolicyMetadata(),
             CapabilityStates: new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
             {
                 [AccountingPolicyCapabilityKeys.CountrySpecificTax] = "supported_unvalidated_limited_scope",
@@ -149,4 +139,20 @@ public sealed class SwedishCandidateAccountingPolicyPack : IAccountingPolicyPack
 
     public AccountingPolicyPackDefinition Definition { get; }
     public string DefinitionHash { get; }
+
+    private static IReadOnlyDictionary<string, string> CreatePolicyMetadata()
+    {
+        var metadata = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["jurisdiction"] = "SE",
+            ["chart_template"] = ChartTemplateKey,
+            ["tax_specification"] = "sweden-domestic-vat-launch-2026.1",
+            ["tax_scope"] = "domestic_standard_25_sales_and_full_recovery_purchases",
+            ["review_state"] = "review_pending",
+            ["invoice_policy_hook"] = "unverified",
+            ["retention_policy"] = "unverified",
+            ["lock_policy"] = "unverified"
+        };
+        return metadata;
+    }
 }

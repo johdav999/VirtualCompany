@@ -128,6 +128,64 @@ public sealed class AccountingAdministrationApiIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.Forbidden, crossTenantPeriodCreate.StatusCode);
     }
 
+    [Fact]
+    public async Task Bas_catalogue_creation_requires_confirmations_and_filters_existing_company_accounts()
+    {
+        var seed = await SeedAsync();
+        using var client = CreateClient(seed.OwnerSubject, seed.OwnerEmail);
+        using var setup = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/setup/complete",
+            SetupRequest(seed.CompanyId));
+        setup.EnsureSuccessStatusCode();
+
+        var cataloguePath = $"/internal/companies/{seed.CompanyId:D}/finance/accounting/chart-catalogs/bas-2026/1.1/accounts?search=1510&excludeExisting=false";
+        using var catalogue = await client.GetAsync(cataloguePath);
+        var catalogueBody = await catalogue.Content.ReadAsStringAsync();
+        Assert.True(catalogue.IsSuccessStatusCode, catalogueBody);
+        using var catalogueJson = JsonDocument.Parse(catalogueBody);
+        var sourceAccount = Assert.Single(catalogueJson.RootElement.GetProperty("accounts").EnumerateArray());
+        Assert.False(sourceAccount.GetProperty("isAlreadyAdded").GetBoolean());
+        Assert.True(sourceAccount.GetProperty("requiresSemanticsConfirmation").GetBoolean());
+        Assert.True(sourceAccount.GetProperty("requiresCompanySuitabilityConfirmation").GetBoolean());
+
+        using var rejected = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/accounts/from-chart-catalog",
+            new
+            {
+                catalogKey = "bas-2026",
+                catalogVersion = "1.1",
+                code = "1510",
+                accountClass = "asset",
+                normalBalance = "debit",
+                accountingSemanticsConfirmed = false,
+                companySuitabilityConfirmed = true,
+                effectiveFrom = new DateOnly(2026, 1, 1)
+            });
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+
+        using var created = await client.PostAsJsonAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/accounts/from-chart-catalog",
+            new
+            {
+                catalogKey = "bas-2026",
+                catalogVersion = "1.1",
+                code = "1510",
+                accountClass = "asset",
+                normalBalance = "debit",
+                accountingSemanticsConfirmed = true,
+                companySuitabilityConfirmed = true,
+                effectiveFrom = new DateOnly(2026, 1, 1)
+            });
+        Assert.Equal(HttpStatusCode.OK, created.StatusCode);
+
+        using var filtered = await client.GetAsync(
+            $"/internal/companies/{seed.CompanyId:D}/finance/accounting/chart-catalogs/bas-2026/1.1/accounts?search=1510&excludeExisting=true");
+        filtered.EnsureSuccessStatusCode();
+        using var filteredJson = JsonDocument.Parse(await filtered.Content.ReadAsStringAsync());
+        Assert.Equal(0, filteredJson.RootElement.GetProperty("matchedAccountCount").GetInt32());
+        Assert.Empty(filteredJson.RootElement.GetProperty("accounts").EnumerateArray());
+    }
+
     private async Task<Seed> SeedAsync()
     {
         var companyId = Guid.NewGuid();

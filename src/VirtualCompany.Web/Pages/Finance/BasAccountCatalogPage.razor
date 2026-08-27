@@ -1,0 +1,101 @@
+@page "/finance/accounting/accounts/bas"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["BasCatalogueTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage" Title="@FinanceText["BasCatalogueTitle"]" Description="@FinanceText["BasCatalogueDescription"]" LoadingMessage="@FinanceText["BasCatalogueLoading"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <div class="bas-catalogue-heading">
+        <div><span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span><h2>@FinanceText["BasCatalogueTitle"]</h2><p>@FinanceText["BasCatalogueHelp"]</p></div>
+        <a class="btn btn-outline-secondary" href="/finance/accounting/accounts">@FinanceText["BackToChartOfAccounts"]</a>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage))
+    {
+        <div class="alert alert-success" role="status">@ActionMessage</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(ActionError))
+    {
+        <div class="alert alert-danger" role="alert"><strong>@FinanceText["AccountingActionFailed"]</strong><div>@ActionError</div></div>
+    }
+
+    @if (Catalog is not null)
+    {
+        <section class="bas-source-card" aria-label="@FinanceText["BasSourceDetails"]">
+            <div class="bas-source-card__status" aria-hidden="true">✓</div>
+            <div>
+                <span class="dashboard-kicker">@FinanceText["BasSourceVerified"]</span><h3>@Catalog.DisplayName</h3><p>@FinanceText["BasSourceVerifiedHelp"]</p>
+                <details class="bas-source-limitation"><summary>@FinanceText["BasSourceLimitations"]</summary><ul>@foreach (var limitation in Catalog.Limitations){<li>@limitation</li>}</ul></details>
+            </div>
+            <dl><div><dt>@FinanceText["SourceFile"]</dt><dd>@Catalog.SourceFileName</dd></div><div><dt>@FinanceText["SourceFingerprint"]</dt><dd><code title="@Catalog.SourceSha256">@ShortHash(Catalog.SourceSha256)</code></dd></div></dl>
+        </section>
+    }
+
+    <section class="bas-filter-card" aria-label="@FinanceText["BasCatalogueFilters"]">
+        <div class="bas-filter-card__search"><label for="bas-search">@FinanceText["SearchAccounts"]</label><InputText id="bas-search" class="form-control" placeholder="@FinanceText["BasSearchPlaceholder"]" @bind-Value="Search" /></div>
+        <div><label for="bas-group">@FinanceText["BasAccountGroup"]</label><InputSelect id="bas-group" class="form-select" @bind-Value="GroupCode"><option value="">@FinanceText["AllGroups"]</option>@foreach (var group in Groups){<option value="@group.Code">@group.Code · @group.NameSv</option>}</InputSelect></div>
+        <label class="bas-filter-check"><InputCheckbox @bind-Value="K2Only" /><span>@FinanceText["K2AllowedOnly"]</span></label>
+        <label class="bas-filter-check"><InputCheckbox @bind-Value="ExcludeExisting" /><span>@FinanceText["NotAlreadyAdded"]</span></label>
+        <div class="bas-filter-card__actions"><button class="btn btn-primary" type="button" @onclick="ApplyFiltersAsync">@FinanceText["ApplyFilters"]</button><button class="btn btn-outline-secondary" type="button" @onclick="ClearFiltersAsync">@FinanceText["Clear"]</button></div>
+    </section>
+
+    <div class="bas-catalogue-grid">
+        <section class="bas-list-card" aria-labelledby="bas-results-title">
+            <div class="bas-card-header"><div><h3 id="bas-results-title">@FinanceText["BasAccounts"]</h3><span>@(Catalog is null ? CommonText["NoResults"] : FinanceText["AccountResults", Catalog.MatchedAccountCount])</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="ReloadAsync" disabled="@IsCatalogLoading">@CommonText["Refresh"]</button></div>
+            <FinanceDataState IsLoading="@IsCatalogLoading" IsEmpty="@(!IsCatalogLoading && string.IsNullOrWhiteSpace(ListError) && Accounts.Count == 0)" ErrorMessage="@ListError" LoadingTitle="@FinanceText["BasCatalogueLoading"]" LoadingMessage="@FinanceText["BasCatalogueLoadingHelp"]" EmptyTitle="@FinanceText["NoBasAccountsFound"]" EmptyMessage="@FinanceText["NoBasAccountsFoundHelp"]" OnRetry="ReloadAsync">
+                <div class="table-responsive">
+                    <table class="table bas-accounts-table align-middle">
+                        <thead><tr><th>@FinanceText["AccountCode"]</th><th>@FinanceText["SwedishAccountName"]</th><th>@FinanceText["BasAccountGroup"]</th><th>K2</th><th>@FinanceText["Status"]</th></tr></thead>
+                        <tbody>
+                            @foreach (var account in Accounts)
+                            {
+                                <tr class="@(Selected?.Code == account.Code ? "selected" : null)" @onclick="() => SelectAccount(account)" tabindex="0" @onkeydown="args => HandleRowKey(args, account)">
+                                    <td><strong>@account.Code</strong></td><td>@account.NameSv @if(account.RequiresNameSelection){<span class="bas-badge bas-badge--warning">@FinanceText["ChooseName"]</span>}</td><td><span class="bas-group-code">@account.GroupCode</span> @account.GroupNameSv</td><td><span class="@(account.IsK2Allowed ? "bas-badge bas-badge--success" : "bas-badge bas-badge--warning")">@FinanceText[account.IsK2Allowed ? "K2Allowed" : "K2Restricted"]</span></td><td><span class="@(account.IsAlreadyAdded ? "bas-badge bas-badge--neutral" : "bas-badge bas-badge--success")">@FinanceText[account.IsAlreadyAdded ? "AlreadyAdded" : "Available"]</span></td>
+                                </tr>
+                            }
+                        </tbody>
+                    </table>
+                </div>
+                @if (Catalog is not null && Catalog.MatchedAccountCount > Catalog.Take)
+                {
+                    <div class="bas-pagination"><span>@FinanceText["CataloguePage", CurrentPage, TotalPages]</span><div><button class="btn btn-sm btn-outline-secondary" type="button" disabled="@(Catalog.Skip == 0)" @onclick="PreviousPageAsync">@FinanceText["Previous"]</button><button class="btn btn-sm btn-outline-secondary" type="button" disabled="@(Catalog.Skip + Catalog.Take >= Catalog.MatchedAccountCount)" @onclick="NextPageAsync">@FinanceText["Next"]</button></div></div>
+                }
+            </FinanceDataState>
+        </section>
+
+        <aside class="bas-detail-card" aria-live="polite">
+            @if (Selected is null)
+            {
+                <div class="bas-empty-detail"><span aria-hidden="true">⌕</span><h3>@FinanceText["SelectBasAccount"]</h3><p>@FinanceText["SelectBasAccountHelp"]</p></div>
+            }
+            else
+            {
+                <div class="bas-card-header bas-card-header--detail"><div><span class="bas-account-code">@Selected.Code</span><h3>@Selected.NameSv</h3></div><span class="@(Selected.IsK2Allowed ? "bas-badge bas-badge--success" : "bas-badge bas-badge--warning")">@FinanceText[Selected.IsK2Allowed ? "K2Allowed" : "K2Restricted"]</span></div>
+                <dl class="bas-detail-list"><div><dt>@FinanceText["Hierarchy"]</dt><dd>@Selected.GroupCode @Selected.GroupNameSv @if(!string.IsNullOrWhiteSpace(Selected.ParentAccountCode)){<span>› @Selected.ParentAccountCode › @Selected.Code</span>}</dd></div><div><dt>@FinanceText["SourceFingerprint"]</dt><dd><code>@ShortHash(Catalog?.SourceSha256)</code></dd></div></dl>
+
+                @if (Selected.IsAlreadyAdded)
+                {
+                    <div class="bas-notice bas-notice--info" role="note"><strong>@FinanceText["AlreadyAdded"]</strong><p>@FinanceText["AlreadyAddedHelp"]</p></div>
+                }
+                <div class="bas-notice bas-notice--warning" role="note"><strong>@FinanceText["OrganizationSuitabilityWarning"]</strong><p>@FinanceText["OrganizationSuitabilityWarningHelp"]</p></div>
+
+                <EditForm Model="@Creation" OnValidSubmit="CreateAccountAsync">
+                    <div class="bas-form-stack">
+                        @if (Selected.NameVariantsSv.Count > 1)
+                        {
+                            <div><label for="bas-source-name">@FinanceText["SourceNameChoice"]</label><InputSelect id="bas-source-name" class="form-select" @bind-Value="Creation.NameSv"><option value="">@FinanceText["ChooseSourceName"]</option>@foreach(var name in Selected.NameVariantsSv){<option value="@name">@name</option>}</InputSelect></div>
+                        }
+                        <div class="bas-semantics-grid"><div><label for="bas-account-class">@FinanceText["AccountClass"]</label><InputSelect id="bas-account-class" class="form-select" @bind-Value="Creation.AccountClass"><option value="">@FinanceText["ChooseAccountClass"]</option><option value="asset">@FinanceText["Assets"]</option><option value="liability">@FinanceText["Liabilities"]</option><option value="equity">@FinanceText["Equity"]</option><option value="income">@FinanceText["Income"]</option><option value="expense">@FinanceText["Expenses"]</option></InputSelect></div><div><label for="bas-normal-balance">@FinanceText["NormalBalance"]</label><InputSelect id="bas-normal-balance" class="form-select" @bind-Value="Creation.NormalBalance"><option value="">@FinanceText["ChooseNormalBalance"]</option><option value="debit">@FinanceText["Debit"]</option><option value="credit">@FinanceText["Credit"]</option></InputSelect></div></div>
+                        <small class="bas-source-limitation">@FinanceText["SemanticsSuggestionWarning"]</small>
+                        <div><label for="bas-effective-from">@FinanceText["ActiveFrom"]</label><InputDate id="bas-effective-from" class="form-control" @bind-Value="Creation.EffectiveFrom" /></div>
+                        <label class="bas-confirmation"><InputCheckbox @bind-Value="Creation.AccountingSemanticsConfirmed" /><span>@FinanceText["ConfirmAccountingSemantics"]</span></label>
+                        <label class="bas-confirmation"><InputCheckbox @bind-Value="Creation.CompanySuitabilityConfirmed" /><span>@FinanceText["ConfirmCompanySuitability"]</span></label>
+                        <button class="btn btn-primary" type="submit" disabled="@(!CanCreateSelected)">@(IsSaving ? FinanceText["Saving"] : FinanceText["AddToChart"])</button>
+                    </div>
+                </EditForm>
+                <div class="bas-laura-guidance"><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraBasGuidanceTitle"]</strong><p>@FinanceText["LauraBasGuidance"]</p></div></div>
+            }
+        </aside>
+    </div>
+</FinancePageLayout>

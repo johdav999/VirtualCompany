@@ -22,6 +22,7 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
 
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IAccountingChartCatalogResolver _chartCatalogResolver;
     private readonly IAccountingConfigurationService _configurationService;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly TimeProvider _timeProvider;
@@ -29,12 +30,14 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
     public AccountingAdministrationService(
         VirtualCompanyDbContext dbContext,
         IAccountingPolicyPackResolver packResolver,
+        IAccountingChartCatalogResolver chartCatalogResolver,
         IAccountingConfigurationService configurationService,
         IAuditEventWriter auditEventWriter,
         TimeProvider timeProvider)
     {
         _dbContext = dbContext;
         _packResolver = packResolver;
+        _chartCatalogResolver = chartCatalogResolver;
         _configurationService = configurationService;
         _auditEventWriter = auditEventWriter;
         _timeProvider = timeProvider;
@@ -473,6 +476,136 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         return BuildAccountDetail(account, context);
     }
 
+    public async Task<AccountingChartCatalogPageDto> GetChartCatalogAsync(
+        GetAccountingChartCatalogQuery query,
+        CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(query.CompanyId);
+        cancellationToken.ThrowIfCancellationRequested();
+        if (query.Skip < 0)
+            throw new ArgumentOutOfRangeException(nameof(query.Skip), "Chart catalogue skip cannot be negative.");
+        if (query.Take is < 1 or > 250)
+            throw new ArgumentOutOfRangeException(nameof(query.Take), "Chart catalogue take must be between 1 and 250.");
+
+        var catalog = _chartCatalogResolver.Resolve(query.CatalogKey, query.CatalogVersion);
+        var existingCodeValues = await _dbContext.FinanceAccounts
+            .AsNoTracking()
+            .Where(account => account.CompanyId == query.CompanyId)
+            .Select(account => account.Code)
+            .ToArrayAsync(cancellationToken);
+        var existingCodes = existingCodeValues.ToHashSet(StringComparer.Ordinal);
+        IEnumerable<AccountingChartCatalogAccountDefinition> filtered = catalog.Accounts;
+        if (!string.IsNullOrWhiteSpace(query.Search))
+        {
+            var search = query.Search.Trim();
+            filtered = filtered.Where(account =>
+                account.Code.Contains(search, StringComparison.OrdinalIgnoreCase) ||
+                account.NameVariantsSv.Any(name => name.Contains(search, StringComparison.OrdinalIgnoreCase)) ||
+                account.GroupNameSv.Contains(search, StringComparison.OrdinalIgnoreCase));
+        }
+        if (!string.IsNullOrWhiteSpace(query.GroupCode))
+        {
+            var groupCode = query.GroupCode.Trim();
+            filtered = filtered.Where(account => string.Equals(account.GroupCode, groupCode, StringComparison.Ordinal));
+        }
+        if (query.K2Only)
+            filtered = filtered.Where(account => account.IsK2Allowed);
+        if (query.ExcludeExisting)
+            filtered = filtered.Where(account => !existingCodes.Contains(account.Code));
+
+        var matches = filtered.OrderBy(account => account.Code, StringComparer.Ordinal).ToArray();
+        var page = matches.Skip(query.Skip).Take(query.Take)
+            .Select(account => MapCatalogAccount(account, existingCodes.Contains(account.Code)))
+            .ToArray();
+        var groups = catalog.Accounts
+            .Select(account => new AccountingChartCatalogGroupDto(account.GroupCode, account.GroupNameSv))
+            .DistinctBy(group => group.Code)
+            .OrderBy(group => group.Code, StringComparer.Ordinal)
+            .ToArray();
+        return new AccountingChartCatalogPageDto(
+            catalog.CatalogKey,
+            catalog.CatalogVersion,
+            catalog.DisplayName,
+            catalog.Locale,
+            catalog.SourceFileName,
+            catalog.SourceSha256,
+            catalog.Accounts.Count,
+            matches.Length,
+            query.Skip,
+            query.Take,
+            catalog.Limitations,
+            groups,
+            page);
+    }
+
+    public async Task<AccountingAccountDetailDto> CreateAccountFromCatalogAsync(
+        CreateAccountingAccountFromCatalogCommand command,
+        CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(command.CompanyId);
+        ValidateActor(command.ActorUserId);
+        var catalog = _chartCatalogResolver.Resolve(command.CatalogKey, command.CatalogVersion);
+        if (!catalog.TryGetAccount(command.Code, out var catalogAccount) || catalogAccount is null)
+        {
+            throw new AccountingConfigurationException(
+                AccountingConfigurationReasonCodes.ChartCatalogAccountNotFound,
+                $"Account code '{command.Code?.Trim()}' is not present in chart catalogue '{catalog.CatalogKey}' version '{catalog.CatalogVersion}'.");
+        }
+
+        var requestedName = string.IsNullOrWhiteSpace(command.NameSv) ? null : command.NameSv.Trim();
+        if (catalogAccount.NameVariantsSv.Count > 1 && requestedName is null)
+        {
+            throw new AccountingConfigurationException(
+                AccountingConfigurationReasonCodes.ChartCatalogNameSelectionRequired,
+                $"BAS account {catalogAccount.Code} has multiple names in the source workbook. Select one of: {string.Join(", ", catalogAccount.NameVariantsSv)}.");
+        }
+        if (requestedName is not null && !catalogAccount.NameVariantsSv.Contains(requestedName, StringComparer.Ordinal))
+        {
+            throw new AccountingConfigurationException(
+                AccountingConfigurationReasonCodes.ChartCatalogNameSelectionRequired,
+                $"The selected Swedish name is not a source value for BAS account {catalogAccount.Code}.");
+        }
+
+        if (!command.AccountingSemanticsConfirmed)
+        {
+            throw new AccountingConfigurationException(
+                AccountingConfigurationReasonCodes.ChartCatalogSemanticsConfirmationRequired,
+                "Confirm that the selected account class and normal balance are appropriate. These values are application suggestions, not BAS-supplied metadata.");
+        }
+        if (!command.CompanySuitabilityConfirmed)
+        {
+            throw new AccountingConfigurationException(
+                AccountingConfigurationReasonCodes.ChartCatalogCompanySuitabilityConfirmationRequired,
+                "Confirm that this BAS account is suitable for the company. The free BAS workbook does not provide organization-type applicability.");
+        }
+
+        var accountClass = FinanceAccountClassValues.NormalizeOptional(command.AccountClass)
+            ?? catalogAccount.SuggestedAccountClass;
+        var normalBalance = FinanceNormalBalanceValues.NormalizeOptional(command.NormalBalance)
+            ?? catalogAccount.SuggestedNormalBalance;
+        if (accountClass is null || normalBalance is null)
+        {
+            throw new AccountingConfigurationException(
+                AccountingConfigurationReasonCodes.ChartCatalogSemanticsRequired,
+                $"BAS account {catalogAccount.Code} has no reliable class and normal-balance default in the source workbook. An accountant must supply both values.");
+        }
+
+        return await CreateAccountAsync(new CreateAccountingAccountCommand(
+            command.CompanyId,
+            catalogAccount.Code,
+            requestedName ?? catalogAccount.NameSv,
+            accountClass,
+            normalBalance,
+            command.EffectiveFrom,
+            command.ActorUserId,
+            command.CorrelationId,
+            catalog.CatalogKey,
+            catalog.CatalogVersion,
+            catalog.SourceSha256,
+            command.AccountingSemanticsConfirmed,
+            command.CompanySuitabilityConfirmed), cancellationToken);
+    }
+
     public async Task<AccountingAccountDetailDto> CreateAccountAsync(
         CreateAccountingAccountCommand command,
         CancellationToken cancellationToken)
@@ -528,7 +661,12 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             {
                 ["code"] = account.Code,
                 ["name"] = account.Name,
-                ["accountClass"] = account.AccountClass
+                ["accountClass"] = account.AccountClass,
+                ["sourceCatalogKey"] = command.SourceCatalogKey,
+                ["sourceCatalogVersion"] = command.SourceCatalogVersion,
+                ["sourceCatalogSha256"] = command.SourceCatalogSha256,
+                ["accountingSemanticsConfirmed"] = command.SourceCatalogKey is null ? null : command.AccountingSemanticsConfirmed.ToString().ToLowerInvariant(),
+                ["companySuitabilityConfirmed"] = command.SourceCatalogKey is null ? null : command.CompanySuitabilityConfirmed.ToString().ToLowerInvariant()
             },
             cancellationToken);
 
@@ -548,6 +686,24 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
 
         return await GetAccountAsync(new GetAccountingAccountQuery(command.CompanyId, account.Id), cancellationToken);
     }
+
+    private static AccountingChartCatalogAccountDto MapCatalogAccount(
+        AccountingChartCatalogAccountDefinition account,
+        bool isAlreadyAdded) => new(
+        account.Code,
+        account.NameSv,
+        account.NameVariantsSv,
+        account.NameVariantsSv.Count > 1,
+        account.IsK2Allowed,
+        account.IsSubAccount,
+        account.ParentAccountCode,
+        account.GroupCode,
+        account.GroupNameSv,
+        account.SuggestedAccountClass,
+        account.SuggestedNormalBalance,
+        true,
+        true,
+        isAlreadyAdded);
 
     public async Task<AccountingAccountDetailDto> RenameAccountAsync(
         RenameAccountingAccountCommand command,

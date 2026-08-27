@@ -135,6 +135,140 @@ public sealed class AccountingAdministrationServiceTests
         Assert.True((await fixture.Context.FinanceAccounts.SingleAsync(account => account.Id == cash.Id)).IsPostingEnabled);
     }
 
+    [Fact]
+    public void Bas_2026_catalogue_preserves_the_complete_workbook_and_ambiguous_source_name()
+    {
+        var catalog = new Bas2026AccountingChartCatalog();
+
+        Assert.Equal(1282, catalog.Accounts.Count);
+        Assert.Equal(Bas2026AccountingChartCatalog.ExpectedSourceSha256, catalog.SourceSha256);
+        Assert.Equal(26, catalog.Accounts.Count(account => !account.IsK2Allowed));
+        Assert.True(catalog.TryGetAccount("1510", out var receivables));
+        Assert.Equal("Kundfordringar", receivables!.NameSv);
+        Assert.Equal(FinanceAccountClassValues.Asset, receivables.SuggestedAccountClass);
+        Assert.True(catalog.TryGetAccount("2087", out var ambiguous));
+        Assert.Equal(["Bunden överkursfond", "Insatsemission"], ambiguous!.NameVariantsSv);
+        Assert.True(catalog.TryGetAccount("8310", out var classEight));
+        Assert.Null(classEight!.SuggestedAccountClass);
+        Assert.Null(classEight.SuggestedNormalBalance);
+    }
+
+    [Fact]
+    public async Task Catalogue_search_and_account_creation_use_checked_in_BAS_values()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+        var page = await fixture.Service.GetChartCatalogAsync(new GetAccountingChartCatalogQuery(
+            fixture.CompanyId,
+            AccountingChartCatalogDefaults.Bas2026CatalogKey,
+            AccountingChartCatalogDefaults.Bas2026CatalogVersion,
+            Search: "1510"), CancellationToken.None);
+
+        Assert.Equal(1282, page.TotalAccountCount);
+        var catalogAccount = Assert.Single(page.Accounts);
+        Assert.Equal("Kundfordringar", catalogAccount.NameSv);
+        Assert.True(catalogAccount.RequiresSemanticsConfirmation);
+        Assert.True(catalogAccount.RequiresCompanySuitabilityConfirmation);
+        Assert.False(catalogAccount.IsAlreadyAdded);
+
+        await fixture.Service.CompleteSetupAsync(fixture.CreateSetupCommand(), CancellationToken.None);
+        var created = await fixture.Service.CreateAccountFromCatalogAsync(new CreateAccountingAccountFromCatalogCommand(
+            fixture.CompanyId,
+            AccountingChartCatalogDefaults.Bas2026CatalogKey,
+            AccountingChartCatalogDefaults.Bas2026CatalogVersion,
+            "1510",
+            NameSv: null,
+            AccountClass: null,
+            NormalBalance: null,
+            AccountingSemanticsConfirmed: true,
+            CompanySuitabilityConfirmed: true,
+            EffectiveFrom: InitialFiscalYearStart,
+            ActorUserId: fixture.ActorId,
+            CorrelationId: "bas-catalog-test"), CancellationToken.None);
+
+        Assert.Equal("1510", created.Code);
+        Assert.Equal("Kundfordringar", created.Name);
+        Assert.Equal("Asset", created.AccountClass);
+        Assert.Equal("Debit", created.NormalBalance);
+        var audit = await fixture.Context.AuditEvents.SingleAsync(item =>
+            item.Action == AuditEventActions.AccountingAccountCreated && item.TargetId == created.Id.ToString("D"));
+        Assert.Equal(AccountingChartCatalogDefaults.Bas2026CatalogKey, audit.Metadata["sourceCatalogKey"]);
+        Assert.Equal(Bas2026AccountingChartCatalog.ExpectedSourceSha256, audit.Metadata["sourceCatalogSha256"]);
+        Assert.Equal("true", audit.Metadata["accountingSemanticsConfirmed"]);
+        Assert.Equal("true", audit.Metadata["companySuitabilityConfirmed"]);
+    }
+
+    [Fact]
+    public async Task Catalogue_creation_requires_accountant_input_for_ambiguous_names_and_class_eight_semantics()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+
+        var ambiguousName = await Assert.ThrowsAsync<AccountingConfigurationException>(() =>
+            fixture.Service.CreateAccountFromCatalogAsync(new CreateAccountingAccountFromCatalogCommand(
+                fixture.CompanyId,
+                AccountingChartCatalogDefaults.Bas2026CatalogKey,
+                AccountingChartCatalogDefaults.Bas2026CatalogVersion,
+                "2087",
+                null,
+                null,
+                null,
+                true,
+                true,
+                InitialFiscalYearStart,
+                fixture.ActorId), CancellationToken.None));
+        Assert.Equal(AccountingConfigurationReasonCodes.ChartCatalogNameSelectionRequired, ambiguousName.ReasonCode);
+
+        var missingSemantics = await Assert.ThrowsAsync<AccountingConfigurationException>(() =>
+            fixture.Service.CreateAccountFromCatalogAsync(new CreateAccountingAccountFromCatalogCommand(
+                fixture.CompanyId,
+                AccountingChartCatalogDefaults.Bas2026CatalogKey,
+                AccountingChartCatalogDefaults.Bas2026CatalogVersion,
+                "8310",
+                null,
+                null,
+                null,
+                true,
+                true,
+                InitialFiscalYearStart,
+                fixture.ActorId), CancellationToken.None));
+        Assert.Equal(AccountingConfigurationReasonCodes.ChartCatalogSemanticsRequired, missingSemantics.ReasonCode);
+    }
+
+    [Fact]
+    public async Task Catalogue_creation_requires_explicit_semantics_and_company_suitability_confirmations()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+
+        var missingSemanticsConfirmation = await Assert.ThrowsAsync<AccountingConfigurationException>(() =>
+            fixture.Service.CreateAccountFromCatalogAsync(new CreateAccountingAccountFromCatalogCommand(
+                fixture.CompanyId,
+                AccountingChartCatalogDefaults.Bas2026CatalogKey,
+                AccountingChartCatalogDefaults.Bas2026CatalogVersion,
+                "1510",
+                null,
+                "asset",
+                "debit",
+                false,
+                true,
+                InitialFiscalYearStart,
+                fixture.ActorId), CancellationToken.None));
+        Assert.Equal(AccountingConfigurationReasonCodes.ChartCatalogSemanticsConfirmationRequired, missingSemanticsConfirmation.ReasonCode);
+
+        var missingSuitabilityConfirmation = await Assert.ThrowsAsync<AccountingConfigurationException>(() =>
+            fixture.Service.CreateAccountFromCatalogAsync(new CreateAccountingAccountFromCatalogCommand(
+                fixture.CompanyId,
+                AccountingChartCatalogDefaults.Bas2026CatalogKey,
+                AccountingChartCatalogDefaults.Bas2026CatalogVersion,
+                "1510",
+                null,
+                "asset",
+                "debit",
+                true,
+                false,
+                InitialFiscalYearStart,
+                fixture.ActorId), CancellationToken.None));
+        Assert.Equal(AccountingConfigurationReasonCodes.ChartCatalogCompanySuitabilityConfirmationRequired, missingSuitabilityConfirmation.ReasonCode);
+    }
+
     private static DateTime ToUtc(DateOnly value) => value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
     private static FinanceAccount ImportedAccount(Guid companyId, string code, string name, string accountType) =>
@@ -191,10 +325,11 @@ public sealed class AccountingAdministrationServiceTests
 
             var pack = new CountryNeutralAccountingPolicyPack();
             var resolver = new AccountingPolicyPackResolver([pack]);
+            var chartCatalogResolver = new AccountingChartCatalogResolver([new Bas2026AccountingChartCatalog()]);
             var clock = new FixedTimeProvider(new DateTimeOffset(NowUtc));
             var auditWriter = new AuditEventWriter(context);
             var configurationService = new AccountingConfigurationService(context, resolver, auditWriter, clock);
-            var service = new AccountingAdministrationService(context, resolver, configurationService, auditWriter, clock);
+            var service = new AccountingAdministrationService(context, resolver, chartCatalogResolver, configurationService, auditWriter, clock);
             return new AdministrationFixture(connection, context, service, companyId, actorId);
         }
 

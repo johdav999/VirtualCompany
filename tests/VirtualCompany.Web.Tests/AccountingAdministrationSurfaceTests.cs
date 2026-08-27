@@ -10,6 +10,9 @@ public sealed class AccountingAdministrationSurfaceTests
         var setupCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingSetupPage.razor.css");
         var accounts = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingAccountsPage.razor");
         var accountsCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingAccountsPage.razor.css");
+        var basCatalogue = Read("src", "VirtualCompany.Web", "Pages", "Finance", "BasAccountCatalogPage.razor");
+        var basCatalogueCode = Read("src", "VirtualCompany.Web", "Pages", "Finance", "BasAccountCatalogPage.razor.cs");
+        var basCatalogueCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "BasAccountCatalogPage.razor.css");
         var periods = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingPeriodsPage.razor");
         var periodsCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingPeriodsPage.razor.css");
 
@@ -37,6 +40,16 @@ public sealed class AccountingAdministrationSurfaceTests
         Assert.Contains("aria-live=\"polite\"", accounts, StringComparison.Ordinal);
         Assert.Contains("Selected.IsProtected", accounts, StringComparison.Ordinal);
         Assert.Contains("ConfirmDeactivate", accounts, StringComparison.Ordinal);
+        Assert.Contains("/finance/accounting/accounts/bas", accounts, StringComparison.Ordinal);
+
+        Assert.Contains("@page \"/finance/accounting/accounts/bas\"", basCatalogue, StringComparison.Ordinal);
+        Assert.Contains("FinanceDataState", basCatalogue, StringComparison.Ordinal);
+        Assert.Contains("AccountingSemanticsConfirmed", basCatalogue, StringComparison.Ordinal);
+        Assert.Contains("CompanySuitabilityConfirmed", basCatalogue, StringComparison.Ordinal);
+        Assert.Contains("Catalog.Limitations", basCatalogue, StringComparison.Ordinal);
+        Assert.Contains("OrganizationSuitabilityWarning", basCatalogue, StringComparison.Ordinal);
+        Assert.Contains("excludeExisting: ExcludeExisting", basCatalogueCode, StringComparison.Ordinal);
+        Assert.Contains("CreateAccountingAccountFromChartCatalogAsync", basCatalogueCode, StringComparison.Ordinal);
 
         Assert.Contains("@page \"/finance/accounting/periods\"", periods, StringComparison.Ordinal);
         Assert.Contains("FinanceDataState", periods, StringComparison.Ordinal);
@@ -47,6 +60,7 @@ public sealed class AccountingAdministrationSurfaceTests
 
         Assert.Contains("@media", setupCss, StringComparison.Ordinal);
         Assert.Contains("@media", accountsCss, StringComparison.Ordinal);
+        Assert.Contains("@media", basCatalogueCss, StringComparison.Ordinal);
         Assert.Contains("@media", periodsCss, StringComparison.Ordinal);
         Assert.DoesNotContain("policyPackKey", setup, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("tenant", setup + accounts + periods, StringComparison.OrdinalIgnoreCase);
@@ -58,12 +72,14 @@ public sealed class AccountingAdministrationSurfaceTests
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "accounting-setup-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "chart-of-accounts-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "fiscal-periods-reference.png")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "bas-account-catalogue-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "swedish-accounting-setup-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "swedish-vat-statutory-reporting-reference.png")));
         var prompts = Read("docs", "design", "references", "accounting-administration-reference-prompts.md");
         Assert.Contains("Accounting setup", prompts, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Chart of accounts", prompts, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Fiscal periods", prompts, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("BAS account catalogue", prompts, StringComparison.OrdinalIgnoreCase);
         var swedishPrompts = Read("docs", "design", "references", "swedish-accounting-reference-prompts.md");
         Assert.Contains("Swedish accounting setup", swedishPrompts, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("VAT and statutory reporting", swedishPrompts, StringComparison.OrdinalIgnoreCase);

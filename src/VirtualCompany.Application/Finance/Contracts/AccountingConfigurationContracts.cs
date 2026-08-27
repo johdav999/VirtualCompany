@@ -9,7 +9,8 @@ public static class AccountingPolicyPackDefaults
     public const string CountryNeutralBankingVersion = "1.1.0";
     public const string SwedishCandidatePackKey = "sweden-statutory-candidate";
     public const string SwedishFoundationVersion = "1.0.0";
-    public const string SwedishCandidateVersion = "1.1.0";
+    public const string SwedishDomesticVatCandidateVersion = "1.1.0";
+    public const string SwedishCandidateVersion = "1.4.0";
 }
 
 public static class AccountingAccountRoleKeys
@@ -53,6 +54,12 @@ public static class AccountingConfigurationReasonCodes
     public const string SetupConflict = "accounting_setup_conflict";
     public const string AccountNotFound = "accounting_account_not_found";
     public const string AccountCodeConflict = "accounting_account_code_conflict";
+    public const string ChartCatalogNotFound = "accounting_chart_catalog_not_found";
+    public const string ChartCatalogAccountNotFound = "accounting_chart_catalog_account_not_found";
+    public const string ChartCatalogNameSelectionRequired = "accounting_chart_catalog_name_selection_required";
+    public const string ChartCatalogSemanticsRequired = "accounting_chart_catalog_semantics_required";
+    public const string ChartCatalogSemanticsConfirmationRequired = "accounting_chart_catalog_semantics_confirmation_required";
+    public const string ChartCatalogCompanySuitabilityConfirmationRequired = "accounting_chart_catalog_company_suitability_confirmation_required";
     public const string AccountProtected = "accounting_account_protected";
     public const string AccountHasPostedHistory = "accounting_account_has_posted_history";
     public const string PeriodNotFound = "accounting_period_not_found";

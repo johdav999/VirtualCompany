@@ -2307,6 +2307,8 @@ public sealed partial class InternalFinanceController : ControllerBase
     {
         var status = exception.ReasonCode is AccountingConfigurationReasonCodes.ConfigurationNotFound
             or AccountingConfigurationReasonCodes.AccountNotFound
+            or AccountingConfigurationReasonCodes.ChartCatalogNotFound
+            or AccountingConfigurationReasonCodes.ChartCatalogAccountNotFound
             or AccountingConfigurationReasonCodes.PeriodNotFound
             ? StatusCodes.Status404NotFound
             : exception.IsConflict

@@ -95,6 +95,56 @@ public sealed partial class InternalFinanceController
                     ResolveCorrelationId()),
                 cancellationToken));
 
+    [Authorize(Policy = CompanyPolicies.AccountingView)]
+    [HttpGet("accounting/chart-catalogs/{catalogKey}/{catalogVersion}/accounts")]
+    public async Task<ActionResult<AccountingChartCatalogPageDto>> GetAccountingChartCatalogAsync(
+        Guid companyId,
+        string catalogKey,
+        string catalogVersion,
+        [FromQuery] string? search,
+        [FromQuery] string? groupCode,
+        [FromQuery] bool k2Only,
+        [FromQuery] bool excludeExisting,
+        [FromQuery] int skip = 0,
+        [FromQuery] int take = 100,
+        CancellationToken cancellationToken = default) =>
+        await ExecuteReadAsync(() =>
+            _accountingAdministrationService.GetChartCatalogAsync(
+                new GetAccountingChartCatalogQuery(
+                    companyId,
+                    catalogKey,
+                    catalogVersion,
+                    search,
+                    groupCode,
+                    k2Only,
+                    excludeExisting,
+                    skip,
+                    take),
+                cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    [HttpPost("accounting/accounts/from-chart-catalog")]
+    public async Task<ActionResult<AccountingAccountDetailDto>> CreateAccountingAccountFromChartCatalogAsync(
+        Guid companyId,
+        [FromBody] CreateAccountingAccountFromChartCatalogRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(() =>
+            _accountingAdministrationService.CreateAccountFromCatalogAsync(
+                new CreateAccountingAccountFromCatalogCommand(
+                    companyId,
+                    request.CatalogKey,
+                    request.CatalogVersion,
+                    request.Code,
+                    request.NameSv,
+                    request.AccountClass,
+                    request.NormalBalance,
+                    request.AccountingSemanticsConfirmed,
+                    request.CompanySuitabilityConfirmed,
+                    request.EffectiveFrom,
+                    ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required for account administration."),
+                    ResolveCorrelationId()),
+                cancellationToken));
+
     [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
     [HttpPut("accounting/accounts/{accountId:guid}/name")]
     public async Task<ActionResult<AccountingAccountDetailDto>> RenameAccountingAccountAsync(
@@ -201,6 +251,19 @@ public sealed class CreateAccountingAccountRequest
     public string Name { get; set; } = string.Empty;
     public string AccountClass { get; set; } = string.Empty;
     public string NormalBalance { get; set; } = string.Empty;
+    public DateOnly EffectiveFrom { get; set; }
+}
+
+public sealed class CreateAccountingAccountFromChartCatalogRequest
+{
+    public string CatalogKey { get; set; } = AccountingChartCatalogDefaults.Bas2026CatalogKey;
+    public string CatalogVersion { get; set; } = AccountingChartCatalogDefaults.Bas2026CatalogVersion;
+    public string Code { get; set; } = string.Empty;
+    public string? NameSv { get; set; }
+    public string? AccountClass { get; set; }
+    public string? NormalBalance { get; set; }
+    public bool AccountingSemanticsConfirmed { get; set; }
+    public bool CompanySuitabilityConfirmed { get; set; }
     public DateOnly EffectiveFrom { get; set; }
 }
 

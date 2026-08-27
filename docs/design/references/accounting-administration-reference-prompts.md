@@ -25,3 +25,11 @@ Use case: `ui-mockup`
 Create a shippable Virtual Company Finance page titled “Fiscal periods”. Reuse the Accounting subnavigation and established visual system. Use a header action “Create fiscal year”, a summary row for current fiscal year, open periods, closed periods, and reporting locks, followed by a 60/40 list-detail layout with monthly periods grouped by fiscal year and friendly Open, Closed, and Reporting locked badges. The selected-period panel shows dates, posting availability, close/lock history, validation state, and a plain-English note that closing, locking, and reopening are handled from period close. Include a compact creation form that validates overlaps and gaps, plus loading, empty, conflict, and unauthorized affordances and Laura's next-step guidance. Do not show raw enums, tenant identifiers, provider concepts, mock transactions, or close/lock/reopen mutation buttons on this screen.
 
 Generated reference: `fiscal-periods-reference.png`.
+
+## BAS account catalogue
+
+Use case: `ui-mockup`
+
+Create a shippable Virtual Company Finance screen titled “BAS account catalogue”. Use the established calm SaaS shell: light `#F7F9FC` background, white 16px cards, soft borders, Inter typography, blue `#2563EB` actions, restrained status colors, fixed sidebar, and Accounting navigation. Show a top readiness card identifying BAS 2026 v1.1 and source verification. Use a 60/40 list-detail layout: the left side has code or Swedish-name search, K2-only, account-group, and not-already-added filters plus a dense account table; the right side shows the selected Swedish account name, code, hierarchy, K2 state, source-name choice, organization-type applicability warning, explicitly editable account class and normal balance, confirmation checkboxes for inferred semantics and company suitability, and a controlled “Add to chart” action. Include an empty selection state and Laura's concise compliance guidance. Avoid raw enum names, tenant identifiers, mock transactions, developer terminology, futuristic styling, or implying that BAS supplied fields absent from the free workbook.
+
+Generated reference: `bas-account-catalogue-reference.png`.

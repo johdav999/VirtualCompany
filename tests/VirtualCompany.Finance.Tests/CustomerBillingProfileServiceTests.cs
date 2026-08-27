@@ -79,6 +79,32 @@ public sealed class CustomerBillingProfileServiceTests
     }
 
     [Fact]
+    public async Task Save_canonicalizes_history_and_ignores_formatting_only_replays()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var input = Input() with
+        {
+            LegalName = "  Example AB  ",
+            TaxIdentifier = " SE5560160680 ",
+            VatIdentifier = " SE556016068001 ",
+            InvoiceDeliveryEmail = " billing@example.test "
+        };
+        var created = await fixture.Service.UpsertAsync(new(fixture.CompanyA, fixture.CustomerA, input, null,
+            fixture.ActorId, "canonical-create"), default);
+
+        var replay = await fixture.Service.UpsertAsync(new(fixture.CompanyA, fixture.CustomerA, Input(),
+            created.Version, fixture.ActorId, "canonical-replay"), default);
+
+        Assert.Equal(created.Version, replay.Version);
+        Assert.Equal("Example AB", replay.Profile.LegalName);
+        Assert.Equal("billing@example.test", replay.Profile.InvoiceDeliveryEmail);
+        var retainedVersion = Assert.Single(await fixture.Db.CustomerBillingProfileVersions.AsNoTracking().ToListAsync());
+        Assert.Contains("\"legalName\":\"Example AB\"", retainedVersion.SnapshotJson, StringComparison.Ordinal);
+        Assert.DoesNotContain("  Example AB  ", retainedVersion.SnapshotJson, StringComparison.Ordinal);
+        Assert.Single(await fixture.Db.AuditEvents.AsNoTracking().ToListAsync());
+    }
+
+    [Fact]
     public async Task Duplicate_detection_is_company_scoped_and_requires_explicit_keep_separate_decision()
     {
         await using var fixture = await Fixture.CreateAsync();
@@ -148,6 +174,18 @@ public sealed class CustomerBillingProfileServiceTests
         Assert.Equal(CustomerBillingSourceKinds.Provider, conflict.IncomingSourceKind);
         Assert.Contains("LegalName", conflict.ChangedFields);
         Assert.True(status.Version > created.Version);
+    }
+
+    [Fact]
+    public async Task Provider_sync_guard_rejects_cross_company_customer_data()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var otherCompanyCustomer = new FinanceCounterparty(Guid.NewGuid(), fixture.CompanyB, "Other company", "customer");
+        var guard = (ICustomerBillingProviderSyncGuard)fixture.Service;
+
+        await Assert.ThrowsAsync<UnauthorizedAccessException>(() => guard.ApplyOrDetectConflictAsync(
+            fixture.CompanyB, otherCompanyCustomer, "Other company", null, null,
+            "fortnox:test:other-company", NowUtc, default));
     }
 
     [Fact]

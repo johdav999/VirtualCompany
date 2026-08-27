@@ -145,7 +145,7 @@ public sealed class SwedishVatAccountingPolicyTests
         {
             Assert.Equal("2.0", facts.RootElement.GetProperty("schemaVersion").GetString());
             Assert.Equal("sweden-domestic-vat-launch-2026.1", facts.RootElement.GetProperty("specificationKey").GetString());
-            Assert.Equal("1.1.0", facts.RootElement.GetProperty("policyPackVersion").GetString());
+            Assert.Equal(AccountingPolicyPackDefaults.SwedishCandidateVersion, facts.RootElement.GetProperty("policyPackVersion").GetString());
             Assert.Equal("2026.1", facts.RootElement.GetProperty("taxRuleVersion").GetString());
             Assert.Equal("operator_classified_domestic_standard_25", facts.RootElement.GetProperty("evidenceClassification").GetString());
             Assert.Equal("midpoint_to_even", facts.RootElement.GetProperty("roundingMode").GetString());
@@ -272,8 +272,9 @@ public sealed class SwedishVatAccountingPolicyTests
                     account.NormalBalance, now, controlRoles.Contains(account.DefaultRoleKey ?? string.Empty)
                         ? account.DefaultRoleKey : null));
             context.Companies.Add(new Company(companyId, "Swedish VAT fixture"));
-            context.CompanyStatutoryProfiles.Add(new CompanyStatutoryProfile(Guid.NewGuid(), companyId,
-                Profile(bookkeepingMethod, now), actorId, now));
+            var statutoryProfile = new CompanyStatutoryProfile(Guid.NewGuid(), companyId,
+                Profile(bookkeepingMethod, now), actorId, now);
+            context.CompanyStatutoryProfiles.Add(statutoryProfile);
             context.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId,
                 "Domestic counterparty", "customer", createdUtc: now));
             context.FinanceAccounts.AddRange(accounts.Values);
@@ -296,6 +297,11 @@ public sealed class SwedishVatAccountingPolicyTests
                 now.AddDays(30), 125m, "SEK", "approved", documentId, createdUtc: now, updatedUtc: now));
             context.FinanceBills.Add(new FinanceBill(billId, companyId, counterpartyId, "BILL-SE-1", now,
                 now.AddDays(30), 125m, "SEK", "approved", documentId, createdUtc: now, updatedUtc: now));
+            context.IssuedStatutoryDocuments.AddRange(
+                IssuedDocument(companyId, invoiceId, StatutoryDocumentTypes.CustomerInvoice, "INV-SE-1",
+                    "swedish-vat-sales-fixture", statutoryProfile, pack, actorId, now),
+                IssuedDocument(companyId, billId, StatutoryDocumentTypes.SupplierInvoice, "BILL-SE-1",
+                    "swedish-vat-purchase-fixture", statutoryProfile, pack, actorId, now));
             await context.SaveChangesAsync();
 
             var resolver = new AccountingPolicyPackResolver([pack]);
@@ -308,6 +314,15 @@ public sealed class SwedishVatAccountingPolicyTests
             string normalBalance, DateTime now, string? role) => new(Guid.NewGuid(), companyId, code, name,
             accountClass, "SEK", 0m, now, accountClass: accountClass, normalBalance: normalBalance,
             effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true, controlAccountRole: role);
+
+        private static IssuedStatutoryDocument IssuedDocument(Guid companyId, Guid sourceRecordId,
+            string documentType, string documentNumber, string businessKey,
+            CompanyStatutoryProfile statutoryProfile, IAccountingPolicyPack pack, Guid actorId, DateTime now) => new(
+                Guid.NewGuid(), companyId, documentType, StatutoryDocumentAuthorities.Imported,
+                documentNumber, sourceRecordId, 1, null, "2026", null,
+                statutoryProfile.Id, statutoryProfile.Version, pack.Definition.PackKey,
+                pack.Definition.Version, pack.DefinitionHash, "{}", new string('d', 64), "{}", "[]",
+                businessKey, null, actorId, now);
 
         private static CompanyStatutoryProfileValues Profile(string bookkeepingMethod, DateTime now) => new(
             "Example Legal AB", "556016-0680", "SE556016068001", StatutoryVatRegistrationStatusValues.Registered,

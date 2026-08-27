@@ -286,7 +286,8 @@ public sealed class AccountingOperationsTests
             var clock = new FixedTimeProvider(new DateTimeOffset(NowUtc));
             var auditWriter = new AuditEventWriter(context);
             var configurationService = new AccountingConfigurationService(context, resolver, auditWriter, clock);
-            var administration = new AccountingAdministrationService(context, resolver, configurationService, auditWriter, clock);
+            var chartCatalogResolver = new AccountingChartCatalogResolver([new Bas2026AccountingChartCatalog()]);
+            var administration = new AccountingAdministrationService(context, resolver, chartCatalogResolver, configurationService, auditWriter, clock);
             await administration.CompleteSetupAsync(new CompleteAccountingSetupCommand(
                 companyId, "USD", new DateOnly(2026, 1, 1),
                 AccountingPolicyPackDefaults.CountryNeutralPackKey,

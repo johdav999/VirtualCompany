@@ -76,6 +76,13 @@ public sealed class FinanceApiClientAccountingConfigurationTests
         await client.GetAccountingAccountsAsync(companyId, "cash & bank", "asset", "active");
         await client.GetAccountingAccountAsync(companyId, accountId);
         await client.CreateAccountingAccountAsync(companyId, new CreateAccountingAccountApiRequest());
+        await client.GetAccountingChartCatalogAsync(companyId, search: "1510", groupCode: "15", k2Only: true, excludeExisting: true, skip: 25, take: 25);
+        await client.CreateAccountingAccountFromChartCatalogAsync(companyId, new CreateAccountingAccountFromChartCatalogApiRequest
+        {
+            Code = "1510",
+            AccountingSemanticsConfirmed = true,
+            CompanySuitabilityConfirmed = true
+        });
         await client.RenameAccountingAccountAsync(companyId, accountId, new RenameAccountingAccountApiRequest());
         await client.DeactivateAccountingAccountAsync(companyId, accountId, new DeactivateAccountingAccountApiRequest());
         await client.GetAccountingFiscalYearsAsync(companyId);
@@ -91,6 +98,8 @@ public sealed class FinanceApiClientAccountingConfigurationTests
             request => AssertRequest(request, companyId, HttpMethod.Get, $"internal/companies/{companyId}/finance/accounting/accounts?search=cash%20%26%20bank&accountClass=asset&status=active"),
             request => AssertRequest(request, companyId, HttpMethod.Get, $"internal/companies/{companyId}/finance/accounting/accounts/{accountId:D}"),
             request => AssertRequest(request, companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/accounts"),
+            request => AssertRequest(request, companyId, HttpMethod.Get, $"internal/companies/{companyId}/finance/accounting/chart-catalogs/bas-2026/1.1/accounts?search=1510&groupCode=15&k2Only=true&excludeExisting=true&skip=25&take=25"),
+            request => AssertRequest(request, companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/accounts/from-chart-catalog"),
             request => AssertRequest(request, companyId, HttpMethod.Put, $"internal/companies/{companyId}/finance/accounting/accounts/{accountId:D}/name"),
             request => AssertRequest(request, companyId, HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/accounts/{accountId:D}/deactivate"),
             request => AssertRequest(request, companyId, HttpMethod.Get, $"internal/companies/{companyId}/finance/accounting/fiscal-years"),

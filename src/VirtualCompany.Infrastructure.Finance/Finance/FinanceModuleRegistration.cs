@@ -18,11 +18,14 @@ public static class FinanceModuleRegistration
     {
         services.AddSingleton<IAccountingPolicyPack, CountryNeutralAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPack, CountryNeutralBankingAccountingPolicyPack>();
+        services.AddSingleton<IAccountingPolicyPack, SwedishDomesticVatCandidatePackV1_1>();
         services.AddSingleton<IAccountingPolicyPack, SwedishCandidateAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPack, SwedishStatutoryDocumentCandidatePack>();
         services.AddSingleton<IAccountingPolicyPack, SwedishStatutoryArchiveCandidatePack>();
         services.AddSingleton<IAccountingPolicyPack, SwedishFoundationAccountingPolicyPack>();
         services.AddSingleton<IAccountingPolicyPackResolver, AccountingPolicyPackResolver>();
+        services.AddSingleton<IAccountingChartCatalog, Bas2026AccountingChartCatalog>();
+        services.AddSingleton<IAccountingChartCatalogResolver, AccountingChartCatalogResolver>();
         foreach (var evidence in AccountingPolicyPackValidationEvidenceCatalog.All)
             services.AddSingleton(evidence);
         services.AddSingleton<IAccountingPolicyPackValidationRegistry, AccountingPolicyPackValidationRegistry>();

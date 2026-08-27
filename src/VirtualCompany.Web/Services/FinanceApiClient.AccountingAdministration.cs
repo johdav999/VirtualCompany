@@ -79,6 +79,46 @@ public sealed partial class FinanceApiClient
             cancellationToken);
     }
 
+    public async Task<AccountingChartCatalogPageResponse> GetAccountingChartCatalogAsync(
+        Guid companyId,
+        string catalogKey = "bas-2026",
+        string catalogVersion = "1.1",
+        string? search = null,
+        string? groupCode = null,
+        bool k2Only = false,
+        bool excludeExisting = false,
+        int skip = 0,
+        int take = 100,
+        CancellationToken cancellationToken = default)
+    {
+        var query = new List<string>();
+        AddQuery(query, "search", search);
+        AddQuery(query, "groupCode", groupCode);
+        query.Add($"k2Only={k2Only.ToString().ToLowerInvariant()}");
+        query.Add($"excludeExisting={excludeExisting.ToString().ToLowerInvariant()}");
+        query.Add($"skip={skip}");
+        query.Add($"take={take}");
+        return await GetAsync<AccountingChartCatalogPageResponse>(
+            companyId,
+            $"internal/companies/{companyId}/finance/accounting/chart-catalogs/{Uri.EscapeDataString(catalogKey)}/{Uri.EscapeDataString(catalogVersion)}/accounts?{string.Join("&", query)}",
+            allowNotFound: false,
+            cancellationToken) ?? new AccountingChartCatalogPageResponse();
+    }
+
+    public Task<AccountingAccountDetailResponse> CreateAccountingAccountFromChartCatalogAsync(
+        Guid companyId,
+        CreateAccountingAccountFromChartCatalogApiRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<CreateAccountingAccountFromChartCatalogApiRequest, AccountingAccountDetailResponse>(
+            companyId,
+            HttpMethod.Post,
+            $"internal/companies/{companyId}/finance/accounting/accounts/from-chart-catalog",
+            request,
+            cancellationToken);
+    }
+
     public Task<AccountingAccountDetailResponse> RenameAccountingAccountAsync(
         Guid companyId,
         Guid accountId,
@@ -309,6 +349,60 @@ public sealed class CreateAccountingAccountApiRequest
     public string Name { get; set; } = string.Empty;
     public string AccountClass { get; set; } = string.Empty;
     public string NormalBalance { get; set; } = string.Empty;
+    public DateOnly EffectiveFrom { get; set; }
+}
+
+public sealed class AccountingChartCatalogPageResponse
+{
+    public string CatalogKey { get; set; } = string.Empty;
+    public string CatalogVersion { get; set; } = string.Empty;
+    public string DisplayName { get; set; } = string.Empty;
+    public string Locale { get; set; } = string.Empty;
+    public string SourceFileName { get; set; } = string.Empty;
+    public string SourceSha256 { get; set; } = string.Empty;
+    public int TotalAccountCount { get; set; }
+    public int MatchedAccountCount { get; set; }
+    public int Skip { get; set; }
+    public int Take { get; set; }
+    public List<string> Limitations { get; set; } = [];
+    public List<AccountingChartCatalogGroupResponse> Groups { get; set; } = [];
+    public List<AccountingChartCatalogAccountResponse> Accounts { get; set; } = [];
+}
+
+public sealed class AccountingChartCatalogGroupResponse
+{
+    public string Code { get; set; } = string.Empty;
+    public string NameSv { get; set; } = string.Empty;
+}
+
+public sealed class AccountingChartCatalogAccountResponse
+{
+    public string Code { get; set; } = string.Empty;
+    public string NameSv { get; set; } = string.Empty;
+    public List<string> NameVariantsSv { get; set; } = [];
+    public bool RequiresNameSelection { get; set; }
+    public bool IsK2Allowed { get; set; }
+    public bool IsSubAccount { get; set; }
+    public string? ParentAccountCode { get; set; }
+    public string GroupCode { get; set; } = string.Empty;
+    public string GroupNameSv { get; set; } = string.Empty;
+    public string? SuggestedAccountClass { get; set; }
+    public string? SuggestedNormalBalance { get; set; }
+    public bool RequiresSemanticsConfirmation { get; set; }
+    public bool RequiresCompanySuitabilityConfirmation { get; set; }
+    public bool IsAlreadyAdded { get; set; }
+}
+
+public sealed class CreateAccountingAccountFromChartCatalogApiRequest
+{
+    public string CatalogKey { get; set; } = "bas-2026";
+    public string CatalogVersion { get; set; } = "1.1";
+    public string Code { get; set; } = string.Empty;
+    public string? NameSv { get; set; }
+    public string? AccountClass { get; set; }
+    public string? NormalBalance { get; set; }
+    public bool AccountingSemanticsConfirmed { get; set; }
+    public bool CompanySuitabilityConfirmed { get; set; }
     public DateOnly EffectiveFrom { get; set; }
 }
 

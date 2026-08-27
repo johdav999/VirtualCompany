@@ -11,7 +11,7 @@ public sealed class SwedishStatutoryDocumentCandidatePack : IAccountingPolicyPac
 
     public SwedishStatutoryDocumentCandidatePack()
     {
-        var prior = new SwedishCandidateAccountingPolicyPack().Definition;
+        var prior = new SwedishDomesticVatCandidatePackV1_1().Definition;
         var capabilities = prior.SupportedCapabilities.Concat(["native_statutory_invoice_issuance"]).Distinct(StringComparer.Ordinal).ToArray();
         var states = new Dictionary<string, string>(prior.CapabilityStates ?? new Dictionary<string, string>(), StringComparer.OrdinalIgnoreCase)
         {

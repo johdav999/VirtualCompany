@@ -143,7 +143,12 @@ public sealed record CreateAccountingAccountCommand(
     string NormalBalance,
     DateOnly EffectiveFrom,
     Guid ActorUserId,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    string? SourceCatalogKey = null,
+    string? SourceCatalogVersion = null,
+    string? SourceCatalogSha256 = null,
+    bool AccountingSemanticsConfirmed = false,
+    bool CompanySuitabilityConfirmed = false);
 
 public sealed record RenameAccountingAccountCommand(
     Guid CompanyId,
@@ -214,6 +219,8 @@ public interface IAccountingAdministrationService
     Task<IReadOnlyList<AccountingAccountListItemDto>> GetAccountsAsync(GetAccountingAccountsQuery query, CancellationToken cancellationToken);
     Task<AccountingAccountDetailDto> GetAccountAsync(GetAccountingAccountQuery query, CancellationToken cancellationToken);
     Task<AccountingAccountDetailDto> CreateAccountAsync(CreateAccountingAccountCommand command, CancellationToken cancellationToken);
+    Task<AccountingChartCatalogPageDto> GetChartCatalogAsync(GetAccountingChartCatalogQuery query, CancellationToken cancellationToken);
+    Task<AccountingAccountDetailDto> CreateAccountFromCatalogAsync(CreateAccountingAccountFromCatalogCommand command, CancellationToken cancellationToken);
     Task<AccountingAccountDetailDto> RenameAccountAsync(RenameAccountingAccountCommand command, CancellationToken cancellationToken);
     Task<AccountingAccountDetailDto> DeactivateAccountAsync(DeactivateAccountingAccountCommand command, CancellationToken cancellationToken);
     Task<IReadOnlyList<AccountingFiscalYearDto>> GetFiscalYearsAsync(GetAccountingPeriodsQuery query, CancellationToken cancellationToken);

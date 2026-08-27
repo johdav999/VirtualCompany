@@ -98,18 +98,26 @@ public sealed class AccountingPolicyPackTests
         Assert.Contains(pack.Definition.TaxRules, x => x.Key == SwedishCandidateAccountingPolicyPack.DomesticPurchase25RuleKey);
         Assert.Equal("supported_unvalidated_limited_scope",
             pack.Definition.CapabilityStates![AccountingPolicyCapabilityKeys.CountrySpecificTax]);
+        Assert.Equal(AccountingChartCatalogDefaults.Bas2026CatalogKey, pack.Definition.PolicyMetadata!["chart_catalog_key"]);
+        Assert.Equal(AccountingChartCatalogDefaults.Bas2026CatalogVersion, pack.Definition.PolicyMetadata["chart_catalog_version"]);
+        Assert.Equal(Bas2026AccountingChartCatalog.ExpectedCatalogSha256, pack.Definition.PolicyMetadata["chart_catalog_sha256"]);
+        Assert.Equal(Bas2026AccountingChartCatalog.ExpectedSourceSha256, pack.Definition.PolicyMetadata["chart_catalog_source_sha256"]);
     }
 
     [Fact]
     public void Swedish_foundation_history_remains_resolvable_after_vat_pack_upgrade()
     {
         var foundation = new SwedishFoundationAccountingPolicyPack();
+        var previousCandidate = new SwedishDomesticVatCandidatePackV1_1();
         var vatCandidate = new SwedishCandidateAccountingPolicyPack();
-        var resolver = new AccountingPolicyPackResolver([foundation, vatCandidate]);
+        var resolver = new AccountingPolicyPackResolver([foundation, previousCandidate, vatCandidate]);
 
         Assert.Same(foundation, resolver.Resolve(AccountingPolicyPackDefaults.SwedishCandidatePackKey, "1.0.0"));
-        Assert.Same(vatCandidate, resolver.Resolve(AccountingPolicyPackDefaults.SwedishCandidatePackKey, "1.1.0"));
+        Assert.Same(previousCandidate, resolver.Resolve(AccountingPolicyPackDefaults.SwedishCandidatePackKey, "1.1.0"));
+        Assert.Same(vatCandidate, resolver.Resolve(AccountingPolicyPackDefaults.SwedishCandidatePackKey, "1.4.0"));
         Assert.NotEqual(foundation.DefinitionHash, vatCandidate.DefinitionHash);
+        Assert.Equal("f81f0a5d7480d84b54c92541aaa23133006c568fc525634dfd7ebb94ce2b4fc2", previousCandidate.DefinitionHash);
+        Assert.NotEqual(previousCandidate.DefinitionHash, vatCandidate.DefinitionHash);
         Assert.Empty(foundation.Definition.TaxRules);
     }
 

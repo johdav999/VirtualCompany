@@ -42,11 +42,14 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
     public async Task<bool> ApplyOrDetectConflictAsync(Guid companyId, FinanceCounterparty counterparty, string legalName,
         string? email, string? taxIdentifier, string sourceReference, DateTime nowUtc, CancellationToken cancellationToken)
     {
+        EnsureTenant(companyId);
+        if (counterparty.CompanyId != companyId || counterparty.CounterpartyType != "customer")
+            throw new UnauthorizedAccessException("Provider customer billing data must match the active company customer.");
         var profile = await _db.CustomerBillingProfiles.IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.CounterpartyId == counterparty.Id, cancellationToken);
         if (profile is null) return true;
         var current = ToInput(profile.ToValues());
-        var incoming = current with
+        var incoming = ValidateAndNormalize(current with
         {
             LegalName = legalName,
             TaxIdentifier = taxIdentifier,
@@ -56,7 +59,7 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
             SourceReference = sourceReference,
             ExternallyVerifiedUtc = null,
             VerificationSource = null
-        };
+        }, companyId, counterparty.Id, profile.UpdatedByUserId, nowUtc);
         var changed = ChangedFields(current, incoming);
         if (changed.Count == 0) return true;
         if (profile.SourceKind != CustomerBillingSourceKinds.Provider)
@@ -103,7 +106,9 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
         if (counterparty.MergedIntoCounterpartyId.HasValue)
             throw new CustomerBillingException(CustomerBillingReasonCodes.UnsafeMerge, "This customer redirects to a merged customer record.", true);
 
-        var incomingValues = ToValues(command.Profile);
+        var normalizedInput = ValidateAndNormalize(command.Profile, command.CompanyId, command.CounterpartyId,
+            command.ActorUserId, now);
+        var incomingValues = ToValues(normalizedInput);
         var profile = await _db.CustomerBillingProfiles.IgnoreQueryFilters()
             .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.CounterpartyId == command.CounterpartyId, cancellationToken);
 
@@ -115,20 +120,20 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
             profile = new CustomerBillingProfile(Guid.NewGuid(), command.CompanyId, command.CounterpartyId,
                 incomingValues, command.ActorUserId, now);
             _db.CustomerBillingProfiles.Add(profile);
-            AddVersion(profile, command.Profile, ["initial_profile"], command.ActorUserId, now);
+            AddVersion(profile, normalizedInput, ["initial_profile"], command.ActorUserId, now);
         }
         else
         {
             if (command.ExpectedVersion != profile.Version) throw ConcurrencyConflict();
             var current = ToInput(profile.ToValues());
-            var changedFields = ChangedFields(current, command.Profile);
+            var changedFields = ChangedFields(current, normalizedInput);
             if (changedFields.Count == 0) return await MapProfileAsync(profile, cancellationToken);
 
             if (RequiresSourceReview(profile.SourceKind, incomingValues.SourceKind))
             {
                 var conflict = new CustomerBillingSourceConflict(Guid.NewGuid(), command.CompanyId, profile.Id,
                     profile.CounterpartyId, profile.Version, profile.SourceKind, incomingValues.SourceKind,
-                    incomingValues.SourceReference, JoinFields(changedFields), Serialize(command.Profile),
+                    incomingValues.SourceReference, JoinFields(changedFields), Serialize(normalizedInput),
                     command.ActorUserId, now);
                 _db.CustomerBillingSourceConflicts.Add(conflict);
                 profile.MarkConflict(command.ActorUserId, now);
@@ -144,12 +149,12 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
             await CaptureInvoiceSnapshotsAsync(command.CompanyId, counterparty, profile, cancellationToken);
             var before = Serialize(current);
             profile.Update(incomingValues, command.ActorUserId, now);
-            AddVersion(profile, command.Profile, changedFields, command.ActorUserId, now);
+            AddVersion(profile, normalizedInput, changedFields, command.ActorUserId, now);
             await WriteAuditAsync(command.CompanyId, command.ActorUserId, "finance.customer_billing.updated",
                 profile.CounterpartyId, AuditEventOutcomes.Succeeded, "Customer billing profile updated.",
                 new Dictionary<string, string?> { ["source"] = profile.SourceKind, ["version"] = profile.Version.ToString(),
                     ["changedFields"] = JoinFields(changedFields) }, command.CorrelationId,
-                JsonSerializer.Serialize(new { before = JsonSerializer.Deserialize<JsonElement>(before), after = command.Profile }, SerializerOptions), cancellationToken);
+                JsonSerializer.Serialize(new { before = JsonSerializer.Deserialize<JsonElement>(before), after = normalizedInput }, SerializerOptions), cancellationToken);
         }
 
         await DetectDuplicatesAsync(profile, now, cancellationToken);
@@ -157,7 +162,7 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
             await WriteAuditAsync(command.CompanyId, command.ActorUserId, "finance.customer_billing.created",
                 profile.CounterpartyId, AuditEventOutcomes.Succeeded, "Customer billing profile created.",
                 new Dictionary<string, string?> { ["source"] = profile.SourceKind, ["version"] = "1" },
-                command.CorrelationId, Serialize(command.Profile), cancellationToken);
+                command.CorrelationId, Serialize(normalizedInput), cancellationToken);
         await SaveAsync(cancellationToken);
         _telemetry.ProfileSaved(command.CompanyId, command.CounterpartyId, profile.SourceKind, profile.Version);
         return await MapProfileAsync(profile, cancellationToken);
@@ -424,6 +429,12 @@ public sealed class CustomerBillingProfileService : ICustomerBillingProfileServi
             if (!string.Equals(JsonSerializer.Serialize(property.GetValue(current), SerializerOptions),
                 JsonSerializer.Serialize(property.GetValue(incoming), SerializerOptions), StringComparison.Ordinal)) result.Add(property.Name);
         return result;
+    }
+    private static CustomerBillingProfileInputDto ValidateAndNormalize(CustomerBillingProfileInputDto input,
+        Guid companyId, Guid counterpartyId, Guid actorId, DateTime nowUtc)
+    {
+        var normalized = new CustomerBillingProfile(Guid.NewGuid(), companyId, counterpartyId, ToValues(input), actorId, nowUtc);
+        return ToInput(normalized.ToValues());
     }
     private static CustomerBillingProfileValues ToValues(CustomerBillingProfileInputDto x) => new(x.LegalName, x.DisplayName,
         x.PartyKind, x.TaxIdentifier, x.VatIdentifier, x.IdentityValidationState, x.BillingAddress.Line1,
