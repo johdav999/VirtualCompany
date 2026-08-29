@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [ValidateSet('hermetic', 'sqlserver', 'accounting-performance', 'docker-migration-restore', 'browser', 'real-provider', 'all')]
+    [ValidateSet('hermetic', 'sqlserver', 'accounting-performance', 'connected-banking-failure', 'connected-banking-recovery', 'connected-banking-performance', 'docker-migration-restore', 'browser', 'real-provider', 'all')]
     [string]$Lane = 'hermetic',
     [string]$ResultsRoot = (Join-Path $PSScriptRoot "..\artifacts\test-matrix\$(Get-Date -Format 'yyyyMMdd-HHmmss')"),
     [switch]$NoBuild,
@@ -81,6 +81,32 @@ try {
         }
         else {
             $results += Invoke-TestProject -Project 'tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj' -Category 'accounting-performance' -Filter 'Category=AccountingPerformance'
+        }
+    }
+
+    if ($Lane -in @('connected-banking-failure', 'all')) {
+        $results += Invoke-TestProject -Project 'tests/VirtualCompany.Finance.Tests/VirtualCompany.Finance.Tests.csproj' -Category 'connected-banking-failure' -Filter 'FullyQualifiedName~BankFeedSynchronizationTests|FullyQualifiedName~EnableBankingProviderContractTests|FullyQualifiedName~PaymentExecutionDomainTests|FullyQualifiedName~ConnectedBankingReadinessServiceTests|FullyQualifiedName~ConnectedBankingRecoveryVerificationServiceTests'
+        $results += Invoke-TestProject -Project 'tests/VirtualCompany.Api.Tests/VirtualCompany.Api.Tests.csproj' -Category 'connected-banking-failure' -Filter 'FullyQualifiedName~BankConnectionsAuthorizationTests|FullyQualifiedName~PaymentBatchAuthorizationTests|FullyQualifiedName~PaymentExecutionAuthorizationTests|FullyQualifiedName~TreasuryWorkspaceAuthorizationTests|FullyQualifiedName~ConnectedBankingReadinessApiIntegrationTests'
+        $results += Invoke-TestProject -Project 'tests/VirtualCompany.Web.Tests/VirtualCompany.Web.Tests.csproj' -Category 'connected-banking-failure' -Filter 'FullyQualifiedName~BankConnectionsSurfaceTests|FullyQualifiedName~BankReconciliationSurfaceTests|FullyQualifiedName~PaymentBatchSurfaceTests|FullyQualifiedName~PaymentExecutionSurfaceTests|FullyQualifiedName~TreasuryWorkspaceSurfaceTests|FullyQualifiedName~FinanceApiClientTreasuryWorkspaceTests'
+    }
+
+    if ($Lane -in @('connected-banking-recovery', 'all')) {
+        $results += Invoke-TestProject -Project 'tests/VirtualCompany.Finance.Tests/VirtualCompany.Finance.Tests.csproj' -Category 'connected-banking-recovery-hermetic' -Filter 'FullyQualifiedName~BankFeedSynchronizationTests.Expired_lease_resumes_from_committed_cursor_after_interrupted_page_without_gap_or_duplicate|FullyQualifiedName~ConnectedBankingRecoveryVerificationServiceTests'
+        if ([string]::IsNullOrWhiteSpace($env:VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION)) {
+            $results += [pscustomobject]@{ project = 'Connected-banking SQL recovery'; category = 'connected-banking-recovery-sqlserver'; startedUtc = [DateTime]::UtcNow.ToString('O'); durationSeconds = 0; outcome = 'not-run'; exitCode = $null; trx = $null; failureCategory = 'prerequisite-not-configured'; prerequisite = 'Set VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION to run BankFeedSqlServerIntegrationTests and PaymentExecutionSqlServerIntegrationTests against a dedicated disposable SQL Server instance.' }
+        }
+        else {
+            $results += Invoke-TestProject -Project 'tests/VirtualCompany.Finance.Tests/VirtualCompany.Finance.Tests.csproj' -Category 'connected-banking-recovery-sqlserver' -Filter 'FullyQualifiedName~BankFeedSqlServerIntegrationTests|FullyQualifiedName~PaymentExecutionSqlServerIntegrationTests'
+        }
+    }
+
+    if ($Lane -in @('connected-banking-performance', 'all')) {
+        if ([string]::IsNullOrWhiteSpace($env:VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION) -or
+            $env:VIRTUALCOMPANY_CONNECTED_BANKING_PERF_PROFILE -notin @('small', 'medium')) {
+            $results += [pscustomobject]@{ project = 'Connected-banking production-shaped capacity'; category = 'connected-banking-performance'; startedUtc = [DateTime]::UtcNow.ToString('O'); durationSeconds = 0; outcome = 'not-run'; exitCode = $null; trx = $null; failureCategory = 'prerequisite-not-configured'; prerequisite = 'Set VIRTUALCOMPANY_SQLSERVER_TEST_CONNECTION and VIRTUALCOMPANY_CONNECTED_BANKING_PERF_PROFILE=small|medium, then run the production-shaped generator and record its signed result using the connected-banking capacity runbook. The lane remains a release stop until that fixture is available.' }
+        }
+        else {
+            $results += [pscustomobject]@{ project = 'Connected-banking production-shaped capacity'; category = 'connected-banking-performance'; startedUtc = [DateTime]::UtcNow.ToString('O'); durationSeconds = 0; outcome = 'not-run'; exitCode = $null; trx = $null; failureCategory = 'test-fixture-not-configured'; prerequisite = 'The profile and SQL Server are configured, but a production-shaped provider/feed volume generator has not been supplied to this checkout. Do not treat this lane as passing.' }
         }
     }
 

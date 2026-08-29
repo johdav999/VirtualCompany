@@ -4450,6 +4450,520 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("activity_events", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationEdge", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EdgeType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("edge_type");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("group_id");
+
+                    b.Property<Guid>("SourceNodeId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("source_node_id");
+
+                    b.Property<Guid>("TargetNodeId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("target_node_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "TargetNodeId");
+
+                    b.HasIndex("CompanyId", "GroupId", "EdgeType");
+
+                    b.HasIndex("CompanyId", "SourceNodeId", "TargetNodeId", "EdgeType")
+                        .IsUnique();
+
+                    b.ToTable("finance_advanced_reconciliation_edges", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_advanced_reconciliation_edges_type", "edge_type IN ('bank_payment', 'payment_document', 'bank_adjustment')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<string>("AfterJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("after_json");
+
+                    b.Property<string>("BeforeJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("before_json");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("group_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "GroupId", "CreatedUtc");
+
+                    b.ToTable("finance_advanced_reconciliation_events", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AcceptedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("accepted_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<decimal>("ConfidenceScore")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("decimal(9,4)")
+                        .HasColumnName("confidence_score");
+
+                    b.Property<Guid?>("CorrectionOfGroupId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("correction_of_group_id");
+
+                    b.Property<string>("Counterparty")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("counterparty");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("DecisionReason")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("decision_reason");
+
+                    b.Property<decimal>("ExpectedBankTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("expected_bank_total");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("reference");
+
+                    b.Property<DateTime?>("RejectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("rejected_at");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("bit")
+                        .HasColumnName("requires_approval");
+
+                    b.Property<DateTime?>("ReversedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reversed_at");
+
+                    b.Property<Guid>("RuleId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rule_id");
+
+                    b.Property<int>("RuleVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("rule_version");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CorrectionOfGroupId");
+
+                    b.HasIndex("CompanyId", "Reference");
+
+                    b.HasIndex("CompanyId", "RuleId");
+
+                    b.HasIndex("CompanyId", "RuleVersion");
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("finance_advanced_reconciliation_groups", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_advanced_reconciliation_groups_status", "status IN ('proposed', 'accepted', 'rejected', 'reversed', 'conflict')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationNode", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AdjustmentKind")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("adjustment_kind");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<decimal>("CreditAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("credit_amount");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<decimal>("DebitAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("debit_amount");
+
+                    b.Property<string>("Direction")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("direction");
+
+                    b.Property<string>("ExpectedRecordVersion")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("expected_record_version");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("group_id");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("label");
+
+                    b.Property<string>("NodeType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("node_type");
+
+                    b.Property<Guid?>("RecordId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("record_id");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("reference");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int")
+                        .HasColumnName("sequence");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "GroupId", "Sequence");
+
+                    b.HasIndex("CompanyId", "NodeType", "RecordId");
+
+                    b.ToTable("finance_advanced_reconciliation_nodes", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_advanced_reconciliation_nodes_type", "node_type IN ('bank_transaction', 'payment', 'invoice', 'bill', 'adjustment', 'residual')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationReasonContribution", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<decimal>("Contribution")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("decimal(9,4)")
+                        .HasColumnName("contribution");
+
+                    b.Property<string>("Evidence")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("evidence");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("explanation");
+
+                    b.Property<string>("FeatureKey")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("feature_key");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("group_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "GroupId", "FeatureKey")
+                        .IsUnique();
+
+                    b.ToTable("finance_advanced_reconciliation_reason_contributions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationResult", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("AllocatedAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("allocated_amount");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EvidenceJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("evidence_json");
+
+                    b.Property<decimal>("ExpectedBankTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("expected_bank_total");
+
+                    b.Property<decimal>("FeeAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("fee_amount");
+
+                    b.Property<Guid>("GroupId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("group_id");
+
+                    b.Property<long>("GroupVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("group_version");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<Guid?>("ParentResultId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("parent_result_id");
+
+                    b.Property<decimal>("ResidualAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("residual_amount");
+
+                    b.Property<decimal>("RoundingAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("rounding_amount");
+
+                    b.Property<int>("RuleVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("rule_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ParentResultId");
+
+                    b.HasIndex("CompanyId", "GroupId", "CreatedUtc");
+
+                    b.ToTable("finance_advanced_reconciliation_results", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationRule", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("AmountTolerance")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount_tolerance");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CounterpartyNormalizationPattern")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("counterparty_normalization_pattern");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<decimal>("LowConfidenceThreshold")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("decimal(9,4)")
+                        .HasColumnName("low_confidence_threshold");
+
+                    b.Property<decimal>("MaterialityThreshold")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("materiality_threshold");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("name");
+
+                    b.Property<string>("ProviderPattern")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("provider_pattern");
+
+                    b.Property<decimal>("RecommendationThreshold")
+                        .HasPrecision(9, 4)
+                        .HasColumnType("decimal(9,4)")
+                        .HasColumnName("recommendation_threshold");
+
+                    b.Property<string>("ReferenceNormalizationPattern")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("reference_normalization_pattern");
+
+                    b.Property<DateTime?>("SupersededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("superseded_at");
+
+                    b.Property<int>("TimingWindowDays")
+                        .HasColumnType("int")
+                        .HasColumnName("timing_window_days");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SupersededUtc");
+
+                    b.HasIndex("CompanyId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("finance_advanced_reconciliation_rules", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.Agent", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6184,6 +6698,1267 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("background_execution_attempts", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankAccountMapping", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyBankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_bank_account_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DiscoveredAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("discovered_account_id");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_current");
+
+                    b.Property<Guid>("MappedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("mapped_by_user_id");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("reason");
+
+                    b.Property<DateTime?>("SupersededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("superseded_at");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CompanyBankAccountId");
+
+                    b.HasIndex("CompanyId", "DiscoveredAccountId")
+                        .IsUnique()
+                        .HasFilter("[is_current] = 1");
+
+                    b.HasIndex("CompanyId", "DiscoveredAccountId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("bank_account_mappings", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankAdjustment", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AdjustmentKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("adjustment_kind");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("BankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_account_id");
+
+                    b.Property<Guid>("BankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_transaction_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CorrectionOfAdjustmentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("correction_of_adjustment_id");
+
+                    b.Property<Guid>("CounterpartFinanceAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("counterpart_finance_account_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("description");
+
+                    b.Property<decimal>("MaterialityThreshold")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("materiality_threshold");
+
+                    b.Property<DateTime?>("PostedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("posted_at");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("bit")
+                        .HasColumnName("requires_approval");
+
+                    b.Property<DateTime?>("ReversedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reversed_at");
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BankAccountId");
+
+                    b.HasIndex("CompanyId", "BankTransactionId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "CorrectionOfAdjustmentId");
+
+                    b.HasIndex("CompanyId", "CounterpartFinanceAccountId");
+
+                    b.HasIndex("CompanyId", "SourceIdentity")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("finance_bank_adjustments", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_bank_adjustments_kind", "adjustment_kind IN ('bank_fee', 'interest_income', 'interest_expense')");
+
+                            t.HasCheckConstraint("CK_finance_bank_adjustments_status", "status IN ('needs_review', 'awaiting_bank_evidence', 'in_transit', 'awaiting_approval', 'ready_to_post', 'posted', 'reversed')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnection", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connected_by_user_id");
+
+                    b.Property<DateTime?>("ConsentExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("consent_expires_at");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("DisconnectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("disconnected_at");
+
+                    b.Property<string>("HealthStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("health_status");
+
+                    b.Property<string>("InstitutionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("institution_id");
+
+                    b.Property<string>("InstitutionName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("institution_name");
+
+                    b.Property<DateTime?>("LastHealthCheckedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_health_checked_at");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(96)
+                        .HasColumnType("nvarchar(96)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("ReasonSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("reason_summary");
+
+                    b.Property<DateTime?>("RevokedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("revoked_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SuspendedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("suspended_at");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ConnectedByUserId");
+
+                    b.HasIndex("CompanyId", "ConsentExpiresUtc");
+
+                    b.HasIndex("CompanyId", "Status");
+
+                    b.HasIndex("CompanyId", "ProviderKey", "InstitutionId")
+                        .IsUnique();
+
+                    b.ToTable("bank_connections", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnectionAuditEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<string>("AfterState")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("after_state");
+
+                    b.Property<string>("BeforeState")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("before_state");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EventType")
+                        .IsRequired()
+                        .HasMaxLength(96)
+                        .HasColumnType("nvarchar(96)")
+                        .HasColumnName("event_type");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(96)
+                        .HasColumnType("nvarchar(96)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("summary");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CorrelationId");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "CreatedUtc");
+
+                    b.ToTable("bank_connection_audit_events", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnectionCapabilityGrant", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Capability")
+                        .IsRequired()
+                        .HasMaxLength(96)
+                        .HasColumnType("nvarchar(96)")
+                        .HasColumnName("capability");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<Guid>("ConsentVersionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("consent_version_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ConnectionId");
+
+                    b.HasIndex("CompanyId", "ConsentVersionId", "Capability")
+                        .IsUnique();
+
+                    b.ToTable("bank_connection_capability_grants", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnectionCredential", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EncryptedEnvelope")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("encrypted_envelope");
+
+                    b.Property<string>("EncryptionKeyId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("encryption_key_id");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ConnectionId")
+                        .IsUnique();
+
+                    b.ToTable("bank_connection_credentials", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConsentRevocationTask", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<Guid>("ConsentVersionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("consent_version_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<DateTime>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<string>("SafeFailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_failure_summary");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ConnectionId");
+
+                    b.HasIndex("CompanyId", "ConsentVersionId");
+
+                    b.HasIndex("Status", "NextAttemptUtc");
+
+                    b.ToTable("bank_consent_revocation_tasks", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConsentSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTime?>("ConsumedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("consumed_at");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("InstitutionId")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("institution_id");
+
+                    b.Property<bool>("IsRenewal")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_renewal");
+
+                    b.Property<string>("NonceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("nonce_hash");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("ProviderSessionReference")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_session_reference");
+
+                    b.Property<string>("ReturnUri")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("return_uri");
+
+                    b.Property<Guid>("StartedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("started_by_user_id");
+
+                    b.Property<string>("StateHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("state_hash");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("StateHash")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ConnectionId");
+
+                    b.HasIndex("CompanyId", "ExpiresUtc");
+
+                    b.ToTable("bank_consent_sessions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConsentVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<DateTime>("EffectiveUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("effective_at");
+
+                    b.Property<DateTime?>("EndedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("ended_at");
+
+                    b.Property<DateTime?>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_at");
+
+                    b.Property<string>("ProviderConsentId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_consent_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ProviderConsentId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ConnectionId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("bank_consent_versions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankDiscoveredAccount", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<DateTime>("FirstDiscoveredUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("first_discovered_at");
+
+                    b.Property<bool>("IsAvailable")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_available");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("MaskedAccountNumber")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("masked_account_number");
+
+                    b.Property<string>("OwnershipStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("ownership_status");
+
+                    b.Property<string>("OwnershipSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("ownership_summary");
+
+                    b.Property<string>("ProviderAccessReference")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_access_reference");
+
+                    b.Property<string>("ProviderAccountId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_account_id");
+
+                    b.Property<int>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "OwnershipStatus");
+
+                    b.HasIndex("CompanyId", "ConnectionId", "ProviderAccountId")
+                        .IsUnique();
+
+                    b.ToTable("bank_discovered_accounts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedBalanceSnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("BalanceType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("balance_type");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("checkpoint_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("LastCommittedTransactionIdentity")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("last_committed_transaction_identity");
+
+                    b.Property<DateTime?>("ObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<Guid>("RawSourceObjectId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("raw_source_object_id");
+
+                    b.Property<DateOnly?>("ReferenceDate")
+                        .HasColumnType("date")
+                        .HasColumnName("reference_date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "RawSourceObjectId");
+
+                    b.HasIndex("CompanyId", "CheckpointId", "CreatedUtc");
+
+                    b.ToTable("bank_feed_balance_snapshots", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedCheckpoint", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AccountMappingId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("account_mapping_id");
+
+                    b.Property<int>("AccountMappingVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("account_mapping_version");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<Guid>("CompanyBankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_bank_account_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("connection_id");
+
+                    b.Property<string>("ContinuationTokenEnvelope")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("continuation_token_envelope");
+
+                    b.Property<string>("ContinuationTokenHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("continuation_token_hash");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateOnly?>("CoverageFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("coverage_from");
+
+                    b.Property<DateOnly?>("CoverageThrough")
+                        .HasColumnType("date")
+                        .HasColumnName("coverage_through");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("DiscoveredAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("discovered_account_id");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<int>("ImportedBookedCount")
+                        .HasColumnType("int")
+                        .HasColumnName("imported_booked_count");
+
+                    b.Property<DateTime?>("LastAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_attempt_at");
+
+                    b.Property<DateTime?>("LastSuccessfulSyncUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_successful_sync_at");
+
+                    b.Property<DateTime?>("LeaseExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("lease_expires_at");
+
+                    b.Property<string>("LeaseOwner")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("lease_owner");
+
+                    b.Property<DateTime?>("NextAttemptUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("next_attempt_at");
+
+                    b.Property<int>("ObservedPendingCount")
+                        .HasColumnType("int")
+                        .HasColumnName("observed_pending_count");
+
+                    b.Property<int>("PageNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("page_number");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("phase");
+
+                    b.Property<string>("ProviderAccountAccessReference")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_account_access_reference");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(96)
+                        .HasColumnType("nvarchar(96)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid?>("RecoveryGapId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("recovery_gap_id");
+
+                    b.Property<Guid?>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<string>("StableProviderAccountId")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("stable_provider_account_id");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SynchronizationRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("synchronization_run_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.Property<DateOnly?>("WindowFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("window_from");
+
+                    b.Property<DateOnly?>("WindowTo")
+                        .HasColumnType("date")
+                        .HasColumnName("window_to");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CompanyBankAccountId");
+
+                    b.HasIndex("CompanyId", "ConnectionId");
+
+                    b.HasIndex("CompanyId", "DiscoveredAccountId")
+                        .IsUnique();
+
+                    b.HasIndex("Status", "NextAttemptUtc", "LeaseExpiresUtc");
+
+                    b.ToTable("bank_feed_checkpoints", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedCursorObservation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("checkpoint_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CursorHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("cursor_hash");
+
+                    b.Property<DateTime>("ObservedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("observed_at");
+
+                    b.Property<int>("PageNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("page_number");
+
+                    b.Property<string>("Phase")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("phase");
+
+                    b.Property<Guid>("SynchronizationRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("synchronization_run_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CheckpointId", "SynchronizationRunId", "Phase", "CursorHash")
+                        .IsUnique();
+
+                    b.ToTable("bank_feed_cursor_observations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedGap", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("checkpoint_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateOnly>("DateFrom")
+                        .HasColumnType("date")
+                        .HasColumnName("date_from");
+
+                    b.Property<DateOnly>("DateTo")
+                        .HasColumnType("date")
+                        .HasColumnName("date_to");
+
+                    b.Property<DateTime>("DetectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("detected_at");
+
+                    b.Property<string>("Kind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("kind");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(96)
+                        .HasColumnType("nvarchar(96)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid?>("ResolvedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("resolved_by_user_id");
+
+                    b.Property<DateTime?>("ResolvedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("resolved_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Summary")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("summary");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CheckpointId", "Status", "DateFrom");
+
+                    b.ToTable("bank_feed_gaps", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedRawSourceObject", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("checkpoint_id");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("checksum");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("content_type");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("EncryptedPayload")
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("encrypted_payload");
+
+                    b.Property<DateTime?>("PayloadPurgedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("payload_purged_at");
+
+                    b.Property<DateTime>("RetentionExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("retention_expires_at");
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("SourceKind")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("source_kind");
+
+                    b.Property<Guid>("SynchronizationRunId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("synchronization_run_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "RetentionExpiresUtc");
+
+                    b.HasIndex("CompanyId", "CheckpointId", "SourceIdentity")
+                        .IsUnique();
+
+                    b.ToTable("bank_feed_raw_source_objects", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedSourceTransaction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasColumnType("decimal(18,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("BankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_transaction_id");
+
+                    b.Property<DateTime?>("BookingDateUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("booking_date");
+
+                    b.Property<Guid>("CheckpointId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("checkpoint_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<string>("Counterparty")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("counterparty");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateTime>("FirstSeenUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("first_seen_at");
+
+                    b.Property<DateTime>("LastSeenUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("last_seen_at");
+
+                    b.Property<string>("ProviderTransactionReference")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_transaction_reference");
+
+                    b.Property<Guid>("RawSourceObjectId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("raw_source_object_id");
+
+                    b.Property<string>("ReferenceText")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("reference_text");
+
+                    b.Property<string>("StableIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("stable_identity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("TransactionDateUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("transaction_date");
+
+                    b.Property<DateTime?>("ValueDateUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("value_date");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "BankTransactionId")
+                        .IsUnique()
+                        .HasFilter("[bank_transaction_id] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "RawSourceObjectId");
+
+                    b.HasIndex("CompanyId", "CheckpointId", "StableIdentity")
+                        .IsUnique();
+
+                    b.ToTable("bank_feed_source_transactions", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankReconciliationFollowUp", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6251,6 +8026,165 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("CurrentVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("current_version");
+
+                    b.Property<bool>("IsActive")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_active");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(120)
+                        .HasColumnType("nvarchar(120)")
+                        .HasColumnName("name");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "Name")
+                        .IsUnique();
+
+                    b.ToTable("bank_statement_csv_mapping_profiles", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfileVersion", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("AccountIdentifierColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("account_identifier_column");
+
+                    b.Property<string>("AmountColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("amount_column");
+
+                    b.Property<string>("BookingDateColumn")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("booking_date_column");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CounterpartyColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("counterparty_column");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("CreditColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("credit_column");
+
+                    b.Property<string>("CultureName")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("culture_name");
+
+                    b.Property<string>("CurrencyColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("currency_column");
+
+                    b.Property<string>("DateFormat")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("date_format");
+
+                    b.Property<string>("DebitColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("debit_column");
+
+                    b.Property<string>("DefaultCurrency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("default_currency");
+
+                    b.Property<string>("Delimiter")
+                        .IsRequired()
+                        .HasMaxLength(1)
+                        .HasColumnType("nvarchar(1)")
+                        .HasColumnName("delimiter");
+
+                    b.Property<string>("ExternalReferenceColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("external_reference_column");
+
+                    b.Property<bool>("HasHeader")
+                        .HasColumnType("bit")
+                        .HasColumnName("has_header");
+
+                    b.Property<Guid>("ProfileId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("profile_id");
+
+                    b.Property<string>("ReferenceColumn")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("reference_column");
+
+                    b.Property<string>("ValueDateColumn")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("value_date_column");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ProfileId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("bank_statement_csv_mapping_profile_versions", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImport", b =>
                 {
                     b.Property<Guid>("Id")
@@ -6298,6 +8232,361 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("bank_statement_imports", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJob", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AcceptedRowCount")
+                        .HasColumnType("int")
+                        .HasColumnName("accepted_row_count");
+
+                    b.Property<Guid>("BankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_account_id");
+
+                    b.Property<decimal?>("CalculatedClosingBalance")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("calculated_closing_balance");
+
+                    b.Property<string>("Checksum")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("checksum");
+
+                    b.Property<decimal?>("ClosingBalance")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("closing_balance");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CompletedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("completed_by_user_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<long>("ContentLength")
+                        .HasColumnType("bigint")
+                        .HasColumnName("content_length");
+
+                    b.Property<string>("ContentType")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("content_type");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<decimal>("CreditTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("credit_total");
+
+                    b.Property<Guid?>("CsvMappingProfileId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("csv_mapping_profile_id");
+
+                    b.Property<int?>("CsvMappingProfileVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("csv_mapping_profile_version");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<decimal>("DebitTotal")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("debit_total");
+
+                    b.Property<int>("DuplicateRowCount")
+                        .HasColumnType("int")
+                        .HasColumnName("duplicate_row_count");
+
+                    b.Property<int>("ErrorRowCount")
+                        .HasColumnType("int")
+                        .HasColumnName("error_row_count");
+
+                    b.Property<string>("FailureCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("failure_code");
+
+                    b.Property<string>("FailureSummary")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("failure_summary");
+
+                    b.Property<string>("Format")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("format");
+
+                    b.Property<int>("ImportedRowCount")
+                        .HasColumnType("int")
+                        .HasColumnName("imported_row_count");
+
+                    b.Property<int>("LastCommittedRowNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("last_committed_row_number");
+
+                    b.Property<string>("MessageVersion")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("message_version");
+
+                    b.Property<decimal?>("OpeningBalance")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("opening_balance");
+
+                    b.Property<string>("OriginalFileName")
+                        .IsRequired()
+                        .HasMaxLength(255)
+                        .HasColumnType("nvarchar(255)")
+                        .HasColumnName("original_file_name");
+
+                    b.Property<string>("ParserVersion")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("parser_version");
+
+                    b.Property<string>("SourceAccountIdentifier")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_account_identifier");
+
+                    b.Property<string>("StatementIdentity")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("statement_identity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("StorageKey")
+                        .IsRequired()
+                        .HasMaxLength(512)
+                        .HasColumnType("nvarchar(512)")
+                        .HasColumnName("storage_key");
+
+                    b.Property<int>("TotalRowCount")
+                        .HasColumnType("int")
+                        .HasColumnName("total_row_count");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BankAccountId");
+
+                    b.HasIndex("CompanyId", "Checksum");
+
+                    b.HasIndex("CompanyId", "CsvMappingProfileId");
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("bank_statement_import_jobs", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJobIssue", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Code")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("code");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("job_id");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("message");
+
+                    b.Property<int?>("RowNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("row_number");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("severity");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "JobId", "Severity");
+
+                    b.ToTable("bank_statement_import_job_issues", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJobRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal?>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTime?>("BookingDateUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("booking_date");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ConflictDecision")
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("conflict_decision");
+
+                    b.Property<string>("ConflictDecisionReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("conflict_decision_reason");
+
+                    b.Property<string>("Counterparty")
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("counterparty");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("ExternalReference")
+                        .HasMaxLength(160)
+                        .HasColumnType("nvarchar(160)")
+                        .HasColumnName("external_reference");
+
+                    b.Property<Guid?>("ImportedBankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("imported_bank_transaction_id");
+
+                    b.Property<string>("IssueCode")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("issue_code");
+
+                    b.Property<string>("IssueMessage")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("issue_message");
+
+                    b.Property<string>("IssueSeverity")
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("issue_severity");
+
+                    b.Property<Guid>("JobId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("job_id");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("PaymentStatus")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("payment_status");
+
+                    b.Property<DateTime?>("ProcessedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("processed_at");
+
+                    b.Property<string>("ReferenceText")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("reference_text");
+
+                    b.Property<string>("RowHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("row_hash");
+
+                    b.Property<string>("RowIdentity")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("row_identity");
+
+                    b.Property<int>("RowNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("row_number");
+
+                    b.Property<DateTime?>("ValueDateUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("value_date");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ImportedBankTransactionId");
+
+                    b.HasIndex("CompanyId", "JobId", "RowNumber")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "JobId", "Outcome", "ProcessedUtc");
+
+                    b.ToTable("bank_statement_import_job_rows", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportRow", b =>
@@ -6999,6 +9288,143 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                             t.HasCheckConstraint("CK_calendar_connections_provider", "provider IN ('google', 'microsoft365')");
 
                             t.HasCheckConstraint("CK_calendar_connections_status", "status IN ('pending', 'active', 'token_expired', 'revoked', 'failed', 'disconnected')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CardSettlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("BankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_account_id");
+
+                    b.Property<Guid?>("BankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_transaction_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CorrectionOfSettlementId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("correction_of_settlement_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<decimal>("FeeAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("fee_amount");
+
+                    b.Property<decimal>("GrossAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("gross_amount");
+
+                    b.Property<decimal>("MaterialityThreshold")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("materiality_threshold");
+
+                    b.Property<decimal>("NetAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("net_amount");
+
+                    b.Property<DateTime?>("PostedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("posted_at");
+
+                    b.Property<string>("ProviderBatchReference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("provider_batch_reference");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("ReceivableFinanceAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("control_finance_account_id");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("bit")
+                        .HasColumnName("requires_approval");
+
+                    b.Property<DateTime?>("ReversedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reversed_at");
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BankAccountId");
+
+                    b.HasIndex("CompanyId", "BankTransactionId")
+                        .IsUnique()
+                        .HasFilter("[bank_transaction_id] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "CorrectionOfSettlementId");
+
+                    b.HasIndex("CompanyId", "ReceivableFinanceAccountId");
+
+                    b.HasIndex("CompanyId", "SourceIdentity")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("finance_card_settlements", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_card_settlements_status", "status IN ('needs_review', 'awaiting_bank_evidence', 'in_transit', 'awaiting_approval', 'ready_to_post', 'posted', 'reversed')");
                         });
                 });
 
@@ -26115,6 +28541,981 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         });
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatch", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid?>("ApprovedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approved_by_user_id");
+
+                    b.Property<DateTime?>("ApprovedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("approved_at");
+
+                    b.Property<Guid?>("CancelledByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("cancelled_by_user_id");
+
+                    b.Property<DateTime?>("CancelledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CreateIdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("create_idempotency_key");
+
+                    b.Property<string>("CreatePayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("create_payload_hash");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("CurrentExportArtifactId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("current_export_artifact_id");
+
+                    b.Property<Guid?>("CurrentValidationResultId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("current_validation_result_id");
+
+                    b.Property<string>("DecisionComment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("decision_comment");
+
+                    b.Property<int>("InstructionSetVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("instruction_set_version");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("name");
+
+                    b.Property<DateOnly>("PlannedExecutionDate")
+                        .HasColumnType("date")
+                        .HasColumnName("planned_execution_date");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("reference");
+
+                    b.Property<Guid?>("RejectedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("rejected_by_user_id");
+
+                    b.Property<DateTime?>("RejectedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("rejected_at");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid?>("SubmittedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("submitted_by_user_id");
+
+                    b.Property<DateTime?>("SubmittedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("submitted_at");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CreateIdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Reference")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("payment_batches", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_batches_status", "status IN ('draft', 'validated', 'awaiting_approval', 'approved', 'rejected', 'cancelled')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchApprovalBinding", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("DecidedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("decided_by_user_id");
+
+                    b.Property<DateTime?>("DecidedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("decided_at");
+
+                    b.Property<string>("DecisionComment")
+                        .HasMaxLength(2000)
+                        .HasColumnType("nvarchar(2000)")
+                        .HasColumnName("decision_comment");
+
+                    b.Property<int>("InstructionSetVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("instruction_set_version");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<string>("SourceSetHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_set_hash");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ApprovalRequestId");
+
+                    b.HasIndex("CompanyId", "BatchId", "ApprovalRequestId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "BatchId", "Status");
+
+                    b.ToTable("payment_batch_approval_bindings", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_batch_approval_bindings_status", "status IN ('pending', 'approved', 'rejected', 'cancelled', 'stale')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchExecution", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ApprovalBindingId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_binding_id");
+
+                    b.Property<Guid>("BankConnectionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_connection_id");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<string>("BusinessIdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("business_idempotency_key");
+
+                    b.Property<bool>("CanCancelAtProvider")
+                        .HasColumnType("bit")
+                        .HasColumnName("can_cancel_at_provider");
+
+                    b.Property<DateTime?>("CancelledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("cancelled_at");
+
+                    b.Property<Guid>("CompanyBankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_bank_account_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("CorrelationId")
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("correlation_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<int>("InstructionSetVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("instruction_set_version");
+
+                    b.Property<DateTime?>("ProviderAcceptedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("provider_accepted_at");
+
+                    b.Property<string>("ProviderAuthorizationUri")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("provider_authorization_uri");
+
+                    b.Property<DateTime?>("ProviderCompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("provider_completed_at");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("ProviderPaymentId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_payment_id");
+
+                    b.Property<string>("ProviderStatus")
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("provider_status");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<Guid>("RequestedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("requested_by_user_id");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<DateTime?>("SettledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("settled_at");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<int>("StatusPollCount")
+                        .HasColumnType("int")
+                        .HasColumnName("status_poll_count");
+
+                    b.Property<DateTime?>("SubmittedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("submitted_at");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<bool>("UpdatesExpected")
+                        .HasColumnType("bit")
+                        .HasColumnName("updates_expected");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ApprovalBindingId");
+
+                    b.HasIndex("CompanyId", "BankConnectionId");
+
+                    b.HasIndex("CompanyId", "BusinessIdempotencyKey")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "CompanyBankAccountId");
+
+                    b.HasIndex("ProviderKey", "ProviderPaymentId")
+                        .IsUnique()
+                        .HasFilter("[provider_payment_id] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "BatchId", "InstructionSetVersion")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("payment_batch_executions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_batch_executions_status", "status IN ('queued', 'submitting', 'awaiting_authorization', 'provider_accepted', 'processing', 'rejected', 'cancelled', 'reconciliation_required', 'provider_completed', 'settled')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchExportArtifact", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("content");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Format")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("format");
+
+                    b.Property<int>("InstructionSetVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("instruction_set_version");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_current");
+
+                    b.Property<string>("MimeType")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("mime_type");
+
+                    b.Property<DateTime?>("SupersededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("superseded_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BatchId", "InstructionSetVersion")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "BatchId", "IsCurrent")
+                        .IsUnique()
+                        .HasFilter("[is_current] = 1");
+
+                    b.ToTable("payment_batch_export_artifacts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AddedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("added_by_user_id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<DateOnly>("DueDate")
+                        .HasColumnType("date")
+                        .HasColumnName("due_date");
+
+                    b.Property<string>("ObligationType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("obligation_type");
+
+                    b.Property<string>("PaymentReference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("payment_reference");
+
+                    b.Property<Guid?>("RemovedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("removed_by_user_id");
+
+                    b.Property<DateTime?>("RemovedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("removed_at");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_hash");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceReference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("source_reference");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BatchId", "ObligationType", "SourceId");
+
+                    b.HasIndex("CompanyId", "ObligationType", "SourceId", "RemovedUtc");
+
+                    b.ToTable("payment_batch_obligations", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_batch_obligations_type", "obligation_type IN ('supplier_payment_proposal', 'customer_refund')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchOperation", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("IdempotencyKey")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("OperationType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("operation_type");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<long>("ResultBatchVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("result_batch_version");
+
+                    b.Property<string>("ResultStatus")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("result_status");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BatchId", "CreatedUtc");
+
+                    b.HasIndex("CompanyId", "OperationType", "IdempotencyKey")
+                        .IsUnique();
+
+                    b.ToTable("payment_batch_operations", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchSettlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AllocationCount")
+                        .HasColumnType("int")
+                        .HasColumnName("allocation_count");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("BankReference")
+                        .IsRequired()
+                        .HasMaxLength(240)
+                        .HasColumnType("nvarchar(240)")
+                        .HasColumnName("bank_reference");
+
+                    b.Property<Guid>("BankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_transaction_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<string>("LedgerEntryIdsJson")
+                        .IsRequired()
+                        .HasMaxLength(8000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("ledger_entry_ids_json");
+
+                    b.Property<int>("PaymentCount")
+                        .HasColumnType("int")
+                        .HasColumnName("payment_count");
+
+                    b.Property<Guid>("SettledByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("settled_by_user_id");
+
+                    b.Property<DateTime>("SettledUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("settled_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BankTransactionId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ExecutionId")
+                        .IsUnique();
+
+                    b.ToTable("payment_batch_settlements", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchValidationIssue", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Explanation")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("explanation");
+
+                    b.Property<Guid?>("ObligationLinkId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("obligation_link_id");
+
+                    b.Property<string>("ReasonCode")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("Severity")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("severity");
+
+                    b.Property<Guid>("ValidationResultId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("validation_result_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ValidationResultId", "ReasonCode");
+
+                    b.ToTable("payment_batch_validation_issues", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchValidationResult", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<string>("CashAvailabilityJson")
+                        .IsRequired()
+                        .HasMaxLength(8000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("cash_availability_json");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<long>("EvaluatedBatchVersion")
+                        .HasColumnType("bigint")
+                        .HasColumnName("evaluated_batch_version");
+
+                    b.Property<int>("InstructionSetVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("instruction_set_version");
+
+                    b.Property<bool>("IsValid")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_valid");
+
+                    b.Property<string>("SourceSetHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_set_hash");
+
+                    b.Property<string>("TotalsJson")
+                        .IsRequired()
+                        .HasMaxLength(8000)
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("totals_json");
+
+                    b.Property<Guid>("ValidatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("validated_by_user_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BatchId", "CreatedUtc");
+
+                    b.ToTable("payment_batch_validation_results", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBeneficiaryProfile", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("destination");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_current");
+
+                    b.Property<string>("MaskedDestination")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("masked_destination");
+
+                    b.Property<Guid>("PartyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("party_id");
+
+                    b.Property<string>("PartyType")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("party_type");
+
+                    b.Property<string>("Rail")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("rail");
+
+                    b.Property<byte[]>("RowVersion")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("binary(16)")
+                        .HasColumnName("row_version")
+                        .IsFixedLength();
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SupersededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("superseded_at");
+
+                    b.Property<string>("VerificationEvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("verification_evidence_hash");
+
+                    b.Property<string>("VerificationEvidenceReference")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("verification_evidence_reference");
+
+                    b.Property<Guid>("VerifiedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("verified_by_user_id");
+
+                    b.Property<DateTime>("VerifiedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("verified_at");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("int")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "PartyType", "PartyId", "IsCurrent")
+                        .IsUnique()
+                        .HasFilter("[is_current] = 1");
+
+                    b.HasIndex("CompanyId", "PartyType", "PartyId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("payment_beneficiary_profiles", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_beneficiary_profiles_status", "status IN ('verified', 'superseded', 'revoked')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBeneficiarySnapshot", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("destination");
+
+                    b.Property<string>("DisplayName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("display_name");
+
+                    b.Property<string>("MaskedDestination")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("masked_destination");
+
+                    b.Property<Guid>("ObligationLinkId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("obligation_link_id");
+
+                    b.Property<Guid?>("ProfileId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("profile_id");
+
+                    b.Property<int>("ProfileVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("profile_version");
+
+                    b.Property<string>("Rail")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("rail");
+
+                    b.Property<string>("VerificationEvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("verification_evidence_hash");
+
+                    b.Property<string>("VerificationEvidenceReference")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("verification_evidence_reference");
+
+                    b.Property<DateTime>("VerifiedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("verified_at");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "ObligationLinkId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ProfileId", "ProfileVersion");
+
+                    b.ToTable("payment_beneficiary_snapshots", (string)null);
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentCashLedgerLink", b =>
                 {
                     b.Property<Guid>("Id")
@@ -26165,6 +29566,686 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("payment_cash_ledger_links", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentExecutionAttempt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<int>("AttemptNumber")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_number");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime?>("CompletedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("completed_at");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<string>("Operation")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("operation");
+
+                    b.Property<string>("Outcome")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("outcome");
+
+                    b.Property<string>("ProviderRequestId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_request_id");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("RequestHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("request_hash");
+
+                    b.Property<string>("RetryClassification")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("retry_classification");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<DateTime>("StartedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("started_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ExecutionId", "Outcome");
+
+                    b.HasIndex("CompanyId", "ExecutionId", "Operation", "AttemptNumber")
+                        .IsUnique();
+
+                    b.ToTable("payment_execution_attempts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentExecutionInstruction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<string>("BeneficiaryName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("beneficiary_name");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<string>("MaskedDestination")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("masked_destination");
+
+                    b.Property<Guid>("ObligationLinkId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("obligation_link_id");
+
+                    b.Property<Guid?>("PaymentAllocationId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("payment_allocation_id");
+
+                    b.Property<Guid?>("PaymentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("payment_id");
+
+                    b.Property<Guid>("PaymentInstructionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("payment_instruction_id");
+
+                    b.Property<string>("ProviderTransactionId")
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_transaction_id");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int")
+                        .HasColumnName("sequence");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasAlternateKey("CompanyId", "Id");
+
+                    b.HasIndex("CompanyId", "ObligationLinkId");
+
+                    b.HasIndex("CompanyId", "PaymentAllocationId");
+
+                    b.HasIndex("CompanyId", "PaymentId");
+
+                    b.HasIndex("CompanyId", "PaymentInstructionId");
+
+                    b.HasIndex("CompanyId", "ProviderTransactionId");
+
+                    b.HasIndex("CompanyId", "ExecutionId", "PaymentInstructionId")
+                        .IsUnique();
+
+                    b.ToTable("payment_execution_instructions", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentInstruction", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 2)
+                        .HasColumnType("decimal(19,2)")
+                        .HasColumnName("amount");
+
+                    b.Property<DateTime?>("ApprovedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("approved_at");
+
+                    b.Property<Guid>("BatchId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("batch_id");
+
+                    b.Property<string>("BeneficiaryName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("beneficiary_name");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .HasColumnType("nvarchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<string>("Destination")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("destination");
+
+                    b.Property<DateOnly>("ExecutionDate")
+                        .HasColumnType("date")
+                        .HasColumnName("execution_date");
+
+                    b.Property<int>("InstructionSetVersion")
+                        .HasColumnType("int")
+                        .HasColumnName("instruction_set_version");
+
+                    b.Property<bool>("IsCurrent")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_current");
+
+                    b.Property<string>("MaskedDestination")
+                        .IsRequired()
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("masked_destination");
+
+                    b.Property<Guid>("ObligationLinkId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("obligation_link_id");
+
+                    b.Property<string>("PaymentReference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("payment_reference");
+
+                    b.Property<string>("Rail")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("rail");
+
+                    b.Property<int>("Sequence")
+                        .HasColumnType("int")
+                        .HasColumnName("sequence");
+
+                    b.Property<string>("SourceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("source_hash");
+
+                    b.Property<string>("SourceVersion")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .HasColumnType("nvarchar(128)")
+                        .HasColumnName("source_version");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(20)
+                        .HasColumnType("nvarchar(20)")
+                        .HasColumnName("status");
+
+                    b.Property<DateTime?>("SupersededUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("superseded_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ObligationLinkId");
+
+                    b.HasIndex("CompanyId", "BatchId", "InstructionSetVersion", "Sequence")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "BatchId", "ObligationLinkId", "IsCurrent")
+                        .IsUnique()
+                        .HasFilter("[is_current] = 1");
+
+                    b.ToTable("payment_instructions", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_payment_instructions_status", "status IN ('draft', 'approved', 'superseded')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentProviderAcknowledgement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime>("AcknowledgedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("acknowledged_at");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("EventIdentity")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("event_identity");
+
+                    b.Property<string>("EvidenceHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("evidence_hash");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<bool>("IsFinal")
+                        .HasColumnType("bit")
+                        .HasColumnName("is_final");
+
+                    b.Property<string>("NormalizedStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("normalized_status");
+
+                    b.Property<string>("ProviderStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("provider_status");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<string>("Source")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("source");
+
+                    b.Property<bool>("UpdatesExpected")
+                        .HasColumnType("bit")
+                        .HasColumnName("updates_expected");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ExecutionId", "AcknowledgedUtc");
+
+                    b.HasIndex("CompanyId", "ExecutionId", "EventIdentity")
+                        .IsUnique();
+
+                    b.ToTable("payment_provider_acknowledgements", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentProviderWebhookReceipt", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<string>("PayloadHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("payload_hash");
+
+                    b.Property<string>("ProviderKey")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("provider_key");
+
+                    b.Property<string>("ProviderPaymentId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("provider_payment_id");
+
+                    b.Property<string>("ProviderStatus")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("provider_status");
+
+                    b.Property<DateTime>("ReceivedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("received_at");
+
+                    b.Property<DateTime>("TriggeredUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("triggered_at");
+
+                    b.Property<string>("WebhookId")
+                        .IsRequired()
+                        .HasMaxLength(256)
+                        .HasColumnType("nvarchar(256)")
+                        .HasColumnName("webhook_id");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ProviderKey", "WebhookId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ExecutionId", "ReceivedUtc");
+
+                    b.ToTable("payment_provider_webhook_receipts", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentRemittance", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<DateTime?>("AcceptedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("accepted_at");
+
+                    b.Property<int>("AttemptCount")
+                        .HasColumnType("int")
+                        .HasColumnName("attempt_count");
+
+                    b.Property<string>("BeneficiaryName")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("beneficiary_name");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("Content")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("content");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("ExecutionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("execution_id");
+
+                    b.Property<Guid>("PaymentInstructionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("payment_instruction_id");
+
+                    b.Property<string>("ProviderReference")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("provider_reference");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<string>("RecipientEmail")
+                        .HasMaxLength(320)
+                        .HasColumnType("nvarchar(320)")
+                        .HasColumnName("recipient_email");
+
+                    b.Property<string>("SafeSummary")
+                        .HasMaxLength(1000)
+                        .HasColumnType("nvarchar(1000)")
+                        .HasColumnName("safe_summary");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(40)
+                        .HasColumnType("nvarchar(40)")
+                        .HasColumnName("status");
+
+                    b.Property<string>("Subject")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("subject");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "PaymentInstructionId");
+
+                    b.HasIndex("CompanyId", "ExecutionId", "PaymentInstructionId")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("payment_remittances", (string)null);
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PayoutSettlement", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("BankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_account_id");
+
+                    b.Property<Guid?>("BankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("bank_transaction_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CorrectionOfSettlementId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("correction_of_settlement_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<decimal>("FeeAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("fee_amount");
+
+                    b.Property<decimal>("GrossAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("gross_amount");
+
+                    b.Property<decimal>("MaterialityThreshold")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("materiality_threshold");
+
+                    b.Property<decimal>("NetAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("net_amount");
+
+                    b.Property<Guid>("PayoutClearingFinanceAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("control_finance_account_id");
+
+                    b.Property<DateTime?>("PostedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("posted_at");
+
+                    b.Property<string>("ProviderBatchReference")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("provider_batch_reference");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("bit")
+                        .HasColumnName("requires_approval");
+
+                    b.Property<DateTime?>("ReversedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reversed_at");
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "BankAccountId");
+
+                    b.HasIndex("CompanyId", "BankTransactionId")
+                        .IsUnique()
+                        .HasFilter("[bank_transaction_id] IS NOT NULL");
+
+                    b.HasIndex("CompanyId", "CorrectionOfSettlementId");
+
+                    b.HasIndex("CompanyId", "PayoutClearingFinanceAccountId");
+
+                    b.HasIndex("CompanyId", "SourceIdentity")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("finance_payout_settlements", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_payout_settlements_status", "status IN ('needs_review', 'awaiting_bank_evidence', 'in_transit', 'awaiting_approval', 'ready_to_post', 'posted', 'reversed')");
+                        });
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ProactiveMessage", b =>
@@ -33472,6 +37553,312 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.ToTable("tool_executions", (string)null);
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasurySourceEvent", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<string>("Action")
+                        .IsRequired()
+                        .HasMaxLength(80)
+                        .HasColumnType("nvarchar(80)")
+                        .HasColumnName("action");
+
+                    b.Property<Guid>("ActorUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("actor_user_id");
+
+                    b.Property<string>("AfterJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("after_json");
+
+                    b.Property<string>("BeforeJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("before_json");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("source_type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "SourceType", "SourceId", "CreatedUtc");
+
+                    b.ToTable("finance_treasury_source_events", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_treasury_source_events_type", "source_type IN ('account_transfer', 'bank_adjustment', 'card_settlement', 'payout_settlement')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasurySourceEvidence", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<string>("ContentHash")
+                        .IsRequired()
+                        .HasMaxLength(128)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(128)")
+                        .HasColumnName("content_hash");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Description")
+                        .IsRequired()
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("description");
+
+                    b.Property<string>("EvidenceType")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("evidence_type");
+
+                    b.Property<string>("Reference")
+                        .IsRequired()
+                        .HasMaxLength(300)
+                        .HasColumnType("nvarchar(300)")
+                        .HasColumnName("reference");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("source_type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "ContentHash");
+
+                    b.HasIndex("CompanyId", "SourceType", "SourceId", "EvidenceType");
+
+                    b.ToTable("finance_treasury_source_evidence", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_treasury_source_evidence_type", "source_type IN ('account_transfer', 'bank_adjustment', 'card_settlement', 'payout_settlement')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasurySourceLedgerLink", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("LedgerEntryId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("ledger_entry_id");
+
+                    b.Property<string>("LinkRole")
+                        .IsRequired()
+                        .HasMaxLength(16)
+                        .HasColumnType("nvarchar(16)")
+                        .HasColumnName("link_role");
+
+                    b.Property<Guid>("SourceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("source_id");
+
+                    b.Property<string>("SourceType")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("source_type");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "LedgerEntryId");
+
+                    b.HasIndex("CompanyId", "SourceType", "SourceId", "LinkRole")
+                        .IsUnique();
+
+                    b.ToTable("finance_treasury_source_ledger_links", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_treasury_source_ledger_links_type", "source_type IN ('account_transfer', 'bank_adjustment', 'card_settlement', 'payout_settlement')");
+                        });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasuryTransfer", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<decimal>("Amount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("amount");
+
+                    b.Property<Guid?>("ApprovalRequestId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("approval_request_id");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<Guid?>("CorrectionOfTransferId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("correction_of_transfer_id");
+
+                    b.Property<Guid>("CreatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("created_by_user_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_at");
+
+                    b.Property<string>("Currency")
+                        .IsRequired()
+                        .HasMaxLength(3)
+                        .IsUnicode(false)
+                        .HasColumnType("varchar(3)")
+                        .HasColumnName("currency");
+
+                    b.Property<decimal>("FeeAmount")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("fee_amount");
+
+                    b.Property<Guid?>("FeeFinanceAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("fee_finance_account_id");
+
+                    b.Property<Guid>("FromBankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("from_bank_account_id");
+
+                    b.Property<Guid?>("InboundBankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("inbound_bank_transaction_id");
+
+                    b.Property<decimal>("MaterialityThreshold")
+                        .HasPrecision(19, 4)
+                        .HasColumnType("decimal(19,4)")
+                        .HasColumnName("materiality_threshold");
+
+                    b.Property<Guid?>("OutboundBankTransactionId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("outbound_bank_transaction_id");
+
+                    b.Property<DateTime?>("PostedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("posted_at");
+
+                    b.Property<string>("ReasonCode")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)")
+                        .HasColumnName("reason_code");
+
+                    b.Property<bool>("RequiresApproval")
+                        .HasColumnType("bit")
+                        .HasColumnName("requires_approval");
+
+                    b.Property<DateTime?>("ReversedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("reversed_at");
+
+                    b.Property<string>("SourceIdentity")
+                        .IsRequired()
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("source_identity");
+
+                    b.Property<string>("Status")
+                        .IsRequired()
+                        .HasMaxLength(32)
+                        .HasColumnType("nvarchar(32)")
+                        .HasColumnName("status");
+
+                    b.Property<Guid>("ToBankAccountId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("to_bank_account_id");
+
+                    b.Property<Guid>("UpdatedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("updated_by_user_id");
+
+                    b.Property<DateTime>("UpdatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("updated_at");
+
+                    b.Property<long>("Version")
+                        .IsConcurrencyToken()
+                        .HasColumnType("bigint")
+                        .HasColumnName("version");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "CorrectionOfTransferId");
+
+                    b.HasIndex("CompanyId", "FeeFinanceAccountId");
+
+                    b.HasIndex("CompanyId", "FromBankAccountId");
+
+                    b.HasIndex("CompanyId", "InboundBankTransactionId");
+
+                    b.HasIndex("CompanyId", "OutboundBankTransactionId");
+
+                    b.HasIndex("CompanyId", "SourceIdentity")
+                        .IsUnique();
+
+                    b.HasIndex("CompanyId", "ToBankAccountId");
+
+                    b.HasIndex("CompanyId", "Status", "UpdatedUtc");
+
+                    b.ToTable("finance_treasury_transfers", null, t =>
+                        {
+                            t.HasCheckConstraint("CK_finance_treasury_transfers_status", "status IN ('needs_review', 'awaiting_bank_evidence', 'in_transit', 'awaiting_approval', 'ready_to_post', 'posted', 'reversed')");
+                        });
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.TrialBalanceSnapshot", b =>
                 {
                     b.Property<Guid>("Id")
@@ -35846,6 +40233,127 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationEdge", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", "Group")
+                        .WithMany("Edges")
+                        .HasForeignKey("CompanyId", "GroupId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationNode", "SourceNode")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "SourceNodeId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationNode", "TargetNode")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "TargetNodeId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+
+                    b.Navigation("SourceNode");
+
+                    b.Navigation("TargetNode");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationEvent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", "Group")
+                        .WithMany("Events")
+                        .HasForeignKey("CompanyId", "GroupId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CorrectionOfGroupId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationRule", "Rule")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RuleId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Rule");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationNode", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", "Group")
+                        .WithMany("Nodes")
+                        .HasForeignKey("CompanyId", "GroupId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationReasonContribution", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", "Group")
+                        .WithMany("ReasonContributions")
+                        .HasForeignKey("CompanyId", "GroupId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Group");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationResult", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", "Group")
+                        .WithMany("Results")
+                        .HasForeignKey("CompanyId", "GroupId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.AdvancedReconciliationResult", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ParentResultId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Group");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationRule", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.Agent", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -36089,6 +40597,278 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankAccountMapping", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", "CompanyBankAccount")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CompanyBankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankDiscoveredAccount", "DiscoveredAccount")
+                        .WithMany("Mappings")
+                        .HasForeignKey("CompanyId", "DiscoveredAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("CompanyBankAccount");
+
+                    b.Navigation("DiscoveredAccount");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankAdjustment", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankAdjustment", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CorrectionOfAdjustmentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CounterpartFinanceAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnection", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.User", "ConnectedByUser")
+                        .WithMany()
+                        .HasForeignKey("ConnectedByUserId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("ConnectedByUser");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnectionAuditEvent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnectionCapabilityGrant", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany("CapabilityGrants")
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConsentVersion", "ConsentVersion")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConsentVersionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+
+                    b.Navigation("ConsentVersion");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnectionCredential", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConsentRevocationTask", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConsentVersion", "ConsentVersion")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConsentVersionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+
+                    b.Navigation("ConsentVersion");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConsentSession", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConsentVersion", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany("Consents")
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankDiscoveredAccount", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", "Connection")
+                        .WithMany("DiscoveredAccounts")
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Connection");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedBalanceSnapshot", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CheckpointId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedRawSourceObject", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RawSourceObjectId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedCheckpoint", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CompanyBankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankDiscoveredAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "DiscoveredAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedCursorObservation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CheckpointId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedGap", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CheckpointId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedRawSourceObject", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CheckpointId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankFeedSourceTransaction", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedCheckpoint", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CheckpointId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankFeedRawSourceObject", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "RawSourceObjectId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankReconciliationFollowUp", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -36118,6 +40898,37 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("LedgerEntry");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfile", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfileVersion", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfile", "Profile")
+                        .WithMany("Versions")
+                        .HasForeignKey("CompanyId", "ProfileId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Profile");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImport", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -36136,6 +40947,82 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("BankAccount");
 
                     b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJob", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", "BankAccount")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfile", "CsvMappingProfile")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CsvMappingProfileId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.Navigation("BankAccount");
+
+                    b.Navigation("Company");
+
+                    b.Navigation("CsvMappingProfile");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJobIssue", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankStatementImportJob", "Job")
+                        .WithMany("Issues")
+                        .HasForeignKey("CompanyId", "JobId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("Job");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJobRow", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", "ImportedBankTransaction")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ImportedBankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankStatementImportJob", "Job")
+                        .WithMany("Rows")
+                        .HasForeignKey("CompanyId", "JobId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("ImportedBankTransaction");
+
+                    b.Navigation("Job");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportRow", b =>
@@ -36354,6 +41241,43 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("ExternalAccountConnection");
 
                     b.Navigation("User");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.CardSettlement", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CardSettlement", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CorrectionOfSettlementId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ReceivableFinanceAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.CompanyBankAccount", b =>
@@ -39687,6 +44611,157 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("TargetSourceSimulationEventRecord");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatch", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchApprovalBinding", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.ApprovalRequest", "ApprovalRequest")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ApprovalRequestId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ApprovalRequest");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchExecution", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchApprovalBinding", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ApprovalBindingId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankConnection", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankConnectionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CompanyBankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchExportArtifact", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", "Batch")
+                        .WithMany("Obligations")
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Batch");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchOperation", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchSettlement", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchValidationIssue", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchValidationResult", "ValidationResult")
+                        .WithMany("Issues")
+                        .HasForeignKey("CompanyId", "ValidationResultId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ValidationResult");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchValidationResult", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBeneficiaryProfile", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBeneficiarySnapshot", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", "ObligationLink")
+                        .WithOne("BeneficiarySnapshot")
+                        .HasForeignKey("VirtualCompany.Domain.Entities.PaymentBeneficiarySnapshot", "CompanyId", "ObligationLinkId")
+                        .HasPrincipalKey("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", "CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("ObligationLink");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentCashLedgerLink", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -39714,6 +44789,143 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("LedgerEntry");
 
                     b.Navigation("Payment");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentExecutionAttempt", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentExecutionInstruction", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ObligationLinkId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentAllocation", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PaymentAllocationId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.Payment", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PaymentId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentInstruction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PaymentInstructionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentInstruction", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatch", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BatchId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ObligationLinkId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentProviderAcknowledgement", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentProviderWebhookReceipt", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentRemittance", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentBatchExecution", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ExecutionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PaymentInstruction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PaymentInstructionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PayoutSettlement", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "BankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.PayoutSettlement", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CorrectionOfSettlementId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "PayoutClearingFinanceAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ProactiveMessage", b =>
@@ -40962,6 +46174,97 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasurySourceEvent", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasurySourceEvidence", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasurySourceLedgerLink", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.LedgerEntry", "LedgerEntry")
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "LedgerEntryId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+
+                    b.Navigation("LedgerEntry");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.TreasuryTransfer", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.TreasuryTransfer", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "CorrectionOfTransferId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.FinanceAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "FeeFinanceAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "FromBankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "InboundBankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.BankTransaction", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "OutboundBankTransactionId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction);
+
+                    b.HasOne("VirtualCompany.Domain.Entities.CompanyBankAccount", null)
+                        .WithMany()
+                        .HasForeignKey("CompanyId", "ToBankAccountId")
+                        .HasPrincipalKey("CompanyId", "Id")
+                        .OnDelete(DeleteBehavior.NoAction)
+                        .IsRequired();
+
+                    b.Navigation("Company");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.TrialBalanceSnapshot", b =>
                 {
                     b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
@@ -41333,6 +46636,19 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Decisions");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.AdvancedReconciliationGroup", b =>
+                {
+                    b.Navigation("Edges");
+
+                    b.Navigation("Events");
+
+                    b.Navigation("Nodes");
+
+                    b.Navigation("ReasonContributions");
+
+                    b.Navigation("Results");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.AgentScheduledTrigger", b =>
                 {
                     b.Navigation("EnqueueWindows");
@@ -41343,8 +46659,34 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Steps");
                 });
 
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankConnection", b =>
+                {
+                    b.Navigation("CapabilityGrants");
+
+                    b.Navigation("Consents");
+
+                    b.Navigation("DiscoveredAccounts");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankDiscoveredAccount", b =>
+                {
+                    b.Navigation("Mappings");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementCsvMappingProfile", b =>
+                {
+                    b.Navigation("Versions");
+                });
+
             modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImport", b =>
                 {
+                    b.Navigation("Rows");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.BankStatementImportJob", b =>
+                {
+                    b.Navigation("Issues");
+
                     b.Navigation("Rows");
                 });
 
@@ -41622,6 +46964,22 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Allocations");
 
                     b.Navigation("CashLedgerLinks");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatch", b =>
+                {
+                    b.Navigation("Obligations");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchObligationLink", b =>
+                {
+                    b.Navigation("BeneficiarySnapshot")
+                        .IsRequired();
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.PaymentBatchValidationResult", b =>
+                {
+                    b.Navigation("Issues");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.ReconciliationSuggestionRecord", b =>

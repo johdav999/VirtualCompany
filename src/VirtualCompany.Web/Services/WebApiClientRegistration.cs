@@ -36,6 +36,7 @@ public static class WebApiClientRegistration
             IsOffline(sp),
             configuration["FinanceUi:SourceFilter"],
             sp.GetRequiredService<IApiProblemMessageResolver>()));
+        services.AddScoped<TreasuryWorkspaceUsageTelemetry>();
         services.AddScoped(sp => new DashboardSummaryApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp)));
         services.AddScoped(sp => new SalesApiClient(sp.GetRequiredService<HttpClient>(), IsOffline(sp), sp.GetRequiredService<IApiProblemMessageResolver>()));
         services.AddScoped(sp => new MarketingApiClient(sp.GetRequiredService<ICompanyApiTransport>(), IsOffline(sp)));

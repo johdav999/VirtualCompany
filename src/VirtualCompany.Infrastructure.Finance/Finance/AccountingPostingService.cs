@@ -612,6 +612,16 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 approvalTargetsSource = profileId.HasValue && approval?.TargetEntityType == ApprovalTargetEntityType.SupplierBillAccounting.ToStorageValue() &&
                     approval.TargetEntityId == profileId.Value;
             }
+            else if (TreasurySourceTypes.IsSupported(entry.SourceType))
+            {
+                var approvedTreasuryType = approval?.ThresholdContext.TryGetValue("sourceType", out var treasuryTypeNode) == true
+                    ? treasuryTypeNode?.ToString()
+                    : null;
+                approvalTargetsSource = Guid.TryParse(entry.SourceId, out var treasurySourceId) &&
+                    approval?.TargetEntityType == ApprovalTargetEntityType.TreasurySource.ToStorageValue() &&
+                    approval.TargetEntityId == treasurySourceId &&
+                    string.Equals(approvedTreasuryType, TreasurySourceTypes.Normalize(entry.SourceType), StringComparison.OrdinalIgnoreCase);
+            }
             if (approval?.Status != ApprovalRequestStatus.Approved ||
                 entry.RequiresApproval && !string.Equals(approvedVersion, entry.SourceVersion?.Trim(), StringComparison.Ordinal) ||
                 !string.IsNullOrWhiteSpace(entry.ApprovalPayloadHash) &&

@@ -20,7 +20,9 @@ public enum ApprovalTargetEntityType
     VatReturn = 16,
     CustomerInvoiceDraft = 17,
     CustomerInvoiceSchedule = 18,
-    CustomerCollectionReminder = 19
+    CustomerCollectionReminder = 19,
+    TreasurySource = 20,
+    PaymentBatch = 21
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -45,7 +47,9 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.VatReturn] = "vat_return",
         [ApprovalTargetEntityType.CustomerInvoiceDraft] = "customer_invoice_draft",
         [ApprovalTargetEntityType.CustomerInvoiceSchedule] = "customer_invoice_schedule",
-        [ApprovalTargetEntityType.CustomerCollectionReminder] = "customer_collection_reminder"
+        [ApprovalTargetEntityType.CustomerCollectionReminder] = "customer_collection_reminder",
+        [ApprovalTargetEntityType.TreasurySource] = "treasury_source",
+        [ApprovalTargetEntityType.PaymentBatch] = "payment_batch"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

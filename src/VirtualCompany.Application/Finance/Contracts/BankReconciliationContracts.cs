@@ -32,6 +32,7 @@ public static class BankReconciliationAdjustmentKinds
     public const string ExchangeGain = AccountingAccountRoleKeys.ExchangeGain;
     public const string ExchangeLoss = AccountingAccountRoleKeys.ExchangeLoss;
     public const string SettlementDiscount = AccountingAccountRoleKeys.SettlementDiscount;
+    public const string Suspense = AccountingAccountRoleKeys.Suspense;
 }
 
 public sealed record BankReconciliationAdjustmentDto(string Kind, decimal DebitAmount, decimal CreditAmount, string Explanation);

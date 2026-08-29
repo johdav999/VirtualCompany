@@ -34,7 +34,8 @@ public static class AccountingAccountRoleKeys
         RoundingDifference,
         ExchangeGain,
         ExchangeLoss,
-        SettlementDiscount
+        SettlementDiscount,
+        Suspense
     };
 }
 

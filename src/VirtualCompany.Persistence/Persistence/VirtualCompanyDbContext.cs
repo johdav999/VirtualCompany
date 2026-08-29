@@ -153,6 +153,21 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<AccountingCutoverReport> AccountingCutoverReports => Set<AccountingCutoverReport>();
     public DbSet<Payment> Payments => Set<Payment>();
     public DbSet<CompanyBankAccount> CompanyBankAccounts => Set<CompanyBankAccount>();
+    public DbSet<BankConnection> BankConnections => Set<BankConnection>();
+    public DbSet<BankConsentSession> BankConsentSessions => Set<BankConsentSession>();
+    public DbSet<BankConsentVersion> BankConsentVersions => Set<BankConsentVersion>();
+    public DbSet<BankConnectionCapabilityGrant> BankConnectionCapabilityGrants => Set<BankConnectionCapabilityGrant>();
+    public DbSet<BankDiscoveredAccount> BankDiscoveredAccounts => Set<BankDiscoveredAccount>();
+    public DbSet<BankAccountMapping> BankAccountMappings => Set<BankAccountMapping>();
+    public DbSet<BankConnectionCredential> BankConnectionCredentials => Set<BankConnectionCredential>();
+    public DbSet<BankConnectionAuditEvent> BankConnectionAuditEvents => Set<BankConnectionAuditEvent>();
+    public DbSet<BankConsentRevocationTask> BankConsentRevocationTasks => Set<BankConsentRevocationTask>();
+    public DbSet<BankFeedCheckpoint> BankFeedCheckpoints => Set<BankFeedCheckpoint>();
+    public DbSet<BankFeedRawSourceObject> BankFeedRawSourceObjects => Set<BankFeedRawSourceObject>();
+    public DbSet<BankFeedSourceTransaction> BankFeedSourceTransactions => Set<BankFeedSourceTransaction>();
+    public DbSet<BankFeedBalanceSnapshot> BankFeedBalanceSnapshots => Set<BankFeedBalanceSnapshot>();
+    public DbSet<BankFeedCursorObservation> BankFeedCursorObservations => Set<BankFeedCursorObservation>();
+    public DbSet<BankFeedGap> BankFeedGaps => Set<BankFeedGap>();
     public DbSet<Budget> Budgets => Set<Budget>();
     public DbSet<Forecast> Forecasts => Set<Forecast>();
     public DbSet<BankTransaction> BankTransactions => Set<BankTransaction>();
@@ -160,11 +175,47 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<BankTransactionPostingStateRecord> BankTransactionPostingStateRecords => Set<BankTransactionPostingStateRecord>();
     public DbSet<BankStatementImport> BankStatementImports => Set<BankStatementImport>();
     public DbSet<BankStatementImportRow> BankStatementImportRows => Set<BankStatementImportRow>();
+    public DbSet<BankStatementImportJob> BankStatementImportJobs => Set<BankStatementImportJob>();
+    public DbSet<BankStatementImportJobRow> BankStatementImportJobRows => Set<BankStatementImportJobRow>();
+    public DbSet<BankStatementImportJobIssue> BankStatementImportJobIssues => Set<BankStatementImportJobIssue>();
+    public DbSet<BankStatementCsvMappingProfile> BankStatementCsvMappingProfiles => Set<BankStatementCsvMappingProfile>();
+    public DbSet<BankStatementCsvMappingProfileVersion> BankStatementCsvMappingProfileVersions => Set<BankStatementCsvMappingProfileVersion>();
     public DbSet<BankReconciliationFollowUp> BankReconciliationFollowUps => Set<BankReconciliationFollowUp>();
     public DbSet<BankTransactionCashLedgerLink> BankTransactionCashLedgerLinks => Set<BankTransactionCashLedgerLink>();
     public DbSet<ReconciliationSuggestionRecord> ReconciliationSuggestionRecords => Set<ReconciliationSuggestionRecord>();
     public DbSet<PaymentCashLedgerLink> PaymentCashLedgerLinks => Set<PaymentCashLedgerLink>();
     public DbSet<ReconciliationResultRecord> ReconciliationResultRecords => Set<ReconciliationResultRecord>();
+    public DbSet<AdvancedReconciliationRule> AdvancedReconciliationRules => Set<AdvancedReconciliationRule>();
+    public DbSet<AdvancedReconciliationGroup> AdvancedReconciliationGroups => Set<AdvancedReconciliationGroup>();
+    public DbSet<AdvancedReconciliationNode> AdvancedReconciliationNodes => Set<AdvancedReconciliationNode>();
+    public DbSet<AdvancedReconciliationEdge> AdvancedReconciliationEdges => Set<AdvancedReconciliationEdge>();
+    public DbSet<AdvancedReconciliationReasonContribution> AdvancedReconciliationReasonContributions => Set<AdvancedReconciliationReasonContribution>();
+    public DbSet<AdvancedReconciliationResult> AdvancedReconciliationResults => Set<AdvancedReconciliationResult>();
+    public DbSet<AdvancedReconciliationEvent> AdvancedReconciliationEvents => Set<AdvancedReconciliationEvent>();
+    public DbSet<TreasuryTransfer> TreasuryTransfers => Set<TreasuryTransfer>();
+    public DbSet<BankAdjustment> BankAdjustments => Set<BankAdjustment>();
+    public DbSet<CardSettlement> CardSettlements => Set<CardSettlement>();
+    public DbSet<PayoutSettlement> PayoutSettlements => Set<PayoutSettlement>();
+    public DbSet<TreasurySourceEvidence> TreasurySourceEvidence => Set<TreasurySourceEvidence>();
+    public DbSet<TreasurySourceEvent> TreasurySourceEvents => Set<TreasurySourceEvent>();
+    public DbSet<TreasurySourceLedgerLink> TreasurySourceLedgerLinks => Set<TreasurySourceLedgerLink>();
+    public DbSet<PaymentBeneficiaryProfile> PaymentBeneficiaryProfiles => Set<PaymentBeneficiaryProfile>();
+    public DbSet<PaymentBatch> PaymentBatches => Set<PaymentBatch>();
+    public DbSet<PaymentBatchObligationLink> PaymentBatchObligations => Set<PaymentBatchObligationLink>();
+    public DbSet<PaymentBeneficiarySnapshot> PaymentBeneficiarySnapshots => Set<PaymentBeneficiarySnapshot>();
+    public DbSet<PaymentInstruction> PaymentInstructions => Set<PaymentInstruction>();
+    public DbSet<PaymentBatchValidationResult> PaymentBatchValidationResults => Set<PaymentBatchValidationResult>();
+    public DbSet<PaymentBatchValidationIssue> PaymentBatchValidationIssues => Set<PaymentBatchValidationIssue>();
+    public DbSet<PaymentBatchExportArtifact> PaymentBatchExportArtifacts => Set<PaymentBatchExportArtifact>();
+    public DbSet<PaymentBatchApprovalBinding> PaymentBatchApprovalBindings => Set<PaymentBatchApprovalBinding>();
+    public DbSet<PaymentBatchOperation> PaymentBatchOperations => Set<PaymentBatchOperation>();
+    public DbSet<PaymentBatchExecution> PaymentBatchExecutions => Set<PaymentBatchExecution>();
+    public DbSet<PaymentExecutionAttempt> PaymentExecutionAttempts => Set<PaymentExecutionAttempt>();
+    public DbSet<PaymentProviderAcknowledgement> PaymentProviderAcknowledgements => Set<PaymentProviderAcknowledgement>();
+    public DbSet<PaymentExecutionInstruction> PaymentExecutionInstructions => Set<PaymentExecutionInstruction>();
+    public DbSet<PaymentProviderWebhookReceipt> PaymentProviderWebhookReceipts => Set<PaymentProviderWebhookReceipt>();
+    public DbSet<PaymentBatchSettlement> PaymentBatchSettlements => Set<PaymentBatchSettlement>();
+    public DbSet<PaymentRemittance> PaymentRemittances => Set<PaymentRemittance>();
     public DbSet<PaymentAllocation> PaymentAllocations => Set<PaymentAllocation>();
     public DbSet<FinanceTransaction> FinanceTransactions => Set<FinanceTransaction>();
     public DbSet<FinanceInvoice> FinanceInvoices => Set<FinanceInvoice>();
@@ -626,6 +677,23 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is BankStatementImport ||
                 entry.Entity is BankStatementImportRow ||
                 entry.Entity is BankReconciliationFollowUp ||
+                entry.Entity is TreasuryTransfer ||
+                entry.Entity is BankAdjustment ||
+                entry.Entity is CardSettlement ||
+                entry.Entity is PayoutSettlement ||
+                entry.Entity is TreasurySourceEvidence ||
+                entry.Entity is TreasurySourceEvent ||
+                entry.Entity is TreasurySourceLedgerLink ||
+                entry.Entity is PaymentBeneficiaryProfile ||
+                entry.Entity is PaymentBatch ||
+                entry.Entity is PaymentBatchObligationLink ||
+                entry.Entity is PaymentBeneficiarySnapshot ||
+                entry.Entity is PaymentInstruction ||
+                entry.Entity is PaymentBatchValidationResult ||
+                entry.Entity is PaymentBatchValidationIssue ||
+                entry.Entity is PaymentBatchExportArtifact ||
+                entry.Entity is PaymentBatchApprovalBinding ||
+                entry.Entity is PaymentBatchOperation ||
                 entry.Entity is PaymentCashLedgerLink ||
                 entry.Entity is BankTransactionCashLedgerLink ||
                 entry.Entity is PaymentAllocation ||
@@ -1153,6 +1221,21 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<CompanyBankAccount>()
             .HasQueryFilter(bankAccount =>
                 CurrentCompanyId != null && bankAccount.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConnection>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConsentSession>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConsentVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConnectionCapabilityGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankDiscoveredAccount>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankAccountMapping>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConnectionCredential>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConnectionAuditEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankConsentRevocationTask>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankFeedCheckpoint>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankFeedRawSourceObject>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankFeedSourceTransaction>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankFeedBalanceSnapshot>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankFeedCursorObservation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankFeedGap>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankTransaction>()
             .HasQueryFilter(bankTransaction =>
                 CurrentCompanyId != null && bankTransaction.CompanyId == CurrentCompanyId);
@@ -1162,6 +1245,40 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<BankTransactionPostingStateRecord>()
             .HasQueryFilter(state =>
                 CurrentCompanyId != null && state.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TreasuryTransfer>()
+            .HasQueryFilter(source => CurrentCompanyId != null && source.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<BankAdjustment>()
+            .HasQueryFilter(source => CurrentCompanyId != null && source.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CardSettlement>()
+            .HasQueryFilter(source => CurrentCompanyId != null && source.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PayoutSettlement>()
+            .HasQueryFilter(source => CurrentCompanyId != null && source.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TreasurySourceEvidence>()
+            .HasQueryFilter(evidence => CurrentCompanyId != null && evidence.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TreasurySourceEvent>()
+            .HasQueryFilter(auditEvent => CurrentCompanyId != null && auditEvent.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<TreasurySourceLedgerLink>()
+            .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBeneficiaryProfile>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatch>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatchObligationLink>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBeneficiarySnapshot>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentInstruction>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatchValidationResult>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatchValidationIssue>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatchExportArtifact>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatchApprovalBinding>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<PaymentBatchOperation>()
+            .HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<PaymentCashLedgerLink>()
             .HasQueryFilter(link =>
                 CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);

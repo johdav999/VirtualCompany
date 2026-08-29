@@ -1,0 +1,273 @@
+@page "/finance/payments/batches"
+@page "/finance/payments/batches/{BatchId:guid}"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["PaymentBatches"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+    Title="@FinanceText["PaymentBatches"]" Description="@FinanceText["PaymentBatchesDescription"]"
+    LoadingMessage="@FinanceText["LoadingPaymentBatches"]" ShowShellHeader="false" ShowShellNavigation="false">
+    <section class="batch-workspace" aria-labelledby="payment-batches-heading">
+        <div class="finance-overview-header batch-workspace__header">
+            <div>
+                <span class="finance-overview-kicker">@FinanceText["FinanceModule"] / @FinanceText["Payments"]</span>
+                <h1 id="payment-batches-heading" class="finance-overview-title">@FinanceText["PaymentBatches"]</h1>
+                <p class="finance-overview-subtitle">@FinanceText["PaymentBatchesDescription"]</p>
+            </div>
+            @if (CanManage)
+            {
+                <div class="batch-create">
+                    <input aria-label="@FinanceText["BatchName"]" @bind="NewBatchName" placeholder="@FinanceText["BatchName"]" />
+                    <input aria-label="@FinanceText["PlannedExecutionDate"]" type="date" @bind="NewPlannedDate" />
+                    <button class="btn btn-primary" type="button" disabled="@IsSubmitting" @onclick="CreateBatchAsync">@FinanceText["CreateBatch"]</button>
+                </div>
+            }
+        </div>
+
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+
+        <div class="batch-approval-notice" role="note">
+            <span aria-hidden="true">!</span>
+            <div><strong>@FinanceText["InternalApprovalOnly"]</strong><p>@FinanceText["InternalApprovalOnlyDescription"]</p></div>
+        </div>
+
+        @if (!string.IsNullOrWhiteSpace(ActionMessage))
+        {
+            <div class="alert alert-info" role="status">@ActionMessage</div>
+        }
+        @if (!string.IsNullOrWhiteSpace(ActionError))
+        {
+            <div class="alert alert-danger" role="alert">@ActionError</div>
+        }
+
+        <div class="batch-kpis" aria-label="@FinanceText["PaymentBatchOverview"]">
+            <article><span class="batch-kpi__icon batch-kpi__icon--blue">D</span><div><small>@FinanceText["DraftBatches"]</small><strong>@(Workspace?.DraftCount ?? 0)</strong></div></article>
+            <article><span class="batch-kpi__icon batch-kpi__icon--amber">!</span><div><small>@FinanceText["NeedsValidation"]</small><strong>@(Workspace?.NeedsValidationCount ?? 0)</strong></div></article>
+            <article><span class="batch-kpi__icon batch-kpi__icon--violet">A</span><div><small>@FinanceText["WaitingForApproval"]</small><strong>@(Workspace?.AwaitingApprovalCount ?? 0)</strong></div></article>
+            <article><span class="batch-kpi__icon batch-kpi__icon--green">$</span><div><small>@FinanceText["PlannedTotal"]</small><strong>@PlannedTotalText</strong></div></article>
+        </div>
+
+        <div class="batch-main-grid">
+            <article class="batch-list-card">
+                <div class="batch-card-header"><div><h2>@FinanceText["Batches"]</h2><p>@FinanceText["BatchListDescription"]</p></div><span>@(Workspace?.Items.Count ?? 0)</span></div>
+                @if (Workspace?.Items.Count > 0)
+                {
+                    <div class="batch-list">
+                        @foreach (var batch in Workspace.Items)
+                        {
+                            <a class="batch-list-row @(Selected?.Summary.Id == batch.Id ? "is-selected" : null)" href="@FinanceRoutes.BuildPaymentBatchPath(batch.Id, AccessState.CompanyId)">
+                                <div><strong>@batch.Reference</strong><span>@batch.Name</span><small>@FinanceText["PlannedDateShort"] @FormatDate(batch.PlannedExecutionDate) · @batch.ObligationCount @FinanceText["Obligations"]</small></div>
+                                <div><span class="batch-status batch-status--@StatusTone(batch.Status)">@StatusLabel(batch.Status)</span><strong>@FormatTotals(batch.Totals)</strong></div>
+                            </a>
+                        }
+                    </div>
+                }
+                else
+                {
+                    <div class="batch-empty"><span aria-hidden="true">+</span><h3>@FinanceText["NoPaymentBatches"]</h3><p>@FinanceText["NoPaymentBatchesDescription"]</p></div>
+                }
+            </article>
+
+            <article class="batch-detail-card">
+                @if (Selected is null)
+                {
+                    <div class="batch-empty"><span aria-hidden="true">✓</span><h2>@FinanceText["NoBatchSelected"]</h2><p>@FinanceText["SelectBatchToReview"]</p></div>
+                }
+                else
+                {
+                    <header class="batch-detail-header">
+                        <div><small>@FinanceText["SelectedBatch"]</small><h2>@Selected.Summary.Reference</h2><span class="batch-status batch-status--@StatusTone(Selected.Summary.Status)">@StatusLabel(Selected.Summary.Status)</span></div>
+                        <div class="batch-actions">
+                            <button class="btn btn-outline-primary" type="button" disabled="@IsSubmitting" @onclick="PreviewAsync">@FinanceText["Preview"]</button>
+                            @if (Selected.AllowedActions.CanValidate && CanManage) { <button class="btn btn-outline-primary" type="button" disabled="@IsSubmitting" @onclick="ValidateAsync">@FinanceText["Validate"]</button> }
+                            @if (Selected.AllowedActions.CanSubmit && CanManage) { <button class="btn btn-primary" type="button" disabled="@IsSubmitting" @onclick="SubmitAsync">@FinanceText["SubmitForApproval"]</button> }
+                            @if (Selected.AllowedActions.CanApprove && CanApprove) { <button class="btn btn-success" type="button" disabled="@IsSubmitting" @onclick="ApproveAsync">@FinanceText["Approve"]</button> }
+                            @if (Selected.AllowedActions.CanReject && CanApprove) { <button class="btn btn-outline-danger" type="button" disabled="@IsSubmitting" @onclick="RejectAsync">@FinanceText["Reject"]</button> }
+                            @if (Selected.AllowedActions.CanRegenerate && CanManage) { <button class="btn btn-outline-secondary" type="button" disabled="@IsSubmitting" @onclick="RegenerateAsync">@FinanceText["Regenerate"]</button> }
+                            @if (Selected.AllowedActions.CanCancel && CanManage) { <button class="btn btn-outline-danger" type="button" disabled="@IsSubmitting" @onclick="CancelAsync">@FinanceText["CancelBatch"]</button> }
+                        </div>
+                    </header>
+
+                    <dl class="batch-facts">
+                        <div><dt>@FinanceText["PlannedExecutionDate"]</dt><dd>@FormatDate(Selected.Summary.PlannedExecutionDate)</dd></div>
+                        <div><dt>@FinanceText["InstructionVersion"]</dt><dd>v@Selected.Summary.InstructionSetVersion</dd></div>
+                        <div><dt>@FinanceText["TotalAmount"]</dt><dd>@FormatTotals(Selected.Summary.Totals)</dd></div>
+                        <div><dt>@FinanceText["ValidationStatus"]</dt><dd>@ValidationLabel</dd></div>
+                        <div><dt>@FinanceText["SeparationOfDuties"]</dt><dd>@FinanceText["DifferentApproverRequired"]</dd></div>
+                        <div><dt>@FinanceText["Evidence"]</dt><dd>@(Selected.ExportArtifactHash is null ? FinanceText["NotGenerated"] : FinanceText["VersionLocked"])</dd></div>
+                    </dl>
+
+                    <div class="batch-approval-notice batch-approval-notice--compact"><span aria-hidden="true">!</span><p>@Selected.InternalApprovalNotice</p></div>
+
+                    @if (Selected.Summary.Status == "approved" || Execution is not null)
+                    {
+                        <section class="execution-panel" aria-labelledby="payment-execution-heading">
+                            <div class="batch-card-header execution-panel__header">
+                                <div>
+                                    <small>@FinanceText["DurableBankSubmission"]</small>
+                                    <h3 id="payment-execution-heading">@FinanceText["PaymentExecution"]</h3>
+                                    <p>@FinanceText["PaymentExecutionDescription"]</p>
+                                </div>
+                                @if (Execution is not null)
+                                {
+                                    <span class="batch-status batch-status--@ExecutionStatusTone(Execution.Status)">@ExecutionStatusLabel(Execution.Status)</span>
+                                }
+                            </div>
+
+                            @if (Execution is null)
+                            {
+                                <div class="execution-authority">
+                                    <strong>@FinanceText["ChooseAuthorizedDebitAccount"]</strong>
+                                    <p>@FinanceText["FinalAuthorityRecheck"]</p>
+                                    @if (ExecutionAccounts.Count == 0)
+                                    {
+                                        <div class="alert alert-warning" role="alert">
+                                            @FinanceText["NoPaymentInitiationAccount"]
+                                            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.BankConnections, AccessState.CompanyId)">@FinanceText["OpenBankConnections"]</a>
+                                        </div>
+                                    }
+                                    else
+                                    {
+                                        <div class="execution-account-options" role="radiogroup" aria-label="@FinanceText["ChooseAuthorizedDebitAccount"]">
+                                            @foreach (var option in ExecutionAccounts)
+                                            {
+                                                <button type="button" role="radio" aria-checked="@(SelectedExecutionConnectionId == option.ConnectionId && SelectedExecutionAccountId == option.CompanyBankAccountId)"
+                                                    class="execution-account-option @(SelectedExecutionConnectionId == option.ConnectionId && SelectedExecutionAccountId == option.CompanyBankAccountId ? "is-selected" : null)"
+                                                    @onclick="() => SelectExecutionAccount(option)">
+                                                    <span aria-hidden="true">●</span><strong>@option.Label</strong>
+                                                </button>
+                                            }
+                                        </div>
+                                        @if (CanApprove)
+                                        {
+                                            <button class="btn btn-primary" type="button" disabled="@IsSubmitting" @onclick="QueueExecutionAsync">@FinanceText["QueueBankExecution"]</button>
+                                        }
+                                    }
+                                </div>
+                            }
+                            else
+                            {
+                                <ol class="execution-progress" aria-label="@FinanceText["PaymentExecutionProgress"]">
+                                    @foreach (var step in ExecutionProgressSteps)
+                                    {
+                                        <li class="@(ExecutionStepReached(step.Status) ? "is-complete" : null)"><span aria-hidden="true">@(ExecutionStepReached(step.Status) ? "✓" : "")</span><strong>@step.Label</strong></li>
+                                    }
+                                </ol>
+                                <div class="execution-summary">
+                                    <div><small>@FinanceText["Provider"]</small><strong>@Execution.ProviderDisplayName</strong></div>
+                                    <div><small>@FinanceText["BankAccount"]</small><strong>@Execution.InstitutionName · @Execution.BankAccountName · @Execution.MaskedBankAccount</strong></div>
+                                    <div><small>@FinanceText["ProviderPaymentReference"]</small><strong>@(Execution.ProviderPaymentId ?? FinanceText["Pending"])</strong></div>
+                                    <div><small>@FinanceText["ProviderStatus"]</small><strong>@(Execution.ProviderStatus ?? FinanceText["Pending"])</strong></div>
+                                </div>
+                                <div class="execution-explanation @(Execution.Status == "reconciliation_required" ? "is-warning" : null)" role="status">
+                                    <strong>@ExecutionStatusLabel(Execution.Status)</strong><p>@Execution.AllowedActions.Explanation</p>
+                                    @if (!string.IsNullOrWhiteSpace(Execution.ReasonCode)) { <small>@FriendlyReason(Execution.ReasonCode)</small> }
+                                </div>
+                                <div class="execution-actions">
+                                    @if (Execution.AllowedActions.CanOpenBankAuthorization && Execution.AuthorizationUri is not null)
+                                    {
+                                        <a class="btn btn-primary" href="@Execution.AuthorizationUri" target="_blank" rel="noopener noreferrer">@FinanceText["OpenBankAuthorization"]</a>
+                                    }
+                                    @if (Execution.AllowedActions.CanRefreshStatus && CanApprove)
+                                    {
+                                        <button class="btn btn-outline-primary" type="button" disabled="@IsSubmitting" @onclick="RefreshExecutionAsync">@FinanceText["RefreshProviderStatus"]</button>
+                                    }
+                                    @if (Execution.AllowedActions.CanCancel && CanApprove)
+                                    {
+                                        <button class="btn btn-outline-danger" type="button" disabled="@IsSubmitting" @onclick="CancelExecutionAsync">@FinanceText["CancelPaymentExecution"]</button>
+                                    }
+                                </div>
+                                @if (Execution.AllowedActions.CanAttachProviderReference && CanApprove)
+                                {
+                                    <div class="execution-recovery">
+                                        <label>@FinanceText["ProviderPaymentReference"]<input @bind="ProviderPaymentId" placeholder="@FinanceText["ProviderPaymentReferencePlaceholder"]" /></label>
+                                        <button class="btn btn-outline-primary" type="button" disabled="@IsSubmitting" @onclick="ReconcileExecutionAsync">@FinanceText["AttachAndReconcile"]</button>
+                                        <small>@FinanceText["NoBlindResubmission"]</small>
+                                    </div>
+                                }
+                                @if (Execution.AllowedActions.CanSettle && CanApprove)
+                                {
+                                    <div class="execution-recovery">
+                                        <label>@FinanceText["BankTransactionId"]<input @bind="SettlementBankTransactionId" /></label>
+                                        <label>@FinanceText["BankSourceVersion"]<input type="number" min="0" @bind="SettlementBankSourceVersion" /></label>
+                                        <button class="btn btn-success" type="button" disabled="@(!Guid.TryParse(SettlementBankTransactionId, out _) || IsSubmitting)" @onclick="SettleExecutionAsync">@FinanceText["MatchAndSettle"]</button>
+                                        <small>@FinanceText["SettlementEvidenceRequirement"]</small>
+                                    </div>
+                                }
+
+                                <div class="execution-evidence-grid">
+                                    <section>
+                                        <h4>@FinanceText["ProviderAcknowledgements"]</h4>
+                                        @if (Execution.Acknowledgements.Count == 0) { <p>@FinanceText["AwaitingProviderAcknowledgement"]</p> }
+                                        @foreach (var acknowledgement in Execution.Acknowledgements.TakeLast(5).Reverse())
+                                        {
+                                            <div class="execution-evidence-row"><strong>@FriendlyType(acknowledgement.Source) · @acknowledgement.ProviderStatus</strong><span>@acknowledgement.AcknowledgedUtc.ToLocalTime().ToString("g") · @(acknowledgement.IsFinal ? FinanceText["Final"] : FinanceText["UpdatesExpected"])</span></div>
+                                        }
+                                    </section>
+                                    <section>
+                                        <h4>@FinanceText["ExecutionAttempts"]</h4>
+                                        @if (Execution.Attempts.Count == 0) { <p>@FinanceText["AwaitingExecutionWorker"]</p> }
+                                        @foreach (var attempt in Execution.Attempts.Take(5))
+                                        {
+                                            <div class="execution-evidence-row"><strong>#@attempt.AttemptNumber · @FriendlyType(attempt.Operation) · @FriendlyType(attempt.Outcome)</strong><span>@FriendlyType(attempt.RetryClassification) · @attempt.StartedUtc.ToLocalTime().ToString("g")</span></div>
+                                        }
+                                    </section>
+                                </div>
+                                @if (Execution.Remittances.Count > 0)
+                                {
+                                    <section class="execution-remittances">
+                                        <h4>@FinanceText["RemittanceAdvice"]</h4>
+                                        <p>@FinanceText["RemittanceAcceptanceBoundary"]</p>
+                                        @foreach (var remittance in Execution.Remittances)
+                                        {
+                                            <div class="execution-evidence-row"><div><strong>@remittance.BeneficiaryName</strong><span>@(remittance.RecipientEmail ?? FinanceText["RecipientEmailMissing"]) · @FriendlyType(remittance.Status)</span></div>@if (remittance.Status == "failed" && CanApprove) { <button class="btn btn-sm btn-outline-primary" type="button" disabled="@IsSubmitting" @onclick="() => RetryRemittanceAsync(remittance)">@FinanceText["Retry"]</button> }</div>
+                                        }
+                                    </section>
+                                }
+                                @if (Execution.Settlement is not null)
+                                {
+                                    <section class="execution-settlement"><strong>✓ @FinanceText["SettlementEvidenceComplete"]</strong><span>@Execution.Settlement.BankReference · @FormatMoney(Execution.Settlement.Amount, Execution.Settlement.Currency) · @Execution.Settlement.LedgerEntryIds.Count @FinanceText["JournalEntries"]</span></section>
+                                }
+                            }
+                        </section>
+                    }
+
+                    @if (Preview is not null)
+                    {
+                        <section class="batch-preview"><strong>@FinanceText["Preview"]</strong><span>@FinanceText["RecommendedExecution"] @FormatDate(Preview.RecommendedExecutionDate)</span><span>@(Preview.CanValidate ? FinanceText["ReadyToValidate"] : FinanceText["AttentionNeeded"])</span></section>
+                    }
+                    @if (Selected.Validation?.Issues.Count > 0)
+                    {
+                        <section class="batch-validation"><h3>@FinanceText["ValidationIssues"]</h3>@foreach (var issue in Selected.Validation.Issues) { <div><strong>@FriendlyReason(issue.ReasonCode)</strong><span>@issue.Explanation</span></div> }</section>
+                    }
+
+                    <section class="batch-obligations">
+                        <div class="batch-card-header"><div><h3>@FinanceText["ObligationsInBatch", Selected.Obligations.Count]</h3><p>@FinanceText["ImmutableSourceEvidence"]</p></div></div>
+                        @if (Selected.Obligations.Count > 0)
+                        {
+                            <div class="batch-table-wrap"><table><thead><tr><th>@FinanceText["Source"]</th><th>@FinanceText["Beneficiary"]</th><th>@FinanceText["DueDate"]</th><th>@FinanceText["Amount"]</th><th>@FinanceText["Verification"]</th><th></th></tr></thead><tbody>
+                                @foreach (var item in Selected.Obligations)
+                                {
+                                    <tr><td><strong>@item.SourceReference</strong><span>@FriendlyType(item.ObligationType) · v@item.SourceVersion</span></td><td><strong>@item.BeneficiaryName</strong><span>@FriendlyType(item.Rail) · @item.MaskedDestination</span></td><td>@FormatDate(item.DueDate)</td><td>@FormatMoney(item.Amount, item.Currency)</td><td><span class="batch-verified">✓ @FinanceText["Verified"]</span><small>v@item.BeneficiaryVersion</small></td><td>@if (Selected.AllowedActions.CanAddOrRemove && CanManage) { <button class="btn btn-sm btn-outline-danger" type="button" disabled="@IsSubmitting" @onclick="() => RemoveAsync(item)">@FinanceText["Remove"]</button> }</td></tr>
+                                }
+                            </tbody></table></div>
+                        }
+                        else { <div class="batch-empty batch-empty--small"><p>@FinanceText["AddEligibleObligations"]</p></div> }
+                    </section>
+
+                    @if (Selected.AllowedActions.CanAddOrRemove && CanManage)
+                    {
+                        <section class="eligible-obligations"><h3>@FinanceText["EligibleObligations"]</h3><p>@FinanceText["EligibleObligationsDescription"]</p>
+                            @foreach (var item in EligibleObligations.Take(8))
+                            {
+                                <div class="eligible-row @(item.IsEligible ? null : "is-blocked")"><div><strong>@item.SourceReference</strong><span>@item.BeneficiaryName · @FormatMoney(item.Amount, item.Currency) · @FormatDate(item.DueDate)</span><small>@item.Explanation</small></div><button class="btn btn-sm btn-outline-primary" type="button" disabled="@(!item.IsEligible || IsSubmitting || IsAlreadyAdded(item))" @onclick="() => AddAsync(item)">@(IsAlreadyAdded(item) ? FinanceText["Added"] : FinanceText["Add"])</button></div>
+                            }
+                        </section>
+                    }
+                }
+            </article>
+        </div>
+
+        <section class="batch-laura"><div class="batch-laura__avatar">L</div><div><strong>@FinanceText["LauraRecommends"]</strong><p>@FinanceText["LauraPaymentBatchRecommendation"]</p></div><a class="btn btn-outline-primary" href="@LauraHref">@FinanceText["MessageLaura"]</a></section>
+    </section>
+</FinancePageLayout>

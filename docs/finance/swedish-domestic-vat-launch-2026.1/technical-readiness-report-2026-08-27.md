@@ -12,7 +12,7 @@ It does not replace review or approval by a qualified Swedish accountant or tax 
 | Field | Frozen value |
 |---|---|
 | Evaluation date | `2026-08-27` |
-| Repository base revision | `2b34315e87c105d89c58835eb54af36e3357f188` plus the reviewed working-tree changes |
+| Frozen repository revision | `6dbcb6ed1413630a50660e286b78dbf3c95645bc` (`Add BAS account catalogue integration and approval evidence`) |
 | Specification | `sweden-domestic-vat-launch-2026.1` |
 | Policy pack | `sweden-statutory-candidate` / `1.4.0` |
 | Policy definition SHA-256 | `f7dd2403535ebd51e5e97137cff2aa629da09768cc45cc6a37fbf667d53b3eb6` |
@@ -21,8 +21,8 @@ It does not replace review or approval by a qualified Swedish accountant or tax 
 | BAS workbook SHA-256 | `a86b39937fab280d4e5db895c04c2af6e145695863d4845ff14eea5d0302328a` |
 | Fixture source | `golden-fixtures.json`, SHA-256 `9306be95d459db5e11478cf7a416173a0fc72fd36f28272f63ed9f1b6f8e30a7` |
 
-The exact release snapshot is not immutable until these reviewed working-tree changes are
-committed. The hashes above identify the content reviewed by the automated checks.
+The reviewed implementation and evidence package are frozen at the repository revision
+above. The hashes identify the exact policy, catalogue, workbook, and fixture content.
 
 ## Findings
 

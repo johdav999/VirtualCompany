@@ -1,0 +1,7 @@
+# Bank connections reference prompt
+
+Create a polished desktop SaaS finance settings screen for **Bank connections** in a Swedish virtual-company accounting product. Use a calm, information-dense enterprise visual style: pale blue-grey application background, white cards, subtle borders and shadows, compact typography, blue primary actions, and restrained green, amber, red, and violet status accents.
+
+Show a top settings tab row with Email settings, Integrations, and Bank connections selected. Include a prominent connect-bank card with provider and institution selectors plus a Connect bank button. Below it, show five compact status summary cards for active connections, renewal required, suspended, provider outage, and ownership mismatch. Add a connected-banks table showing institution, consent status, consent expiry, connection health, mapped accounts, and actions for refresh, renew, suspend, and disconnect. Add a discovered-accounts table with masked account identifiers, currency, ownership-verification badges, explicit internal-account selectors, mapping-version evidence, and Map account actions. Include one healthy bank, one renewal-required state, and one ownership-mismatch account so operator states are visible. Make the layout accessible, responsive-looking, and realistic; do not show real banking brands, credentials, tokens, or live customer data.
+
+Mode: generate a new raster UI reference image (16:9 desktop product mockup).

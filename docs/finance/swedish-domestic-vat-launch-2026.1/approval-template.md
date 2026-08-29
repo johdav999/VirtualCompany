@@ -12,6 +12,7 @@ This record must be completed by a qualified Swedish accountant or tax specialis
 
 ## Frozen artifact identity
 
+- Repository revision: `6dbcb6ed1413630a50660e286b78dbf3c95645bc`
 - Specification key: `sweden-domestic-vat-launch-2026.1`
 - Policy-pack key/version: `sweden-statutory-candidate` / `1.4.0`
 - Runtime definition hash: `f7dd2403535ebd51e5e97137cff2aa629da09768cc45cc6a37fbf667d53b3eb6`

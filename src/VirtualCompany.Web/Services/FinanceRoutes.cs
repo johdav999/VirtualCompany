@@ -21,8 +21,11 @@ public static class FinanceRoutes
     public const string CashPosition = "/finance/cash-position";
     public const string Activity = "/finance/activity";
     public const string Transactions = "/finance/transactions";
+    public const string StatementImports = "/finance/transactions/imports";
     public const string Payments = "/finance/payments";
     public const string PaymentDetail = "/finance/payments/{PaymentId:guid}";
+    public const string PaymentBatches = "/finance/payments/batches";
+    public const string PaymentBatchDetail = "/finance/payments/batches/{BatchId:guid}";
     public const string SupplierBills = "/finance/supplier-bills";
     public const string SupplierBillsReview = "/finance/supplier-bills/review";
     public const string SupplierSubscriptions = "/finance/supplier-subscriptions";
@@ -69,6 +72,7 @@ public static class FinanceRoutes
     public const string AccountingManualJournalDraft = "/finance/accounting/journals/drafts/{DraftId:guid}";
     public const string EmailSettings = "/finance/settings/email-settings";
     public const string FinanceIntegrationSettings = "/finance/settings/integrations";
+    public const string BankConnections = "/finance/settings/bank-connections";
     public const string AlertDetail = "/finance/alerts/{AlertId:guid}";
 
     public static FinanceRouteDefinition HomePage { get; } =
@@ -89,8 +93,8 @@ public static class FinanceRoutes
             new("Customer invoices", Invoices, "Track invoice review and collection workflows.", ActivePathPrefixes: [Invoices, Reviews, Receivables, "/finance/customers"]),
             new("Supplier bills", SupplierBills, "Review supplier bills and bill intake work.", ActivePathPrefixes: [SupplierBills, Bills, BillInbox]),
             new("Subscriptions", SupplierSubscriptions, "Track recurring supplier agreements and bill matching."),
-            new("Payments", Payments, "Track money coming in and going out."),
-            new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity]),
+            new("Payments", Payments, "Track money coming in and going out.", ActivePathPrefixes: [Payments, PaymentBatches]),
+            new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity, StatementImports]),
             new("Accounting", AccountingSetup, "Set up and administer native accounting.", ActivePathPrefixes: [AccountingSetup, AccountingAccounts, AccountingPeriods, AccountingJournal, AccountingReconciliation, AccountingReports, AccountingConnections]),
             new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies])
         ];
@@ -116,6 +120,9 @@ public static class FinanceRoutes
 
     public static string BuildPaymentDetailPath(Guid paymentId, Guid? companyId) =>
         WithCompanyContext($"/finance/payments/{paymentId:D}", companyId);
+
+    public static string BuildPaymentBatchPath(Guid batchId, Guid? companyId) =>
+        WithCompanyContext($"/finance/payments/batches/{batchId:D}", companyId);
 
     public static string BuildBillDetailPath(Guid billId, Guid? companyId) =>
         WithCompanyContext($"/finance/supplier-bills/{billId:D}", companyId);

@@ -1,0 +1,14 @@
+# Payment batches workspace reference prompt
+
+Use case: ui-mockup
+Asset type: high-fidelity desktop SaaS application reference screenshot
+Primary request: Design the Finance payment batches workspace for Virtual Company. The page turns eligible supplier and customer-refund obligations into reviewed, validated, internally approved, immutable payment instructions. It must clearly say that internal approval does not submit anything to a bank and does not mean paid.
+Scene/backdrop: Full desktop product shell on a #F7F9FC application background with a fixed 240px white left sidebar, a centered workspace up to about 1280px, and a contextual Finance Manager card near the bottom of the sidebar.
+Subject: Finance module header with title "Payment batches", subtitle about reviewing and approving instructions before bank submission, Finance secondary navigation with Payments active, top-right "Create batch" button; four compact KPI cards for Draft batches, Needs validation, Waiting for approval, and Planned total; a main 62/38 split with a left batch list and a right selected-batch review panel. The selected draft shows batch reference, planned execution date, version, currency totals, validation status, creator, approval separation warning, and actions Preview, Validate, Submit for approval. Below, show a dense obligations table with supplier/refund source, beneficiary, due date, amount, verification, and eligibility reason. Include one ineligible held row as a visible validation example. Add a small Laura, Finance Manager insight explaining cash and due-date optimization. Include a concise empty state treatment for no selected batch.
+Style/medium: Polished high-fidelity modern B2B SaaS product screenshot, operational and trustworthy, no decorative illustration, Inter typography, subtle borders and shadows, 14–16px card radii.
+Composition/framing: 16:10 landscape desktop view; clear hierarchy; 24–32px page padding; dense but readable tables; sticky-style table header; ample whitespace; responsive-looking card layout.
+Lighting/mood: Bright, calm, professional, finance-control-center confidence.
+Color palette: #F7F9FC background, white cards, #2563EB primary, #16A34A success, #F59E0B warning, #DC2626 danger, slate text and muted blue-gray borders.
+Text (verbatim): "Payment batches"; "Create batch"; "Internal approval only — nothing is sent to a bank"; "Needs validation"; "Waiting for approval"; "Preview"; "Validate"; "Submit for approval"; "Laura recommends".
+Constraints: Keep named agent Laura visible; emphasize what is happening, what needs attention, and the next action; show verified-beneficiary and source-version evidence; show segregation of duties; do not show a Send, Pay now, Submitted, Processing at bank, or Paid state; do not expose technical enum names, provider payloads, tenant language, or raw identifiers; no mock bank-success claims; no logos; no watermark.
+

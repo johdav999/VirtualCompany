@@ -867,6 +867,15 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                 .IgnoreQueryFilters()
                 .AsNoTracking()
                 .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
+            ApprovalTargetEntityType.TreasurySource =>
+                await _dbContext.TreasuryTransfers.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken) ||
+                await _dbContext.BankAdjustments.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken) ||
+                await _dbContext.CardSettlements.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken) ||
+                await _dbContext.PayoutSettlements.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.CompanyId == companyId && x.Id == targetEntityId, cancellationToken),
             _ => false
         };
 
@@ -1594,6 +1603,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchActivation.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration activation",
             var value when string.Equals(value, ApprovalTargetEntityType.AccountingProviderSwitchClosure.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Accounting migration closure",
             var value when string.Equals(value, ApprovalTargetEntityType.VatReturn.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "VAT return",
+            var value when string.Equals(value, ApprovalTargetEntityType.TreasurySource.ToStorageValue(), StringComparison.OrdinalIgnoreCase) => "Treasury source",
             var value when string.Equals(value, "fortnox_write", StringComparison.OrdinalIgnoreCase) => "Accounting system action",
             _ => entityType
         };

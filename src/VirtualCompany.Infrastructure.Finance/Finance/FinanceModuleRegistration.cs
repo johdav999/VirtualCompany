@@ -50,6 +50,102 @@ public static class FinanceModuleRegistration
             options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 10);
         });
         services.AddSingleton<AccountingOperationsTelemetry>();
+        services.AddSingleton<BankConnectionTelemetry>();
+        services.AddSingleton<TreasuryMovementTelemetry>();
+        services.AddSingleton<PaymentBatchTelemetry>();
+        services.AddSingleton<PaymentExecutionTelemetry>();
+        services.AddSingleton<TreasuryWorkspaceTelemetry>();
+        services.AddOptions<ConnectedBankingReadinessOptions>()
+            .Bind(configuration.GetSection(ConnectedBankingReadinessOptions.SectionName))
+            .Validate(options => options.ConsentExpiryWarningDays is >= 1 and <= 90,
+                "Connected-banking consent warning must be between 1 and 90 days.")
+            .Validate(options => options.FeedLagWarningMinutes is >= 1 and <= 1440,
+                "Connected-banking feed-lag warning must be between 1 minute and 1 day.")
+            .Validate(options => options.UnreconciledWarningDays is >= 1 and <= 90 &&
+                                 options.StaleApprovalWarningDays is >= 1 and <= 30 &&
+                                 options.UnsettledBatchWarningDays is >= 1 and <= 30,
+                "Connected-banking aging windows are outside supported bounds.")
+            .Validate(options => options.WorkerBacklogWarningMinutes is >= 1 and <= 1440,
+                "Connected-banking worker backlog warning must be between 1 minute and 1 day.")
+            .ValidateOnStart();
+        services.AddOptions<PaymentExecutionOptions>()
+            .Bind(configuration.GetSection(PaymentExecutionOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.PollIntervalSeconds = Math.Clamp(options.PollIntervalSeconds, 10, 3600);
+                options.MaximumStatusPolls = Math.Clamp(options.MaximumStatusPolls, 1, 1000);
+                options.MaximumProviderAttempts = Math.Clamp(options.MaximumProviderAttempts, 1, 20);
+                options.AuthorizationExpiryMinutes = Math.Clamp(options.AuthorizationExpiryMinutes, 5, 1440);
+            });
+        services.AddOptions<PaymentBatchPolicyOptions>()
+            .Bind(configuration.GetSection(PaymentBatchPolicyOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.CutOffHourEuropeStockholm = Math.Clamp(options.CutOffHourEuropeStockholm, 0, 23);
+                options.DualApprovalThreshold = Math.Max(0m, options.DualApprovalThreshold);
+                options.ApprovalRole = string.IsNullOrWhiteSpace(options.ApprovalRole) ? "owner" : options.ApprovalRole.Trim();
+                options.SupportedCurrencies = options.SupportedCurrencies.Length == 0 ? ["SEK", "EUR"] : options.SupportedCurrencies.Select(x => x.Trim().ToUpperInvariant()).Distinct().ToArray();
+            });
+        services.AddSingleton<IBankConsentStateProtector, DataProtectionBankConsentStateProtector>();
+        services.AddOptions<EnableBankingOptions>()
+            .Bind(configuration.GetSection(EnableBankingOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.ApplicationId = configuration["ENABLE_BANKING_APPLICATION_ID"]
+                    ?? Environment.GetEnvironmentVariable("ENABLE_BANKING_APPLICATION_ID")
+                    ?? options.ApplicationId;
+                options.PrivateKeyPem = configuration["ENABLE_BANKING_PRIVATE_KEY_PEM"]
+                    ?? Environment.GetEnvironmentVariable("ENABLE_BANKING_PRIVATE_KEY_PEM")
+                    ?? options.PrivateKeyPem;
+                options.PrivateKeyPath = configuration["ENABLE_BANKING_PRIVATE_KEY_PATH"]
+                    ?? Environment.GetEnvironmentVariable("ENABLE_BANKING_PRIVATE_KEY_PATH")
+                    ?? options.PrivateKeyPath;
+                options.CountryCode = string.IsNullOrWhiteSpace(options.CountryCode) ? "SE" : options.CountryCode.Trim().ToUpperInvariant();
+                options.PsuType = string.Equals(options.PsuType, "personal", StringComparison.OrdinalIgnoreCase) ? "personal" : "business";
+                options.ConsentValidityDays = Math.Clamp(options.ConsentValidityDays, 1, 180);
+                options.RequestTimeoutSeconds = Math.Clamp(options.RequestTimeoutSeconds, 5, 120);
+            });
+        services.AddHttpClient(EnableBankingProvider.HttpClientName, client =>
+        {
+            var section = configuration.GetSection(EnableBankingOptions.SectionName);
+            var baseUri = section["BaseUri"] ?? "https://api.enablebanking.com/";
+            client.BaseAddress = new Uri(baseUri.EndsWith('/') ? baseUri : baseUri + "/", UriKind.Absolute);
+            client.Timeout = TimeSpan.FromSeconds(Math.Clamp(section.GetValue("RequestTimeoutSeconds", 45), 5, 120));
+        });
+        services.AddScoped<EnableBankingProvider>();
+        services.AddScoped<IBankConnectionProvider>(provider => provider.GetRequiredService<EnableBankingProvider>());
+        services.AddScoped<IBankFeedProvider>(provider => provider.GetRequiredService<EnableBankingProvider>());
+        services.AddScoped<IPaymentInitiationProvider>(provider => provider.GetRequiredService<EnableBankingProvider>());
+        services.AddScoped<IBankConnectionProviderRegistry, BankConnectionProviderRegistry>();
+        services.AddScoped<IBankFeedProviderRegistry, BankFeedProviderRegistry>();
+        services.AddScoped<IPaymentInitiationProviderRegistry, PaymentInitiationProviderRegistry>();
+        services.AddScoped<IProtectedBankCredentialStore, ProtectedBankCredentialStore>();
+        services.AddScoped<IBankConnectionService, BankConnectionService>();
+        services.AddOptions<BankFeedSynchronizationOptions>()
+            .Bind(configuration.GetSection(BankFeedSynchronizationOptions.SectionName))
+            .Validate(x => x.PollIntervalSeconds is >= 10 and <= 3600, "Bank feed polling must be between 10 seconds and 1 hour.")
+            .Validate(x => x.ClaimBatchSize is >= 1 and <= 100, "Bank feed claim batch size must be between 1 and 100.")
+            .Validate(x => x.LeaseSeconds is >= 30 and <= 900, "Bank feed lease duration must be between 30 and 900 seconds.")
+            .Validate(x => x.SynchronizationIntervalMinutes is >= 1 and <= 1440, "Bank feed synchronization interval must be between 1 minute and 1 day.")
+            .Validate(x => x.InitialLookbackDays is >= 1 and <= 366 && x.OverlapDays is >= 1 and <= 30,
+                "Bank feed lookback and overlap settings are outside supported bounds.")
+            .Validate(x => x.MaximumBackfillDays is >= 1 and <= 1095 && x.MaximumAttempts is >= 1 and <= 20,
+                "Bank feed recovery bounds are outside supported limits.")
+            .ValidateOnStart();
+        services.AddSingleton<BankFeedTelemetry>();
+        services.AddScoped<IBankFeedService, BankFeedService>();
+        services.AddScoped<IBankFeedSynchronizationRunner, BankFeedSynchronizationRunner>();
+        services.AddOptions<BankStatementImportOptions>()
+            .Bind(configuration.GetSection(BankStatementImportOptions.SectionName))
+            .Validate(x => x.MaximumUploadBytes is >= 1024 and <= 20 * 1024 * 1024,
+                "Statement import upload limit must be between 1 KB and 20 MB.")
+            .Validate(x => x.MaximumRows is >= 1 and <= 100_000,
+                "Statement import row limit must be between 1 and 100,000.")
+            .Validate(x => x.CommitBatchSize is >= 1 and <= 1000,
+                "Statement import commit batch size must be between 1 and 1,000.")
+            .ValidateOnStart();
+        services.AddScoped<IBankStatementFileParser, Iso20022BankStatementParser>();
+        services.AddScoped<IBankStatementFileParser, CsvBankStatementParser>();
         services.AddOptions<AccountingCapacityOptions>()
             .Bind(configuration.GetSection(AccountingCapacityOptions.SectionName))
             .Validate(x => x.DefaultProfile is AccountingCapacityProfileKeys.Small or AccountingCapacityProfileKeys.Medium,
@@ -461,11 +557,15 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinancePaymentCommandService, CompanyFinanceCommandService>();
         services.AddScoped<CompanyCashSettlementPostingService>();
         services.AddScoped<IFinanceCashSettlementPostingService>(provider => provider.GetRequiredService<CompanyCashSettlementPostingService>());
+        services.AddScoped<FinancePaymentAllocationService>(provider => new FinancePaymentAllocationService(
+            provider.GetRequiredService<VirtualCompany.Infrastructure.Persistence.VirtualCompanyDbContext>(),
+            provider.GetRequiredService<IFinanceCashSettlementPostingService>()));
         services.AddScoped<IFinanceApprovalTaskService, CompanyFinanceApprovalTaskService>();
         services.AddScoped<ICashPostingTraceabilityBackfillService, CompanyCashPostingTraceabilityBackfillService>();
         services.AddScoped<CompanyBankTransactionService>();
         services.AddScoped<IBankTransactionReadService>(provider => provider.GetRequiredService<CompanyBankTransactionService>());
         services.AddScoped<IBankTransactionCommandService>(provider => provider.GetRequiredService<CompanyBankTransactionService>());
+        services.AddScoped<IBankStatementImportCenterService, BankStatementImportCenterService>();
         services.AddScoped<IFinancePolicyConfigurationService, CompanyFinanceCommandService>();
         services.AddScoped<IFinancialStatementMappingService, CompanyFinancialStatementMappingService>();
         services.AddScoped<IExecutiveCockpitFinanceAdapter, CompanyExecutiveCockpitFinanceAdapter>();
@@ -517,10 +617,25 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceSupplierInvoiceEnrichmentService, SupplierInvoiceEnrichmentService>();
         services.AddScoped<IFinanceReadService, CompanyFinanceReadService>();
         services.AddScoped<IFinancePaymentReadService, CompanyFinanceReadService>();
+        services.AddSingleton<ITreasuryWorkspacePolicy, TreasuryWorkspacePolicy>();
+        services.AddScoped<ITreasuryWorkspaceQueryService, TreasuryWorkspaceQueryService>();
+        services.AddScoped<IConnectedBankingReadinessService, ConnectedBankingReadinessService>();
+        services.AddScoped<IConnectedBankingRecoveryVerificationService, ConnectedBankingRecoveryVerificationService>();
         services.AddScoped<IReconciliationScoringSettingsProvider, CompanyReconciliationScoringSettingsProvider>();
         services.AddScoped<IReconciliationScoringService, CompanyReconciliationScoringService>();
         services.AddScoped<IReconciliationSuggestionReadService, CompanyReconciliationSuggestionService>();
         services.AddScoped<IReconciliationSuggestionCommandService, CompanyReconciliationSuggestionService>();
+        services.AddScoped<AdvancedReconciliationService>();
+        services.AddScoped<IAdvancedReconciliationReadService>(provider => provider.GetRequiredService<AdvancedReconciliationService>());
+        services.AddScoped<IAdvancedReconciliationCommandService>(provider => provider.GetRequiredService<AdvancedReconciliationService>());
+        services.AddScoped<TreasuryMovementService>();
+        services.AddScoped<ITreasuryMovementReadService>(provider => provider.GetRequiredService<TreasuryMovementService>());
+        services.AddScoped<ITreasuryMovementCommandService>(provider => provider.GetRequiredService<TreasuryMovementService>());
+        services.AddScoped<IPaymentBatchEligibilityPolicy, PaymentBatchEligibilityPolicy>();
+        services.AddScoped<IPaymentBatchService, PaymentBatchService>();
+        services.AddScoped<PaymentExecutionAuthorityValidator>();
+        services.AddScoped<IPaymentBatchExecutionService, PaymentBatchExecutionService>();
+        services.AddScoped<IPaymentBatchExecutionDispatcher, PaymentBatchExecutionDispatcher>();
         services.AddScoped<IFinanceAgentAnalysisService, FinanceAgentAnalysisService>();
         services.AddScoped<IFinanceAgentDecisionService, FinanceAgentDecisionService>();
         services.AddScoped<IFinanceToolProvider>(provider =>
@@ -549,6 +664,8 @@ public static class FinanceModuleRegistration
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
         services.AddHostedService<FinanceIntegrationStartupSyncBackgroundService>();
+        services.AddHostedService<BankConsentRevocationBackgroundService>();
+        services.AddHostedService<BankFeedSynchronizationBackgroundService>();
         services.AddHostedService<FinanceBillFortnoxRegistrationReconciliationBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
         return services;

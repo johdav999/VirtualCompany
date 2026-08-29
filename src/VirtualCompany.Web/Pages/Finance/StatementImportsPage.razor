@@ -1,0 +1,132 @@
+@page "/finance/transactions/imports"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["StatementImports"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["StatementImports"]" Description="@FinanceText["StatementImportsDescription"]"
+                   LoadingMessage="@FinanceText["LoadingStatementImports"]" ShowShellHeader="false" ShowShellNavigation="false">
+    <section class="statement-imports" aria-labelledby="statement-imports-heading">
+        <header class="statement-imports__header">
+            <div><span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
+                <h1 id="statement-imports-heading">@FinanceText["StatementImports"]</h1>
+                <p>@FinanceText["StatementImportsDescription"]</p></div>
+            <button class="btn btn-primary" type="button" @onclick="ResetPreview" disabled="@IsBusy">@FinanceText["NewImport"]</button>
+        </header>
+        <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
+        <nav class="statement-imports__subnav" aria-label="@FinanceText["TransactionWorkspaces"]">
+            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Transactions, AccessState.CompanyId)">@FinanceText["BankTransactions"]</a>
+            <a class="active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.StatementImports, AccessState.CompanyId)" aria-current="page">@FinanceText["StatementImports"]</a>
+        </nav>
+
+        @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+        @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div></div> }
+
+        <div class="statement-imports__layout">
+            <div class="statement-imports__main">
+                <section class="statement-card upload-card" aria-labelledby="upload-heading">
+                    <div class="drop-zone">
+                        <span class="drop-zone__icon" aria-hidden="true">⇧</span>
+                        <div><h2 id="upload-heading">@FinanceText["DropStatementFile"]</h2>
+                            <p>@(SelectedFile is null ? FinanceText["ChooseStatementFile"] : SelectedFile.Name)</p></div>
+                        <InputFile id="statement-file" OnChange="SelectFile" accept=".xml,.csv,.052,.053,.054" disabled="@(!CanManage || IsBusy)" />
+                    </div>
+                    <div class="upload-card__fields">
+                        <label for="statement-account">@FinanceText["BankAccount"]
+                            <select id="statement-account" class="form-select" @bind="SelectedBankAccountId" disabled="@(!CanManage || IsBusy)">
+                                <option value="">@FinanceText["SelectBankAccount"]</option>
+                                @foreach (var account in Workspace?.Accounts ?? [])
+                                { <option value="@account.Id">@account.DisplayName · @account.MaskedAccountNumber · @account.Currency</option> }
+                            </select>
+                        </label>
+                        <label for="statement-profile">@FinanceText["CsvMappingProfile"] <small>@FinanceText["OptionalForXml"]</small>
+                            <select id="statement-profile" class="form-select" @bind="SelectedCsvProfileId" disabled="@(!CanManage || IsBusy)">
+                                <option value="">@FinanceText["SelectCsvProfile"]</option>
+                                @foreach (var profile in Workspace?.CsvProfiles ?? [])
+                                { <option value="@profile.Id">@profile.Name · v@profile.Version</option> }
+                            </select>
+                        </label>
+                    </div>
+                    <footer><small>@FinanceText["SupportedStatementFormats"]</small>
+                        <div class="upload-card__actions">
+                            <button class="btn btn-link" type="button" @onclick="ToggleProfileEditor" disabled="@(!CanManage || IsBusy)">@FinanceText["ManageCsvProfiles"]</button>
+                            <button class="btn btn-primary" type="button" @onclick="PreviewAsync" disabled="@(!CanPreview)">@FinanceText["PreviewFile"]</button>
+                        </div>
+                    </footer>
+                </section>
+
+                @if (ShowProfileEditor)
+                {
+                    <section class="statement-card profile-card" aria-labelledby="profile-heading">
+                        <header><div><span class="finance-overview-kicker">CSV</span><h2 id="profile-heading">@FinanceText["NewCsvProfile"]</h2><p>@FinanceText["NewCsvProfileDescription"]</p></div></header>
+                        <div class="profile-grid">
+                            <label>@FinanceText["ProfileName"]<input class="form-control" @bind="Profile.Name" /></label>
+                            <label>@FinanceText["Delimiter"]<select class="form-select" @bind="Profile.Delimiter"><option value=";">;</option><option value=",">,</option><option value="tab">Tab</option></select></label>
+                            <label>@FinanceText["Culture"]<input class="form-control" @bind="Profile.CultureName" placeholder="sv-SE" /></label>
+                            <label>@FinanceText["DateFormat"]<input class="form-control" @bind="Profile.DateFormat" placeholder="yyyy-MM-dd" /></label>
+                            <label>@FinanceText["BookingDateColumn"]<input class="form-control" @bind="Profile.BookingDateColumn" /></label>
+                            <label>@FinanceText["AmountColumn"]<input class="form-control" @bind="Profile.AmountColumn" /></label>
+                            <label>@FinanceText["ReferenceColumn"]<input class="form-control" @bind="Profile.ReferenceColumn" /></label>
+                            <label>@FinanceText["CurrencyColumn"]<input class="form-control" @bind="Profile.CurrencyColumn" /></label>
+                            <label>@FinanceText["CounterpartyColumn"]<input class="form-control" @bind="Profile.CounterpartyColumn" /></label>
+                            <label>@FinanceText["AccountIdentifierColumn"]<input class="form-control" @bind="Profile.AccountIdentifierColumn" /></label>
+                        </div>
+                        <footer><label class="form-check"><input class="form-check-input" type="checkbox" @bind="Profile.HasHeader" /><span>@FinanceText["FirstRowContainsHeaders"]</span></label>
+                            <button class="btn btn-primary" type="button" @onclick="CreateProfileAsync" disabled="@(!CanCreateProfile)">@FinanceText["SaveProfile"]</button></footer>
+                    </section>
+                }
+
+                @if (SelectedJob is not null)
+                {
+                    <section class="statement-summary" aria-label="@FinanceText["PreviewSummary"]">
+                        <article><span>@FinanceText["Rows"]</span><strong>@SelectedJob.TotalRowCount</strong></article>
+                        <article class="success"><span>@FinanceText["Accepted"]</span><strong>@SelectedJob.AcceptedRowCount</strong></article>
+                        <article class="warning"><span>@FinanceText["Duplicates"]</span><strong>@SelectedJob.DuplicateRowCount</strong></article>
+                        <article class="danger"><span>@FinanceText["Issues"]</span><strong>@SelectedJob.ErrorRowCount</strong></article>
+                    </section>
+                    <section class="statement-card preview-card" aria-labelledby="preview-heading">
+                        <header><div><h2 id="preview-heading">@FinanceText["Preview"]</h2><p>@FinanceText["PreviewRows", SelectedJob.Rows.Count, SelectedJob.TotalRowCount]</p></div>
+                            <span class="@JobStatusClass(SelectedJob.Status)">@JobStatusLabel(SelectedJob.Status)</span></header>
+                        @if (SelectedJob.Rows.Count == 0)
+                        { <div class="statement-empty"><strong>@FinanceText["NoStatementRows"]</strong><p>@FinanceText["NoStatementRowsDescription"]</p></div> }
+                        else
+                        {
+                            <div class="table-responsive"><table class="table statement-preview-table"><thead><tr><th>@CommonText["Status"]</th><th>@FinanceText["Date"]</th><th>@FinanceText["Reference"]</th><th>@FinanceText["Counterparty"]</th><th class="text-end">@FinanceText["Amount"]</th><th>@FinanceText["Issue"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead>
+                                <tbody>@foreach (var row in SelectedJob.Rows) { <tr><td><span class="@RowStatusClass(row.Outcome)">@RowStatusLabel(row.Outcome)</span></td><td>@FormatDate(row.BookingDateUtc)</td><td>@(row.ReferenceText ?? row.ExternalReference ?? "—")</td><td>@(row.Counterparty ?? "—")</td><td class="text-end">@FormatAmount(row)</td><td>@(row.IssueMessage ?? (row.PaymentStatus is null ? "—" : FinanceText["PaymentStatusValue", row.PaymentStatus]))</td><td>@if (CanSkip(row)) { <button class="btn btn-sm btn-outline-danger" @onclick="() => SkipRowAsync(row)" disabled="@IsBusy">@FinanceText["SkipRow"]</button> }</td></tr> }</tbody>
+                            </table></div>
+                        }
+                    </section>
+                }
+            </div>
+
+            <aside class="statement-imports__aside">
+                <section class="statement-card validation-card" aria-labelledby="validation-heading">
+                    <header><h2 id="validation-heading">@FinanceText["ValidationReport"]</h2>@if (SelectedJob is not null) { <span class="issue-count">@FinanceText["BlockingCount", SelectedJob.ErrorRowCount]</span> }</header>
+                    @if (SelectedJob is null)
+                    { <div class="statement-empty"><strong>@FinanceText["NoPreviewYet"]</strong><p>@FinanceText["NoPreviewYetDescription"]</p></div> }
+                    else if (SelectedJob.Issues.Count == 0)
+                    { <div class="validation-success"><strong>@FinanceText["NoBlockingIssues"]</strong><p>@FinanceText["ReadyToImportDescription"]</p></div> }
+                    else
+                    { <ul class="validation-list">@foreach (var issue in SelectedJob.Issues.Take(12)) { <li class="@issue.Severity"><span aria-hidden="true">●</span><div><strong>@IssueLabel(issue)</strong><small>@issue.Message</small></div></li> }</ul> }
+                </section>
+                @if (SelectedJob is not null)
+                {
+                    <section class="statement-card totals-card"><h2>@FinanceText["ControlTotals"]</h2>
+                        <dl><div><dt>@FinanceText["OpeningBalance"]</dt><dd>@FormatMoney(SelectedJob.OpeningBalance)</dd></div><div><dt>@FinanceText["ClosingBalance"]</dt><dd>@FormatMoney(SelectedJob.ClosingBalance)</dd></div><div><dt>@FinanceText["CalculatedClosingBalance"]</dt><dd>@FormatMoney(SelectedJob.CalculatedClosingBalance)</dd></div><div><dt>@FinanceText["DebitTotal"]</dt><dd>@FormatMoney(SelectedJob.DebitTotal)</dd></div><div><dt>@FinanceText["CreditTotal"]</dt><dd>@FormatMoney(SelectedJob.CreditTotal)</dd></div></dl>
+                        @if (ControlTotalsMatch) { <p class="totals-match">✓ @FinanceText["ControlTotalsMatch"]</p> }
+                    </section>
+                }
+                <section class="preview-notice"><strong>ⓘ @FinanceText["PreviewIsNotImport"]</strong><p>@FinanceText["PreviewIsNotImportDescription"]</p></section>
+                <section class="statement-card laura-card"><div class="laura-card__identity"><img src="/avatars/agents/laura-finance.png" alt="" /><div><strong>Laura</strong><small>@FinanceText["FinanceManager"]</small></div></div><p>@FinanceText["LauraImportGuidance"]</p>
+                    @if (SelectedJob is not null && CanCommit) { <button class="btn btn-primary w-100" @onclick="CommitAsync" disabled="@IsBusy">@(SelectedJob.Status == "partially_imported" ? FinanceText["Resume"] : FinanceText["CompleteImport"])</button> }</section>
+            </aside>
+        </div>
+
+        <section class="statement-card history-card" aria-labelledby="history-heading"><header><div><h2 id="history-heading">@FinanceText["ImportHistory"]</h2><p>@FinanceText["ImportHistoryDescription"]</p></div></header>
+            @if (Workspace?.Jobs.Count > 0)
+            { <div class="table-responsive"><table class="table"><thead><tr><th>@FinanceText["FileName"]</th><th>@FinanceText["FormatVersion"]</th><th>@FinanceText["BankAccount"]</th><th>@FinanceText["Progress"]</th><th>@CommonText["Status"]</th><th>@FinanceText["Updated"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead><tbody>@foreach (var job in Workspace.Jobs) { <tr><td><strong>@job.OriginalFileName</strong><small>@FormatBytes(job.ContentLength)</small></td><td>@(job.Format ?? "—")<small>@(job.MessageVersion ?? "—")</small></td><td>@job.BankAccountName</td><td><progress max="@Math.Max(1, job.AcceptedRowCount)" value="@job.ImportedRowCount"></progress><small>@Progress(job)%</small></td><td><span class="@JobStatusClass(job.Status)">@JobStatusLabel(job.Status)</span></td><td>@FormatDate(job.UpdatedUtc)</td><td><button class="btn btn-sm btn-outline-primary" @onclick="() => SelectJobAsync(job.Id)" disabled="@IsBusy">@(job.Status == "partially_imported" ? FinanceText["Resume"] : FinanceText["View"])</button></td></tr> }</tbody></table></div> }
+            else { <div class="statement-empty"><strong>@FinanceText["NoImportHistory"]</strong><p>@FinanceText["NoImportHistoryDescription"]</p></div> }
+        </section>
+    </section>
+</FinancePageLayout>

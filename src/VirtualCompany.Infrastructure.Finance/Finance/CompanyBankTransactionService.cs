@@ -538,7 +538,7 @@ public sealed class CompanyBankTransactionService : IBankTransactionReadService,
             if (NormalizeMoney(previouslyLinked + amount) > payment.Amount)
                 throw Validation(nameof(match.AllocatedAmount), "The match would exceed the payment amount.");
             newTotal += amount;
-            if (NormalizeMoney(existingTotal + newTotal) > transaction.AbsoluteAmount)
+            if (NormalizeMoney(existingTotal + newTotal) > transaction.AbsoluteAmount && command.Adjustments is not { Count: > 0 })
                 throw Validation(nameof(match.AllocatedAmount), "The match would exceed the bank transaction amount.");
             _dbContext.BankTransactionPaymentLinks.Add(new BankTransactionPaymentLink(Guid.NewGuid(), command.CompanyId,
                 transaction.Id, payment.Id, amount, transaction.Currency, now));

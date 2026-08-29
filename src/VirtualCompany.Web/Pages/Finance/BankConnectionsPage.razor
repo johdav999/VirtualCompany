@@ -1,0 +1,170 @@
+@page "/finance/settings/bank-connections"
+@rendermode InteractiveServer
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["BankConnections"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["BankConnections"]" Description="@FinanceText["BankConnectionsDescription"]"
+                   LoadingMessage="@FinanceText["LoadingBankConnections"]" Area="settings">
+    <div class="bank-connections-toolbar">
+        <nav class="finance-settings-tabs" aria-label="@FinanceText["FinanceSettingsSections"]">
+            <NavLink class="finance-settings-tab" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.EmailSettings, AccessState.CompanyId)">@FinanceText["EmailSettings"]</NavLink>
+            <NavLink class="finance-settings-tab" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.FinanceIntegrationSettings, AccessState.CompanyId)">@FinanceText["Integrations"]</NavLink>
+            <NavLink class="finance-settings-tab" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.BankConnections, AccessState.CompanyId)" Match="NavLinkMatch.Prefix">@FinanceText["BankConnections"]</NavLink>
+        </nav>
+        <button class="btn btn-outline-secondary" type="button" @onclick="LoadAsync" disabled="@IsBusy">@FinanceText["Refresh"]</button>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div></div> }
+
+    <section class="bank-connect-card" aria-labelledby="connect-bank-heading">
+        <div>
+            <span class="dashboard-kicker">@FinanceText["ConsentAndOwnership"]</span>
+            <h2 id="connect-bank-heading">@FinanceText["ConnectBank"]</h2>
+            <p>@FinanceText["ConnectBankDescription"]</p>
+        </div>
+        @if (Status?.Providers.Count > 0)
+        {
+            <div class="bank-connect-form">
+                <label>@FinanceText["Provider"]
+                    <select class="form-select" @bind="SelectedProviderKey" @bind:after="LoadInstitutionsAsync" disabled="@(!CanManage || IsBusy)">
+                        @foreach (var provider in Status.Providers.Where(x => x.IsConfigured)) { <option value="@provider.ProviderKey">@provider.DisplayName</option> }
+                    </select>
+                </label>
+                <label>@FinanceText["Institution"]
+                    <select class="form-select" @bind="SelectedInstitutionId" disabled="@(!CanManage || IsBusy || Institutions.Count == 0)">
+                        @foreach (var institution in Institutions) { <option value="@institution.InstitutionId">@institution.DisplayName</option> }
+                    </select>
+                </label>
+                <button class="btn btn-primary" type="button" @onclick="ConnectAsync" disabled="@(!CanManage || IsBusy || string.IsNullOrWhiteSpace(SelectedInstitutionId))">@FinanceText["ConnectBank"]</button>
+            </div>
+        }
+        else
+        {
+            <div class="bank-no-provider" role="status"><strong>@FinanceText["NoBankProviderConfigured"]</strong><span>@FinanceText["NoBankProviderConfiguredDescription"]</span></div>
+        }
+    </section>
+
+    <section class="bank-summary-grid" aria-label="@FinanceText["BankConnectionSummary"]">
+        <article><strong>@ActiveCount</strong><span>@FinanceText["ActiveConnections"]</span></article>
+        <article class="warning"><strong>@RenewalCount</strong><span>@FinanceText["RenewalRequired"]</span></article>
+        <article class="danger"><strong>@SuspendedCount</strong><span>@FinanceText["Suspended"]</span></article>
+        <article class="danger"><strong>@OutageCount</strong><span>@FinanceText["ProviderOutage"]</span></article>
+        <article class="attention"><strong>@OwnershipMismatchCount</strong><span>@FinanceText["OwnershipMismatch"]</span></article>
+    </section>
+
+    @if (FeedHealth is not null)
+    {
+        <section class="bank-feed-card" aria-labelledby="bank-feed-heading">
+            <header class="bank-feed-header">
+                <div><span class="dashboard-kicker">@FinanceText["ContinuousBankFeed"]</span><h2 id="bank-feed-heading">@FinanceText["FeedCoverage"]</h2><p>@FinanceText["FeedCoverageDescription"]</p></div>
+                @if (CanManage) { <button class="btn btn-outline-primary" type="button" @onclick="() => SynchronizeFeedsAsync()" disabled="@IsBusy">@FinanceText["SynchronizeAll"]</button> }
+            </header>
+            <div class="bank-feed-kpis" aria-label="@FinanceText["FeedCoverageSummary"]">
+                <article class="healthy"><strong>@FeedHealth.HealthyCount</strong><span>@FinanceText["HealthyFeeds"]</span></article>
+                <article class="attention"><strong>@FeedHealth.AttentionCount</strong><span>@FinanceText["AttentionNeeded"]</span></article>
+                <article><strong>@FormatDate(FeedHealth.LatestSuccessfulCoverageUtc)</strong><span>@FinanceText["LastCovered"]</span></article>
+                <article class="lag"><strong>@FormatLag(FeedHealth.MaximumLagMinutes)</strong><span>@FinanceText["CurrentLag"]</span></article>
+            </div>
+            @if (FeedHealth.Accounts.Count > 0)
+            {
+                <div class="table-responsive">
+                    <table class="table align-middle mb-0 bank-feed-table">
+                        <thead><tr><th>@FinanceText["Account"]</th><th>@FinanceText["FeedStatus"]</th><th>@FinanceText["Coverage"]</th><th>@FinanceText["LastSync"]</th><th>@FinanceText["Lag"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead>
+                        <tbody>
+                        @foreach (var account in FeedHealth.Accounts)
+                        {
+                            var openGap = account.Gaps.FirstOrDefault(x => x.Status == "open");
+                            <tr>
+                                <td><strong>@account.AccountName</strong><small class="d-block text-body-secondary">@account.InstitutionName · @account.MaskedAccountNumber</small></td>
+                                <td><span class="@FeedStatusClass(account.Status)">@FeedStatusLabel(account.Status)</span>@if (openGap is not null) { <small class="d-block feed-gap-summary">@openGap.Summary</small> }</td>
+                                <td><strong>@FormatCoverage(account)</strong>@if (openGap is not null) { <small class="d-block text-warning">@openGap.DateFrom.ToString("yyyy-MM-dd") – @openGap.DateTo.ToString("yyyy-MM-dd") @FinanceText["Missing"]</small> }</td>
+                                <td>@FormatDate(account.LastSuccessfulSyncUtc)</td>
+                                <td>@FormatLag(account.LagMinutes)</td>
+                                <td class="bank-feed-actions">
+                                    @if (CanManage && openGap is not null) { <button class="btn btn-sm btn-outline-warning" @onclick="() => RecoverGapAsync(account, openGap)" disabled="@IsBusy">@FinanceText["RecoverRange"]</button> }
+                                    else if (CanManage) { <button class="btn btn-sm btn-outline-primary" @onclick="() => SynchronizeFeedsAsync(account.CheckpointId)" disabled="@IsBusy">@FinanceText["SynchronizeNow"]</button> }
+                                </td>
+                            </tr>
+                        }
+                        </tbody>
+                    </table>
+                </div>
+            }
+            else
+            {
+                <div class="bank-feed-empty"><strong>@FinanceText["NoMappedFeedAccounts"]</strong><p>@FinanceText["NoMappedFeedAccountsDescription"]</p></div>
+            }
+        </section>
+    }
+
+    @if (Status?.Connections.Count > 0)
+    {
+        <section class="bank-connection-list" aria-labelledby="connected-banks-heading">
+            <header><div><h2 id="connected-banks-heading">@FinanceText["ConnectedBanks"]</h2><p>@FinanceText["ConnectedBanksDescription"]</p></div></header>
+            @foreach (var connection in Status.Connections)
+            {
+                <article class="bank-connection-row">
+                    <div class="bank-identity"><span aria-hidden="true">⌂</span><div><strong>@connection.InstitutionName</strong><small>@ProviderName(connection.ProviderKey)</small></div></div>
+                    <div><small>@FinanceText["ConsentStatus"]</small><span class="@StatusClass(connection)">@StatusLabel(connection)</span></div>
+                    <div><small>@FinanceText["ConsentExpiry"]</small><strong>@FormatDate(connection.ConsentExpiresUtc)</strong></div>
+                    <div><small>@FinanceText["ConnectionHealth"]</small><strong>@HealthLabel(connection.HealthStatus)</strong></div>
+                    <div><small>@FinanceText["MappedAccounts"]</small><strong>@connection.Accounts.Count(x => x.MappedCompanyBankAccountId.HasValue) / @connection.Accounts.Count</strong></div>
+                    <div class="bank-row-actions">
+                        @if (CanManage && connection.Status is "active" or "attention_required")
+                        { <button class="btn btn-sm btn-outline-secondary" @onclick="() => RefreshAsync(connection)" disabled="@IsBusy">@FinanceText["Refresh"]</button> }
+                        @if (CanManage && connection.Status is "attention_required" or "suspended")
+                        { <button class="btn btn-sm btn-outline-primary" @onclick="() => RenewAsync(connection)" disabled="@IsBusy">@FinanceText["RenewConsent"]</button> }
+                        @if (CanManage && connection.Status is "active" or "attention_required")
+                        { <button class="btn btn-sm btn-outline-warning" @onclick="() => SuspendAsync(connection)" disabled="@IsBusy">@FinanceText["Suspend"]</button> }
+                        @if (CanManage && connection.Status is not "disconnected")
+                        {
+                            <button class="btn btn-sm btn-outline-danger" @onclick="() => DisconnectAsync(connection)" disabled="@IsBusy">
+                                @(_disconnectConfirmationId == connection.Id ? FinanceText["ConfirmDisconnect"] : FinanceText["Disconnect"])
+                            </button>
+                        }
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(connection.ReasonSummary)) { <p class="bank-connection-reason"><strong>@ReasonLabel(connection.ReasonCode)</strong> @connection.ReasonSummary</p> }
+                </article>
+            }
+        </section>
+
+        <section class="bank-accounts-card" aria-labelledby="discovered-accounts-heading">
+            <header><div><h2 id="discovered-accounts-heading">@FinanceText["DiscoveredAccounts"]</h2><p>@FinanceText["DiscoveredAccountsDescription"]</p></div></header>
+            <div class="table-responsive">
+                <table class="table align-middle mb-0">
+                    <thead><tr><th>@FinanceText["Institution"]</th><th>@FinanceText["Account"]</th><th>@FinanceText["Currency"]</th><th>@FinanceText["Ownership"]</th><th>@FinanceText["Mapping"]</th><th><span class="visually-hidden">@FinanceText["Actions"]</span></th></tr></thead>
+                    <tbody>
+                    @foreach (var pair in DiscoveredAccounts)
+                    {
+                        var connection = pair.Connection; var account = pair.Account;
+                        <tr>
+                            <td><strong>@connection.InstitutionName</strong></td>
+                            <td><strong>@account.DisplayName</strong><small class="d-block text-body-secondary">@account.MaskedAccountNumber</small></td>
+                            <td>@account.Currency</td>
+                            <td><span class="ownership ownership--@account.OwnershipStatus">@OwnershipLabel(account.OwnershipStatus)</span></td>
+                            <td>
+                                @if (account.MappedCompanyBankAccountId.HasValue) { <strong>@account.MappedCompanyBankAccountName</strong><small class="d-block text-body-secondary">@FinanceText["MappingVersion", account.MappingVersion.GetValueOrDefault()]</small> }
+                                else
+                                {
+                                    <select class="form-select form-select-sm" @bind="MappingTargets[account.Id]" disabled="@(!CanMap(account))">
+                                        <option value="@Guid.Empty">@FinanceText["SelectInternalAccount"]</option>
+                                        @foreach (var target in CompatibleAccounts(account)) { <option value="@target.Id">@target.DisplayName · @target.MaskedAccountNumber</option> }
+                                    </select>
+                                }
+                            </td>
+                            <td>@if (!account.MappedCompanyBankAccountId.HasValue) { <button class="btn btn-sm btn-outline-primary" @onclick="() => MapAsync(connection, account)" disabled="@(!CanMap(account) || MappingTargets[account.Id] == Guid.Empty)">@FinanceText["MapAccount"]</button> }</td>
+                        </tr>
+                    }
+                    </tbody>
+                </table>
+            </div>
+        </section>
+    }
+    else if (Status is not null)
+    {
+        <section class="bank-empty"><strong>@FinanceText["NoBankConnections"]</strong><p>@FinanceText["NoBankConnectionsDescription"]</p></section>
+    }
+</FinancePageLayout>

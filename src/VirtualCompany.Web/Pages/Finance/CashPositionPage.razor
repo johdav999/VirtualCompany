@@ -1,116 +1,299 @@
 @page "/finance/cash-position"
-@inherits FinanceSummaryPageBase<CashPositionSummaryViewModel>
+@inherits FinanceSummaryPageBase<TreasuryWorkspaceResponse>
 
-<PageTitle>@FinanceText["CashPosition"]</PageTitle>
+<PageTitle>@FinanceText["TreasuryDailyCash"]</PageTitle>
 
 <FinancePageLayout
     IsLoading="@IsLoading"
     AccessState="@AccessState"
     ErrorMessage="@ErrorMessage"
-    Title="@FinanceText["CashPosition"]"
-    Description="@FinanceText["CashPositionDescription"]"
-    LoadingMessage="@FinanceText["LoadingCashPosition"]"
+    Title="@FinanceText["TreasuryDailyCash"]"
+    Description="@FinanceText["TreasuryDailyCashDescription"]"
+    LoadingMessage="@FinanceText["TreasuryLoading"]"
     ShowShellHeader="false"
     ShowShellNavigation="false">
     <FinanceDataState
         IsLoading="@IsSummaryLoading"
         IsEmpty="@IsSummaryEmpty"
         ErrorMessage="@SummaryErrorMessage"
-        LoadingTitle="@FinanceText["LoadingCashPosition"]"
-        LoadingMessage="@FinanceText["GettingCashDetails"]"
-        EmptyTitle="@FinanceText["NoCashPosition"]"
-        EmptyMessage="@FinanceText["NoCashPositionDescription"]"
-        RetryText="@FinanceText["ReloadCashPosition"]"
+        LoadingTitle="@FinanceText["TreasuryLoading"]"
+        LoadingMessage="@FinanceText["TreasuryLoadingDescription"]"
+        EmptyTitle="@FinanceText["TreasuryEmpty"]"
+        EmptyMessage="@FinanceText["TreasuryEmptyDescription"]"
+        ErrorTitle="@FinanceText["TreasuryUnavailable"]"
+        RetryText="@FinanceText["TreasuryReload"]"
         OnRetry="@RetryAsync">
         @if (ViewModel is not null)
         {
-            <section class="cash-position-dashboard" aria-labelledby="cash-position-heading">
-                <div class="finance-overview-header">
+            <div class="treasury-workspace" aria-labelledby="treasury-heading" data-testid="daily-treasury-workspace">
+                <header class="treasury-header">
                     <div>
-                        <span class="finance-overview-kicker">@FinanceText["FinanceModule"]</span>
-                        <h1 id="cash-position-heading" class="finance-overview-title">@FinanceText["CashPosition"]</h1>
-                        <p class="finance-overview-subtitle">@FinanceText["CashPositionDescription"]</p>
+                        <span class="treasury-kicker">@FinanceText["FinanceModule"]</span>
+                        <h1 id="treasury-heading">@FinanceText["TreasuryDailyCash"]</h1>
+                        <p>@FinanceText["TreasuryDailyCashDescription"]</p>
                     </div>
-                    <div class="finance-overview-header__actions">
-                        <a class="btn finance-overview-button finance-overview-button--primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Home, AccessState.CompanyId)">@FinanceText["FinanceOverview"]</a>
-                        <a class="btn finance-overview-button finance-overview-button--secondary" href="@DashboardHref">@FinanceText["CompanyDashboard"]</a>
+                    <div class="treasury-header__actions">
+                        <button class="btn btn-outline-secondary" type="button" @onclick="RetryAsync">
+                            @FinanceText["TreasuryRefreshEvidence"]
+                        </button>
+                        <a class="btn btn-primary" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId)">
+                            @FinanceText["TreasuryOpenPayments"]
+                        </a>
                     </div>
-                </div>
+                </header>
 
                 <FinanceSectionNav CompanyId="@AccessState.CompanyId!.Value" MembershipRole="@AccessState.MembershipRole" />
-                <div class="finance-subtab-nav" aria-label="@FinanceText["Cash"]">
-                    <a class="finance-subtab-nav__link active" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.CashPosition, AccessState.CompanyId)">@FinanceText["CashPosition"]</a>
-                    <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.Balances, AccessState.CompanyId)">@FinanceText["Balances"]</a>
-                    <a class="finance-subtab-nav__link" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.MonthlySummary, AccessState.CompanyId)">@FinanceText["MonthlySummary"]</a>
-                </div>
 
-                <div class="cash-position-grid">
-                    <article class="cash-position-card cash-position-card--wide">
-                        <div class="cash-position-card__icon cash-position-card__icon--positive" aria-hidden="true">$</div>
-                        <div class="cash-position-card__body">
-                            <p class="cash-position-card__label">@FinanceText["AvailableCash"]</p>
-                            <div class="cash-position-card__value">@ViewModel.AvailableBalance</div>
-                            <p class="cash-position-card__muted">@FinanceText["AsOfValue", FormattedAsOf]</p>
-                        </div>
-                        <div class="cash-position-card__icon cash-position-card__icon--positive cash-position-card__icon--end" aria-hidden="true">$</div>
+                @if (ViewModel.HasStaleEvidence || ViewModel.HasMissingEvidence)
+                {
+                    <section class="treasury-alert" role="status" aria-live="polite">
+                        <strong>@FinanceText["TreasuryEvidenceNeedsAttention"]</strong>
+                        <span>@FinanceText["TreasuryEvidenceNeedsAttentionDescription"]</span>
+                        <span>@FinanceText["TreasuryStalestEvidence", FormatDateTime(ViewModel.StalestEvidenceUtc)]</span>
+                    </section>
+                }
+
+                <section class="treasury-kpis" aria-label="@FinanceText["TreasuryCashSummary"]">
+                    <article class="treasury-card treasury-kpi">
+                        <span>@FinanceText["TreasuryAvailableCash"]</span>
+                        <strong>@FormatMoney(ViewModel.Liquidity.AvailableCash, ViewModel.Liquidity.Currency)</strong>
+                        <small>@FinanceText["TreasuryFreshestEvidence", FormatDateTime(ViewModel.FreshestEvidenceUtc)]</small>
                     </article>
-
-                    <article class="cash-position-card">
-                        <div class="cash-position-card__icon cash-position-card__icon--neutral" aria-hidden="true">avg</div>
-                        <div class="cash-position-card__body">
-                            <h2 class="cash-position-card__title">@ViewModel.MonthlySpendingTitle</h2>
-                            <div class="cash-position-card__value cash-position-card__value--medium">@ViewModel.AverageMonthlyBurn</div>
-                            <p class="cash-position-card__muted">@ViewModel.MonthlySpendingDescription</p>
-                            <p class="cash-position-card__strong">@ViewModel.RunwayDescription</p>
-                        </div>
+                    <article class="treasury-card treasury-kpi">
+                        <span>@FinanceText["TreasuryProjectedCash"]</span>
+                        <strong>@FormatMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency)</strong>
+                        <small>@FinanceText["TreasuryProjectionThrough", FormatDateTime(ViewModel.Liquidity.ProjectionThroughUtc)]</small>
                     </article>
-
-                    <article class="cash-position-card">
-                        <div class="cash-position-card__icon cash-position-card__icon--@ViewModel.FriendlyHealthTone" aria-hidden="true">ok</div>
-                        <div class="cash-position-card__body">
-                            <h2 class="cash-position-card__title">@ViewModel.CashHealthTitle</h2>
-                            <span class="cash-position-status cash-position-status--@ViewModel.FriendlyHealthTone">@ViewModel.FriendlyHealthLabel</span>
-                            <p class="cash-position-card__muted mt-2">@ViewModel.CashHealthMessage</p>
-                            @if (!string.IsNullOrWhiteSpace(ViewModel.ConfidenceText))
-                            {
-                                <p class="cash-position-card__muted mb-0">@ViewModel.ConfidenceText</p>
-                            }
-                        </div>
+                    <article class="treasury-card treasury-kpi">
+                        <span>@FinanceText["TreasuryExpectedIn"]</span>
+                        <strong class="is-positive">@FormatMoney(ViewModel.Liquidity.ExpectedInflows, ViewModel.Liquidity.Currency)</strong>
+                        <small>@FinanceText["TreasuryProjectionWindow", ViewModel.Liquidity.HorizonDays]</small>
                     </article>
-
-                    <article class="cash-position-card cash-position-card--stacked">
-                        <div class="cash-position-card__header">
-                            <h2 class="cash-position-card__title">@ViewModel.CashGuideTitle</h2>
-                            <div class="cash-position-card__icon cash-position-card__icon--warning cash-position-card__icon--small" aria-hidden="true">!</div>
-                        </div>
-                        <dl class="cash-position-guide-list">
-                            <div><dt>@ViewModel.WarningCashLabel</dt><dd>@ViewModel.WarningThreshold</dd></div>
-                            <div><dt>@ViewModel.CriticalCashLabel</dt><dd>@ViewModel.CriticalThreshold</dd></div>
-                            <div><dt>@ViewModel.WarningRunwayLabel</dt><dd>@ViewModel.WarningRunway</dd></div>
-                            <div><dt>@ViewModel.CriticalRunwayLabel</dt><dd>@ViewModel.CriticalRunway</dd></div>
-                        </dl>
-                        <p class="cash-position-card__muted mb-0">@ViewModel.CashGuideHelperText</p>
+                    <article class="treasury-card treasury-kpi">
+                        <span>@FinanceText["TreasuryExpectedOut"]</span>
+                        <strong>@FormatMoney(ViewModel.Liquidity.ExpectedOutflows, ViewModel.Liquidity.Currency)</strong>
+                        <small class="treasury-risk treasury-risk--@ViewModel.Liquidity.RiskLevel">@RiskLabel(ViewModel.Liquidity.RiskLevel)</small>
                     </article>
+                </section>
 
-                    <article class="cash-position-card cash-position-card--stacked">
-                        <div class="cash-position-card__header">
-                            <h2 class="cash-position-card__title">@ViewModel.MeaningCardTitle</h2>
-                            <div class="cash-position-card__icon cash-position-card__icon--@ViewModel.FriendlyHealthTone cash-position-card__icon--small" aria-hidden="true">!</div>
-                        </div>
-                        <div class="cash-position-meaning">
-                            <div class="cash-position-meaning__headline">
-                                <span class="cash-position-card__icon cash-position-card__icon--@ViewModel.FriendlyHealthTone cash-position-card__icon--tiny" aria-hidden="true">ok</span>
-                                <strong>@ViewModel.MeaningTitle</strong>
+                <div class="treasury-primary-grid">
+                    <section class="treasury-card treasury-accounts" aria-labelledby="treasury-accounts-heading">
+                        <div class="treasury-card__header">
+                            <div>
+                                <h2 id="treasury-accounts-heading">@FinanceText["TreasuryAccountCoverage"]</h2>
+                                <p>@FinanceText["TreasuryAccountCoverageDescription"]</p>
                             </div>
-                            @foreach (var paragraph in ViewModel.MeaningParagraphs)
-                            {
-                                <p>@paragraph</p>
-                            }
-                            <p class="cash-position-card__muted mb-0">@FinanceText["StatusValue", ViewModel.MeaningStatus]</p>
+                            <span class="treasury-count">@LocalNumber.Integer(ViewModel.Accounts.Count)</span>
                         </div>
-                    </article>
+                        @if (ViewModel.Accounts.Count == 0)
+                        {
+                            <p class="treasury-empty-inline">@FinanceText["TreasuryNoConnectedAccounts"]</p>
+                        }
+                        else
+                        {
+                            <div class="treasury-table-scroll" tabindex="0" aria-label="@FinanceText["TreasuryAccountCoverage"]">
+                                <table class="treasury-table">
+                                    <thead>
+                                        <tr>
+                                            <th scope="col">@FinanceText["TreasuryAccount"]</th>
+                                            <th scope="col">@FinanceText["TreasuryBalance"]</th>
+                                            <th scope="col">@FinanceText["TreasurySourceFreshness"]</th>
+                                            <th scope="col">@FinanceText["TreasuryFeedCoverage"]</th>
+                                            <th scope="col">@FinanceText["TreasuryAction"]</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        @foreach (var account in ViewModel.Accounts)
+                                        {
+                                            var accountAction = AccountAction(account);
+                                            <tr>
+                                                <th scope="row">
+                                                    <strong>@account.AccountName</strong>
+                                                    <small>@account.InstitutionName · @account.MaskedAccountNumber</small>
+                                                </th>
+                                                <td>@(account.Balance.HasValue ? FormatMoney(account.Balance.Value, account.Currency) : "—")</td>
+                                                <td>
+                                                    <span class="treasury-status treasury-status--@account.EvidenceState">@EvidenceLabel(account.EvidenceState)</span>
+                                                    <small>@account.EvidenceSource · @FormatDateTime(account.EvidenceUtc)</small>
+                                                </td>
+                                                <td>
+                                                    <strong>@account.FeedStatus</strong>
+                                                    <small>@FormatDate(account.CoverageFrom) – @FormatDate(account.CoverageThrough)</small>
+                                                    <small>@AccountExplanation(account)</small>
+                                                </td>
+                                                <td>
+                                                    @if (accountAction is { IsAllowed: true } && !string.IsNullOrWhiteSpace(accountAction.NavigationTarget))
+                                                    {
+                                                        <a href="@accountAction.NavigationTarget" @onclick="() => TrackAction(accountAction)">@ActionLabel(accountAction.Action)</a>
+                                                    }
+                                                    else if (accountAction is not null)
+                                                    {
+                                                        <span class="treasury-action-blocked" title="@accountAction.Explanation">@ActionLabel(accountAction.Action)</span>
+                                                    }
+                                                    else
+                                                    {
+                                                        <span aria-label="@FinanceText["TreasuryNoActionRequired"]">—</span>
+                                                    }
+                                                </td>
+                                            </tr>
+                                        }
+                                    </tbody>
+                                </table>
+                            </div>
+                        }
+                    </section>
+
+                    <section class="treasury-card treasury-attention" aria-labelledby="treasury-attention-heading">
+                        <div class="treasury-card__header">
+                            <div>
+                                <h2 id="treasury-attention-heading">@FinanceText["TreasuryNeedsAttention"]</h2>
+                                <p>@FinanceText["TreasuryNeedsAttentionDescription"]</p>
+                            </div>
+                            <span class="treasury-count">@LocalNumber.Integer(ViewModel.Exceptions.Count)</span>
+                        </div>
+                        @if (ViewModel.Exceptions.Count == 0)
+                        {
+                            <p class="treasury-empty-inline">@FinanceText["TreasuryNoExceptions"]</p>
+                        }
+                        else
+                        {
+                            <ol class="treasury-exception-list">
+                                @foreach (var item in ViewModel.Exceptions)
+                                {
+                                    <li>
+                                        <span class="treasury-priority treasury-priority--@item.Severity">@SeverityLabel(item.Severity)</span>
+                                        <div>
+                                            <strong>@ExceptionTitle(item)</strong>
+                                            <p>@ExceptionExplanation(item)</p>
+                                            @if (item.Amount.HasValue && !string.IsNullOrWhiteSpace(item.Currency))
+                                            {
+                                                <small>@FormatMoney(item.Amount.Value, item.Currency)</small>
+                                            }
+                                        </div>
+                                        @if (item.Action.IsAllowed && !string.IsNullOrWhiteSpace(item.Action.NavigationTarget))
+                                        {
+                                            <a href="@item.Action.NavigationTarget" @onclick="() => TrackAction(item.Action)">@ActionLabel(item.Action.Action)</a>
+                                        }
+                                        else
+                                        {
+                                            <span class="treasury-action-blocked" title="@item.Action.Explanation">@ActionLabel(item.Action.Action)</span>
+                                        }
+                                    </li>
+                                }
+                            </ol>
+                        }
+                    </section>
                 </div>
-            </section>
+
+                <div class="treasury-secondary-grid">
+                    <section class="treasury-card" aria-labelledby="treasury-outlook-heading">
+                        <div class="treasury-card__header">
+                            <div>
+                                <h2 id="treasury-outlook-heading">@FinanceText["TreasuryCashOutlook"]</h2>
+                                <p>@FinanceText["TreasuryCashOutlookDescription", ViewModel.Liquidity.HorizonDays]</p>
+                            </div>
+                            <span class="treasury-risk treasury-risk--@ViewModel.Liquidity.RiskLevel">@RiskLabel(ViewModel.Liquidity.RiskLevel)</span>
+                        </div>
+                        <dl class="treasury-outlook">
+                            <div><dt>@FinanceText["TreasuryStartingCash"]</dt><dd>@FormatMoney(ViewModel.Liquidity.AvailableCash, ViewModel.Liquidity.Currency)</dd></div>
+                            <div><dt>@FinanceText["TreasuryProjectedCash"]</dt><dd>@FormatMoney(ViewModel.Liquidity.ProjectedCash, ViewModel.Liquidity.Currency)</dd></div>
+                            <div><dt>@FinanceText["TreasuryWarningThreshold"]</dt><dd>@FormatOptionalMoney(ViewModel.Liquidity.WarningCashAmount, ViewModel.Liquidity.Currency)</dd></div>
+                            <div><dt>@FinanceText["TreasuryCriticalThreshold"]</dt><dd>@FormatOptionalMoney(ViewModel.Liquidity.CriticalCashAmount, ViewModel.Liquidity.Currency)</dd></div>
+                        </dl>
+                        <div class="treasury-projection" aria-label="@FinanceText["TreasuryProjectionEvidence"]">
+                            @foreach (var point in ViewModel.Liquidity.Projection)
+                            {
+                                <div><time datetime="@point.Date.ToString("yyyy-MM-dd", System.Globalization.CultureInfo.InvariantCulture)">@FormatDate(point.Date)</time><strong>@FormatMoney(point.ProjectedCash, ViewModel.Liquidity.Currency)</strong><small>@ProjectionEvidenceBasis(point)</small></div>
+                            }
+                        </div>
+                    </section>
+
+                    <section class="treasury-card" aria-labelledby="treasury-payments-heading">
+                        <div class="treasury-card__header">
+                            <div>
+                                <h2 id="treasury-payments-heading">@FinanceText["TreasuryPaymentWork"]</h2>
+                                <p>@FinanceText["TreasuryPaymentWorkDescription"]</p>
+                            </div>
+                            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.PaymentBatches, AccessState.CompanyId)">@FinanceText["TreasuryOpenPayments"]</a>
+                        </div>
+                        <dl class="treasury-payment-counts">
+                            <div><dt>@FinanceText["TreasuryApproved"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.Approved)</dd></div>
+                            <div><dt>@FinanceText["Queued"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.Queued)</dd></div>
+                            <div><dt>@FinanceText["TreasuryAwaitingAuthorization"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.AwaitingAuthorization)</dd></div>
+                            <div><dt>@FinanceText["TreasuryProcessing"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.Processing)</dd></div>
+                            <div><dt>@FinanceText["TreasuryRejected"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.Rejected)</dd></div>
+                            <div><dt>@FinanceText["TreasuryReconciliationRequired"]</dt><dd>@LocalNumber.Integer(ViewModel.PaymentWork.ReconciliationRequired)</dd></div>
+                        </dl>
+                        @if (ViewModel.PaymentWork.Items.Count > 0)
+                        {
+                            <ul class="treasury-payment-list">
+                                @foreach (var payment in ViewModel.PaymentWork.Items.Take(4))
+                                {
+                                    <li>
+                                        <div><strong>@payment.Reference</strong><small>@PaymentExplanation(payment)</small></div>
+                                        <a href="@payment.ReviewAction.NavigationTarget" @onclick="() => TrackAction(payment.ReviewAction)">@FinanceText["TreasuryReviewPayment"]</a>
+                                    </li>
+                                }
+                            </ul>
+                        }
+                    </section>
+                </div>
+
+                <div class="treasury-secondary-grid">
+                    <section class="treasury-card" aria-labelledby="treasury-tasks-heading">
+                        <div class="treasury-card__header">
+                            <div>
+                                <h2 id="treasury-tasks-heading">@FinanceText["TreasuryPriorityTasks"]</h2>
+                                <p>@FinanceText["TreasuryPriorityTasksDescription"]</p>
+                            </div>
+                            <span class="treasury-count">@LocalNumber.Integer(ViewModel.Tasks.Count)</span>
+                        </div>
+                        @if (ViewModel.Tasks.Count == 0)
+                        {
+                            <p class="treasury-empty-inline">@FinanceText["TreasuryNoPriorityTasks"]</p>
+                        }
+                        else
+                        {
+                            <ul class="treasury-task-list">
+                                @foreach (var task in ViewModel.Tasks)
+                                {
+                                    <li><div><strong>@task.Title</strong><small>@task.Owner · @task.Status</small></div><a href="@task.NavigationTarget">@FinanceText["TreasuryReviewTask"]</a></li>
+                                }
+                            </ul>
+                        }
+                    </section>
+
+                    <aside class="treasury-card treasury-laura" aria-labelledby="treasury-laura-heading">
+                        <div class="treasury-laura__identity">
+                            <span aria-hidden="true">L</span>
+                            <div><h2 id="treasury-laura-heading">@ViewModel.Laura.AgentName</h2><p>@LauraRoleName() · @FinanceText["TreasuryRecommendOnly"]</p></div>
+                        </div>
+                        <p class="treasury-laura__summary">@LauraSummary()</p>
+                        <div class="treasury-evidence-columns">
+                            <section aria-labelledby="treasury-citations-heading">
+                                <h3 id="treasury-citations-heading">@FinanceText["TreasuryDataUsed"]</h3>
+                                <ul>
+                                    @foreach (var citation in ViewModel.Laura.Citations)
+                                    {
+                                        <li><a href="@citation.NavigationTarget">@CitationLabel(citation)</a><small>@FormatDateTime(citation.ObservedUtc)</small></li>
+                                    }
+                                </ul>
+                            </section>
+                            <section aria-labelledby="treasury-missing-heading">
+                                <h3 id="treasury-missing-heading">@FinanceText["TreasuryMissingEvidence"]</h3>
+                                @if (MissingEvidenceMessages().Count == 0)
+                                {
+                                    <p>@FinanceText["TreasuryNoMissingEvidence"]</p>
+                                }
+                                else
+                                {
+                                    <ul>@foreach (var missing in MissingEvidenceMessages()) { <li>@missing</li> }</ul>
+                                }
+                            </section>
+                        </div>
+                    </aside>
+                </div>
+            </div>
         }
     </FinanceDataState>
 </FinancePageLayout>

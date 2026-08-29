@@ -57,6 +57,8 @@ public sealed class DependencyInjectionArchitectureTests
         "AccountingProviderSwitchTargetTransferBackgroundService",
         "AgentMemoryCandidateExpiryWorker",
         "AgentScheduledTriggerSchedulerBackgroundService",
+        "BankConsentRevocationBackgroundService",
+        "BankFeedSynchronizationBackgroundService",
         "BriefingSchedulerBackgroundService",
         "BriefingUpdateJobBackgroundService",
         "CampaignSchedulingBackgroundService",

@@ -211,6 +211,9 @@ public static class AuditTargetTypes
     public const string AccountingMigration = "accounting_migration";
     public const string AccountingRecovery = "accounting_recovery";
     public const string ManualJournalDraft = "manual_journal_draft";
+    public const string TreasurySource = "treasury_source";
+    public const string PaymentBatch = "payment_batch";
+    public const string PaymentBatchExecution = "payment_batch_execution";
 }
 
 public static class AuditEventOutcomes
@@ -351,6 +354,26 @@ public static class AuditEventActions
     public const string AccountingBankReconciliationReviewed = "accounting.bank_reconciliation.reviewed";
     public const string AccountingBankStatementImported = "accounting.bank_statement.imported";
     public const string AccountingBankSuspenseReclassified = "accounting.bank_suspense.reclassified";
+    public const string AccountingTreasurySourceCreated = "accounting.treasury_source.created";
+    public const string AccountingTreasuryBankEvidenceLinked = "accounting.treasury_source.bank_evidence_linked";
+    public const string AccountingTreasuryApprovalBound = "accounting.treasury_source.approval_bound";
+    public const string AccountingTreasurySourcePosted = "accounting.treasury_source.posted";
+    public const string AccountingTreasurySourceReversed = "accounting.treasury_source.reversed";
+    public const string PaymentBatchCreated = "finance.payment_batch.created";
+    public const string PaymentBatchChanged = "finance.payment_batch.changed";
+    public const string PaymentBatchValidated = "finance.payment_batch.validated";
+    public const string PaymentBatchApprovalRequested = "finance.payment_batch.approval_requested";
+    public const string PaymentBatchApproved = "finance.payment_batch.approved";
+    public const string PaymentBatchRejected = "finance.payment_batch.rejected";
+    public const string PaymentBatchCancelled = "finance.payment_batch.cancelled";
+    public const string PaymentBatchExecutionQueued = "finance.payment_batch_execution.queued";
+    public const string PaymentBatchSubmittedToProvider = "finance.payment_batch_execution.submitted";
+    public const string PaymentBatchAcknowledged = "finance.payment_batch_execution.acknowledged";
+    public const string PaymentBatchExecutionReconciliationRequired = "finance.payment_batch_execution.reconciliation_required";
+    public const string PaymentBatchExecutionRejected = "finance.payment_batch_execution.rejected";
+    public const string PaymentBatchExecutionCancelled = "finance.payment_batch_execution.cancelled";
+    public const string PaymentBatchExecutionSettled = "finance.payment_batch_execution.settled";
+    public const string PaymentRemittanceAccepted = "finance.payment_remittance.accepted";
     public const string AccountingAuthorityChangeStarted = "accounting.authority.change_started";
     public const string AccountingAuthorityCutoverValidated = "accounting.authority.cutover_validated";
     public const string AccountingAuthorityCutoverCompleted = "accounting.authority.cutover_completed";

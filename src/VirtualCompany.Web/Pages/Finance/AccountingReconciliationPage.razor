@@ -30,6 +30,79 @@
         <div class="reconciliation-filter-actions"><button class="btn btn-link" type="button" @onclick="ClearFiltersAsync">@FinanceText["ClearFilters"]</button><button class="btn btn-primary" type="button" @onclick="ApplyFiltersAsync">@FinanceText["ApplyFilters"]</button></div>
     </section>
 
+    <section class="advanced-reconciliation" aria-label="@FinanceText["AdvancedSettlementGroups"]">
+        <header class="advanced-reconciliation-header">
+            <div><span class="dashboard-kicker">@FinanceText["ExplainableMatching"]</span><h3>@FinanceText["AdvancedSettlementGroups"]</h3><p>@FinanceText["AdvancedSettlementGroupsHelp"]</p></div>
+            @if (AdvancedWorkspace.CurrentRule is { } currentRule) { <span class="reconciliation-badge">@FinanceText["RuleVersion", currentRule.Version]</span> }
+        </header>
+        <div class="advanced-reconciliation-metrics">
+            <div><small>@FinanceText["NeedsReview"]</small><strong>@AdvancedWorkspace.Metrics.NeedsReviewCount</strong></div>
+            <div><small>@FinanceText["LowConfidence"]</small><strong>@AdvancedWorkspace.Metrics.LowConfidenceCount</strong></div>
+            <div><small>@FinanceText["Conflict"]</small><strong>@AdvancedWorkspace.Metrics.ConflictCount</strong></div>
+            <div><small>@FinanceText["StaleSuggestions"]</small><strong>@AdvancedWorkspace.Metrics.StaleCount</strong></div>
+        </div>
+        <div class="advanced-reconciliation-layout">
+            <div class="advanced-group-list">
+                <header><strong>@FinanceText["SettlementGroups"]</strong><small>@FinanceText["GroupCount", AdvancedWorkspace.Groups.Count]</small></header>
+                @if (AdvancedWorkspace.Groups.Count == 0)
+                {
+                    <div class="reconciliation-empty"><span aria-hidden="true">◇</span><h4>@FinanceText["NoGroupSelected"]</h4><p>@FinanceText["NoGroupSelectedHelp"]</p></div>
+                }
+                else
+                {
+                    @foreach (var group in AdvancedWorkspace.Groups)
+                    {
+                        <button type="button" class="advanced-group-row @(SelectedAdvanced?.Summary.Id == group.Id ? "selected" : null)" @onclick="() => SelectAdvancedAsync(group.Id)">
+                            <span><span class="reconciliation-badge reconciliation-badge--@group.Status">@AdvancedStatusLabel(group.Status)</span><strong>@group.Reference</strong><small>@group.Counterparty · @FinanceText["AdvancedCardinality", group.BankRowCount, group.DocumentCount]</small></span>
+                            <span><strong>@Money(group.ExpectedBankTotal, group.Currency)</strong><small class="@(group.IsStale ? "text-danger" : null)">@(group.IsStale ? FinanceText["Stale"] : group.ConfidenceScore.ToString("P0"))</small></span>
+                        </button>
+                    }
+                }
+            </div>
+            <div class="advanced-group-detail" aria-live="polite">
+                @if (SelectedAdvanced is null)
+                {
+                    <div class="reconciliation-empty"><span aria-hidden="true">↔</span><h4>@FinanceText["NoGroupSelected"]</h4><p>@FinanceText["NoGroupSelectedHelp"]</p></div>
+                }
+                else
+                {
+                    <header><div><span class="reconciliation-badge reconciliation-badge--@SelectedAdvanced.Summary.Status">@AdvancedStatusLabel(SelectedAdvanced.Summary.Status)</span><h4>@SelectedAdvanced.Summary.Reference</h4><p>@SelectedAdvanced.Summary.Counterparty</p></div><span class="advanced-balance @(SelectedAdvanced.IsBalanced ? "balanced" : "unbalanced")">@(SelectedAdvanced.IsBalanced ? FinanceText["Balanced"] : FinanceText["Unbalanced"])</span></header>
+                    <div class="advanced-control-totals">
+                        <div><small>@FinanceText["ExpectedBankTotal"]</small><strong>@Money(SelectedAdvanced.Summary.ExpectedBankTotal, SelectedAdvanced.Summary.Currency)</strong></div>
+                        <div><small>@FinanceText["AllocatedAmount"]</small><strong>@Money(SelectedAdvanced.AllocatedAmount, SelectedAdvanced.Summary.Currency)</strong></div>
+                        <div><small>@FinanceText["BankFee"]</small><strong>@Money(SelectedAdvanced.FeeAmount, SelectedAdvanced.Summary.Currency)</strong></div>
+                        <div><small>@FinanceText["RoundingDifference"]</small><strong>@Money(SelectedAdvanced.RoundingAmount, SelectedAdvanced.Summary.Currency)</strong></div>
+                        <div><small>@FinanceText["AdvancedResidual"]</small><strong>@Money(SelectedAdvanced.ResidualAmount, SelectedAdvanced.Summary.Currency)</strong></div>
+                    </div>
+                    @if (!string.IsNullOrWhiteSpace(SelectedAdvanced.BlockingReason)) { <div class="reconciliation-notice reconciliation-notice--danger"><strong>@FinanceText["NeedsAttention"]</strong><p>@SelectedAdvanced.BlockingReason</p></div> }
+                    <div class="advanced-evidence-grid">
+                        <section><h5>@FinanceText["AuditableResultGraph"]</h5><div class="advanced-result-graph">
+                            @foreach (var node in SelectedAdvanced.Nodes.OrderBy(x => x.Sequence))
+                            {
+                                <div class="advanced-node advanced-node--@node.NodeType"><span aria-hidden="true">@(node.NodeType == "bank_transaction" ? "▣" : node.NodeType is "invoice" or "bill" ? "▤" : node.NodeType == "payment" ? "✓" : "±")</span><div><strong>@node.Label</strong><small>@AdvancedNodeLabel(node.NodeType) · @node.Reference</small></div><strong>@Money(Math.Max(node.Amount, Math.Max(node.DebitAmount, node.CreditAmount)), node.Currency)</strong></div>
+                            }
+                        </div></section>
+                        <section class="advanced-reasons"><h5>@FinanceText["WhySuggested"]</h5>
+                            @foreach (var reason in SelectedAdvanced.ReasonContributions)
+                            { <div><span><strong>@FinanceText[reason.FeatureKey switch { "normalized_reference" => "NormalizedReference", "counterparty" => "Counterparty", "amount" => "Amount", "timing" => "Timing", _ => "ProviderPattern" }]</strong><small>@reason.Explanation</small></span><strong class="amount-positive">@reason.Contribution.ToString("P0")</strong></div> }
+                            <footer><span>@FinanceText["RuleVersion", SelectedAdvanced.Summary.RuleVersion]</span><strong>@FinanceText["ConfidenceValue", SelectedAdvanced.Summary.ConfidenceScore.ToString("P0")]</strong></footer>
+                        </section>
+                    </div>
+                    <section class="advanced-review"><div><strong>@FinanceText["ReviewRequired"]</strong><p>@(SelectedAdvanced.Summary.RequiresApproval ? FinanceText["MaterialReviewRequired"] : FinanceText["HumanDecisionRequired"])</p></div><textarea class="form-control" rows="2" @bind="AdvancedDecisionReason" placeholder="@FinanceText["AdvancedDecisionReasonPlaceholder"]"></textarea></section>
+                    <div class="advanced-actions">
+                        @if (SelectedAdvanced.Summary.Status == "proposed")
+                        { <button class="btn btn-outline-danger" type="button" disabled="@(!CanApproveAdvancedReconciliation || IsSubmitting || SelectedAdvanced.Summary.IsStale)" @onclick="RejectAdvancedAsync">@FinanceText["RejectSuggestion"]</button><button class="btn btn-primary" type="button" disabled="@(!CanApproveAdvancedReconciliation || IsSubmitting || SelectedAdvanced.Summary.IsStale || !SelectedAdvanced.IsBalanced)" @onclick="AcceptAdvancedAsync">@FinanceText["AcceptAndPost"]</button> }
+                        else if (SelectedAdvanced.Summary.Status == "accepted")
+                        { <button class="btn btn-outline-danger" type="button" disabled="@(!CanApproveAdvancedReconciliation || IsSubmitting || ReclassificationPeriodId == Guid.Empty)" @onclick="ReverseAdvancedAsync">@FinanceText["CreateLinkedReversal"]</button> }
+                    </div>
+                    <section class="advanced-history"><h5>@FinanceText["ImmutableHistory"]</h5>@foreach (var history in SelectedAdvanced.History) { <div><span aria-hidden="true">•</span><strong>@AdvancedStatusLabel(history.Action)</strong><small>@history.CreatedUtc.ToLocalTime().ToString("g")</small></div> }</section>
+                }
+            </div>
+        </div>
+    </section>
+
+    <div class="reconciliation-subheading"><h3>@FinanceText["IndividualBankTransactions"]</h3><p>@FinanceText["IndividualBankTransactionsHelp"]</p></div>
+
     <div class="reconciliation-layout">
         <section class="reconciliation-list-card" aria-busy="@IsWorkspaceLoading">
             <header><div><h3>@FinanceText["BankActivity"]</h3><span>@FinanceText["TransactionCount", Workspace.Items.Count]</span></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="ApplyFiltersAsync">@CommonText["Refresh"]</button></header>
@@ -50,6 +123,59 @@
             {
                 <header class="reconciliation-detail-header"><div><span class="reconciliation-badge reconciliation-badge--@Selected.State">@StateLabel(Selected.State)</span><h3 class="@(Selected.Transaction.Amount >= 0 ? "amount-positive" : "amount-negative")">@Money(Selected.Transaction.Amount, Selected.Transaction.Currency)</h3><p>@Selected.Transaction.Counterparty · @Selected.Transaction.ReferenceText</p></div><small>@Selected.Transaction.BookingDate.ToString("d")</small></header>
                 <section class="reconciliation-progress"><div><span>@FinanceText["AllocationProgress"]</span><strong>@FinanceText["AmountOfTotal", Money(Selected.Transaction.ReconciledAmount, Selected.Transaction.Currency), Money(Math.Abs(Selected.Transaction.Amount), Selected.Transaction.Currency)]</strong></div><progress value="@Selected.Transaction.ReconciledAmount" max="@Math.Abs(Selected.Transaction.Amount)"></progress><small>@FinanceText["RemainsVisible", Money(Selected.RemainingAmount, Selected.Transaction.Currency)]</small></section>
+
+                @if (SelectedTreasury is not null)
+                {
+                    <section class="treasury-treatment" aria-label="@FinanceText["TreasuryTreatment"]">
+                        <header class="treasury-treatment__header">
+                            <div><span class="dashboard-kicker">@FinanceText["TreasuryTreatment"]</span><h4>@TreasuryTypeLabel(SelectedTreasury.Summary.SourceType)</h4><p>@SelectedTreasury.Summary.DisplayName</p></div>
+                            <span class="reconciliation-badge treasury-status--@SelectedTreasury.Summary.Status">@TreasuryStatusLabel(SelectedTreasury.Summary.Status)</span>
+                        </header>
+                        @if (RelatedTreasurySources.Count > 1)
+                        {
+                            <div class="treasury-source-tabs" aria-label="@FinanceText["RelatedTreasurySources"]">
+                                @foreach (var source in RelatedTreasurySources)
+                                { <button type="button" class="@(source.Id == SelectedTreasury.Summary.Id ? "selected" : null)" @onclick="() => SelectTreasuryAsync(source)">@TreasuryTypeLabel(source.SourceType)</button> }
+                            </div>
+                        }
+                        <div class="treasury-treatment__grid">
+                            <div><small>@FinanceText["TreasuryGross"]</small><strong>@Money(SelectedTreasury.Summary.GrossAmount, SelectedTreasury.Summary.Currency)</strong></div>
+                            <div><small>@FinanceText["TreasuryFees"]</small><strong>@Money(SelectedTreasury.Summary.FeeAmount, SelectedTreasury.Summary.Currency)</strong></div>
+                            <div><small>@FinanceText["TreasuryNet"]</small><strong>@Money(SelectedTreasury.Summary.NetAmount, SelectedTreasury.Summary.Currency)</strong></div>
+                            <div><small>@FinanceText["TreasuryBankEvidence"]</small><strong>@FinanceText["TreasuryEvidenceCount", SelectedTreasury.BankEvidence.Count]</strong></div>
+                        </div>
+                        <div class="treasury-control @(SelectedTreasury.AllowedActions.CanPost || SelectedTreasury.Summary.Status is "posted" or "reversed" ? "treasury-control--passed" : "treasury-control--attention")">
+                            <span aria-hidden="true">@(SelectedTreasury.AllowedActions.CanPost || SelectedTreasury.Summary.Status is "posted" or "reversed" ? "✓" : "!")</span>
+                            <div><strong>@FinanceText[SelectedTreasury.AllowedActions.CanPost || SelectedTreasury.Summary.Status is "posted" or "reversed" ? "TreasuryControlPassed" : "NeedsAttention"]</strong><p>@SelectedTreasury.AllowedActions.Explanation</p></div>
+                        </div>
+                        <div class="treasury-evidence-list">
+                            @foreach (var evidence in SelectedTreasury.BankEvidence)
+                            { <a href="@FinanceRoutes.WithCompanyContext($"{FinanceRoutes.AccountingReconciliation}/{evidence.BankTransactionId:D}", AccessState.CompanyId)"><span>@TreasuryStatusLabel(evidence.LegRole == "outbound" || evidence.LegRole == "inbound" ? "in_transit" : SelectedTreasury.Summary.Status)</span><strong>@Money(evidence.Amount, evidence.Currency)</strong><small>@evidence.BookingDate.ToString("d") · @evidence.Counterparty</small></a> }
+                            @if (SelectedTreasury.Evidence.Count > SelectedTreasury.BankEvidence.Count)
+                            { <div><span>@FinanceText["TreasuryProviderEvidence"]</span><strong>@FinanceText["TreasuryEvidenceCount", SelectedTreasury.Evidence.Count - SelectedTreasury.BankEvidence.Count]</strong></div> }
+                        </div>
+                        @if (TreasuryPostingPreview is not null)
+                        {
+                            <section class="treasury-preview"><h5>@FinanceText["TreasuryPostingPreview"]</h5>
+                                @foreach (var line in TreasuryPostingPreview.Lines)
+                                { <div><span><strong>@line.AccountCode · @line.AccountName</strong><small>@line.Description</small></span><span>@(line.DebitAmount > 0m ? FinanceText["TreasuryDebit", Money(line.DebitAmount, line.Currency)] : FinanceText["TreasuryCredit", Money(line.CreditAmount, line.Currency)])</span></div> }
+                                @if (!string.IsNullOrWhiteSpace(TreasuryPostingPreview.BlockingReason)) { <p class="text-danger">@TreasuryPostingPreview.BlockingReason</p> }
+                            </section>
+                        }
+                        <div class="treasury-actions">
+                            @if (SelectedTreasury.AllowedActions.CanPreview)
+                            { <button class="btn btn-outline-primary" type="button" disabled="@(!CanManageAccounting || IsSubmitting || ReclassificationPeriodId == Guid.Empty)" @onclick="PreviewTreasuryAsync">@FinanceText["ReviewPostingPreview"]</button> }
+                            @if (SelectedTreasury.AllowedActions.CanPost)
+                            { <button class="btn btn-primary" type="button" disabled="@(!CanApproveAdvancedReconciliation || IsSubmitting || ReclassificationPeriodId == Guid.Empty)" @onclick="PostTreasuryAsync">@FinanceText["PostTreasurySource"]</button> }
+                            @if (SelectedTreasury.AllowedActions.CanReverse)
+                            { <textarea class="form-control" rows="2" @bind="TreasuryReviewReason" placeholder="@FinanceText["TreasuryReversalReasonPlaceholder"]"></textarea><button class="btn btn-outline-danger" type="button" disabled="@(!CanApproveAdvancedReconciliation || IsSubmitting || ReclassificationPeriodId == Guid.Empty)" @onclick="ReverseTreasuryAsync">@FinanceText["CreateLinkedReversal"]</button> }
+                        </div>
+                        <section class="treasury-history"><h5>@FinanceText["ImmutableHistory"]</h5>
+                            @foreach (var item in SelectedTreasury.History)
+                            { <div><span aria-hidden="true">•</span><strong>@item.Action.Replace('_', ' ')</strong><small>@item.CreatedUtc.ToLocalTime().ToString("g")</small></div> }
+                        </section>
+                    </section>
+                }
 
                 @if (!string.IsNullOrWhiteSpace(Selected.BlockingReason)) { <div class="reconciliation-notice reconciliation-notice--danger"><strong>@FinanceText["NeedsAttention"]</strong><p>@Selected.BlockingReason</p></div> }
 

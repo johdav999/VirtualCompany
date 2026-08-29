@@ -19,6 +19,10 @@ public static class CompanyOutboxTopics
     public const string CustomerInvoiceElectronicDeliveryRequested = "finance.customer_invoice.electronic_delivery_requested";
     public const string CustomerInvoiceElectronicReconciliationRequested = "finance.customer_invoice.electronic_reconciliation_requested";
     public const string CustomerReminderEmailDeliveryRequested = "finance.customer_reminder.email_delivery_requested";
+    public const string PaymentBatchSubmissionRequested = "finance.payment_batch.submission_requested";
+    public const string PaymentBatchStatusPollRequested = "finance.payment_batch.status_poll_requested";
+    public const string PaymentBatchCancellationRequested = "finance.payment_batch.cancellation_requested";
+    public const string PaymentRemittanceDeliveryRequested = "finance.payment_remittance.delivery_requested";
     public const string SalesMeetingInvitationDeliveryRequested = "sales.meeting_invitation.delivery_requested";
     public const string SalesMeetingChangeDeliveryRequested = "sales.meeting_change.delivery_requested";
     public const string SalesMeetingConfirmationDeliveryRequested = "sales.meeting_confirmation.delivery_requested";

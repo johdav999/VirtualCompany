@@ -203,6 +203,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
     private readonly ISalesMeetingConfirmationDeliveryDispatcher? _salesMeetingConfirmationDelivery;
     private readonly IGuidedResearchContinuationService? _guidedResearch;
     private readonly ICompanyOnboardingDocumentGenerationService? _onboardingDocuments;
+    private readonly IPaymentBatchExecutionDispatcher? _paymentExecutionDispatcher;
 
     public CompanyOutboxProcessor(
         VirtualCompanyDbContext dbContext,
@@ -229,7 +230,8 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         ISalesMeetingChangeDeliveryDispatcher? salesMeetingChangeDelivery = null,
         ISalesMeetingConfirmationDeliveryDispatcher? salesMeetingConfirmationDelivery = null,
         IGuidedResearchContinuationService? guidedResearch = null,
-        ICompanyOnboardingDocumentGenerationService? onboardingDocuments = null)
+        ICompanyOnboardingDocumentGenerationService? onboardingDocuments = null,
+        IPaymentBatchExecutionDispatcher? paymentExecutionDispatcher = null)
     {
         _dbContext = dbContext;
         _invitationDeliveryDispatcher = invitationDeliveryDispatcher;
@@ -256,6 +258,7 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
         _salesMeetingConfirmationDelivery = salesMeetingConfirmationDelivery;
         _guidedResearch = guidedResearch;
         _onboardingDocuments = onboardingDocuments;
+        _paymentExecutionDispatcher = paymentExecutionDispatcher;
     }
 
     public async Task<int> DispatchPendingAsync(CancellationToken cancellationToken)
@@ -500,6 +503,42 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
 
         switch (message.Topic)
         {
+            case CompanyOutboxTopics.PaymentBatchSubmissionRequested:
+            {
+                var payload = Deserialize<PaymentBatchSubmissionRequestedMessage>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Payment submission");
+                EnsurePaymentExecutionDispatcher();
+                await _paymentExecutionDispatcher!.DispatchSubmissionAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.PaymentBatchStatusPollRequested:
+            {
+                var payload = Deserialize<PaymentBatchStatusPollRequestedMessage>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Payment status poll");
+                EnsurePaymentExecutionDispatcher();
+                await _paymentExecutionDispatcher!.DispatchStatusPollAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.PaymentBatchCancellationRequested:
+            {
+                var payload = Deserialize<PaymentBatchCancellationRequestedMessage>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Payment cancellation");
+                EnsurePaymentExecutionDispatcher();
+                await _paymentExecutionDispatcher!.DispatchCancellationAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
+            case CompanyOutboxTopics.PaymentRemittanceDeliveryRequested:
+            {
+                var payload = Deserialize<PaymentRemittanceDeliveryRequestedMessage>(message);
+                EnsureTenant(payload.CompanyId, message.CompanyId, "Payment remittance");
+                EnsurePaymentExecutionDispatcher();
+                await _paymentExecutionDispatcher!.DispatchRemittanceAsync(
+                    payload with { CorrelationId = payload.CorrelationId ?? message.CorrelationId }, cancellationToken);
+                break;
+            }
             case CompanyOutboxTopics.InvitationDeliveryRequested:
             {
                 var payload = Deserialize<CompanyInvitationDeliveryRequestedMessage>(message);
@@ -741,6 +780,18 @@ public sealed class CompanyOutboxProcessor : ICompanyOutboxProcessor
             default:
                 throw new CompanyOutboxPermanentException($"Unsupported company outbox topic '{message.Topic}'.");
         }
+    }
+
+    private void EnsurePaymentExecutionDispatcher()
+    {
+        if (_paymentExecutionDispatcher is null)
+            throw new CompanyOutboxPermanentException("Payment execution dispatch is not configured.");
+    }
+
+    private static void EnsureTenant(Guid payloadCompanyId, Guid messageCompanyId, string operation)
+    {
+        if (payloadCompanyId != messageCompanyId)
+            throw new CompanyOutboxPermanentException($"{operation} outbox payload tenant does not match the outbox message tenant.");
     }
 
     private async Task EnqueueBriefingJobForPlatformEventAsync(
