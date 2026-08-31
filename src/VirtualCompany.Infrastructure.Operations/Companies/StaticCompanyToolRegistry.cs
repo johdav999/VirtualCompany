@@ -44,7 +44,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
                 definition.Version,
                 definition.InputSchema,
                 definition.OutputSchema,
-                definition.SensitiveAction)))
+                definition.SensitiveAction,
+                definition.ActionType == ToolActionType.Execute
+                    ? FinanceToolRiskPolicyCatalog.GetRequired(definition.ToolName)
+                    : null)))
           .Concat(SalesToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, salesScopes, definition.Version, definition.InputSchema, definition.OutputSchema)))
           .Concat(MarketingToolDefinitions.Select(definition => Register(definition.ToolName, new HashSet<ToolActionType> { definition.ActionType }, marketingScopes, definition.Version, definition.InputSchema, definition.OutputSchema)));
 
@@ -230,7 +233,8 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         string version = "1.0.0",
         JsonObject? inputSchema = null,
         JsonObject? outputSchema = null,
-        bool sensitiveAction = false) =>
+        bool sensitiveAction = false,
+        FinanceToolRiskClassification? financeRiskClassification = null) =>
         new(
             toolName,
             supportedActions ?? StandardActions,
@@ -238,7 +242,8 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
             version,
             inputSchema?.DeepClone().AsObject(),
             outputSchema?.DeepClone().AsObject(),
-            sensitiveAction);
+            sensitiveAction,
+            financeRiskClassification);
 
     private static ToolDefinitionManifest FinanceDefinition(
         string toolName,
@@ -246,7 +251,10 @@ public sealed class StaticCompanyToolRegistry : ICompanyToolRegistry
         JsonObject inputSchema,
         JsonObject outputSchema,
         bool sensitiveAction = false) =>
-        new(toolName, "1.0.0", actionType, inputSchema, outputSchema, sensitiveAction);
+        new(toolName, "1.0.0", actionType, inputSchema, outputSchema,
+            actionType == ToolActionType.Execute
+                ? FinanceToolRiskPolicyCatalog.GetRequired(toolName).IsSensitiveByDefault
+                : sensitiveAction);
 
     private static class FinanceInputSchemas
     {

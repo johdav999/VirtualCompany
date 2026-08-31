@@ -44,7 +44,8 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
             throw new KeyNotFoundException("Agent not found.");
         var correlationId = string.IsNullOrWhiteSpace(request.CorrelationId) ? Guid.NewGuid().ToString("N") : request.CorrelationId.Trim();
         var run = new AgentOrchestrationRun(request.CompanyId, request.AgentId, request.ActorUserId, request.CapabilityId,
-            request.CapabilityVersion, request.PromptVersion, request.SchemaVersion, correlationId, request.TaskId, request.ConversationId);
+            request.CapabilityVersion, request.PromptVersion, request.SchemaVersion, correlationId, request.TaskId,
+            request.ConversationId, request.EffectiveAuthorityVersion, request.EffectiveAuthorityHash);
         _db.AgentOrchestrationRuns.Add(run); await _db.SaveChangesAsync(cancellationToken);
         var timer = Stopwatch.StartNew();
 
@@ -209,6 +210,8 @@ public sealed class SharedAgentReasoningGateway : IAgentReasoningGateway
         requiredResultVersion = request.SchemaVersion,
         includeClaims = request.IncludeClaims,
         allowedActionTypes = request.AllowedActionTypes, allowedTools = request.AllowedTools,
+        effectiveAuthorityVersion = request.EffectiveAuthorityVersion,
+        effectiveAuthorityHash = request.EffectiveAuthorityHash,
         sources = request.Sources.Select(x => new { x.Id, x.Type, x.Title, x.Snippet, x.UpdatedUtc })
     }, JsonOptions);
 

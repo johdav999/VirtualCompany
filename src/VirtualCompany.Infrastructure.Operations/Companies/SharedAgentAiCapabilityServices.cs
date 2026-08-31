@@ -89,28 +89,42 @@ public sealed class AgentPlanningService : IAgentPlanningService
 {
     private readonly VirtualCompanyDbContext _db; private readonly IAgentReasoningGateway _reasoning;
     private readonly ICompanyTaskService _tasks; private readonly ICurrentUserAccessor _user;
-    public AgentPlanningService(VirtualCompanyDbContext db, IAgentReasoningGateway reasoning, ICompanyTaskService tasks, ICurrentUserAccessor user)
-    { _db = db; _reasoning = reasoning; _tasks = tasks; _user = user; }
+    private readonly IAgentEffectiveAuthorityResolver _authorityResolver;
+    public AgentPlanningService(VirtualCompanyDbContext db, IAgentReasoningGateway reasoning, ICompanyTaskService tasks,
+        ICurrentUserAccessor user, IAgentEffectiveAuthorityResolver authorityResolver)
+    { _db = db; _reasoning = reasoning; _tasks = tasks; _user = user; _authorityResolver = authorityResolver; }
     public async Task<AgentPlanDto> GenerateAsync(Guid companyId, Guid agentId, GenerateAgentPlanCommand command, CancellationToken ct)
     {
         if (string.IsNullOrWhiteSpace(command.Objective) || command.Objective.Length > 2000) throw new ArgumentException("A bounded objective is required.");
         var maximum = Math.Clamp(command.MaximumSteps, 1, 12);
+        var authority = await _authorityResolver.ResolveAsync(companyId, agentId, ct);
+        var usable = authority.Tools.Where(item => item.IsUsable).ToArray();
         var current = await _db.WorkTasks.AsNoTracking().Where(x => x.CompanyId == companyId && x.AssignedAgentId == agentId && x.Status != WorkTaskStatus.Completed)
             .OrderByDescending(x => x.UpdatedUtc).Take(10).Select(x => new AgentAiSource(x.Id.ToString("N"), "work_task", x.Title, x.Description ?? x.Title, x.UpdatedUtc)).ToListAsync(ct);
         var result = await _reasoning.ReasonAsync(new AgentReasoningRequest(companyId, agentId, AgentCapabilityIds.Planning,
             "1.0.0", "bounded-plan-v1", "1.0", $"Create at most {maximum} ordered, independently completable plan steps for this objective: {command.Objective}. State assumptions and completion evidence. Planning must not execute an external action.",
-            current, ["recommend"], [], _user.UserId), ct);
+            current,
+            usable.Select(item => item.ActionType).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            usable.Select(item => item.ToolName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(),
+            _user.UserId, EffectiveAuthorityVersion: authority.AuthorityVersion,
+            EffectiveAuthorityHash: authority.AuthorityHash), ct);
         var steps = result.Claims.Take(maximum).Select((claim, i) => new AgentPlanStepDto(i + 1,
             claim.Text.Length > 180 ? claim.Text[..180] : claim.Text, claim.Text, agentId,
             command.TargetUtc, i == 0 ? [] : [i], false, "A user verifies the task result.")).ToArray();
         var errors = new List<string>(); if (steps.Length == 0) errors.Add("The model did not produce any valid plan steps.");
-        return new AgentPlanDto(result.RunId, errors.Count == 0 ? "draft" : "invalid", command.Objective, result.Uncertainty, steps, errors, true);
+        return new AgentPlanDto(result.RunId, errors.Count == 0 ? "draft" : "invalid", command.Objective,
+            result.Uncertainty, steps, errors, true, authority.AuthorityVersion, authority.AuthorityHash);
     }
     public async Task<AgentPlanDto> CommitAsync(Guid companyId, Guid agentId, Guid runId, CancellationToken ct)
     {
         var result = await _reasoning.GetRunAsync(companyId, agentId, runId, ct) ?? throw new KeyNotFoundException("Plan run not found.");
         var run = await _db.AgentOrchestrationRuns.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == runId && x.AgentId == agentId && x.CapabilityId == AgentCapabilityIds.Planning, ct)
             ?? throw new KeyNotFoundException("Plan run not found.");
+        var authority = await _authorityResolver.ResolveAsync(companyId, agentId, ct);
+        if (string.IsNullOrWhiteSpace(run.EffectiveAuthorityHash) ||
+            !string.Equals(run.EffectiveAuthorityVersion, authority.AuthorityVersion, StringComparison.Ordinal) ||
+            !string.Equals(run.EffectiveAuthorityHash, authority.AuthorityHash, StringComparison.Ordinal))
+            throw new AgentAiConflictException("Agent permissions changed after this plan was created. Refresh and review a new plan.");
         if (result.Status is not ("completed" or "needs_review") || result.Claims.Count == 0) throw new AgentAiConflictException("Only a valid reviewed plan can be committed.");
         var committed = new List<AgentPlanStepDto>(); Guid? parentId = null;
         for (var i = 0; i < result.Claims.Count; i++)
@@ -121,7 +135,8 @@ public sealed class AgentPlanningService : IAgentPlanningService
             parentId ??= task.Id;
             committed.Add(new AgentPlanStepDto(i + 1, title, claim.Text, agentId, null, i == 0 ? [] : [i], false, "Task is completed with recorded output.", task.Id));
         }
-        return new AgentPlanDto(runId, "committed", result.Summary, result.Uncertainty, committed, [], false);
+        return new AgentPlanDto(runId, "committed", result.Summary, result.Uncertainty, committed, [], false,
+            authority.AuthorityVersion, authority.AuthorityHash);
     }
 }
 

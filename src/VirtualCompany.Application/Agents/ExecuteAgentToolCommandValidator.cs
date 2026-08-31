@@ -53,6 +53,33 @@ public static class ExecuteAgentToolCommandValidator
             AddError(errors, nameof(command.Scope), "Scope must be 100 characters or fewer.");
         }
 
+        if (command.TaskId == Guid.Empty)
+        {
+            AddError(errors, nameof(command.TaskId), "TaskId cannot be empty.");
+        }
+
+        if (command.WorkflowInstanceId == Guid.Empty)
+        {
+            AddError(errors, nameof(command.WorkflowInstanceId), "WorkflowInstanceId cannot be empty.");
+        }
+
+        if (command.DelegationAuthorityId == Guid.Empty)
+        {
+            AddError(errors, nameof(command.DelegationAuthorityId), "DelegationAuthorityId cannot be empty.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(command.ExpectedAuthorityVersion) && command.ExpectedAuthorityVersion.Trim().Length > 100)
+        {
+            AddError(errors, nameof(command.ExpectedAuthorityVersion), "ExpectedAuthorityVersion must be 100 characters or fewer.");
+        }
+
+        if (!string.IsNullOrWhiteSpace(command.ExpectedAuthorityHash) &&
+            (command.ExpectedAuthorityHash.Trim().Length != 64 ||
+             command.ExpectedAuthorityHash.Trim().Any(character => !Uri.IsHexDigit(character))))
+        {
+            AddError(errors, nameof(command.ExpectedAuthorityHash), "ExpectedAuthorityHash must be a 64-character SHA-256 value.");
+        }
+
         var hasThresholdCategory = !string.IsNullOrWhiteSpace(command.ThresholdCategory);
         var hasThresholdKey = !string.IsNullOrWhiteSpace(command.ThresholdKey);
         var hasThresholdValue = command.ThresholdValue.HasValue;

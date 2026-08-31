@@ -8687,6 +8687,14 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Property<DateTime>("CreatedUtc")
                         .HasColumnType("datetime2");
 
+                    b.Property<string>("EffectiveAuthorityHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)");
+
+                    b.Property<string>("EffectiveAuthorityVersion")
+                        .HasMaxLength(100)
+                        .HasColumnType("nvarchar(100)");
+
                     b.Property<string>("FailureCode")
                         .HasMaxLength(100)
                         .HasColumnType("nvarchar(100)");
@@ -9448,6 +9456,7 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("nvarchar(100)");
 
                     b.Property<DateTime>("UpdatedUtc")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetime2");
 
                     b.HasKey("Id");
@@ -23321,6 +23330,87 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         {
                             t.HasCheckConstraint("CK_finance_accounts_source_type", "source_type IN ('manual', 'simulation', 'fortnox')");
                         });
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAgentDelegationAuthority", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("AgentId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("agent_id");
+
+                    b.Property<string>("AllowedActionClasses")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("allowed_action_classes_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("AllowedScopes")
+                        .IsRequired()
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("allowed_scopes_json")
+                        .HasDefaultValueSql("N'[]'");
+
+                    b.Property<string>("Capability")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("capability");
+
+                    b.Property<Guid>("CompanyId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("company_id");
+
+                    b.Property<DateTime>("CreatedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("created_utc");
+
+                    b.Property<Guid>("DelegatedActorUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("delegated_actor_user_id");
+
+                    b.Property<DateTime>("ExpiresUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("expires_utc");
+
+                    b.Property<Guid>("IssuedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("issued_by_user_id");
+
+                    b.Property<DateTime>("IssuedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("issued_utc");
+
+                    b.Property<Guid>("OriginatingWorkflowInstanceId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("originating_workflow_instance_id");
+
+                    b.Property<string>("RevocationReason")
+                        .HasMaxLength(500)
+                        .HasColumnType("nvarchar(500)")
+                        .HasColumnName("revocation_reason");
+
+                    b.Property<Guid?>("RevokedByUserId")
+                        .HasColumnType("uniqueidentifier")
+                        .HasColumnName("revoked_by_user_id");
+
+                    b.Property<DateTime?>("RevokedUtc")
+                        .HasColumnType("datetime2")
+                        .HasColumnName("revoked_utc");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("CompanyId", "OriginatingWorkflowInstanceId");
+
+                    b.HasIndex("CompanyId", "AgentId", "ExpiresUtc");
+
+                    b.ToTable("finance_agent_delegation_authorities", (string)null);
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAgentInsight", b =>
@@ -44889,6 +44979,7 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnName("tool_version");
 
                     b.Property<DateTime>("UpdatedUtc")
+                        .IsConcurrencyToken()
                         .HasColumnType("datetime2")
                         .HasColumnName("updated_at");
 
@@ -52078,6 +52169,17 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Navigation("Company");
 
                     b.Navigation("ReplacementAccount");
+                });
+
+            modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAgentDelegationAuthority", b =>
+                {
+                    b.HasOne("VirtualCompany.Domain.Entities.Company", "Company")
+                        .WithMany()
+                        .HasForeignKey("CompanyId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Company");
                 });
 
             modelBuilder.Entity("VirtualCompany.Domain.Entities.FinanceAgentInsight", b =>

@@ -1,5 +1,6 @@
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Agents;
@@ -106,7 +107,8 @@ public sealed record TrustedToolRegistration(
     string Version = "1.0.0",
     JsonObject? InputSchema = null,
     JsonObject? OutputSchema = null,
-    bool SensitiveAction = false)
+    bool SensitiveAction = false,
+    FinanceToolRiskClassification? FinanceRiskClassification = null)
 {
     private static readonly Regex SemanticVersionPattern = new(
         @"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$",

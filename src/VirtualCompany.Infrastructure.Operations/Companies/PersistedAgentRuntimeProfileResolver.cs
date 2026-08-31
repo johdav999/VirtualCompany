@@ -12,13 +12,16 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IAgentCommunicationProfileResolver _communicationProfileResolver;
+    private readonly IAgentEffectiveAuthorityResolver _effectiveAuthorityResolver;
 
     public PersistedAgentRuntimeProfileResolver(
         VirtualCompanyDbContext dbContext,
-        IAgentCommunicationProfileResolver communicationProfileResolver)
+        IAgentCommunicationProfileResolver communicationProfileResolver,
+        IAgentEffectiveAuthorityResolver effectiveAuthorityResolver)
     {
         _dbContext = dbContext;
         _communicationProfileResolver = communicationProfileResolver;
+        _effectiveAuthorityResolver = effectiveAuthorityResolver;
     }
 
     public async Task<AgentRuntimeProfileDto> GetCurrentProfileAsync(
@@ -44,14 +47,14 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             agent.CommunicationProfile,
             new CommunicationProfileResolutionContext(
                 companyId, agentId, generationPath, correlationId));
-
-        var tools = CloneNodes(agent.Tools);
-        var scopes = CloneNodes(agent.Scopes);
-        if (IsLaura(agent))
-        {
-            BackfillLauraMigrationTools(tools);
-            BackfillLauraFinanceScopes(scopes);
-        }
+        var authority = await _effectiveAuthorityResolver.ResolveAsync(companyId, agentId, cancellationToken);
+        var useEffectiveFinanceAuthority = IsLauraFinanceAgent(agent);
+        var effectiveTools = useEffectiveFinanceAuthority
+            ? BuildEffectiveToolPermissions(authority)
+            : CloneNodes(agent.Tools);
+        var effectiveScopes = useEffectiveFinanceAuthority
+            ? BuildEffectiveDataScopes(authority)
+            : CloneNodes(agent.Scopes);
 
         return new AgentRuntimeProfileDto(
             agent.Id,
@@ -66,8 +69,8 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             CloneNodes(agent.Personality),
             CloneNodes(agent.Objectives),
             CloneNodes(agent.Kpis),
-            tools,
-            scopes,
+            effectiveTools,
+            effectiveScopes,
             CloneNodes(agent.Thresholds),
             CloneNodes(agent.EscalationRules),
             CloneNodes(agent.TriggerLogic),
@@ -76,50 +79,45 @@ public sealed class PersistedAgentRuntimeProfileResolver : IAgentRuntimeProfileR
             ResolveBriefing(agent.CommunicationProfile),
             agent.CanReceiveAssignments,
             agent.UpdatedUtc,
-            agent.AutonomyLevel.ToStorageValue());
+            agent.AutonomyLevel.ToStorageValue(),
+            CloneNodes(agent.Tools),
+            CloneNodes(agent.Scopes),
+            authority.AuthorityVersion,
+            authority.AuthorityHash);
     }
 
-    private static bool IsLaura(Agent agent) =>
+    private static bool IsLauraFinanceAgent(Agent agent) =>
         string.Equals(agent.TemplateId, LauraFinanceAgentSeedData.TemplateId, StringComparison.OrdinalIgnoreCase) ||
         (string.Equals(agent.DisplayName, "Laura", StringComparison.OrdinalIgnoreCase) &&
          string.Equals(agent.Department, "Finance", StringComparison.OrdinalIgnoreCase));
 
-    private static void BackfillLauraMigrationTools(Dictionary<string, JsonNode?> tools)
+    private static Dictionary<string, JsonNode?> BuildEffectiveToolPermissions(AgentEffectiveAuthorityDto authority)
     {
-        var allowed = ReadStrings(tools, "allowed");
-        allowed.UnionWith(AccountingProviderSwitchAgentToolIds.All);
-        tools["allowed"] = ToJsonArray(allowed);
-
-        var actions = ReadStrings(tools, "actions");
-        actions.UnionWith(["read", "recommend", "execute"]);
-        tools["actions"] = ToJsonArray(actions);
-
-        var denied = ReadStrings(tools, "denied");
-        denied.ExceptWith(AccountingProviderSwitchAgentToolIds.All);
-        tools["denied"] = ToJsonArray(denied);
+        var usable = authority.Tools.Where(item => item.IsUsable).ToArray();
+        return new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["allowed"] = ToJsonArray(usable.Select(item => item.ToolName).Distinct(StringComparer.OrdinalIgnoreCase)),
+            ["actions"] = ToJsonArray(usable.Select(item => item.ActionType).Distinct(StringComparer.OrdinalIgnoreCase)),
+            ["denied"] = ToJsonArray(authority.Tools.Where(item => !item.IsUsable).Select(item => item.ToolName).Distinct(StringComparer.OrdinalIgnoreCase)),
+            ["deniedActions"] = new JsonArray()
+        };
     }
 
-    private static void BackfillLauraFinanceScopes(Dictionary<string, JsonNode?> scopes)
+    private static Dictionary<string, JsonNode?> BuildEffectiveDataScopes(AgentEffectiveAuthorityDto authority)
     {
+        var result = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
         foreach (var action in new[] { "read", "recommend", "execute" })
         {
-            var values = ReadStrings(scopes, action);
-            values.Add("finance");
-            scopes[action] = ToJsonArray(values);
+            result[action] = ToJsonArray(authority.Tools
+                .Where(item => item.IsUsable && item.ActionType.Equals(action, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.Scope).Distinct(StringComparer.OrdinalIgnoreCase));
         }
-    }
-
-    private static HashSet<string> ReadStrings(IReadOnlyDictionary<string, JsonNode?> values, string key)
-    {
-        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        if (!values.TryGetValue(key, out var node) || node is not JsonArray array) return result;
-        foreach (var item in array.OfType<JsonValue>())
-            if (item.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)) result.Add(text.Trim());
+        result["write"] = new JsonArray();
         return result;
     }
 
     private static JsonArray ToJsonArray(IEnumerable<string> values) =>
-        new(values.OrderBy(x => x, StringComparer.OrdinalIgnoreCase)
+        new(values.OrderBy(value => value, StringComparer.OrdinalIgnoreCase)
             .Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
 
     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes)

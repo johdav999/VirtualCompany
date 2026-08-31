@@ -54,7 +54,7 @@ internal sealed class ToolExecutionAttemptConfiguration : IEntityTypeConfigurati
         builder.Property(x => x.StartedUtc).HasColumnName("started_at").IsRequired();
         builder.Property(x => x.CompletedUtc).HasColumnName("completed_at");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
-        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
+        builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired().IsConcurrencyToken();
         builder.Property(x => x.ExecutedUtc).HasColumnName("executed_at");
         builder.HasIndex(x => new { x.CompanyId, x.CorrelationId });
         builder.HasIndex(x => new { x.CompanyId, x.AgentId, x.StartedUtc });

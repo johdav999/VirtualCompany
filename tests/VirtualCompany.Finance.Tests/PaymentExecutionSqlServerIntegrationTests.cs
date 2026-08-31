@@ -128,7 +128,7 @@ public sealed class PaymentExecutionSqlServerIntegrationTests
     private static VirtualCompanyDbContext CreateContext(string connectionString) => new(
         new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlServer(connectionString, sql => sql.MigrationsAssembly(
-                typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection)
+                typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker)
                     .Assembly.GetName().Name))
             .Options);
 

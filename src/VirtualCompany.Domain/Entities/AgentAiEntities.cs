@@ -6,13 +6,16 @@ public sealed class AgentOrchestrationRun : ICompanyOwnedEntity
 
     public AgentOrchestrationRun(Guid companyId, Guid agentId, Guid? actorUserId, string capabilityId,
         string capabilityVersion, string promptVersion, string schemaVersion, string correlationId,
-        Guid? taskId = null, Guid? conversationId = null)
+        Guid? taskId = null, Guid? conversationId = null, string? effectiveAuthorityVersion = null,
+        string? effectiveAuthorityHash = null)
     {
         if (companyId == Guid.Empty || agentId == Guid.Empty) throw new ArgumentException("Company and agent are required.");
         Id = Guid.NewGuid(); CompanyId = companyId; AgentId = agentId; ActorUserId = actorUserId;
         CapabilityId = Required(capabilityId, 100); CapabilityVersion = Required(capabilityVersion, 32);
         PromptVersion = Required(promptVersion, 32); SchemaVersion = Required(schemaVersion, 32);
         CorrelationId = Required(correlationId, 128); TaskId = taskId; ConversationId = conversationId;
+        EffectiveAuthorityVersion = Optional(effectiveAuthorityVersion, 100);
+        EffectiveAuthorityHash = Optional(effectiveAuthorityHash, 64);
         Status = "running"; CreatedUtc = UpdatedUtc = DateTime.UtcNow; StartedUtc = CreatedUtc;
     }
 
@@ -36,6 +39,8 @@ public sealed class AgentOrchestrationRun : ICompanyOwnedEntity
     public string? FailureCode { get; private set; }
     public string? FailureMessage { get; private set; }
     public string CorrelationId { get; private set; } = null!;
+    public string? EffectiveAuthorityVersion { get; private set; }
+    public string? EffectiveAuthorityHash { get; private set; }
     public int? InputTokens { get; private set; }
     public int? OutputTokens { get; private set; }
     public long? LatencyMilliseconds { get; private set; }

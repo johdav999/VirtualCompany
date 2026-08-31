@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Migrations;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Cockpit;
 using VirtualCompany.Domain.Entities;
@@ -20,6 +21,9 @@ public sealed class VirtualCompanyDbContext : DbContext
         _companyContextAccessor = companyContextAccessor;
         _dashboardCacheInvalidator = dashboardCacheInvalidator;
     }
+
+    protected override void OnConfiguring(DbContextOptionsBuilder optionsBuilder)
+        => optionsBuilder.ReplaceService<IMigrationsAssembly, CompositeMigrationsAssembly>();
 
     public DbSet<User> Users => Set<User>();
     public DbSet<UserPreference> UserPreferences => Set<UserPreference>();
@@ -55,6 +59,7 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<CompanyOperatingLease> CompanyOperatingLeases => Set<CompanyOperatingLease>();
     public DbSet<OperatingSnapshot> OperatingSnapshots => Set<OperatingSnapshot>();
     public DbSet<ToolExecutionAttempt> ToolExecutionAttempts => Set<ToolExecutionAttempt>();
+    public DbSet<FinanceAgentDelegationAuthority> FinanceAgentDelegationAuthorities => Set<FinanceAgentDelegationAuthority>();
     public DbSet<AgentScheduledTrigger> AgentScheduledTriggers => Set<AgentScheduledTrigger>();
     public DbSet<TriggerExecutionAttempt> TriggerExecutionAttempts => Set<TriggerExecutionAttempt>();
     public DbSet<AgentScheduledTriggerEnqueueWindow> AgentScheduledTriggerEnqueueWindows => Set<AgentScheduledTriggerEnqueueWindow>();

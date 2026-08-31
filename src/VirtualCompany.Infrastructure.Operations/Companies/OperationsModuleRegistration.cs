@@ -253,6 +253,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IOperatingDispatchQueryService>(provider => provider.GetRequiredService<OperatingWorkDispatcher>());
         services.AddHostedService<CompanyOperatingCycleScheduler>();
         services.AddHostedService<OperatingWorkDispatchBackgroundService>();
+        services.AddScoped<IAgentEffectiveAuthorityResolver, AgentEffectiveAuthorityResolver>();
         services.AddScoped<IAgentCapabilityCatalog, AgentCapabilityCatalog>();
         services.AddScoped<IAgentReasoningGateway, SharedAgentReasoningGateway>();
         services.AddScoped<IAgentQuestionAnsweringService, AgentQuestionAnsweringService>();
@@ -358,6 +359,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<IMemoryRetrievalService>(provider => provider.GetRequiredService<CompanyMemoryService>());
         services.AddScoped<IAgentAssignmentGuard, CompanyAgentAssignmentGuard>();
         services.AddScoped<IAgentToolExecutionService, CompanyAgentToolExecutionService>();
+        services.AddScoped<IFinanceAgentAuthorizationService, FinanceAgentAuthorizationService>();
         services.AddScoped<IPolicyGuardrailEngine, PolicyGuardrailEngine>();
         services.AddSingleton<ICompanyToolRegistry, StaticCompanyToolRegistry>();
         services.AddSingleton<IInsightScoringService, DefaultInsightScoringService>();

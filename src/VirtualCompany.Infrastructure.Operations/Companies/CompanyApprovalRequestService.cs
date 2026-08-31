@@ -1,3 +1,5 @@
+using System.Collections.Concurrent;
+using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -27,6 +29,7 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
     private readonly IServiceProvider _serviceProvider;
     private readonly IExecutiveCockpitDashboardCache _dashboardCache;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+    private static readonly ConcurrentDictionary<Guid, ApprovalDecisionGate> ApprovalDecisionLocks = new();
 
     public CompanyApprovalRequestService(
         VirtualCompanyDbContext dbContext,
@@ -129,6 +132,64 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         ApprovalDecisionCommand command,
         CancellationToken cancellationToken)
     {
+        var decisionGate = AcquireDecisionGate(command.ApprovalId);
+        var lockAcquired = false;
+        try
+        {
+            await decisionGate.Semaphore.WaitAsync(cancellationToken);
+            lockAcquired = true;
+            return await DecideCoreAsync(companyId, command, cancellationToken);
+        }
+        finally
+        {
+            if (lockAcquired)
+            {
+                decisionGate.Semaphore.Release();
+            }
+            lock (decisionGate.SyncRoot)
+            {
+                decisionGate.ReferenceCount--;
+                if (decisionGate.ReferenceCount == 0)
+                {
+                    decisionGate.IsRetired = true;
+                    ApprovalDecisionLocks.TryRemove(
+                        new KeyValuePair<Guid, ApprovalDecisionGate>(command.ApprovalId, decisionGate));
+                }
+            }
+        }
+    }
+
+    private static ApprovalDecisionGate AcquireDecisionGate(Guid approvalId)
+    {
+        while (true)
+        {
+            var gate = ApprovalDecisionLocks.GetOrAdd(approvalId, static _ => new ApprovalDecisionGate());
+            lock (gate.SyncRoot)
+            {
+                if (gate.IsRetired)
+                {
+                    continue;
+                }
+
+                gate.ReferenceCount++;
+                return gate;
+            }
+        }
+    }
+
+    private sealed class ApprovalDecisionGate
+    {
+        public object SyncRoot { get; } = new();
+        public SemaphoreSlim Semaphore { get; } = new(1, 1);
+        public int ReferenceCount { get; set; }
+        public bool IsRetired { get; set; }
+    }
+
+    private async Task<ApprovalDecisionResultDto> DecideCoreAsync(
+        Guid companyId,
+        ApprovalDecisionCommand command,
+        CancellationToken cancellationToken)
+    {
         var membership = await RequireMembershipAsync(companyId, cancellationToken);
         ValidateDecision(command);
 
@@ -143,9 +204,41 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
 
         if (approval.Status != ApprovalRequestStatus.Pending)
         {
+            if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty &&
+                TryGetGuid(approval.DecisionChain, "lastDecisionClientRequestId") == command.ClientRequestId.Value)
+            {
+                var replayedStep = approval.Steps
+                    .Where(step => step.Status != ApprovalStepStatus.Pending)
+                    .OrderByDescending(step => step.SequenceNo)
+                    .FirstOrDefault() ?? approval.Steps.OrderBy(step => step.SequenceNo).First();
+                return new ApprovalDecisionResultDto(
+                    await ToDtoAsync(approval, cancellationToken),
+                    ToStepDto(replayedStep),
+                    approval.CurrentActionableStep is { } replayNext ? ToStepDto(replayNext) : null,
+                    approval.Status != ApprovalRequestStatus.Pending);
+            }
+
             throw new ApprovalValidationException(new Dictionary<string, string[]>
             {
                 [nameof(command.Decision)] = [$"Only pending approvals can be decided. Current status: {approval.Status.ToStorageValue()}."]
+            });
+        }
+
+        if (IsExpiredFinanceActionApproval(approval, DateTime.UtcNow))
+        {
+            approval.MarkExpired("Finance approval expired before it was decided. Create and review a new request.");
+            var expiredTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
+            await MarkApprovalNotificationsActionedAsync(companyId, approval.Id, membership.UserId, cancellationToken);
+            await WriteCompletionAuditAsync(approval, membership.UserId, cancellationToken);
+            if (expiredTransition is not null)
+            {
+                await WriteLinkedEntityStateAuditAsync(approval, expiredTransition, membership.UserId, cancellationToken);
+            }
+            EnqueueApprovalUpdatedEvent(approval, "expired");
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            throw new ApprovalValidationException(new Dictionary<string, string[]>
+            {
+                [nameof(command.Decision)] = ["The Finance approval expired. A new reviewed request is required."]
             });
         }
 
@@ -164,13 +257,27 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             throw new ApprovalDecisionForbiddenException("The current user is not an approver for the current step.");
         }
 
-        var rejected = string.Equals(command.Decision, "reject", StringComparison.OrdinalIgnoreCase) ||
+        var requestedApproval = string.Equals(command.Decision, "approve", StringComparison.OrdinalIgnoreCase) ||
+                                string.Equals(command.Decision, "approved", StringComparison.OrdinalIgnoreCase);
+        var selfApprovalRejected = requestedApproval && RequiresIndependentFinanceReview(approval) &&
+                                   IsInitiatingUser(approval, membership.UserId);
+        var rejected = selfApprovalRejected || string.Equals(command.Decision, "reject", StringComparison.OrdinalIgnoreCase) ||
             string.Equals(command.Decision, "rejected", StringComparison.OrdinalIgnoreCase);
+        var decisionComment = selfApprovalRejected
+            ? "Rejected because Finance segregation of duties prohibits requester self-approval."
+            : command.Comment;
         var decidedStep = rejected
-            ? approval.RejectCurrentStep(currentStep.Id, membership.UserId, command.Comment)
-            : approval.ApproveCurrentStep(currentStep.Id, membership.UserId, command.Comment);
+            ? approval.RejectCurrentStep(currentStep.Id, membership.UserId, decisionComment)
+            : approval.ApproveCurrentStep(currentStep.Id, membership.UserId, decisionComment);
+        if (command.ClientRequestId.HasValue && command.ClientRequestId.Value != Guid.Empty)
+        {
+            var decisionChain = CloneNodes(approval.DecisionChain);
+            decisionChain["lastDecisionClientRequestId"] = command.ClientRequestId.Value;
+            approval.SetDecisionChain(decisionChain);
+        }
 
-        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, membership.UserId, cancellationToken);
+        EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
+        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
         await WriteDecisionAuditAsync(approval, decidedStep, membership.UserId, rejected, cancellationToken);
 
         var finalized = approval.Status != ApprovalRequestStatus.Pending;
@@ -189,7 +296,6 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             EnqueueApprovalNotification(approval);
         }
 
-        EnqueueApprovalUpdatedEvent(approval, rejected ? "rejected" : "approved");
         await _dbContext.SaveChangesAsync(cancellationToken);
         if (finalized &&
             approval.Status == ApprovalRequestStatus.Approved &&
@@ -235,7 +341,8 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             });
         var comment = $"Automatically approved by {grant.AgentDisplayName} under supplier trust rule {grant.GrantId:N} for {grant.SupplierName} ({grant.Stage}).";
         var decidedStep = approval.ApproveCurrentStep(currentStep.Id, grant.GrantorUserId, comment);
-        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, grant.GrantorUserId, cancellationToken);
+        EnqueueApprovalUpdatedEvent(approval, "automatically_approved");
+        var linkedEntityTransition = await UpdateLinkedEntityAfterDecisionAsync(approval, cancellationToken);
 
         await WriteDecisionAuditAsync(approval, decidedStep, grant.GrantorUserId, rejected: false, cancellationToken);
         await _auditEventWriter.WriteAsync(
@@ -274,7 +381,6 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             EnqueueApprovalNotification(approval);
         }
 
-        EnqueueApprovalUpdatedEvent(approval, "automatically_approved");
         await _dbContext.SaveChangesAsync(cancellationToken);
         await _dashboardCache.InvalidateAsync(companyId, cancellationToken);
 
@@ -335,7 +441,6 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
 
     private async Task<LinkedEntityStateTransition?> UpdateLinkedEntityAfterDecisionAsync(
         ApprovalRequest approval,
-        Guid executionActorUserId,
         CancellationToken cancellationToken)
     {
         if (approval.Status == ApprovalRequestStatus.Pending)
@@ -418,6 +523,107 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
             if (approval.Status == ApprovalRequestStatus.Approved)
             {
                 var policyDecision = BuildApprovedApprovalPolicyDecision(approval);
+                FinanceAgentAuthorizationDecisionDto? actorAuthorization = null;
+                if (IsFinanceToolAttempt(attempt))
+                {
+                    var authorityResolver = _serviceProvider.GetRequiredService<IAgentEffectiveAuthorityResolver>();
+                    var currentAuthority = await authorityResolver.ResolveAsync(
+                        approval.CompanyId, attempt.AgentId, cancellationToken);
+                    var continuationValidation = await RevalidateFinanceContinuationAsync(
+                        approval, attempt, currentAuthority, cancellationToken);
+                    if (!continuationValidation.IsValid)
+                    {
+                        approval.MarkStale(continuationValidation.Explanation);
+                        policyDecision["outcome"] = PolicyDecisionOutcomeValues.Deny;
+                        policyDecision["approvalStatus"] = ApprovalRequestStatus.Stale.ToStorageValue();
+                        policyDecision["reasonCode"] = continuationValidation.ReasonCode;
+                        policyDecision["continuationValidation"] = continuationValidation.Evidence;
+                        var staleResult = ToolExecutionResult.Failed(
+                            attempt.ToolName,
+                            attempt.ActionType,
+                            ToolExecutionStatus.Denied.ToStorageValue(),
+                            continuationValidation.ReasonCode,
+                            continuationValidation.Explanation,
+                            metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["approvalRequestId"] = approval.Id,
+                                ["executionId"] = attempt.Id,
+                                ["continuationValidation"] = continuationValidation.Evidence.DeepClone()
+                            });
+                        attempt.MarkDenied(policyDecision, staleResult.ToStructuredPayload(),
+                            denialReason: continuationValidation.ReasonCode);
+                        return LinkedEntityStateTransition.ForAction(
+                            attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                    }
+
+                    var approvedAuthorityVersion = TryReadString(approval.ThresholdContext, "effectiveAuthorityVersion");
+                    var approvedAuthorityHash = TryReadString(approval.ThresholdContext, "effectiveAuthorityHash");
+                    if (string.IsNullOrWhiteSpace(approvedAuthorityHash) ||
+                        !string.Equals(approvedAuthorityVersion, currentAuthority.AuthorityVersion, StringComparison.Ordinal) ||
+                        !string.Equals(approvedAuthorityHash, currentAuthority.AuthorityHash, StringComparison.Ordinal))
+                    {
+                        policyDecision["effectiveAuthorityVersion"] = currentAuthority.AuthorityVersion;
+                        policyDecision["effectiveAuthorityHash"] = currentAuthority.AuthorityHash;
+                        policyDecision["reasonCode"] = AgentAuthorityReasonCodes.Stale;
+                        var staleResult = ToolExecutionResult.Failed(
+                            attempt.ToolName,
+                            attempt.ActionType,
+                            ToolExecutionStatus.Denied.ToStorageValue(),
+                            AgentAuthorityReasonCodes.Stale,
+                            "Agent permissions changed after approval was requested. Create and review a new request.",
+                            metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["effectiveAuthorityVersion"] = JsonValue.Create(currentAuthority.AuthorityVersion),
+                                ["effectiveAuthorityHash"] = JsonValue.Create(currentAuthority.AuthorityHash),
+                                ["approvedAuthorityVersion"] = approvedAuthorityVersion is null ? null : JsonValue.Create(approvedAuthorityVersion),
+                                ["approvedAuthorityHash"] = approvedAuthorityHash is null ? null : JsonValue.Create(approvedAuthorityHash)
+                            });
+                        attempt.MarkDenied(policyDecision, staleResult.ToStructuredPayload(),
+                            denialReason: AgentAuthorityReasonCodes.Stale);
+                        return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                    }
+
+                    var approvalBinding = approval.ThresholdContext["approvalBinding"] as JsonObject;
+                    var delegationAuthorityId = approvalBinding is null
+                        ? null
+                        : FinanceApprovalContinuationBinding.ReadBindingGuid(approvalBinding, "delegationAuthorityId");
+                    var financeAuthorization = _serviceProvider.GetRequiredService<IFinanceAgentAuthorizationService>();
+                    actorAuthorization = await financeAuthorization.AuthorizeAsync(
+                        new FinanceAgentAuthorizationRequest(
+                            approval.CompanyId,
+                            attempt.AgentId,
+                            attempt.Id,
+                            attempt.ToolName,
+                            attempt.ActionType,
+                            attempt.Scope,
+                            attempt.WorkflowInstanceId,
+                            attempt.CorrelationId,
+                            ActorUserId: delegationAuthorityId.HasValue ? null : approval.RequestedByUserId,
+                            DelegationAuthorityId: delegationAuthorityId,
+                            IsApprovedContinuation: true),
+                        cancellationToken);
+
+                    policyDecision["actorAuthorization"] = JsonSerializer.SerializeToNode(actorAuthorization);
+                    await WriteFinanceAuthorizationAuditAsync(actorAuthorization, attempt.CorrelationId, cancellationToken);
+                    if (!actorAuthorization.IsAllowed)
+                    {
+                        var deniedResult = ToolExecutionResult.Failed(
+                            attempt.ToolName,
+                            attempt.ActionType,
+                            ToolExecutionStatus.Denied.ToStorageValue(),
+                            "finance_actor_unauthorized",
+                            "This Finance action is not available for the originating actor.",
+                            metadata: new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+                            {
+                                ["authorizationReasonCode"] = JsonValue.Create(actorAuthorization.ReasonCode),
+                                ["authorizationPolicyVersion"] = JsonValue.Create(actorAuthorization.PolicyVersion),
+                                ["executionId"] = JsonValue.Create(attempt.Id)
+                            });
+                        attempt.MarkDenied(policyDecision, deniedResult.ToStructuredPayload(), denialReason: actorAuthorization.ReasonCode);
+                        return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                    }
+                }
+
                 var companyToolExecutor = _serviceProvider.GetRequiredService<ICompanyToolExecutor>();
                 var result = await companyToolExecutor.ExecuteAsync(
                     new ToolExecutionRequest(
@@ -432,12 +638,22 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
                         attempt.CorrelationId,
                         attempt.Id,
                         attempt.ToolVersion,
-                        executionActorUserId),
+                        actorAuthorization?.ActorId ?? approval.RequestedByUserId),
                     cancellationToken);
                 if (string.Equals(result.Status, ToolExecutionStatus.Denied.ToStorageValue(), StringComparison.OrdinalIgnoreCase))
                 {
                     attempt.MarkDenied(policyDecision, result.ToStructuredPayload());
                     return LinkedEntityStateTransition.ForAction(attempt.Id, previousStatus, attempt.Status.ToStorageValue());
+                }
+
+                if (IsAmbiguousProviderResult(result))
+                {
+                    attempt.MarkReconciliationRequired(
+                        policyDecision,
+                        result.ToStructuredPayload(),
+                        result.ErrorCode ?? "ambiguous_provider_outcome");
+                    return LinkedEntityStateTransition.ForAction(
+                        attempt.Id, previousStatus, attempt.Status.ToStorageValue());
                 }
 
                 if (!result.Success)
@@ -1725,4 +1941,343 @@ public sealed class CompanyApprovalRequestService : IApprovalRequestService, IAp
         public static LinkedEntityStateTransition ForOperatingPlan(Guid id, string previousState, string currentState) =>
             new("operating_plan", id.ToString("N"), previousState, currentState, "operating_plans");
     }
+
+    private bool IsFinanceToolAttempt(ToolExecutionAttempt attempt) =>
+        _serviceProvider.GetRequiredService<ICompanyToolRegistry>()
+            .TryGetTool(attempt.ToolName, out var registration) &&
+        registration.Scopes.Contains("finance");
+
+    private static bool IsAmbiguousProviderResult(ToolExecutionResult result) =>
+        string.Equals(result.Status, ToolExecutionStatus.ReconciliationRequired.ToStorageValue(), StringComparison.OrdinalIgnoreCase) ||
+        result.ErrorCode?.Contains("reconciliation_required", StringComparison.OrdinalIgnoreCase) == true ||
+        result.ErrorCode?.Contains("ambiguous", StringComparison.OrdinalIgnoreCase) == true ||
+        result.Metadata?.TryGetValue("providerReconciliationRequired", out var node) == true &&
+        node is JsonValue value && value.TryGetValue<bool>(out var required) && required;
+
+    private bool RequiresIndependentFinanceReview(ApprovalRequest approval)
+    {
+        if (ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) != ApprovalTargetEntityType.Action)
+        {
+            return false;
+        }
+
+        return _serviceProvider.GetRequiredService<ICompanyToolRegistry>()
+                   .TryGetTool(approval.ToolName, out var registration) &&
+               registration.FinanceRiskClassification?.RequiresSegregation == true;
+    }
+
+    private static bool IsInitiatingUser(ApprovalRequest approval, Guid userId) =>
+        approval.RequestedByUserId == userId ||
+        (string.Equals(approval.RequestedByActorType, AuditActorTypes.User, StringComparison.OrdinalIgnoreCase) &&
+         approval.RequestedByActorId == userId) ||
+        approval.ThresholdContext.TryGetValue("approvalBinding", out var bindingNode) &&
+        bindingNode is JsonObject binding &&
+        FinanceApprovalContinuationBinding.ReadBindingGuid(binding, "initiatingUserId") == userId;
+
+    private static bool IsExpiredFinanceActionApproval(ApprovalRequest approval, DateTime utcNow)
+    {
+        if (ApprovalTargetEntityTypeValues.Parse(approval.TargetEntityType) != ApprovalTargetEntityType.Action ||
+            !approval.ThresholdContext.TryGetValue("approvalBinding", out var bindingNode) ||
+            bindingNode is not JsonObject binding)
+        {
+            return false;
+        }
+
+        var expiresUtc = FinanceApprovalContinuationBinding.ReadBindingUtc(binding, "expiresUtc");
+        return expiresUtc.HasValue && expiresUtc.Value <= utcNow.ToUniversalTime();
+    }
+
+    private async Task<FinanceContinuationValidation> RevalidateFinanceContinuationAsync(
+        ApprovalRequest approval,
+        ToolExecutionAttempt attempt,
+        AgentEffectiveAuthorityDto currentAuthority,
+        CancellationToken cancellationToken)
+    {
+        var evidence = new JsonObject
+        {
+            ["schemaVersion"] = FinanceApprovalContinuationBinding.SchemaVersion,
+            ["approvalRequestId"] = approval.Id,
+            ["executionId"] = attempt.Id,
+            ["validatedUtc"] = DateTime.UtcNow
+        };
+
+        FinanceContinuationValidation Invalid(string reasonCode, string state, string explanation)
+        {
+            evidence["state"] = state;
+            evidence["reasonCode"] = reasonCode;
+            FinanceAgentAuthorityTelemetry.RecordApproval(attempt.ToolName, "stale", reasonCode);
+            return new FinanceContinuationValidation(false, reasonCode, explanation, evidence);
+        }
+
+        if (!approval.ThresholdContext.TryGetValue("approvalBinding", out var bindingNode) ||
+            bindingNode is not JsonObject binding ||
+            !string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "schemaVersion"),
+                FinanceApprovalContinuationBinding.SchemaVersion, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.BindingMissing,
+                "binding_missing_or_invalid",
+                "The Finance approval is not bound to a current immutable action. Create and review a new request.");
+        }
+
+        var expiresUtc = FinanceApprovalContinuationBinding.ReadBindingUtc(binding, "expiresUtc");
+        evidence["expiresUtc"] = expiresUtc;
+        if (!expiresUtc.HasValue || expiresUtc.Value <= DateTime.UtcNow)
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.Expired,
+                "expired",
+                "The Finance approval expired. Create and review a new request.");
+        }
+
+        var registry = _serviceProvider.GetRequiredService<ICompanyToolRegistry>();
+        if (!registry.TryGetTool(attempt.ToolName, out var registration) ||
+            registration.FinanceRiskClassification is null)
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.PolicyStale,
+                "tool_or_risk_classification_missing",
+                "The Finance tool policy changed after review. Create and review a new request.");
+        }
+
+        var exactBindingMatches =
+            FinanceApprovalContinuationBinding.ReadBindingGuid(binding, "companyId") == approval.CompanyId &&
+            FinanceApprovalContinuationBinding.ReadBindingGuid(binding, "approvalRequestId") == approval.Id &&
+            FinanceApprovalContinuationBinding.ReadBindingGuid(binding, "executionId") == attempt.Id &&
+            FinanceApprovalContinuationBinding.ReadBindingGuid(binding, "agentId") == attempt.AgentId &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "toolName"), attempt.ToolName, StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "toolVersion"), attempt.ToolVersion, StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "actionType"), attempt.ActionType.ToStorageValue(), StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "scope"), attempt.Scope, StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "riskTier"), registration.FinanceRiskClassification.RiskTier, StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "requiredActorPermission"), registration.FinanceRiskClassification.RequiredActorPermission, StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "approvalBehavior"), registration.FinanceRiskClassification.DefaultApprovalBehavior, StringComparison.Ordinal) &&
+            string.Equals(FinanceApprovalContinuationBinding.ReadBindingString(binding, "externalSideEffectClass"), registration.FinanceRiskClassification.ExternalSideEffectClassification, StringComparison.Ordinal) &&
+            FinanceApprovalContinuationBinding.ReadBindingBoolean(binding, "sensitiveAction") == registration.SensitiveAction &&
+            FinanceApprovalContinuationBinding.ReadBindingBoolean(binding, "segregationRequired") == registration.FinanceRiskClassification.RequiresSegregation &&
+            string.Equals(registration.Version, attempt.ToolVersion, StringComparison.Ordinal);
+        if (!exactBindingMatches)
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.BindingMismatch,
+                "action_binding_mismatch",
+                "The approved Finance action no longer matches the current attempt. Create and review a new request.");
+        }
+
+        var approvedPayloadHash = FinanceApprovalContinuationBinding.ReadBindingString(binding, "normalizedPayloadHash");
+        var currentPayloadHash = FinanceApprovalContinuationBinding.ComputePayloadHash(attempt.RequestPayload);
+        evidence["approvedPayloadHash"] = approvedPayloadHash;
+        evidence["currentPayloadHash"] = currentPayloadHash;
+        if (string.IsNullOrWhiteSpace(approvedPayloadHash) ||
+            !string.Equals(approvedPayloadHash, currentPayloadHash, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.BindingMismatch,
+                "payload_hash_mismatch",
+                "The approved Finance payload changed after review. Create and review a new request.");
+        }
+
+        var approvedBusinessIdempotencyKey = FinanceApprovalContinuationBinding.ReadBindingString(binding, "businessIdempotencyKey");
+        var currentBusinessIdempotencyKey = FinanceApprovalContinuationBinding.ComputeBusinessIdempotencyKey(attempt);
+        var approvedContinuationKey = FinanceApprovalContinuationBinding.ReadBindingString(binding, "continuationKey");
+        var currentContinuationKey = FinanceApprovalContinuationBinding.ComputeContinuationKey(
+            attempt, currentPayloadHash, registration.FinanceRiskClassification.PolicyVersion);
+        if (string.IsNullOrWhiteSpace(approvedBusinessIdempotencyKey) ||
+            !string.Equals(approvedBusinessIdempotencyKey, currentBusinessIdempotencyKey, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(approvedContinuationKey) ||
+            !string.Equals(approvedContinuationKey, currentContinuationKey, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.BindingMismatch,
+                "idempotency_or_continuation_binding_mismatch",
+                "The approved Finance continuation identity changed after review. Create and review a new request.");
+        }
+
+        var approvedAuthorityVersion = FinanceApprovalContinuationBinding.ReadBindingString(binding, "effectiveAuthorityVersion");
+        var approvedAuthorityHash = FinanceApprovalContinuationBinding.ReadBindingString(binding, "effectiveAuthorityHash");
+        if (string.IsNullOrWhiteSpace(approvedAuthorityHash) ||
+            !string.Equals(approvedAuthorityVersion, currentAuthority.AuthorityVersion, StringComparison.Ordinal) ||
+            !string.Equals(approvedAuthorityHash, currentAuthority.AuthorityHash, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.AuthorityStale,
+                "authority_changed",
+                "Agent authority changed after approval was requested. Create and review a new request.");
+        }
+
+        var currentTargets = await FinanceApprovalContinuationBinding.BuildTargetSnapshotAsync(
+            _dbContext, attempt, cancellationToken);
+        var approvedTargetHash = FinanceApprovalContinuationBinding.ReadBindingString(binding, "targetSnapshotHash");
+        var approvedTargets = binding["targetSnapshot"] as JsonArray;
+        var currentTargetHash = FinanceApprovalContinuationBinding.ComputeTargetSnapshotHash(currentTargets);
+        evidence["approvedTargetSnapshotHash"] = approvedTargetHash;
+        evidence["currentTargetSnapshotHash"] = currentTargetHash;
+        if (approvedTargets is null ||
+            !string.Equals(approvedTargetHash,
+                FinanceApprovalContinuationBinding.ComputeTargetSnapshotHash(approvedTargets), StringComparison.Ordinal) ||
+            currentTargets.Any(item => item is JsonObject target && target["exists"]?.GetValue<bool>() != true) ||
+            string.IsNullOrWhiteSpace(approvedTargetHash) ||
+            !string.Equals(approvedTargetHash, currentTargetHash, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.TargetStale,
+                "target_changed_or_missing",
+                "Finance target evidence changed after review. The approval is stale and cannot be edited into validity.");
+        }
+
+        var currentIntegrationHash = await FinanceApprovalContinuationBinding.BuildIntegrationStateHashAsync(
+            _dbContext, approval.CompanyId, registration.FinanceRiskClassification, cancellationToken);
+        var approvedIntegrationHash = FinanceApprovalContinuationBinding.ReadBindingString(binding, "integrationStateHash");
+        evidence["approvedIntegrationStateHash"] = approvedIntegrationHash;
+        evidence["currentIntegrationStateHash"] = currentIntegrationHash;
+        if (string.IsNullOrWhiteSpace(approvedIntegrationHash) ||
+            !string.Equals(approvedIntegrationHash, currentIntegrationHash, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.IntegrationStale,
+                "integration_state_changed",
+                "Finance integration state changed after review. Create and review a new request.");
+        }
+
+        var currentToolAuthority = currentAuthority.Find(attempt.ToolName, attempt.ActionType, attempt.Scope);
+        if (currentToolAuthority is null || !currentToolAuthority.IsUsable)
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.EligibilityFailed,
+                "effective_tool_authority_not_usable",
+                "The Finance action is no longer eligible under the effective agent authority.");
+        }
+
+        var runtimeProfile = await _serviceProvider.GetRequiredService<IAgentRuntimeProfileResolver>()
+            .GetCurrentProfileAsync(approval.CompanyId, attempt.AgentId, cancellationToken);
+        var usableTools = currentAuthority.Tools.Where(item => item.IsUsable).ToArray();
+        var toolPermissions = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["allowed"] = new JsonArray(usableTools.Select(item => (JsonNode?)JsonValue.Create(item.ToolName)).ToArray()),
+            ["actions"] = new JsonArray(usableTools.Select(item => item.ActionType)
+                .Distinct(StringComparer.OrdinalIgnoreCase).Select(item => (JsonNode?)JsonValue.Create(item)).ToArray()),
+            ["denied"] = new JsonArray(),
+            ["deniedActions"] = new JsonArray()
+        };
+        var dataScopes = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
+        foreach (var action in usableTools.Select(item => item.ActionType).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            dataScopes[action] = new JsonArray(usableTools
+                .Where(item => string.Equals(item.ActionType, action, StringComparison.OrdinalIgnoreCase))
+                .Select(item => item.Scope)
+                .Where(scope => !string.IsNullOrWhiteSpace(scope))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Select(scope => (JsonNode?)JsonValue.Create(scope))
+                .ToArray());
+        }
+
+        var riskContext = await FinanceApprovalContinuationBinding.BuildRiskContextAsync(
+            _dbContext, attempt, cancellationToken);
+        if (!riskContext.BackendVerified)
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.EligibilityFailed,
+                "finance_eligibility_unverified",
+                "Current Finance eligibility evidence could not be verified.");
+        }
+
+        var policyDecision = _serviceProvider.GetRequiredService<IPolicyGuardrailEngine>().Evaluate(
+            new PolicyEvaluationRequest(
+                approval.CompanyId,
+                attempt.AgentId,
+                runtimeProfile.CompanyId,
+                runtimeProfile.Status,
+                runtimeProfile.AutonomyLevel,
+                runtimeProfile.CanReceiveAssignments,
+                toolPermissions,
+                dataScopes,
+                CloneNodes(runtimeProfile.ApprovalThresholds),
+                CloneNodes(runtimeProfile.EscalationRules),
+                attempt.ToolName,
+                attempt.ActionType,
+                attempt.Scope,
+                CloneNodes(attempt.RequestPayload),
+                TryReadString(approval.ThresholdContext, "thresholdCategory"),
+                TryReadString(approval.ThresholdContext, "thresholdKey"),
+                TryGetDecimal(approval.ThresholdContext, "thresholdValue"),
+                SensitiveAction: true,
+                ExecutionId: attempt.Id,
+                CorrelationId: attempt.CorrelationId,
+                TrustedToolApprovalRequired: false,
+                TriggerLogic: CloneNodes(runtimeProfile.TriggerLogic),
+                FinanceRiskContext: riskContext));
+
+        var approvedRiskVersion = FinanceApprovalContinuationBinding.ReadBindingString(binding, "riskPolicyVersion");
+        var approvedCompanyPolicyVersion = FinanceApprovalContinuationBinding.ReadBindingString(binding, "financeApprovalPolicyVersion");
+        var currentRiskVersion = TryReadString(policyDecision.Metadata, "riskPolicyVersion");
+        var currentCompanyPolicyVersion = TryReadString(policyDecision.Metadata, "financeApprovalPolicyVersion");
+        var approvedThresholdHash = FinanceApprovalContinuationBinding.ReadBindingString(binding, "thresholdEvaluationHash");
+        var currentThresholdHash = FinanceApprovalContinuationBinding.ComputeThresholdEvaluationHash(policyDecision);
+        evidence["approvedRiskPolicyVersion"] = approvedRiskVersion;
+        evidence["currentRiskPolicyVersion"] = currentRiskVersion;
+        evidence["approvedFinanceApprovalPolicyVersion"] = approvedCompanyPolicyVersion;
+        evidence["currentFinanceApprovalPolicyVersion"] = currentCompanyPolicyVersion;
+        evidence["approvedThresholdEvaluationHash"] = approvedThresholdHash;
+        evidence["currentThresholdEvaluationHash"] = currentThresholdHash;
+        if (!string.Equals(policyDecision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase) ||
+            string.IsNullOrWhiteSpace(approvedRiskVersion) ||
+            !string.Equals(approvedRiskVersion, currentRiskVersion, StringComparison.Ordinal) ||
+            !string.Equals(approvedCompanyPolicyVersion, currentCompanyPolicyVersion, StringComparison.Ordinal) ||
+            string.IsNullOrWhiteSpace(approvedThresholdHash) ||
+            !string.Equals(approvedThresholdHash, currentThresholdHash, StringComparison.Ordinal))
+        {
+            return Invalid(
+                FinanceApprovalContinuationReasonCodes.PolicyStale,
+                "policy_or_threshold_evidence_changed",
+                "Finance policy or threshold evidence changed after review. Create and review a new request.");
+        }
+
+        evidence["state"] = "valid";
+        evidence["reasonCode"] = "finance_approval_continuation_valid";
+        return new FinanceContinuationValidation(
+            true,
+            "finance_approval_continuation_valid",
+            "The Finance approval remains bound to the current action and evidence.",
+            evidence);
+    }
+
+    private Task WriteFinanceAuthorizationAuditAsync(
+        FinanceAgentAuthorizationDecisionDto decision,
+        string? correlationId,
+        CancellationToken cancellationToken) =>
+        _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                decision.CompanyId,
+                string.Equals(decision.ActorType, FinanceAgentActorTypes.Human, StringComparison.Ordinal)
+                    ? AuditActorTypes.User
+                    : AuditActorTypes.System,
+                decision.ActorId,
+                AuditEventActions.FinanceAgentToolAuthorizationEvaluated,
+                AuditTargetTypes.AgentToolExecution,
+                decision.ExecutionId.ToString("N"),
+                decision.IsAllowed ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Denied,
+                DataSources: ["approval_continuation", "finance_actor_authorization", "company_membership"],
+                CorrelationId: correlationId,
+                RationaleSummary: decision.Explanation,
+                Metadata: new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["authorizationOutcome"] = decision.Outcome,
+                    ["authorizationReasonCode"] = decision.ReasonCode,
+                    ["authorizationPolicyVersion"] = decision.PolicyVersion,
+                    ["authorizationEvidence"] = string.Join(",", decision.Evidence.Select(static item =>
+                        $"{item.Type}:{item.Reference}:{item.Result}")),
+                    ["actorType"] = decision.ActorType,
+                    ["membershipState"] = decision.MembershipState,
+                    ["toolName"] = decision.ToolName,
+                    ["actionType"] = decision.ActionType,
+                    ["approvedContinuation"] = "true",
+                    ["delegationAuthorityId"] = decision.DelegationAuthorityId?.ToString("N")
+                }),
+            cancellationToken);
+
+    private sealed record FinanceContinuationValidation(
+        bool IsValid,
+        string ReasonCode,
+        string Explanation,
+        JsonObject Evidence);
 }

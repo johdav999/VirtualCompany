@@ -23,7 +23,7 @@ public sealed record AgentReasoningRequest(
     string SchemaVersion, string Instruction, IReadOnlyList<AgentAiSource> Sources,
     IReadOnlyList<string> AllowedActionTypes, IReadOnlyList<string> AllowedTools,
     Guid? ActorUserId = null, Guid? TaskId = null, Guid? ConversationId = null, string? CorrelationId = null,
-    bool IncludeClaims = true);
+    bool IncludeClaims = true, string? EffectiveAuthorityVersion = null, string? EffectiveAuthorityHash = null);
 
 public sealed record AgentReasoningResult(
     Guid RunId, string Status, string ResultVersion, string Summary, IReadOnlyList<AgentAiClaim> Claims,
@@ -65,7 +65,8 @@ public sealed record GenerateAgentPlanCommand(string Objective, DateTime? Target
 public sealed record AgentPlanStepDto(int Order, string Title, string Description, Guid? OwnerAgentId, DateTime? DueUtc,
     IReadOnlyList<int> Dependencies, bool RequiresApproval, string CompletionEvidence, Guid? CommittedTaskId = null);
 public sealed record AgentPlanDto(Guid RunId, string Status, string Objective, IReadOnlyList<string> Assumptions,
-    IReadOnlyList<AgentPlanStepDto> Steps, IReadOnlyList<string> ValidationErrors, bool RequiresReview);
+    IReadOnlyList<AgentPlanStepDto> Steps, IReadOnlyList<string> ValidationErrors, bool RequiresReview,
+    string? EffectiveAuthorityVersion = null, string? EffectiveAuthorityHash = null);
 public interface IAgentPlanningService
 {
     Task<AgentPlanDto> GenerateAsync(Guid companyId, Guid agentId, GenerateAgentPlanCommand command, CancellationToken cancellationToken);

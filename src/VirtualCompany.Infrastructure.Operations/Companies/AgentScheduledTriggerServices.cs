@@ -11,6 +11,7 @@ using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Companies;
 using VirtualCompany.Application.Workflows;
 using VirtualCompany.Domain.Entities;
+using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
 
@@ -207,6 +208,7 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
     private readonly IScheduleExpressionValidator _validator;
     private readonly IScheduledTriggerNextRunCalculator _nextRunCalculator;
     private readonly TimeProvider _timeProvider;
+    private readonly IAgentEffectiveAuthorityResolver _authorityResolver;
 
     public AgentScheduledTriggerService(
         VirtualCompanyDbContext dbContext,
@@ -214,7 +216,8 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
         IAgentScheduledTriggerRepository repository,
         IScheduleExpressionValidator validator,
         IScheduledTriggerNextRunCalculator nextRunCalculator,
-        TimeProvider timeProvider)
+        TimeProvider timeProvider,
+        IAgentEffectiveAuthorityResolver authorityResolver)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -222,6 +225,7 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
         _validator = validator;
         _nextRunCalculator = nextRunCalculator;
         _timeProvider = timeProvider;
+        _authorityResolver = authorityResolver;
     }
 
     public async Task<IReadOnlyList<AgentScheduledTriggerDto>> ListAsync(
@@ -262,6 +266,7 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
             ? RequireNextRun(normalized.CronExpression, normalized.TimeZoneId, NowUtc())
             : null;
 
+        var authorityMetadata = await PrepareAuthorityMetadataAsync(companyId, agentId, command.Metadata, cancellationToken);
         var trigger = new AgentScheduledTrigger(
             Guid.NewGuid(),
             companyId,
@@ -272,7 +277,7 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
             normalized.TimeZoneId,
             nextRunUtc,
             normalized.Enabled,
-            command.Metadata);
+            authorityMetadata);
 
         await _repository.AddAsync(trigger, cancellationToken);
         await _repository.SaveChangesAsync(cancellationToken);
@@ -296,13 +301,14 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
             ? RequireNextRun(normalized.CronExpression, normalized.TimeZoneId, NowUtc())
             : null;
 
+        var authorityMetadata = await PrepareAuthorityMetadataAsync(companyId, agentId, command.Metadata, cancellationToken);
         trigger.UpdateSchedule(
             normalized.Name,
             normalized.Code,
             normalized.CronExpression,
             normalized.TimeZoneId,
             nextRunUtc,
-            command.Metadata);
+            authorityMetadata);
 
         await _repository.SaveChangesAsync(cancellationToken);
         return trigger.ToDto();
@@ -316,6 +322,7 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
     {
         await RequireMembershipAsync(companyId, cancellationToken);
         var trigger = await GetTriggerForAgentAsync(companyId, agentId, triggerId, cancellationToken);
+        await EnsureStoredAuthorityIsCurrentAsync(trigger, cancellationToken);
         var nextRunUtc = RequireNextRun(trigger.CronExpression, trigger.TimeZoneId, NowUtc());
 
         trigger.Enable(nextRunUtc);
@@ -408,6 +415,73 @@ public sealed class AgentScheduledTriggerService : IAgentScheduledTriggerService
     }
 
     private DateTime NowUtc() => _timeProvider.GetUtcNow().UtcDateTime;
+
+    private async Task<Dictionary<string, JsonNode?>> PrepareAuthorityMetadataAsync(
+        Guid companyId,
+        Guid agentId,
+        IReadOnlyDictionary<string, JsonNode?>? metadata,
+        CancellationToken cancellationToken)
+    {
+        var result = metadata is null
+            ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+            : metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(), StringComparer.OrdinalIgnoreCase);
+        var authority = await _authorityResolver.ResolveAsync(companyId, agentId, cancellationToken);
+        ValidateRequestedToolAuthority(result, authority);
+        result["effectiveAuthorityVersion"] = JsonValue.Create(authority.AuthorityVersion);
+        result["effectiveAuthorityHash"] = JsonValue.Create(authority.AuthorityHash);
+        return result;
+    }
+
+    private async Task EnsureStoredAuthorityIsCurrentAsync(
+        AgentScheduledTrigger trigger,
+        CancellationToken cancellationToken)
+    {
+        var authority = await _authorityResolver.ResolveAsync(trigger.CompanyId, trigger.AgentId, cancellationToken);
+        var storedVersion = ReadMetadataString(trigger.Metadata, "effectiveAuthorityVersion");
+        var storedHash = ReadMetadataString(trigger.Metadata, "effectiveAuthorityHash");
+        if (!string.IsNullOrWhiteSpace(storedHash) &&
+            (!string.Equals(storedVersion, authority.AuthorityVersion, StringComparison.Ordinal) ||
+             !string.Equals(storedHash, authority.AuthorityHash, StringComparison.Ordinal)))
+        {
+            throw new AgentScheduledTriggerValidationException(new Dictionary<string, string[]>
+            {
+                ["EffectiveAuthority"] = ["Agent permissions changed after this schedule was saved. Refresh and review the schedule before enabling it."]
+            });
+        }
+
+        ValidateRequestedToolAuthority(trigger.Metadata, authority);
+    }
+
+    private static void ValidateRequestedToolAuthority(
+        IReadOnlyDictionary<string, JsonNode?> metadata,
+        AgentEffectiveAuthorityDto authority)
+    {
+        var toolName = ReadMetadataString(metadata, "toolName");
+        if (string.IsNullOrWhiteSpace(toolName)) return;
+
+        var actionText = ReadMetadataString(metadata, "actionType");
+        if (!ToolActionTypeValues.TryParse(actionText, out var action))
+        {
+            throw new AgentScheduledTriggerValidationException(new Dictionary<string, string[]>
+            {
+                ["Metadata.actionType"] = ["A valid actionType is required when schedule metadata names a tool."]
+            });
+        }
+
+        var toolAuthority = authority.Find(toolName, action, ReadMetadataString(metadata, "scope"));
+        if (toolAuthority is null || !toolAuthority.IsUsable)
+        {
+            throw new AgentScheduledTriggerValidationException(new Dictionary<string, string[]>
+            {
+                ["Metadata.toolName"] = ["The scheduled tool is not available in the agent's effective authority."]
+            });
+        }
+    }
+
+    private static string? ReadMetadataString(IReadOnlyDictionary<string, JsonNode?> metadata, string key) =>
+        metadata.TryGetValue(key, out var node) && node is JsonValue value && value.TryGetValue<string>(out var text)
+            ? text?.Trim()
+            : null;
 
     private DateTime RequireNextRun(string cronExpression, string timeZoneId, DateTime referenceUtc) =>
         _nextRunCalculator.GetNextRunUtc(cronExpression, timeZoneId, referenceUtc)

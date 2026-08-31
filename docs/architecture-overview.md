@@ -25,7 +25,7 @@ Capability assemblies may depend on Domain, Application, Persistence, and Platfo
 
 ## Persistence and Migrations
 
-`VirtualCompany.Persistence` owns `VirtualCompanyDbContext`, entity configurations, and seed resources. `VirtualCompany.Persistence.Migrations` owns the complete SQL Server migration history, snapshot, and design-time factory. Platform runtime configuration explicitly selects that migrations assembly.
+`VirtualCompany.Persistence` owns `VirtualCompanyDbContext`, entity configurations, and seed resources. `VirtualCompany.Persistence.Migrations` owns the complete SQL Server migration source history, current snapshot, design-time factory, and composite migration catalog. Immutable generated history is compiled by the bounded `VirtualCompany.Persistence.Migrations.History1` through `History3` projects so Roslyn never receives the complete generated history in one compilation; the source files remain in the canonical migrations directory and runtime discovery exposes one ordered history. Platform runtime configuration explicitly selects the root migrations assembly.
 
 Local SQL Server and Docker SQL Server use the same model and migration history. Database-specific setup scripts may differ, but schema authority remains EF Core migrations.
 

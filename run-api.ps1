@@ -108,7 +108,12 @@ try
 
     $env:MSBuildEnableWorkloadResolver = "false"
     $buildTimer = [System.Diagnostics.Stopwatch]::StartNew()
-    dotnet build $projectPath -c $configuration --no-restore --disable-build-servers `
+    # Let MSBuild perform its incremental restore before compiling. The assets
+    # file records the absolute NuGet package root, so reusing an assets file
+    # produced by another Windows account (for example an IDE or sandboxed
+    # automation account) makes --no-restore fail with NETSDK1064 even when the
+    # package is present in the current user's cache.
+    dotnet build $projectPath -c $configuration --disable-build-servers `
         "-p:BuildInParallel=false" `
         "-p:VCStartupProject=VirtualCompany.Api" `
         "-p:VCStartupOutputPath=$buildOutputRoot" `

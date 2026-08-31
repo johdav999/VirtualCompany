@@ -2,13 +2,16 @@ using System.Diagnostics;
 using System.Globalization;
 using System.Text.Json.Nodes;
 using System.Text.Json;
+using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auditing;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Observability;
 using VirtualCompany.Infrastructure.Persistence;
 using VirtualCompany.Infrastructure.Tenancy;
+using VirtualCompany.Shared;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -22,6 +25,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     private readonly ICompanyToolRegistry _companyToolRegistry;
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ICorrelationContextAccessor _correlationContextAccessor;
+    private readonly IFinanceAgentAuthorizationService _financeAgentAuthorizationService;
+    private readonly IAgentEffectiveAuthorityResolver _effectiveAuthorityResolver;
 
     public CompanyAgentToolExecutionService(
         VirtualCompanyDbContext dbContext,
@@ -31,7 +36,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         ICompanyToolExecutor companyToolExecutor,
         ICompanyToolRegistry companyToolRegistry,
         IAuditEventWriter auditEventWriter,
-        ICorrelationContextAccessor correlationContextAccessor)
+        ICorrelationContextAccessor correlationContextAccessor,
+        IFinanceAgentAuthorizationService financeAgentAuthorizationService,
+        IAgentEffectiveAuthorityResolver effectiveAuthorityResolver)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
@@ -41,6 +48,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         _companyToolRegistry = companyToolRegistry;
         _auditEventWriter = auditEventWriter;
         _correlationContextAccessor = correlationContextAccessor;
+        _financeAgentAuthorizationService = financeAgentAuthorizationService;
+        _effectiveAuthorityResolver = effectiveAuthorityResolver;
     }
 
     public async Task<ExecuteAgentToolResultDto> ExecuteAsync(
@@ -49,7 +58,6 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         ExecuteAgentToolCommand command,
         CancellationToken cancellationToken)
     {
-        var membership = await RequireMembershipAsync(companyId, cancellationToken);
         ExecuteAgentToolCommandValidator.ValidateAndThrow(command);
         var correlationId = CreateCorrelationId(command.CorrelationId);
         var startedAtUtc = DateTime.UtcNow;
@@ -73,8 +81,102 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             startedAtUtc,
             toolVersion: toolVersion);
 
+        _dbContext.ToolExecutionAttempts.Add(attempt);
+
+        VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext? membership = null;
+        FinanceAgentAuthorizationDecisionDto? actorAuthorization = null;
+        Guid actorUserId;
+        if (IsFinanceTool(command.ToolName))
+        {
+            actorAuthorization = await _financeAgentAuthorizationService.AuthorizeAsync(
+                new FinanceAgentAuthorizationRequest(
+                    companyId,
+                    agentId,
+                    executionId,
+                    command.ToolName,
+                    actionType,
+                    command.Scope,
+                    command.WorkflowInstanceId,
+                    correlationId,
+                    DelegationAuthorityId: command.DelegationAuthorityId),
+                cancellationToken);
+
+            await WriteActorAuthorizationAuditAsync(actorAuthorization, correlationId, cancellationToken);
+
+            if (!actorAuthorization.IsAllowed)
+            {
+                var authorizationPolicyDecision = ToPolicyDecision(actorAuthorization, correlationId);
+                var callerMessage = "This Finance action is not available for the current actor.";
+                var denial = ToolExecutionDenialDto.FromDecision(authorizationPolicyDecision, callerMessage);
+                var structuredResult = ToolExecutionResult.Failed(
+                    command.ToolName,
+                    actionType,
+                    ToolExecutionStatus.Denied.ToStorageValue(),
+                    "finance_actor_unauthorized",
+                    callerMessage,
+                    metadata: BuildActorAuthorizationResultMetadata(actorAuthorization, correlationId));
+                attempt.MarkDenied(SerializeDecision(authorizationPolicyDecision), structuredResult.ToStructuredPayload(),
+                    DateTime.UtcNow, callerMessage);
+                await _dbContext.SaveChangesAsync(cancellationToken);
+
+                return new ExecuteAgentToolResultDto(
+                    attempt.Id,
+                    attempt.Status.ToStorageValue(),
+                    null,
+                    authorizationPolicyDecision,
+                    structuredResult.ToStructuredPayload(),
+                    callerMessage,
+                    Denial: denial,
+                    ActorAuthorization: actorAuthorization);
+            }
+
+            actorUserId = actorAuthorization.ActorId!.Value;
+            await _dbContext.SaveChangesAsync(cancellationToken);
+        }
+        else
+        {
+            membership = await RequireMembershipAsync(companyId, cancellationToken);
+            actorUserId = membership.UserId;
+        }
+
         var runtimeProfile = await _agentRuntimeProfileResolver.GetCurrentProfileAsync(companyId, agentId, cancellationToken);
-        var (toolPermissions, dataScopes) = ResolvePolicyBoundaries(runtimeProfile);
+        var effectiveAuthority = await _effectiveAuthorityResolver.ResolveAsync(companyId, agentId, cancellationToken);
+        var requestedAuthority = effectiveAuthority.Find(command.ToolName, actionType, command.Scope);
+        var enforceEffectiveAuthority = IsLauraFinanceAgent(runtimeProfile) || IsFinanceTool(command.ToolName);
+        var staleAuthority = (!string.IsNullOrWhiteSpace(command.ExpectedAuthorityVersion) &&
+                              !string.Equals(command.ExpectedAuthorityVersion, effectiveAuthority.AuthorityVersion, StringComparison.Ordinal)) ||
+                             (!string.IsNullOrWhiteSpace(command.ExpectedAuthorityHash) &&
+                              !string.Equals(command.ExpectedAuthorityHash, effectiveAuthority.AuthorityHash, StringComparison.Ordinal));
+        if (staleAuthority || (enforceEffectiveAuthority && (requestedAuthority is null || !requestedAuthority.IsUsable)))
+        {
+            var reasonCode = staleAuthority
+                ? AgentAuthorityReasonCodes.Stale
+                : requestedAuthority?.ReasonCode ?? AgentAuthorityReasonCodes.ConfigurationRequired;
+            var policyReasonCode = staleAuthority ? reasonCode : ToGuardrailCompatibleReasonCode(reasonCode);
+            var explanation = staleAuthority
+                ? "The effective agent authority changed after this request was prepared. Refresh and review it again."
+                : requestedAuthority?.Explanation ?? "The requested tool is not present in the effective agent authority.";
+            var authorityDecision = ToEffectiveAuthorityPolicyDecision(
+                companyId, agentId, executionId, command, actionType, correlationId,
+                effectiveAuthority, policyReasonCode, explanation);
+            var callerMessage = staleAuthority
+                ? "Agent permissions changed. Refresh this action before trying again."
+                : "This agent capability is not currently available.";
+            var denial = ToolExecutionDenialDto.FromDecision(authorityDecision, callerMessage);
+            var deniedResult = ToolExecutionResult.Failed(command.ToolName, actionType,
+                ToolExecutionStatus.Denied.ToStorageValue(), staleAuthority ? reasonCode : "policy_denied", callerMessage,
+                metadata: BuildExecutionResultMetadata(command, authorityDecision, correlationId, executionId,
+                    userFacingMessage: callerMessage));
+            attempt.MarkDenied(SerializeDecision(authorityDecision), deniedResult.ToStructuredPayload(), DateTime.UtcNow, callerMessage);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return new ExecuteAgentToolResultDto(attempt.Id, attempt.Status.ToStorageValue(), null,
+                authorityDecision, deniedResult.ToStructuredPayload(), callerMessage, Denial: denial,
+                ActorAuthorization: actorAuthorization, EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+                EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
+        }
+
+        var (toolPermissions, dataScopes) = ResolvePolicyBoundaries(runtimeProfile, effectiveAuthority);
+        var financeRiskContext = await ResolveFinanceRiskContextAsync(companyId, command, cancellationToken);
         var policyRequest = new PolicyEvaluationRequest(
             companyId,
             agentId,
@@ -96,11 +198,13 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             command.SensitiveAction,
             executionId,
             correlationId,
-            IsTrustedToolApprovalRequired(command.ToolName));
+            IsTrustedToolApprovalRequired(command.ToolName),
+            CloneNodes(runtimeProfile.TriggerLogic),
+            financeRiskContext);
 
         var decision = _policyGuardrailEngine.Evaluate(policyRequest);
-        _dbContext.ToolExecutionAttempts.Add(attempt);
-
+        decision.Metadata["effectiveAuthorityVersion"] = JsonValue.Create(effectiveAuthority.AuthorityVersion);
+        decision.Metadata["effectiveAuthorityHash"] = JsonValue.Create(effectiveAuthority.AuthorityHash);
         await WriteBoundaryEnforcementAuditAsync(
             companyId,
             agentId,
@@ -114,6 +218,12 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         var serializedDecision = SerializeDecision(decision);
         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.Deny, StringComparison.OrdinalIgnoreCase))
         {
+            if (IsFinanceTool(command.ToolName))
+            {
+                FinanceAgentAuthorityTelemetry.RecordApproval(command.ToolName, "denied",
+                    decision.ReasonCodes.FirstOrDefault() ?? "policy_denied");
+            }
+
             var callerMessage = BuildCallerMessage(decision);
             var denial = ToolExecutionDenialDto.FromDecision(decision, callerMessage);
             var structuredResult = ToolExecutionResult.Failed(
@@ -149,24 +259,53 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 decision,
                 structuredResult.ToStructuredPayload(),
                 callerMessage,
-                Denial: denial);
+                Denial: denial,
+                ActorAuthorization: actorAuthorization,
+                EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+                EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
         }
 
         if (string.Equals(decision.Outcome, PolicyDecisionOutcomeValues.RequireApproval, StringComparison.OrdinalIgnoreCase))
         {
+            FinanceAgentAuthorityTelemetry.RecordApproval(command.ToolName, "approval_required",
+                decision.ReasonCodes.FirstOrDefault() ?? "approval_required");
+            var thresholdContext = BuildThresholdContext(command, decision, effectiveAuthority);
+            var approvalRequestId = Guid.NewGuid();
+            if (_companyToolRegistry.TryGetTool(command.ToolName, out var approvalTool) &&
+                approvalTool.FinanceRiskClassification is not null)
+            {
+                var approvalBinding = await FinanceApprovalContinuationBinding.CreateAsync(
+                    _dbContext,
+                    _companyToolRegistry,
+                    attempt,
+                    approvalRequestId,
+                    actorUserId,
+                    command.DelegationAuthorityId,
+                    decision,
+                    effectiveAuthority,
+                    decision.Audit?.EvaluatedAtUtc ?? DateTime.UtcNow,
+                    cancellationToken);
+                thresholdContext["approvalBinding"] = approvalBinding;
+                thresholdContext["normalizedPayloadHash"] = approvalBinding["normalizedPayloadHash"]?.DeepClone();
+                thresholdContext["targetSnapshotHash"] = approvalBinding["targetSnapshotHash"]?.DeepClone();
+                thresholdContext["businessIdempotencyKey"] = approvalBinding["businessIdempotencyKey"]?.DeepClone();
+                thresholdContext["expiresUtc"] = approvalBinding["expiresUtc"]?.DeepClone();
+            }
+
             var approvalRequest = new ApprovalRequest(
-                Guid.NewGuid(),
+                approvalRequestId,
                 companyId,
                 agentId,
                 attempt.Id,
-                membership.UserId,
+                actorUserId,
                 command.ToolName,
                 actionType,
                 TryGetNonEmptyString(decision.Metadata, "approvalTarget"),
-                BuildThresholdContext(command, decision),
+                thresholdContext,
                 serializedDecision,
                 null);
-            var decisionChain = BuildApprovalDecisionChain(command, decision, approvalRequest.Id, attempt.Id, membership.UserId);
+            var decisionChain = BuildApprovalDecisionChain(command, decision, approvalRequest.Id, attempt.Id, actorUserId,
+                effectiveAuthority);
             approvalRequest.SetDecisionChain(decisionChain);
             var structuredResult = ToolExecutionResult.Failed(
                 command.ToolName,
@@ -184,7 +323,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 new AuditEventWriteRequest(
                     companyId,
                     AuditActorTypes.User,
-                    membership.UserId,
+                    actorUserId,
                     AuditEventActions.AgentToolExecutionApprovalRequested,
                     AuditTargetTypes.ApprovalRequest,
                     approvalRequest.Id.ToString("N"),
@@ -204,11 +343,19 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 decision,
                 structuredResult.ToStructuredPayload(),
                 structuredResult.Summary,
-                CloneNodes(decisionChain));
+                CloneNodes(decisionChain),
+                ActorAuthorization: actorAuthorization,
+                EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+                EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
         }
 
         try
         {
+            if (IsFinanceTool(command.ToolName))
+            {
+                FinanceAgentAuthorityTelemetry.RecordApproval(command.ToolName, "allowed", "policy_allowed");
+            }
+
             var result = await _companyToolExecutor.ExecuteAsync(
             new ToolExecutionRequest(
                 companyId,
@@ -222,7 +369,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 correlationId,
                 executionId,
                 toolVersion,
-                membership.UserId),
+                actorUserId),
             cancellationToken);
             result = NormalizeStructuredResult(result, command);
 
@@ -253,7 +400,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 null,
                 decision,
                 result.ToStructuredPayload(),
-                    result.Summary);
+                    result.Summary,
+                    ActorAuthorization: actorAuthorization,
+                    EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+                    EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
             }
 
             if (!result.Success)
@@ -276,7 +426,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 return new ExecuteAgentToolResultDto(
                     attempt.Id, attempt.Status.ToStorageValue(), null, decision,
-                    result.ToStructuredPayload(), result.Summary);
+                    result.ToStructuredPayload(), result.Summary,
+                    ActorAuthorization: actorAuthorization,
+                    EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+                    EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
             }
 
             attempt.MarkExecuted(serializedDecision, result.ToStructuredPayload(), DateTime.UtcNow);
@@ -285,7 +438,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             new AuditEventWriteRequest(
                 companyId,
                 AuditActorTypes.User,
-                membership.UserId,
+                actorUserId,
                 AuditEventActions.AgentToolExecutionExecuted,
                 AuditTargetTypes.AgentToolExecution,
                 attempt.Id.ToString("N"),
@@ -304,7 +457,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             null,
             decision,
             result.ToStructuredPayload(),
-            result.Summary);
+            result.Summary,
+            ActorAuthorization: actorAuthorization,
+            EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+            EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -321,7 +477,7 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 new AuditEventWriteRequest(
                     companyId,
                     AuditActorTypes.User,
-                    membership.UserId,
+                    actorUserId,
                     AuditEventActions.AgentToolExecutionExecuted,
                     AuditTargetTypes.AgentToolExecution,
                     attempt.Id.ToString("N"),
@@ -340,9 +496,143 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 null,
                 decision,
                 failedResult.ToStructuredPayload(),
-                failedResult.Summary);
+                failedResult.Summary,
+                ActorAuthorization: actorAuthorization,
+                EffectiveAuthorityVersion: effectiveAuthority.AuthorityVersion,
+                EffectiveAuthorityHash: effectiveAuthority.AuthorityHash);
         }
     }
+
+    private bool IsFinanceTool(string toolName) =>
+        _companyToolRegistry.TryGetTool(toolName, out var registration) &&
+        registration.Scopes.Contains("finance");
+
+    private Task WriteActorAuthorizationAuditAsync(
+        FinanceAgentAuthorizationDecisionDto decision,
+        string correlationId,
+        CancellationToken cancellationToken)
+    {
+        var metadata = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["actorType"] = decision.ActorType,
+            ["membershipState"] = decision.MembershipState,
+            ["toolName"] = decision.ToolName,
+            ["actionType"] = decision.ActionType,
+            ["scope"] = decision.Scope,
+            ["requiredCompanyPolicies"] = string.Join(",", decision.RequiredCompanyPolicies),
+            ["requiredFinancePermissions"] = string.Join(",", decision.RequiredFinancePermissions),
+            ["authorizationOutcome"] = decision.Outcome,
+            ["authorizationReasonCode"] = decision.ReasonCode,
+            ["authorizationPolicyVersion"] = decision.PolicyVersion,
+            ["authorizationEvidence"] = string.Join(",", decision.Evidence.Select(static item =>
+                $"{item.Type}:{item.Reference}:{item.Result}")),
+            ["executionId"] = decision.ExecutionId.ToString("N"),
+            ["delegationAuthorityId"] = decision.DelegationAuthorityId?.ToString("N"),
+            ["originatingWorkflowInstanceId"] = decision.OriginatingWorkflowInstanceId?.ToString("N")
+        };
+
+        return _auditEventWriter.WriteAsync(
+            new AuditEventWriteRequest(
+                decision.CompanyId,
+                string.Equals(decision.ActorType, FinanceAgentActorTypes.Human, StringComparison.Ordinal)
+                    ? AuditActorTypes.User
+                    : AuditActorTypes.System,
+                decision.ActorId,
+                AuditEventActions.FinanceAgentToolAuthorizationEvaluated,
+                AuditTargetTypes.AgentToolExecution,
+                decision.ExecutionId.ToString("N"),
+                decision.IsAllowed ? AuditEventOutcomes.Succeeded : AuditEventOutcomes.Denied,
+                DataSources: ["agent_execution", "finance_actor_authorization", "company_membership"],
+                CorrelationId: correlationId,
+                RationaleSummary: decision.Explanation,
+                Metadata: metadata),
+            cancellationToken);
+    }
+
+    private static ToolExecutionDecisionDto ToPolicyDecision(
+        FinanceAgentAuthorizationDecisionDto authorization,
+        string correlationId)
+    {
+        var metadata = BuildActorAuthorizationResultMetadata(authorization, correlationId);
+        metadata["executionState"] = JsonValue.Create("blocked_before_guardrail");
+        return new ToolExecutionDecisionDto(
+            PolicyDecisionOutcomeValues.Deny,
+            [authorization.ReasonCode],
+            authorization.Explanation,
+            "actor_authorization",
+            authorization.ActionType,
+            authorization.Scope,
+            false,
+            metadata,
+            Reasons: [new PolicyDecisionReasonDto(authorization.ReasonCode, "actor_authorization", authorization.Explanation)],
+            Tenant: new PolicyDecisionTenantContextDto(authorization.CompanyId, authorization.CompanyId, true),
+            Actor: new PolicyDecisionActorContextDto(authorization.AgentId, "authorization_denied", false),
+            Tool: new PolicyDecisionToolContextDto(authorization.ToolName, authorization.ActionType, authorization.Scope),
+            Audit: new PolicyDecisionAuditContextDto(authorization.ExecutionId, correlationId,
+                authorization.EvaluatedAtUtc, "default_deny", authorization.PolicyVersion));
+    }
+
+    private static ToolExecutionDecisionDto ToEffectiveAuthorityPolicyDecision(
+        Guid companyId,
+        Guid agentId,
+        Guid executionId,
+        ExecuteAgentToolCommand command,
+        ToolActionType actionType,
+        string correlationId,
+        AgentEffectiveAuthorityDto authority,
+        string reasonCode,
+        string explanation)
+    {
+        var metadata = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
+        {
+            ["executionState"] = JsonValue.Create("blocked_before_guardrail"),
+            ["effectiveAuthorityVersion"] = JsonValue.Create(authority.AuthorityVersion),
+            ["effectiveAuthorityHash"] = JsonValue.Create(authority.AuthorityHash),
+            ["expectedAuthorityVersion"] = string.IsNullOrWhiteSpace(command.ExpectedAuthorityVersion) ? null : JsonValue.Create(command.ExpectedAuthorityVersion),
+            ["expectedAuthorityHash"] = string.IsNullOrWhiteSpace(command.ExpectedAuthorityHash) ? null : JsonValue.Create(command.ExpectedAuthorityHash)
+        };
+        return new ToolExecutionDecisionDto(
+            PolicyDecisionOutcomeValues.Deny,
+            [reasonCode],
+            explanation,
+            authority.AutonomyLevel,
+            actionType.ToStorageValue(),
+            command.Scope,
+            false,
+            metadata,
+            Reasons: [new PolicyDecisionReasonDto(reasonCode, "effective_authority", explanation)],
+            Tenant: new PolicyDecisionTenantContextDto(companyId, companyId, true),
+            Actor: new PolicyDecisionActorContextDto(agentId, authority.AgentStatus,
+                authority.AgentStatus.Equals("active", StringComparison.OrdinalIgnoreCase)),
+            Tool: new PolicyDecisionToolContextDto(command.ToolName, actionType.ToStorageValue(), command.Scope),
+            Audit: new PolicyDecisionAuditContextDto(executionId, correlationId, DateTime.UtcNow,
+                "default_deny", authority.AuthorityVersion));
+    }
+
+    private static string ToGuardrailCompatibleReasonCode(string authorityReasonCode) => authorityReasonCode switch
+    {
+        AgentAuthorityReasonCodes.ExplicitlyDenied => PolicyDecisionReasonCodes.ToolExplicitlyDenied,
+        AgentAuthorityReasonCodes.ActionDenied => PolicyDecisionReasonCodes.ToolActionNotPermitted,
+        AgentAuthorityReasonCodes.ScopeDenied => PolicyDecisionReasonCodes.ScopeNotPermitted,
+        AgentAuthorityReasonCodes.AgentInactive => PolicyDecisionReasonCodes.AgentStatusDisallowsExecution,
+        _ => PolicyDecisionReasonCodes.ToolNotPermitted
+    };
+
+    private static Dictionary<string, JsonNode?> BuildActorAuthorizationResultMetadata(
+        FinanceAgentAuthorizationDecisionDto decision,
+        string correlationId) =>
+        new(StringComparer.OrdinalIgnoreCase)
+        {
+            ["actorType"] = JsonValue.Create(decision.ActorType),
+            ["membershipState"] = JsonValue.Create(decision.MembershipState),
+            ["authorizationOutcome"] = JsonValue.Create(decision.Outcome),
+            ["authorizationReasonCode"] = JsonValue.Create(decision.ReasonCode),
+            ["authorizationPolicyVersion"] = JsonValue.Create(decision.PolicyVersion),
+            ["requiredCompanyPolicies"] = JsonSerializer.SerializeToNode(decision.RequiredCompanyPolicies),
+            ["requiredFinancePermissions"] = JsonSerializer.SerializeToNode(decision.RequiredFinancePermissions),
+            ["correlationId"] = JsonValue.Create(correlationId),
+            ["executionId"] = JsonValue.Create(decision.ExecutionId)
+        };
 
     private async Task<VirtualCompany.Application.Auth.ResolvedCompanyMembershipContext> RequireMembershipAsync(
         Guid companyId,
@@ -358,7 +648,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
     }
 
     private (Dictionary<string, JsonNode?> ToolPermissions, Dictionary<string, JsonNode?> DataScopes) ResolvePolicyBoundaries(
-        AgentRuntimeProfileDto runtimeProfile)
+        AgentRuntimeProfileDto runtimeProfile,
+        AgentEffectiveAuthorityDto effectiveAuthority)
     {
         var toolPermissions = CloneNodes(runtimeProfile.ToolPermissions);
         var dataScopes = CloneNodes(runtimeProfile.DataScopes);
@@ -388,19 +679,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             return (toolPermissions, dataScopes);
         }
 
-        var financeDefinitions = _companyToolRegistry
-            .ListToolDefinitions()
-            .Where(definition => _companyToolRegistry.TryGetTool(definition.ToolName, out var registration) &&
-                                 registration.Scopes.Contains("finance"))
-            .OrderBy(definition => definition.ToolName, StringComparer.OrdinalIgnoreCase)
+        var granted = effectiveAuthority.Tools.Where(authority => authority.IsUsable).ToArray();
+        var allowedTools = granted
+            .Select(authority => authority.ToolName)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        var allowedTools = financeDefinitions
-            .Select(definition => definition.ToolName)
-            .ToArray();
-
-        var allowedActions = financeDefinitions
-            .Select(definition => definition.ActionType.ToStorageValue())
+        var allowedActions = granted
+            .Select(authority => authority.ActionType)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .OrderBy(action => action, StringComparer.OrdinalIgnoreCase)
             .ToArray();
@@ -498,7 +784,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ["executionId"] = decision.Audit is null ? null : decision.Audit.ExecutionId.ToString("N"),
             ["approvalRequirementType"] = decision.ApprovalRequirement?.RequirementType,
             ["executionState"] = TryGetNonEmptyString(decision.Metadata, "executionState"),
-            ["primaryReasonCode"] = GetPrimaryReasonCode(decision)
+            ["primaryReasonCode"] = GetPrimaryReasonCode(decision),
+            ["riskPolicyVersion"] = TryGetNonEmptyString(decision.Metadata, "riskPolicyVersion"),
+            ["financeApprovalPolicyVersion"] = TryGetNonEmptyString(decision.Metadata, "financeApprovalPolicyVersion")
         };
 
         if (approvalRequestId.HasValue)
@@ -516,7 +804,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
     private static Dictionary<string, JsonNode?> BuildThresholdContext(
         ExecuteAgentToolCommand command,
-        ToolExecutionDecisionDto decision)
+        ToolExecutionDecisionDto decision,
+        AgentEffectiveAuthorityDto effectiveAuthority)
     {
         var thresholdContext = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase);
 
@@ -559,6 +848,9 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         }
 
         thresholdContext["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null;
+        thresholdContext["delegationAuthorityId"] = command.DelegationAuthorityId.HasValue
+            ? JsonValue.Create(command.DelegationAuthorityId.Value)
+            : null;
 
         if (!string.IsNullOrWhiteSpace(command.Scope))
         {
@@ -566,6 +858,13 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         }
 
         thresholdContext["sensitiveAction"] = JsonValue.Create(command.SensitiveAction);
+        thresholdContext["effectiveAuthorityVersion"] = JsonValue.Create(effectiveAuthority.AuthorityVersion);
+        thresholdContext["effectiveAuthorityHash"] = JsonValue.Create(effectiveAuthority.AuthorityHash);
+
+        CopyDecisionMetadata(decision, thresholdContext, "riskPolicyVersion");
+        CopyDecisionMetadata(decision, thresholdContext, "financeApprovalPolicyVersion");
+        CopyDecisionMetadata(decision, thresholdContext, "riskClassification");
+        CopyDecisionMetadata(decision, thresholdContext, "financeRiskEvaluation");
 
         if (decision.Metadata.TryGetValue("thresholdEvaluation", out var thresholdEvaluation))
         {
@@ -597,7 +896,8 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         ToolExecutionDecisionDto decision,
         Guid approvalRequestId,
         Guid executionId,
-        Guid requestedByUserId)
+        Guid requestedByUserId,
+        AgentEffectiveAuthorityDto effectiveAuthority)
     {
         var steps = new JsonArray
         {
@@ -625,6 +925,11 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
                 ["taskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
                 ["originatingTaskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
                 ["workflowInstanceId"] = command.WorkflowInstanceId.HasValue ? JsonValue.Create(command.WorkflowInstanceId.Value) : null,
+                ["delegationAuthorityId"] = command.DelegationAuthorityId.HasValue ? JsonValue.Create(command.DelegationAuthorityId.Value) : null,
+                ["effectiveAuthorityVersion"] = effectiveAuthority.AuthorityVersion,
+                ["effectiveAuthorityHash"] = effectiveAuthority.AuthorityHash,
+                ["riskPolicyVersion"] = TryGetNonEmptyString(decision.Metadata, "riskPolicyVersion"),
+                ["financeApprovalPolicyVersion"] = TryGetNonEmptyString(decision.Metadata, "financeApprovalPolicyVersion"),
                 ["approvalTarget"] = TryGetNonEmptyString(decision.Metadata, "approvalTarget")
             }
         };
@@ -639,6 +944,10 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             ["originatingTaskId"] = command.TaskId.HasValue ? JsonValue.Create(command.TaskId.Value) : null,
             ["status"] = JsonValue.Create("pending"),
             ["currentStep"] = JsonValue.Create("approval_request_created"),
+            ["effectiveAuthorityVersion"] = JsonValue.Create(effectiveAuthority.AuthorityVersion),
+            ["effectiveAuthorityHash"] = JsonValue.Create(effectiveAuthority.AuthorityHash),
+            ["riskPolicyVersion"] = decision.Metadata.TryGetValue("riskPolicyVersion", out var riskPolicyVersion) ? riskPolicyVersion?.DeepClone() : null,
+            ["financeApprovalPolicyVersion"] = decision.Metadata.TryGetValue("financeApprovalPolicyVersion", out var financeApprovalPolicyVersion) ? financeApprovalPolicyVersion?.DeepClone() : null,
             ["steps"] = steps
         };
 
@@ -805,6 +1114,14 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
         return string.IsNullOrWhiteSpace(text) ? null : text.Trim();
     }
 
+    private static void CopyDecisionMetadata(
+        ToolExecutionDecisionDto decision,
+        IDictionary<string, JsonNode?> target,
+        string key)
+    {
+        if (decision.Metadata.TryGetValue(key, out var value)) target[key] = value?.DeepClone();
+    }
+
     private static Dictionary<string, JsonNode?> CloneNodes(IReadOnlyDictionary<string, JsonNode?>? nodes) =>
         nodes is null || nodes.Count == 0
             ? new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
@@ -829,8 +1146,61 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
 
     private bool IsSensitiveAction(string toolName, bool requestedSensitiveAction) =>
         requestedSensitiveAction ||
-        (_companyToolRegistry.TryGetTool(toolName, out var registration) && registration.SensitiveAction);
+        (_companyToolRegistry.TryGetTool(toolName, out var registration) &&
+         registration.SensitiveAction && registration.FinanceRiskClassification is null);
 
     private bool IsTrustedToolApprovalRequired(string toolName) =>
-        _companyToolRegistry.TryGetTool(toolName, out var registration) && registration.SensitiveAction;
+        _companyToolRegistry.TryGetTool(toolName, out var registration) &&
+        registration.SensitiveAction && registration.FinanceRiskClassification is null;
+
+    private async Task<FinanceToolRiskEvaluationContext?> ResolveFinanceRiskContextAsync(
+        Guid companyId,
+        ExecuteAgentToolCommand command,
+        CancellationToken cancellationToken)
+    {
+        if (!_companyToolRegistry.TryGetTool(command.ToolName, out var registration) ||
+            registration.FinanceRiskClassification is null)
+        {
+            return null;
+        }
+
+        if (!command.ToolName.Equals("categorize_transaction", StringComparison.OrdinalIgnoreCase))
+        {
+            return new FinanceToolRiskEvaluationContext(
+                null, 1, null, null, true, "trusted_finance_tool_registry");
+        }
+
+        var transactionId = ReadPayloadGuid(command.RequestPayload, "transactionId");
+        var requestedCategory = ReadPayloadString(command.RequestPayload, "category");
+        if (!transactionId.HasValue)
+        {
+            return new FinanceToolRiskEvaluationContext(
+                null, 0, null, requestedCategory, false, "finance_transaction_not_resolved");
+        }
+
+        var transaction = await _dbContext.FinanceTransactions.IgnoreQueryFilters().AsNoTracking()
+            .Where(item => item.CompanyId == companyId && item.Id == transactionId.Value)
+            .Select(item => new { item.Amount, item.TransactionType })
+            .SingleOrDefaultAsync(cancellationToken);
+        return transaction is null
+            ? new FinanceToolRiskEvaluationContext(
+                null, 0, null, requestedCategory, false, "finance_transaction_not_found")
+            : new FinanceToolRiskEvaluationContext(
+                Math.Abs(transaction.Amount), 1, transaction.TransactionType,
+                requestedCategory is null ? null : FinanceTransactionCategories.Normalize(requestedCategory),
+                true, "finance_transactions");
+    }
+
+    private static Guid? ReadPayloadGuid(IReadOnlyDictionary<string, JsonNode?>? payload, string key)
+    {
+        if (payload is null || !payload.TryGetValue(key, out var node) || node is not JsonValue value) return null;
+        if (value.TryGetValue<Guid>(out var guid) && guid != Guid.Empty) return guid;
+        return value.TryGetValue<string>(out var text) && Guid.TryParse(text, out guid) && guid != Guid.Empty ? guid : null;
+    }
+
+    private static string? ReadPayloadString(IReadOnlyDictionary<string, JsonNode?>? payload, string key) =>
+        payload is not null && payload.TryGetValue(key, out var node) && node is JsonValue value &&
+        value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
+            ? text.Trim()
+            : null;
 }

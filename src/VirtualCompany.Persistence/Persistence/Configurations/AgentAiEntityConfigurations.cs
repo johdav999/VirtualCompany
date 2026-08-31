@@ -15,6 +15,7 @@ internal sealed class AgentOrchestrationRunConfiguration : IEntityTypeConfigurat
         b.Property(x => x.Confidence).HasColumnType("decimal(5,4)"); b.Property(x => x.Summary).HasMaxLength(2000);
         b.Property(x => x.ResultJson).HasColumnType("nvarchar(max)"); b.Property(x => x.SourceIdsJson).HasColumnType("nvarchar(max)");
         b.Property(x => x.FailureCode).HasMaxLength(100); b.Property(x => x.FailureMessage).HasMaxLength(1000); b.Property(x => x.CorrelationId).HasMaxLength(128).IsRequired();
+        b.Property(x => x.EffectiveAuthorityVersion).HasMaxLength(100); b.Property(x => x.EffectiveAuthorityHash).HasMaxLength(64);
         b.Property(x => x.Version).IsConcurrencyToken().IsRequired(); b.HasIndex(x => new { x.CompanyId, x.AgentId, x.CreatedUtc });
         b.HasIndex(x => new { x.CompanyId, x.CapabilityId, x.Status }); b.HasOne<Company>().WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         b.HasOne<Agent>().WithMany().HasForeignKey(x => x.AgentId).OnDelete(DeleteBehavior.Restrict);

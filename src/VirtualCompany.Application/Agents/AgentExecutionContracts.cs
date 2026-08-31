@@ -1,5 +1,6 @@
 using System.Collections.ObjectModel;
 using System.Text.Json.Nodes;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
 
 namespace VirtualCompany.Application.Agents;
@@ -15,7 +16,10 @@ public sealed record ExecuteAgentToolCommand(
     bool SensitiveAction = false,
     Guid? TaskId = null,
     Guid? WorkflowInstanceId = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    Guid? DelegationAuthorityId = null,
+    string? ExpectedAuthorityVersion = null,
+    string? ExpectedAuthorityHash = null);
 
 public sealed record ExecuteAgentToolResultDto(
     Guid ExecutionId,
@@ -25,7 +29,10 @@ public sealed record ExecuteAgentToolResultDto(
     Dictionary<string, JsonNode?>? ExecutionResult,
     string Message,
     Dictionary<string, JsonNode?>? ApprovalDecisionChain = null,
-    ToolExecutionDenialDto? Denial = null);
+    ToolExecutionDenialDto? Denial = null,
+    FinanceAgentAuthorizationDecisionDto? ActorAuthorization = null,
+    string? EffectiveAuthorityVersion = null,
+    string? EffectiveAuthorityHash = null);
 
 public sealed record ToolExecutionDenialDto(
     string Code,
@@ -169,7 +176,9 @@ public sealed record PolicyEvaluationRequest(
     bool SensitiveAction,
     Guid ExecutionId,
     string? CorrelationId,
-    bool TrustedToolApprovalRequired = false);
+    bool TrustedToolApprovalRequired = false,
+    IReadOnlyDictionary<string, JsonNode?>? TriggerLogic = null,
+    FinanceToolRiskEvaluationContext? FinanceRiskContext = null);
 
 public sealed record ToolExecutionRequest(
     Guid CompanyId,
@@ -334,4 +343,7 @@ public static class PolicyDecisionReasonCodes
     public const string ThresholdConfigurationMissing = "threshold_configuration_missing";
     public const string ThresholdExceededRequiresApproval = "threshold_exceeded_requires_approval";
     public const string SensitiveActionRequiresApproval = "sensitive_action_requires_approval";
+    public const string FinanceRiskPolicyMissing = "finance_risk_policy_missing";
+    public const string FinanceApprovalPolicyRequiresReview = "finance_approval_policy_requires_review";
+    public const string FinanceCategorizationExceptionApplied = "finance_categorization_exception_applied";
 }

@@ -1,11 +1,8 @@
-using System.Text.Json.Nodes;
-using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Marketing;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Documents;
-using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -156,21 +153,18 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
         new(id, "1.0.0", name, description, "Marketing", ToolActionType.Recommend, [tool], scopes,
             [SharedAiProviderSignal], AgentAutonomyLevel.Level0, "none", true);
 
-    private readonly VirtualCompanyDbContext _dbContext;
-    private readonly ICompanyToolRegistry _toolRegistry;
+    private readonly IAgentEffectiveAuthorityResolver _authorityResolver;
     private readonly KnowledgeIndexingOptions _knowledgeIndexingOptions;
     private readonly BriefingSchedulerOptions _briefingSchedulerOptions;
     private readonly SharedAgentAiOptions _sharedAiOptions;
 
     public AgentCapabilityCatalog(
-        VirtualCompanyDbContext dbContext,
-        ICompanyToolRegistry toolRegistry,
+        IAgentEffectiveAuthorityResolver authorityResolver,
         IOptions<KnowledgeIndexingOptions> knowledgeIndexingOptions,
         IOptions<BriefingSchedulerOptions> briefingSchedulerOptions,
         IOptions<SharedAgentAiOptions> sharedAiOptions)
     {
-        _dbContext = dbContext;
-        _toolRegistry = toolRegistry;
+        _authorityResolver = authorityResolver;
         _knowledgeIndexingOptions = knowledgeIndexingOptions.Value;
         _briefingSchedulerOptions = briefingSchedulerOptions.Value;
         _sharedAiOptions = sharedAiOptions.Value;
@@ -193,31 +187,16 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             throw new ArgumentException("AgentId is required.", nameof(agentId));
         }
 
-        // Capability evaluation is used by both authorized HTTP requests and trusted
-        // background execution such as a persisted Realtime voice binding. Do not route
-        // this internal, company-scoped read through the human operating-profile editor,
-        // which requires an ambient HTTP identity and makes background tools fail closed
-        // before their already-established binding authorization can be evaluated.
-        var agent = await _dbContext.Agents
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.Id == agentId, cancellationToken);
-        if (agent is null)
-        {
-            throw new KeyNotFoundException("Agent not found.");
-        }
-
+        var authority = await _authorityResolver.ResolveAsync(companyId, agentId, cancellationToken);
         var profile = new CapabilityProfile(
-            agent.DisplayName,
-            agent.Department,
-            agent.Status.ToStorageValue(),
-            agent.CanReceiveAssignments,
-            agent.AutonomyLevel,
-            agent.Tools,
-            agent.Scopes);
+            authority.AgentName,
+            authority.Department,
+            authority.AgentStatus,
+            authority.CanReceiveAssignments,
+            AgentAutonomyLevelValues.Parse(authority.AutonomyLevel));
         var autonomy = profile.AutonomyLevel;
         var capabilities = Manifests
-            .Select(manifest => Resolve(manifest, profile, autonomy))
+            .Select(manifest => Resolve(manifest, profile, autonomy, authority))
             .ToArray();
 
         return new AgentCapabilityCatalogDto(
@@ -227,13 +206,17 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             profile.Status,
             profile.AutonomyLevel.ToStorageValue(),
             capabilities,
-            DateTime.UtcNow);
+            authority.GeneratedUtc,
+            authority.AuthorityVersion,
+            authority.AuthorityHash,
+            authority.Tools);
     }
 
     private AgentCapabilityDto Resolve(
         AgentCapabilityManifest manifest,
         CapabilityProfile profile,
-        AgentAutonomyLevel autonomy)
+        AgentAutonomyLevel autonomy,
+        AgentEffectiveAuthorityDto authority)
     {
         var missing = new List<string>();
 
@@ -264,67 +247,19 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
                 missing);
         }
 
-        foreach (var toolName in manifest.RequiredTools)
+        var requiredAuthorities = manifest.RequiredTools.Select(tool => authority.Find(tool, manifest.ActionType,
+            manifest.RequiredDataScopes.FirstOrDefault())).ToArray();
+        if (requiredAuthorities.Any(item => item is null || !item.IsUsable))
         {
-            if (!_toolRegistry.TryGetTool(toolName, out var registration) ||
-                !registration.SupportedActions.Contains(manifest.ActionType))
-            {
-                missing.Add($"tool:{toolName}");
-            }
-        }
-
-        if (missing.Count > 0)
-        {
-            return ToDto(
-                manifest,
-                AgentCapabilityStates.ConfigurationRequired,
-                "required_tool_unregistered",
-                "One or more trusted tools required by this capability are not registered.",
+            var unavailable = requiredAuthorities.FirstOrDefault(item => item is not null && !item.IsUsable);
+            missing.AddRange(manifest.RequiredTools.Where((_, index) => requiredAuthorities[index] is null)
+                .Select(tool => $"tool:{tool}"));
+            if (unavailable is not null) missing.Add($"authority:{unavailable.ToolName}:{unavailable.ReasonCode}");
+            return ToDto(manifest,
+                unavailable?.State ?? AgentCapabilityStates.ConfigurationRequired,
+                unavailable?.ReasonCode ?? "required_tool_unregistered",
+                unavailable?.Explanation ?? "One or more trusted tools required by this capability are not registered.",
                 missing);
-        }
-
-        var allowedTools = ReadStringSet(profile.ToolPermissions, "allowed", out var allowedToolsConfigured);
-        var deniedTools = ReadStringSet(profile.ToolPermissions, "denied", out _);
-        var allowedActions = ReadStringSet(profile.ToolPermissions, "actions", out var allowedActionsConfigured);
-        var deniedActions = ReadStringSet(profile.ToolPermissions, "deniedActions", out _);
-        var actionName = manifest.ActionType.ToStorageValue();
-
-        if (!allowedToolsConfigured || manifest.RequiredTools.Any(tool => !allowedTools.Contains(tool) || deniedTools.Contains(tool)))
-        {
-            missing.AddRange(manifest.RequiredTools
-                .Where(tool => !allowedTools.Contains(tool) || deniedTools.Contains(tool))
-                .Select(tool => $"permission:tool:{tool}"));
-        }
-
-        if ((allowedActionsConfigured && !allowedActions.Contains(actionName)) || deniedActions.Contains(actionName))
-        {
-            missing.Add($"permission:action:{actionName}");
-        }
-
-        var scopeBucket = manifest.ActionType switch
-        {
-            ToolActionType.Read => "read",
-            ToolActionType.Recommend => "recommend",
-            ToolActionType.Execute => "execute",
-            _ => "read"
-        };
-        var allowedScopes = ReadStringSet(profile.DataScopes, scopeBucket, out var scopeConfigured);
-        if (manifest.RequiredDataScopes.Count > 0 &&
-            (!scopeConfigured || manifest.RequiredDataScopes.Any(scope => !allowedScopes.Contains(scope))))
-        {
-            missing.AddRange(manifest.RequiredDataScopes
-                .Where(scope => !allowedScopes.Contains(scope))
-                .Select(scope => $"permission:scope:{scopeBucket}:{scope}"));
-        }
-
-        if (missing.Count > 0)
-        {
-            return ToDto(
-                manifest,
-                AgentCapabilityStates.PermissionDenied,
-                "agent_permission_missing",
-                "The agent's tool permissions or data scopes do not allow this capability.",
-                missing.Distinct(StringComparer.OrdinalIgnoreCase).ToArray());
         }
 
         if (autonomy < manifest.MinimumAutonomy)
@@ -356,7 +291,8 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
                 missing);
         }
 
-        var approvalRequired = manifest.ApprovalBehavior is "always" or "commit_requires_review" or "policy_dependent";
+        var approvalRequired = manifest.ApprovalBehavior is "always" or "commit_requires_review" or "policy_dependent" ||
+                               requiredAuthorities.Any(item => item?.State == AgentCapabilityStates.ApprovalRequired);
         return ToDto(
             manifest,
             approvalRequired ? AgentCapabilityStates.ApprovalRequired : AgentCapabilityStates.Available,
@@ -403,30 +339,10 @@ public sealed class AgentCapabilityCatalog : IAgentCapabilityCatalog
             missingRequirements,
             manifest.ApprovalBehavior);
 
-    private static HashSet<string> ReadStringSet(
-        IReadOnlyDictionary<string, JsonNode?> source,
-        string key,
-        out bool configured)
-    {
-        configured = source.TryGetValue(key, out var node) && node is JsonArray;
-        if (node is not JsonArray array)
-        {
-            return new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        }
-
-        return array
-            .Select(item => item is JsonValue value && value.TryGetValue<string>(out var text) ? text?.Trim() : null)
-            .Where(text => !string.IsNullOrWhiteSpace(text))
-            .Select(text => text!)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
-
     private sealed record CapabilityProfile(
         string DisplayName,
         string Department,
         string Status,
         bool CanReceiveAssignments,
-        AgentAutonomyLevel AutonomyLevel,
-        IReadOnlyDictionary<string, JsonNode?> ToolPermissions,
-        IReadOnlyDictionary<string, JsonNode?> DataScopes);
+        AgentAutonomyLevel AutonomyLevel);
 }

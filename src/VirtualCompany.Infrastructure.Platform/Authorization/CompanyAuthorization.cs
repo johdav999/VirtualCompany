@@ -166,6 +166,7 @@ internal static class CompanyPermissionAuthorizationRules
             FinancePermissions.View => FinanceAccess.CanView(membershipRole.ToStorageValue()),
             FinancePermissions.AccountingView => FinanceAccess.CanViewAccounting(membershipRole.ToStorageValue()),
             FinancePermissions.AccountingAdmin => FinanceAccess.CanManageAccounting(membershipRole.ToStorageValue()),
+            FinancePermissions.ManageIntegrations => FinanceAccess.CanManageFinanceIntegrations(membershipRole.ToStorageValue()),
             _ => false
         };
 }

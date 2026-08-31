@@ -53,7 +53,7 @@ internal sealed class ApprovalRequestConfiguration : IEntityTypeConfiguration<Ap
             .HasDefaultValueSql(CompanyJsonColumnConfiguration.JsonObjectDefault)
             .IsRequired();
         builder.Property(x => x.CreatedUtc).IsRequired();
-        builder.Property(x => x.UpdatedUtc).IsRequired();
+        builder.Property(x => x.UpdatedUtc).IsRequired().IsConcurrencyToken();
         builder.Property(x => x.DecidedUtc).HasColumnName("decided_at");
         builder.HasMany(x => x.Steps)
             .WithOne(x => x.Approval)

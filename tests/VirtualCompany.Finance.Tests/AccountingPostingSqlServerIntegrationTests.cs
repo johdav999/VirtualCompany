@@ -253,7 +253,7 @@ public sealed class AccountingPostingSqlServerIntegrationTests
     private static VirtualCompanyDbContext CreateContext(string connectionString, ICompanyContextAccessor accessor)
     {
         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
-            .UseSqlServer(connectionString, sql => sql.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection).Assembly.GetName().Name))
+            .UseSqlServer(connectionString, sql => sql.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker).Assembly.GetName().Name))
             .Options;
         return new VirtualCompanyDbContext(options, accessor);
     }

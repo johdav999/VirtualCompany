@@ -126,6 +126,7 @@ internal static class LauraFinanceAgentSeedData
         {
             ["financePolicy"] = new JsonObject
             {
+                ["policyVersion"] = "laura-finance-approval-policy-v1",
                 ["respectCompanyFinanceThresholds"] = true,
                 ["requireApprovalForExecute"] = true
             }

@@ -20,7 +20,7 @@ public sealed class AccountingCloseMigrationSqlServerTests
         };
         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlServer(builder.ConnectionString, sql => sql.MigrationsAssembly(
-                typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection)
+                typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker)
                     .Assembly.GetName().Name))
             .Options;
 

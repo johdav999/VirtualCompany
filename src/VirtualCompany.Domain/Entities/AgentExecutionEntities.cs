@@ -163,6 +163,21 @@ public sealed class ToolExecutionAttempt : ICompanyOwnedEntity
         UpdatedUtc = CompletedUtc.Value;
     }
 
+    public void MarkReconciliationRequired(
+        IDictionary<string, JsonNode?>? policyDecision,
+        IDictionary<string, JsonNode?>? resultPayload,
+        string? reason,
+        DateTime? completedAtUtc = null)
+    {
+        Status = ToolExecutionStatus.ReconciliationRequired;
+        PolicyDecision = CloneNodes(policyDecision);
+        ResultPayload = CloneNodes(resultPayload);
+        DenialReason = NormalizeOptional(reason, nameof(reason), DenialReasonMaxLength);
+        CompletedUtc = completedAtUtc ?? DateTime.UtcNow;
+        ExecutedUtc = null;
+        UpdatedUtc = CompletedUtc.Value;
+    }
+
     private static string NormalizeRequired(string value, string name, int maxLength)
     {
         if (string.IsNullOrWhiteSpace(value))
@@ -379,7 +394,10 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
         Status is ApprovalRequestStatus.Approved
             or ApprovalRequestStatus.Rejected
             or ApprovalRequestStatus.Expired
-            or ApprovalRequestStatus.Cancelled;
+            or ApprovalRequestStatus.Cancelled
+            or ApprovalRequestStatus.Stale
+            or ApprovalRequestStatus.Superseded
+            or ApprovalRequestStatus.Revoked;
 
     public bool CanExecuteGuardedAction => Status == ApprovalRequestStatus.Approved;
 
@@ -389,6 +407,9 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
         ApprovalRequestStatus.Rejected => "approval_rejected",
         ApprovalRequestStatus.Expired => "approval_expired",
         ApprovalRequestStatus.Cancelled => "approval_cancelled",
+        ApprovalRequestStatus.Stale => "approval_stale",
+        ApprovalRequestStatus.Superseded => "approval_superseded",
+        ApprovalRequestStatus.Revoked => "approval_revoked",
         _ => null
     };
 
@@ -469,6 +490,47 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
 
         Status = ApprovalRequestStatus.Cancelled;
         DecisionSummary = string.IsNullOrWhiteSpace(decisionSummary) ? "Approval request cancelled." : decisionSummary.Trim();
+        DecidedUtc = DateTime.UtcNow;
+        RebuildDecisionChain();
+        UpdatedUtc = DecidedUtc.Value;
+    }
+
+    public void MarkStale(string? decisionSummary = null)
+    {
+        MarkInvalidated(
+            ApprovalRequestStatus.Stale,
+            "Approval request became stale. Create and review a new request.",
+            decisionSummary);
+    }
+
+    public void MarkSuperseded(string? decisionSummary = null)
+    {
+        MarkInvalidated(
+            ApprovalRequestStatus.Superseded,
+            "Approval request was superseded by a newer request.",
+            decisionSummary);
+    }
+
+    public void MarkRevoked(string? decisionSummary = null)
+    {
+        MarkInvalidated(
+            ApprovalRequestStatus.Revoked,
+            "Approval request was revoked.",
+            decisionSummary);
+    }
+
+    private void MarkInvalidated(
+        ApprovalRequestStatus terminalStatus,
+        string defaultSummary,
+        string? decisionSummary)
+    {
+        if (Status is not (ApprovalRequestStatus.Pending or ApprovalRequestStatus.Approved))
+        {
+            throw new InvalidOperationException("Only pending or approved approvals can be invalidated.");
+        }
+
+        Status = terminalStatus;
+        DecisionSummary = string.IsNullOrWhiteSpace(decisionSummary) ? defaultSummary : decisionSummary.Trim();
         DecidedUtc = DateTime.UtcNow;
         RebuildDecisionChain();
         UpdatedUtc = DecidedUtc.Value;
@@ -598,13 +660,12 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
 
     private void RebuildDecisionChain()
     {
-        DecisionChain = new Dictionary<string, JsonNode?>(StringComparer.OrdinalIgnoreCase)
-        {
-            ["schemaVersion"] = JsonValue.Create("2026-04-12"),
-            ["status"] = JsonValue.Create(Status.ToStorageValue()),
-            ["targetEntityType"] = JsonValue.Create(TargetEntityType),
-            ["targetEntityId"] = JsonValue.Create(TargetEntityId),
-            ["steps"] = new JsonArray(_steps.OrderBy(step => step.SequenceNo)
+        var rebuilt = CloneNodes(DecisionChain);
+        rebuilt["schemaVersion"] = JsonValue.Create("2026-04-12");
+        rebuilt["status"] = JsonValue.Create(Status.ToStorageValue());
+        rebuilt["targetEntityType"] = JsonValue.Create(TargetEntityType);
+        rebuilt["targetEntityId"] = JsonValue.Create(TargetEntityId);
+        rebuilt["steps"] = new JsonArray(_steps.OrderBy(step => step.SequenceNo)
                 .Select(step => new JsonObject
                 {
                     ["sequenceNo"] = step.SequenceNo,
@@ -615,8 +676,8 @@ public sealed class ApprovalRequest : ICompanyOwnedEntity
                     ["decidedAt"] = step.DecidedUtc,
                     ["comment"] = step.Comment
                 })
-                .ToArray<JsonNode?>())
-        };
+                .ToArray<JsonNode?>());
+        DecisionChain = rebuilt;
     }
 }
 

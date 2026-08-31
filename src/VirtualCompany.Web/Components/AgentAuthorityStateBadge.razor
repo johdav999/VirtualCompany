@@ -1,0 +1,19 @@
+@inject IStringLocalizer<AgentsResources> AgentText
+
+<span class="agent-authority-state-pill @Tone">@AgentText[ResourceKey]</span>
+
+@code {
+    [Parameter, EditorRequired]
+    public string State { get; set; } = string.Empty;
+
+    [Parameter]
+    public bool IsApprovalStatus { get; set; }
+
+    private string ResourceKey => IsApprovalStatus
+        ? AgentAuthorityTransparencyPresenter.ApprovalStatusLabelKey(State)
+        : AgentAuthorityTransparencyPresenter.StateLabelKey(State);
+
+    private string Tone => IsApprovalStatus
+        ? AgentAuthorityTransparencyPresenter.ApprovalStatusTone(State)
+        : AgentAuthorityTransparencyPresenter.StateTone(State);
+}

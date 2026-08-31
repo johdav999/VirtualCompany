@@ -1,7 +1,9 @@
 using System.Text.Json.Nodes;
 using System.Text.Json;
 using VirtualCompany.Application.Agents;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Shared;
 
 namespace VirtualCompany.Infrastructure.Companies;
 
@@ -102,8 +104,10 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         var normalizedScope = string.IsNullOrWhiteSpace(request.Scope) ? null : request.Scope.Trim();
         // The policy layer evaluates the agent's configured authority. The executor remains the
         // fail-closed enforcement boundary for trusted registry membership, action, scope, and schema.
-        if (_toolRegistry.TryGetTool(toolName, out var registeredTool))
+        TrustedToolRegistration? registeredTool = null;
+        if (_toolRegistry.TryGetTool(toolName, out var resolvedRegisteredTool))
         {
+            registeredTool = resolvedRegisteredTool;
             metadata["registryPolicyState"] = JsonValue.Create("registered");
             metadata["registeredToolVersion"] = JsonValue.Create(registeredTool.Version);
             metadata["registeredToolActions"] = ToJsonArray(registeredTool.SupportedActions.Select(static action => action.ToStorageValue()));
@@ -264,6 +268,58 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
             }
         }
         metadata["scopeMatch"] = JsonValue.Create(true);
+
+        if (actionType == ToolActionType.Execute &&
+            registeredTool?.Scopes.Contains("finance") == true)
+        {
+            if (registeredTool.FinanceRiskClassification is null)
+            {
+                metadata["riskPolicyVersion"] = JsonValue.Create(FinanceToolRiskPolicyVersions.V1);
+                metadata["riskPolicyState"] = JsonValue.Create("missing_classification");
+                return Deny(
+                    request,
+                    normalizedAction,
+                    [PolicyDecisionReasonCodes.FinanceRiskPolicyMissing],
+                    "The Finance execute tool has no explicit backend risk classification.",
+                    metadata,
+                    thresholdEvaluations);
+            }
+
+            var financeRisk = EvaluateFinanceRiskPolicy(request, registeredTool.FinanceRiskClassification);
+            thresholdEvaluations.AddRange(financeRisk.ThresholdEvaluations);
+            metadata["riskPolicyVersion"] = JsonValue.Create(registeredTool.FinanceRiskClassification.PolicyVersion);
+            metadata["financeApprovalPolicyVersion"] = JsonValue.Create(financeRisk.CompanyPolicyVersion);
+            metadata["riskPolicyState"] = JsonValue.Create(financeRisk.State);
+            metadata["authoritativeSensitiveAction"] = JsonValue.Create(true);
+            metadata["riskClassification"] = CreateRiskClassificationMetadata(registeredTool.FinanceRiskClassification);
+            metadata["financeRiskEvaluation"] = financeRisk.Metadata;
+
+            if (financeRisk.RequiresApproval)
+            {
+                approvalRequirement = new PolicyDecisionApprovalRequirementDto(
+                    "finance_risk_policy",
+                    null,
+                    financeRisk.PolicySource,
+                    registeredTool.FinanceRiskClassification.ThresholdCategory,
+                    null,
+                    request.FinanceRiskContext?.Amount,
+                    financeRisk.ConfiguredAmountLimit,
+                    [normalizedAction],
+                    [toolName],
+                    normalizedScope is null ? [] : [normalizedScope]);
+                return RequireApproval(
+                    request,
+                    normalizedAction,
+                    metadata,
+                    [PolicyDecisionReasonCodes.SensitiveActionRequiresApproval,
+                        PolicyDecisionReasonCodes.FinanceApprovalPolicyRequiresReview],
+                    financeRisk.Explanation,
+                    thresholdEvaluations,
+                    approvalRequirement);
+            }
+
+            metadata["boundedFinanceExceptionApplied"] = JsonValue.Create(true);
+        }
 
         if (autonomyLevel == AgentAutonomyLevel.Level0 && actionType != ToolActionType.Read)
         {
@@ -658,6 +714,7 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
             ["policyDecisionSchemaVersion"] = JsonValue.Create(PolicyDecisionSchemaVersions.V1),
             ["policyMode"] = JsonValue.Create("default_deny"),
             ["sensitiveAction"] = JsonValue.Create(request.SensitiveAction),
+            ["requestedSensitiveAction"] = JsonValue.Create(request.SensitiveAction),
             ["executionId"] = JsonValue.Create(request.ExecutionId),
             ["correlationId"] = string.IsNullOrWhiteSpace(request.CorrelationId) ? null : JsonValue.Create(request.CorrelationId)
         };
@@ -973,7 +1030,8 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         PolicyDecisionReasonCodes.ScopeNotPermitted or PolicyDecisionReasonCodes.ScopeContextMissing or PolicyDecisionReasonCodes.DataScopeViolation => "scope",
         PolicyDecisionReasonCodes.ApprovalRequiredByPolicy or PolicyDecisionReasonCodes.ApprovalRouteMissing or PolicyDecisionReasonCodes.ApprovalRequired => "approval",
         PolicyDecisionReasonCodes.ThresholdContextMissing or PolicyDecisionReasonCodes.ThresholdConfigurationMissing or PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "threshold",
-        PolicyDecisionReasonCodes.SensitiveActionRequiresApproval => "sensitivity",
+        PolicyDecisionReasonCodes.SensitiveActionRequiresApproval or PolicyDecisionReasonCodes.FinanceRiskPolicyMissing or PolicyDecisionReasonCodes.FinanceApprovalPolicyRequiresReview => "sensitivity",
+        PolicyDecisionReasonCodes.FinanceCategorizationExceptionApplied => "allowance",
         PolicyDecisionReasonCodes.PolicyChecksPassed => "allowance",
         _ => "policy"
     };
@@ -1006,8 +1064,280 @@ public sealed class PolicyGuardrailEngine : IPolicyGuardrailEngine
         PolicyDecisionReasonCodes.ThresholdConfigurationMissing => "Threshold policy is missing or invalid.",
         PolicyDecisionReasonCodes.ThresholdExceededRequiresApproval => "The request exceeded a configured threshold.",
         PolicyDecisionReasonCodes.SensitiveActionRequiresApproval => "The action is marked as sensitive and requires approval.",
+        PolicyDecisionReasonCodes.FinanceRiskPolicyMissing => "The Finance tool has no explicit backend risk classification.",
+        PolicyDecisionReasonCodes.FinanceApprovalPolicyRequiresReview => "The authoritative Finance policy requires human review.",
+        PolicyDecisionReasonCodes.FinanceCategorizationExceptionApplied => "A versioned bounded categorization exception allowed the action.",
         _ => "The action was evaluated by a default-deny guardrail rule."
     };
+
+    private static FinanceRiskEvaluation EvaluateFinanceRiskPolicy(
+        PolicyEvaluationRequest request,
+        FinanceToolRiskClassification classification)
+    {
+        var financePolicy = request.ApprovalThresholds.TryGetValue("financePolicy", out var policyNode)
+            ? policyNode as JsonObject
+            : null;
+        var companyPolicyVersion = ReadString(financePolicy, "policyVersion") ?? "company-finance-policy-unversioned";
+        var requireAllExecute = ReadBooleanFailSafe(financePolicy, "requireApprovalForExecute", out var executeRuleState);
+        var explicitToolRule = ContainsIdentifierFailSafe(financePolicy, "requireApprovalForTools", classification.ToolName, out var toolRuleState);
+        var explicitActionRule = ContainsIdentifierFailSafe(financePolicy, "requireApprovalForActions", ToolActionType.Execute.ToStorageValue(), out var actionRuleState);
+        var workflowRule = RequiresApprovalFromWorkflow(request.TriggerLogic, classification.ToolName, out var workflowRuleState);
+
+        var metadata = new JsonObject
+        {
+            ["toolName"] = classification.ToolName,
+            ["riskPolicyVersion"] = classification.PolicyVersion,
+            ["companyPolicyVersion"] = companyPolicyVersion,
+            ["requireApprovalForExecute"] = requireAllExecute,
+            ["requireApprovalForExecuteState"] = executeRuleState,
+            ["explicitToolRuleMatched"] = explicitToolRule,
+            ["explicitToolRuleState"] = toolRuleState,
+            ["explicitActionRuleMatched"] = explicitActionRule,
+            ["explicitActionRuleState"] = actionRuleState,
+            ["workflowRuleMatched"] = workflowRule,
+            ["workflowRuleState"] = workflowRuleState,
+            ["backendContextVerified"] = request.FinanceRiskContext?.BackendVerified ?? false,
+            ["evidenceSource"] = request.FinanceRiskContext?.EvidenceSource
+        };
+        var evaluations = new List<PolicyDecisionThresholdEvaluationDto>();
+
+        if (requireAllExecute || explicitToolRule || explicitActionRule || workflowRule)
+        {
+            evaluations.Add(new PolicyDecisionThresholdEvaluationDto(
+                "finance_policy", "approval_rule", 1m, 1m, false, true, true, "policy_requires_review"));
+            metadata["decision"] = "approval_required";
+            return new FinanceRiskEvaluation(true, "configured_approval_rule",
+                "The effective Finance approval policy requires review for this execute action.",
+                requireAllExecute ? "approval_thresholds.financePolicy.requireApprovalForExecute"
+                    : workflowRule ? "trigger_logic.workflowCapabilities.requiresApproval"
+                    : "approval_thresholds.financePolicy.explicit_rules",
+                companyPolicyVersion, null, evaluations, metadata);
+        }
+
+        if (string.Equals(classification.DefaultApprovalBehavior,
+                FinanceToolApprovalBehaviors.ReviewUnlessBoundedCategorizationException,
+                StringComparison.OrdinalIgnoreCase))
+        {
+            return EvaluateCategorizationException(request, classification, financePolicy, companyPolicyVersion,
+                evaluations, metadata);
+        }
+
+        evaluations.Add(new PolicyDecisionThresholdEvaluationDto(
+            classification.ThresholdCategory, "default_approval", null, null, false, true, true,
+            "risk_classification_requires_review"));
+        metadata["decision"] = "approval_required";
+        return new FinanceRiskEvaluation(true, "risk_classification_requires_review",
+            "The versioned Finance risk classification requires human review for this action.",
+            "finance_tool_risk_policy.default_approval_behavior", companyPolicyVersion, null,
+            evaluations, metadata);
+    }
+
+    private static FinanceRiskEvaluation EvaluateCategorizationException(
+        PolicyEvaluationRequest request,
+        FinanceToolRiskClassification classification,
+        JsonObject? financePolicy,
+        string companyPolicyVersion,
+        List<PolicyDecisionThresholdEvaluationDto> evaluations,
+        JsonObject metadata)
+    {
+        var exception = financePolicy?["categorizationException"] as JsonObject;
+        var exceptionVersion = ReadString(exception, "policyVersion");
+        var enabled = ReadBoolean(exception, "enabled") == true;
+        var maxAmount = ReadDecimal(exception, "maxAmount");
+        var maxBatchCount = ReadInt(exception, "maxBatchCount");
+        var requiredState = ReadString(exception, "requiredCurrentState");
+        var allowedCategories = ReadIdentifiers(exception, "allowedCategories", out var categoriesValid);
+        var context = request.FinanceRiskContext;
+
+        var configurationValid = enabled && !string.IsNullOrWhiteSpace(exceptionVersion) &&
+                                 maxAmount is >= 0 && maxBatchCount is > 0 and <= 100 &&
+                                 string.Equals(requiredState, "uncategorized", StringComparison.OrdinalIgnoreCase) &&
+                                 categoriesValid && allowedCategories.Count > 0 &&
+                                 allowedCategories.All(FinanceTransactionCategories.IsSupported);
+        var amountExceeded = !context?.Amount.HasValue ?? true;
+        amountExceeded = amountExceeded || (maxAmount.HasValue && Math.Abs(context!.Amount!.Value) > maxAmount.Value);
+        var countExceeded = context is null || context.ItemCount <= 0 || !maxBatchCount.HasValue || context.ItemCount > maxBatchCount.Value;
+        var stateAllowed = context is not null && string.Equals(context.CurrentState, requiredState, StringComparison.OrdinalIgnoreCase);
+        var categoryAllowed = context?.RequestedCategory is not null && allowedCategories.Contains(context.RequestedCategory);
+        var contextValid = context?.BackendVerified == true && context.Amount.HasValue && context.ItemCount > 0;
+        var exceptionApplied = configurationValid && contextValid && !amountExceeded && !countExceeded &&
+                               stateAllowed && categoryAllowed &&
+                               string.Equals(classification.Reversibility, FinanceToolReversibility.Reversible, StringComparison.Ordinal);
+
+        var evaluationState = !configurationValid ? "missing_or_invalid_exception_configuration"
+            : !contextValid ? "unverified_backend_context"
+            : exceptionApplied ? "within_bounded_exception" : "outside_bounded_exception";
+        evaluations.Add(new PolicyDecisionThresholdEvaluationDto(
+            classification.ThresholdCategory, "maxAmount", context?.Amount, maxAmount,
+            amountExceeded, !exceptionApplied, true, evaluationState));
+        evaluations.Add(new PolicyDecisionThresholdEvaluationDto(
+            classification.ThresholdCategory, "maxBatchCount", context?.ItemCount, maxBatchCount,
+            countExceeded, !exceptionApplied, true, evaluationState));
+
+        metadata["categorizationException"] = new JsonObject
+        {
+            ["policyVersion"] = exceptionVersion,
+            ["configurationValid"] = configurationValid,
+            ["applied"] = exceptionApplied,
+            ["maxAmount"] = maxAmount,
+            ["actualAmount"] = context?.Amount,
+            ["maxBatchCount"] = maxBatchCount,
+            ["actualBatchCount"] = context?.ItemCount,
+            ["requiredCurrentState"] = requiredState,
+            ["actualCurrentState"] = context?.CurrentState,
+            ["requestedCategory"] = context?.RequestedCategory,
+            ["categoryAllowed"] = categoryAllowed,
+            ["evaluationState"] = evaluationState
+        };
+        metadata["decision"] = exceptionApplied ? "bounded_exception_allowed" : "approval_required";
+
+        return exceptionApplied
+            ? new FinanceRiskEvaluation(false, "bounded_categorization_exception_applied",
+                "The action is within the versioned, reversible categorization exception.",
+                "approval_thresholds.financePolicy.categorizationException", exceptionVersion!, maxAmount,
+                evaluations, metadata)
+            : new FinanceRiskEvaluation(true, evaluationState,
+                "Transaction categorization requires review because no valid bounded exception covers this request.",
+                "finance_tool_risk_policy.default_approval_behavior", exceptionVersion ?? companyPolicyVersion,
+                maxAmount, evaluations, metadata);
+    }
+
+    private static JsonObject CreateRiskClassificationMetadata(FinanceToolRiskClassification classification) => new()
+    {
+        ["toolName"] = classification.ToolName,
+        ["policyVersion"] = classification.PolicyVersion,
+        ["riskTier"] = classification.RiskTier,
+        ["reversibility"] = classification.Reversibility,
+        ["requiredActorPermission"] = classification.RequiredActorPermission,
+        ["defaultApprovalBehavior"] = classification.DefaultApprovalBehavior,
+        ["thresholdCategory"] = classification.ThresholdCategory,
+        ["requiresSegregation"] = classification.RequiresSegregation,
+        ["externalSideEffectClassification"] = classification.ExternalSideEffectClassification
+    };
+
+    private static string? ReadString(JsonObject? source, string key) =>
+        source?[key] is JsonValue value && value.TryGetValue<string>(out var text) && !string.IsNullOrWhiteSpace(text)
+            ? text.Trim()
+            : null;
+
+    private static bool? ReadBoolean(JsonObject? source, string key) =>
+        source?[key] is JsonValue value && value.TryGetValue<bool>(out var result) ? result : null;
+
+    private static bool ReadBooleanFailSafe(JsonObject? source, string key, out string state)
+    {
+        if (source is null || !source.TryGetPropertyValue(key, out var node) || node is null)
+        {
+            state = "not_configured";
+            return false;
+        }
+        if (node is JsonValue value && value.TryGetValue<bool>(out var result))
+        {
+            state = "configured";
+            return result;
+        }
+        state = "invalid_fail_safe_review";
+        return true;
+    }
+
+    private static decimal? ReadDecimal(JsonObject? source, string key)
+    {
+        if (source?[key] is not JsonValue value) return null;
+        if (value.TryGetValue<decimal>(out var decimalValue)) return decimalValue;
+        if (value.TryGetValue<double>(out var doubleValue)) return (decimal)doubleValue;
+        if (value.TryGetValue<int>(out var intValue)) return intValue;
+        return null;
+    }
+
+    private static int? ReadInt(JsonObject? source, string key) =>
+        source?[key] is JsonValue value && value.TryGetValue<int>(out var result) ? result : null;
+
+    private static HashSet<string> ReadIdentifiers(JsonObject? source, string key, out bool valid)
+    {
+        valid = false;
+        if (source?[key] is not JsonArray array) return new(StringComparer.OrdinalIgnoreCase);
+        var values = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var node in array)
+        {
+            if (node is not JsonValue value || !value.TryGetValue<string>(out var text) || string.IsNullOrWhiteSpace(text))
+                return new(StringComparer.OrdinalIgnoreCase);
+            values.Add(FinanceTransactionCategories.Normalize(text));
+        }
+        valid = true;
+        return values;
+    }
+
+    private static bool ContainsIdentifierFailSafe(JsonObject? source, string key, string expected, out string state)
+    {
+        if (source is null || !source.TryGetPropertyValue(key, out var node) || node is null)
+        {
+            state = "not_configured";
+            return false;
+        }
+        if (node is not JsonArray array)
+        {
+            state = "invalid_fail_safe_review";
+            return true;
+        }
+        var matched = false;
+        foreach (var item in array)
+        {
+            if (item is not JsonValue value ||
+                !value.TryGetValue<string>(out var text) ||
+                string.IsNullOrWhiteSpace(text))
+            {
+                state = "invalid_fail_safe_review";
+                return true;
+            }
+
+            matched |= string.Equals(text, expected, StringComparison.OrdinalIgnoreCase);
+        }
+
+        state = "configured";
+        return matched;
+    }
+
+    private static bool RequiresApprovalFromWorkflow(
+        IReadOnlyDictionary<string, JsonNode?>? triggerLogic,
+        string toolName,
+        out string state)
+    {
+        state = "not_configured";
+        if (triggerLogic is null || !triggerLogic.TryGetValue("workflowCapabilities", out var node) || node is null)
+            return false;
+        if (node is not JsonObject workflow || !workflow.TryGetPropertyValue("requiresApproval", out var required) || required is null)
+            return false;
+        if (required is not JsonArray array)
+        {
+            state = "invalid_fail_safe_review";
+            return true;
+        }
+        var matched = false;
+        foreach (var item in array)
+        {
+            if (item is not JsonValue value ||
+                !value.TryGetValue<string>(out var text) ||
+                string.IsNullOrWhiteSpace(text))
+            {
+                state = "invalid_fail_safe_review";
+                return true;
+            }
+
+            matched |= string.Equals(text, toolName, StringComparison.OrdinalIgnoreCase);
+        }
+
+        state = "configured";
+        return matched;
+    }
+
+    private sealed record FinanceRiskEvaluation(
+        bool RequiresApproval,
+        string State,
+        string Explanation,
+        string PolicySource,
+        string CompanyPolicyVersion,
+        decimal? ConfiguredAmountLimit,
+        IReadOnlyList<PolicyDecisionThresholdEvaluationDto> ThresholdEvaluations,
+        JsonObject Metadata);
 
     private static bool TryGetIdentifierSet(
         JsonObject values,

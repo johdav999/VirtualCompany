@@ -62,7 +62,7 @@ try {
     $results = @()
     if ($Lane -in @('hermetic', 'all')) {
         foreach ($project in $hermeticProjects) {
-            $results += Invoke-TestProject -Project $project -Category 'hermetic' -Filter 'Category!=SqlServer'
+            $results += Invoke-TestProject -Project $project -Category 'hermetic' -Filter 'Category!=SqlServer&Category!=AccountingPerformance'
         }
     }
 

@@ -221,6 +221,7 @@ The current consolidation references are stored in `docs/design/references/`:
 - `agent-team-kanban-reference.png`
 - `work-center-reference.png`
 - `agent-settings-reference.png`
+- `agent-authority-approval-reference.png`
 - `finance-consolidated-overview-reference.png`
 - `finance-supplier-bills-reference.png`
 - `sales-overview-reference.png`

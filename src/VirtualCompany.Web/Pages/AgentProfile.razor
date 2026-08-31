@@ -3,9 +3,11 @@
 @using System.Text
 @using System.Text.Json.Nodes
 @using Microsoft.AspNetCore.Components
+@using VirtualCompany.Shared
 @using VirtualCompany.Web.Services
 @inject OnboardingApiClient OnboardingApiClient
 @inject AgentApiClient AgentApiClient
+@inject ApprovalApiClient ApprovalApiClient
 @inject NavigationManager Navigation
 @inject IStringLocalizer<AgentsResources> AgentText
 @inject IStringLocalizer<CommonResources> CommonText
@@ -220,6 +222,155 @@ else
             </div>
         </section>
 
+        <section class="agent-authority-workspace" aria-labelledby="agent-authority-title">
+            <header class="agent-authority-workspace__header">
+                <div>
+                    <span class="dashboard-kicker">@AgentText["AuthorityAndApprovals"]</span>
+                    <h2 id="agent-authority-title">@AgentText["WhatThisAgentCanDo"]</h2>
+                    <p>@AgentText["AuthorityWorkspaceDescription"]</p>
+                </div>
+                @if (capabilityCatalog is not null)
+                {
+                    <span class="agent-authority-generated" title="@FormatDate(capabilityCatalog.GeneratedUtc)">
+                        <span class="bi bi-arrow-repeat" aria-hidden="true"></span>
+                        @AgentText["AuthorityChecked", FormatRelativeDate(capabilityCatalog.GeneratedUtc)]
+                    </span>
+                }
+            </header>
+
+            @if (!currentProfile.Visibility.CanViewPermissions)
+            {
+                <div class="agent-authority-state is-empty">
+                    <span class="bi bi-lock" aria-hidden="true"></span>
+                    <div><strong>@AgentText["AuthorityRestricted"]</strong><p>@AgentText["HiddenForMembershipRole"]</p></div>
+                </div>
+            }
+            else if (isAuthorityLoading)
+            {
+                <div class="agent-authority-state" role="status" aria-live="polite">
+                    <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+                    <div><strong>@AgentText["LoadingAuthority"]</strong><p>@AgentText["LoadingAuthorityDescription"]</p></div>
+                </div>
+            }
+            else if (!string.IsNullOrWhiteSpace(authorityErrorMessage))
+            {
+                <div class="agent-authority-state is-error" role="alert">
+                    <span class="bi bi-exclamation-triangle" aria-hidden="true"></span>
+                    <div><strong>@AgentText["AuthorityUnavailable"]</strong><p>@authorityErrorMessage</p></div>
+                    <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="LoadAuthorityWorkspaceAsync">@CommonText["Retry"]</button>
+                </div>
+            }
+            else if (capabilityRows.Count == 0)
+            {
+                <div class="agent-authority-state is-empty">
+                    <span class="bi bi-inbox" aria-hidden="true"></span>
+                    <div><strong>@AgentText["NoAuthorityConfigured"]</strong><p>@AgentText["NoAuthorityConfiguredDescription"]</p></div>
+                </div>
+            }
+            else
+            {
+                <div class="agent-authority-grid">
+                    <article class="agent-authority-card agent-authority-card--matrix">
+                        <header>
+                            <div><span class="bi bi-shield-check" aria-hidden="true"></span><h3>@AgentText["CapabilityAccess"]</h3></div>
+                            <p>@AgentText["CapabilityAccessDescription"]</p>
+                        </header>
+                        <div class="agent-authority-table-wrap">
+                            <table class="agent-authority-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">@AgentText["Capability"]</th>
+                                        <th scope="col">@AgentText["ActionMode"]</th>
+                                        <th scope="col">@AgentText["ActorPermission"]</th>
+                                        <th scope="col">@AgentText["ApprovalBehavior"]</th>
+                                        <th scope="col">@AgentText["IntegrationAndReadiness"]</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    @foreach (var row in capabilityRows)
+                                    {
+                                        <tr>
+                                            <td data-label="@AgentText["Capability"]"><strong>@Humanize(row.ToolName)</strong><small>@AgentText[AgentAuthorityTransparencyPresenter.StateExplanationKey(row.ReasonCode)]</small></td>
+                                            <td data-label="@AgentText["ActionMode"]"><span class="agent-authority-mode is-@row.ActionMode">@FormatActionMode(row.ActionMode)</span></td>
+                                            <td data-label="@AgentText["ActorPermission"]">@FormatActorPermission(row.ActorPermission)</td>
+                                            <td data-label="@AgentText["ApprovalBehavior"]">@FormatApprovalRequirement(row.ApprovalRequirement)</td>
+                                            <td data-label="@AgentText["IntegrationAndReadiness"]">
+                                                <AgentAuthorityStateBadge State="@row.State" />
+                                                <small>@FormatIntegrationState(row.IntegrationState)</small>
+                                            </td>
+                                        </tr>
+                                    }
+                                </tbody>
+                            </table>
+                        </div>
+                    </article>
+
+                    <article class="agent-authority-card agent-authority-card--approval">
+                        <header>
+                            <div><span class="bi bi-clipboard-check" aria-hidden="true"></span><h3>@AgentText["ExecutionPreview"]</h3></div>
+                            <p>@AgentText["ExecutionPreviewDescription"]</p>
+                        </header>
+                        @if (approvalPreview is null)
+                        {
+                            <div class="agent-authority-preview-empty">
+                                <span class="bi bi-check2-circle" aria-hidden="true"></span>
+                                <strong>@AgentText["NoAgentApprovals"]</strong>
+                                <p>@AgentText["NoAgentApprovalsDescription"]</p>
+                            </div>
+                        }
+                        else
+                        {
+                            var preview = approvalPreview;
+                            <div class="agent-authority-preview-heading">
+                                <div>
+                                    <span>@AgentText["LatestApprovalRequest"]</span>
+                                    <strong>@(string.IsNullOrWhiteSpace(preview.TargetSummary) ? AgentText["ApprovalTargetFallback"] : preview.TargetSummary)</strong>
+                                </div>
+                                <AgentAuthorityStateBadge State="@preview.Status" IsApprovalStatus="true" />
+                            </div>
+
+                            @if (AgentAuthorityTransparencyPresenter.RequiresFreshReview(preview.Status))
+                            {
+                                <div class="agent-authority-stale" role="status"><span class="bi bi-exclamation-octagon" aria-hidden="true"></span>@AgentText["ApprovalNeedsFreshReview"]</div>
+                            }
+
+                            <dl class="agent-authority-preview-list">
+                                <div><dt>@AgentText["RequestedEffect"]</dt><dd>@FormatRequestedEffect(preview)</dd></div>
+                                <div><dt>@AgentText["EvidenceAge"]</dt><dd title="@FormatDate(preview.EvidenceAt)">@FormatRelativeDate(preview.EvidenceAt)</dd></div>
+                                <div><dt>@AgentText["RiskTier"]</dt><dd><span class="agent-authority-risk is-@NormalizeTone(preview.RiskTier)">@FormatRiskTier(preview.RiskTier)</span></dd></div>
+                                <div><dt>@AgentText["ApproverRequirement"]</dt><dd>@FormatApprover(preview)</dd></div>
+                                <div><dt>@AgentText["ApprovalExpiry"]</dt><dd>@(preview.ExpiresAt is DateTime expiresAt ? FormatDate(expiresAt) : AgentText["NoApprovalExpiry"])</dd></div>
+                            </dl>
+
+                            <nav class="agent-authority-preview-links" aria-label="@AgentText["ApprovalEvidenceLinks"]">
+                                @if (BuildTargetHref(preview) is { } targetHref)
+                                {
+                                    <a href="@targetHref"><span class="bi bi-box-arrow-up-right" aria-hidden="true"></span>@AgentText["OpenTargetRecord"]</a>
+                                }
+                                <a href="@BuildApprovalHref(preview.ApprovalId)"><span class="bi bi-check2-square" aria-hidden="true"></span>@AgentText["OpenApproval"]</a>
+                                <a href="@BuildAuditHref()"><span class="bi bi-journal-text" aria-hidden="true"></span>@AgentText["OpenAuditTrail"]</a>
+                            </nav>
+                        }
+                    </article>
+                </div>
+
+                @if (CanViewOperatorTools)
+                {
+                    <aside class="agent-authority-operator" aria-labelledby="agent-authority-operator-title">
+                        <div><span class="bi bi-wrench-adjustable-circle" aria-hidden="true"></span><div><strong id="agent-authority-operator-title">@AgentText["OperatorTools"]</strong><p>@AgentText["OperatorToolsDescription"]</p></div></div>
+                        <nav aria-label="@AgentText["OperatorTools"]">
+                            @if (approvalPreview?.ToolExecutionId is Guid executionId)
+                            {
+                                <a href="@FinanceRoutes.BuildTransparencyToolExecutionDetailPath(executionId, CompanyId)">@AgentText["OpenToolExecution"]</a>
+                            }
+                            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.TransparencyToolRegistry, CompanyId)">@AgentText["OpenToolRegistry"]</a>
+                            <a href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.TransparencyEvents, CompanyId)">@AgentText["OpenTransparencyEvents"]</a>
+                        </nav>
+                    </aside>
+                }
+            }
+        </section>
+
         <section class="agent-profile-details">
             <nav class="agent-profile-tabs" aria-label="@AgentText["ProfileDetails"]">
                 @foreach (var tab in DetailTabs)
@@ -314,6 +465,11 @@ else
     private string selectedTab = "responsibilities";
     private AgentProfileViewModel? profile;
     private AgentStatusDetailViewModel? statusDetail;
+    private AgentCapabilityCatalogViewModel? capabilityCatalog;
+    private AgentApprovalPreview? approvalPreview;
+    private IReadOnlyList<AgentAuthorityCapabilityRow> capabilityRows = [];
+    private bool isAuthorityLoading;
+    private string? authorityErrorMessage;
 
     private CompanyMembershipViewModel? ActiveMembership =>
         CompanyId is Guid companyId
@@ -327,6 +483,8 @@ else
         string.Equals(ActiveMembership?.MembershipRole, "admin", StringComparison.OrdinalIgnoreCase) ||
         string.Equals(ActiveMembership?.MembershipRole, "manager", StringComparison.OrdinalIgnoreCase);
 
+    private bool CanViewOperatorTools => FinanceAccess.CanAccessSandboxAdmin(ActiveMembership?.MembershipRole);
+
     protected override async Task OnParametersSetAsync()
     {
         isLoading = true;
@@ -334,6 +492,10 @@ else
         profile = null;
         currentUser = null;
         statusDetail = null;
+        capabilityCatalog = null;
+        approvalPreview = null;
+        capabilityRows = [];
+        authorityErrorMessage = null;
 
         try
         {
@@ -363,6 +525,9 @@ else
             {
                 profile = await AgentApiClient.GetProfileViewAsync(companyId, AgentId);
                 statusDetail = await AgentApiClient.GetStatusDetailAsync(companyId, AgentId);
+                isLoading = false;
+                await InvokeAsync(StateHasChanged);
+                await LoadAuthorityWorkspaceAsync();
             }
         }
         catch (InvalidOperationException)
@@ -380,6 +545,115 @@ else
         }
     }
 
+    private async Task LoadAuthorityWorkspaceAsync()
+    {
+        if (CompanyId is not Guid companyId || profile?.Visibility.CanViewPermissions != true)
+        {
+            return;
+        }
+
+        isAuthorityLoading = true;
+        authorityErrorMessage = null;
+        try
+        {
+            var capabilitiesTask = AgentApiClient.GetCapabilitiesAsync(companyId, AgentId);
+            var approvalsTask = ApprovalApiClient.ListAsync(companyId, status: null);
+            await Task.WhenAll(capabilitiesTask, approvalsTask);
+
+            capabilityCatalog = await capabilitiesTask;
+            capabilityRows = AgentAuthorityTransparencyPresenter.SelectCapabilityRows(capabilityCatalog);
+            approvalPreview = AgentAuthorityTransparencyPresenter.CreateApprovalPreview(await approvalsTask, AgentId);
+        }
+        catch (OnboardingApiException)
+        {
+            capabilityCatalog = null;
+            approvalPreview = null;
+            capabilityRows = [];
+            authorityErrorMessage = AgentText["AuthorityCouldNotLoad"];
+        }
+        finally
+        {
+            isAuthorityLoading = false;
+        }
+    }
+
+    private string? BuildTargetHref(AgentApprovalPreview preview) =>
+        CompanyId is Guid companyId
+            ? AgentAuthorityTransparencyPresenter.BuildTargetHref(preview, companyId)
+            : null;
+
+    private string BuildApprovalHref(Guid approvalId) => $"/approvals?companyId={CompanyId:D}&approvalId={approvalId:D}";
+
+    private string BuildAuditHref() => $"/audit?companyId={CompanyId:D}";
+
+    private string FormatActionMode(string value) => value switch
+    {
+        "read" => AgentText["AuthorityActionRead"],
+        "recommend" => AgentText["AuthorityActionRecommend"],
+        "execute" => AgentText["AuthorityActionExecute"],
+        _ => AgentText["Unknown"]
+    };
+
+    private string FormatActorPermission(string value) => value.ToLowerInvariant() switch
+    {
+        "finance.view" => AgentText["PermissionFinanceView"],
+        "finance.edit" => AgentText["PermissionFinanceEdit"],
+        "finance.approve" => AgentText["PermissionFinanceApprove"],
+        "finance.integrations.manage" => AgentText["PermissionFinanceIntegrations"],
+        "finance.accounting.view" => AgentText["PermissionAccountingView"],
+        "finance.accounting.admin" => AgentText["PermissionAccountingAdmin"],
+        "membership.access" => AgentText["PermissionMembershipAccess"],
+        _ => Humanize(value)
+    };
+
+    private string FormatApprovalRequirement(string value) => value switch
+    {
+        "required" or "always_review" => AgentText["ApprovalRequiredBeforeExecution"],
+        "policy_dependent" or "review_unless_bounded_categorization_exception" => AgentText["ApprovalDependsOnPolicy"],
+        _ => AgentText["ApprovalNotRequired"]
+    };
+
+    private string FormatIntegrationState(string value) => value switch
+    {
+        "ready" => AgentText["IntegrationReady"],
+        "setup_required" => AgentText["IntegrationSetupRequired"],
+        "unavailable" => AgentText["IntegrationUnavailable"],
+        _ => AgentText["IntegrationNotAvailable"]
+    };
+
+    private string FormatRequestedEffect(AgentApprovalPreview preview) =>
+        string.IsNullOrWhiteSpace(preview.ToolName)
+            ? AgentText["RequestedEffectUnavailable"]
+            : AgentText["RequestedEffectFormat", FormatActionMode(preview.ActionType ?? string.Empty), Humanize(preview.ToolName)];
+
+    private string FormatRiskTier(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "low" => AgentText["RiskLow"],
+        "high" => AgentText["RiskHigh"],
+        "critical" => AgentText["RiskCritical"],
+        _ => AgentText["RiskNotClassified"]
+    };
+
+    private string FormatApprover(AgentApprovalPreview preview)
+    {
+        var approver = preview.RequiredUserId is Guid
+            ? AgentText["NamedApprover"]
+            : !string.IsNullOrWhiteSpace(preview.RequiredRole)
+                ? AgentText["ApproverRole", Humanize(preview.RequiredRole)]
+                : AgentText["ApproverAssignedByPolicy"];
+        return preview.RequiresIndependentApproval
+            ? AgentText["IndependentApproverRequired", approver]
+            : approver;
+    }
+
+    private static string NormalizeTone(string? value) => value?.Trim().ToLowerInvariant() switch
+    {
+        "low" => "low",
+        "high" => "high",
+        "critical" => "critical",
+        _ => "neutral"
+    };
+
     private static IReadOnlyList<AgentRecentActivityViewModel> GetRecentActivity(AgentProfileViewModel currentProfile) =>
         currentProfile.RecentActivity.OrderByDescending(item => item.OccurredUtc).ToArray();
 
@@ -387,7 +661,13 @@ else
     {
         if (IsFinanceProfile(currentProfile))
         {
-            return AgentFinancePresentation.GetCapabilitySummaries(currentProfile);
+            var effective = currentProfile.EffectiveAuthority.Tools
+                .Where(item => item.State is "available" or "approval_required")
+                .Select(item => $"{Humanize(item.ToolName)} · {Humanize(item.ActionType)} · {Humanize(item.Scope)}")
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(10)
+                .ToArray();
+            return effective.Length == 0 ? [AgentText["RecommendedNextActions"]] : effective;
         }
 
         var capabilities = TryReadStringArray(currentProfile.ToolPermissions, "allowed")

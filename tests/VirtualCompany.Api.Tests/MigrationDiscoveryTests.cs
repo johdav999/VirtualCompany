@@ -19,7 +19,7 @@ public sealed class MigrationDiscoveryTests
     [Fact]
     public void Every_migration_has_discovery_metadata_for_virtual_company_context()
     {
-        var migrationTypes = typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection).Assembly
+        var migrationTypes = typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker).Assembly
             .GetTypes()
             .Where(type => !type.IsAbstract && typeof(Migration).IsAssignableFrom(type))
             .OrderBy(type => type.Name)

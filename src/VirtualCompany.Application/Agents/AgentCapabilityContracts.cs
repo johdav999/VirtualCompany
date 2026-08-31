@@ -87,7 +87,10 @@ public sealed record AgentCapabilityCatalogDto(
     string AgentStatus,
     string AutonomyLevel,
     IReadOnlyList<AgentCapabilityDto> Capabilities,
-    DateTime GeneratedUtc);
+    DateTime GeneratedUtc,
+    string AuthorityVersion,
+    string AuthorityHash,
+    IReadOnlyList<EffectiveAgentToolAuthorityDto> EffectiveTools);
 
 public interface IAgentCapabilityCatalog
 {

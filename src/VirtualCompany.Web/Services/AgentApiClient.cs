@@ -1073,6 +1073,53 @@ public sealed class AgentProfileViewModel
     public List<AgentProfileSectionViewModel> Sections { get; set; } = [];
     public AgentProfileAnalyticsPreviewViewModel AnalyticsPreview { get; set; } = new();
     public DateTime UpdatedUtc { get; set; }
+    public AgentEffectiveAuthorityViewModel EffectiveAuthority { get; set; } = new();
+}
+
+public sealed class AgentEffectiveAuthorityViewModel
+{
+    public Guid CompanyId { get; set; }
+    public Guid AgentId { get; set; }
+    public string AgentName { get; set; } = string.Empty;
+    public string Department { get; set; } = string.Empty;
+    public string AgentStatus { get; set; } = string.Empty;
+    public bool CanReceiveAssignments { get; set; }
+    public string AutonomyLevel { get; set; } = string.Empty;
+    public string AuthorityVersion { get; set; } = string.Empty;
+    public string AuthorityHash { get; set; } = string.Empty;
+    public List<AgentAuthorityGrantViewModel> ConfiguredGrants { get; set; } = [];
+    public List<AgentAuthorityGrantViewModel> CompatibilityGrants { get; set; } = [];
+    public List<EffectiveAgentToolAuthorityViewModel> Tools { get; set; } = [];
+    public DateTime GeneratedUtc { get; set; }
+}
+
+public sealed class AgentAuthorityGrantViewModel
+{
+    public string ToolName { get; set; } = string.Empty;
+    public string ToolVersion { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
+    public string Scope { get; set; } = string.Empty;
+    public string Source { get; set; } = string.Empty;
+    public string SourceVersion { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class EffectiveAgentToolAuthorityViewModel
+{
+    public string ToolName { get; set; } = string.Empty;
+    public string ToolVersion { get; set; } = string.Empty;
+    public string ActionType { get; set; } = string.Empty;
+    public string Scope { get; set; } = string.Empty;
+    public string State { get; set; } = string.Empty;
+    public string ReasonCode { get; set; } = string.Empty;
+    public string Explanation { get; set; } = string.Empty;
+    public string? GrantSource { get; set; }
+    public string? GrantSourceVersion { get; set; }
+    public List<string> RequiredCompanyPolicies { get; set; } = [];
+    public List<string> RequiredFinancePermissions { get; set; } = [];
+    public string ActorPermission { get; set; } = string.Empty;
+    public string ApprovalBehavior { get; set; } = string.Empty;
+    public string IntegrationState { get; set; } = string.Empty;
 }
 
 public sealed class AgentConfigurationViewModel
@@ -1197,6 +1244,9 @@ public sealed class AgentCapabilityCatalogViewModel
     public string AutonomyLevel { get; set; } = string.Empty;
     public List<AgentCapabilityViewModel> Capabilities { get; set; } = [];
     public DateTime GeneratedUtc { get; set; }
+    public string AuthorityVersion { get; set; } = string.Empty;
+    public string AuthorityHash { get; set; } = string.Empty;
+    public List<EffectiveAgentToolAuthorityViewModel> EffectiveTools { get; set; } = [];
 }
 
 public sealed class AgentCapabilityViewModel
@@ -1228,7 +1278,7 @@ public sealed class AgentAiClaimViewModel { public string Text { get; set; } = s
 public sealed class AgentAiSourceViewModel { public string Id { get; set; } = string.Empty; public string Type { get; set; } = string.Empty; public string Title { get; set; } = string.Empty; public string Snippet { get; set; } = string.Empty; }
 public sealed class AgentWorkPriorityViewModel { public string SourceId { get; set; } = string.Empty; public string Title { get; set; } = string.Empty; public string Status { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public int DeterministicScore { get; set; } public List<string> ReasonCodes { get; set; } = []; public string AiRationale { get; set; } = string.Empty; public decimal Confidence { get; set; } }
 public sealed class GenerateAgentPlanRequest { public string Objective { get; set; } = string.Empty; public DateTime? TargetUtc { get; set; } public int MaximumSteps { get; set; } = 8; }
-public sealed class AgentPlanViewModel { public Guid RunId { get; set; } public string Status { get; set; } = string.Empty; public string Objective { get; set; } = string.Empty; public bool RequiresReview { get; set; } public List<AgentPlanStepViewModel> Steps { get; set; } = []; public List<string> ValidationErrors { get; set; } = []; }
+public sealed class AgentPlanViewModel { public Guid RunId { get; set; } public string Status { get; set; } = string.Empty; public string Objective { get; set; } = string.Empty; public bool RequiresReview { get; set; } public List<AgentPlanStepViewModel> Steps { get; set; } = []; public List<string> ValidationErrors { get; set; } = []; public string? EffectiveAuthorityVersion { get; set; } public string? EffectiveAuthorityHash { get; set; } }
 public sealed class AgentPlanStepViewModel { public int Order { get; set; } public string Title { get; set; } = string.Empty; public string Description { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public bool RequiresApproval { get; set; } public string CompletionEvidence { get; set; } = string.Empty; public Guid? CommittedTaskId { get; set; } }
 public sealed class CreateAgentHandoffRequest { public string Type { get; set; } = string.Empty; public Guid ReceivingAgentId { get; set; } public string Objective { get; set; } = string.Empty; public string RequestedOutcome { get; set; } = string.Empty; public DateTime? DueUtc { get; set; } public List<string> SourceIds { get; set; } = []; }
 public sealed class TransitionAgentHandoffRequest { public string Status { get; set; } = string.Empty; public string? Summary { get; set; } public decimal? Confidence { get; set; } }

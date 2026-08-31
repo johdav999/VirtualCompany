@@ -16,11 +16,15 @@ public sealed class SharedAgentAiDomainTests
     public void Run_completion_is_terminal_and_validates_confidence()
     {
         var run = new AgentOrchestrationRun(Guid.NewGuid(), Guid.NewGuid(), null, AgentCapabilityIds.Planning,
-            "1.0.0", "plan-v1", "1.0", "correlation");
+            "1.0.0", "plan-v1", "1.0", "correlation",
+            effectiveAuthorityVersion: AgentEffectiveAuthorityVersions.V1,
+            effectiveAuthorityHash: new string('a', 64));
 
         run.Complete("completed", "test", "deterministic", .8m, "Validated plan", "{}", "[]", 10, 20, 25);
 
         Assert.Equal("completed", run.Status);
+        Assert.Equal(AgentEffectiveAuthorityVersions.V1, run.EffectiveAuthorityVersion);
+        Assert.Equal(new string('a', 64), run.EffectiveAuthorityHash);
         Assert.Throws<InvalidOperationException>(() => run.Fail("failed", "late_failure", "Too late", 30));
     }
 

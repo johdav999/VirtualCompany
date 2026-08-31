@@ -46,19 +46,22 @@ public sealed class CompanyAgentService : ICompanyAgentService
     private readonly IAuditEventWriter _auditEventWriter;
     private readonly ICorrelationContextAccessor _correlationContextAccessor;
     private readonly ICompanyOutboxEnqueuer _outboxEnqueuer;
+    private readonly IAgentEffectiveAuthorityResolver _effectiveAuthorityResolver;
 
     public CompanyAgentService(
         VirtualCompanyDbContext dbContext,
         ICompanyMembershipContextResolver companyMembershipContextResolver,
         IAuditEventWriter auditEventWriter,
         ICorrelationContextAccessor correlationContextAccessor,
-        ICompanyOutboxEnqueuer outboxEnqueuer)
+        ICompanyOutboxEnqueuer outboxEnqueuer,
+        IAgentEffectiveAuthorityResolver effectiveAuthorityResolver)
     {
         _dbContext = dbContext;
         _companyMembershipContextResolver = companyMembershipContextResolver;
         _auditEventWriter = auditEventWriter;
         _correlationContextAccessor = correlationContextAccessor;
         _outboxEnqueuer = outboxEnqueuer;
+        _effectiveAuthorityResolver = effectiveAuthorityResolver;
     }
 
     public async Task<IReadOnlyList<AgentTemplateCatalogItemDto>> GetTemplatesAsync(Guid companyId, CancellationToken cancellationToken)
@@ -280,7 +283,9 @@ public sealed class CompanyAgentService : ICompanyAgentService
             .Take(8)
             .ToListAsync(cancellationToken);
 
-        return ToProfileViewDto(agent, membership.MembershipRole, executionSummary, approvalSummary, auditEvents, executionAttempts, approvalRequests);
+        var effectiveAuthority = await _effectiveAuthorityResolver.ResolveAsync(companyId, agentId, cancellationToken);
+        return ToProfileViewDto(agent, membership.MembershipRole, executionSummary, approvalSummary, auditEvents,
+            executionAttempts, approvalRequests, effectiveAuthority);
     }
 
     public async Task<IReadOnlyList<CompanyAgentSummaryDto>> GetRosterAsync(Guid companyId, CancellationToken cancellationToken)
@@ -772,7 +777,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
         AgentApprovalAggregate? approval,
         IReadOnlyList<AuditEvent> auditEvents,
         IReadOnlyList<ToolExecutionAttempt> executionAttempts,
-        IReadOnlyList<ApprovalRequest> approvalRequests)
+        IReadOnlyList<ApprovalRequest> approvalRequests,
+        AgentEffectiveAuthorityDto effectiveAuthority)
     {
         var visibility = BuildProfileVisibility(membershipRole);
         var workloadSummary = BuildWorkloadSummary(
@@ -831,7 +837,8 @@ public sealed class CompanyAgentService : ICompanyAgentService
             BuildAgentProfileRoute(agent.CompanyId, agent.Id),
             BuildProfileSections(visibility),
             BuildAnalyticsPreview(),
-            agent.UpdatedUtc);
+            agent.UpdatedUtc,
+            effectiveAuthority);
     }
 
     private static AgentConfigurationSettingsDto BuildConfigurationSettings(Agent agent) =>

@@ -259,7 +259,8 @@ public sealed record AgentProfileViewDto(
     string ProfileRoute,
     IReadOnlyList<AgentProfileSectionDto> Sections,
     AgentProfileAnalyticsPreviewDto AnalyticsPreview,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    AgentEffectiveAuthorityDto EffectiveAuthority);
 
 public sealed record CreateAgentFromTemplateCommand(
     string TemplateId,
@@ -336,7 +337,11 @@ public sealed record AgentRuntimeProfileDto(
     Dictionary<string, string> Briefing,
     bool CanReceiveAssignments,
     DateTime UpdatedUtc,
-    string AutonomyLevel);
+    string AutonomyLevel,
+    Dictionary<string, JsonNode?>? ConfiguredToolPermissions = null,
+    Dictionary<string, JsonNode?>? ConfiguredDataScopes = null,
+    string? EffectiveAuthorityVersion = null,
+    string? EffectiveAuthorityHash = null);
 
 public interface ICompanyAgentService
 {

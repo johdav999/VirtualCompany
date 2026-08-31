@@ -145,6 +145,9 @@ public sealed class ApprovalDecisionChainTests
     [InlineData(ApprovalRequestStatus.Rejected, "approval_rejected")]
     [InlineData(ApprovalRequestStatus.Expired, "approval_expired")]
     [InlineData(ApprovalRequestStatus.Cancelled, "approval_cancelled")]
+    [InlineData(ApprovalRequestStatus.Stale, "approval_stale")]
+    [InlineData(ApprovalRequestStatus.Superseded, "approval_superseded")]
+    [InlineData(ApprovalRequestStatus.Revoked, "approval_revoked")]
     public void Non_approved_approval_cannot_execute_guarded_action(ApprovalRequestStatus status, string reasonCode)
     {
         var approval = CreateApprovalWithStatus(status);
@@ -181,6 +184,36 @@ public sealed class ApprovalDecisionChainTests
         Assert.Throws<InvalidOperationException>(() => approval.RejectCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
         Assert.Throws<InvalidOperationException>(() => approval.ApproveCurrentStep(approval.Steps.Single().Id, Guid.NewGuid(), null));
         Assert.False(approval.CanExecuteGuardedAction);
+    }
+
+    [Theory]
+    [InlineData(ApprovalRequestStatus.Stale, "Target or policy changed.")]
+    [InlineData(ApprovalRequestStatus.Superseded, "A newer approval replaced this request.")]
+    [InlineData(ApprovalRequestStatus.Revoked, "Approval authority was revoked.")]
+    public void Invalidating_approval_records_explicit_terminal_state(
+        ApprovalRequestStatus status,
+        string summary)
+    {
+        var approval = CreateApproval(requiredRole: "manager");
+
+        switch (status)
+        {
+            case ApprovalRequestStatus.Stale:
+                approval.MarkStale(summary);
+                break;
+            case ApprovalRequestStatus.Superseded:
+                approval.MarkSuperseded(summary);
+                break;
+            case ApprovalRequestStatus.Revoked:
+                approval.MarkRevoked(summary);
+                break;
+        }
+
+        Assert.Equal(status, approval.Status);
+        Assert.Equal(summary, approval.DecisionSummary);
+        Assert.True(approval.IsTerminal);
+        Assert.False(approval.CanExecuteGuardedAction);
+        Assert.Null(approval.CurrentActionableStep);
     }
 
     [Fact]
@@ -229,6 +262,15 @@ public sealed class ApprovalDecisionChainTests
                 break;
             case ApprovalRequestStatus.Cancelled:
                 approval.MarkCancelled("superseded");
+                break;
+            case ApprovalRequestStatus.Stale:
+                approval.MarkStale("stale");
+                break;
+            case ApprovalRequestStatus.Superseded:
+                approval.MarkSuperseded("superseded");
+                break;
+            case ApprovalRequestStatus.Revoked:
+                approval.MarkRevoked("revoked");
                 break;
         }
 

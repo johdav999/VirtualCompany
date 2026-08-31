@@ -405,7 +405,7 @@ public sealed class FinanceInsightMigrationCompatibilityTests
         new(new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlServer(
                 connection,
-                sqlServer => sqlServer.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection).Assembly.GetName().Name))
+                sqlServer => sqlServer.MigrationsAssembly(typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker).Assembly.GetName().Name))
             .Options);
 
     private sealed class SqlServerTestDatabase : IAsyncDisposable

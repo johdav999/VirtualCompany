@@ -2,6 +2,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\VirtualCompany.Persistence\VirtualCompany.Persistence.csproj" />
+    <ProjectReference Include="..\VirtualCompany.Persistence.Migrations.History1\VirtualCompany.Persistence.Migrations.History1.csproj" />
+    <ProjectReference Include="..\VirtualCompany.Persistence.Migrations.History2\VirtualCompany.Persistence.Migrations.History2.csproj" />
+    <ProjectReference Include="..\VirtualCompany.Persistence.Migrations.History3\VirtualCompany.Persistence.Migrations.History3.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -12,15 +15,35 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.14" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Compile Remove="Persistence\Migrations\202603*.cs" />
+    <Compile Remove="Persistence\Migrations\202604*.cs" />
+    <Compile Remove="Persistence\Migrations\202605*.cs" />
+    <Compile Remove="Persistence\Migrations\202606*.cs" />
+    <Compile Remove="Persistence\Migrations\202607*.cs" />
+    <Compile Remove="Persistence\Migrations\2026080*.cs" />
+    <Compile Remove="Persistence\Migrations\20260812*.cs" />
+    <Compile Remove="Persistence\Migrations\20260818*.cs" />
+    <Compile Remove="Persistence\Migrations\20260819*.cs" />
+    <Compile Remove="Persistence\Migrations\20260820*.cs" />
+    <Compile Remove="Persistence\Migrations\20260821*.cs" />
+    <Compile Remove="Persistence\Migrations\20260822*.cs" />
+    <Compile Remove="Persistence\Migrations\20260823*.cs" />
+    <Compile Remove="Persistence\Migrations\20260824*.cs" />
+    <Compile Remove="Persistence\Migrations\20260825*.cs" />
+    <Compile Remove="Persistence\Migrations\20260826*.cs" />
+    <Compile Remove="Persistence\Migrations\20260828*.cs" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net9.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <!-- The generated EF migration set is large enough to trigger a Roslyn
-         AccessViolation on Windows. Keep compilation local and avoid analyzer
-         and debug-symbol work for generated migration sources. Migration
-         execution and EF design-time metadata are unaffected. -->
+    <!-- Immutable migration history is compiled by the bounded History
+         projects above. Keep each compiler invocation local and avoid analyzer
+         and debug-symbol work for generated migration sources. -->
     <UseSharedCompilation>false</UseSharedCompilation>
+    <ConcurrentBuild>false</ConcurrentBuild>
     <RunAnalyzersDuringBuild>false</RunAnalyzersDuringBuild>
     <DebugSymbols>false</DebugSymbols>
     <DebugType>none</DebugType>

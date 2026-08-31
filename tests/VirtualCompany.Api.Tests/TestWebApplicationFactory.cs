@@ -156,7 +156,7 @@ public class TestWebApplicationFactory : WebApplicationFactory<Program>
                 else
                 {
                     options.UseSqlServer(_sqlServerConnectionString, sqlServer => sqlServer.MigrationsAssembly(
-                        typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection)
+                        typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker)
                             .Assembly.GetName().Name));
                 }
                 if (_dbInterceptors.Count > 0) options.AddInterceptors(_dbInterceptors);

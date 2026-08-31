@@ -43,7 +43,8 @@ public enum ToolExecutionStatus
     AwaitingApproval = 3,
     Executed = 4,
     Failed = 5,
-    Rejected = 6
+    Rejected = 6,
+    ReconciliationRequired = 7
 }
 
 public static class AgentStatusValues
@@ -349,7 +350,8 @@ public static class ToolExecutionStatusValues
         [ToolExecutionStatus.AwaitingApproval] = "awaiting_approval",
         [ToolExecutionStatus.Executed] = "executed",
         [ToolExecutionStatus.Failed] = "failed",
-        [ToolExecutionStatus.Rejected] = "rejected"
+        [ToolExecutionStatus.Rejected] = "rejected",
+        [ToolExecutionStatus.ReconciliationRequired] = "reconciliation_required"
     };
 
     private static readonly IReadOnlyDictionary<string, ToolExecutionStatus> ReverseValues =
@@ -372,7 +374,10 @@ public enum ApprovalRequestStatus
     Approved = 2,
     Rejected = 3,
     Expired = 4,
-    Cancelled = 5
+    Cancelled = 5,
+    Stale = 6,
+    Superseded = 7,
+    Revoked = 8
 }
 
 public static class ApprovalRequestStatusValues
@@ -383,7 +388,10 @@ public static class ApprovalRequestStatusValues
         [ApprovalRequestStatus.Approved] = "approved",
         [ApprovalRequestStatus.Rejected] = "rejected",
         [ApprovalRequestStatus.Expired] = "expired",
-        [ApprovalRequestStatus.Cancelled] = "cancelled"
+        [ApprovalRequestStatus.Cancelled] = "cancelled",
+        [ApprovalRequestStatus.Stale] = "stale",
+        [ApprovalRequestStatus.Superseded] = "superseded",
+        [ApprovalRequestStatus.Revoked] = "revoked"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalRequestStatus> ReverseValues =

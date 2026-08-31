@@ -64,6 +64,7 @@ public sealed class DependencyInjectionArchitectureTests
         "AccountingScheduleGenerationBackgroundService",
         "AgentMemoryCandidateExpiryWorker",
         "AgentScheduledTriggerSchedulerBackgroundService",
+        "AuditPackageBackgroundService",
         "BankConsentRevocationBackgroundService",
         "BankFeedSynchronizationBackgroundService",
         "BriefingSchedulerBackgroundService",

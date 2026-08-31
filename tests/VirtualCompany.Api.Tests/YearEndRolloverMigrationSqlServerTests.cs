@@ -17,7 +17,7 @@ public sealed class YearEndRolloverMigrationSqlServerTests
         };
         var options = new DbContextOptionsBuilder<VirtualCompanyDbContext>()
             .UseSqlServer(builder.ConnectionString, sql => sql.MigrationsAssembly(
-                typeof(VirtualCompany.Persistence.Migrations.Persistence.Migrations.PersistPreferredCompanySelection)
+                typeof(VirtualCompany.Persistence.Migrations.Persistence.MigrationAssemblyMarker)
                     .Assembly.GetName().Name)).Options;
         await using var context = new VirtualCompanyDbContext(options, new UnscopedCompanyContextAccessor());
         try
