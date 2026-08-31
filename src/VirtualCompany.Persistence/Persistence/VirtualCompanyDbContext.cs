@@ -105,6 +105,22 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<DashboardWidgetConfig> DashboardWidgetConfigs => Set<DashboardWidgetConfig>();
     public DbSet<FinanceAccount> FinanceAccounts => Set<FinanceAccount>();
     public DbSet<AccountingConfiguration> AccountingConfigurations => Set<AccountingConfiguration>();
+    public DbSet<CompanyCurrencyDefinition> CompanyCurrencyDefinitions => Set<CompanyCurrencyDefinition>();
+    public DbSet<ExchangeRateSource> ExchangeRateSources => Set<ExchangeRateSource>();
+    public DbSet<ExchangeRateSet> ExchangeRateSets => Set<ExchangeRateSet>();
+    public DbSet<ExchangeRateObservation> ExchangeRateObservations => Set<ExchangeRateObservation>();
+    public DbSet<ExchangeRateEvidence> ExchangeRateEvidence => Set<ExchangeRateEvidence>();
+    public DbSet<ExchangeRateConversion> ExchangeRateConversions => Set<ExchangeRateConversion>();
+    public DbSet<ExchangeRateConversionLeg> ExchangeRateConversionLegs => Set<ExchangeRateConversionLeg>();
+    public DbSet<ExchangeRateRefreshJob> ExchangeRateRefreshJobs => Set<ExchangeRateRefreshJob>();
+    public DbSet<CurrencyRevaluationRun> CurrencyRevaluationRuns => Set<CurrencyRevaluationRun>();
+    public DbSet<CurrencyRevaluationPopulationItem> CurrencyRevaluationPopulationItems => Set<CurrencyRevaluationPopulationItem>();
+    public DbSet<CurrencyRevaluationRateBinding> CurrencyRevaluationRateBindings => Set<CurrencyRevaluationRateBinding>();
+    public DbSet<CurrencyRevaluationProposalLine> CurrencyRevaluationProposalLines => Set<CurrencyRevaluationProposalLine>();
+    public DbSet<CurrencyRevaluationReview> CurrencyRevaluationReviews => Set<CurrencyRevaluationReview>();
+    public DbSet<CurrencyRevaluationReconciliation> CurrencyRevaluationReconciliations => Set<CurrencyRevaluationReconciliation>();
+    public DbSet<CurrencyRevaluationAccountPolicy> CurrencyRevaluationAccountPolicies => Set<CurrencyRevaluationAccountPolicy>();
+    public DbSet<CurrencyRevaluationSchedule> CurrencyRevaluationSchedules => Set<CurrencyRevaluationSchedule>();
     public DbSet<AccountingConfigurationAccountRole> AccountingConfigurationAccountRoles => Set<AccountingConfigurationAccountRole>();
     public DbSet<AccountingPolicyPackSelection> AccountingPolicyPackSelections => Set<AccountingPolicyPackSelection>();
     public DbSet<CompanyStatutoryProfile> CompanyStatutoryProfiles => Set<CompanyStatutoryProfile>();
@@ -255,6 +271,13 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<SupplierSubscriptionBillMatch> SupplierSubscriptionBillMatches => Set<SupplierSubscriptionBillMatch>();
     public DbSet<SupplierSubscriptionIntakeProposal> SupplierSubscriptionIntakeProposals => Set<SupplierSubscriptionIntakeProposal>();
     public DbSet<FinanceAsset> FinanceAssets => Set<FinanceAsset>();
+    public DbSet<FixedAssetClass> FixedAssetClasses => Set<FixedAssetClass>();
+    public DbSet<FixedAssetRegisterItem> FixedAssetRegisterItems => Set<FixedAssetRegisterItem>();
+    public DbSet<FixedAssetComponent> FixedAssetComponents => Set<FixedAssetComponent>();
+    public DbSet<FixedAssetBookEvent> FixedAssetBookEvents => Set<FixedAssetBookEvent>();
+    public DbSet<FixedAssetMigrationConflict> FixedAssetMigrationConflicts => Set<FixedAssetMigrationConflict>();
+    public DbSet<FixedAssetDepreciationRun> FixedAssetDepreciationRuns => Set<FixedAssetDepreciationRun>();
+    public DbSet<FixedAssetDepreciationRunItem> FixedAssetDepreciationRunItems => Set<FixedAssetDepreciationRunItem>();
     public DbSet<FinanceBalance> FinanceBalances => Set<FinanceBalance>();
     public DbSet<FinancePolicyConfiguration> FinancePolicyConfigurations => Set<FinancePolicyConfiguration>();
     public DbSet<FinanceSeedAnomaly> FinanceSeedAnomalies => Set<FinanceSeedAnomaly>();
@@ -268,11 +291,59 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<LedgerEntry> LedgerEntries => Set<LedgerEntry>();
     public DbSet<LedgerEntrySourceMapping> LedgerEntrySourceMappings => Set<LedgerEntrySourceMapping>();
     public DbSet<LedgerEntryLine> LedgerEntryLines => Set<LedgerEntryLine>();
+    public DbSet<LedgerEntryLineDimension> LedgerEntryLineDimensions => Set<LedgerEntryLineDimension>();
+    public DbSet<AccountingDimensionType> AccountingDimensionTypes => Set<AccountingDimensionType>();
+    public DbSet<AccountingDimensionMember> AccountingDimensionMembers => Set<AccountingDimensionMember>();
+    public DbSet<AccountingDimensionAccountPolicy> AccountingDimensionAccountPolicies => Set<AccountingDimensionAccountPolicy>();
+    public DbSet<AccountingDimensionCombinationRule> AccountingDimensionCombinationRules => Set<AccountingDimensionCombinationRule>();
+    public DbSet<AccountingDimensionExternalMapping> AccountingDimensionExternalMappings => Set<AccountingDimensionExternalMapping>();
+    public DbSet<AccountingDimensionMappingConflict> AccountingDimensionMappingConflicts => Set<AccountingDimensionMappingConflict>();
+    public DbSet<AccountingAllocationTemplate> AccountingAllocationTemplates => Set<AccountingAllocationTemplate>();
+    public DbSet<AccountingAllocationTemplateVersion> AccountingAllocationTemplateVersions => Set<AccountingAllocationTemplateVersion>();
+    public DbSet<AccountingAllocationTemplateLine> AccountingAllocationTemplateLines => Set<AccountingAllocationTemplateLine>();
+    public DbSet<AccountingAllocationApplication> AccountingAllocationApplications => Set<AccountingAllocationApplication>();
+    public DbSet<AccountingAllocationApplicationLine> AccountingAllocationApplicationLines => Set<AccountingAllocationApplicationLine>();
+    public DbSet<AccountingAllocationEvidenceLink> AccountingAllocationEvidenceLinks => Set<AccountingAllocationEvidenceLink>();
+    public DbSet<AccountingSchedule> AccountingSchedules => Set<AccountingSchedule>();
+    public DbSet<AccountingScheduleVersion> AccountingScheduleVersions => Set<AccountingScheduleVersion>();
+    public DbSet<AccountingScheduleLine> AccountingScheduleLines => Set<AccountingScheduleLine>();
+    public DbSet<AccountingScheduleLineDimension> AccountingScheduleLineDimensions => Set<AccountingScheduleLineDimension>();
+    public DbSet<AccountingScheduleEvidenceLink> AccountingScheduleEvidenceLinks => Set<AccountingScheduleEvidenceLink>();
+    public DbSet<AccountingScheduleApprovalBinding> AccountingScheduleApprovalBindings => Set<AccountingScheduleApprovalBinding>();
+    public DbSet<AccountingScheduleOccurrence> AccountingScheduleOccurrences => Set<AccountingScheduleOccurrence>();
+    public DbSet<AccountingScheduleOccurrenceException> AccountingScheduleExceptions => Set<AccountingScheduleOccurrenceException>();
+    public DbSet<AccountingScheduleOperation> AccountingScheduleOperations => Set<AccountingScheduleOperation>();
+    public DbSet<AccountingCloseTemplate> AccountingCloseTemplates => Set<AccountingCloseTemplate>();
+    public DbSet<AccountingCloseTemplateVersion> AccountingCloseTemplateVersions => Set<AccountingCloseTemplateVersion>();
+    public DbSet<AccountingCloseTemplateSection> AccountingCloseTemplateSections => Set<AccountingCloseTemplateSection>();
+    public DbSet<AccountingCloseTaskDefinition> AccountingCloseTaskDefinitions => Set<AccountingCloseTaskDefinition>();
+    public DbSet<AccountingCloseTaskDefinitionDependency> AccountingCloseTaskDefinitionDependencies => Set<AccountingCloseTaskDefinitionDependency>();
+    public DbSet<AccountingCloseEvidenceRequirement> AccountingCloseEvidenceRequirements => Set<AccountingCloseEvidenceRequirement>();
+    public DbSet<AccountingCloseTemplateHistory> AccountingCloseTemplateHistory => Set<AccountingCloseTemplateHistory>();
+    public DbSet<AccountingCloseInstance> AccountingCloseInstances => Set<AccountingCloseInstance>();
+    public DbSet<AccountingCloseTask> AccountingCloseTasks => Set<AccountingCloseTask>();
+    public DbSet<AccountingCloseTaskDependency> AccountingCloseTaskDependencies => Set<AccountingCloseTaskDependency>();
+    public DbSet<AccountingCloseTaskEvidence> AccountingCloseTaskEvidence => Set<AccountingCloseTaskEvidence>();
+    public DbSet<AccountingCloseTaskNote> AccountingCloseTaskNotes => Set<AccountingCloseTaskNote>();
+    public DbSet<AccountingCloseTaskBlocker> AccountingCloseTaskBlockers => Set<AccountingCloseTaskBlocker>();
+    public DbSet<AccountingCloseStatusHistory> AccountingCloseStatusHistory => Set<AccountingCloseStatusHistory>();
+    public DbSet<AccountingCloseOperation> AccountingCloseOperations => Set<AccountingCloseOperation>();
+    public DbSet<CompanyAccountingClosePolicy> CompanyAccountingClosePolicies => Set<CompanyAccountingClosePolicy>();
+    public DbSet<AccountingCloseReadinessSnapshot> AccountingCloseReadinessSnapshots => Set<AccountingCloseReadinessSnapshot>();
+    public DbSet<AccountingCloseReadinessCheck> AccountingCloseReadinessChecks => Set<AccountingCloseReadinessCheck>();
+    public DbSet<AccountingCloseWaiver> AccountingCloseWaivers => Set<AccountingCloseWaiver>();
+    public DbSet<AccountingCloseReopenRequest> AccountingCloseReopenRequests => Set<AccountingCloseReopenRequest>();
+    public DbSet<AccountingCloseSignOff> AccountingCloseSignOffs => Set<AccountingCloseSignOff>();
     public DbSet<VoucherSeries> VoucherSeries => Set<VoucherSeries>();
     public DbSet<VoucherSequence> VoucherSequences => Set<VoucherSequence>();
+    public DbSet<AccountingAccountLifecycleHistory> AccountingAccountLifecycleHistory => Set<AccountingAccountLifecycleHistory>();
+    public DbSet<AccountingSeriesPolicy> AccountingSeriesPolicies => Set<AccountingSeriesPolicy>();
+    public DbSet<AccountingVoucherGapEvidence> AccountingVoucherGapEvidence => Set<AccountingVoucherGapEvidence>();
+    public DbSet<AccountingCommerceEventReceipt> AccountingCommerceEventReceipts => Set<AccountingCommerceEventReceipt>();
     public DbSet<LedgerPostingIdentity> LedgerPostingIdentities => Set<LedgerPostingIdentity>();
     public DbSet<ManualJournalDraft> ManualJournalDrafts => Set<ManualJournalDraft>();
     public DbSet<ManualJournalDraftLine> ManualJournalDraftLines => Set<ManualJournalDraftLine>();
+    public DbSet<ManualJournalDraftLineDimension> ManualJournalDraftLineDimensions => Set<ManualJournalDraftLineDimension>();
     public DbSet<ManualJournalEvidenceLink> ManualJournalEvidenceLinks => Set<ManualJournalEvidenceLink>();
     public DbSet<ManualJournalOperation> ManualJournalOperations => Set<ManualJournalOperation>();
     public DbSet<LedgerEntryEvidenceLink> LedgerEntryEvidenceLinks => Set<LedgerEntryEvidenceLink>();
@@ -283,6 +354,18 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<TrialBalanceSnapshot> TrialBalanceSnapshots => Set<TrialBalanceSnapshot>();
     public DbSet<FinancialStatementSnapshot> FinancialStatementSnapshots => Set<FinancialStatementSnapshot>();
     public DbSet<FinancialStatementSnapshotLine> FinancialStatementSnapshotLines => Set<FinancialStatementSnapshotLine>();
+    public DbSet<FinancialReportSuiteSnapshot> FinancialReportSuiteSnapshots => Set<FinancialReportSuiteSnapshot>();
+    public DbSet<ReportDefinition> ReportDefinitions => Set<ReportDefinition>();
+    public DbSet<ReportDefinitionVersion> ReportDefinitionVersions => Set<ReportDefinitionVersion>();
+    public DbSet<ReportDefinitionSection> ReportDefinitionSections => Set<ReportDefinitionSection>();
+    public DbSet<ReportDefinitionLine> ReportDefinitionLines => Set<ReportDefinitionLine>();
+    public DbSet<ReportDefinitionAccountGroup> ReportDefinitionAccountGroups => Set<ReportDefinitionAccountGroup>();
+    public DbSet<ReportDefinitionAccountGroupMember> ReportDefinitionAccountGroupMembers => Set<ReportDefinitionAccountGroupMember>();
+    public DbSet<ReportDefinitionComparison> ReportDefinitionComparisons => Set<ReportDefinitionComparison>();
+    public DbSet<ReportDefinitionValidationResult> ReportDefinitionValidationResults => Set<ReportDefinitionValidationResult>();
+    public DbSet<ReportDefinitionValidationIssue> ReportDefinitionValidationIssues => Set<ReportDefinitionValidationIssue>();
+    public DbSet<ReportDefinitionApproval> ReportDefinitionApprovals => Set<ReportDefinitionApproval>();
+    public DbSet<ReportDefinitionCommandReceipt> ReportDefinitionCommandReceipts => Set<ReportDefinitionCommandReceipt>();
     public DbSet<AccountingTaxReview> AccountingTaxReviews => Set<AccountingTaxReview>();
     public DbSet<VatFilingPeriod> VatFilingPeriods => Set<VatFilingPeriod>();
     public DbSet<VatReturn> VatReturns => Set<VatReturn>();
@@ -290,6 +373,35 @@ public sealed class VirtualCompanyDbContext : DbContext
     public DbSet<VatReturnSourceContribution> VatReturnSourceContributions => Set<VatReturnSourceContribution>();
     public DbSet<VatReturnValidationIssue> VatReturnValidationIssues => Set<VatReturnValidationIssue>();
     public DbSet<VatReturnReview> VatReturnReviews => Set<VatReturnReview>();
+    public DbSet<ComplianceObligationInstance> ComplianceObligationInstances => Set<ComplianceObligationInstance>();
+    public DbSet<ComplianceObligationDefinition> ComplianceObligationDefinitions => Set<ComplianceObligationDefinition>();
+    public DbSet<ComplianceObligationHistory> ComplianceObligationHistory => Set<ComplianceObligationHistory>();
+    public DbSet<AuditPackage> AuditPackages => Set<AuditPackage>();
+    public DbSet<AccountantCompanyGrant> AccountantCompanyGrants => Set<AccountantCompanyGrant>();
+    public DbSet<AccountantReviewEngagement> AccountantReviewEngagements => Set<AccountantReviewEngagement>();
+    public DbSet<AccountantReviewItem> AccountantReviewItems => Set<AccountantReviewItem>();
+    public DbSet<AccountantEvidenceRequest> AccountantEvidenceRequests => Set<AccountantEvidenceRequest>();
+    public DbSet<AccountantEvidenceResponse> AccountantEvidenceResponses => Set<AccountantEvidenceResponse>();
+    public DbSet<AccountantEngagementSignOff> AccountantEngagementSignOffs => Set<AccountantEngagementSignOff>();
+    public DbSet<AccountantReviewHistory> AccountantReviewHistory => Set<AccountantReviewHistory>();
+    public DbSet<YearEndRun> YearEndRuns => Set<YearEndRun>();
+    public DbSet<YearEndReadinessSnapshot> YearEndReadinessSnapshots => Set<YearEndReadinessSnapshot>();
+    public DbSet<YearEndRetainedEarningsProposal> YearEndRetainedEarningsProposals => Set<YearEndRetainedEarningsProposal>();
+    public DbSet<YearEndOpeningBalanceCandidate> YearEndOpeningBalanceCandidates => Set<YearEndOpeningBalanceCandidate>();
+    public DbSet<YearEndApprovalSignOff> YearEndApprovalSignOffs => Set<YearEndApprovalSignOff>();
+    public DbSet<YearEndSubsequentEvent> YearEndSubsequentEvents => Set<YearEndSubsequentEvent>();
+    public DbSet<YearEndCorrectionRecord> YearEndCorrectionRecords => Set<YearEndCorrectionRecord>();
+    public DbSet<YearEndHistory> YearEndHistory => Set<YearEndHistory>();
+    public DbSet<YearEndOperation> YearEndOperations => Set<YearEndOperation>();
+    public DbSet<AuditPackageApproval> AuditPackageApprovals => Set<AuditPackageApproval>();
+    public DbSet<AuditPackageArtifact> AuditPackageArtifacts => Set<AuditPackageArtifact>();
+    public DbSet<AuditPackageGenerationAttempt> AuditPackageGenerationAttempts => Set<AuditPackageGenerationAttempt>();
+    public DbSet<AuditPackageDownloadAuthorization> AuditPackageDownloadAuthorizations => Set<AuditPackageDownloadAuthorization>();
+    public DbSet<AuditPackageVerificationResult> AuditPackageVerificationResults => Set<AuditPackageVerificationResult>();
+    public DbSet<ComplianceSubmissionEvidence> ComplianceSubmissionEvidence => Set<ComplianceSubmissionEvidence>();
+    public DbSet<ComplianceAuthorityAcknowledgement> ComplianceAuthorityAcknowledgements => Set<ComplianceAuthorityAcknowledgement>();
+    public DbSet<ComplianceReminder> ComplianceReminders => Set<ComplianceReminder>();
+    public DbSet<ComplianceCommandReceipt> ComplianceCommandReceipts => Set<ComplianceCommandReceipt>();
     public DbSet<AccountingPeriodHistory> AccountingPeriodHistory => Set<AccountingPeriodHistory>();
     public DbSet<AccountingExportJob> AccountingExportJobs => Set<AccountingExportJob>();
     public DbSet<FinancialStatementMapping> FinancialStatementMappings => Set<FinancialStatementMapping>();
@@ -564,6 +676,18 @@ public sealed class VirtualCompanyDbContext : DbContext
 
     private void EnsurePostedLedgerIsImmutable()
     {
+        var changedDimensionLineIds = ChangeTracker.Entries<LedgerEntryLineDimension>()
+            .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
+            .Select(entry => entry.Entity.LedgerEntryLineId)
+            .Where(id => id != Guid.Empty)
+            .Distinct()
+            .ToArray();
+        var dimensionEntryIds = changedDimensionLineIds.Length == 0
+            ? []
+            : LedgerEntryLines.IgnoreQueryFilters().AsNoTracking()
+                .Where(line => changedDimensionLineIds.Contains(line.Id))
+                .Select(line => line.LedgerEntryId)
+                .ToArray();
         var changedEntryIds = ChangeTracker.Entries<LedgerEntry>()
             .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
             .Select(entry => entry.Entity.Id)
@@ -576,6 +700,7 @@ public sealed class VirtualCompanyDbContext : DbContext
             .Concat(ChangeTracker.Entries<LedgerEntryEvidenceLink>()
                 .Where(entry => entry.State is EntityState.Modified or EntityState.Deleted)
                 .Select(entry => entry.Entity.LedgerEntryId))
+            .Concat(dimensionEntryIds)
             .Where(id => id != Guid.Empty)
             .Distinct()
             .ToArray();
@@ -630,6 +755,22 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is FinanceAccount ||
                 entry.Entity is AccountingConfiguration ||
                 entry.Entity is AccountingConfigurationAccountRole ||
+                entry.Entity is CompanyCurrencyDefinition ||
+                entry.Entity is ExchangeRateSource ||
+                entry.Entity is ExchangeRateSet ||
+                entry.Entity is ExchangeRateObservation ||
+                entry.Entity is ExchangeRateEvidence ||
+                entry.Entity is ExchangeRateConversion ||
+                entry.Entity is ExchangeRateConversionLeg ||
+                entry.Entity is ExchangeRateRefreshJob ||
+                entry.Entity is CurrencyRevaluationRun ||
+                entry.Entity is CurrencyRevaluationPopulationItem ||
+                entry.Entity is CurrencyRevaluationRateBinding ||
+                entry.Entity is CurrencyRevaluationProposalLine ||
+                entry.Entity is CurrencyRevaluationReview ||
+                entry.Entity is CurrencyRevaluationReconciliation ||
+                entry.Entity is CurrencyRevaluationAccountPolicy ||
+                entry.Entity is CurrencyRevaluationSchedule ||
                 entry.Entity is AccountingPolicyPackSelection ||
                 entry.Entity is CompanyStatutoryProfile ||
                 entry.Entity is AccountingAuthorityPeriod ||
@@ -731,6 +872,30 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is ManualJournalDraftLine ||
                 entry.Entity is ManualJournalEvidenceLink ||
                 entry.Entity is ManualJournalOperation ||
+                entry.Entity is AccountingSchedule ||
+                entry.Entity is AccountingScheduleVersion ||
+                entry.Entity is AccountingScheduleLine ||
+                entry.Entity is AccountingScheduleLineDimension ||
+                entry.Entity is AccountingScheduleEvidenceLink ||
+                entry.Entity is AccountingScheduleApprovalBinding ||
+                entry.Entity is AccountingScheduleOccurrence ||
+                entry.Entity is AccountingScheduleOccurrenceException ||
+                entry.Entity is AccountingScheduleOperation ||
+                entry.Entity is AccountingCloseTemplate ||
+                entry.Entity is AccountingCloseTemplateVersion ||
+                entry.Entity is AccountingCloseTemplateSection ||
+                entry.Entity is AccountingCloseTaskDefinition ||
+                entry.Entity is AccountingCloseTaskDefinitionDependency ||
+                entry.Entity is AccountingCloseEvidenceRequirement ||
+                entry.Entity is AccountingCloseTemplateHistory ||
+                entry.Entity is AccountingCloseInstance ||
+                entry.Entity is AccountingCloseTask ||
+                entry.Entity is AccountingCloseTaskDependency ||
+                entry.Entity is AccountingCloseTaskEvidence ||
+                entry.Entity is AccountingCloseTaskNote ||
+                entry.Entity is AccountingCloseTaskBlocker ||
+                entry.Entity is AccountingCloseStatusHistory ||
+                entry.Entity is AccountingCloseOperation ||
                 entry.Entity is LedgerEntryEvidenceLink ||
                 entry.Entity is CustomerInvoiceAccountingProfile ||
                 entry.Entity is CustomerInvoiceAccountingLine ||
@@ -739,6 +904,18 @@ public sealed class VirtualCompanyDbContext : DbContext
                 entry.Entity is TrialBalanceSnapshot ||
                 entry.Entity is FinancialStatementSnapshot ||
                 entry.Entity is FinancialStatementSnapshotLine ||
+                entry.Entity is FinancialReportSuiteSnapshot ||
+                entry.Entity is ReportDefinition ||
+                entry.Entity is ReportDefinitionVersion ||
+                entry.Entity is ReportDefinitionSection ||
+                entry.Entity is ReportDefinitionLine ||
+                entry.Entity is ReportDefinitionAccountGroup ||
+                entry.Entity is ReportDefinitionAccountGroupMember ||
+                entry.Entity is ReportDefinitionComparison ||
+                entry.Entity is ReportDefinitionValidationResult ||
+                entry.Entity is ReportDefinitionValidationIssue ||
+                entry.Entity is ReportDefinitionApproval ||
+                entry.Entity is ReportDefinitionCommandReceipt ||
                 entry.Entity is AccountingTaxReview ||
                 entry.Entity is VatFilingPeriod ||
                 entry.Entity is VatReturn ||
@@ -1095,6 +1272,18 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceAccount>()
             .HasQueryFilter(account =>
                 CurrentCompanyId != null && account.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAccountLifecycleHistory>()
+            .HasQueryFilter(history =>
+                CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingSeriesPolicy>()
+            .HasQueryFilter(policy =>
+                CurrentCompanyId != null && policy.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingVoucherGapEvidence>()
+            .HasQueryFilter(evidence =>
+                CurrentCompanyId != null && evidence.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCommerceEventReceipt>()
+            .HasQueryFilter(receipt =>
+                CurrentCompanyId != null && receipt.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingConfiguration>()
             .HasQueryFilter(configuration =>
                 CurrentCompanyId != null && configuration.CompanyId == CurrentCompanyId);
@@ -1222,6 +1411,22 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(bankAccount =>
                 CurrentCompanyId != null && bankAccount.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankConnection>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyCurrencyDefinition>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateSource>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateSet>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateObservation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateEvidence>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateConversion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateConversionLeg>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ExchangeRateRefreshJob>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationPopulationItem>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationRateBinding>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationProposalLine>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationReview>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationReconciliation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationAccountPolicy>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CurrencyRevaluationSchedule>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankConsentSession>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankConsentVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<BankConnectionCapabilityGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
@@ -1306,6 +1511,20 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinanceAsset>()
             .HasQueryFilter(asset =>
                 CurrentCompanyId != null && asset.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetClass>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetRegisterItem>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetComponent>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetBookEvent>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetMigrationConflict>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetDepreciationRun>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FixedAssetDepreciationRunItem>()
+            .HasQueryFilter(entity => CurrentCompanyId != null && entity.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<FinanceBalance>()
             .HasQueryFilter(balance =>
                 CurrentCompanyId != null && balance.CompanyId == CurrentCompanyId);
@@ -1359,6 +1578,45 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<ManualJournalOperation>()
             .HasQueryFilter(operation => CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingSchedule>()
+            .HasQueryFilter(schedule => CurrentCompanyId != null && schedule.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleVersion>()
+            .HasQueryFilter(version => CurrentCompanyId != null && version.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleLine>()
+            .HasQueryFilter(line => CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleLineDimension>()
+            .HasQueryFilter(dimension => CurrentCompanyId != null && dimension.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleEvidenceLink>()
+            .HasQueryFilter(link => CurrentCompanyId != null && link.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleApprovalBinding>()
+            .HasQueryFilter(binding => CurrentCompanyId != null && binding.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleOccurrence>()
+            .HasQueryFilter(occurrence => CurrentCompanyId != null && occurrence.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleOccurrenceException>()
+            .HasQueryFilter(exception => CurrentCompanyId != null && exception.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingScheduleOperation>()
+            .HasQueryFilter(operation => CurrentCompanyId != null && operation.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTemplate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTemplateVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTemplateSection>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTaskDefinition>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTaskDefinitionDependency>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseEvidenceRequirement>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTemplateHistory>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseInstance>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTask>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTaskDependency>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTaskEvidence>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTaskNote>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseTaskBlocker>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseStatusHistory>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseOperation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<CompanyAccountingClosePolicy>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseReadinessSnapshot>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseReadinessCheck>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseWaiver>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseReopenRequest>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingCloseSignOff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerInvoiceDraft>()
             .HasQueryFilter(draft => CurrentCompanyId != null && draft.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<CustomerInvoiceDraftLine>()
@@ -1396,6 +1654,20 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<FinancialStatementSnapshotLine>()
             .HasQueryFilter(line =>
                 CurrentCompanyId != null && line.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<FinancialReportSuiteSnapshot>()
+            .HasQueryFilter(snapshot =>
+                CurrentCompanyId != null && snapshot.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinition>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionSection>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionLine>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionAccountGroup>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionAccountGroupMember>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionComparison>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionValidationResult>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionValidationIssue>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionApproval>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ReportDefinitionCommandReceipt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingTaxReview>()
             .HasQueryFilter(review => CurrentCompanyId != null && review.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<VatFilingPeriod>()
@@ -1410,6 +1682,35 @@ public sealed class VirtualCompanyDbContext : DbContext
             .HasQueryFilter(issue => CurrentCompanyId != null && issue.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<VatReturnReview>()
             .HasQueryFilter(review => CurrentCompanyId != null && review.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceObligationInstance>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceObligationDefinition>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceObligationHistory>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceSubmissionEvidence>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceAuthorityAcknowledgement>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceReminder>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ComplianceCommandReceipt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AuditPackage>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AuditPackageApproval>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AuditPackageArtifact>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AuditPackageGenerationAttempt>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AuditPackageDownloadAuthorization>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AuditPackageVerificationResult>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantCompanyGrant>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantReviewEngagement>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantReviewItem>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantEvidenceRequest>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantEvidenceResponse>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantEngagementSignOff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountantReviewHistory>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndRun>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndReadinessSnapshot>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndRetainedEarningsProposal>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndOpeningBalanceCandidate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndApprovalSignOff>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndSubsequentEvent>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndCorrectionRecord>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndHistory>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<YearEndOperation>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingPeriodHistory>()
             .HasQueryFilter(history => CurrentCompanyId != null && history.CompanyId == CurrentCompanyId);
         modelBuilder.Entity<AccountingExportJob>()
@@ -1687,6 +1988,21 @@ public sealed class VirtualCompanyDbContext : DbContext
         modelBuilder.Entity<SupportKnowledgeGap>()
             .HasQueryFilter(gap =>
                 CurrentCompanyId != null && gap.CompanyId == CurrentCompanyId);
+
+        modelBuilder.Entity<AccountingDimensionType>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingDimensionMember>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingDimensionAccountPolicy>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingDimensionCombinationRule>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingDimensionExternalMapping>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingDimensionMappingConflict>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAllocationTemplate>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAllocationTemplateVersion>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAllocationTemplateLine>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAllocationApplication>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAllocationApplicationLine>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<AccountingAllocationEvidenceLink>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<LedgerEntryLineDimension>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
+        modelBuilder.Entity<ManualJournalDraftLineDimension>().HasQueryFilter(x => CurrentCompanyId != null && x.CompanyId == CurrentCompanyId);
     }
 
     private void ApplySqliteCompatibilityMappings(ModelBuilder modelBuilder)

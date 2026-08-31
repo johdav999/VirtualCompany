@@ -1,0 +1,143 @@
+@inject FinanceApiClient FinanceApiClient
+
+<section class="dimensions-workspace" aria-labelledby="dimensions-title" aria-busy="@IsLoading">
+    <header class="dimensions-workspace__header">
+        <div><span class="dashboard-kicker">@FinanceText["DimensionGovernanceKicker"]</span><h2 id="dimensions-title">@FinanceText["AccountingDimensions"]</h2><p>@FinanceText["AccountingDimensionsDescription"]</p></div>
+        @if (CanManage) { <button type="button" class="btn btn-primary" @onclick="BeginType">@FinanceText["AddDimension"]</button> }
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(Message)) { <div class="alert alert-success" role="status">@Message</div> }
+    @if (!string.IsNullOrWhiteSpace(Error)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["DimensionsUnavailable"]</strong><div>@Error</div><button class="btn btn-sm btn-outline-danger" type="button" @onclick="LoadAsync">@CommonText["TryAgain"]</button></div> }
+
+    @if (IsLoading)
+    {
+        <div class="dimensions-state" role="status"><div class="spinner-border text-primary"></div><h3>@FinanceText["LoadingDimensions"]</h3></div>
+    }
+    else if (Workspace is not null)
+    {
+        <section class="dimensions-summary" aria-label="@FinanceText["DimensionHealth"]">
+            <article><span>▦</span><div><small>@FinanceText["ActiveDimensions"]</small><strong>@Workspace.ActiveDimensionCount</strong><em class="ok">@FinanceText["GovernedAndEffective"]</em></div></article>
+            <article><span>!</span><div><small>@FinanceText["MembersNeedingMapping"]</small><strong>@Workspace.OpenMappingConflictCount</strong><em class="@(Workspace.OpenMappingConflictCount == 0 ? "ok" : "warn")">@(Workspace.OpenMappingConflictCount == 0 ? FinanceText["NoOpenConflicts"] : FinanceText["ResolveBeforePosting"])</em></div></article>
+            <article><span>✓</span><div><small>@FinanceText["RequiredAccountRules"]</small><strong>@Workspace.RequiredAccountRuleCount</strong><em>@FinanceText["ValidatedAtPosting"]</em></div></article>
+            <article><span>◔</span><div><small>@FinanceText["AllocationTemplates"]</small><strong>@Workspace.AllocationTemplates.Count</strong><em>@FinanceText["VersionedAndTraceable"]</em></div></article>
+        </section>
+
+        @if (EditingType)
+        {
+            <section class="dimensions-card dimensions-editor">
+                <div class="dimensions-card__header"><div><h3>@FinanceText["NewDimensionType"]</h3><p>@FinanceText["NewDimensionTypeHelp"]</p></div></div>
+                <div class="dimensions-form-grid"><label>@FinanceText["Code"]<input class="form-control" @bind="TypeCode" /></label><label>@FinanceText["Name"]<input class="form-control" @bind="TypeName" /></label><label>@FinanceText["EffectiveFrom"]<input type="date" class="form-control" @bind="TypeEffectiveFrom" /></label><label class="form-check"><input type="checkbox" class="form-check-input" @bind="TypeAllowsHierarchy" /> @FinanceText["AllowHierarchy"]</label></div>
+                <div class="dimensions-editor__actions"><button class="btn btn-outline-secondary" type="button" @onclick="CancelType">@CommonText["Cancel"]</button><button class="btn btn-primary" type="button" @onclick="SaveTypeAsync" disabled="@IsActing">@CommonText["Save"]</button></div>
+            </section>
+        }
+
+        <div class="dimensions-layout">
+            <section class="dimensions-card dimensions-catalogue">
+                <div class="dimensions-card__header"><div><h3>@FinanceText["DimensionCatalogue"]</h3><p>@FinanceText["DimensionCatalogueHelp"]</p></div><span class="status-badge status-badge-success">@FinanceText["ActiveMemberCount", Workspace.ActiveMemberCount]</span></div>
+                @if (Workspace.DimensionTypes.Count == 0)
+                {
+                    <div class="dimensions-state compact"><span>▦</span><h3>@FinanceText["NoDimensionsConfigured"]</h3><p>@FinanceText["NoDimensionsConfiguredHelp"]</p></div>
+                }
+                @foreach (var type in Workspace.DimensionTypes)
+                {
+                    <button type="button" class="dimension-type-row @(SelectedType?.Id == type.Id ? "selected" : null)" @onclick="() => SelectType(type)">
+                        <span class="dimension-icon">@(type.Code == "project" ? "□" : "▦")</span><span><strong>@type.Name</strong><small>@FinanceText["MemberCount", type.Members.Count] · @DateRange(type.EffectiveFrom, type.EffectiveTo)</small></span><em class="status-badge @StatusClass(type.Status)">@Status(type.Status)</em><b>›</b>
+                    </button>
+                }
+
+                @if (SelectedType is not null)
+                {
+                    <div class="dimension-members-header"><div><h4>@FinanceText["DimensionMembers", SelectedType.Name]</h4><span>@FinanceText["ImmutablePostingSnapshotsHelp"]</span></div>@if (CanManage) { <button type="button" class="btn btn-sm btn-outline-primary" @onclick="BeginMember">@FinanceText["AddMember"]</button> }</div>
+                    @if (EditingMember)
+                    {
+                        <div class="dimension-member-editor"><label>@FinanceText["Code"]<input class="form-control" @bind="MemberCode" /></label><label>@FinanceText["Name"]<input class="form-control" @bind="MemberName" /></label><div><button class="btn btn-sm btn-outline-secondary" @onclick="CancelMember">@CommonText["Cancel"]</button><button class="btn btn-sm btn-primary" @onclick="SaveMemberAsync" disabled="@IsActing">@CommonText["Save"]</button></div></div>
+                    }
+                    <div class="table-responsive"><table class="table dimensions-table"><thead><tr><th>@FinanceText["Member"]</th><th>@FinanceText["Code"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["EffectiveDates"]</th></tr></thead><tbody>
+                        @foreach (var member in SelectedType.Members)
+                        {
+                            <tr class="@(SelectedMember?.Id == member.Id ? "selected" : null)" role="button" tabindex="0" aria-selected="@(SelectedMember?.Id == member.Id)" @onclick="() => SelectMemberAsync(member)" @onkeydown="args => SelectMemberOnKeyAsync(args.Key, member)"><td><strong>@member.Name</strong><span>@member.HierarchyPath</span></td><td>@member.Code</td><td><span class="status-badge @StatusClass(member.Status)">@Status(member.Status)</span></td><td>@DateRange(member.EffectiveFrom, member.EffectiveTo)</td></tr>
+                        }
+                    </tbody></table></div>
+                }
+            </section>
+
+            <aside class="dimensions-card dimension-detail" aria-live="polite">
+                @if (SelectedMember is null)
+                {
+                    <div class="dimensions-state compact"><span>⌕</span><h3>@FinanceText["SelectDimensionMember"]</h3><p>@FinanceText["SelectDimensionMemberHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="dimensions-card__header"><div><span class="dashboard-kicker">@SelectedType?.Name</span><h3>@SelectedMember.Code · @SelectedMember.Name</h3></div><span class="status-badge @StatusClass(SelectedMember.Status)">@Status(SelectedMember.Status)</span></div>
+                    <dl class="dimension-facts"><div><dt>@FinanceText["HierarchyPath"]</dt><dd>@SelectedMember.HierarchyPath</dd></div><div><dt>@FinanceText["EffectiveDates"]</dt><dd>@DateRange(SelectedMember.EffectiveFrom, SelectedMember.EffectiveTo)</dd></div><div><dt>@FinanceText["AccountRequirements"]</dt><dd>@Workspace.AccountPolicies.Count(x => x.DimensionTypeId == SelectedMember.DimensionTypeId)</dd></div><div><dt>@FinanceText["ValidCombinations"]</dt><dd>@Workspace.CombinationRules.Count(x => x.LeftMemberId == SelectedMember.Id || x.RightMemberId == SelectedMember.Id)</dd></div><div><dt>@FinanceText["ExternalMappings"]</dt><dd>@Workspace.ExternalMappings.Count(x => x.DimensionMemberId == SelectedMember.Id)</dd></div></dl>
+                    <div class="dimension-report-summary"><h4>@FinanceText["PostedLineDrilldown"]</h4>@if (Report is null) { <p>@FinanceText["LoadingPostedLines"]</p> } else { <strong>@Money(Report.NetAmount, Report.Lines.FirstOrDefault()?.Currency)</strong><span>@FinanceText["PostedLineCount", Report.TotalLineCount]</span> }</div>
+                    @foreach (var line in Report?.Lines.Take(6) ?? []) { <a class="dimension-journal-line" href="@JournalUrl(line.LedgerEntryId)"><span><strong>@line.EntryNumber</strong><small>@line.PostingDate.ToString("d") · @line.AccountCode @line.AccountName</small></span><b>@Money(line.DebitAmount - line.CreditAmount, line.Currency)</b></a> }
+                    <div class="dimension-laura"><span>L</span><div><strong>@FinanceText["LauraFinanceManager"]</strong><p>@FinanceText["LauraDimensionAdvice"]</p></div></div>
+                }
+            </aside>
+        </div>
+
+        @if (Workspace.MappingConflicts.Any(x => x.Status == "open"))
+        {
+            <section class="dimensions-card dimensions-conflicts"><div class="dimensions-card__header"><div><h3>@FinanceText["MappingConflicts"]</h3><p>@FinanceText["MappingConflictsHelp"]</p></div><span class="status-badge status-badge-warning">@FinanceText["NeedsMapping"]</span></div>
+                @foreach (var conflict in Workspace.MappingConflicts.Where(x => x.Status == "open").Take(5)) { <div class="dimension-conflict-row"><span>!</span><div><strong>@conflict.ExternalDimensionType · @conflict.ExternalValue</strong><p>@conflict.Explanation</p><small>@conflict.ProviderKey · @LocalDateTime.DateTime(conflict.CreatedUtc)</small></div></div> }
+            </section>
+        }
+
+        <section class="dimensions-card dimensions-allocations">
+            <div class="dimensions-card__header"><div><h3>@FinanceText["AllocationTemplates"]</h3><p>@FinanceText["AllocationTemplatesHelp"]</p></div><span class="status-badge">@FinanceText["SourceEvidence"]</span></div>
+            @if (Workspace.AllocationTemplates.Count == 0)
+            {
+                <div class="dimensions-state compact"><span>◔</span><h3>@FinanceText["NoAllocationTemplates"]</h3><p>@FinanceText["NoAllocationTemplatesHelp"]</p></div>
+            }
+            else
+            {
+                <div class="allocation-toolbar"><label>@FinanceText["Template"]<select class="form-select" @bind="SelectedTemplateId">@foreach (var template in Workspace.AllocationTemplates) { <option value="@template.Id">@template.Name · v@(template.CurrentVersionNumber ?? 0)</option> }</select></label><label>@FinanceText["PreviewAmount"]<input type="number" step="0.01" class="form-control" @bind="PreviewAmount" /></label><button type="button" class="btn btn-primary" @onclick="PreviewAllocationAsync" disabled="@IsActing">@FinanceText["PreviewAllocation"]</button></div>
+                @if (AllocationPreview is not null)
+                {
+                    <div class="table-responsive"><table class="table dimensions-table"><thead><tr><th>@FinanceText["TargetMember"]</th><th>@FinanceText["AllocationDriver"]</th><th>@FinanceText["AllocatedAmount"]</th><th>@FinanceText["Rounding"]</th></tr></thead><tbody>@foreach (var line in AllocationPreview.Lines) { <tr><td><strong>@line.DimensionDisplay</strong></td><td>@line.DriverValue @(line.AllocationKind == "percentage" ? "%" : AllocationPreview.Currency)</td><td>@Money(line.RoundedAmount, AllocationPreview.Currency)</td><td>@line.RoundingResidual.ToString("0.######")</td></tr> }</tbody><tfoot><tr><th>@FinanceText["Total"]</th><th></th><th>@Money(AllocationPreview.AllocatedAmount, AllocationPreview.Currency)</th><th><span class="status-badge @(AllocationPreview.Difference == 0 ? "status-badge-success" : "status-badge-danger")">@(AllocationPreview.Difference == 0 ? FinanceText["TotalsPreserved"] : FinanceText["NeedsReview"])</span></th></tr></tfoot></table></div>
+                    @if (AllocationPreview.RequiresApproval) { <div class="allocation-approval">◷ @FinanceText["MaterialAllocationApproval"]</div> }
+                }
+            }
+        </section>
+    }
+</section>
+
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    private AccountingDimensionWorkspaceResponse? Workspace { get; set; }
+    private AccountingDimensionTypeResponse? SelectedType { get; set; }
+    private AccountingDimensionMemberResponse? SelectedMember { get; set; }
+    private AccountingDimensionReportResponse? Report { get; set; }
+    private AccountingAllocationPreviewResponse? AllocationPreview { get; set; }
+    private bool IsLoading { get; set; } = true; private bool IsActing { get; set; }
+    private string? Error { get; set; } private string? Message { get; set; }
+    private bool EditingType { get; set; } private string TypeCode { get; set; } = ""; private string TypeName { get; set; } = "";
+    private bool TypeAllowsHierarchy { get; set; } = true; private DateOnly TypeEffectiveFrom { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    private bool EditingMember { get; set; } private string MemberCode { get; set; } = ""; private string MemberName { get; set; } = "";
+    private Guid SelectedTemplateId { get; set; } private decimal PreviewAmount { get; set; } = 1000m;
+
+    protected override async Task OnParametersSetAsync() { if (CompanyId.HasValue) await LoadAsync(); }
+    private async Task LoadAsync()
+    { IsLoading = true; Error = null; try { Workspace = await FinanceApiClient.GetAccountingDimensionWorkspaceAsync(CompanyId!.Value); SelectedType = Workspace?.DimensionTypes.FirstOrDefault(x => x.Id == SelectedType?.Id) ?? Workspace?.DimensionTypes.FirstOrDefault(); SelectedMember = SelectedType?.Members.FirstOrDefault(x => x.Id == SelectedMember?.Id) ?? SelectedType?.Members.FirstOrDefault(); SelectedTemplateId = Workspace?.AllocationTemplates.FirstOrDefault(x => x.Id == SelectedTemplateId)?.Id ?? Workspace?.AllocationTemplates.FirstOrDefault()?.Id ?? Guid.Empty; if (SelectedMember is not null) await LoadReportAsync(); } catch (FinanceApiException ex) { Error = ex.Message; } finally { IsLoading = false; } }
+    private void SelectType(AccountingDimensionTypeResponse type) { SelectedType = type; SelectedMember = null; Report = null; EditingMember = false; }
+    private async Task SelectMemberAsync(AccountingDimensionMemberResponse member) { SelectedMember = member; await LoadReportAsync(); }
+    private Task SelectMemberOnKeyAsync(string key, AccountingDimensionMemberResponse member) => key is "Enter" or " " ? SelectMemberAsync(member) : Task.CompletedTask;
+    private async Task LoadReportAsync() { if (CompanyId is Guid companyId && SelectedMember is not null) Report = await FinanceApiClient.GetAccountingDimensionReportAsync(companyId, SelectedMember.Id); }
+    private void BeginType() { EditingType = true; TypeCode = ""; TypeName = ""; TypeAllowsHierarchy = true; TypeEffectiveFrom = DateOnly.FromDateTime(DateTime.Today); }
+    private void CancelType() => EditingType = false;
+    private async Task SaveTypeAsync() => await ActAsync(async companyId => { await FinanceApiClient.SaveAccountingDimensionTypeAsync(companyId, new() { Code = TypeCode, Name = TypeName, AllowsHierarchy = TypeAllowsHierarchy, EffectiveFrom = TypeEffectiveFrom }); EditingType = false; Message = FinanceText["DimensionSaved"]; await LoadAsync(); });
+    private void BeginMember() { EditingMember = true; MemberCode = ""; MemberName = ""; }
+    private void CancelMember() => EditingMember = false;
+    private async Task SaveMemberAsync() { if (SelectedType is null) return; await ActAsync(async companyId => { await FinanceApiClient.SaveAccountingDimensionMemberAsync(companyId, new() { DimensionTypeId = SelectedType.Id, Code = MemberCode, Name = MemberName, EffectiveFrom = DateOnly.FromDateTime(DateTime.Today) }); EditingMember = false; Message = FinanceText["DimensionMemberSaved"]; await LoadAsync(); }); }
+    [Parameter] public string Currency { get; set; } = "SEK";
+
+    private async Task PreviewAllocationAsync() { if (SelectedTemplateId == Guid.Empty) return; await ActAsync(async companyId => AllocationPreview = await FinanceApiClient.PreviewAccountingAllocationAsync(companyId, new() { TemplateId = SelectedTemplateId, Amount = PreviewAmount, Currency = Currency, EffectiveDate = DateOnly.FromDateTime(DateTime.Today) })); }
+    private async Task ActAsync(Func<Guid, Task> action) { if (CompanyId is not Guid companyId) return; IsActing = true; Error = null; Message = null; try { await action(companyId); } catch (FinanceApiException ex) { Error = ex.Message; } finally { IsActing = false; } }
+    private string JournalUrl(Guid id) => FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?entryId={id:D}", CompanyId);
+    private string Status(string value) => FinanceStatusPresenter.Present(value, FinanceText, CommonText);
+    private static string StatusClass(string value) => value == "active" || value == "resolved" ? "status-badge-success" : value == "open" ? "status-badge-warning" : "";
+    private string DateRange(DateOnly from, DateOnly? to) => $"{from:d} – {(to.HasValue ? to.Value.ToString("d") : FinanceText["NoEndDate"])}";
+    private static string Money(decimal value, string? currency) => $"{value:N2} {currency}".Trim();
+}

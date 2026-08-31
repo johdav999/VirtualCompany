@@ -83,7 +83,11 @@ public sealed class CustomerCollectionsTests
         var item = Assert.Single(aging.Items);
         Assert.Equal(invoice.Id, item.InvoiceId); Assert.Equal(25m, item.AllocatedAmount); Assert.Equal(75m, item.OpenAmount);
         Assert.Equal(75m, aging.TotalOpen); Assert.DoesNotContain(aging.Items, x => x.InvoiceId == hiddenInvoice.Id);
+        Assert.Null(item.FunctionalOpenAmount); Assert.Null(aging.FunctionalTotalOpen);
         Assert.Equal(0m, statement.OpeningBalance); Assert.Equal(100m, statement.InvoiceActivity); Assert.Equal(25m, statement.AllocationActivity); Assert.Equal(75m, statement.ClosingBalance);
+        Assert.Equal("legacy_or_imported_unavailable", statement.FunctionalEvidenceStatus);
+        Assert.Null(statement.FunctionalClosingBalance);
+        Assert.All(statement.Items, row => Assert.Null(row.FunctionalRunningBalance));
         Assert.Equal(statement.Checksum, replay.Checksum); Assert.True(replay.IsIdempotentReplay);
         var hidden = await Assert.ThrowsAsync<CustomerCollectionException>(() => service.GetStatementAsync(new(otherCompanyId, statement.Id), default));
         Assert.Equal(CustomerCollectionReasonCodes.NotFound, hidden.ReasonCode);

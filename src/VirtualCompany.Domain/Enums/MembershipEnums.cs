@@ -12,7 +12,8 @@ public enum CompanyMembershipRole
     Employee = 4,
     FinanceApprover = 5,
     SupportSupervisor = 6,
-    Tester = 7
+    Tester = 7,
+    Accountant = 8
 }
 
 public enum CompanyMembershipStatus
@@ -37,7 +38,8 @@ public static class CompanyMembershipRoles
         new(CompanyMembershipRole.Employee, "employee", "Employee"),
         new(CompanyMembershipRole.FinanceApprover, "finance_approver", "Finance Approver"),
         new(CompanyMembershipRole.SupportSupervisor, "support_supervisor", "Support Supervisor"),
-        new(CompanyMembershipRole.Tester, "tester", "Tester")
+        new(CompanyMembershipRole.Tester, "tester", "Tester"),
+        new(CompanyMembershipRole.Accountant, "accountant", "External accountant")
     ];
 
     private static readonly IReadOnlyDictionary<CompanyMembershipRole, CompanyMembershipRoleOption> RolesByEnum =

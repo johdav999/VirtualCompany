@@ -26,6 +26,20 @@
         <div class="alert alert-danger" role="alert"><strong>@FinanceText["AccountingActionFailed"]</strong><div>@ActionError</div><button class="btn btn-sm btn-outline-danger mt-2" type="button" @onclick="ReloadAsync">@CommonText["TryAgain"]</button></div>
     }
 
+    <section class="accounting-governance-summary" aria-label="@FinanceText["AccountingAdministration"]">
+        <article><span>@FinanceText["ActiveAccounts"]</span><strong>@Accounts.Count(x => x.LifecycleStatus == "active")</strong><small>@FinanceText["AvailableForPosting"]</small></article>
+        <article><span>@FinanceText["RestrictedAccounts"]</span><strong>@Accounts.Count(x => x.LifecycleStatus is "restricted" or "retirement_scheduled")</strong><small>@FinanceText["GovernedPostingRules"]</small></article>
+        <article><span>@FinanceText["SeriesHealth"]</span><strong>@(SeriesPolicies.Sum(x => x.UnexplainedGapCount) == 0 ? FinanceText["Healthy"] : FinanceText["NeedsEvidence"])</strong><small>@FinanceText["UnexplainedGaps", SeriesPolicies.Sum(x => x.UnexplainedGapCount)]</small></article>
+    </section>
+    <nav class="accounting-governance-tabs" aria-label="@FinanceText["AccountingAdministration"]">
+        <button class="@(ActiveTab == "accounts" ? "active" : null)" type="button" @onclick='() => SetTab("accounts")'>@FinanceText["Accounts"]</button>
+        <button class="@(ActiveTab == "series" ? "active" : null)" type="button" @onclick='() => SetTab("series")'>@FinanceText["VoucherSeries"]</button>
+        <button class="@(ActiveTab == "commerce" ? "active" : null)" type="button" @onclick='() => SetTab("commerce")'>@FinanceText["CommerceBoundary"]</button>
+    </nav>
+
+    @if (ActiveTab == "accounts")
+    {
+
     <section class="accounting-filter-card" aria-label="@FinanceText["AccountFilters"]">
         <div>
             <label for="account-search">@FinanceText["SearchAccounts"]</label>
@@ -52,7 +66,7 @@
             <FinanceDataState IsLoading="@IsAccountsLoading" IsEmpty="@(!IsAccountsLoading && string.IsNullOrWhiteSpace(ListError) && Accounts.Count == 0)" ErrorMessage="@ListError" LoadingTitle="@FinanceText["AccountsLoading"]" LoadingMessage="@FinanceText["AccountsLoadingHelp"]" EmptyTitle="@FinanceText["NoAccountsFound"]" EmptyMessage="@FinanceText["NoAccountsFoundHelp"]" OnRetry="ReloadAsync">
                 <div class="table-responsive">
                     <table class="table accounting-accounts-table align-middle">
-                        <thead><tr><th>@FinanceText["AccountCode"]</th><th>@FinanceText["AccountName"]</th><th>@FinanceText["AccountClass"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["ControlRole"]</th><th>@FinanceText["Reporting"]</th></tr></thead>
+                        <thead><tr><th>@FinanceText["AccountCode"]</th><th>@FinanceText["AccountName"]</th><th>@FinanceText["AccountClass"]</th><th>@FinanceText["PostingPolicy"]</th><th>@FinanceText["Dependencies"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["Reporting"]</th></tr></thead>
                         <tbody>
                             @foreach (var account in Accounts)
                             {
@@ -66,8 +80,9 @@
                                         }
                                     </td>
                                     <td>@FinanceText[AccountingPresentation.AccountClassResourceKey(account.AccountClass)]</td>
-                                    <td><span class="@AccountingPresentation.AccountStatusClass(account.IsPostingEnabled)">@FinanceText[account.IsPostingEnabled ? "Active" : "Inactive"]</span></td>
-                                    <td>@(account.RoleName ?? FinanceText["NoControlRole"])</td>
+                                    <td>@FinanceText[$"PostingRestriction_{account.PostingRestriction}"]</td>
+                                    <td>@account.DependencyCount</td>
+                                    <td><span class="@AccountingPresentation.AccountStatusClass(account.LifecycleStatus == "active")">@FinanceText[$"Lifecycle_{account.LifecycleStatus}"]</span></td>
                                     <td>@(account.ReportingPlacement ?? FinanceText["NotMapped"])</td>
                                 </tr>
                             }
@@ -116,7 +131,7 @@
                     </div>
                 </div>
                 <dl class="accounting-detail-list">
-                    <div><dt>@FinanceText["AccountClass"]</dt><dd>@FinanceText[AccountingPresentation.AccountClassResourceKey(Selected.AccountClass)]</dd></div><div><dt>@FinanceText["NormalBalance"]</dt><dd>@FinanceText[AccountingPresentation.NormalBalanceResourceKey(Selected.NormalBalance)]</dd></div><div><dt>@FinanceText["Currency"]</dt><dd>@Selected.Currency</dd></div><div><dt>@FinanceText["ControlRole"]</dt><dd>@(Selected.RoleName ?? FinanceText["NoControlRole"])</dd></div><div><dt>@FinanceText["ActiveDates"]</dt><dd>@FormatActiveDates(Selected)</dd></div><div><dt>@FinanceText["PostingStatus"]</dt><dd>@FinanceText[Selected.IsPostingEnabled ? "PostingEnabled" : "PostingDisabled"]</dd></div><div><dt>@FinanceText["Reporting"]</dt><dd>@(Selected.ReportingPlacement ?? FinanceText["NotMapped"])</dd></div>
+                    <div><dt>@FinanceText["AccountClass"]</dt><dd>@FinanceText[AccountingPresentation.AccountClassResourceKey(Selected.AccountClass)]</dd></div><div><dt>@FinanceText["NormalBalance"]</dt><dd>@FinanceText[AccountingPresentation.NormalBalanceResourceKey(Selected.NormalBalance)]</dd></div><div><dt>@FinanceText["Currency"]</dt><dd>@Selected.Currency</dd></div><div><dt>@FinanceText["ControlRole"]</dt><dd>@(Selected.RoleName ?? FinanceText["NoControlRole"])</dd></div><div><dt>@FinanceText["ActiveDates"]</dt><dd>@FormatActiveDates(Selected)</dd></div><div><dt>@FinanceText["PostingStatus"]</dt><dd>@FinanceText[$"PostingRestriction_{Selected.PostingRestriction}"]</dd></div><div><dt>@FinanceText["Reporting"]</dt><dd>@(Selected.IsReportable ? Selected.ReportingPlacement ?? FinanceText["NotMapped"] : FinanceText["NotReportable"])</dd></div>
                 </dl>
                 @if (!string.IsNullOrWhiteSpace(Selected.ProtectedReason))
                 {
@@ -127,21 +142,65 @@
                     <div class="accounting-account-actions">
                         <label for="rename-account">@FinanceText["RenameAccount"]</label>
                         <div class="input-group"><InputText id="rename-account" class="form-control" @bind-Value="RenameValue" /><button class="btn btn-outline-primary" type="button" @onclick="RenameAccountAsync" disabled="@IsSaving">@FinanceText["SaveName"]</button></div>
-                        @if (Selected.IsPostingEnabled)
+                        <h4>@FinanceText["LifecycleAndReplacement"]</h4>
+                        <div><label for="lifecycle-restriction">@FinanceText["PostingPolicy"]</label><InputSelect id="lifecycle-restriction" class="form-select" @bind-Value="LifecycleDraft.PostingRestriction"><option value="none">@FinanceText["PostingRestriction_none"]</option><option value="manual">@FinanceText["PostingRestriction_manual"]</option><option value="all">@FinanceText["PostingRestriction_all"]</option></InputSelect></div>
+                        <div class="form-check"><InputCheckbox id="lifecycle-reportable" class="form-check-input" @bind-Value="LifecycleDraft.IsReportable" /><label class="form-check-label" for="lifecycle-reportable">@FinanceText["IncludeInReporting"]</label></div>
+                        <div><label for="lifecycle-end">@FinanceText["RetirementDate"]</label><InputDate id="lifecycle-end" class="form-control" @bind-Value="LifecycleDraft.EffectiveTo" /></div>
+                        <div><label for="lifecycle-replacement">@FinanceText["ReplacementAccount"]</label><InputSelect id="lifecycle-replacement" class="form-select" @bind-Value="LifecycleDraft.ReplacementAccountId"><option value="">@FinanceText["SelectReplacementAccount"]</option>@foreach (var replacement in Accounts.Where(x => x.Id != Selected.Id && x.IsPostingEnabled && x.AccountClass == Selected.AccountClass)) { <option value="@replacement.Id">@replacement.Code — @replacement.Name</option> }</InputSelect></div>
+                        <div><label for="lifecycle-reason">@FinanceText["Reason"]</label><InputTextArea id="lifecycle-reason" class="form-control" @bind-Value="LifecycleDraft.Reason" /></div>
+                        @if (LifecyclePreview is not null)
                         {
-                            @if (!ConfirmDeactivate)
-                            {
-                                <button class="btn btn-outline-danger w-100" type="button" @onclick="RequestDeactivate" disabled="@(Selected.IsProtected || IsSaving)">@FinanceText["DeactivateAccount"]</button>
-                            }
-                            else
-                            {
-                                <div class="accounting-confirm"><p>@FinanceText["DeactivateAccountConfirm"]</p><div class="d-flex gap-2"><button class="btn btn-danger" type="button" @onclick="DeactivateAccountAsync" disabled="@IsSaving">@FinanceText["ConfirmDeactivate"]</button><button class="btn btn-outline-secondary" type="button" @onclick="CancelDeactivate">@CommonText["Cancel"]</button></div></div>
-                            }
+                            <div class="accounting-impact-preview"><strong>@FinanceText["DependencyImpact"]</strong>@foreach (var dependency in LifecyclePreview.Dependencies.Where(x => x.Count > 0)) { <div><span>@dependency.DisplayName</span><b>@dependency.Count</b></div> }@foreach (var issue in LifecyclePreview.Issues) { <p>@issue.Explanation</p> }</div>
                         }
+                        <div class="d-flex gap-2"><button class="btn btn-outline-primary" type="button" @onclick="PreviewLifecycleAsync" disabled="@IsSaving">@FinanceText["PreviewImpact"]</button><button class="btn btn-primary" type="button" @onclick="ApplyLifecycleAsync" disabled="@(IsSaving || LifecyclePreview?.CanApply != true || string.IsNullOrWhiteSpace(LifecycleDraft.Reason))">@FinanceText["ApplyLifecycle"]</button></div>
                     </div>
                 }
                 <div class="accounting-laura-mini"><span aria-hidden="true">L</span><div><strong>@FinanceText["LauraAccountAdviceTitle"]</strong><p>@FinanceText["LauraAccountAdvice"]</p></div></div>
             }
         </aside>
     </div>
+    }
+    else if (ActiveTab == "series")
+    {
+        <div class="accounting-series-governance">
+            <section class="accounting-list-card"><div class="accounting-card-header"><div><h3>@FinanceText["SeriesPolicies"]</h3><span>@FinanceText["SeriesPolicyHelp"]</span></div></div><div class="table-responsive"><table class="table accounting-accounts-table"><thead><tr><th>@FinanceText["Series"]</th><th>@FinanceText["SourceType"]</th><th>@FinanceText["TransactionType"]</th><th>@FinanceText["FiscalYear"]</th><th>@FinanceText["Location"]</th><th>@FinanceText["ProviderMapping"]</th><th>@FinanceText["GapEvidence"]</th></tr></thead><tbody>@foreach (var policy in SeriesPolicies) { <tr class="@(SelectedSeriesPolicy?.SeriesId == policy.SeriesId ? "selected" : null)" @onclick="() => SelectSeriesPolicy(policy)"><td><strong>@policy.SeriesCode</strong><br /><small>@policy.SeriesName</small></td><td>@policy.SourceType</td><td>@policy.TransactionType</td><td>@(policy.FiscalYear?.ToString() ?? FinanceText["AllFiscalYears"])</td><td>@FormatSeriesLocation(policy.LocationDimensionMemberId)</td><td>@(policy.ProviderSeriesCode ?? FinanceText["NotMapped"])</td><td><span class="@(policy.UnexplainedGapCount == 0 ? "accounting-badge accounting-badge--success" : "accounting-badge accounting-badge--warning")">@policy.UnexplainedGapCount</span></td></tr> }</tbody></table></div></section>
+            <aside class="accounting-detail-card">
+                @if (SelectedSeriesPolicy is null)
+                {
+                    <div class="accounting-detail-state"><span>#</span><h3>@FinanceText["SelectSeries"]</h3><p>@FinanceText["SelectSeriesHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="accounting-card-header"><div><span class="accounting-account-code">@SelectedSeriesPolicy.SeriesCode</span><h3>@SelectedSeriesPolicy.SeriesName</h3><small>@SelectedSeriesPolicy.PolicyPackKey · @SelectedSeriesPolicy.PolicyPackVersion · @FinanceText["Version"] @SelectedSeriesPolicy.Version</small></div></div>
+                    <div class="accounting-form-stack">
+                        <div><label for="series-source">@FinanceText["SourceType"]</label><InputText id="series-source" class="form-control" @bind-Value="SelectedSeriesPolicy.SourceType" /></div>
+                        <div><label for="series-transaction">@FinanceText["TransactionType"]</label><InputText id="series-transaction" class="form-control" @bind-Value="SelectedSeriesPolicy.TransactionType" /></div>
+                        <div><label for="series-year">@FinanceText["FiscalYear"]</label><InputNumber id="series-year" class="form-control" @bind-Value="SelectedSeriesPolicy.FiscalYear" /></div>
+                        <div><label for="series-location">@FinanceText["Location"]</label><InputSelect id="series-location" class="form-select" @bind-Value="SelectedSeriesPolicy.LocationDimensionMemberId"><option value="">@FinanceText["AllLocations"]</option>@foreach (var option in SeriesLocationOptions) { <option value="@option.Id">@option.DisplayName</option> }</InputSelect><small>@FinanceText["SeriesLocationHelp"]</small></div>
+                        <div><label for="series-jurisdiction">@FinanceText["Jurisdiction"]</label><InputText id="series-jurisdiction" class="form-control" @bind-Value="SelectedSeriesPolicy.Jurisdiction" /></div>
+                        <div><label for="series-provider-key">@FinanceText["ProviderKey"]</label><InputText id="series-provider-key" class="form-control" @bind-Value="SelectedSeriesPolicy.ProviderKey" /></div>
+                        <div><label for="series-provider">@FinanceText["ProviderMapping"]</label><InputText id="series-provider" class="form-control" @bind-Value="SelectedSeriesPolicy.ProviderSeriesCode" /></div>
+                        <div class="form-check"><InputCheckbox id="series-active" class="form-check-input" @bind-Value="SelectedSeriesPolicy.IsActive" /><label class="form-check-label" for="series-active">@FinanceText["Active"]</label></div>
+                        <button class="btn btn-primary" type="button" @onclick="SaveSeriesPolicyAsync" disabled="@(!CanManageAccounting || IsSaving)">@FinanceText["SaveSeriesPolicy"]</button>
+                        @if (SelectedSeriesPolicy.SeriesKind == "voucher" && SelectedSeriesPolicy.UnexplainedGapCount > 0)
+                        {
+                            <section class="accounting-gap-evidence">
+                                <h4>@FinanceText["RecordGapEvidence"]</h4><p>@FinanceText["RecordGapEvidenceHelp"]</p>
+                                <div><label for="gap-year">@FinanceText["FiscalYear"]</label><InputNumber id="gap-year" class="form-control" @bind-Value="GapFiscalYear" /></div>
+                                <div><label for="gap-number">@FinanceText["MissingNumber"]</label><InputNumber id="gap-number" class="form-control" @bind-Value="GapMissingNumber" /></div>
+                                <div><label for="gap-reason">@FinanceText["Reason"]</label><InputTextArea id="gap-reason" class="form-control" @bind-Value="GapReason" /></div>
+                                <button class="btn btn-outline-primary" type="button" @onclick="RecordVoucherGapAsync" disabled="@(!CanManageAccounting || IsSaving || GapMissingNumber is not > 0 || string.IsNullOrWhiteSpace(GapReason))">@FinanceText["RecordGapEvidence"]</button>
+                            </section>
+                        }
+                    </div>
+                }
+            </aside>
+        </div>
+    }
+    else
+    {
+        <section class="accounting-commerce-boundary"><span class="accounting-commerce-boundary__icon" aria-hidden="true">i</span><div><span class="dashboard-kicker">@FinanceText["CapabilityBoundary"]</span><h3>@FinanceText["InventoryAccountingNotSupported"]</h3><p>@(CommerceCapability?.Explanation ?? FinanceText["InventoryBoundaryHelp"])</p><dl><div><dt>@FinanceText["ContractVersion"]</dt><dd>@CommerceCapability?.ContractVersion</dd></div><div><dt>@FinanceText["QuantityState"]</dt><dd>@FinanceText["ExternalOnly"]</dd></div><div><dt>@FinanceText["ValuationAndCogs"]</dt><dd>@FinanceText["Blocked"]</dd></div></dl></div></section>
+    }
+
+    <div class="accounting-inventory-banner" role="note"><strong>@FinanceText["InventoryAccountingNotSupported"]</strong><span>@FinanceText["InventoryBoundaryShort"]</span></div>
 </FinancePageLayout>

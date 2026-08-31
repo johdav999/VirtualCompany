@@ -50,7 +50,14 @@ public sealed record CustomerAgingItemDto(
     decimal? CreditLimit,
     decimal CustomerExposure,
     string RecommendedAction,
-    IReadOnlyList<string> EvidenceCitations);
+    IReadOnlyList<string> EvidenceCitations,
+    decimal? FunctionalOriginalAmount = null,
+    decimal? FunctionalAllocatedAmount = null,
+    decimal? FunctionalOpenAmount = null,
+    string? FunctionalCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null);
 
 public sealed record CustomerAgingResultDto(
     Guid CompanyId,
@@ -67,7 +74,14 @@ public sealed record CustomerAgingResultDto(
     decimal TotalOpen,
     decimal ControlAccountDifference,
     bool IsControlAccountReconciled,
-    IReadOnlyList<CustomerAgingItemDto> Items);
+    IReadOnlyList<CustomerAgingItemDto> Items,
+    string? FunctionalCurrency = null,
+    decimal? FunctionalCurrent = null,
+    decimal? FunctionalDays1To30 = null,
+    decimal? FunctionalDays31To60 = null,
+    decimal? FunctionalDays61To90 = null,
+    decimal? FunctionalDaysOver90 = null,
+    decimal? FunctionalTotalOpen = null);
 
 public sealed record GenerateCustomerStatementCommand(
     Guid CompanyId,
@@ -91,7 +105,15 @@ public sealed record CustomerStatementItemDto(
     decimal DebitAmount,
     decimal CreditAmount,
     decimal RunningBalance,
-    string SourceHash);
+    string SourceHash,
+    decimal? FunctionalDebitAmount = null,
+    decimal? FunctionalCreditAmount = null,
+    decimal? FunctionalRunningBalance = null,
+    string? FunctionalCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null,
+    string? CurrencyProvenance = null);
 
 public sealed record CustomerStatementDto(
     Guid Id,
@@ -115,7 +137,14 @@ public sealed record CustomerStatementDto(
     long ContentLength,
     DateTime CreatedUtc,
     IReadOnlyList<CustomerStatementItemDto> Items,
-    bool IsIdempotentReplay = false);
+    bool IsIdempotentReplay = false,
+    string? FunctionalCurrency = null,
+    decimal? FunctionalOpeningBalance = null,
+    decimal? FunctionalInvoiceActivity = null,
+    decimal? FunctionalAllocationActivity = null,
+    decimal? FunctionalCreditActivity = null,
+    decimal? FunctionalClosingBalance = null,
+    string FunctionalEvidenceStatus = "legacy_unavailable");
 
 public sealed record GetCustomerStatementQuery(Guid CompanyId, Guid StatementId);
 public sealed record ListCustomerStatementsQuery(Guid CompanyId, Guid? CustomerId = null, int Skip = 0, int Take = 100);

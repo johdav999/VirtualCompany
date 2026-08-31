@@ -77,7 +77,10 @@ public sealed record SupplierBillAccountingJournalLineDto(
     string? TaxTreatment = null,
     string? TaxRuleVersion = null,
     IReadOnlyList<string>? VatBoxMappings = null,
-    string? EvidenceClassification = null);
+    string? EvidenceClassification = null,
+    decimal? DocumentDebitAmount = null,
+    decimal? DocumentCreditAmount = null,
+    string? DocumentCurrency = null);
 
 public sealed record SupplierBillAccountingPreviewDto(
     Guid BillId,
@@ -102,7 +105,10 @@ public sealed record SupplierBillAccountingPreviewDto(
     string? SourceDocumentHash,
     IReadOnlyList<SupplierBillAccountingJournalLineDto> JournalLines,
     IReadOnlyList<SupplierBillDuplicateEvidenceDto> DuplicateEvidence,
-    IReadOnlyList<SupplierBillAccountingIssueDto> Issues);
+    IReadOnlyList<SupplierBillAccountingIssueDto> Issues,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null,
+    IReadOnlyList<ExchangeRateLookupLeg>? ExchangeRateLegs = null);
 
 public sealed record SupplierBillAccountingApprovalDto(
     Guid Id, string Status, long SourceVersion, string PayloadHash, DateTime CreatedUtc, DateTime? DecidedUtc);
@@ -137,7 +143,12 @@ public sealed record SupplierBillAccountingStateDto(
     SupplierBillAccountingApprovalDto? Approval,
     IReadOnlyList<SupplierBillAccountingJournalLineDto> JournalLines,
     IReadOnlyList<SupplierBillDuplicateEvidenceDto> DuplicateEvidence,
-    IReadOnlyList<SupplierBillAccountingIssueDto> Issues);
+    IReadOnlyList<SupplierBillAccountingIssueDto> Issues,
+    DateOnly? ExchangeRateDate = null,
+    Guid? ExchangeRateConversionId = null,
+    string? ExchangeRateIdentity = null,
+    decimal? ConversionRoundingResidual = null,
+    string? CurrencyProvenance = null);
 
 public sealed record SupplierBillAccountingTaxRuleOptionDto(
     string Key, string DisplayName, decimal? Rate, string AmountMethod, string TaxTreatment, DateOnly EffectiveFrom);
@@ -188,7 +199,8 @@ public sealed record SupplierBillPayablesReconciliationDto(
     decimal OutstandingAmount,
     decimal Difference,
     bool IsReconciled,
-    DateTime AsOfUtc);
+    DateTime AsOfUtc,
+    IReadOnlyList<DocumentCurrencyOpenItemControlDto>? DocumentCurrencyBreakdown = null);
 
 public interface ISupplierBillAccountingPolicy
 {

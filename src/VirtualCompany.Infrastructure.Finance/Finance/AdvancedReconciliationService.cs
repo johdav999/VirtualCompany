@@ -199,7 +199,8 @@ internal sealed class AdvancedReconciliationService : IAdvancedReconciliationRea
                     new CreateFinancePaymentAllocationDto(payment.RecordId!.Value,
                         document.NodeType == AdvancedReconciliationNodeTypes.Invoice ? document.RecordId : null,
                         document.NodeType == AdvancedReconciliationNodeTypes.Bill ? document.RecordId : null,
-                        edge.Amount, group.Currency, $"advanced-reconciliation:{group.Id:N}:edge:{edge.Id:N}")), cancellationToken);
+                        edge.Amount, group.Currency, $"advanced-reconciliation:{group.Id:N}:edge:{edge.Id:N}"),
+                    command.ActorUserId, command.CorrelationId), cancellationToken);
             }
 
             var bankNodes = group.Nodes.Where(x => x.NodeType == AdvancedReconciliationNodeTypes.BankTransaction).OrderBy(x => x.Sequence).ToArray();

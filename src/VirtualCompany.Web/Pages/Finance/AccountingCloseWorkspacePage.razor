@@ -1,0 +1,171 @@
+@page "/finance/accounting/close-workspace"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["CloseWorkspaceTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["CloseWorkspaceTitle"]" Description="@FinanceText["CloseWorkspaceDescription"]"
+                   LoadingMessage="@FinanceText["CloseWorkspaceLoading"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    @if (WorkspaceLoading)
+    {
+        <section class="close-workspace-state" role="status" aria-live="polite">
+            <div class="spinner-border spinner-border-sm" aria-hidden="true"></div>
+            <p>@FinanceText["CloseWorkspaceLoading"]</p>
+        </section>
+    }
+    else if (!string.IsNullOrWhiteSpace(WorkspaceError))
+    {
+        <section class="close-workspace-state error" role="alert">
+            <h2>@FinanceText["CloseWorkspaceLoadFailed"]</h2><p>@WorkspaceError</p>
+            <button class="btn btn-outline-primary" type="button" @onclick="ReloadAsync">@FinanceText["Retry"]</button>
+        </section>
+    }
+    else if (Workspace is not null)
+    {
+        <header class="close-workspace-hero">
+            <div>
+                <span class="close-kicker">@Workspace.CompanyName · @Friendly(Workspace.MembershipRole)</span>
+                <h2>@FinanceText["CloseWorkspaceTitle"]</h2>
+                <p>@Workspace.EvidenceNotice</p>
+            </div>
+            <div class="close-workspace-toolbar">
+                <label for="close-period">@FinanceText["ClosePeriod"]</label>
+                <select id="close-period" class="form-select" value="@Workspace.SelectedPeriod?.FiscalPeriodId" @onchange="ChangePeriodAsync">
+                    @foreach (var period in Workspace.Periods)
+                    {
+                        <option value="@period.FiscalPeriodId">@period.Name · @Friendly(period.CloseStatus ?? "not_started")</option>
+                    }
+                </select>
+                <button class="btn btn-outline-secondary" type="button" disabled="@(Acting || !CanRefreshReadiness)" @onclick="RefreshReadinessAsync">@FinanceText["RefreshReadiness"]</button>
+                <a class="btn btn-outline-primary" href="@Scoped("/inbox")">@FinanceText["ActionCenter"]</a>
+            </div>
+        </header>
+
+        @if (!string.IsNullOrWhiteSpace(ActionMessage))
+        {
+            <div class="alert @(ActionFailed ? "alert-danger" : "alert-info")" role="status">@ActionMessage</div>
+        }
+
+        @if (Workspace.CloseInstanceId is null)
+        {
+            <section class="close-workspace-state">
+                <h2>@FinanceText["NoCloseInstance"]</h2>
+                <p>@FinanceText["NoCloseInstanceHelp"]</p>
+                <a class="btn btn-primary" href="@Scoped(FinanceRoutes.AccountingPeriods)">@FinanceText["OpenPeriods"]</a>
+            </section>
+        }
+        else
+        {
+            <section class="close-readiness" aria-labelledby="readiness-heading">
+                <div class="close-section-heading">
+                    <div><span class="close-kicker">@Workspace.SelectedPeriod?.Name · @Friendly(Workspace.CloseStatus ?? "unknown")</span><h3 id="readiness-heading">@FinanceText["CloseReadinessSummary"]</h3></div>
+                    @if (Workspace.Readiness is { } readiness)
+                    {
+                        <span class="evidence-time @(readiness.IsStale ? "stale" : null)">@FinanceText[readiness.IsStale ? "EvidenceStaleAt" : "EvidenceCurrentAt", Local(readiness.PreparedUtc)]</span>
+                    }
+                </div>
+                @if (Workspace.Readiness is null)
+                {
+                    <div class="readiness-empty"><strong>@FinanceText["NoReadinessSnapshot"]</strong><span>@FinanceText["NoReadinessSnapshotHelp"]</span></div>
+                }
+                else
+                {
+                    <div class="readiness-metrics">
+                        <article class="metric blocked"><span aria-hidden="true">!</span><div><strong>@Workspace.Readiness.BlockingCount</strong><small>@FinanceText["Blockers"]</small></div></article>
+                        <article class="metric attention"><span aria-hidden="true">△</span><div><strong>@Workspace.Readiness.WarningCount</strong><small>@FinanceText["NeedsAttention"]</small></div></article>
+                        <article class="metric neutral"><span aria-hidden="true">○</span><div><strong>@Workspace.Tasks.Count(x => x.Status == "not_started")</strong><small>@FinanceText["NotStarted"]</small></div></article>
+                        <article class="metric current"><span aria-hidden="true">✓</span><div><strong>@Workspace.Tasks.Count(x => x.Status == "completed")</strong><small>@FinanceText["CompletedAtEvidenceTime"]</small></div><time>@Local(Workspace.Readiness.PreparedUtc)</time></article>
+                    </div>
+                }
+            </section>
+
+            <div class="close-workspace-grid">
+                <section class="close-plan" aria-labelledby="plan-heading">
+                    <div class="close-section-heading"><div><span class="close-kicker">@FinanceText["DependenciesAndEvidence"]</span><h3 id="plan-heading">@FinanceText["ClosePlan"]</h3></div><span>@Workspace.Tasks.Count @FinanceText["Tasks"]</span></div>
+                    @if (Workspace.Tasks.Count == 0)
+                    {
+                        <div class="close-empty">@FinanceText["NoCloseTasks"]</div>
+                    }
+                    else
+                    {
+                        <div class="close-task-table" role="table" aria-label="@FinanceText["ClosePlan"]">
+                            <div class="task-row task-head" role="row"><span>@FinanceText["Task"]</span><span>@FinanceText["Owner"]</span><span>@FinanceText["DueDate"]</span><span>@FinanceText["Status"]</span><span>@FinanceText["Evidence"]</span><span>@FinanceText["SafeNextAction"]</span></div>
+                            @foreach (var task in Workspace.Tasks.OrderBy(x => x.Sequence))
+                            {
+                                <article class="task-row @StatusClass(task.Status)" role="row" id="task-@task.Id">
+                                    <div><strong>@task.Title</strong><small>@task.PredecessorTaskIds.Count @FinanceText["Dependencies"] · @task.BlockingReasonCodes.Count @FinanceText["Blocks"]</small></div>
+                                    <span>@(task.OwnerRole ?? Short(task.OwnerUserId))</span>
+                                    <time datetime="@task.DueUtc.ToString("O")">@Local(task.DueUtc)</time>
+                                    <span class="status-pill @StatusClass(task.Status)">@Friendly(task.Status)</span>
+                                    <span><strong>@task.Evidence.Count</strong> @FinanceText["Items"]</span>
+                                    <div class="task-actions">
+                                        @if (CanComplete(task))
+                                        {
+                                            <button class="btn btn-sm btn-outline-primary" disabled="@Acting" @onclick="() => BeginComplete(task)">@FinanceText["CompleteTask"]</button>
+                                        }
+                                        else if (task.Blockers.FirstOrDefault() is { } blocker)
+                                        {
+                                            <a href="@Scoped(blocker.DrilldownUrl)">@blocker.SafeNextAction</a>
+                                        }
+                                        else
+                                        {
+                                            <a href="@Scoped(task.DrilldownUrl)">@FinanceText["ReviewEvidence"]</a>
+                                        }
+                                    </div>
+                                </article>
+                                @if (CompletingTask?.Id == task.Id)
+                                {
+                                    <div class="task-complete-form">
+                                        <label for="task-note-@task.Id">@FinanceText["CompletionNote"]</label>
+                                        <input id="task-note-@task.Id" class="form-control" maxlength="1000" @bind="CompletionNote" />
+                                        <span>@FinanceText["EvidenceRetainedCount", task.Evidence.Count]</span>
+                                        <button class="btn btn-primary btn-sm" disabled="@Acting" @onclick="CompleteTaskAsync">@FinanceText["ConfirmCompletion"]</button>
+                                        <button class="btn btn-link btn-sm" disabled="@Acting" @onclick="CancelComplete">@FinanceText["Cancel"]</button>
+                                    </div>
+                                }
+                            }
+                        </div>
+                    }
+                </section>
+
+                <aside class="close-priorities" aria-labelledby="blockers-heading">
+                    <div class="close-section-heading"><h3 id="blockers-heading">@FinanceText["PriorityBlockers", Workspace.Readiness?.Blockers.Count ?? 0]</h3></div>
+                    @if (Workspace.Readiness?.Blockers.Count > 0)
+                    {
+                        @foreach (var blocker in Workspace.Readiness.Blockers.Take(8))
+                        {
+                            <article class="blocker-card"><div><span aria-hidden="true">!</span><strong>@blocker.Title</strong></div><p>@blocker.Explanation</p><dl><dt>@FinanceText["Owner"]</dt><dd>@Short(blocker.OwnerUserId)</dd><dt>@FinanceText["Status"]</dt><dd>@Friendly(blocker.Status)</dd><dt>@FinanceText["Evidence"]</dt><dd>@blocker.EvidenceCount · @Local(blocker.ObservedUtc)</dd></dl><a href="@Scoped(blocker.DrilldownUrl)">@blocker.SafeNextAction</a></article>
+                        }
+                    }
+                    else
+                    {
+                        <div class="close-empty">@FinanceText["NoCurrentBlockers"] @if (Workspace.Readiness is not null) { <time>@Local(Workspace.Readiness.PreparedUtc)</time> }</div>
+                    }
+
+                    @if (CanLock)
+                    {
+                        <div class="lock-card"><strong>@FinanceText["LockPeriod"]</strong><label for="lock-reason">@FinanceText["LockReason"]</label><input id="lock-reason" class="form-control" maxlength="1000" @bind="LockReason" /><button class="btn btn-primary" disabled="@(Acting || LockReason.Trim().Length < 10)" @onclick="LockAsync">@FinanceText["LockWithCurrentEvidence"]</button></div>
+                    }
+                    else if (Workspace.AllowedActions.Contains("request_reopen"))
+                    {
+                        <a class="btn btn-outline-warning w-100" href="@Scoped(FinanceRoutes.AccountingReports)">@FinanceText["RequestGovernedReopen"]</a>
+                    }
+                </aside>
+            </div>
+
+            <section class="close-panels" aria-label="@FinanceText["CloseEvidenceAreas"]">
+                @foreach (var panel in Workspace.Panels)
+                {
+                    <article class="close-panel @StatusClass(panel.Status)"><div><span class="close-kicker">@Friendly(panel.Status)</span><h3>@PanelTitle(panel)</h3></div><strong>@panel.TotalCount</strong><p>@FinanceText["AttentionItems", panel.AttentionCount]</p>@if(panel.EvidenceUtc.HasValue){<time>@FinanceText["EvidenceCurrentAt", Local(panel.EvidenceUtc.Value)]</time>}else{<span class="no-evidence">@FinanceText["NoRetainedEvidence"]</span>}<a href="@Scoped(panel.DrilldownUrl)">@FinanceText["OpenArea"]</a></article>
+                }
+            </section>
+
+            <div class="close-bottom-grid">
+                <section class="close-history"><div class="close-section-heading"><h3>@FinanceText["SignOffs"]</h3><span>@Workspace.SignOffs.Count</span></div>@if(Workspace.SignOffs.Count==0){<div class="close-empty">@FinanceText["NoSignOffs"]</div>}else{@foreach(var signoff in Workspace.SignOffs.Take(8)){<article><span class="history-dot"></span><div><strong>@Friendly(signoff.Action)</strong><small>@Friendly(signoff.ActorRole) · @Local(signoff.OccurredUtc)</small><code>@ShortHash(signoff.EvidenceHash)</code></div></article>}}</section>
+                <section class="close-notifications"><div class="close-section-heading"><h3>@FinanceText["ActionCenter"]</h3><a href="@Scoped("/inbox")">@FinanceText["ViewAll"]</a></div>@if(Workspace.Notifications.Count==0){<div class="close-empty">@FinanceText["NoCloseNotifications"]</div>}else{@foreach(var item in Workspace.Notifications.Take(6)){<article><span class="notification-dot @StatusClass(item.Priority)"></span><div><strong>@item.Title</strong><p>@item.Body</p><small>@Local(item.CreatedUtc)</small></div>@if(!string.IsNullOrWhiteSpace(item.ActionUrl)){<a href="@Scoped(item.ActionUrl)">@FinanceText["Open"]</a>}</article>}}</section>
+            </div>
+        }
+    }
+</FinancePageLayout>

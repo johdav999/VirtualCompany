@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Domain.Finance;
 using VirtualCompany.Infrastructure.Persistence;
 
 namespace VirtualCompany.Infrastructure.Finance;
@@ -10,13 +11,25 @@ internal sealed class FinancePaymentAllocationService
 {
     private readonly VirtualCompanyDbContext _dbContext;
     private readonly IFinanceCashSettlementPostingService? _cashSettlementPostingService;
+    private readonly IExchangeRateService? _exchangeRateService;
+    private readonly IAccountingPostingService? _accountingPostingService;
+    private readonly ForeignCurrencySettlementTelemetry? _telemetry;
+    private readonly TimeProvider _timeProvider;
 
     public FinancePaymentAllocationService(
         VirtualCompanyDbContext dbContext,
-        IFinanceCashSettlementPostingService? cashSettlementPostingService = null)
+        IFinanceCashSettlementPostingService? cashSettlementPostingService = null,
+        IExchangeRateService? exchangeRateService = null,
+        IAccountingPostingService? accountingPostingService = null,
+        ForeignCurrencySettlementTelemetry? telemetry = null,
+        TimeProvider? timeProvider = null)
     {
         _dbContext = dbContext;
         _cashSettlementPostingService = cashSettlementPostingService;
+        _exchangeRateService = exchangeRateService;
+        _accountingPostingService = accountingPostingService;
+        _telemetry = telemetry;
+        _timeProvider = timeProvider ?? TimeProvider.System;
     }
     public Task<FinancePaymentAllocationDto> CreateAsync(
         CreateFinancePaymentAllocationCommand command,
@@ -29,7 +42,9 @@ internal sealed class FinancePaymentAllocationService
         CreateFinancePaymentAllocationCommand command,
         CancellationToken cancellationToken)
     {
-            ValidateAllocationDto(command.Allocation.PaymentId, command.Allocation.InvoiceId, command.Allocation.BillId, command.Allocation.AllocatedAmount, command.Allocation.Currency);
+            ValidateAllocationDto(command.Allocation.PaymentId, command.Allocation.InvoiceId, command.Allocation.BillId,
+                command.Allocation.AllocatedAmount, command.Allocation.Currency, command.Allocation.FeeAmount,
+                command.Allocation.WriteOffAmount);
 
             var payment = await LoadPaymentAsync(command.CompanyId, command.Allocation.PaymentId, cancellationToken);
             var invoice = await LoadInvoiceAsync(command.CompanyId, command.Allocation.InvoiceId, cancellationToken);
@@ -37,6 +52,8 @@ internal sealed class FinancePaymentAllocationService
             var amount = NormalizeMoney(command.Allocation.AllocatedAmount);
             var currency = NormalizeCurrency(command.Allocation.Currency);
             var idempotencyKey = NormalizeIdempotencyKey(command.Allocation.IdempotencyKey);
+            var feeAmount = NormalizeNonNegativeMoney(command.Allocation.FeeAmount, "FeeAmount");
+            var writeOffAmount = NormalizeNonNegativeMoney(command.Allocation.WriteOffAmount, "WriteOffAmount");
 
             if (idempotencyKey is not null)
             {
@@ -47,7 +64,9 @@ internal sealed class FinancePaymentAllocationService
                 if (existing is not null)
                 {
                     if (existing.PaymentId != payment.Id || existing.InvoiceId != invoice?.Id || existing.BillId != bill?.Id ||
-                        existing.AllocatedAmount != amount || !string.Equals(existing.Currency, currency, StringComparison.Ordinal))
+                        existing.AllocatedAmount != amount || existing.FeeAmount != feeAmount ||
+                        existing.WriteOffAmount != writeOffAmount ||
+                        !string.Equals(existing.Currency, currency, StringComparison.Ordinal))
                     {
                         throw CreateValidationException("IdempotencyKey", "The idempotency key was already used for a different payment allocation.");
                     }
@@ -56,10 +75,15 @@ internal sealed class FinancePaymentAllocationService
                 }
             }
 
-            await ValidateAsync(command.CompanyId, payment, invoice, bill, amount, currency, null, cancellationToken);
+            await ValidateAsync(command.CompanyId, payment, invoice, bill, amount, feeAmount, writeOffAmount,
+                currency, null, cancellationToken);
+
+            var allocationId = Guid.NewGuid();
+            var settlement = await PrepareSettlementAsync(command, allocationId, payment, invoice, bill,
+                amount, feeAmount, writeOffAmount, cancellationToken);
 
             var allocation = new PaymentAllocation(
-                Guid.NewGuid(),
+                allocationId,
                 command.CompanyId,
                 payment.Id,
                 invoice?.Id,
@@ -69,11 +93,32 @@ internal sealed class FinancePaymentAllocationService
                 sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
                 paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
                 targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId,
-                idempotencyKey: idempotencyKey);
+                idempotencyKey: idempotencyKey,
+                feeAmount: feeAmount,
+                writeOffAmount: writeOffAmount);
 
             _dbContext.PaymentAllocations.Add(allocation);
-            await ApplyTargetSettlementStatusAsync(command.CompanyId, invoice, bill, amount, null, cancellationToken);
-            await TryPostSettlementAsync(command.CompanyId, payment, allocation, amount, cancellationToken);
+            await ApplyTargetSettlementStatusAsync(command.CompanyId, invoice, bill,
+                amount + writeOffAmount, null, cancellationToken);
+            if (settlement is not null)
+            {
+                var posted = await PostSettlementAsync(command.CompanyId, payment, allocation, settlement,
+                    command.ActorUserId ?? Guid.Empty, command.CorrelationId, cancellationToken);
+                allocation.RecordSettlement(settlement.Result.AllocatedPaymentAmount, payment.Currency,
+                    settlement.Facts.FunctionalCurrency, settlement.Result.AllocatedFunctionalAmount,
+                    settlement.Result.SettlementFunctionalAmount, settlement.Result.BankFunctionalAmount,
+                    settlement.Result.FeeFunctionalAmount, settlement.Result.WriteOffFunctionalAmount,
+                    settlement.Result.RealizedGainLossAmount, settlement.Result.RoundingFunctionalAmount,
+                    settlement.Result.DocumentOutstandingAfter, settlement.Result.FunctionalOutstandingAfter,
+                    settlement.Facts.SettlementRateDate, settlement.Facts.SettlementRate,
+                    settlement.Facts.SettlementExchangeRateConversionId,
+                    settlement.Facts.SettlementRateIdentity,
+                    settlement.Facts.SettlementConversionRoundingResidual,
+                    posted.LedgerEntryId, _timeProvider.GetUtcNow().UtcDateTime);
+                _telemetry?.Settled(payment.PaymentType, payment.Currency,
+                    settlement.Facts.FunctionalCurrency, settlement.Result.IsFinalSettlement,
+                    settlement.Result.RealizedGainLossAmount);
+            }
             await _dbContext.SaveChangesAsync(cancellationToken);
 
             return Map(allocation);
@@ -89,7 +134,9 @@ internal sealed class FinancePaymentAllocationService
                 throw new ArgumentException("Allocation id is required.", nameof(command));
             }
 
-            ValidateAllocationDto(command.Allocation.PaymentId, command.Allocation.InvoiceId, command.Allocation.BillId, command.Allocation.AllocatedAmount, command.Allocation.Currency);
+            ValidateAllocationDto(command.Allocation.PaymentId, command.Allocation.InvoiceId,
+                command.Allocation.BillId, command.Allocation.AllocatedAmount,
+                command.Allocation.Currency, 0m, 0m);
 
             var allocation = await _dbContext.PaymentAllocations
                 .IgnoreQueryFilters()
@@ -98,6 +145,13 @@ internal sealed class FinancePaymentAllocationService
             {
                 throw new KeyNotFoundException("Finance payment allocation was not found.");
             }
+            if (allocation.SettlementLedgerEntryId.HasValue || allocation.IsReversed)
+                throw CreateValidationException("AllocationId",
+                    "Posted settlement allocations are immutable. Reverse the settlement and create a corrected allocation.");
+            if (await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
+                    .AnyAsync(x => x.CompanyId == command.CompanyId, cancellationToken))
+                throw CreateValidationException("AllocationId",
+                    "Accounting-enabled allocations cannot be edited in place. Reverse or delete the unposted legacy allocation and create a governed settlement.");
 
             var previousInvoice = await LoadInvoiceAsync(command.CompanyId, allocation.InvoiceId, cancellationToken);
             var previousBill = await LoadBillAsync(command.CompanyId, allocation.BillId, cancellationToken);
@@ -107,9 +161,9 @@ internal sealed class FinancePaymentAllocationService
             var amount = NormalizeMoney(command.Allocation.AllocatedAmount);
             var currency = NormalizeCurrency(command.Allocation.Currency);
 
-            await ValidateAsync(command.CompanyId, payment, invoice, bill, amount, currency, allocation.Id, cancellationToken);
+            await ValidateAsync(command.CompanyId, payment, invoice, bill, amount, 0m, 0m,
+                currency, allocation.Id, cancellationToken);
 
-            allocation.Update(payment.Id, invoice?.Id, bill?.Id, amount, currency);
             allocation.Update(
                 payment.Id,
                 invoice?.Id,
@@ -156,6 +210,9 @@ internal sealed class FinancePaymentAllocationService
             {
                 throw new KeyNotFoundException("Finance payment allocation was not found.");
             }
+            if (allocation.SettlementLedgerEntryId.HasValue || allocation.IsReversed)
+                throw CreateValidationException("AllocationId",
+                    "Posted settlement allocations cannot be deleted. Use the reversal endpoint so the original evidence remains available.");
 
             var invoice = await LoadInvoiceAsync(command.CompanyId, allocation.InvoiceId, cancellationToken);
             var bill = await LoadBillAsync(command.CompanyId, allocation.BillId, cancellationToken);
@@ -173,6 +230,63 @@ internal sealed class FinancePaymentAllocationService
             }
 
             await _dbContext.SaveChangesAsync(cancellationToken);
+        }, cancellationToken);
+
+    public Task<FinancePaymentAllocationDto> ReverseAsync(
+        ReverseFinancePaymentAllocationCommand command,
+        CancellationToken cancellationToken) =>
+        ExecuteInTransactionAsync(async () =>
+        {
+            if (command.AllocationId == Guid.Empty)
+                throw CreateValidationException("AllocationId", "Allocation id is required.");
+            if (command.PaymentId == Guid.Empty)
+                throw CreateValidationException("PaymentId", "Payment id is required.");
+            if (command.ActorUserId == Guid.Empty)
+                throw new UnauthorizedAccessException("A resolved company user is required to reverse a settlement.");
+            var idempotencyKey = NormalizeIdempotencyKey(command.IdempotencyKey)
+                ?? throw CreateValidationException("IdempotencyKey", "A reversal idempotency key is required.");
+            if (string.IsNullOrWhiteSpace(command.Reason))
+                throw CreateValidationException("Reason", "A reversal reason is required.");
+
+            var allocation = await _dbContext.PaymentAllocations.IgnoreQueryFilters()
+                .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.PaymentId == command.PaymentId &&
+                    x.Id == command.AllocationId,
+                    cancellationToken)
+                ?? throw new KeyNotFoundException("Finance payment allocation was not found.");
+            if (allocation.IsReversed)
+            {
+                if (!string.Equals(allocation.ReversalIdempotencyKey, idempotencyKey, StringComparison.Ordinal))
+                    throw CreateValidationException("IdempotencyKey",
+                        "The settlement is already reversed under a different idempotency key.");
+                return Map(allocation, true);
+            }
+            if (!allocation.SettlementLedgerEntryId.HasValue)
+                throw CreateValidationException("AllocationId",
+                    "Only a posted governed settlement can be reversed. Legacy unposted allocations may be deleted.");
+            if (_accountingPostingService is null)
+                throw CreateValidationException("AllocationId", "The accounting posting authority is unavailable.");
+
+            var period = await _dbContext.FiscalPeriods.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId &&
+                    x.StartUtc <= command.PostingDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc) &&
+                    x.EndUtc > command.PostingDate.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc), cancellationToken)
+                ?? throw CreateValidationException("PostingDate", "No accounting period covers the reversal date.");
+            var reversed = await _accountingPostingService.ReverseAsync(new ReverseAccountingEntryCommand(
+                command.CompanyId, allocation.SettlementLedgerEntryId.Value, period.Id, "B",
+                command.PostingDate, command.Reason, $"{allocation.Version}:reversal",
+                idempotencyKey, command.ActorUserId, CorrelationId: command.CorrelationId), cancellationToken);
+            allocation.Reverse(reversed.Journal.Id, command.ActorUserId, command.Reason,
+                idempotencyKey, _timeProvider.GetUtcNow().UtcDateTime);
+
+            var invoice = await LoadInvoiceAsync(command.CompanyId, allocation.InvoiceId, cancellationToken);
+            var bill = await LoadBillAsync(command.CompanyId, allocation.BillId, cancellationToken);
+            if (invoice is not null)
+                await ApplyInvoiceSettlementStatusAsync(command.CompanyId, invoice, null, allocation.Id, cancellationToken);
+            if (bill is not null)
+                await ApplyBillSettlementStatusAsync(command.CompanyId, bill, null, allocation.Id, cancellationToken);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            _telemetry?.Reversed(allocation.Currency, allocation.FunctionalCurrency ?? allocation.Currency);
+            return Map(allocation);
         }, cancellationToken);
 
     public Task<FinancePaymentAllocationBackfillResultDto> BackfillAsync(
@@ -253,9 +367,10 @@ internal sealed class FinancePaymentAllocationService
     {
         var createdAllocationCount = 0;
         var createdPaymentCount = 0;
-        var remainingAmount = invoice.Amount;
+        var remainingAmount = Math.Abs(invoice.Amount);
 
-        var payments = await FindExistingPaymentsAsync(companyId, PaymentTypes.Incoming, invoice.InvoiceNumber, invoice.Currency, cancellationToken);
+        var paymentType = invoice.Amount < 0m ? PaymentTypes.Outgoing : PaymentTypes.Incoming;
+        var payments = await FindExistingPaymentsAsync(companyId, paymentType, invoice.InvoiceNumber, invoice.Currency, cancellationToken);
         foreach (var payment in payments)
         {
             if (remainingAmount <= 0m)
@@ -272,7 +387,7 @@ internal sealed class FinancePaymentAllocationService
         {
             var syntheticPayment = CreateSyntheticPayment(
                 companyId,
-                PaymentTypes.Incoming,
+                paymentType,
                 remainingAmount,
                 invoice.Currency,
                 invoice.DueUtc,
@@ -297,9 +412,10 @@ internal sealed class FinancePaymentAllocationService
     {
         var createdAllocationCount = 0;
         var createdPaymentCount = 0;
-        var remainingAmount = bill.Amount;
+        var remainingAmount = Math.Abs(bill.Amount);
 
-        var payments = await FindExistingPaymentsAsync(companyId, PaymentTypes.Outgoing, bill.BillNumber, bill.Currency, cancellationToken);
+        var paymentType = bill.Amount < 0m ? PaymentTypes.Incoming : PaymentTypes.Outgoing;
+        var payments = await FindExistingPaymentsAsync(companyId, paymentType, bill.BillNumber, bill.Currency, cancellationToken);
         foreach (var payment in payments)
         {
             if (remainingAmount <= 0m)
@@ -316,7 +432,7 @@ internal sealed class FinancePaymentAllocationService
         {
             var syntheticPayment = CreateSyntheticPayment(
                 companyId,
-                PaymentTypes.Outgoing,
+                paymentType,
                 remainingAmount,
                 bill.Currency,
                 bill.DueUtc,
@@ -349,10 +465,19 @@ internal sealed class FinancePaymentAllocationService
             return new BackfillChunkResult(0, 0m);
         }
 
-        await ValidateAsync(companyId, payment, invoice, bill, allocationAmount, payment.Currency, null, cancellationToken);
+        await ValidateAsync(companyId, payment, invoice, bill, allocationAmount, 0m, 0m,
+            payment.Currency, null, cancellationToken);
+
+        var allocationId = Guid.NewGuid();
+        var command = new CreateFinancePaymentAllocationCommand(companyId,
+            new CreateFinancePaymentAllocationDto(payment.Id, invoice?.Id, bill?.Id,
+                allocationAmount, payment.Currency,
+                $"payment-allocation-backfill:{companyId:N}:{payment.Id:N}:{(invoice?.Id ?? bill!.Id):N}"));
+        var settlement = await PrepareSettlementAsync(command, allocationId, payment, invoice, bill,
+            allocationAmount, 0m, 0m, cancellationToken);
 
         var allocation = new PaymentAllocation(
-            Guid.NewGuid(),
+            allocationId,
             companyId,
             payment.Id,
             invoice?.Id,
@@ -361,11 +486,26 @@ internal sealed class FinancePaymentAllocationService
             payment.Currency,
             sourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
             paymentSourceSimulationEventRecordId: payment.SourceSimulationEventRecordId,
-            targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId);
+            targetSourceSimulationEventRecordId: invoice?.SourceSimulationEventRecordId ?? bill?.SourceSimulationEventRecordId,
+            idempotencyKey: command.Allocation.IdempotencyKey);
 
         _dbContext.PaymentAllocations.Add(allocation);
         await ApplyTargetSettlementStatusAsync(companyId, invoice, bill, allocationAmount, null, cancellationToken);
-        await TryPostSettlementAsync(companyId, payment, allocation, allocationAmount, cancellationToken);
+        if (settlement is not null)
+        {
+            var posted = await PostSettlementAsync(companyId, payment, allocation, settlement,
+                Guid.Empty, null, cancellationToken);
+            allocation.RecordSettlement(settlement.Result.AllocatedPaymentAmount, payment.Currency,
+                settlement.Facts.FunctionalCurrency, settlement.Result.AllocatedFunctionalAmount,
+                settlement.Result.SettlementFunctionalAmount, settlement.Result.BankFunctionalAmount,
+                settlement.Result.FeeFunctionalAmount, settlement.Result.WriteOffFunctionalAmount,
+                settlement.Result.RealizedGainLossAmount, settlement.Result.RoundingFunctionalAmount,
+                settlement.Result.DocumentOutstandingAfter, settlement.Result.FunctionalOutstandingAfter,
+                settlement.Facts.SettlementRateDate, settlement.Facts.SettlementRate,
+                settlement.Facts.SettlementExchangeRateConversionId, settlement.Facts.SettlementRateIdentity,
+                settlement.Facts.SettlementConversionRoundingResidual, posted.LedgerEntryId,
+                _timeProvider.GetUtcNow().UtcDateTime);
+        }
         await _dbContext.SaveChangesAsync(cancellationToken);
 
         return new BackfillChunkResult(1, allocationAmount);
@@ -377,6 +517,8 @@ internal sealed class FinancePaymentAllocationService
         FinanceInvoice? invoice,
         FinanceBill? bill,
         decimal amount,
+        decimal feeAmount,
+        decimal writeOffAmount,
         string currency,
         Guid? allocationIdToExclude,
         CancellationToken cancellationToken)
@@ -400,9 +542,12 @@ internal sealed class FinancePaymentAllocationService
 
         if (invoice is not null)
         {
-            if (!string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase))
+            var expectedPaymentType = invoice.Amount < 0m ? PaymentTypes.Outgoing : PaymentTypes.Incoming;
+            if (!string.Equals(payment.PaymentType, expectedPaymentType, StringComparison.OrdinalIgnoreCase))
             {
-                throw CreateValidationException("PaymentId", "Incoming payments can only be allocated to invoices.");
+                throw CreateValidationException("PaymentId", invoice.Amount < 0m
+                    ? "Customer credit refunds require an outgoing payment."
+                    : "Incoming payments can only be allocated to customer invoices.");
             }
 
             if (!string.Equals(invoice.Currency, currency, StringComparison.OrdinalIgnoreCase))
@@ -413,9 +558,12 @@ internal sealed class FinancePaymentAllocationService
 
         if (bill is not null)
         {
-            if (!string.Equals(payment.PaymentType, PaymentTypes.Outgoing, StringComparison.OrdinalIgnoreCase))
+            var expectedPaymentType = bill.Amount < 0m ? PaymentTypes.Incoming : PaymentTypes.Outgoing;
+            if (!string.Equals(payment.PaymentType, expectedPaymentType, StringComparison.OrdinalIgnoreCase))
             {
-                throw CreateValidationException("PaymentId", "Outgoing payments can only be allocated to bills.");
+                throw CreateValidationException("PaymentId", bill.Amount < 0m
+                    ? "Supplier credit refunds require an incoming payment."
+                    : "Outgoing payments can only be allocated to supplier bills.");
             }
 
             if (!string.Equals(bill.Currency, currency, StringComparison.OrdinalIgnoreCase))
@@ -424,9 +572,17 @@ internal sealed class FinancePaymentAllocationService
             }
         }
 
+        if ((invoice?.Amount ?? bill!.Amount) < 0m && writeOffAmount > 0m)
+            throw CreateValidationException("WriteOffAmount", "Credit-note refunds cannot include a write-off.");
+        if (string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase) && feeAmount >= amount)
+            throw CreateValidationException("FeeAmount", "An incoming settlement fee must be smaller than the allocated amount.");
+
+        var paymentAmountRequired = NormalizeMoney(string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase)
+            ? amount - feeAmount
+            : amount + feeAmount);
         var allocatedToPayment = await GetAllocatedToPaymentAsync(companyId, payment.Id, allocationIdToExclude, cancellationToken);
         var remainingOnPayment = NormalizeMoney(Math.Max(0m, payment.Amount - allocatedToPayment));
-        if (amount > remainingOnPayment)
+        if (paymentAmountRequired > remainingOnPayment)
         {
             throw CreateValidationException("AllocatedAmount", $"Payment allocations cannot exceed the remaining unallocated payment amount of {remainingOnPayment:0.00}.");
         }
@@ -434,8 +590,8 @@ internal sealed class FinancePaymentAllocationService
         if (invoice is not null)
         {
             var allocatedToInvoice = await GetAllocatedToInvoiceAsync(companyId, invoice.Id, allocationIdToExclude, cancellationToken);
-            var remainingOpenAmount = NormalizeMoney(Math.Max(0m, invoice.Amount - allocatedToInvoice));
-            if (amount > remainingOpenAmount)
+            var remainingOpenAmount = NormalizeMoney(Math.Max(0m, Math.Abs(invoice.Amount) - allocatedToInvoice));
+            if (amount + writeOffAmount > remainingOpenAmount)
             {
                 throw CreateValidationException("AllocatedAmount", $"Invoice allocations cannot exceed the remaining open amount of {remainingOpenAmount:0.00}.");
             }
@@ -444,8 +600,8 @@ internal sealed class FinancePaymentAllocationService
         if (bill is not null)
         {
             var allocatedToBill = await GetAllocatedToBillAsync(companyId, bill.Id, allocationIdToExclude, cancellationToken);
-            var remainingOpenAmount = NormalizeMoney(Math.Max(0m, bill.Amount - allocatedToBill));
-            if (amount > remainingOpenAmount)
+            var remainingOpenAmount = NormalizeMoney(Math.Max(0m, Math.Abs(bill.Amount) - allocatedToBill));
+            if (amount + writeOffAmount > remainingOpenAmount)
             {
                 throw CreateValidationException("AllocatedAmount", $"Bill allocations cannot exceed the remaining open amount of {remainingOpenAmount:0.00}.");
             }
@@ -638,8 +794,9 @@ internal sealed class FinancePaymentAllocationService
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.PaymentId == paymentId &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 (!allocationIdToExclude.HasValue || x.Id != allocationIdToExclude.Value))
-            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
+            .SumAsync(x => (decimal?)x.AllocatedPaymentAmount, cancellationToken) ?? 0m;
 
     private async Task<decimal> GetAllocatedToInvoiceAsync(
         Guid companyId,
@@ -651,8 +808,9 @@ internal sealed class FinancePaymentAllocationService
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId == invoiceId &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 (!allocationIdToExclude.HasValue || x.Id != allocationIdToExclude.Value))
-            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
+            .SumAsync(x => (decimal?)(x.AllocatedAmount + x.WriteOffAmount), cancellationToken) ?? 0m;
 
     private async Task<decimal> GetAllocatedToBillAsync(
         Guid companyId,
@@ -664,12 +822,13 @@ internal sealed class FinancePaymentAllocationService
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.BillId == billId &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 (!allocationIdToExclude.HasValue || x.Id != allocationIdToExclude.Value))
-            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
+            .SumAsync(x => (decimal?)(x.AllocatedAmount + x.WriteOffAmount), cancellationToken) ?? 0m;
 
     private static string ResolveSettlementStatus(decimal totalAmount, decimal allocatedAmount)
     {
-        var roundedTotal = NormalizeMoney(totalAmount);
+        var roundedTotal = NormalizeMoney(Math.Abs(totalAmount));
         var roundedAllocated = NormalizeMoney(Math.Max(0m, allocatedAmount));
 
         if (roundedAllocated <= 0m)
@@ -690,7 +849,9 @@ internal sealed class FinancePaymentAllocationService
         Guid? invoiceId,
         Guid? billId,
         decimal allocatedAmount,
-        string currency)
+        string currency,
+        decimal feeAmount,
+        decimal writeOffAmount)
     {
         if (paymentId == Guid.Empty)
         {
@@ -701,6 +862,9 @@ internal sealed class FinancePaymentAllocationService
         {
             throw CreateValidationException("AllocatedAmount", "Allocated amount must be greater than zero.");
         }
+
+        _ = NormalizeNonNegativeMoney(feeAmount, "FeeAmount");
+        _ = NormalizeNonNegativeMoney(writeOffAmount, "WriteOffAmount");
 
         if ((invoiceId.HasValue && billId.HasValue) || (!invoiceId.HasValue && !billId.HasValue))
         {
@@ -736,40 +900,200 @@ internal sealed class FinancePaymentAllocationService
         return normalized;
     }
 
-    private async Task TryPostSettlementAsync(
+    private async Task<PreparedSettlement?> PrepareSettlementAsync(
+        CreateFinancePaymentAllocationCommand command,
+        Guid allocationId,
+        Payment payment,
+        FinanceInvoice? invoice,
+        FinanceBill? bill,
+        decimal amount,
+        decimal feeAmount,
+        decimal writeOffAmount,
+        CancellationToken cancellationToken)
+    {
+        var configuration = await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId, cancellationToken);
+        if (configuration is null)
+        {
+            if (feeAmount != 0m || writeOffAmount != 0m)
+                throw CreateValidationException("AllocatedAmount",
+                    "Fees and write-offs require native accounting so their governed accounts can be resolved.");
+            return null;
+        }
+
+        if (NormalizeIdempotencyKey(command.Allocation.IdempotencyKey) is null)
+            throw CreateValidationException("IdempotencyKey",
+                "Accounting-enabled settlement requires a stable idempotency key.");
+
+        _ = NormalizeNonNegativeMoney(feeAmount, "FeeAmount");
+        _ = NormalizeNonNegativeMoney(writeOffAmount, "WriteOffAmount");
+        if (_cashSettlementPostingService is null)
+            throw CreateValidationException("PaymentId", "The cash settlement posting authority is unavailable.");
+        if (!string.Equals(payment.Status, PaymentStatuses.Completed, StringComparison.OrdinalIgnoreCase))
+            throw CreateValidationException("PaymentId",
+                "Accounting-enabled settlements require a completed payment with authoritative evidence.");
+        await EnsureAuthoritativePaymentEvidenceAsync(command.CompanyId, payment.Id, cancellationToken);
+
+        var documentCurrency = invoice?.Currency ?? bill!.Currency;
+        var documentTotal = Math.Abs(invoice?.Amount ?? bill!.Amount);
+        var profileFacts = await LoadDocumentCarryingFactsAsync(command.CompanyId, invoice, bill,
+            configuration.BaseCurrency, documentTotal, cancellationToken);
+        var priorQuery = _dbContext.PaymentAllocations.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == command.CompanyId &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
+                (invoice != null ? x.InvoiceId == invoice.Id : x.BillId == bill!.Id));
+        var previouslyAppliedDocument = await priorQuery
+            .SumAsync(x => (decimal?)(x.AllocatedAmount + x.WriteOffAmount), cancellationToken) ?? 0m;
+        var previouslyAppliedFunctional = await priorQuery
+            .SumAsync(x => (decimal?)(x.AllocatedFunctionalAmount ??
+                (x.AllocatedAmount + x.WriteOffAmount) * profileFacts.OriginalRate), cancellationToken) ?? 0m;
+        previouslyAppliedFunctional = NormalizeMoney(previouslyAppliedFunctional);
+
+        var incoming = string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase);
+        var conversionInput = NormalizeMoney(amount + writeOffAmount + (incoming ? 0m : feeAmount));
+        ExchangeRateConversionResult? conversion = null;
+        decimal settlementRate;
+        string rateIdentity;
+        decimal conversionResidual;
+        var rateDate = DateOnly.FromDateTime(payment.PaymentDate);
+        if (string.Equals(documentCurrency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+        {
+            settlementRate = 1m;
+            rateIdentity = DocumentCurrencyFacts.BaseIdentity(documentCurrency, rateDate);
+            conversionResidual = 0m;
+        }
+        else
+        {
+            if (_exchangeRateService is null)
+                throw CreateValidationException("Currency", "The authoritative exchange-rate service is unavailable.");
+            if (!command.ActorUserId.HasValue || command.ActorUserId == Guid.Empty)
+                throw CreateValidationException("PaymentId",
+                    "A resolved company user is required to retain foreign-currency settlement evidence.");
+            conversion = await _exchangeRateService.ConvertAsync(new ConvertCurrencyCommand(
+                command.CompanyId, command.ActorUserId.Value, conversionInput, documentCurrency,
+                configuration.BaseCurrency, rateDate, ExchangeRateLookupPurposes.SettlementDate,
+                $"payment-allocation:{command.CompanyId:N}:{allocationId:N}:settlement",
+                command.CorrelationId), cancellationToken);
+            settlementRate = conversion.EffectiveRate;
+            rateIdentity = DocumentCurrencyFacts.RateIdentity(conversion);
+            conversionResidual = conversion.RoundingResidual;
+        }
+
+        ForeignCurrencySettlementResult result;
+        try
+        {
+            result = ForeignCurrencySettlementPolicy.Calculate(new ForeignCurrencySettlementInput(
+                payment.PaymentType, documentTotal, profileFacts.FunctionalTotal,
+                previouslyAppliedDocument, previouslyAppliedFunctional, amount, feeAmount,
+                writeOffAmount, settlementRate, configuration.RoundingPrecision,
+                configuration.RoundingMode));
+        }
+        catch (InvalidOperationException exception)
+        {
+            _telemetry?.Blocked("settlement_policy_blocked", documentCurrency, configuration.BaseCurrency);
+            throw CreateValidationException("AllocatedAmount", exception.Message);
+        }
+
+        if (conversion is not null && conversion.InputAmount != result.JournalDocumentTotal)
+            throw CreateValidationException("AllocatedAmount",
+                "The retained settlement conversion does not reconcile to the journal document total.");
+        var controlRole = invoice is not null
+            ? AccountingAccountRoleKeys.AccountsReceivable
+            : AccountingAccountRoleKeys.AccountsPayable;
+        var facts = new CashSettlementAccountingFacts(
+            allocationId, controlRole, documentCurrency, configuration.BaseCurrency,
+            amount, writeOffAmount, feeAmount, result.AllocatedPaymentAmount,
+            result.AllocatedFunctionalAmount, result.SettlementFunctionalAmount,
+            result.BankFunctionalAmount, result.FeeFunctionalAmount,
+            result.WriteOffFunctionalAmount, result.RealizedGainLossAmount,
+            result.RoundingFunctionalAmount, rateDate, settlementRate, conversion?.Id,
+            rateIdentity, conversionResidual, result.JournalDocumentTotal,
+            result.IsFinalSettlement);
+        return new PreparedSettlement(result, facts);
+    }
+
+    private async Task<CashSettlementPostingResultDto> PostSettlementAsync(
         Guid companyId,
         Payment payment,
         PaymentAllocation allocation,
-        decimal amount,
-        CancellationToken cancellationToken)
-    {
-        if (_cashSettlementPostingService is null ||
-            !string.Equals(payment.Status, PaymentStatuses.Completed, StringComparison.OrdinalIgnoreCase))
-        {
-            return;
-        }
-
-        // Companies created before native accounting activation retain the legacy settlement
-        // workflow until setup and historical migration establish periods, roles, and policy.
-        // This avoids fabricating a journal from incomplete configuration while preserving the
-        // allocation as migration evidence. Configured internal-ledger companies remain strict.
-        var nativeAccountingEnabled = await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
-            .AnyAsync(x => x.CompanyId == companyId, cancellationToken);
-        if (!nativeAccountingEnabled) return;
-
-        await _cashSettlementPostingService.PostCashSettlementAsync(
+        PreparedSettlement settlement,
+        Guid actorUserId,
+        string? correlationId,
+        CancellationToken cancellationToken) =>
+        await _cashSettlementPostingService!.PostCashSettlementAsync(
             new PostCashSettlementCommand(
                 companyId,
                 FinanceCashPostingSourceTypes.PaymentAllocation,
                 allocation.Id.ToString("D"),
                 payment.Id,
-                amount,
-                allocation.CreatedUtc),
+                settlement.Result.AllocatedPaymentAmount,
+                payment.PaymentDate,
+                settlement.Facts,
+                actorUserId,
+                correlationId),
             cancellationToken);
+
+    private async Task<DocumentCarryingFacts> LoadDocumentCarryingFactsAsync(
+        Guid companyId,
+        FinanceInvoice? invoice,
+        FinanceBill? bill,
+        string functionalCurrency,
+        decimal documentTotal,
+        CancellationToken cancellationToken)
+    {
+        var documentCurrency = invoice?.Currency ?? bill!.Currency;
+        if (string.Equals(documentCurrency, functionalCurrency, StringComparison.OrdinalIgnoreCase))
+            return new DocumentCarryingFacts(documentTotal, 1m);
+
+        if (invoice is not null)
+        {
+            var profile = await _dbContext.CustomerInvoiceAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+                .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.InvoiceId == invoice.Id &&
+                    x.Status == CustomerInvoiceAccountingStatuses.Posted, cancellationToken);
+            if (profile is null || !profile.HasAuthoritativeCurrencyFacts)
+                throw CreateValidationException("InvoiceId",
+                    "The foreign-currency invoice must be posted with authoritative transaction-date rate facts before settlement.");
+            if (Math.Abs(Math.Abs(profile.GrossAmount) - documentTotal) > 0.01m)
+                throw CreateValidationException("InvoiceId", "The invoice accounting snapshot no longer matches the open-item amount.");
+            return new DocumentCarryingFacts(Math.Abs(profile.GrossBaseAmount), profile.ExchangeRate);
+        }
+
+        var billProfile = await _dbContext.SupplierBillAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId && x.BillId == bill!.Id &&
+                x.Status == SupplierBillAccountingStatuses.Posted, cancellationToken);
+        if (billProfile is null || !billProfile.HasAuthoritativeCurrencyFacts)
+            throw CreateValidationException("BillId",
+                "The foreign-currency supplier bill must be posted with authoritative transaction-date rate facts before settlement.");
+        if (Math.Abs(Math.Abs(billProfile.GrossAmount) - documentTotal) > 0.01m)
+            throw CreateValidationException("BillId", "The supplier-bill accounting snapshot no longer matches the open-item amount.");
+        return new DocumentCarryingFacts(Math.Abs(billProfile.GrossBaseAmount), billProfile.ExchangeRate);
+    }
+
+    private async Task EnsureAuthoritativePaymentEvidenceAsync(
+        Guid companyId, Guid paymentId, CancellationToken cancellationToken)
+    {
+        var providerReported = await _dbContext.FinanceExternalReferences.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.CompanyId == companyId && x.InternalRecordId == paymentId &&
+                x.EntityType == "payment", cancellationToken);
+        if (!providerReported) return;
+        var bankMatched = await _dbContext.BankTransactionPaymentLinks.IgnoreQueryFilters().AsNoTracking()
+            .AnyAsync(x => x.CompanyId == companyId && x.PaymentId == paymentId, cancellationToken);
+        if (!bankMatched)
+        {
+            _telemetry?.Blocked("bank_evidence_required", null, null);
+            throw CreateValidationException("PaymentId",
+                "Provider-reported settlement requires authoritative bank evidence and remains reconciliation-required until matched.");
+        }
     }
 
     private static decimal NormalizeMoney(decimal value) =>
         decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+
+    private static decimal NormalizeNonNegativeMoney(decimal value, string field)
+    {
+        if (value < 0m) throw CreateValidationException(field, $"{field} cannot be negative.");
+        return NormalizeMoney(value);
+    }
 
     private static string? NormalizeIdempotencyKey(string? value)
     {
@@ -799,7 +1123,33 @@ internal sealed class FinancePaymentAllocationService
             allocation.PaymentSourceSimulationEventRecordId,
             allocation.TargetSourceSimulationEventRecordId,
             allocation.IdempotencyKey,
-            isIdempotentReplay);
+            isIdempotentReplay,
+            allocation.FeeAmount,
+            allocation.WriteOffAmount,
+            allocation.AllocatedPaymentAmount,
+            allocation.PaymentCurrency,
+            allocation.FunctionalCurrency,
+            allocation.AllocatedFunctionalAmount,
+            allocation.SettlementFunctionalAmount,
+            allocation.BankFunctionalAmount,
+            allocation.FeeFunctionalAmount,
+            allocation.WriteOffFunctionalAmount,
+            allocation.RealizedGainLossAmount,
+            allocation.RoundingFunctionalAmount,
+            allocation.DocumentOutstandingAfter,
+            allocation.FunctionalOutstandingAfter,
+            allocation.SettlementRateDate,
+            allocation.SettlementRate,
+            allocation.SettlementExchangeRateConversionId,
+            allocation.SettlementRateIdentity,
+            allocation.SettlementConversionRoundingResidual,
+            allocation.SettlementLedgerEntryId,
+            allocation.ReversalLedgerEntryId,
+            allocation.SettlementStatus,
+            allocation.ReversedUtc,
+            allocation.ReversedByUserId,
+            allocation.ReversalReason,
+            allocation.Version);
 
     private async Task<TResult> ExecuteInTransactionAsync<TResult>(
         Func<Task<TResult>> action,
@@ -813,7 +1163,8 @@ internal sealed class FinancePaymentAllocationService
         var strategy = _dbContext.Database.CreateExecutionStrategy();
         return await strategy.ExecuteAsync(async () =>
         {
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable, cancellationToken);
             var result = await action();
             await transaction.CommitAsync(cancellationToken);
             return result;
@@ -833,7 +1184,8 @@ internal sealed class FinancePaymentAllocationService
         var strategy = _dbContext.Database.CreateExecutionStrategy();
         await strategy.ExecuteAsync(async () =>
         {
-            await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+            await using var transaction = await _dbContext.Database.BeginTransactionAsync(
+                System.Data.IsolationLevel.Serializable, cancellationToken);
             await action();
             await transaction.CommitAsync(cancellationToken);
         });
@@ -841,6 +1193,8 @@ internal sealed class FinancePaymentAllocationService
 
     private sealed record BackfillDocumentResult(int CreatedAllocationCount, int CreatedPaymentCount);
     private sealed record BackfillChunkResult(int CreatedAllocationCount, decimal AllocatedAmount);
+    private sealed record DocumentCarryingFacts(decimal FunctionalTotal, decimal OriginalRate);
+    private sealed record PreparedSettlement(ForeignCurrencySettlementResult Result, CashSettlementAccountingFacts Facts);
 
     private static FinanceValidationException CreateValidationException(string field, string message) =>
         new(

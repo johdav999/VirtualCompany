@@ -269,6 +269,104 @@ public sealed class AccountingAdministrationServiceTests
         Assert.Equal(AccountingConfigurationReasonCodes.ChartCatalogCompanySuitabilityConfirmationRequired, missingSuitabilityConfirmation.ReasonCode);
     }
 
+    [Fact]
+    public async Task Governed_retirement_requires_replacement_for_posted_history_and_preserves_the_journal()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+        await fixture.Service.CompleteSetupAsync(fixture.CreateSetupCommand(), CancellationToken.None);
+        var account = await fixture.Service.CreateAccountAsync(new(fixture.CompanyId, "1510", "Receivables legacy",
+            "asset", "debit", InitialFiscalYearStart, fixture.ActorId), CancellationToken.None);
+        var replacement = await fixture.Service.CreateAccountAsync(new(fixture.CompanyId, "1511", "Receivables current",
+            "asset", "debit", InitialFiscalYearStart, fixture.ActorId), CancellationToken.None);
+        var period = await fixture.Context.FiscalPeriods.OrderBy(x => x.StartUtc).FirstAsync();
+        var journal = new LedgerEntry(Guid.NewGuid(), fixture.CompanyId, period.Id, "G-2026-000001", NowUtc,
+            LedgerEntryStatuses.Posted, "Historical receivable", "test", "history-1", NowUtc);
+        fixture.Context.LedgerEntries.Add(journal);
+        fixture.Context.LedgerEntryLines.Add(new LedgerEntryLine(Guid.NewGuid(), fixture.CompanyId, journal.Id,
+            account.Id, 100m, 0m, "USD", "Historical balance", NowUtc));
+        await fixture.Context.SaveChangesAsync();
+
+        var withoutReplacement = await fixture.Service.PreviewAccountLifecycleAsync(new(fixture.CompanyId,
+            account.Id, InitialFiscalYearStart, new DateOnly(2026, 12, 31), null, "asset", "debit", true, "none"), default);
+        var withReplacement = await fixture.Service.PreviewAccountLifecycleAsync(new(fixture.CompanyId,
+            account.Id, InitialFiscalYearStart, new DateOnly(2026, 12, 31), replacement.Id, "asset", "debit", true, "none"), default);
+
+        Assert.False(withoutReplacement.CanApply);
+        Assert.Contains(withoutReplacement.Issues, x => x.ReasonCode == AccountingGovernanceReasonCodes.ReplacementRequired);
+        Assert.True(withReplacement.CanApply);
+        Assert.Contains(withReplacement.Dependencies, x => x.DependencyType == "posted_journals" && x.Count == 1);
+
+        var updated = await fixture.Service.ApplyAccountLifecycleAsync(new(fixture.CompanyId, account.Id,
+            account.Name, "asset", "debit", true, "none", InitialFiscalYearStart, new DateOnly(2026, 12, 31),
+            replacement.Id, "Move future receivable postings to the replacement account.", account.LifecycleVersion,
+            fixture.ActorId), default);
+
+        Assert.Equal(replacement.Id, updated.ReplacementAccountId);
+        Assert.Equal("retirement_scheduled", updated.LifecycleStatus);
+        Assert.Equal(account.Id, (await fixture.Context.LedgerEntryLines.SingleAsync(x => x.LedgerEntryId == journal.Id)).FinanceAccountId);
+        Assert.Contains(updated.LifecycleHistory!, x => x.ChangeType == AccountingAccountLifecycleChangeTypes.Retired);
+    }
+
+    [Fact]
+    public async Task Series_policy_is_scoped_versioned_and_keeps_provider_mapping()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+        await fixture.Service.CompleteSetupAsync(fixture.CreateSetupCommand(), CancellationToken.None);
+        var series = (await fixture.Service.GetSeriesPoliciesAsync(fixture.CompanyId, default))
+            .Single(x => x.SeriesKind == AccountingSeriesKinds.Voucher && x.SeriesCode == "G");
+
+        var saved = await fixture.Service.SaveSeriesPolicyAsync(new(fixture.CompanyId, null,
+            AccountingSeriesKinds.Voucher, series.SeriesId, "manual_journal", "manual", 2026, null,
+            "SE", "fortnox", "A", true, null, fixture.ActorId), default);
+
+        Assert.NotEqual(Guid.Empty, saved.Id);
+        Assert.Equal("fortnox", saved.ProviderKey);
+        Assert.Equal("A", saved.ProviderSeriesCode);
+        Assert.Equal(1, saved.Version);
+        Assert.Single(await fixture.Context.AccountingSeriesPolicies.Where(x => x.CompanyId == fixture.CompanyId).ToListAsync());
+
+        var stale = await Assert.ThrowsAsync<AccountingConfigurationException>(() =>
+            fixture.Service.SaveSeriesPolicyAsync(new(fixture.CompanyId, saved.Id,
+                saved.SeriesKind, saved.SeriesId, saved.SourceType, saved.TransactionType, saved.FiscalYear,
+                saved.LocationDimensionMemberId, saved.Jurisdiction, saved.ProviderKey, saved.ProviderSeriesCode,
+                true, 0, fixture.ActorId), default));
+        Assert.Equal(AccountingGovernanceReasonCodes.SeriesPolicyConflict, stale.ReasonCode);
+        Assert.True(stale.IsConflict);
+
+        fixture.Context.VoucherSequences.Add(new VoucherSequence(Guid.NewGuid(), fixture.CompanyId,
+            saved.SeriesId, 2026, 3, NowUtc));
+        await fixture.Context.SaveChangesAsync();
+        var withEvidence = await fixture.Service.RecordVoucherGapEvidenceAsync(new(fixture.CompanyId,
+            saved.SeriesId, 2026, 2, "Number reserved during a failed source import.", fixture.ActorId), default);
+
+        Assert.Equal(2, withEvidence.UnexplainedGapCount);
+        Assert.Contains(await fixture.Context.AccountingVoucherGapEvidence.ToListAsync(),
+            x => x.MissingNumber == 2 && x.Reason.Contains("failed source import", StringComparison.Ordinal));
+        Assert.Contains(await fixture.Context.AuditEvents.ToListAsync(),
+            x => x.Action == "accounting.voucher.gap_explained");
+    }
+
+    [Fact]
+    public async Task Commerce_boundary_blocks_inventory_and_idempotently_accepts_supported_facts_without_quantity_state()
+    {
+        await using var fixture = await AdministrationFixture.CreateAsync();
+        var eventId = Guid.NewGuid();
+        var blocked = await Assert.ThrowsAsync<AccountingConfigurationException>(() => fixture.Service.SubmitCommerceEventAsync(
+            new(fixture.CompanyId, eventId, 1, "finance-commerce.v1", "sale.finalized", "commerce", NowUtc,
+                true, fixture.ActorId), default));
+
+        var command = new SubmitCommerceAccountingEventCommand(fixture.CompanyId, eventId, 1,
+            "finance-commerce.v1", "sale.finalized", "commerce", NowUtc, false, fixture.ActorId);
+        var accepted = await fixture.Service.SubmitCommerceEventAsync(command, default);
+        var replay = await fixture.Service.SubmitCommerceEventAsync(command, default);
+
+        Assert.Equal(AccountingGovernanceReasonCodes.InventoryUnsupported, blocked.ReasonCode);
+        Assert.Equal("accepted", accepted.Status);
+        Assert.Equal("accepted", replay.Status);
+        Assert.Single(await fixture.Context.AccountingCommerceEventReceipts.ToListAsync());
+        Assert.DoesNotContain(fixture.Context.Model.GetEntityTypes(), x => x.ClrType.Name.Contains("Inventory", StringComparison.Ordinal));
+    }
+
     private static DateTime ToUtc(DateOnly value) => value.ToDateTime(TimeOnly.MinValue, DateTimeKind.Utc);
 
     private static FinanceAccount ImportedAccount(Guid companyId, string code, string name, string accountType) =>

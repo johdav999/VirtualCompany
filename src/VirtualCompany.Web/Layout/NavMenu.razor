@@ -92,6 +92,15 @@
                     </NavLink>
                 </div>
             }
+            @if (showAccountantPortfolio)
+            {
+                <div class="nav-item px-3">
+                    <NavLink class="nav-link" href="/accountant/portfolio" @onclick="CloseNavMenuAsync">
+                        <span class="nav-icon nav-icon-finance" aria-hidden="true"></span>
+                        <span>Accountant portfolio</span>
+                    </NavLink>
+                </div>
+            }
             <div class="nav-item px-3">
                 <NavLink class="nav-link" href="@salesHref" @onclick="CloseNavMenuAsync">
                     <span class="nav-icon nav-icon-sales" aria-hidden="true"></span>
@@ -207,6 +216,7 @@
     private string? pendingCulture;
     private string pendingReturnUrl = "/";
     private bool cultureSyncSubmitted;
+    private bool showAccountantPortfolio;
 
     private string? NavMenuCssClass => collapseNavMenu ? "collapse" : null;
 
@@ -277,6 +287,7 @@
     {
         currentCompanyId = TryGetCompanyIdFromUri(Navigation.Uri) ?? currentUser?.ActiveCompany?.CompanyId;
         financeHref = FinanceAccessResolver.BuildNavigationHref(currentUser, currentCompanyId);
+        showAccountantPortfolio = currentUser?.Memberships.Any(x => string.Equals(x.MembershipRole, "accountant", StringComparison.OrdinalIgnoreCase)) == true;
         simulationLabHref = BuildRestrictedAreaHref(FinanceRoutes.SandboxAdmin);
         systemAdminHref = await ResolveSystemAdminHrefAsync();
         dashboardHref = DashboardRoutes.EnsureCompanyContext("/dashboard", currentCompanyId, "/dashboard");

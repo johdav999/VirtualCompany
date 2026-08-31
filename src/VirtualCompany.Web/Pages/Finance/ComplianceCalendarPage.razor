@@ -1,0 +1,57 @@
+@page "/finance/accounting/compliance-calendar"
+@inherits FinancePageBase
+
+<PageTitle>Compliance calendar</PageTitle>
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="Compliance calendar" Description="Track evidence-backed Swedish filing obligations without overstating authority status."
+                   LoadingMessage="Loading compliance obligations…">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+    <header class="compliance-hero">
+        <div><span class="dashboard-kicker">Sweden · @PackLabel</span><h2>Compliance calendar</h2><p>Deadlines come from explicit filing-period facts. Generated artifacts are never presented as filed or compliant.</p></div>
+        @if (CanManage) { <button class="btn btn-primary" type="button" disabled="@IsWorking" @onclick="GenerateAsync">Generate from source facts</button> }
+    </header>
+    @if (!string.IsNullOrWhiteSpace(WorkspaceMessage)) { <div class="alert @(HasError?"alert-danger":"alert-info")" role="status">@WorkspaceMessage</div> }
+    <section class="compliance-kpis" aria-label="Compliance summary">
+        <article><span>Open obligations</span><strong>@(Calendar?.OpenCount ?? 0)</strong></article>
+        <article><span>Due in 14 days</span><strong>@(Calendar?.DueSoonCount ?? 0)</strong></article>
+        <article class="danger"><span>Overdue</span><strong>@(Calendar?.OverdueCount ?? 0)</strong></article>
+        <article><span>Awaiting authority</span><strong>@(Calendar?.AwaitingAuthorityCount ?? 0)</strong></article>
+    </section>
+    @if(CanManage && VatPeriods.Any(x=>x.DueDate is null))
+    {<section class="deadline-config"><div><strong>Deadline source required</strong><p>Choose a VAT period and enter the exact authority-sourced due date. The app does not calculate legal deadlines.</p></div><select class="form-select" @bind="MissingPeriodId">@foreach(var period in VatPeriods.Where(x=>x.DueDate is null)){<option value="@period.Id">@period.PeriodCode · ends @period.EndDate.ToString("d")</option>}</select><input class="form-control" type="date" @bind="ExplicitDueDate"/><button class="btn btn-outline-primary" @onclick="SetDueDateAsync">Record explicit date</button></section>}
+    <div class="compliance-grid">
+        <main class="compliance-list">
+            <div class="list-toolbar"><div><span class="dashboard-kicker">@ViewYear</span><h3>Obligations and deadlines</h3></div><div class="view-switch"><button class="@(!CalendarView?"active":null)" type="button" @onclick="()=>CalendarView=false">List</button><button class="@(CalendarView?"active":null)" type="button" @onclick="()=>CalendarView=true">Calendar</button></div></div>
+            @if (Calendar?.Obligations.Count is null or 0)
+            { <div class="empty-state"><strong>No generated obligations</strong><p>Add an explicit due date to a VAT filing period, then generate. The app will not infer a legal deadline.</p></div> }
+            else if(CalendarView)
+            {<div class="calendar-board"><h4>@DateTime.UtcNow.ToString("MMMM") @ViewYear</h4><div class="calendar-week"><span>Mon</span><span>Tue</span><span>Wed</span><span>Thu</span><span>Fri</span><span>Sat</span><span>Sun</span></div><div class="calendar-days">@foreach(var day in CalendarDays){<button type="button" class="calendar-day"><strong>@day</strong>@foreach(var item in DueOn(day)){<span class="@StatusClass(item.Status)" @onclick="()=>Select(item)">@item.Title</span>}</button>}</div></div>}
+            else
+            { <table><thead><tr><th>Due</th><th>Obligation</th><th>Status</th><th>Evidence</th></tr></thead><tbody>
+              @foreach(var item in Calendar.Obligations){<tr class="@(Selected?.Id==item.Id?"selected":null)" @onclick="()=>Select(item)"><td><strong>@item.DueDate.ToString("dd MMM")</strong><small>@item.DueDate.Year</small></td><td><strong>@item.Title</strong><small>@item.Jurisdiction · @item.PolicyPackVersion</small></td><td><span class="status-pill @StatusClass(item.Status)">@Label(item.Status)</span></td><td>@item.Requirements.Count(x=>x.IsSatisfied)/@item.Requirements.Count</td></tr>}
+              </tbody></table> }
+        </main>
+        <aside class="compliance-insight">
+            <span class="dashboard-kicker">State integrity</span><h3>What each state proves</h3>
+            <ol><li><strong>Exported</strong><span>A technically validated package exists.</span></li><li><strong>Manual submission recorded</strong><span>User evidence says it was sent.</span></li><li><strong>Authority received</strong><span>A receipt is retained.</span></li><li><strong>Authority approved</strong><span>Separate authority approval evidence is retained.</span></li></ol>
+            <div class="capability-note"><strong>Direct submission unavailable</strong><p>No authority provider was selected. This workspace supports export plus manual evidence only.</p></div>
+        </aside>
+    </div>
+    @if(Selected is not null)
+    {
+      <section class="compliance-detail">
+        <div class="detail-heading"><div><span class="dashboard-kicker">Selected obligation</span><h3>@Selected.Title</h3><p>Due @Selected.DueDate.ToString("D") · owner @Short(Selected.OwnerUserId)</p></div><span class="status-pill @StatusClass(Selected.Status)">@Label(Selected.Status)</span></div>
+        <div class="detail-columns">
+          <div><h4>Source snapshot</h4><dl><dt>Jurisdiction</dt><dd>@Selected.Jurisdiction</dd><dt>Policy pack</dt><dd>@Selected.PolicyPackKey · @Selected.PolicyPackVersion</dd><dt>Definition hash</dt><dd><code>@ShortHash(Selected.PolicyPackDefinitionHash)</code></dd><dt>Due-date rule</dt><dd>@Selected.DueDateRule</dd><dt>Source hash</dt><dd><code>@ShortHash(Selected.SourceHash)</code></dd><dt>Close task</dt><dd>@(Selected.AccountingCloseTaskId.HasValue?"Linked to existing VAT close task":"No matching close task")</dd></dl></div>
+          <div><h4>Required evidence</h4>@foreach(var req in Selected.Requirements){<div class="requirement"><span class="@(req.IsSatisfied?"ok":"pending")">@(req.IsSatisfied?"✓":"○")</span><div><strong>@req.Label</strong><small>@(req.EvidenceReference??"Not yet retained")</small></div></div>}@if(CanApprove){@foreach(var evidence in Selected.SubmissionEvidence.Where(x=>x.ReviewStatus=="pending")){<div class="evidence-review"><small>@evidence.Reference</small><button class="btn btn-sm btn-outline-secondary" @onclick="()=>ReviewEvidenceAsync(evidence.Id,false)">Reject</button><button class="btn btn-sm btn-primary" @onclick="()=>ReviewEvidenceAsync(evidence.Id,true)">Accept evidence</button></div>}}</div>
+          <div><h4>Evidence timeline</h4><ol class="timeline">@foreach(var history in Selected.History.OrderByDescending(x=>x.OccurredUtc).Take(6)){<li><strong>@Label(history.Action)</strong><span>@history.OccurredUtc.ToLocalTime().ToString("g")</span><small>@history.Reason</small></li>}</ol></div>
+        </div>
+        @if(CanManage || CanApprove){<div class="workflow-actions">@foreach(var action in Selected.AllowedActions.Where(x=>x is not "mark_manual_submitted" and not "record_acknowledgement" && (CanManage || x is "approve" or "reject"))){<button class="btn @(action=="approve"?"btn-primary":"btn-outline-secondary")" disabled="@IsWorking" @onclick="()=>TransitionAsync(action)">@ActionLabel(action)</button>}</div>}
+        @if(CanManage && Selected.AllowedActions.Contains("mark_manual_submitted"))
+        {<div class="evidence-form"><h4>Record manual submission evidence</h4><input class="form-control" placeholder="Evidence reference or retained document ID" @bind="EvidenceReference"/><input class="form-control" placeholder="SHA-256 evidence hash" @bind="EvidenceHash"/><button class="btn btn-primary" @onclick="RecordSubmissionAsync">Record evidence</button></div>}
+        @if(CanManage && Selected.AllowedActions.Contains("record_acknowledgement"))
+        {<div class="evidence-form"><h4>Record authority evidence</h4><select class="form-select" @bind="AcknowledgementKind"><option value="received">Authority received</option><option value="approved">Authority approved</option><option value="rejected">Authority rejected</option></select><input class="form-control" placeholder="Authority reference" @bind="EvidenceReference"/><input class="form-control" placeholder="SHA-256 evidence hash" @bind="EvidenceHash"/><button class="btn btn-primary" @onclick="RecordAcknowledgementAsync">Record authority evidence</button></div>}
+        <p class="compliance-notice">@Selected.ComplianceNotice</p>
+      </section>
+    }
+</FinancePageLayout>

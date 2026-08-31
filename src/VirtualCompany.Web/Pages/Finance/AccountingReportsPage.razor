@@ -15,6 +15,8 @@
             <p>@FinanceText["ReportsPostedSourceHelp"]</p>
         </div>
         <div class="accounting-reports-actions">
+            @if (View is not "schedules" and not "assets")
+            {
             <label for="report-period">@FinanceText["FiscalPeriod"]</label>
             <select id="report-period" class="form-select" value="@SelectedPeriodId" @onchange="ChangePeriodAsync">
                 @foreach (var period in Periods)
@@ -22,14 +24,15 @@
                     <option value="@period.Id">@period.Name · @period.StartDate.ToString("d")–@period.EndDate.ToString("d")</option>
                 }
             </select>
-            @if (CanManageAccounting && View != "vat")
+            }
+            @if (CanManageAccounting && View is not "vat" and not "revaluation" and not "dimensions" and not "schedules" and not "assets")
             {
                 <button class="btn btn-primary" type="button" @onclick="RequestExportAsync" disabled="@IsActing">@FinanceText["CreateExport"]</button>
             }
         </div>
     </div>
 
-    @if (View != "vat") { <div class="accounting-compliance-notice" role="note">ⓘ @(TaxSummary?.ComplianceNotice ?? FinanceText["CountryNeutralTaxNotice"])</div> }
+    @if (View is not "vat" and not "revaluation" and not "dimensions" and not "schedules" and not "assets") { <div class="accounting-compliance-notice" role="note">ⓘ @(TaxSummary?.ComplianceNotice ?? FinanceText["CountryNeutralTaxNotice"])</div> }
 
     @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
     @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ActionCouldNotBeCompleted"]</strong><div>@ActionError</div></div> }
@@ -40,6 +43,9 @@
         <button type="button" class="accounting-report-kpi @(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'><span aria-hidden="true">▣</span><small>@FinanceText["BalanceSheet"]</small><strong>@Money(BalanceSheet?.TotalAssets, BalanceSheet?.Currency)</strong><em class="@(BalanceSheet?.IsBalanced == true ? "ok" : "warn")">@FinanceText[BalanceSheet?.IsBalanced == true ? "Reconciled" : "NeedsReview"]</em></button>
         <button type="button" class="accounting-report-kpi @(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'><span aria-hidden="true">◇</span><small>@FinanceText["TaxSummary"]</small><strong>@Money(TaxSummary?.Lines.Sum(x => x.TaxAmount), Currency)</strong><em class="@(TaxSummary?.IsReviewed == true ? "ok" : "warn")">@FinanceText[TaxSummary?.IsReviewed == true ? "Reviewed" : "ReviewRequired"]</em></button>
         <button type="button" class="accounting-report-kpi @(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => View = "vat"'><span aria-hidden="true">%</span><small>@FinanceText["VatReturn"]</small><strong>@Money(CurrentVatReturn?.SettlementExact, CurrentVatReturn?.Currency)</strong><em class="@(CurrentVatReturn?.Issues.Any(x => x.IsBlocking) == true ? "warn" : "ok")">@(CurrentVatReturn is null ? FinanceText["NotCalculated"] : CurrentVatReturn.IsStale ? FinanceText["StaleData"] : FinanceText["ReadyForReview"])</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "revaluation" ? "active" : null)" aria-pressed="@(View == "revaluation")" @onclick='() => View = "revaluation"'><span aria-hidden="true">¤</span><small>@FinanceText["CurrencyRevaluation"]</small><strong>@FinanceText["PeriodEnd"]</strong><em>@FinanceText["RatesEvidencePosting"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "schedules" ? "active" : null)" aria-pressed="@(View == "schedules")" @onclick='() => View = "schedules"'><span aria-hidden="true">↻</span><small>@FinanceText["AccountingSchedules"]</small><strong>@FinanceText["AutomatedPosting"]</strong><em>@FinanceText["SchedulesEvidenceApproval"]</em></button>
+        <button type="button" class="accounting-report-kpi @(View == "assets" ? "active" : null)" aria-pressed="@(View == "assets")" @onclick='() => View = "assets"'><span aria-hidden="true">▤</span><small>@FinanceText["FixedAssets"]</small><strong>@FinanceText["AssetRegister"]</strong><em>@FinanceText["DepreciationAndDisposal"]</em></button>
     </section>
 
     <nav class="accounting-report-tabs" aria-label="@FinanceText["ReportViews"]">
@@ -49,6 +55,10 @@
         <button type="button" class="@(View == "balance-sheet" ? "active" : null)" aria-pressed="@(View == "balance-sheet")" @onclick='() => View = "balance-sheet"'>@FinanceText["BalanceSheet"]</button>
         <button type="button" class="@(View == "tax" ? "active" : null)" aria-pressed="@(View == "tax")" @onclick='() => View = "tax"'>@FinanceText["TaxSummary"]</button>
         <button type="button" class="@(View == "vat" ? "active" : null)" aria-pressed="@(View == "vat")" @onclick='() => View = "vat"'>@FinanceText["VatAndStatutoryExports"]</button>
+        <button type="button" class="@(View == "revaluation" ? "active" : null)" aria-pressed="@(View == "revaluation")" @onclick='() => View = "revaluation"'>@FinanceText["CurrencyRevaluation"]</button>
+        <button type="button" class="@(View == "dimensions" ? "active" : null)" aria-pressed="@(View == "dimensions")" @onclick='() => View = "dimensions"'>@FinanceText["AccountingDimensions"]</button>
+        <button type="button" class="@(View == "schedules" ? "active" : null)" aria-pressed="@(View == "schedules")" @onclick='() => View = "schedules"'>@FinanceText["AccountingSchedules"]</button>
+        <button type="button" class="@(View == "assets" ? "active" : null)" aria-pressed="@(View == "assets")" @onclick='() => View = "assets"'>@FinanceText["FixedAssets"]</button>
     </nav>
 
     @if (View == "vat")
@@ -60,6 +70,26 @@
                             OnPeriodChanged="ChangeVatPeriodAsync" OnCalculate="CalculateVatAsync" OnRequestApproval="RequestVatApprovalAsync"
                             OnFinalize="FinalizeVatAsync" OnCreateCorrection="CreateVatCorrectionAsync" OnRequestExport="RequestStatutoryExportAsync"
                             OnRetryExport="RetryStatutoryExportAsync" OnRefreshExports="RefreshExportsAsync" />
+    }
+    else if (View == "revaluation")
+    {
+        <CurrencyRevaluationWorkspace CompanyId="@AccessState.CompanyId" FiscalPeriodId="@SelectedPeriodId"
+            CanManage="@CanManageAccounting" IsPeriodClosed="@(SelectedPeriod?.IsClosed == true)" RequestedRunId="@RequestedRunId" />
+    }
+    else if (View == "dimensions")
+    {
+        <AccountingDimensionsWorkspace CompanyId="@AccessState.CompanyId" CanManage="@CanManageAccounting" Currency="@(Currency ?? "SEK")" />
+    }
+    else if (View == "schedules")
+    {
+        <AccountingSchedulesWorkspace CompanyId="@AccessState.CompanyId" CanManage="@CanManageAccounting" CanApprove="@CanApproveSchedules" />
+    }
+    else if (View == "assets")
+    {
+        <FixedAssetsWorkspace CompanyId="@AccessState.CompanyId" FiscalPeriodId="@SelectedPeriodId"
+            PeriodStart="@(SelectedPeriod?.StartDate ?? DateOnly.FromDateTime(DateTime.UtcNow))"
+            PeriodEnd="@(SelectedPeriod?.EndDate ?? DateOnly.FromDateTime(DateTime.UtcNow))"
+            CanApprove="@CanApproveSchedules" JournalHref="@JournalEntryUrl" />
     }
     else
     {

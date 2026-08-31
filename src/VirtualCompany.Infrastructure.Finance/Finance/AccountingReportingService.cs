@@ -479,6 +479,11 @@ public sealed class AccountingReportingService : IAccountingReportingService
                 outcome = "failed_permanent";
                 job.Fail(ex.ReasonCode, ex.Message, _timeProvider.GetUtcNow().UtcDateTime);
             }
+            catch (AccountingExportException ex)
+            {
+                outcome = "failed_permanent";
+                job.Fail(ex.ReasonCode, ex.Message, _timeProvider.GetUtcNow().UtcDateTime);
+            }
             catch (IOException)
             {
                 outcome = job.AttemptCount < 3 ? "retry_scheduled" : "failed";
@@ -512,6 +517,28 @@ public sealed class AccountingReportingService : IAccountingReportingService
         {
             var content = await BuildGenericCsvAsync(job.CompanyId, job.FiscalPeriodId, cancellationToken);
             return GenericArtifact(content, job, "csv", "text/csv; charset=utf-8", "utf-8");
+        }
+        if (job.ExportType == AccountingExportTypeValues.FinancialReportSuiteJson)
+        {
+            var snapshots = await _dbContext.FinancialReportSuiteSnapshots.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == job.CompanyId && x.FiscalPeriodId == job.FiscalPeriodId)
+                .OrderBy(x => x.ReportKind).ThenBy(x => x.ParametersHash).ThenBy(x => x.Id)
+                .Select(x => new { x.Id, x.ReportKind, x.CalculationVersion, x.MappingVersion,
+                    x.ParametersHash, x.Checksum, x.CreatedUtc, x.ReportJson })
+                .ToArrayAsync(cancellationToken);
+            if (snapshots.Length == 0)
+                throw new AccountingExportException("financial_report_suite_snapshot_missing",
+                    "At least one approved financial report snapshot is required before the report suite can be exported.");
+            var content = JsonSerializer.SerializeToUtf8Bytes(new
+            {
+                schema = "virtual-company.financial-report-suite",
+                version = "1.0",
+                job.CompanyId,
+                job.FiscalPeriodId,
+                reports = snapshots.Select(x => new { x.Id, x.ReportKind, x.CalculationVersion, x.MappingVersion,
+                    x.ParametersHash, x.Checksum, x.CreatedUtc, report = JsonSerializer.Deserialize<JsonElement>(x.ReportJson) })
+            }, JsonOptions);
+            return GenericArtifact(content, job, "report-suite.json", "application/json", "utf-8");
         }
 
         var source = await BuildSieSourceAsync(job.CompanyId, job.FiscalPeriodId, job.RequestedUtc, cancellationToken);
@@ -560,7 +587,12 @@ public sealed class AccountingReportingService : IAccountingReportingService
             accounts = accounts.Select(x => new { x.Id, x.Code, x.Name, x.AccountClass, x.NormalBalance, x.Currency, x.ControlAccountRole, x.EffectiveFrom, x.EffectiveTo }),
             periods = periods.Select(x => new { x.Id, x.Name, x.StartUtc, x.EndUtc, x.IsClosed, x.IsReportingLocked }),
             vouchers = entries.Select(x => new { x.Id, x.EntryNumber, x.DocumentDate, x.PostingDate, x.BaseCurrency, x.PostingType, x.SourceType, x.SourceId, x.SourceVersion, x.PolicyPackKey, x.PolicyPackVersion, x.OriginalLedgerEntryId, x.CorrectionReason }),
-            lines = lines.Select(x => new { x.Id, x.LedgerEntryId, x.FinanceAccountId, x.DebitAmount, x.CreditAmount, x.Currency, x.Description, taxFacts = ParseJson(x.TaxFactsJson), dimensionFacts = ParseJson(x.DimensionFactsJson) }),
+            lines = lines.Select(x => new { x.Id, x.LedgerEntryId, x.FinanceAccountId,
+                functionalDebitAmount = x.DebitAmount, functionalCreditAmount = x.CreditAmount,
+                functionalCurrency = x.Currency, x.DocumentDebitAmount, x.DocumentCreditAmount,
+                x.DocumentCurrency, x.ExchangeRate, x.ExchangeRateDate, x.ExchangeRateConversionId,
+                x.ExchangeRateIdentity, x.ConversionRoundingResidual, x.Description,
+                taxFacts = ParseJson(x.TaxFactsJson), dimensionFacts = ParseJson(x.DimensionFactsJson) }),
             parties = parties.Select(x => new { x.Id, x.Name, x.CounterpartyType, x.TaxId }),
             attachmentManifest = attachments.Select(x => new { x.LedgerEntryId, x.DocumentId, x.Title, x.ContentHash })
         };
@@ -573,14 +605,24 @@ public sealed class AccountingReportingService : IAccountingReportingService
             .Where(x => x.CompanyId == companyId && x.LedgerEntry.FiscalPeriodId == fiscalPeriodId && x.LedgerEntry.Status == LedgerEntryStatuses.Posted)
             .OrderBy(x => x.LedgerEntry.EntryUtc).ThenBy(x => x.LedgerEntry.EntryNumber).ThenBy(x => x.Id)
             .Select(x => new { x.LedgerEntry.EntryNumber, x.LedgerEntry.PostingDate, x.LedgerEntry.EntryUtc,
-                AccountCode = x.FinanceAccount.Code, x.DebitAmount, x.CreditAmount, x.Currency, x.Description })
+                AccountCode = x.FinanceAccount.Code, x.DebitAmount, x.CreditAmount, x.Currency,
+                x.DocumentDebitAmount, x.DocumentCreditAmount, x.DocumentCurrency, x.ExchangeRate,
+                x.ExchangeRateDate, x.ExchangeRateConversionId, x.ExchangeRateIdentity,
+                x.ConversionRoundingResidual, x.Description })
             .ToArrayAsync(cancellationToken);
-        var csv = new StringBuilder("voucher,posting_date,account,debit,credit,currency,description\n");
+        var csv = new StringBuilder("voucher,posting_date,account,functional_debit,functional_credit,functional_currency,document_debit,document_credit,document_currency,exchange_rate,exchange_rate_date,exchange_rate_conversion_id,exchange_rate_identity,conversion_rounding_residual,description\n");
         foreach (var row in rows)
             csv.Append(Csv(row.EntryNumber)).Append(',')
                 .Append((row.PostingDate ?? DateOnly.FromDateTime(row.EntryUtc)).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)).Append(',')
                 .Append(Csv(row.AccountCode)).Append(',').Append(Amount(row.DebitAmount)).Append(',')
                 .Append(Amount(row.CreditAmount)).Append(',').Append(Csv(row.Currency)).Append(',')
+                .Append(Amount(row.DocumentDebitAmount)).Append(',').Append(Amount(row.DocumentCreditAmount)).Append(',')
+                .Append(Csv(row.DocumentCurrency)).Append(',')
+                .Append(row.ExchangeRate.HasValue ? row.ExchangeRate.Value.ToString("0.##################", CultureInfo.InvariantCulture) : string.Empty).Append(',')
+                .Append(row.ExchangeRateDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture) ?? string.Empty).Append(',')
+                .Append(row.ExchangeRateConversionId?.ToString("D") ?? string.Empty).Append(',')
+                .Append(Csv(row.ExchangeRateIdentity ?? string.Empty)).Append(',')
+                .Append(row.ConversionRoundingResidual.HasValue ? row.ConversionRoundingResidual.Value.ToString("0.##################", CultureInfo.InvariantCulture) : string.Empty).Append(',')
                 .Append(Csv(row.Description ?? string.Empty)).Append('\n');
         return Encoding.UTF8.GetBytes(csv.ToString());
     }

@@ -1,10 +1,16 @@
 <nav class="accounting-navigation" aria-label="@FinanceText["AccountingNavigation"]">
+    <a class="@LinkClass(FinanceRoutes.AccountingCloseWorkspace)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingCloseWorkspace, CompanyId)">@FinanceText["CloseWorkspaceNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingSetup)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingSetup, CompanyId)">@FinanceText["AccountingSetupNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingAccounts)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingAccounts, CompanyId)">@FinanceText["AccountingAccountsNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingPeriods)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingPeriods, CompanyId)">@FinanceText["AccountingPeriodsNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingJournal)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingJournal, CompanyId)">@FinanceText["AccountingJournalNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingReconciliation)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReconciliation, CompanyId)">@FinanceText["AccountingReconciliationNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingReports)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReports, CompanyId)">@FinanceText["AccountingReportsNav"]</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingComplianceCalendar)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingComplianceCalendar, CompanyId)">Compliance calendar</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingAuditPackages)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingAuditPackages, CompanyId)">Audit packages</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingReportDefinitions)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingReportDefinitions, CompanyId)">Report designer</a>
+    <a class="@LinkClass(FinanceRoutes.AccountingYearEnd)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingYearEnd, CompanyId)">Year-end</a>
+    <a class="@AdvancedLinkClass()" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingAdvanced, CompanyId)">@FinanceText["AccountingAdvancedNav"]</a>
     <a class="@LinkClass(FinanceRoutes.AccountingConnections)" href="@FinanceRoutes.WithCompanyContext(FinanceRoutes.AccountingConnections, CompanyId)">@FinanceText["AccountingConnectionsNav"]</a>
 </nav>
 
@@ -17,6 +23,16 @@
         var path = "/" + Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0].Trim('/');
         return (string.Equals(path, route, StringComparison.OrdinalIgnoreCase) ||
                 route == FinanceRoutes.AccountingJournal && path.StartsWith(route + "/", StringComparison.OrdinalIgnoreCase))
+            ? "accounting-navigation__link active"
+            : "accounting-navigation__link";
+    }
+
+    private string AdvancedLinkClass()
+    {
+        var path = "/" + Navigation.ToBaseRelativePath(Navigation.Uri).Split('?', '#')[0].Trim('/');
+        return path.StartsWith(FinanceRoutes.AccountingAdvanced, StringComparison.OrdinalIgnoreCase) ||
+               path is FinanceRoutes.AccountingCurrencyRates or FinanceRoutes.AccountingDimensions or
+                   FinanceRoutes.AccountingSchedules or FinanceRoutes.AccountingFixedAssets or FinanceRoutes.AccountingRevaluation
             ? "accounting-navigation__link active"
             : "accounting-navigation__link";
     }

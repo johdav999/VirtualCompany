@@ -34,7 +34,11 @@ public sealed record FinancialStatementMappingDto(
     string LineClassification,
     bool IsActive,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    long VersionNumber = 1,
+    DateOnly? EffectiveFrom = null,
+    DateOnly? EffectiveTo = null,
+    Guid? SupersedesMappingId = null);
 
 public sealed record FinancialStatementMappingValidationIssueDto(
     string Code,

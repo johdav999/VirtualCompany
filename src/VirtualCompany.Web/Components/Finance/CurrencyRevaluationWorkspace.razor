@@ -1,0 +1,151 @@
+@inject FinanceApiClient FinanceApiClient
+
+<section class="fx-revaluation" aria-labelledby="fx-revaluation-title" aria-busy="@IsLoading">
+    <header class="fx-revaluation__header">
+        <div><span class="dashboard-kicker">@FinanceText["CurrencyRevaluationKicker"]</span><h2 id="fx-revaluation-title">@FinanceText["CurrencyRevaluation"]</h2><p>@FinanceText["CurrencyRevaluationDescription"]</p></div>
+        <div class="fx-revaluation__actions">
+            <label for="fx-series">@FinanceText["VoucherSeries"]</label>
+            <select id="fx-series" class="form-select" @bind="VoucherSeriesCode" disabled="@(VoucherSeries.Count == 0 || IsActing)">@foreach (var series in VoucherSeries) { <option value="@series.Code">@series.Code · @series.DisplayName</option> }</select>
+            @if (CanManage && !IsPeriodClosed) { <button type="button" class="btn btn-primary" @onclick="PreviewAsync" disabled="@(IsActing || string.IsNullOrWhiteSpace(VoucherSeriesCode))">@(Current is null ? FinanceText["PrepareRevaluation"] : FinanceText["RegenerateRevaluation"])</button> }
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(Message)) { <div class="alert alert-success" role="status">@Message</div> }
+    @if (!string.IsNullOrWhiteSpace(Error)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["CurrencyRevaluationUnavailable"]</strong><div>@Error</div><button class="btn btn-sm btn-outline-danger" type="button" @onclick="RetryAsync">@CommonText["TryAgain"]</button></div> }
+
+    <nav class="fx-revaluation__tabs" aria-label="@FinanceText["CurrencyRevaluationViews"]">
+        <button type="button" class="@(Tab == "run" ? "active" : null)" @onclick='() => Tab = "run"'>@FinanceText["CurrentRun"]</button>
+        <button type="button" class="@(Tab == "proposal" ? "active" : null)" @onclick='() => Tab = "proposal"'>@FinanceText["JournalProposal"]</button>
+        <button type="button" class="@(Tab == "history" ? "active" : null)" @onclick='() => Tab = "history"'>@FinanceText["RunHistory"]</button>
+        <button type="button" class="@(Tab == "schedule" ? "active" : null)" @onclick='() => Tab = "schedule"'>@FinanceText["Automation"]</button>
+    </nav>
+
+    @if (IsLoading)
+    {
+        <div class="fx-revaluation__state" role="status"><div class="spinner-border text-primary"></div><h3>@FinanceText["LoadingRevaluationEvidence"]</h3></div>
+    }
+    else if (Tab == "history")
+    {
+        <section class="fx-card"><div class="fx-card__header"><div><h3>@FinanceText["RunHistory"]</h3><p>@FinanceText["RunHistoryHelp"]</p></div></div>
+            @if (Runs.Count == 0) { <div class="fx-revaluation__state compact"><p>@FinanceText["NoRevaluationRuns"]</p></div> }
+            @foreach (var run in Runs) { <button class="fx-run-row" type="button" @onclick="() => SelectRunAsync(run.Id)"><span><strong>@FinanceText["RevaluationRunNumber", run.RunNumber]</strong><small>@run.AsOfDate.ToString("d") · @LocalDateTime.DateTime(run.UpdatedUtc)</small></span><span><b>@Money(run.ProposedAdjustmentTotal, run.FunctionalCurrency)</b><em class="status-badge @StatusClass(run.Status)">@Status(run.Status)</em></span></button> }
+        </section>
+    }
+    else if (Tab == "schedule")
+    {
+        <div class="fx-schedule-grid">
+            <section class="fx-card"><h3>@FinanceText["ScheduledRevaluation"]</h3><p>@FinanceText["ScheduledRevaluationHelp"]</p><label class="form-check"><input class="form-check-input" type="checkbox" @bind="ScheduleEnabled" /><span>@FinanceText["EnableScheduledRevaluation"]</span></label><label for="fx-days">@FinanceText["DaysBeforePeriodEnd"]</label><input id="fx-days" class="form-control" type="number" min="0" max="31" @bind="ScheduleDays" /><label class="form-check"><input class="form-check-input" type="checkbox" @bind="AutomaticReversal" /><span>@FinanceText["AutomaticNextPeriodReversal"]</span></label>@if (CanManage) { <button class="btn btn-primary" type="button" @onclick="SaveScheduleAsync" disabled="@IsActing">@FinanceText["SaveSchedule"]</button> }</section>
+            <aside class="fx-card fx-laura"><div><span>L</span><div><strong>@FinanceText["LauraFinanceManager"]</strong><small>@FinanceText["FinanceManager"]</small></div></div><p>@FinanceText["LauraRevaluationAutomationAdvice"]</p></aside>
+        </div>
+    }
+    else if (Current is null)
+    {
+        <div class="fx-revaluation__state"><span aria-hidden="true">¤</span><h3>@FinanceText["NoRevaluationPrepared"]</h3><p>@FinanceText["NoRevaluationPreparedHelp"]</p></div>
+    }
+    else
+    {
+        <section class="fx-summary" aria-label="@FinanceText["RevaluationSummary"]">
+            <article><span>@FinanceText["RunStatus"]</span><strong>@Status(Current.Status)</strong><em class="status-badge @StatusClass(Current.Status)">@FinanceText[Current.ReviewCount == 0 ? "EvidenceComplete" : "ReviewRequired"]</em></article>
+            <article><span>@FinanceText["ForeignBalances"]</span><strong>@Current.PopulationCount</strong><em>@FinanceText["IncludedExcluded", Current.IncludedCount, Current.ExcludedCount]</em></article>
+            <article><span>@FinanceText["NetAdjustment"]</span><strong>@Money(Current.ProposedAdjustmentTotal, Current.FunctionalCurrency)</strong><em>@FinanceText["AsOfDateValue", Current.AsOfDate.ToString("d")]</em></article>
+            <article><span>@FinanceText["ApprovalStatus"]</span><strong>@(Current.Approval is null ? FinanceText["NotRequested"] : Status(Current.Approval.Status))</strong><em>@FinanceText["ProposalVersion", Current.Version]</em></article>
+        </section>
+
+        <div class="fx-revaluation__workflow">
+            <span class="done">1</span><b>@FinanceText["Population"]</b><i></i><span class="@(Current.ReviewCount == 0 ? "done" : "current")">2</span><b>@FinanceText["Review"]</b><i></i><span class="@(Current.Approval?.Status == "approved" ? "done" : Current.Status == "awaiting_approval" ? "current" : null)">3</span><b>@FinanceText["Approval"]</b><i></i><span class="@(Current.Status is "posted" or "reversed" ? "done" : null)">4</span><b>@FinanceText["Posting"]</b>
+        </div>
+
+        @if (Current.Status == "failed") { <div class="alert alert-danger"><strong>@Status(Current.FailureReasonCode ?? "failed")</strong><div>@Current.FailureSummary</div></div> }
+        @if (Current.ReviewCount > 0) { <div class="alert alert-warning"><strong>@FinanceText["ReviewItemsBeforeApproval"]</strong><div>@FinanceText["ReviewItemsBeforeApprovalHelp", Current.ReviewCount]</div></div> }
+
+        @if (Tab == "proposal")
+        {
+            <div class="fx-layout"><section class="fx-card"><div class="fx-card__header"><div><h3>@FinanceText["ExactJournalProposal"]</h3><p>@FinanceText["ExactJournalProposalHelp"]</p></div><span class="status-badge @(Current.Reconciliations.All(x => x.IsReconciled) ? "status-badge-success" : "status-badge-warning")">@FinanceText[Current.Reconciliations.All(x => x.IsReconciled) ? "Reconciled" : "NeedsReview"]</span></div><div class="table-responsive"><table class="table fx-table"><thead><tr><th>@FinanceText["Account"]</th><th>@FinanceText["Description"]</th><th>@FinanceText["Debit"]</th><th>@FinanceText["Credit"]</th></tr></thead><tbody>@foreach (var line in Current.ProposalLines.OrderBy(x => x.Sequence)) { <tr><td><strong>@line.AccountCode</strong><span>@line.AccountName</span></td><td>@line.Description</td><td>@Money(line.DebitAmount, line.Currency)</td><td>@Money(line.CreditAmount, line.Currency)</td></tr> }</tbody></table></div></section>@EvidenceCard</div>
+        }
+        else
+        {
+            <div class="fx-layout"><section class="fx-card"><div class="fx-card__header"><div><h3>@FinanceText["RevaluationPopulation"]</h3><p>@FinanceText["RevaluationPopulationHelp"]</p></div><span>@Current.Population.Count</span></div><div class="table-responsive"><table class="table fx-table"><thead><tr><th>@FinanceText["Account"]</th><th>@FinanceText["Currency"]</th><th>@FinanceText["ForeignBalance"]</th><th>@FinanceText["CarryingAmount"]</th><th>@FinanceText["PeriodEndRate"]</th><th>@FinanceText["RevaluedAmount"]</th><th>@FinanceText["Adjustment"]</th><th>@FinanceText["Status"]</th></tr></thead><tbody>@foreach (var item in Current.Population) { <tr class="@(item.Status == "needs_review" ? "needs-review" : null)"><td><strong>@item.AccountCode</strong><span>@item.AccountName</span></td><td>@item.DocumentCurrency</td><td>@item.DocumentBalance.ToString("N2")</td><td>@Money(item.CarryingFunctionalAmount, item.FunctionalCurrency)</td><td>@(item.PeriodEndRate?.ToString("N6") ?? "—")</td><td>@Money(item.RevaluedFunctionalAmount, item.FunctionalCurrency)</td><td><strong>@Money(item.AdjustmentAmount, item.FunctionalCurrency)</strong></td><td><span class="status-badge @StatusClass(item.Status)">@Status(item.Status)</span>@if (item.Status == "needs_review" && CanManage) { <button class="btn btn-sm btn-link" type="button" @onclick="() => BeginExclude(item.Id)">@FinanceText["Review"]</button> }</td></tr> }</tbody></table></div>@if (ReviewItemId.HasValue) { <div class="fx-review"><label for="fx-review-reason">@FinanceText["ExclusionEvidenceReason"]</label><textarea id="fx-review-reason" class="form-control" rows="2" @bind="ReviewReason"></textarea><div><button class="btn btn-outline-secondary" @onclick="CancelReview">@CommonText["Cancel"]</button><button class="btn btn-primary" @onclick="ExcludeAsync" disabled="@(ReviewReason.Trim().Length < 10 || IsActing)">@FinanceText["ExcludeWithEvidence"]</button></div></div> }</section>@EvidenceCard</div>
+        }
+
+        @if (CanManage && !IsPeriodClosed)
+        {
+            <div class="fx-action-bar"><div><strong>@FinanceText["ControlledPosting"]</strong><span>@NextAction</span></div><div>@if (Current.Status == "draft" && Current.ReviewCount == 0) { <button class="btn btn-primary" @onclick="SubmitAsync" disabled="@IsActing">@FinanceText["RequestApproval"]</button> }@if (Current.Status is "awaiting_approval" or "approved") { <button class="btn btn-primary" @onclick="PostAsync" disabled="@(IsActing || Current.Approval?.Status != "approved")">@FinanceText["PostApprovedProposal"]</button> }@if (Current.Status == "posted") { <button class="btn btn-outline-danger" @onclick="ReverseAsync" disabled="@IsActing">@FinanceText["ReverseNextPeriod"]</button> }</div></div>
+        }
+    }
+</section>
+
+@code {
+    [Parameter] public Guid? CompanyId { get; set; }
+    [Parameter] public Guid FiscalPeriodId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public bool IsPeriodClosed { get; set; }
+    [Parameter] public Guid? RequestedRunId { get; set; }
+    private List<CurrencyRevaluationRunResponse> Runs { get; set; } = [];
+    private CurrencyRevaluationRunResponse? Current { get; set; }
+    private List<ManualJournalVoucherSeriesResponse> VoucherSeries { get; set; } = [];
+    private CurrencyRevaluationScheduleResponse? Schedule { get; set; }
+    private Guid? LoadedCompanyId { get; set; } private Guid LoadedPeriodId { get; set; }
+    private Guid? LoadedRequestedRunId { get; set; }
+    private string VoucherSeriesCode { get; set; } = ""; private string Tab { get; set; } = "run";
+    private string? PreviewRequestIdentity { get; set; }
+    private bool IsLoading { get; set; } private bool IsActing { get; set; }
+    private string? Error { get; set; } private string? Message { get; set; }
+    private Guid? ReviewItemId { get; set; } private string ReviewReason { get; set; } = "";
+    private bool ScheduleEnabled { get; set; } private int ScheduleDays { get; set; } = 3; private bool AutomaticReversal { get; set; } = true;
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is not Guid companyId || companyId == LoadedCompanyId &&
+            FiscalPeriodId == LoadedPeriodId && RequestedRunId == LoadedRequestedRunId) return;
+        LoadedCompanyId = companyId; LoadedPeriodId = FiscalPeriodId;
+        LoadedRequestedRunId = RequestedRunId; PreviewRequestIdentity = null;
+        await LoadAsync(companyId);
+    }
+    private async Task LoadAsync(Guid companyId)
+    {
+        IsLoading = true; Error = null;
+        try
+        {
+            var runsTask = FinanceApiClient.GetCurrencyRevaluationRunsAsync(companyId, FiscalPeriodId);
+            var referencesTask = FinanceApiClient.GetManualJournalReferenceDataAsync(companyId);
+            var scheduleTask = FinanceApiClient.GetCurrencyRevaluationScheduleAsync(companyId);
+            await Task.WhenAll(runsTask, referencesTask, scheduleTask);
+            Runs = (await runsTask)?.Items ?? []; VoucherSeries = (await referencesTask)?.VoucherSeries ?? [];
+            Schedule = await scheduleTask;
+            Current = Runs.FirstOrDefault(x => x.Id == RequestedRunId);
+            if (Current is null && RequestedRunId is Guid requestedRunId)
+                Current = await FinanceApiClient.GetCurrencyRevaluationRunAsync(companyId, requestedRunId);
+            Current ??= Runs.FirstOrDefault();
+            VoucherSeriesCode = Current?.VoucherSeriesCode ?? Schedule?.VoucherSeriesCode ?? VoucherSeries.FirstOrDefault()?.Code ?? "";
+            ScheduleEnabled = Schedule?.IsEnabled ?? false; ScheduleDays = Schedule?.DaysBeforePeriodEnd ?? 3; AutomaticReversal = Schedule?.AutomaticReversal ?? true;
+        }
+        catch (FinanceApiException exception) { Error = exception.Message; }
+        finally { IsLoading = false; }
+    }
+    private Task RetryAsync() => CompanyId is Guid companyId ? LoadAsync(companyId) : Task.CompletedTask;
+    private async Task SelectRunAsync(Guid id) { if (CompanyId is not Guid companyId) return; Current = await FinanceApiClient.GetCurrencyRevaluationRunAsync(companyId, id); Tab = "run"; }
+    private Task PreviewAsync() => ActAsync(async companyId =>
+    {
+        PreviewRequestIdentity ??= $"fx-revaluation:{companyId:N}:{FiscalPeriodId:N}:{Guid.NewGuid():N}";
+        Current = await FinanceApiClient.PreviewCurrencyRevaluationAsync(companyId, FiscalPeriodId,
+            VoucherSeriesCode, PreviewRequestIdentity);
+        PreviewRequestIdentity = null;
+        await RefreshRunsAsync(companyId);
+        Message = FinanceText["RevaluationPreparedMessage"];
+    });
+    private Task SubmitAsync() => ActAsync(async companyId => { if (Current is null) return; Current = await FinanceApiClient.SubmitCurrencyRevaluationAsync(companyId, Current.Id, Current.Version); await RefreshRunsAsync(companyId); Message = FinanceText["RevaluationApprovalRequestedMessage"]; });
+    private Task PostAsync() => ActAsync(async companyId => { if (Current is null) return; Current = await FinanceApiClient.PostCurrencyRevaluationAsync(companyId, Current.Id, Current.Version, $"fx-post:{Current.Id:N}:{Current.Version}"); await RefreshRunsAsync(companyId); Message = FinanceText["RevaluationPostedMessage"]; });
+    private Task ReverseAsync() => ActAsync(async companyId => { if (Current is null) return; Current = await FinanceApiClient.ReverseCurrencyRevaluationAsync(companyId, Current.Id, Current.Version, $"fx-reverse:{Current.Id:N}"); await RefreshRunsAsync(companyId); Message = FinanceText["RevaluationReversedMessage"]; });
+    private void BeginExclude(Guid id) { ReviewItemId = id; ReviewReason = ""; }
+    private void CancelReview() { ReviewItemId = null; ReviewReason = ""; }
+    private Task ExcludeAsync() => ActAsync(async companyId => { if (Current is null || ReviewItemId is not Guid itemId) return; Current = await FinanceApiClient.ReviewCurrencyRevaluationItemAsync(companyId, Current.Id, itemId, "exclude", ReviewReason.Trim(), Current.Version); CancelReview(); await RefreshRunsAsync(companyId); Message = FinanceText["RevaluationReviewRecordedMessage"]; });
+    private Task SaveScheduleAsync() => ActAsync(async companyId => { Schedule = await FinanceApiClient.ConfigureCurrencyRevaluationScheduleAsync(companyId, new() { IsEnabled = ScheduleEnabled, DaysBeforePeriodEnd = ScheduleDays, AutomaticReversal = AutomaticReversal, VoucherSeriesCode = VoucherSeriesCode, ExpectedVersion = Schedule?.Version }); Message = FinanceText["RevaluationScheduleSavedMessage"]; });
+    private async Task RefreshRunsAsync(Guid companyId) { Runs = (await FinanceApiClient.GetCurrencyRevaluationRunsAsync(companyId, FiscalPeriodId))?.Items ?? []; if (Current is not null) Current = Runs.FirstOrDefault(x => x.Id == Current.Id) ?? Current; }
+    private async Task ActAsync(Func<Guid, Task> action) { if (CompanyId is not Guid companyId) return; IsActing = true; Error = null; Message = null; try { await action(companyId); } catch (FinanceApiException exception) { Error = exception.Message; } finally { IsActing = false; } }
+    private string Status(string value) => FinanceStatusPresenter.Present(value, FinanceText, CommonText);
+    private static string StatusClass(string value) => value.Trim().ToLowerInvariant() switch { "posted" or "reversed" or "approved" or "included" => "status-badge-success", "failed" or "rejected" => "status-badge-danger", "needs_review" or "awaiting_approval" or "pending" => "status-badge-warning", _ => "" };
+    private string NextAction => Current is null ? "" : Current.Status switch { "draft" when Current.ReviewCount == 0 => FinanceText["RevaluationReadyForApproval"], "needs_review" => FinanceText["RevaluationResolveReview"], "awaiting_approval" => FinanceText["RevaluationWaitingForApproval"], "approved" => FinanceText["RevaluationReadyToPost"], "posted" => FinanceText["RevaluationPostedImmutable"], "reversed" => FinanceText["RevaluationReversalComplete"], _ => Current.FailureSummary ?? "" };
+    private static string Money(decimal amount, string? currency) => $"{amount:N2} {currency}".Trim();
+    private RenderFragment EvidenceCard => @<aside class="fx-card fx-evidence"><div class="fx-card__header"><div><span class="dashboard-kicker">@FinanceText["CloseEvidence"]</span><h3>@FinanceText["ReproducibleEvidence"]</h3></div><span class="status-badge status-badge-success">@FinanceText["Retained"]</span></div><dl><div><dt>@FinanceText["PopulationChecksum"]</dt><dd>@Short(Current?.PopulationChecksum)</dd></div><div><dt>@FinanceText["RateSetChecksum"]</dt><dd>@Short(Current?.RateSetChecksum)</dd></div><div><dt>@FinanceText["ProposalChecksum"]</dt><dd>@Short(Current?.ProposalChecksum)</dd></div><div><dt>@FinanceText["RateBindings"]</dt><dd>@(Current?.RateBindings.Count ?? 0)</dd></div></dl><p>@FinanceText["ReproducibleEvidenceHelp"]</p>@if (Current?.LedgerEntryId is Guid journalId) { <a class="btn btn-outline-primary" href="@FinanceRoutes.WithCompanyContext($"/finance/accounting/journals?entryId={journalId:D}", CompanyId)">@FinanceText["OpenPostedJournal"]</a> }<div class="fx-laura"><span>L</span><div><strong>@FinanceText["LauraFinanceManager"]</strong><p>@FinanceText["LauraRevaluationAdvice"]</p></div></div></aside>;
+    private static string Short(string? value) => string.IsNullOrWhiteSpace(value) ? "—" : value[..Math.Min(12, value.Length)];
+}

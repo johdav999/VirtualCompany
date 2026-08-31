@@ -9,6 +9,7 @@ This inventory records the route topology after the UI consolidation. Canonical 
 | Overview | `/dashboard` | `/` resolves through the existing home flow |
 | Agent team | `/agents/staff` | `/agents`, `/agents/{AgentId}`, `/agents/{AgentId}/chat` remain canonical profile/chat context |
 | Finance | `/finance` | See Finance table |
+| Accountant portfolio | `/accountant/portfolio` | Available only when the signed-in user has an explicit accountant membership; company detail stays on the route with `companyId` context and engagement deep links carry the explicit company and fiscal period into the shared close workspace |
 | Sales | `/app/sales` | See Sales table |
 | Support | `/support` | `/support/cases` |
 | Work | `/work` | `/tasks`, `/approvals`, `/inbox`, `/outbound-review-queue`, `/queue` remain compatibility/detail routes |
@@ -43,6 +44,7 @@ This inventory records the route topology after the UI consolidation. Canonical 
 | Supplier review | `/finance/supplier-bills/review`, `/finance/supplier-bills/review/{BillId}` | Bill inbox aliases above |
 | Payments | `/finance/payments`, `/finance/payments/{PaymentId}` | None |
 | Transactions | `/finance/transactions`, `/finance/transactions/{TransactionId}` | `/finance/activity`, `/finance/activity/{TransactionId}` |
+| Accounting | `/finance/accounting/close-workspace`, `/finance/accounting/setup`, `/finance/accounting/accounts`, `/finance/accounting/periods`, `/finance/accounting/journals`, `/finance/accounting/reconciliation`, `/finance/accounting/reports`, `/finance/accounting/compliance-calendar`, `/finance/accounting/audit-packages`, `/finance/accounting/report-definitions`, `/finance/accounting/year-end`, `/finance/accounting/advanced`, `/finance/accounting/currency-rates`, `/finance/accounting/dimensions`, `/finance/accounting/schedules`, `/finance/accounting/fixed-assets`, `/finance/accounting/revaluation` | The close workspace is the evidence-led operational entry point; `/finance/accounting/reports?view=revaluation`, `?view=dimensions`, `?view=schedules`, and `?view=assets` remain compatibility views with company and drill-down context preserved |
 | Issues | `/finance/issues`, `/finance/issues/{AnomalyId}` | `/finance/anomalies`, `/finance/anomalies/{AnomalyId}` |
 | Supporting detail | `/finance/counterparties`, `/finance/alerts/{AlertId}` | Contextual routes, not local navigation |
 | Legacy mailbox | `/finance/mailbox` | Configuration is now entered through Settings |

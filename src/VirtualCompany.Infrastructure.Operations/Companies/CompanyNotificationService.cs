@@ -362,6 +362,7 @@ public sealed class CompanyNotificationService : INotificationInboxService
             "workflow_failure" => CompanyNotificationType.WorkflowFailure,
             "briefing_available" => CompanyNotificationType.BriefingAvailable,
             "proactive_message" => CompanyNotificationType.ProactiveMessage,
+            "accountant_collaboration" => CompanyNotificationType.AccountantCollaboration,
             _ when Enum.TryParse<CompanyNotificationType>(value.Trim(), ignoreCase: true, out var parsed) => parsed,
             _ => throw new ArgumentOutOfRangeException(nameof(value), value, "Unsupported notification type value.")
         };

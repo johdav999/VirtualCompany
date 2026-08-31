@@ -6,7 +6,34 @@ public sealed record PostCashSettlementCommand(
     string SourceId,
     Guid PaymentId,
     decimal SettledAmount,
-    DateTime SettledAtUtc);
+    DateTime SettledAtUtc,
+    CashSettlementAccountingFacts? AccountingFacts = null,
+    Guid ActorUserId = default,
+    string? CorrelationId = null);
+
+public sealed record CashSettlementAccountingFacts(
+    Guid AllocationId,
+    string ControlAccountRole,
+    string DocumentCurrency,
+    string FunctionalCurrency,
+    decimal AllocatedDocumentAmount,
+    decimal WriteOffDocumentAmount,
+    decimal FeeDocumentAmount,
+    decimal AllocatedPaymentAmount,
+    decimal AllocatedFunctionalAmount,
+    decimal SettlementFunctionalAmount,
+    decimal BankFunctionalAmount,
+    decimal FeeFunctionalAmount,
+    decimal WriteOffFunctionalAmount,
+    decimal RealizedGainLossAmount,
+    decimal RoundingFunctionalAmount,
+    DateOnly SettlementRateDate,
+    decimal SettlementRate,
+    Guid? SettlementExchangeRateConversionId,
+    string SettlementRateIdentity,
+    decimal SettlementConversionRoundingResidual,
+    decimal JournalDocumentTotal,
+    bool IsFinalSettlement);
 
 public sealed record CashSettlementPostingResultDto(
     Guid CompanyId,
@@ -15,7 +42,8 @@ public sealed record CashSettlementPostingResultDto(
     string SourceId,
     decimal PostedAmount,
     DateTime PostedAtUtc,
-    bool Created);
+    bool Created,
+    decimal RealizedGainLossAmount = 0m);
 
 public interface IFinanceCashSettlementPostingService
 {

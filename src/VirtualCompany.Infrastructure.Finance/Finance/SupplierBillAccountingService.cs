@@ -18,6 +18,7 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
     private readonly IAuditEventWriter _audit;
     private readonly TimeProvider _timeProvider;
     private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IExchangeRateService? _exchangeRates;
 
     public SupplierBillAccountingService(
         VirtualCompanyDbContext dbContext,
@@ -25,7 +26,8 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         IAccountingPostingService postingService,
         IAuditEventWriter audit,
         TimeProvider timeProvider,
-        IAccountingPolicyPackResolver packResolver)
+        IAccountingPolicyPackResolver packResolver,
+        IExchangeRateService? exchangeRates = null)
     {
         _dbContext = dbContext;
         _policy = policy;
@@ -33,6 +35,7 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         _audit = audit;
         _timeProvider = timeProvider;
         _packResolver = packResolver;
+        _exchangeRates = exchangeRates;
     }
 
     public Task<SupplierBillAccountingPreviewDto> PreviewAsync(
@@ -116,6 +119,9 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         if (factsUnchanged && profile!.ApprovalRequestId.HasValue)
             return new(await MapStateAsync(profile, cancellationToken), profile.ApprovalRequestId.Value, true);
 
+        var retainedCurrency = await RetainCurrencyFactsAsync(plan, command.ActorUserId,
+            command.CorrelationId, cancellationToken);
+
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         if (profile is null)
         {
@@ -155,6 +161,9 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                     line.CostBaseAmount, line.RecoverableTaxBaseAmount, line.RecoverableTaxAccountId,
                     SerializeTaxFacts(line, plan, command.ActorUserId)));
         }
+        profile.BindCurrencyFacts(retainedCurrency.ConversionId, plan.ExchangeRateDate,
+            plan.ExchangeRatePurpose, plan.ExchangeRateIdentity, retainedCurrency.RoundingResidual,
+            retainedCurrency.Provenance, command.ActorUserId, now);
 
         var approval = ApprovalRequest.CreateForTarget(Guid.NewGuid(), command.CompanyId,
             ApprovalTargetEntityType.SupplierBillAccounting, profile.Id, AuditActorTypes.User,
@@ -166,6 +175,8 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                 ["sourceDocumentHash"] = JsonValue.Create(profile.SourceDocumentHash),
                 ["billId"] = JsonValue.Create(command.BillId.ToString("N")),
                 ["grossBaseAmount"] = JsonValue.Create(profile.GrossBaseAmount),
+                ["exchangeRateIdentity"] = JsonValue.Create(profile.ExchangeRateIdentity),
+                ["exchangeRateConversionId"] = JsonValue.Create(profile.ExchangeRateConversionId?.ToString("N")),
                 ["idempotencyKey"] = JsonValue.Create(command.IdempotencyKey.Trim())
             }, null, null, [new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "finance_approver")]);
         _dbContext.ApprovalRequests.Add(approval);
@@ -180,7 +191,9 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                 ["billId"] = command.BillId.ToString("N"),
                 ["sourceVersion"] = profile.Version.ToString(CultureInfo.InvariantCulture),
                 ["payloadHash"] = profile.PayloadHash,
-                ["sourceDocumentHash"] = profile.SourceDocumentHash
+                ["sourceDocumentHash"] = profile.SourceDocumentHash,
+                ["exchangeRateIdentity"] = profile.ExchangeRateIdentity,
+                ["exchangeRateConversionId"] = profile.ExchangeRateConversionId?.ToString("N")
             }, command.CorrelationId, now), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new(await MapStateAsync(profile, cancellationToken), approval.Id, false);
@@ -262,7 +275,7 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
 
             var originalInput = ToInput(originalProfile);
             var creditInput = new SupplierBillAccountingInput(command.Accounting.FiscalPeriodId,
-                command.Accounting.VoucherSeriesCode, command.Accounting.ExchangeRate ?? originalProfile.ExchangeRate,
+                command.Accounting.VoucherSeriesCode, command.Accounting.ExchangeRate,
                 originalInput.Lines);
             var plan = await _policy.BuildPlanAsync(new(command.CompanyId, credit.Id, creditInput, command.ActorUserId), cancellationToken);
             if (!plan.IsReady)
@@ -336,17 +349,62 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
             .SumAsync(x => x.CreditAmount - x.DebitAmount, cancellationToken);
         var profileByBill = profiles.ToDictionary(x => x.BillId);
         var allocations = await _dbContext.PaymentAllocations.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.BillId != null && profileByBill.Keys.Contains(x.BillId.Value))
+            .Where(x => x.CompanyId == query.CompanyId && x.BillId != null &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
+                profileByBill.Keys.Contains(x.BillId.Value))
             .ToListAsync(cancellationToken);
-        var allocatedBase = allocations.Sum(x => x.AllocatedAmount * profileByBill[x.BillId!.Value].ExchangeRate);
+        var allocatedBase = allocations.Sum(x => x.AllocatedFunctionalAmount ??
+            decimal.Round((x.AllocatedAmount + x.WriteOffAmount) * profileByBill[x.BillId!.Value].ExchangeRate,
+                configuration.RoundingPrecision, MidpointRounding.ToEven));
         var difference = decimal.Round(postedDocuments - ledger, configuration.RoundingPrecision, MidpointRounding.ToEven);
+        var breakdown = profiles.GroupBy(x => x.DocumentCurrency, StringComparer.OrdinalIgnoreCase).Select(group =>
+        {
+            var ids = group.Select(x => x.BillId).ToHashSet();
+            var documentPosted = group.Sum(x => x.Bill.DocumentKind == FinanceDocumentKinds.SupplierCreditNote ? -x.GrossAmount : x.GrossAmount);
+            var functionalPosted = group.Sum(x => x.Bill.DocumentKind == FinanceDocumentKinds.SupplierCreditNote ? -x.GrossBaseAmount : x.GrossBaseAmount);
+            var documentAllocated = allocations.Where(x => x.BillId.HasValue && ids.Contains(x.BillId.Value))
+                .Sum(x => x.AllocatedAmount + x.WriteOffAmount);
+            var functionalAllocated = allocations.Where(x => x.BillId.HasValue && ids.Contains(x.BillId.Value))
+                .Sum(x => x.AllocatedFunctionalAmount ??
+                    decimal.Round((x.AllocatedAmount + x.WriteOffAmount) * profileByBill[x.BillId!.Value].ExchangeRate,
+                        configuration.RoundingPrecision, MidpointRounding.ToEven));
+            return new DocumentCurrencyOpenItemControlDto(group.Key, documentPosted, documentAllocated,
+                documentPosted - documentAllocated, functionalPosted, functionalAllocated,
+                functionalPosted - functionalAllocated, configuration.BaseCurrency);
+        }).OrderBy(x => x.DocumentCurrency, StringComparer.Ordinal).ToArray();
         return new(query.CompanyId, configuration.BaseCurrency, postedDocuments, ledger, allocatedBase,
-            postedDocuments - allocatedBase, difference, difference == 0m, _timeProvider.GetUtcNow().UtcDateTime);
+            postedDocuments - allocatedBase, difference, difference == 0m, _timeProvider.GetUtcNow().UtcDateTime,
+            breakdown);
+    }
+
+    private async Task<RetainedDocumentCurrencyFacts> RetainCurrencyFactsAsync(
+        SupplierBillAccountingPlan plan, Guid actorUserId, string? correlationId,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(plan.Bill.Currency, plan.Configuration!.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+            return new(null, 0m, DocumentCurrencyFacts.BaseCurrencyIdentity);
+
+        if (_exchangeRates is null)
+            throw Error(SupplierBillAccountingReasonCodes.CurrencyConversionMissing,
+                "The authoritative exchange-rate service is unavailable.");
+        var conversion = await _exchangeRates.ConvertAsync(new(plan.Bill.CompanyId, actorUserId,
+            plan.GrossAmount, plan.Bill.Currency, plan.Configuration.BaseCurrency,
+            plan.ExchangeRateDate, plan.ExchangeRatePurpose,
+            $"supplier-bill:{plan.Bill.Id:N}:{plan.PayloadHash}:gross", correlationId), cancellationToken);
+        if (conversion.EffectiveRate != plan.ExchangeRate || conversion.RoundedAmount != plan.GrossBaseAmount ||
+            !string.Equals(DocumentCurrencyFacts.RateIdentity(conversion), plan.ExchangeRateIdentity,
+                StringComparison.OrdinalIgnoreCase))
+            throw Error(SupplierBillAccountingReasonCodes.VersionConflict,
+                "The selected exchange rate changed while the supplier bill was being prepared. Refresh the preview before submitting.", true);
+        return new(conversion.Id, conversion.RoundingResidual, DocumentCurrencyFacts.AuthoritativeRate);
     }
 
     private async Task<ProposedAccountingEntry> BuildProposedAsync(
         SupplierBillAccountingProfile profile, string idempotencyKey, Guid actorUserId, CancellationToken cancellationToken)
     {
+        if (!profile.HasAuthoritativeCurrencyFacts)
+            throw Error(SupplierBillAccountingReasonCodes.CurrencyConversionMissing,
+                "This supplier bill has no authoritative currency conversion evidence. Prepare and approve a new accounting version before posting.", true);
         var bill = await _dbContext.FinanceBills.IgnoreQueryFilters().AsNoTracking()
             .SingleAsync(x => x.CompanyId == profile.CompanyId && x.Id == profile.BillId, cancellationToken);
         var isCredit = bill.DocumentKind == FinanceDocumentKinds.SupplierCreditNote;
@@ -354,7 +412,13 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         {
             new(profile.PayableAccountId, isCredit ? profile.GrossBaseAmount : 0m,
                 isCredit ? 0m : profile.GrossBaseAmount, profile.BaseCurrency,
-                $"{bill.BillNumber} · accounts payable")
+                $"{bill.BillNumber} · accounts payable",
+                DocumentDebitAmount: isCredit ? profile.GrossAmount : 0m,
+                DocumentCreditAmount: isCredit ? 0m : profile.GrossAmount,
+                DocumentCurrency: profile.DocumentCurrency, ExchangeRate: profile.ExchangeRate,
+                ExchangeRateDate: profile.ExchangeRateDate, ExchangeRateConversionId: profile.ExchangeRateConversionId,
+                ExchangeRateIdentity: profile.ExchangeRateIdentity,
+                ConversionRoundingResidual: profile.ConversionRoundingResidual)
         };
         var ordered = profile.Lines.OrderBy(x => x.Sequence).ToArray();
         foreach (var line in ordered)
@@ -363,12 +427,22 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
             var retainedTaxFacts = ParseTaxFacts(line.TaxFactsJson);
             retainedTaxFacts["documentCurrency"] = profile.DocumentCurrency;
             lines.Add(new(line.CostAccountId, isCredit ? 0m : cost, isCredit ? cost : 0m,
-                profile.BaseCurrency, line.Description, TaxFacts: retainedTaxFacts));
+                profile.BaseCurrency, line.Description, TaxFacts: retainedTaxFacts,
+                DocumentDebitAmount: isCredit ? 0m : line.NetAmount + line.NonRecoverableTaxAmount,
+                DocumentCreditAmount: isCredit ? line.NetAmount + line.NonRecoverableTaxAmount : 0m,
+                DocumentCurrency: profile.DocumentCurrency, ExchangeRate: profile.ExchangeRate,
+                ExchangeRateDate: profile.ExchangeRateDate, ExchangeRateConversionId: profile.ExchangeRateConversionId,
+                ExchangeRateIdentity: profile.ExchangeRateIdentity));
             if (line.RecoverableTaxBaseAmount > 0m && line.RecoverableTaxAccountId.HasValue)
                 lines.Add(new(line.RecoverableTaxAccountId.Value,
                     isCredit ? 0m : line.RecoverableTaxBaseAmount,
                     isCredit ? line.RecoverableTaxBaseAmount : 0m,
-                    profile.BaseCurrency, $"Tax · {line.Description}", TaxFacts: retainedTaxFacts));
+                    profile.BaseCurrency, $"Tax · {line.Description}", TaxFacts: retainedTaxFacts,
+                    DocumentDebitAmount: isCredit ? 0m : line.RecoverableTaxAmount,
+                    DocumentCreditAmount: isCredit ? line.RecoverableTaxAmount : 0m,
+                    DocumentCurrency: profile.DocumentCurrency, ExchangeRate: profile.ExchangeRate,
+                    ExchangeRateDate: profile.ExchangeRateDate, ExchangeRateConversionId: profile.ExchangeRateConversionId,
+                    ExchangeRateIdentity: profile.ExchangeRateIdentity));
         }
 
         var evidence = new List<ProposedAccountingEvidence>();
@@ -388,24 +462,38 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                 .Where(x => x.CompanyId == profile.CompanyId && x.BillId == profile.OriginalBillId.Value)
                 .Select(x => x.LedgerEntryId).SingleAsync(cancellationToken);
 
+        var policyFacts = new Dictionary<string, string>
+        {
+            ["documentKind"] = bill.DocumentKind,
+            ["documentCurrency"] = profile.DocumentCurrency,
+            ["exchangeRate"] = profile.ExchangeRate.ToString(CultureInfo.InvariantCulture),
+            ["netAmount"] = profile.NetAmount.ToString(CultureInfo.InvariantCulture),
+            ["recoverableTaxAmount"] = profile.RecoverableTaxAmount.ToString(CultureInfo.InvariantCulture),
+            ["nonRecoverableTaxAmount"] = profile.NonRecoverableTaxAmount.ToString(CultureInfo.InvariantCulture),
+            ["grossAmount"] = profile.GrossAmount.ToString(CultureInfo.InvariantCulture),
+            ["currencyProvenance"] = profile.CurrencyProvenance,
+            ["policyDefinitionHash"] = profile.PolicyDefinitionHash
+        };
+        AddOptionalFact(policyFacts, "exchangeRateDate",
+            profile.ExchangeRateDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        AddOptionalFact(policyFacts, "exchangeRateIdentity", profile.ExchangeRateIdentity);
+        AddOptionalFact(policyFacts, "exchangeRateConversionId", profile.ExchangeRateConversionId?.ToString("N"));
+        AddOptionalFact(policyFacts, "conversionRoundingResidual",
+            profile.ConversionRoundingResidual?.ToString(CultureInfo.InvariantCulture));
+        AddOptionalFact(policyFacts, "sourceDocumentHash", profile.SourceDocumentHash);
+
         return new(profile.CompanyId, profile.FiscalPeriodId, profile.VoucherSeriesCode,
             DateOnly.FromDateTime(bill.ReceivedUtc), DateOnly.FromDateTime(bill.ReceivedUtc),
             LedgerPostingTypeValues.SourceDocument, $"{(isCredit ? "Supplier credit note" : "Supplier bill")} {bill.BillNumber}",
             "supplier_bill", bill.Id.ToString("N"), profile.Version.ToString(CultureInfo.InvariantCulture),
             idempotencyKey.Trim(), lines, actorUserId, profile.ApprovalRequestId, true,
-            new Dictionary<string, string>
-            {
-                ["documentKind"] = bill.DocumentKind,
-                ["documentCurrency"] = profile.DocumentCurrency,
-                ["exchangeRate"] = profile.ExchangeRate.ToString(CultureInfo.InvariantCulture),
-                ["netAmount"] = profile.NetAmount.ToString(CultureInfo.InvariantCulture),
-                ["recoverableTaxAmount"] = profile.RecoverableTaxAmount.ToString(CultureInfo.InvariantCulture),
-                ["nonRecoverableTaxAmount"] = profile.NonRecoverableTaxAmount.ToString(CultureInfo.InvariantCulture),
-                ["grossAmount"] = profile.GrossAmount.ToString(CultureInfo.InvariantCulture),
-                ["policyDefinitionHash"] = profile.PolicyDefinitionHash,
-                ["sourceDocumentHash"] = profile.SourceDocumentHash ?? string.Empty
-            }, isCredit ? "credit" : "post", profile.PayloadHash, evidence, originalLedgerEntryId,
+            policyFacts, isCredit ? "credit" : "post", profile.PayloadHash, evidence, originalLedgerEntryId,
             isCredit ? $"Credit note {bill.BillNumber} corrects supplier bill {profile.OriginalBillId:N}." : null);
+    }
+
+    private static void AddOptionalFact(IDictionary<string, string> facts, string key, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value)) facts[key] = value;
     }
 
     private async Task<SupplierBillAccountingProfile> LoadProfileAsync(
@@ -447,7 +535,9 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
             profile.BaseCurrency, profile.TaxTreatment, profile.PolicyPackKey, profile.PolicyPackVersion,
             profile.SourceDocumentHash, profile.LedgerEntryId, voucher, profile.OriginalBillId,
             profile.BlockingReasonCode, profile.BlockingReason, approval, journalLines, duplicates,
-            profile.BlockingReason is null ? [] : [new(profile.BlockingReasonCode ?? "blocked", profile.BlockingReason)]);
+            profile.BlockingReason is null ? [] : [new(profile.BlockingReasonCode ?? "blocked", profile.BlockingReason)],
+            profile.ExchangeRateDate, profile.ExchangeRateConversionId, profile.ExchangeRateIdentity,
+            profile.ConversionRoundingResidual, profile.CurrencyProvenance);
     }
 
     private static IReadOnlyList<SupplierBillAccountingJournalLineDto> BuildStateJournalLines(
@@ -458,7 +548,8 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         if (!accounts.TryGetValue(profile.PayableAccountId, out var payable)) return result;
         result.Add(new(payable.Id, "accounts_payable", payable.Code, payable.Name,
             isCredit ? profile.GrossBaseAmount : 0m, isCredit ? 0m : profile.GrossBaseAmount,
-            profile.BaseCurrency, "Accounts payable"));
+            profile.BaseCurrency, "Accounts payable", DocumentDebitAmount: isCredit ? profile.GrossAmount : 0m,
+            DocumentCreditAmount: isCredit ? 0m : profile.GrossAmount, DocumentCurrency: profile.DocumentCurrency));
         var ordered = profile.Lines.OrderBy(x => x.Sequence).ToArray();
         foreach (var line in ordered)
         {
@@ -469,7 +560,9 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                 isCredit ? 0m : cost, isCredit ? cost : 0m, profile.BaseCurrency,
                 line.Description, line.TaxRuleKey, line.TaxTreatment,
                 taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
-                taxFacts.GetValueOrDefault("evidenceClassification")));
+                taxFacts.GetValueOrDefault("evidenceClassification"),
+                isCredit ? 0m : line.NetAmount + line.NonRecoverableTaxAmount,
+                isCredit ? line.NetAmount + line.NonRecoverableTaxAmount : 0m, profile.DocumentCurrency));
             if (line.RecoverableTaxBaseAmount > 0m && line.RecoverableTaxAccountId.HasValue &&
                 accounts.TryGetValue(line.RecoverableTaxAccountId.Value, out var taxAccount))
                 result.Add(new(taxAccount.Id, taxFacts.GetValueOrDefault("recoverableAccountRole") ?? "tax_recoverable", taxAccount.Code, taxAccount.Name,
@@ -477,7 +570,8 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
                     isCredit ? line.RecoverableTaxBaseAmount : 0m, profile.BaseCurrency,
                     "Recoverable tax", line.TaxRuleKey, line.TaxTreatment,
                     taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
-                    taxFacts.GetValueOrDefault("evidenceClassification")));
+                    taxFacts.GetValueOrDefault("evidenceClassification"), isCredit ? 0m : line.RecoverableTaxAmount,
+                    isCredit ? line.RecoverableTaxAmount : 0m, profile.DocumentCurrency));
         }
         return result;
     }
@@ -544,10 +638,14 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
         var version = approval.ThresholdContext.TryGetValue("sourceVersion", out var versionNode) ? versionNode?.ToString() : null;
         var hash = approval.ThresholdContext.TryGetValue("payloadHash", out var hashNode) ? hashNode?.ToString() : null;
         var documentHash = approval.ThresholdContext.TryGetValue("sourceDocumentHash", out var documentNode) ? documentNode?.ToString() : null;
+        var rateIdentity = approval.ThresholdContext.TryGetValue("exchangeRateIdentity", out var rateNode) ? rateNode?.ToString() : null;
+        var conversionId = approval.ThresholdContext.TryGetValue("exchangeRateConversionId", out var conversionNode) ? conversionNode?.ToString() : null;
         return approval.TargetEntityType == ApprovalTargetEntityType.SupplierBillAccounting.ToStorageValue() &&
             approval.TargetEntityId == profile.Id && version == profile.Version.ToString(CultureInfo.InvariantCulture) &&
             string.Equals(hash, profile.PayloadHash, StringComparison.OrdinalIgnoreCase) &&
-            string.Equals(documentHash, profile.SourceDocumentHash, StringComparison.OrdinalIgnoreCase);
+            string.Equals(documentHash, profile.SourceDocumentHash, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(rateIdentity, profile.ExchangeRateIdentity, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(conversionId, profile.ExchangeRateConversionId?.ToString("N"), StringComparison.OrdinalIgnoreCase);
     }
 
     private static string ResolveTaxTreatment(AccountingTaxRuleDefinition rule) =>
@@ -641,4 +739,6 @@ public sealed class SupplierBillAccountingService : ISupplierBillAccountingServi
             ? []
             : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     private static SupplierBillAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
+
+    private sealed record RetainedDocumentCurrencyFacts(Guid? ConversionId, decimal RoundingResidual, string Provenance);
 }

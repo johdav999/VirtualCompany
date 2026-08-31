@@ -13,12 +13,17 @@ public static class AccountingPostingReasonCodes
     public const string PostingDateOutsidePeriod = "posting_date_outside_period";
     public const string VoucherSeriesNotFound = "voucher_series_not_found";
     public const string VoucherSeriesInactive = "voucher_series_inactive";
+    public const string VoucherSeriesPolicyMismatch = "voucher_series_policy_mismatch";
     public const string AccountNotFound = "posting_account_not_found";
     public const string AccountUnclassified = "posting_account_unclassified";
     public const string AccountInactive = "posting_account_inactive";
     public const string AccountPostingDisabled = "account_posting_disabled";
     public const string ManualPostingRestricted = "manual_posting_restricted";
     public const string CurrencyMismatch = "posting_currency_mismatch";
+    public const string DocumentCurrencyMismatch = "posting_document_currency_mismatch";
+    public const string DocumentAmountsUnbalanced = "posting_document_amounts_unbalanced";
+    public const string RateFactsMissing = "posting_exchange_rate_facts_missing";
+    public const string RateFactsInvalid = "posting_exchange_rate_facts_invalid";
     public const string InvalidPrecision = "posting_precision_invalid";
     public const string TooFewLines = "posting_requires_two_lines";
     public const string InvalidLine = "posting_line_invalid";
@@ -44,7 +49,16 @@ public sealed record ProposedAccountingLine(
     string? Description = null,
     Guid? CostCenterId = null,
     IReadOnlyDictionary<string, string>? TaxFacts = null,
-    IReadOnlyDictionary<string, string>? DimensionFacts = null);
+    IReadOnlyDictionary<string, string>? DimensionFacts = null,
+    decimal? DocumentDebitAmount = null,
+    decimal? DocumentCreditAmount = null,
+    string? DocumentCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    Guid? ExchangeRateConversionId = null,
+    string? ExchangeRateIdentity = null,
+    decimal? ConversionRoundingResidual = null,
+    IReadOnlyList<Guid>? DimensionMemberIds = null);
 
 public sealed record ProposedAccountingEvidence(Guid DocumentId, string ContentHash, string Title);
 
@@ -82,7 +96,11 @@ public sealed record AccountingPostingPreview(
     decimal Difference,
     string BaseCurrency,
     int RoundingPrecision,
-    IReadOnlyList<AccountingPostingIssue> Issues);
+    IReadOnlyList<AccountingPostingIssue> Issues,
+    string? DocumentCurrency = null,
+    decimal? DocumentDebitTotal = null,
+    decimal? DocumentCreditTotal = null,
+    decimal? DocumentDifference = null);
 
 public sealed record PreviewAccountingEntryCommand(ProposedAccountingEntry Entry);
 public sealed record PreviewNonAuthoritativeAccountingCandidateCommand(ProposedAccountingEntry Entry);
@@ -101,7 +119,8 @@ public sealed record ReverseAccountingEntryCommand(
     string IdempotencyKey,
     Guid ActorUserId,
     Guid? ApprovalRequestId = null,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    string ActorType = AuditActorTypes.User);
 
 public sealed record AccountingJournalLineDto(
     Guid Id,
@@ -114,7 +133,16 @@ public sealed record AccountingJournalLineDto(
     Guid? CostCenterId,
     string? Description,
     IReadOnlyDictionary<string, string> TaxFacts,
-    IReadOnlyDictionary<string, string> DimensionFacts);
+    IReadOnlyDictionary<string, string> DimensionFacts,
+    decimal? DocumentDebitAmount = null,
+    decimal? DocumentCreditAmount = null,
+    string? DocumentCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    Guid? ExchangeRateConversionId = null,
+    string? ExchangeRateIdentity = null,
+    decimal? ConversionRoundingResidual = null,
+    IReadOnlyList<ResolvedAccountingDimensionAssignment>? DimensionAssignments = null);
 
 public sealed record AccountingJournalEvidenceDto(Guid DocumentId, string Title, string ContentHash, string OriginalFileName);
 public sealed record AccountingJournalApprovalDto(Guid Id, string Status, string ApprovalType, string? DecisionSummary,
@@ -157,6 +185,16 @@ public sealed record AccountingJournalDto(
     IReadOnlyList<AccountingJournalAuditEventDto>? AuditTimeline = null);
 
 public sealed record PostedAccountingJournal(AccountingJournalDto Journal, bool IsIdempotentReplay);
+
+public sealed record DocumentCurrencyOpenItemControlDto(
+    string DocumentCurrency,
+    decimal PostedDocumentAmount,
+    decimal AllocatedDocumentAmount,
+    decimal OutstandingDocumentAmount,
+    decimal PostedFunctionalAmount,
+    decimal AllocatedFunctionalAmount,
+    decimal OutstandingFunctionalAmount,
+    string FunctionalCurrency);
 
 public sealed record ListAccountingJournalsQuery(Guid CompanyId, DateOnly? From = null, DateOnly? To = null, int Skip = 0, int Take = 100,
     string? Search = null, string? SourceType = null, string? PostingType = null, string? VoucherSeriesCode = null);

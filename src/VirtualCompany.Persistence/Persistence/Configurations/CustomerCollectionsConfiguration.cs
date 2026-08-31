@@ -64,6 +64,13 @@ public sealed class CustomerStatementSnapshotConfiguration : IEntityTypeConfigur
         b.Property(x => x.RenderedContent).HasColumnName("rendered_content").HasColumnType("varbinary(max)"); b.Property(x => x.ContentHash).HasColumnName("content_hash").HasMaxLength(64);
         b.Property(x => x.ContentLength).HasColumnName("content_length"); b.Property(x => x.IdempotencyKey).HasColumnName("idempotency_key").HasMaxLength(200);
         b.Property(x => x.CreatedByUserId).HasColumnName("created_by_user_id"); b.Property(x => x.CreatedUtc).HasColumnName("created_utc");
+        b.Property(x => x.FunctionalCurrency).HasColumnName("functional_currency").HasMaxLength(3);
+        b.Property(x => x.FunctionalOpeningBalance).HasColumnName("functional_opening_balance").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalInvoiceActivity).HasColumnName("functional_invoice_activity").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalAllocationActivity).HasColumnName("functional_allocation_activity").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalCreditActivity).HasColumnName("functional_credit_activity").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalClosingBalance).HasColumnName("functional_closing_balance").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalEvidenceStatus).HasColumnName("functional_evidence_status").HasMaxLength(40);
         b.HasIndex(x => new { x.CompanyId, x.IdempotencyKey }).IsUnique(); b.HasIndex(x => new { x.CompanyId, x.CustomerId, x.CutoffDate }); b.HasIndex(x => new { x.CompanyId, x.Checksum });
         b.HasOne<FinanceCounterparty>().WithMany().HasForeignKey(x => new { x.CompanyId, x.CustomerId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         b.HasMany(x => x.Items).WithOne(x => x.Statement).HasForeignKey(x => new { x.CompanyId, x.StatementId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Cascade);
@@ -80,6 +87,14 @@ public sealed class CustomerStatementItemConfiguration : IEntityTypeConfiguratio
         b.Property(x => x.EffectiveDate).HasColumnName("effective_date"); b.Property(x => x.Reference).HasColumnName("reference").HasMaxLength(200);
         b.Property(x => x.DebitAmount).HasColumnName("debit_amount").HasPrecision(19, 2); b.Property(x => x.CreditAmount).HasColumnName("credit_amount").HasPrecision(19, 2);
         b.Property(x => x.RunningBalance).HasColumnName("running_balance").HasPrecision(19, 2); b.Property(x => x.SourceHash).HasColumnName("source_hash").HasMaxLength(64);
+        b.Property(x => x.FunctionalDebitAmount).HasColumnName("functional_debit_amount").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalCreditAmount).HasColumnName("functional_credit_amount").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalRunningBalance).HasColumnName("functional_running_balance").HasPrecision(19, 2);
+        b.Property(x => x.FunctionalCurrency).HasColumnName("functional_currency").HasMaxLength(3);
+        b.Property(x => x.ExchangeRate).HasColumnName("exchange_rate").HasPrecision(28, 12);
+        b.Property(x => x.ExchangeRateDate).HasColumnName("exchange_rate_date");
+        b.Property(x => x.ExchangeRateIdentity).HasColumnName("exchange_rate_identity").HasMaxLength(64);
+        b.Property(x => x.CurrencyProvenance).HasColumnName("currency_provenance").HasMaxLength(40);
         b.HasIndex(x => new { x.CompanyId, x.StatementId, x.Sequence }).IsUnique(); b.HasIndex(x => new { x.CompanyId, x.InvoiceId });
     }
 }

@@ -181,6 +181,75 @@ public sealed class CashSettlementPostingServiceTests
     }
 
     [Fact]
+    public async Task Foreign_currency_partial_settlement_posts_historical_receivable_and_realized_gain_once()
+    {
+        var companyId = Guid.NewGuid();
+        await using var connection = await OpenConnectionAsync();
+        var postedAtUtc = new DateTime(2026, 4, 22, 10, 0, 0, DateTimeKind.Utc);
+        var accessor = new TestCompanyContextAccessor(companyId);
+        await using var dbContext = CreateContext(connection, accessor);
+        await dbContext.Database.EnsureCreatedAsync();
+
+        var seed = await SeedPostingScenarioAsync(dbContext, companyId);
+        var paymentId = Guid.NewGuid();
+        var conversionId = Guid.NewGuid();
+        dbContext.CompanyCurrencyDefinitions.Add(new CompanyCurrencyDefinition(
+            Guid.NewGuid(), companyId, "EUR", "Euro", 2, true, postedAtUtc));
+        dbContext.Payments.Add(new Payment(
+            paymentId, companyId, PaymentTypes.Incoming, 40m, "EUR", postedAtUtc,
+            "bank_transfer", PaymentStatuses.Completed, "INV-FX-001"));
+        dbContext.ExchangeRateConversions.Add(new ExchangeRateConversion(
+            conversionId, companyId, $"test-settlement:{conversionId:N}", new string('a', 64),
+            ExchangeRateLookupPurposes.SettlementDate, DateOnly.FromDateTime(postedAtUtc),
+            40m, "EUR", "USD", 11m, 440m, 440m, 0m, 2,
+            AccountingRoundingModeValues.AwayFromZero, postedAtUtc));
+        await dbContext.SaveChangesAsync();
+
+        var facts = new CashSettlementAccountingFacts(
+            Guid.NewGuid(), AccountingAccountRoleKeys.AccountsReceivable, "EUR", "USD",
+            AllocatedDocumentAmount: 40m,
+            WriteOffDocumentAmount: 0m,
+            FeeDocumentAmount: 0m,
+            AllocatedPaymentAmount: 40m,
+            AllocatedFunctionalAmount: 400m,
+            SettlementFunctionalAmount: 440m,
+            BankFunctionalAmount: 440m,
+            FeeFunctionalAmount: 0m,
+            WriteOffFunctionalAmount: 0m,
+            RealizedGainLossAmount: 40m,
+            RoundingFunctionalAmount: 0m,
+            SettlementRateDate: DateOnly.FromDateTime(postedAtUtc),
+            SettlementRate: 11m,
+            SettlementExchangeRateConversionId: conversionId,
+            SettlementRateIdentity: "settlement:eur-usd:2026-04-22:11",
+            SettlementConversionRoundingResidual: 0m,
+            JournalDocumentTotal: 40m,
+            IsFinalSettlement: false);
+        var command = new PostCashSettlementCommand(
+            companyId, FinanceCashPostingSourceTypes.PaymentAllocation, "allocation-fx-001",
+            paymentId, 40m, postedAtUtc, facts);
+        var service = new CompanyCashSettlementPostingService(dbContext, accessor);
+
+        var first = await service.PostCashSettlementAsync(command, CancellationToken.None);
+        var replay = await service.PostCashSettlementAsync(command, CancellationToken.None);
+
+        Assert.True(first.Created);
+        Assert.False(replay.Created);
+        Assert.Equal(first.LedgerEntryId, replay.LedgerEntryId);
+        Assert.Equal(40m, first.RealizedGainLossAmount);
+        var lines = await LoadLedgerLinesAsync(dbContext, companyId, first.LedgerEntryId);
+        Assert.Equal(3, lines.Count);
+        Assert.Contains(lines, line => line.FinanceAccountId == seed.CashAccountId && line.DebitAmount == 440m);
+        Assert.Contains(lines, line => line.FinanceAccountId == seed.ReceivablesAccountId && line.CreditAmount == 400m);
+        Assert.Contains(lines, line => line.FinanceAccountId == seed.ExchangeGainAccountId && line.CreditAmount == 40m);
+        Assert.Equal(440m, lines.Sum(line => line.DebitAmount));
+        Assert.Equal(440m, lines.Sum(line => line.CreditAmount));
+        Assert.Single(await dbContext.LedgerEntries.IgnoreQueryFilters().Where(x =>
+            x.CompanyId == companyId && x.SourceType == FinanceCashPostingSourceTypes.PaymentAllocation &&
+            x.SourceId == "allocation-fx-001").ToListAsync());
+    }
+
+    [Fact]
     public async Task ReprocessingLaterSettlementTimestamp_CreatesNewJournalEntryWhileSameTimestampReplayReturnsExistingResult()
     {
         var companyId = Guid.NewGuid();
@@ -493,6 +562,7 @@ public sealed class CashSettlementPostingServiceTests
         var cashAccountId = Guid.NewGuid();
         var receivablesAccountId = Guid.NewGuid();
         var payablesAccountId = Guid.NewGuid();
+        var exchangeGainAccountId = Guid.NewGuid();
         var fiscalPeriodId = Guid.NewGuid();
         var bankAccountId = Guid.NewGuid();
         var incomingPaymentId = Guid.NewGuid();
@@ -544,7 +614,21 @@ public sealed class CashSettlementPostingServiceTests
                 effectiveFrom: new DateOnly(2026, 1, 1),
                 isPostingEnabled: true,
                 controlAccountRole: AccountingAccountRoleKeys.AccountsPayable);
-        dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount, payablesAccount);
+        var exchangeGainAccount = new FinanceAccount(
+                exchangeGainAccountId,
+                companyId,
+                "3960",
+                "Realized Exchange Gain",
+                "revenue",
+                "USD",
+                0m,
+                configuredAtUtc,
+                accountClass: FinanceAccountClassValues.Income,
+                normalBalance: FinanceNormalBalanceValues.Credit,
+                effectiveFrom: new DateOnly(2026, 1, 1),
+                isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.ExchangeGain);
+        dbContext.FinanceAccounts.AddRange(cashAccount, receivablesAccount, payablesAccount, exchangeGainAccount);
 
         var accountingConfiguration = new AccountingConfiguration(
             accountingConfigurationId,
@@ -564,7 +648,8 @@ public sealed class CashSettlementPostingServiceTests
         dbContext.AccountingConfigurationAccountRoles.AddRange(
             new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.Bank, cashAccountId, configuredAtUtc),
             new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.AccountsReceivable, receivablesAccountId, configuredAtUtc),
-            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.AccountsPayable, payablesAccountId, configuredAtUtc));
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.AccountsPayable, payablesAccountId, configuredAtUtc),
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, accountingConfigurationId, AccountingAccountRoleKeys.ExchangeGain, exchangeGainAccountId, configuredAtUtc));
         dbContext.VoucherSeries.Add(new VoucherSeries(Guid.NewGuid(), companyId, "B", "Bank", "B", true, configuredAtUtc));
 
         dbContext.FiscalPeriods.Add(new FiscalPeriod(
@@ -617,6 +702,7 @@ public sealed class CashSettlementPostingServiceTests
             cashAccountId,
             receivablesAccountId,
             payablesAccountId,
+            exchangeGainAccountId,
             incomingPaymentId,
             outgoingPaymentId);
     }
@@ -697,6 +783,7 @@ public sealed class CashSettlementPostingServiceTests
         Guid CashAccountId,
         Guid ReceivablesAccountId,
         Guid PayablesAccountId,
+        Guid ExchangeGainAccountId,
         Guid IncomingPaymentId,
         Guid OutgoingPaymentId);
 

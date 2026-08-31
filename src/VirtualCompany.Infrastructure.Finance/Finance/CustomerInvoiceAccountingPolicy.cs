@@ -29,6 +29,10 @@ internal sealed record CustomerInvoiceAccountingPlan(
     Guid FiscalPeriodId,
     string VoucherSeriesCode,
     decimal ExchangeRate,
+    DateOnly ExchangeRateDate,
+    string ExchangeRatePurpose,
+    string ExchangeRateIdentity,
+    IReadOnlyList<ExchangeRateLookupLeg> ExchangeRateLegs,
     decimal NetAmount,
     decimal TaxAmount,
     decimal GrossAmount,
@@ -55,14 +59,17 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
     private readonly IAccountingPolicyPackResolver _packResolver;
     private readonly IAccountingTaxDecisionPolicy _taxPolicy;
     private readonly AccountingOperationsTelemetry? _telemetry;
+    private readonly IExchangeRateService? _exchangeRates;
 
     public CustomerInvoiceAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver,
-        IAccountingTaxDecisionPolicy taxPolicy, AccountingOperationsTelemetry telemetry)
+        IAccountingTaxDecisionPolicy taxPolicy, AccountingOperationsTelemetry telemetry,
+        IExchangeRateService exchangeRates)
     {
         _dbContext = dbContext;
         _packResolver = packResolver;
         _taxPolicy = taxPolicy;
         _telemetry = telemetry;
+        _exchangeRates = exchangeRates;
     }
 
     public CustomerInvoiceAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver)
@@ -139,15 +146,30 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
         if (!seriesAvailable) Add(issues, CustomerInvoiceAccountingReasonCodes.VoucherSeriesUnavailable, "Select an active voucher series.");
 
         var baseCurrency = configuration?.BaseCurrency ?? invoice.Currency;
-        var exchangeRate = string.Equals(invoice.Currency, baseCurrency, StringComparison.OrdinalIgnoreCase)
-            ? 1m
-            : input.ExchangeRate.GetValueOrDefault();
-        if (exchangeRate <= 0m)
-        {
+        var ratePurpose = ExchangeRateLookupPurposes.TransactionDate;
+        var rateDate = issueDate;
+        ExchangeRateLookupResult rateLookup;
+        if (string.Equals(invoice.Currency, baseCurrency, StringComparison.OrdinalIgnoreCase))
+            rateLookup = new(ExchangeRateDecisionStatuses.Ready, ExchangeRateReasonCodes.IdentityConversion,
+                "Document and functional currency are identical.", invoice.Currency, baseCurrency, rateDate,
+                ratePurpose, 1m, rateDate, []);
+        else if (_exchangeRates is null)
+            rateLookup = new(ExchangeRateDecisionStatuses.Blocked, ExchangeRateReasonCodes.ProviderUnavailable,
+                "The authoritative exchange-rate service is unavailable.", invoice.Currency, baseCurrency,
+                rateDate, ratePurpose, null, null, []);
+        else
+            rateLookup = await _exchangeRates.LookupAsync(new(query.CompanyId, invoice.Currency, baseCurrency,
+                rateDate, ratePurpose), cancellationToken);
+        var exchangeRate = rateLookup.IsReady && rateLookup.EffectiveRate.HasValue
+            ? rateLookup.EffectiveRate.Value : 1m;
+        if (!rateLookup.IsReady || !rateLookup.EffectiveRate.HasValue)
+            Add(issues, CustomerInvoiceAccountingReasonCodes.CurrencyConversionMissing, rateLookup.Explanation);
+        if (input.ExchangeRate.HasValue && input.ExchangeRate.Value > 0m && input.ExchangeRate.Value != exchangeRate)
             Add(issues, CustomerInvoiceAccountingReasonCodes.CurrencyConversionMissing,
-                $"Enter the {invoice.Currency}-to-{baseCurrency} exchange rate used for this invoice.");
-            exchangeRate = 1m;
-        }
+                "The supplied rate does not match the authoritative historical rate. Refresh the preview and use the retained rate evidence.");
+        var rateIdentity = rateLookup.IsReady
+            ? DocumentCurrencyFacts.RateIdentity(rateLookup)
+            : $"blocked:{rateLookup.ReasonCode}";
 
         var receivable = FindRole(configuration, "accounts_receivable", issues);
         var revenue = FindRole(configuration, "revenue", issues);
@@ -234,20 +256,24 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
         if (receivable is not null && revenue is not null && grossBase > 0m)
         {
             journalLines.Add(new(receivable.Id, "accounts_receivable", receivable.Code, receivable.Name,
-                isCredit ? 0m : grossBase, isCredit ? grossBase : 0m, baseCurrency, $"{invoice.InvoiceNumber} · {invoice.Counterparty.Name}"));
+                isCredit ? 0m : grossBase, isCredit ? grossBase : 0m, baseCurrency, $"{invoice.InvoiceNumber} · {invoice.Counterparty.Name}",
+                DocumentDebitAmount: isCredit ? 0m : grossAmount,
+                DocumentCreditAmount: isCredit ? grossAmount : 0m, DocumentCurrency: invoice.Currency));
             foreach (var line in calculated)
             {
                 var baseNet = line.NetBaseAmount + (line.Sequence == calculated.Last().Sequence ? rounding : 0m);
                 journalLines.Add(new(revenue.Id, "revenue", revenue.Code, revenue.Name,
                     isCredit ? baseNet : 0m, isCredit ? 0m : baseNet, baseCurrency, line.Description, line.TaxRuleKey,
-                    line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification));
+                    line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification,
+                    isCredit ? line.NetAmount : 0m, isCredit ? 0m : line.NetAmount, invoice.Currency));
                 if (line.TaxBaseAmount > 0m && pack is not null)
                 {
                     var taxAccount = configuration?.AccountRoles.FirstOrDefault(x => x.FinanceAccountId == line.TaxPayableAccountId)?.FinanceAccount;
                     if (taxAccount is not null)
                         journalLines.Add(new(taxAccount.Id, line.LiabilityAccountRoleKey ?? "tax_payable", taxAccount.Code, taxAccount.Name,
                             isCredit ? line.TaxBaseAmount : 0m, isCredit ? 0m : line.TaxBaseAmount, baseCurrency, "Tax", line.TaxRuleKey,
-                            line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification));
+                            line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification,
+                            isCredit ? line.TaxAmount : 0m, isCredit ? 0m : line.TaxAmount, invoice.Currency));
                 }
             }
         }
@@ -269,11 +295,13 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
         var taxMethod = calculated.Select(x => x.TaxMethod).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() is { Length: 1 } methods
             ? methods[0]
             : "mixed";
-        var payloadHash = ComputeHash(invoice, input.FiscalPeriodId, seriesCode, exchangeRate, calculated,
+        var payloadHash = ComputeHash(invoice, input.FiscalPeriodId, seriesCode, exchangeRate, rateDate,
+            ratePurpose, rateIdentity, calculated,
             configuration?.PolicyPackKey, configuration?.PolicyPackVersion, existing?.OriginalInvoiceId);
         var sourceVersion = existing is null ? 1 : string.Equals(existing.PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase) ? existing.Version : existing.Version + 1;
 
         return new(invoice, configuration, pack, existing, input.FiscalPeriodId, seriesCode, exchangeRate,
+            rateDate, ratePurpose, rateIdentity, rateLookup.Legs,
             netAmount, taxAmount, grossAmount, netBase, taxBase, grossBase, rounding, receivable?.Id ?? Guid.Empty, revenue?.Id ?? Guid.Empty, taxMethod,
             sourceVersion, payloadHash, calculated, journalLines, evidence, issues);
     }
@@ -285,7 +313,8 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
         plan.ExchangeRate, plan.NetBaseAmount, plan.TaxBaseAmount, plan.GrossBaseAmount,
         plan.RoundingBaseAmount, plan.Configuration?.BaseCurrency ?? plan.Invoice.Currency,
         plan.Configuration?.PolicyPackKey ?? string.Empty, plan.Configuration?.PolicyPackVersion ?? string.Empty,
-        plan.SourceVersion, plan.PayloadHash, plan.JournalLines, plan.Issues);
+        plan.SourceVersion, plan.PayloadHash, plan.JournalLines, plan.Issues,
+        plan.ExchangeRateDate, plan.ExchangeRateIdentity, plan.ExchangeRateLegs);
 
     private static FinanceAccount? FindRole(AccountingConfiguration? configuration, string roleKey, ICollection<CustomerInvoiceAccountingIssueDto> issues)
     {
@@ -308,12 +337,15 @@ public sealed class CustomerInvoiceAccountingPolicy : ICustomerInvoiceAccounting
     private static CustomerInvoiceAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
 
     private static string ComputeHash(FinanceInvoice invoice, Guid periodId, string seriesCode, decimal exchangeRate,
+        DateOnly exchangeRateDate, string exchangeRatePurpose, string exchangeRateIdentity,
         IReadOnlyList<CustomerInvoiceAccountingLinePlan> lines, string? packKey, string? packVersion, Guid? originalInvoiceId)
     {
         var json = JsonSerializer.Serialize(new
         {
             invoice.Id, invoice.InvoiceNumber, invoice.IssuedUtc, invoice.Amount, invoice.Currency, invoice.DocumentKind,
             PeriodId = periodId, Series = seriesCode, ExchangeRate = exchangeRate,
+            ExchangeRateDate = exchangeRateDate, ExchangeRatePurpose = exchangeRatePurpose,
+            ExchangeRateIdentity = exchangeRateIdentity,
             PackKey = packKey, PackVersion = packVersion, OriginalInvoiceId = originalInvoiceId,
             Lines = lines.Select(x => new { x.Sequence, x.Description, x.TaxRuleKey, x.TaxRuleVersion, x.TaxMethod,
                 x.TaxTreatment, x.TaxRate, x.InputAmount, x.NetAmount, x.TaxAmount, x.GrossAmount, x.VatBoxMappings,

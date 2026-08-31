@@ -31,6 +31,13 @@ internal sealed class CustomerInvoiceAccountingProfileConfiguration : IEntityTyp
         builder.Property(x => x.TaxBaseAmount).HasColumnName("tax_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.GrossBaseAmount).HasColumnName("gross_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.RoundingBaseAmount).HasColumnName("rounding_base_amount").HasColumnType("decimal(19,6)").IsRequired();
+        builder.Property(x => x.ExchangeRateConversionId).HasColumnName("exchange_rate_conversion_id");
+        builder.Property(x => x.ExchangeRateDate).HasColumnName("exchange_rate_date");
+        builder.Property(x => x.ExchangeRatePurpose).HasColumnName("exchange_rate_purpose").HasMaxLength(32);
+        builder.Property(x => x.ExchangeRateIdentity).HasColumnName("exchange_rate_identity").HasMaxLength(128);
+        builder.Property(x => x.ConversionRoundingResidual).HasColumnName("conversion_rounding_residual").HasPrecision(38, 18);
+        builder.Property(x => x.CurrencyProvenance).HasColumnName("currency_provenance").HasMaxLength(32).IsRequired();
+        builder.Ignore(x => x.HasAuthoritativeCurrencyFacts);
         builder.Property(x => x.ReceivableAccountId).HasColumnName("receivable_account_id").IsRequired();
         builder.Property(x => x.RevenueAccountId).HasColumnName("revenue_account_id").IsRequired();
         builder.Property(x => x.TaxMethod).HasColumnName("tax_method").HasMaxLength(32).IsRequired();
@@ -52,6 +59,8 @@ internal sealed class CustomerInvoiceAccountingProfileConfiguration : IEntityTyp
         builder.HasIndex(x => new { x.CompanyId, x.InvoiceId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId }).IsUnique().HasFilter("[ledger_entry_id] IS NOT NULL");
+        builder.HasIndex(x => new { x.CompanyId, x.ExchangeRateConversionId });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentCurrency, x.ExchangeRateDate });
         builder.HasOne(x => x.Invoice).WithOne().HasForeignKey<CustomerInvoiceAccountingProfile>(x => new { x.CompanyId, x.InvoiceId })
             .HasPrincipalKey<FinanceInvoice>(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.OriginalInvoice).WithMany().HasForeignKey(x => new { x.CompanyId, x.OriginalInvoiceId })
@@ -59,6 +68,8 @@ internal sealed class CustomerInvoiceAccountingProfileConfiguration : IEntityTyp
         builder.HasOne(x => x.ApprovalRequest).WithMany().HasForeignKey(x => new { x.CompanyId, x.ApprovalRequestId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.ExchangeRateConversion).WithMany().HasForeignKey(x => new { x.CompanyId, x.ExchangeRateConversionId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
     }
 }

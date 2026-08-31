@@ -43,6 +43,47 @@ public sealed class AccountingReportsSurfaceTests
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "accounting-reports-close-reference.png")));
     }
 
+    [Fact]
+    public void Currency_revaluation_workspace_exposes_reproducible_controlled_workflow()
+    {
+        var page = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingReportsPage.razor");
+        var workspace = Read("src", "VirtualCompany.Web", "Components", "Finance", "CurrencyRevaluationWorkspace.razor");
+        var client = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.CurrencyRevaluation.cs");
+
+        Assert.Contains("CurrencyRevaluationWorkspace", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"ReproducibleEvidence\"]", workspace, StringComparison.Ordinal);
+        Assert.Contains("PopulationChecksum", workspace, StringComparison.Ordinal);
+        Assert.Contains("RateSetChecksum", workspace, StringComparison.Ordinal);
+        Assert.Contains("ProposalChecksum", workspace, StringComparison.Ordinal);
+        Assert.Contains("SubmitCurrencyRevaluationAsync", workspace, StringComparison.Ordinal);
+        Assert.Contains("ReverseCurrencyRevaluationAsync", workspace, StringComparison.Ordinal);
+        Assert.Contains("PreviewRequestIdentity ??=", workspace, StringComparison.Ordinal);
+        Assert.Contains("GetCurrencyRevaluationRunAsync(companyId, requestedRunId)", workspace, StringComparison.Ordinal);
+        Assert.Contains("ExpectedVersion", client, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references",
+            "finance-currency-revaluation-reference.png")));
+    }
+
+    [Fact]
+    public void Accounting_dimensions_workspace_exposes_governance_allocation_and_immutable_drilldown()
+    {
+        var page = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingReportsPage.razor");
+        var workspace = Read("src", "VirtualCompany.Web", "Components", "Finance", "AccountingDimensionsWorkspace.razor");
+        var css = Read("src", "VirtualCompany.Web", "Components", "Finance", "AccountingDimensionsWorkspace.razor.css");
+        var client = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.AccountingDimensions.cs");
+
+        Assert.Contains("AccountingDimensionsWorkspace", page, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"DimensionCatalogue\"]", workspace, StringComparison.Ordinal);
+        Assert.Contains("FinanceText[\"MappingConflicts\"]", workspace, StringComparison.Ordinal);
+        Assert.Contains("PreviewAccountingAllocationAsync", workspace, StringComparison.Ordinal);
+        Assert.Contains("HierarchyPath", workspace, StringComparison.Ordinal);
+        Assert.Contains("LedgerEntryId", client, StringComparison.Ordinal);
+        Assert.Contains("IdempotencyKey", client, StringComparison.Ordinal);
+        Assert.Contains("@media(max-width:1000px)", css, StringComparison.Ordinal);
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references",
+            "finance-accounting-dimensions-reference.png")));
+    }
+
     private static string Read(params string[] segments) => File.ReadAllText(Path.Combine([RepositoryRoot(), .. segments]));
     private static string RepositoryRoot()
     {

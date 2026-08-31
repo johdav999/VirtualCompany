@@ -202,6 +202,7 @@ public static class OperationsModuleRegistration
         services.AddScoped<ICompanyNoteService>(provider => provider.GetRequiredService<CompanyQueryService>());
         services.AddScoped<ICompanySelectionService, CompanySelectionService>();
         services.AddScoped<ICompanyMembershipAdministrationService, CompanyMembershipAdministrationService>();
+        services.AddScoped<IAccountantCollaborationService, AccountantCollaborationService>();
         services.AddScoped<CompanySetupTemplateSeeder>();
         services.AddScoped<AgentTemplateCatalogSeeder>();
         services.AddScoped<ICoreCompanyAgentSeeder, CoreCompanyAgentSeeder>();

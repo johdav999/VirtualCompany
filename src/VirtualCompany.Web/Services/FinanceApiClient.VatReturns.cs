@@ -8,12 +8,13 @@ public sealed partial class FinanceApiClient
             $"internal/companies/{companyId}/finance/accounting/vat/filing-periods", false, cancellationToken) ?? [];
 
     public Task<VatFilingPeriodResponse> CreateVatFilingPeriodAsync(Guid companyId, string periodCode,
-        DateOnly startDate, DateOnly endDate, Guid? fiscalPeriodId, CancellationToken cancellationToken = default)
+        DateOnly startDate, DateOnly endDate, Guid? fiscalPeriodId, CancellationToken cancellationToken = default,
+        DateOnly? dueDate = null)
     {
         EnsureOnlineMutation();
         return SendCompanyScopedAsync<object, VatFilingPeriodResponse>(companyId, HttpMethod.Post,
             $"internal/companies/{companyId}/finance/accounting/vat/filing-periods",
-            new { periodCode, startDate, endDate, currency = "SEK", fiscalPeriodId }, cancellationToken);
+            new { periodCode, startDate, endDate, currency = "SEK", fiscalPeriodId, dueDate }, cancellationToken);
     }
 
     public async Task<IReadOnlyList<VatReturnResponse>> GetVatReturnsAsync(Guid companyId,
@@ -21,6 +22,8 @@ public sealed partial class FinanceApiClient
         await GetAsync<List<VatReturnResponse>>(companyId,
             $"internal/companies/{companyId}/finance/accounting/vat/returns{(filingPeriodId.HasValue ? $"?filingPeriodId={filingPeriodId:D}" : string.Empty)}",
             false, cancellationToken) ?? [];
+
+    public Task<VatFilingPeriodResponse> SetVatFilingPeriodDueDateAsync(Guid companyId,Guid filingPeriodId,DateOnly dueDate,CancellationToken cancellationToken=default){EnsureOnlineMutation();return SendCompanyScopedAsync<object,VatFilingPeriodResponse>(companyId,HttpMethod.Put,$"internal/companies/{companyId}/finance/accounting/vat/filing-periods/{filingPeriodId:D}/due-date",new{dueDate},cancellationToken);}
 
     public Task<VatReturnResponse?> GetVatReturnAsync(Guid companyId, Guid vatReturnId,
         CancellationToken cancellationToken = default) => GetAsync<VatReturnResponse>(companyId,
@@ -79,6 +82,7 @@ public sealed class VatFilingPeriodResponse
     public DateOnly EndDate { get; set; }
     public string Currency { get; set; } = string.Empty;
     public Guid? FiscalPeriodId { get; set; }
+    public DateOnly? DueDate { get; set; }
 }
 
 public sealed class VatReturnResponse

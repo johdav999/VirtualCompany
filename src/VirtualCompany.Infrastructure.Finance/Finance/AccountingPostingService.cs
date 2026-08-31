@@ -23,6 +23,7 @@ public sealed class AccountingPostingService : IAccountingPostingService
     private readonly TimeProvider _timeProvider;
     private readonly IAccountingAuthorityPolicy? _authorityPolicy;
     private readonly AccountingOperationsTelemetry? _telemetry;
+    private readonly IAccountingDimensionPostingPolicy? _dimensionPolicy;
 
     public AccountingPostingService(
         VirtualCompanyDbContext dbContext,
@@ -30,7 +31,8 @@ public sealed class AccountingPostingService : IAccountingPostingService
         IAuditEventWriter auditEventWriter,
         TimeProvider timeProvider,
         IAccountingAuthorityPolicy? authorityPolicy = null,
-        AccountingOperationsTelemetry? telemetry = null)
+        AccountingOperationsTelemetry? telemetry = null,
+        IAccountingDimensionPostingPolicy? dimensionPolicy = null)
     {
         _dbContext = dbContext;
         _readService = readService;
@@ -38,6 +40,7 @@ public sealed class AccountingPostingService : IAccountingPostingService
         _timeProvider = timeProvider;
         _authorityPolicy = authorityPolicy;
         _telemetry = telemetry;
+        _dimensionPolicy = dimensionPolicy;
     }
 
     public async Task<AccountingPostingPreview> PreviewAsync(PreviewAccountingEntryCommand command, CancellationToken cancellationToken)
@@ -170,7 +173,7 @@ public sealed class AccountingPostingService : IAccountingPostingService
 
         var original = await _dbContext.LedgerEntries
             .AsNoTracking()
-            .Include(entry => entry.Lines)
+            .Include(entry => entry.Lines).ThenInclude(line => line.DimensionAssignments)
             .SingleOrDefaultAsync(entry => entry.CompanyId == command.CompanyId && entry.Id == command.OriginalLedgerEntryId, cancellationToken)
             ?? throw Error(AccountingPostingReasonCodes.JournalNotFound, "The journal entry could not be found.");
 
@@ -206,12 +209,22 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 line.Description,
                 line.CostCenterId,
                 ParseFacts(line.TaxFactsJson),
-                ParseFacts(line.DimensionFactsJson))).ToArray(),
+                ParseFacts(line.DimensionFactsJson),
+                line.DocumentCreditAmount,
+                line.DocumentDebitAmount,
+                line.DocumentCurrency,
+                line.ExchangeRate,
+                line.ExchangeRateDate,
+                line.ExchangeRateConversionId,
+                line.ExchangeRateIdentity,
+                line.ConversionRoundingResidual.HasValue ? -line.ConversionRoundingResidual.Value : null,
+                line.DimensionAssignments.Select(x => x.DimensionMemberId).ToArray())).ToArray(),
             command.ActorUserId,
             command.ApprovalRequestId,
             command.ApprovalRequestId.HasValue,
             ParseFacts(original.PolicyFactsJson),
-            "reverse");
+            "reverse",
+            ActorType: command.ActorType);
 
         return await ExecuteWithSqlRetryAsync(
             () => PostInternalAsync(
@@ -304,9 +317,13 @@ public sealed class AccountingPostingService : IAccountingPostingService
             originalLedgerEntryId,
             correctionReason);
 
-        foreach (var proposedLine in entry.Lines)
+        var dimensionDecision = _dimensionPolicy is null
+            ? new AccountingDimensionPostingDecision([], new Dictionary<int, IReadOnlyList<ResolvedAccountingDimensionAssignment>>())
+            : await _dimensionPolicy.EvaluateAsync(entry, cancellationToken);
+        for (var lineIndex = 0; lineIndex < entry.Lines.Count; lineIndex++)
         {
-            journal.Lines.Add(new LedgerEntryLine(
+            var proposedLine = entry.Lines[lineIndex];
+            var journalLine = new LedgerEntryLine(
                 Guid.NewGuid(),
                 entry.CompanyId,
                 ledgerEntryId,
@@ -318,7 +335,21 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 proposedLine.Description,
                 nowUtc,
                 SerializeFacts(proposedLine.TaxFacts),
-                SerializeFacts(proposedLine.DimensionFacts)));
+                SerializeFacts(proposedLine.DimensionFacts),
+                proposedLine.DocumentDebitAmount,
+                proposedLine.DocumentCreditAmount,
+                proposedLine.DocumentCurrency,
+                proposedLine.ExchangeRate,
+                proposedLine.ExchangeRateDate,
+                proposedLine.ExchangeRateConversionId,
+                proposedLine.ExchangeRateIdentity,
+                proposedLine.ConversionRoundingResidual);
+            foreach (var dimension in dimensionDecision.AssignmentsByLine.GetValueOrDefault(lineIndex) ?? [])
+                journalLine.DimensionAssignments.Add(new LedgerEntryLineDimension(Guid.NewGuid(), entry.CompanyId,
+                    journalLine.Id, dimension.DimensionTypeId, dimension.DimensionMemberId,
+                    dimension.DimensionTypeCode, dimension.DimensionTypeName, dimension.MemberCode,
+                    dimension.MemberName, dimension.HierarchyPath, nowUtc));
+            journal.Lines.Add(journalLine);
         }
 
         journal.SourceMappings.Add(new LedgerEntrySourceMapping(
@@ -469,7 +500,7 @@ public sealed class AccountingPostingService : IAccountingPostingService
             if (configuration.Authority != AccountingAuthorityValues.InternalLedger)
                 issues.Add(new(AccountingPostingReasonCodes.AuthorityUnavailable, "The internal ledger is not the accounting authority for this company."));
         }
-        else if (requireAuthority)
+        else if (requireAuthority && _authorityPolicy is not null)
         {
             var authority = await _authorityPolicy.EvaluateAsync(
                 new EvaluateAccountingAuthorityQuery(
@@ -504,6 +535,27 @@ public sealed class AccountingPostingService : IAccountingPostingService
         }
         if (series is null) issues.Add(new(AccountingPostingReasonCodes.VoucherSeriesNotFound, "The voucher series could not be found."));
         else if (!series.IsActive) issues.Add(new(AccountingPostingReasonCodes.VoucherSeriesInactive, "The voucher series is not active."));
+        else
+        {
+            var fiscalYear = ResolveFiscalYear(entry.PostingDate, configuration.FiscalYearStartMonth, configuration.FiscalYearStartDay);
+            var sourceType = NormalizeOptional(entry.SourceType)?.ToLowerInvariant();
+            var transactionType = NormalizeOptional(entry.PostingType)?.ToLowerInvariant();
+            var locationIds = entry.Lines?.SelectMany(x => x.DimensionMemberIds ?? []).Distinct().ToHashSet() ?? [];
+            var jurisdiction = entry.PolicyFacts is not null && entry.PolicyFacts.TryGetValue("jurisdiction", out var jurisdictionValue)
+                ? NormalizeOptional(jurisdictionValue)?.ToUpperInvariant() : null;
+            var candidates = await _dbContext.AccountingSeriesPolicies.AsNoTracking().Where(x =>
+                x.CompanyId == entry.CompanyId && x.SeriesKind == AccountingSeriesKinds.Voucher && x.IsActive &&
+                (x.SourceType == "*" || x.SourceType == sourceType) &&
+                (x.TransactionType == "*" || x.TransactionType == transactionType) &&
+                (!x.FiscalYear.HasValue || x.FiscalYear == fiscalYear) &&
+                x.PolicyPackKey == configuration.PolicyPackKey && x.PolicyPackVersion == configuration.PolicyPackVersion)
+                .ToListAsync(cancellationToken);
+            var applicable = candidates.Where(x => (!x.LocationDimensionMemberId.HasValue || locationIds.Contains(x.LocationDimensionMemberId.Value)) &&
+                (x.Jurisdiction is null || string.Equals(x.Jurisdiction, jurisdiction, StringComparison.OrdinalIgnoreCase))).ToArray();
+            if (applicable.Length > 0 && applicable.All(x => x.SeriesId != series.Id))
+                issues.Add(new(AccountingPostingReasonCodes.VoucherSeriesPolicyMismatch,
+                    "The selected voucher series is not permitted for this source, transaction type, fiscal year, location, and policy pack."));
+        }
 
         if (entry.Lines is null || entry.Lines.Count < 2)
             issues.Add(new(AccountingPostingReasonCodes.TooFewLines, "A journal entry must contain at least two non-zero lines."));
@@ -513,6 +565,19 @@ public sealed class AccountingPostingService : IAccountingPostingService
             var accounts = await _dbContext.FinanceAccounts.AsNoTracking()
                 .Where(account => account.CompanyId == entry.CompanyId && accountIds.Contains(account.Id))
                 .ToDictionaryAsync(account => account.Id, cancellationToken);
+            var conversionIds = entry.Lines.Where(line => line.ExchangeRateConversionId.HasValue)
+                .Select(line => line.ExchangeRateConversionId!.Value).Distinct().ToArray();
+            var conversions = await _dbContext.ExchangeRateConversions.IgnoreQueryFilters().AsNoTracking()
+                .Where(item => item.CompanyId == entry.CompanyId && conversionIds.Contains(item.Id))
+                .ToDictionaryAsync(item => item.Id, cancellationToken);
+            var documentCurrencies = entry.Lines.Select(line => NormalizeOptional(line.DocumentCurrency ?? line.Currency)?.ToUpperInvariant())
+                .Where(currency => currency is not null).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            var currencyDefinitions = await _dbContext.CompanyCurrencyDefinitions.IgnoreQueryFilters().AsNoTracking()
+                .Where(item => item.CompanyId == entry.CompanyId && item.IsEnabled && documentCurrencies.Contains(item.Code))
+                .ToDictionaryAsync(item => item.Code, StringComparer.OrdinalIgnoreCase, cancellationToken);
+            if (documentCurrencies.Length > 1)
+                issues.Add(new(AccountingPostingReasonCodes.DocumentCurrencyMismatch,
+                    "One journal entry cannot combine document amounts from multiple currencies."));
             foreach (var line in entry.Lines)
             {
                 if (line.FinanceAccountId == Guid.Empty || !accounts.TryGetValue(line.FinanceAccountId, out var account))
@@ -522,11 +587,18 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 }
                 if (account.AccountClass is null || account.NormalBalance is null)
                     issues.Add(new(AccountingPostingReasonCodes.AccountUnclassified, "The journal account needs an accounting class and normal balance before it can be used.", account.Id));
-                if (!account.IsPostingEnabled)
-                    issues.Add(new(AccountingPostingReasonCodes.AccountPostingDisabled, "The journal account is not enabled for posting.", account.Id));
+                if (!account.IsPostingEnabled || account.PostingRestriction == FinanceAccountPostingRestrictionValues.All)
+                    issues.Add(new(AccountingPostingReasonCodes.AccountPostingDisabled,
+                        account.ReplacementAccountId.HasValue
+                            ? $"The journal account is retired. Use replacement account {account.ReplacementAccountId.Value:D} for future postings."
+                            : "The journal account is not enabled for posting.", account.Id));
                 if (account.EffectiveFrom.HasValue && entry.PostingDate < account.EffectiveFrom.Value || account.EffectiveTo.HasValue && entry.PostingDate > account.EffectiveTo.Value)
-                    issues.Add(new(AccountingPostingReasonCodes.AccountInactive, "The journal account is not active on the posting date.", account.Id));
-                if (entry.PostingType == LedgerPostingTypeValues.Manual && account.RestrictManualPosting)
+                    issues.Add(new(AccountingPostingReasonCodes.AccountInactive,
+                        account.ReplacementAccountId.HasValue
+                            ? $"The journal account is outside its effective dates. Use replacement account {account.ReplacementAccountId.Value:D} for future postings."
+                            : "The journal account is not active on the posting date.", account.Id));
+                if (entry.PostingType == LedgerPostingTypeValues.Manual &&
+                    (account.RestrictManualPosting || account.PostingRestriction == FinanceAccountPostingRestrictionValues.Manual))
                     issues.Add(new(AccountingPostingReasonCodes.ManualPostingRestricted, "Manual posting is restricted for this control account.", account.Id));
                 if (!string.Equals(line.Currency?.Trim(), configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase))
                     issues.Add(new(AccountingPostingReasonCodes.CurrencyMismatch, "Every journal line must use the company's base currency.", account.Id));
@@ -536,7 +608,102 @@ public sealed class AccountingPostingService : IAccountingPostingService
                     issues.Add(new(AccountingPostingReasonCodes.InvalidPrecision, $"Journal amounts support up to {configuration.RoundingPrecision} decimal places.", account.Id));
                 if (!ValidFacts(line.TaxFacts) || !ValidFacts(line.DimensionFacts))
                     issues.Add(new(AccountingPostingReasonCodes.InvalidFacts, "Tax and dimension facts must use non-empty bounded keys and values.", account.Id));
+
+                var hasExplicitDocumentFacts = line.DocumentDebitAmount.HasValue || line.DocumentCreditAmount.HasValue ||
+                    !string.IsNullOrWhiteSpace(line.DocumentCurrency);
+                var documentDebit = line.DocumentDebitAmount ?? line.DebitAmount;
+                var documentCredit = line.DocumentCreditAmount ?? line.CreditAmount;
+                var documentCurrency = NormalizeOptional(line.DocumentCurrency ?? line.Currency)?.ToUpperInvariant() ?? string.Empty;
+                var isFunctionalOnlySettlementAdjustment = line.DocumentDebitAmount == 0m && line.DocumentCreditAmount == 0m &&
+                    entry.PostingType is LedgerPostingTypeValues.CashSettlement or LedgerPostingTypeValues.Reversal;
+                if (documentDebit < 0m || documentCredit < 0m ||
+                    !isFunctionalOnlySettlementAdjustment && documentDebit == 0m && documentCredit == 0m ||
+                    documentDebit > 0m && documentCredit > 0m ||
+                    !isFunctionalOnlySettlementAdjustment && line.DebitAmount > 0m != (documentDebit > 0m))
+                    issues.Add(new(AccountingPostingReasonCodes.InvalidLine,
+                        "Document amounts must preserve the debit or credit direction of the functional amount.", account.Id));
+                var documentPrecision = currencyDefinitions.GetValueOrDefault(documentCurrency)?.MinorUnitPrecision ??
+                    (string.Equals(documentCurrency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase)
+                        ? configuration.RoundingPrecision : -1);
+                if (documentPrecision < 0)
+                    issues.Add(new(AccountingPostingReasonCodes.DocumentCurrencyMismatch,
+                        $"The document currency {documentCurrency} is not enabled for this company.", account.Id));
+                else if (!HasSupportedPrecision(documentDebit, documentPrecision) || !HasSupportedPrecision(documentCredit, documentPrecision))
+                    issues.Add(new(AccountingPostingReasonCodes.InvalidPrecision,
+                        $"Document amounts in {documentCurrency} support up to {documentPrecision} decimal places.", account.Id));
+
+                var isForeign = !string.Equals(documentCurrency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase);
+                if (isForeign)
+                {
+                    if (!hasExplicitDocumentFacts || !line.ExchangeRateConversionId.HasValue ||
+                        !line.ExchangeRateDate.HasValue || !line.ExchangeRate.HasValue ||
+                        string.IsNullOrWhiteSpace(line.ExchangeRateIdentity))
+                    {
+                        issues.Add(new(AccountingPostingReasonCodes.RateFactsMissing,
+                            "Foreign-currency journal lines require retained conversion, date, and rate identity facts.", account.Id));
+                    }
+                    else if (!conversions.TryGetValue(line.ExchangeRateConversionId.Value, out var conversion) ||
+                        !string.Equals(conversion.InputCurrency, documentCurrency, StringComparison.OrdinalIgnoreCase) ||
+                        !string.Equals(conversion.OutputCurrency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase) ||
+                        conversion.RequestedDate != line.ExchangeRateDate || conversion.EffectiveRate != line.ExchangeRate)
+                    {
+                        issues.Add(new(AccountingPostingReasonCodes.RateFactsInvalid,
+                            "The retained exchange-rate conversion does not match this company, currency pair, date, or rate.", account.Id));
+                    }
+                }
+                else if (line.ExchangeRate.HasValue && line.ExchangeRate.Value != 1m)
+                {
+                    issues.Add(new(AccountingPostingReasonCodes.RateFactsInvalid,
+                        "Base-currency document amounts must use the explicit identity rate of 1.", account.Id));
+                }
             }
+
+            if (documentCurrencies.Length == 1)
+            {
+                var documentCurrency = documentCurrencies[0]!;
+                var precision = currencyDefinitions.GetValueOrDefault(documentCurrency)?.MinorUnitPrecision ?? configuration.RoundingPrecision;
+                var documentDebit = Round(entry.Lines.Sum(line => line.DocumentDebitAmount ?? line.DebitAmount), precision,
+                    configuration.RoundingMode);
+                var documentCredit = Round(entry.Lines.Sum(line => line.DocumentCreditAmount ?? line.CreditAmount), precision,
+                    configuration.RoundingMode);
+                var functionalDebit = Round(entry.Lines.Sum(line => line.DebitAmount), configuration.RoundingPrecision,
+                    configuration.RoundingMode);
+                var functionalCredit = Round(entry.Lines.Sum(line => line.CreditAmount), configuration.RoundingPrecision,
+                    configuration.RoundingMode);
+                if (documentDebit != documentCredit && functionalDebit == functionalCredit)
+                    issues.Add(new(AccountingPostingReasonCodes.DocumentAmountsUnbalanced,
+                        $"Document-currency debits and credits differ by {Math.Abs(documentDebit - documentCredit):0.######} {documentCurrency}."));
+
+                if (!string.Equals(documentCurrency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+                {
+                    var retainedIds = entry.Lines.Where(line => line.ExchangeRateConversionId.HasValue)
+                        .Select(line => line.ExchangeRateConversionId!.Value).Distinct().ToArray();
+                    var retainedRates = entry.Lines.Where(line => line.ExchangeRate.HasValue)
+                        .Select(line => line.ExchangeRate!.Value).Distinct().ToArray();
+                    var retainedDates = entry.Lines.Where(line => line.ExchangeRateDate.HasValue)
+                        .Select(line => line.ExchangeRateDate!.Value).Distinct().ToArray();
+                    var retainedIdentities = entry.Lines.Select(line => NormalizeOptional(line.ExchangeRateIdentity))
+                        .Where(value => value is not null).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                    var settlementCarriesHistoricalFunctionalAmounts =
+                        entry.PostingType is LedgerPostingTypeValues.CashSettlement or LedgerPostingTypeValues.Reversal;
+                    if (retainedIds.Length != 1 || retainedRates.Length != 1 || retainedDates.Length != 1 || retainedIdentities.Length != 1 ||
+                        !conversions.TryGetValue(retainedIds.FirstOrDefault(), out var retained) ||
+                        retained.InputAmount != documentDebit || retained.InputAmount != documentCredit ||
+                        !settlementCarriesHistoricalFunctionalAmounts &&
+                        (retained.RoundedAmount != Round(entry.Lines.Sum(line => line.DebitAmount), configuration.RoundingPrecision, configuration.RoundingMode) ||
+                         retained.RoundedAmount != Round(entry.Lines.Sum(line => line.CreditAmount), configuration.RoundingPrecision, configuration.RoundingMode)))
+                    {
+                        issues.Add(new(AccountingPostingReasonCodes.RateFactsInvalid,
+                            "The journal totals do not reconcile to one retained authoritative currency conversion and rate identity."));
+                    }
+                }
+            }
+        }
+
+        if (_dimensionPolicy is not null)
+        {
+            var dimensionDecision = await _dimensionPolicy.EvaluateAsync(entry, cancellationToken);
+            issues.AddRange(dimensionDecision.Issues);
         }
 
         TryValidateRequired(entry.SourceType, nameof(entry.SourceType), 64, issues);
@@ -622,6 +789,21 @@ public sealed class AccountingPostingService : IAccountingPostingService
                     approval.TargetEntityId == treasurySourceId &&
                     string.Equals(approvedTreasuryType, TreasurySourceTypes.Normalize(entry.SourceType), StringComparison.OrdinalIgnoreCase);
             }
+            else if (string.Equals(entry.SourceType, "currency_revaluation_run", StringComparison.OrdinalIgnoreCase))
+                approvalTargetsSource = Guid.TryParse(entry.SourceId, out var revaluationRunId) &&
+                    approval?.TargetEntityType == ApprovalTargetEntityType.CurrencyRevaluationRun.ToStorageValue() &&
+                    approval.TargetEntityId == revaluationRunId;
+            else if (string.Equals(entry.SourceType, "accounting_schedule_occurrence", StringComparison.OrdinalIgnoreCase))
+            {
+                var scheduleId = Guid.TryParse(entry.SourceId, out var occurrenceId)
+                    ? await _dbContext.AccountingScheduleOccurrences.AsNoTracking()
+                        .Where(x => x.CompanyId == entry.CompanyId && x.Id == occurrenceId)
+                        .Select(x => (Guid?)x.ScheduleId).SingleOrDefaultAsync(cancellationToken)
+                    : null;
+                approvalTargetsSource = scheduleId.HasValue &&
+                    approval?.TargetEntityType == ApprovalTargetEntityType.AccountingSchedule.ToStorageValue() &&
+                    approval.TargetEntityId == scheduleId.Value;
+            }
             if (approval?.Status != ApprovalRequestStatus.Approved ||
                 entry.RequiresApproval && !string.Equals(approvedVersion, entry.SourceVersion?.Trim(), StringComparison.Ordinal) ||
                 !string.IsNullOrWhiteSpace(entry.ApprovalPayloadHash) &&
@@ -642,14 +824,15 @@ public sealed class AccountingPostingService : IAccountingPostingService
                     "A correction must reference a posted journal and include an explicit reason."));
         }
 
-        if ((entry.Evidence?.Count ?? 0) > 0)
+        var entryEvidence = entry.Evidence ?? [];
+        if (entryEvidence.Count > 0)
         {
-            var documentIds = entry.Evidence!.Select(x => x.DocumentId).Distinct().ToArray();
+            var documentIds = entryEvidence.Select(x => x.DocumentId).Distinct().ToArray();
             var documents = await _dbContext.CompanyKnowledgeDocuments.AsNoTracking()
                 .Where(x => x.CompanyId == entry.CompanyId && documentIds.Contains(x.Id)).ToListAsync(cancellationToken);
             if (documents.Count != documentIds.Length)
                 issues.Add(new(AccountingPostingReasonCodes.InvalidSource, "One or more evidence documents could not be found."));
-            foreach (var evidence in entry.Evidence)
+            foreach (var evidence in entryEvidence)
             {
                 var document = documents.FirstOrDefault(x => x.Id == evidence.DocumentId);
                 var checksum = document?.Metadata.TryGetValue("checksum_sha256", out var checksumNode) == true ? checksumNode?.ToString() : null;
@@ -758,7 +941,16 @@ public sealed class AccountingPostingService : IAccountingPostingService
         var debit = Round(lines.Sum(line => line.DebitAmount), precision, mode);
         var credit = Round(lines.Sum(line => line.CreditAmount), precision, mode);
         var difference = Round(debit - credit, precision, mode);
-        return new AccountingPostingPreview(issues.Count == 0 && difference == 0m, debit, credit, difference, configuration?.BaseCurrency ?? string.Empty, precision, issues.ToArray());
+        var documentCurrencies = lines.Select(line => NormalizeOptional(line.DocumentCurrency ?? line.Currency)?.ToUpperInvariant())
+            .Where(currency => currency is not null).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var documentCurrency = documentCurrencies.Length == 1 ? documentCurrencies[0] : null;
+        decimal? documentDebit = documentCurrency is null ? null : lines.Sum(line => line.DocumentDebitAmount ?? line.DebitAmount);
+        decimal? documentCredit = documentCurrency is null ? null : lines.Sum(line => line.DocumentCreditAmount ?? line.CreditAmount);
+        decimal? documentDifference = documentDebit.HasValue && documentCredit.HasValue
+            ? documentDebit.Value - documentCredit.Value : null;
+        return new AccountingPostingPreview(issues.Count == 0 && difference == 0m, debit, credit, difference,
+            configuration?.BaseCurrency ?? string.Empty, precision, issues.ToArray(), documentCurrency,
+            documentDebit, documentCredit, documentDifference);
     }
 
     private static decimal Round(decimal amount, int precision, string mode) =>
@@ -808,7 +1000,13 @@ public sealed class AccountingPostingService : IAccountingPostingService
                 line.FinanceAccountId, line.DebitAmount, line.CreditAmount,
                 Currency = NormalizeOptional(line.Currency)?.ToUpperInvariant(),
                 Description = NormalizeOptional(line.Description), line.CostCenterId,
-                TaxFacts = NormalizeFacts(line.TaxFacts), DimensionFacts = NormalizeFacts(line.DimensionFacts)
+                TaxFacts = NormalizeFacts(line.TaxFacts), DimensionFacts = NormalizeFacts(line.DimensionFacts),
+                line.DocumentDebitAmount, line.DocumentCreditAmount,
+                DocumentCurrency = NormalizeOptional(line.DocumentCurrency)?.ToUpperInvariant(),
+                line.ExchangeRate, line.ExchangeRateDate, line.ExchangeRateConversionId,
+                ExchangeRateIdentity = NormalizeOptional(line.ExchangeRateIdentity)?.ToLowerInvariant(),
+                line.ConversionRoundingResidual,
+                DimensionMemberIds = (line.DimensionMemberIds ?? []).OrderBy(x => x)
             })
         });
         return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();

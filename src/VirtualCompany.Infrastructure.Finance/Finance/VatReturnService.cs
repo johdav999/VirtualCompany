@@ -78,7 +78,7 @@ public sealed class VatReturnService : IVatReturnService
 
         var now = Now();
         var period = new VatFilingPeriod(Guid.NewGuid(), command.CompanyId, command.PeriodCode,
-            command.StartDate, command.EndDate, "SEK", command.FiscalPeriodId, now);
+            command.StartDate, command.EndDate, "SEK", command.FiscalPeriodId, now, command.DueDate);
         _db.VatFilingPeriods.Add(period);
         await WriteAuditAsync(command.CompanyId, command.ActorUserId, AuditEventActions.VatFilingPeriodCreated,
             AuditTargetTypes.VatFilingPeriod, period.Id, AuditEventOutcomes.Succeeded,
@@ -96,6 +96,11 @@ public sealed class VatReturnService : IVatReturnService
         return (await _db.VatFilingPeriods.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId).OrderByDescending(x => x.StartDate)
             .ToListAsync(cancellationToken)).Select(Map).ToArray();
+    }
+
+    public async Task<VatFilingPeriodDto> SetFilingPeriodDueDateAsync(SetVatFilingPeriodDueDateCommand command,CancellationToken cancellationToken)
+    {
+        await RequireManageAsync(command.CompanyId,command.ActorUserId,cancellationToken);var period=await _db.VatFilingPeriods.IgnoreQueryFilters().SingleOrDefaultAsync(x=>x.CompanyId==command.CompanyId&&x.Id==command.FilingPeriodId,cancellationToken)??throw new KeyNotFoundException("VAT filing period was not found in the requested company.");if(await _db.ComplianceObligationInstances.IgnoreQueryFilters().AnyAsync(x=>x.CompanyId==command.CompanyId&&x.VatFilingPeriodId==period.Id&&x.Status!=ComplianceObligationStatuses.Generated,cancellationToken))throw Error("compliance_deadline_frozen","The deadline is frozen after obligation preparation. Create a correction instead of rewriting the source deadline.");period.SetDueDate(command.DueDate);await WriteAuditAsync(command.CompanyId,command.ActorUserId,"vat_filing_period_due_date_set",AuditTargetTypes.VatFilingPeriod,period.Id,AuditEventOutcomes.Succeeded,"Recorded an explicit authority-sourced filing deadline; no statutory deadline was inferred.",new(){["dueDate"]=command.DueDate.ToString("yyyy-MM-dd"),["dueDateRule"]="explicit_operator_supplied"},cancellationToken);await SaveAsync(cancellationToken);return Map(period);
     }
 
     public async Task<VatReturnDto> CalculateAsync(CalculateVatReturnCommand command,
@@ -662,7 +667,7 @@ public sealed class VatReturnService : IVatReturnService
     private static string Required(string value, string name, int max) => string.IsNullOrWhiteSpace(value) ? throw new ArgumentException($"{name} is required.", name) : value.Trim().Length <= max ? value.Trim() : throw new ArgumentOutOfRangeException(name);
     private static VatReturnOperationException Error(string code, string message) => new(code, message);
     private DateTime Now() => _timeProvider.GetUtcNow().UtcDateTime;
-    private static VatFilingPeriodDto Map(VatFilingPeriod x) => new(x.Id, x.CompanyId, x.PeriodCode, x.StartDate, x.EndDate, x.Currency, x.FiscalPeriodId, x.CreatedUtc);
+    private static VatFilingPeriodDto Map(VatFilingPeriod x) => new(x.Id, x.CompanyId, x.PeriodCode, x.StartDate, x.EndDate, x.Currency, x.FiscalPeriodId, x.CreatedUtc, x.DueDate);
 
     private sealed record SourceRow(Guid LedgerEntryLineId, Guid LedgerEntryId, string VoucherNumber,
         DateOnly PostingDate, string? SourceType, string? SourceId, string? SourceVersion,

@@ -193,11 +193,12 @@ internal sealed class OverdueReceivablesFinancialCheck : IFinancialCheck
             .Where(x =>
                 x.CompanyId == context.CompanyId &&
                 x.InvoiceId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
                 x.Payment.PaymentDate <= context.AsOfUtc)
             .GroupBy(x => x.InvoiceId!.Value)
-            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount)))
+            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount + y.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
 
         return invoices
@@ -310,11 +311,12 @@ internal sealed class PayablesFinancialCheck : IFinancialCheck
             .Where(x =>
                 x.CompanyId == context.CompanyId &&
                 x.BillId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
                 x.Payment.PaymentDate <= context.AsOfUtc)
             .GroupBy(x => x.BillId!.Value)
-            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount)))
+            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount + y.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
 
         var payableWindowEndUtc = context.AsOfUtc.Date.AddDays(context.PayableWindowDays + 1);
@@ -412,11 +414,12 @@ internal sealed class SupplierBillDueMonitoringFinancialCheck : IFinancialCheck
             .Where(x =>
                 x.CompanyId == context.CompanyId &&
                 x.BillId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
                 x.Payment.PaymentDate <= context.AsOfUtc)
             .GroupBy(x => x.BillId!.Value)
-            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount)))
+            .Select(x => new AllocationRow(x.Key, x.Sum(y => y.AllocatedAmount + y.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
 
         return bills

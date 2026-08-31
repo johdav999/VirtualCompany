@@ -1,0 +1,106 @@
+@using VirtualCompany.Web.Services
+@inject FinanceApiClient FinanceApiClient
+@inject Microsoft.Extensions.Localization.IStringLocalizer<VirtualCompany.Web.Localization.Finance.FinanceResources> FinanceText
+
+<section class="schedule-workspace" aria-busy="@IsLoading">
+    <header class="schedule-toolbar">
+        <div><span class="dashboard-kicker">@FinanceText["ScheduleAutomation"]</span><h3>@FinanceText["AccountingSchedules"]</h3><p>@FinanceText["AccountingSchedulesDescription"]</p></div>
+        @if (CanManage) { <button class="btn btn-primary" type="button" @onclick="BeginCreate">+ @FinanceText["NewSchedule"]</button> }
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(Message)) { <div class="alert alert-success" role="status">@Message</div> }
+    @if (!string.IsNullOrWhiteSpace(Error)) { <div class="alert alert-danger" role="alert"><strong>@FinanceText["ScheduleActionFailed"]</strong><div>@Error</div><button class="btn btn-sm btn-outline-danger" type="button" @onclick="LoadAsync">@CommonText["TryAgain"]</button></div> }
+
+    <div class="schedule-kpis" aria-label="@FinanceText["ScheduleSummary"]">
+        <article><span>↻</span><div><small>@FinanceText["ActiveSchedules"]</small><strong>@(List?.ActiveCount ?? 0)</strong></div></article>
+        <article><span>◷</span><div><small>@FinanceText["DueThisPeriod"]</small><strong>@(List?.DueCount ?? 0)</strong></div></article>
+        <article class="@(List?.ExceptionCount > 0 ? "warn" : null)"><span>!</span><div><small>@FinanceText["ScheduleExceptions"]</small><strong>@(List?.ExceptionCount ?? 0)</strong></div></article>
+        <article><span>Σ</span><div><small>@FinanceText["RemainingAmount"]</small><strong>@Money(List?.RemainingAmount, List?.Currency)</strong></div></article>
+    </div>
+
+    @if (IsEditing)
+    {
+        <section class="schedule-editor" aria-label="@FinanceText["NewAccountingSchedule"]">
+            <div class="schedule-section-heading"><div><h4>@FinanceText[EditingScheduleId.HasValue ? "EditAccountingSchedule" : "NewAccountingSchedule"]</h4><p>@FinanceText["ScheduleEditorHelp"]</p></div><button class="btn-close" type="button" aria-label="@FinanceText["Close"]" @onclick="CancelCreate"></button></div>
+            <div class="schedule-form-grid">
+                <label><span>@FinanceText["ScheduleCode"]</span><input class="form-control" maxlength="40" @bind="Draft.Code" /></label>
+                <label class="wide"><span>@FinanceText["Name"]</span><input class="form-control" maxlength="160" @bind="Draft.Name" /></label>
+                <label><span>@FinanceText["ScheduleType"]</span><select class="form-select" @bind="Draft.ScheduleType"><option value="recurring_fixed">@FinanceText["RecurringFixed"]</option><option value="date_allocation">@FinanceText["AllocationSchedule"]</option><option value="accrual">@FinanceText["AccrualSchedule"]</option><option value="prepayment">@FinanceText["PrepaymentSchedule"]</option></select></label>
+                <label><span>@FinanceText["Cadence"]</span><select class="form-select" @bind="Draft.Cadence"><option value="monthly">@FinanceText["Monthly"]</option><option value="quarterly">@FinanceText["Quarterly"]</option><option value="yearly">@FinanceText["Yearly"]</option></select></label>
+                <label><span>@FinanceText["AmountBasis"]</span><select class="form-select" @bind="Draft.AmountBasis"><option value="per_occurrence">@FinanceText["PerOccurrence"]</option><option value="total_schedule">@FinanceText["TotalSchedule"]</option></select></label>
+                <label><span>@FinanceText["StartDate"]</span><input class="form-control" type="date" @bind="Draft.StartDate" /></label>
+                <label><span>@FinanceText["EndDate"]</span><input class="form-control" type="date" @bind="Draft.EndDate" /></label>
+                <label><span>@FinanceText["OccurrenceDay"]</span><input class="form-control" type="number" min="1" max="31" @bind="Draft.OccurrenceDay" /></label>
+                <label><span>@FinanceText["Proration"]</span><select class="form-select" @bind="Draft.ProrationRule"><option value="none">@FinanceText["NoProration"]</option><option value="daily">@FinanceText["DailyFirstPeriod"]</option></select></label>
+                <label><span>@FinanceText["ReversalRule"]</span><select class="form-select" @bind="Draft.ReversalRule"><option value="none">@FinanceText["NoAutomaticReversal"]</option><option value="next_period_start">@FinanceText["NextPeriodReversal"]</option></select></label>
+                <label><span>@FinanceText["VoucherSeries"]</span><select class="form-select" @bind="Draft.VoucherSeriesCode">@foreach (var series in Reference?.VoucherSeries ?? []) { <option value="@series.Code">@series.Code · @series.DisplayName</option> }</select></label>
+                <label><span>@FinanceText["Amount"]</span><input class="form-control" type="number" min="0.01" step="0.01" @bind="Draft.Amount" /></label>
+                <label class="wide"><span>@FinanceText["Description"]</span><input class="form-control" maxlength="240" @bind="Draft.Description" /></label>
+                <label><span>@FinanceText["DebitAccount"]</span><select class="form-select" @bind="Draft.DebitAccountId"><option value="@Guid.Empty">@FinanceText["SelectAccount"]</option>@foreach (var account in Accounts) { <option value="@account.Id">@account.Code · @account.Name</option> }</select></label>
+                <label><span>@FinanceText["CreditAccount"]</span><select class="form-select" @bind="Draft.CreditAccountId"><option value="@Guid.Empty">@FinanceText["SelectAccount"]</option>@foreach (var account in Accounts) { <option value="@account.Id">@account.Code · @account.Name</option> }</select></label>
+                <fieldset class="wide evidence-picker"><legend>@FinanceText["Evidence"]</legend><p>@FinanceText["ScheduleEvidenceDescription"]</p>@foreach (var evidence in Reference?.EvidenceDocuments.Take(6) ?? []) { <label><input type="checkbox" checked="@Draft.EvidenceIds.Contains(evidence.DocumentId)" @onchange="args => ToggleEvidence(evidence.DocumentId, args.Value as bool? == true)" /> <span>@evidence.Title</span></label> }</fieldset>
+            </div>
+            <div class="schedule-editor-actions"><button class="btn btn-outline-secondary" type="button" @onclick="CancelCreate">@FinanceText["Cancel"]</button><button class="btn btn-primary" type="button" disabled="@IsActing" @onclick="CreateAsync">@FinanceText["SaveSchedule"]</button></div>
+        </section>
+    }
+
+    @if (IsLoading)
+    {
+        <div class="schedule-state" role="status"><div class="spinner-border text-primary" aria-hidden="true"></div><h4>@FinanceText["ScheduleLoading"]</h4></div>
+    }
+    else if (List?.Items.Count == 0)
+    {
+        <div class="schedule-state"><span aria-hidden="true">↻</span><h4>@FinanceText["NoSchedules"]</h4><p>@FinanceText["NoSchedulesHelp"]</p>@if (CanManage) { <button class="btn btn-primary" type="button" @onclick="BeginCreate">@FinanceText["NewSchedule"]</button> }</div>
+    }
+    else
+    {
+        <div class="schedule-grid">
+            <section class="schedule-list-card">
+                <div class="schedule-section-heading"><div><h4>@FinanceText["Schedules"]</h4><p>@FinanceText["ScheduleListHelp"]</p></div><button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadAsync">@FinanceText["Refresh"]</button></div>
+                <div class="table-responsive"><table class="table schedule-table"><thead><tr><th>@FinanceText["Schedule"]</th><th>@FinanceText["TypeCadence"]</th><th>@FinanceText["NextOccurrence"]</th><th>@FinanceText["Released"]</th><th>@FinanceText["Remaining"]</th><th>@FinanceText["Status"]</th></tr></thead><tbody>
+                @foreach (var schedule in List?.Items ?? [])
+                {
+                    <tr class="@(Selected?.Id == schedule.Id ? "selected" : null)" role="button" tabindex="0" aria-selected="@(Selected?.Id == schedule.Id)" @onclick="() => SelectAsync(schedule.Id)" @onkeydown="args => SelectOnKeyAsync(args.Key, schedule.Id)"><td><strong>@schedule.Code · @schedule.Name</strong><small>v@schedule.CurrentVersionNumber</small></td><td>@Friendly(schedule.ScheduleType)<small>@Friendly(schedule.Cadence)</small></td><td>@schedule.NextOccurrenceDate.ToString("d")</td><td>@Money(schedule.Reconciliation.ReleasedAmount, schedule.Currency)</td><td>@Money(schedule.Reconciliation.RemainingAmount, schedule.Currency)</td><td><span class="schedule-status @schedule.Status">@Friendly(schedule.Status)</span></td></tr>
+                }
+                </tbody></table></div>
+            </section>
+
+            <aside class="schedule-detail-card" aria-live="polite">
+                @if (Selected is null) { <div class="schedule-state compact"><span aria-hidden="true">⌕</span><h4>@FinanceText["SelectSchedule"]</h4></div> }
+                else
+                {
+                    <div class="schedule-detail-head"><div><small>@Selected.Code · v@Selected.CurrentVersionNumber</small><h4>@Selected.Name</h4><span>@Friendly(Selected.ScheduleType) · @Friendly(Selected.Cadence)</span></div><span class="schedule-status @Selected.Status">@Friendly(Selected.Status)</span></div>
+                    <nav class="schedule-detail-tabs" aria-label="@FinanceText["ScheduleViews"]"><button class="@(DetailView == "overview" ? "active" : null)" @onclick='() => DetailView = "overview"'>@FinanceText["Overview"]</button><button class="@(DetailView == "occurrences" ? "active" : null)" @onclick='() => DetailView = "occurrences"'>@FinanceText["Occurrences"]</button><button class="@(DetailView == "exceptions" ? "active" : null)" @onclick='() => DetailView = "exceptions"'>@FinanceText["Exceptions"]</button><button class="@(DetailView == "reconciliation" ? "active" : null)" @onclick='() => DetailView = "reconciliation"'>@FinanceText["Reconciliation"]</button></nav>
+                    @if (DetailView == "overview")
+                    {
+                        <dl class="schedule-facts"><div><dt>@FinanceText["EffectivePeriod"]</dt><dd>@Selected.StartDate.ToString("d") – @(Selected.EndDate?.ToString("d") ?? "∞")</dd></div><div><dt>@FinanceText["VoucherSeries"]</dt><dd>@Selected.VoucherSeriesCode</dd></div><div><dt>@FinanceText["AmountBasis"]</dt><dd>@Friendly(Selected.AmountBasis)</dd></div><div><dt>@FinanceText["Approval"]</dt><dd>@Friendly(Selected.Approval?.Status ?? "not_submitted")</dd></div></dl>
+                        @foreach (var line in Selected.CurrentVersion?.Lines ?? []) { <div class="schedule-line"><span><strong>@line.AccountCode · @line.AccountName</strong><small>@line.Description</small></span><strong>@Money(line.DebitAmount - line.CreditAmount, Selected.Currency)</strong></div> }
+                        @if (Preview is not null) { <div class="schedule-preview"><strong>@FinanceText["NextPostingPreview"]</strong><span>@Preview.PostingDate.ToString("d") · @Money(Preview.OccurrenceAmount, Selected.Currency)</span><small>@FinanceText["PlannedOccurrencesValue", Preview.PlannedOccurrences]</small></div> }
+                    }
+                    else if (DetailView == "occurrences")
+                    {
+                        @foreach (var occurrence in Selected.Occurrences.OrderByDescending(x => x.PostingDate)) { <div class="schedule-occurrence"><span><strong>@occurrence.PostingDate.ToString("d")</strong><small>@Friendly(occurrence.Status) · @Money(occurrence.ScheduledAmount, occurrence.Currency)</small></span>@if (occurrence.LedgerEntryId is Guid entryId) { <a href="@JournalUrl(entryId)">@FinanceText["Journal"] ↗</a> } else if (CanManage && occurrence.Status is "blocked" or "failed") { <button class="btn btn-sm btn-outline-primary" disabled="@IsActing" @onclick="() => RegenerateAsync(occurrence)">@FinanceText["Regenerate"]</button> }</div> }
+                    }
+                    else if (DetailView == "exceptions")
+                    {
+                        var exceptions = Selected.Occurrences.SelectMany(x => x.Exceptions).Where(x => x.Status == "open").ToArray();
+                        @if (exceptions.Length == 0) { <div class="schedule-state compact"><span aria-hidden="true">✓</span><h4>@FinanceText["NoOpenExceptions"]</h4></div> }
+                        @foreach (var exception in exceptions) { <div class="schedule-exception"><strong>@Friendly(exception.ReasonCode)</strong><p>@exception.Explanation</p><small>@exception.SafeNextAction</small></div> }
+                    }
+                    else
+                    {
+                        <div class="schedule-reconciliation"><div><span>@FinanceText["OriginalAmount"]</span><strong>@Money(Selected.Reconciliation.OriginalAmount, Selected.Currency)</strong></div><div><span>@FinanceText["Released"]</span><strong>@Money(Selected.Reconciliation.ReleasedAmount, Selected.Currency)</strong></div><div><span>@FinanceText["Reversed"]</span><strong>@Money(Selected.Reconciliation.ReversedAmount, Selected.Currency)</strong></div><div><span>@FinanceText["ExceptionAmount"]</span><strong>@Money(Selected.Reconciliation.ExceptionAmount, Selected.Currency)</strong></div><div class="total"><span>@FinanceText["Remaining"]</span><strong>@Money(Selected.Reconciliation.RemainingAmount, Selected.Currency)</strong></div><p class="@(Selected.Reconciliation.IsReconciled ? "ok" : "warn")">@(Selected.Reconciliation.IsReconciled ? FinanceText["ScheduleReconciled"] : FinanceText["ScheduleUnreconciled"])</p></div>
+                    }
+                    <div class="schedule-actions">
+                        @if (CanManage && Selected.AllowedActions.Contains("edit") && Selected.CurrentVersion?.Lines.Count == 2) { <button class="btn btn-outline-secondary" disabled="@IsActing" @onclick="BeginEdit">@FinanceText["EditSchedule"]</button> }
+                        @if (Selected.AllowedActions.Contains("preview")) { <button class="btn btn-outline-primary" disabled="@IsActing" @onclick="PreviewAsync">@FinanceText["PreviewSchedule"]</button> }
+                        @if (CanManage && Selected.AllowedActions.Contains("submit")) { <button class="btn btn-primary" disabled="@IsActing" @onclick="SubmitAsync">@FinanceText["SubmitForApproval"]</button> }
+                        @if (CanApprove && Selected.AllowedActions.Contains("approve")) { <button class="btn btn-success" disabled="@IsActing" @onclick="() => DecideAsync(true)">@FinanceText["Approve"]</button><button class="btn btn-outline-danger" disabled="@IsActing" @onclick="() => DecideAsync(false)">@FinanceText["Reject"]</button> }
+                        @if (CanManage && Selected.AllowedActions.Contains("activate")) { <button class="btn btn-primary" disabled="@IsActing" @onclick="ActivateAsync">@FinanceText["ActivateSchedule"]</button> }
+                        @foreach (var action in new[] { "pause", "resume", "end" }.Where(Selected.AllowedActions.Contains)) { <button class="btn btn-outline-secondary" disabled="@(!CanManage || IsActing)" @onclick="() => ChangeStateAsync(action)">@FinanceText[$"ScheduleAction_{action}"]</button> }
+                    </div>
+                }
+            </aside>
+        </div>
+    }
+</section>

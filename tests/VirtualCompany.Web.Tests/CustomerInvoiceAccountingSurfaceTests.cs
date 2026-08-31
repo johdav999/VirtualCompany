@@ -48,6 +48,18 @@ public sealed class CustomerInvoiceAccountingSurfaceTests
     }
 
     [Fact]
+    public void Invoice_accounting_editor_responds_to_the_detail_panel_width()
+    {
+        var css = Read("src", "VirtualCompany.Web", "wwwroot", "css", "app.css");
+
+        Assert.Contains("container-name: invoice-detail", css, StringComparison.Ordinal);
+        Assert.Contains("@container invoice-detail (max-width: 560px)", css, StringComparison.Ordinal);
+        Assert.Contains(".invoice-accounting-grid > *", css, StringComparison.Ordinal);
+        Assert.Contains(".invoice-accounting-line > *", css, StringComparison.Ordinal);
+        Assert.Contains("grid-template-columns: minmax(0, 1fr)", css, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Screenshot_first_reference_is_saved_with_its_generation_prompt()
     {
         Assert.True(File.Exists(Path.Combine(Root(), "docs", "design", "references", "customer-invoice-accounting-reference.png")));

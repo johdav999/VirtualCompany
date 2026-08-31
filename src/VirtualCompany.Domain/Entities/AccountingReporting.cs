@@ -16,6 +16,7 @@ public static class AccountingExportTypeValues
     public const string GenericCsv = "generic_csv";
     public const string Sie4B = "sie_4b";
     public const string SwedishStatutoryArchive = "swedish_statutory_archive";
+    public const string FinancialReportSuiteJson = "financial_report_suite_json";
 
     public static string Normalize(string? value) => string.IsNullOrWhiteSpace(value)
         ? GenericJson
@@ -25,6 +26,7 @@ public static class AccountingExportTypeValues
             GenericCsv => GenericCsv,
             Sie4B => Sie4B,
             SwedishStatutoryArchive => SwedishStatutoryArchive,
+            FinancialReportSuiteJson => FinancialReportSuiteJson,
             _ => throw new ArgumentOutOfRangeException(nameof(value), "Accounting export type is not supported.")
         };
 

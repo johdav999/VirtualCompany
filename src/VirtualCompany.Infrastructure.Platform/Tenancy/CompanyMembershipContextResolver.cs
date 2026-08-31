@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Auth;
+using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
 
@@ -57,6 +58,17 @@ public sealed class CompanyMembershipContextResolver : ICompanyMembershipContext
             .Select(x => new ResolvedCompanyMembershipContext(x.Id, x.CompanyId, x.UserId!.Value, x.Company.Name, x.Role, x.Status, x.Company.Timezone, x.Company.Currency))
             .SingleOrDefaultAsync(cancellationToken)
             .ConfigureAwait(false);
+
+        if (membership?.MembershipRole == CompanyMembershipRole.Accountant)
+        {
+            var now = DateTime.UtcNow;
+            var hasEffectiveGrant = await _dbContext.AccountantCompanyGrants.IgnoreQueryFilters().AsNoTracking()
+                .AnyAsync(x => x.CompanyId == companyId && x.MembershipId == membership.MembershipId &&
+                    x.AccountantUserId == userId && x.Status == AccountantGrantStatuses.Active &&
+                    x.EffectiveFromUtc <= now && (!x.EffectiveUntilUtc.HasValue || x.EffectiveUntilUtc > now),
+                    cancellationToken).ConfigureAwait(false);
+            if (!hasEffectiveGrant) membership = null;
+        }
 
         if (_companyContextAccessor.CompanyId == companyId)
         {

@@ -1,9 +1,11 @@
 using Microsoft.Data.Sqlite;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
+using VirtualCompany.Infrastructure.Auditing;
 using VirtualCompany.Infrastructure.Finance;
 using VirtualCompany.Infrastructure.Persistence;
 using Xunit;
@@ -12,6 +14,98 @@ namespace VirtualCompany.Api.Tests;
 
 public sealed class FinancePaymentAllocationCommandServiceTests
 {
+    [Fact]
+    public async Task Governed_settlement_reversal_preserves_evidence_reopens_invoice_and_replays_once()
+    {
+        var companyId = Guid.NewGuid();
+        var actorId = Guid.NewGuid();
+        var invoiceId = Guid.NewGuid();
+        var paymentId = Guid.NewGuid();
+        var configurationId = Guid.NewGuid();
+        var bankAccountId = Guid.NewGuid();
+        var receivablesAccountId = Guid.NewGuid();
+        var periodId = Guid.NewGuid();
+        var now = new DateTime(2026, 4, 15, 12, 0, 0, DateTimeKind.Utc);
+        await using var connection = await OpenConnectionAsync();
+        var accessor = new TestCompanyContextAccessor(companyId);
+        await using var dbContext = CreateContext(connection, accessor);
+        await dbContext.Database.EnsureCreatedAsync();
+
+        dbContext.Companies.Add(new Company(companyId, "Governed Settlement Company"));
+        dbContext.Users.Add(new User(actorId, "settlement-owner@example.com", "Settlement Owner",
+            "test", actorId.ToString("N")));
+        dbContext.CompanyMemberships.Add(new CompanyMembership(Guid.NewGuid(), companyId, actorId,
+            CompanyMembershipRole.Owner, CompanyMembershipStatus.Active));
+        var counterpartyId = Guid.NewGuid();
+        dbContext.FinanceCounterparties.Add(new FinanceCounterparty(counterpartyId, companyId,
+            "Settlement Customer", "customer", "settlement@example.com"));
+        dbContext.FinanceInvoices.Add(new FinanceInvoice(
+            invoiceId, companyId, counterpartyId, "INV-GOVERNED-001", new DateTime(2026, 4, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 4, 30, 0, 0, 0, DateTimeKind.Utc), 100m, "USD", "open"));
+        dbContext.Payments.Add(new Payment(
+            paymentId, companyId, PaymentTypes.Incoming, 100m, "USD", now,
+            "bank_transfer", PaymentStatuses.Completed, "INV-GOVERNED-001"));
+        dbContext.FinanceAccounts.AddRange(
+            new FinanceAccount(bankAccountId, companyId, "1000", "Bank", FinanceAccountTypes.Asset, "USD", 0m, now,
+                accountClass: FinanceAccountClassValues.Asset, normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.Bank),
+            new FinanceAccount(receivablesAccountId, companyId, "1100", "Accounts Receivable", FinanceAccountTypes.Asset, "USD", 0m, now,
+                accountClass: FinanceAccountClassValues.Asset, normalBalance: FinanceNormalBalanceValues.Debit,
+                effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true,
+                controlAccountRole: AccountingAccountRoleKeys.AccountsReceivable));
+        var configuration = new AccountingConfiguration(
+            configurationId, companyId, "USD", 1, 1, AccountingPolicyPackDefaults.CountryNeutralPackKey,
+            AccountingPolicyPackDefaults.CountryNeutralBankingVersion, new DateOnly(2026, 1, 1), 2,
+            AccountingRoundingModeValues.AwayFromZero, actorId, now);
+        configuration.SetSetupState(AccountingSetupStateValues.Ready, actorId, now);
+        dbContext.AccountingConfigurations.Add(configuration);
+        dbContext.AccountingConfigurationAccountRoles.AddRange(
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configurationId,
+                AccountingAccountRoleKeys.Bank, bankAccountId, now),
+            new AccountingConfigurationAccountRole(Guid.NewGuid(), companyId, configurationId,
+                AccountingAccountRoleKeys.AccountsReceivable, receivablesAccountId, now));
+        dbContext.FiscalPeriods.Add(new FiscalPeriod(periodId, companyId, "FY 2026",
+            new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2027, 1, 1, 0, 0, 0, DateTimeKind.Utc)));
+        dbContext.VoucherSeries.Add(new VoucherSeries(Guid.NewGuid(), companyId, "B", "Bank", "B", true, now));
+        await dbContext.SaveChangesAsync();
+
+        var timeProvider = new FixedTimeProvider(now);
+        var posting = new AccountingPostingService(dbContext, new AccountingJournalReadService(dbContext),
+            new AuditEventWriter(dbContext), timeProvider);
+        var cashPosting = new CompanyCashSettlementPostingService(dbContext, accessor, posting,
+            new AccountingAccountRoleResolver(dbContext), timeProvider);
+        using var services = new ServiceCollection()
+            .AddSingleton<IFinanceCashSettlementPostingService>(cashPosting)
+            .AddSingleton<IAccountingPostingService>(posting)
+            .AddSingleton<TimeProvider>(timeProvider)
+            .BuildServiceProvider();
+        var service = new CompanyFinanceCommandService(dbContext, accessor, services);
+
+        var allocation = await service.CreateAllocationAsync(
+            new CreateFinancePaymentAllocationCommand(companyId,
+                new CreateFinancePaymentAllocationDto(paymentId, invoiceId, null, 100m, "USD", "governed:create:001"),
+                actorId, "settlement-create-001"), CancellationToken.None);
+        var reversalCommand = new ReverseFinancePaymentAllocationCommand(
+            companyId, paymentId, allocation.Id, new DateOnly(2026, 4, 16),
+            "Customer payment was returned", "governed:reverse:001", actorId, "settlement-reverse-001");
+        var reversed = await service.ReverseAllocationAsync(reversalCommand, CancellationToken.None);
+        var replay = await service.ReverseAllocationAsync(reversalCommand, CancellationToken.None);
+
+        Assert.Equal(PaymentAllocationSettlementStatuses.Posted, allocation.SettlementStatus);
+        Assert.NotNull(allocation.SettlementLedgerEntryId);
+        Assert.Equal(PaymentAllocationSettlementStatuses.Reversed, reversed.SettlementStatus);
+        Assert.NotNull(reversed.ReversalLedgerEntryId);
+        Assert.True(replay.IsIdempotentReplay);
+        Assert.Equal(reversed.ReversalLedgerEntryId, replay.ReversalLedgerEntryId);
+        Assert.Equal(FinanceSettlementStatuses.Unpaid,
+            await dbContext.FinanceInvoices.IgnoreQueryFilters().Where(x => x.Id == invoiceId)
+                .Select(x => x.SettlementStatus).SingleAsync());
+        Assert.Equal(2, await dbContext.LedgerEntries.IgnoreQueryFilters().CountAsync(x => x.CompanyId == companyId));
+        Assert.Single(await dbContext.PaymentAllocations.IgnoreQueryFilters().Where(x => x.CompanyId == companyId).ToListAsync());
+    }
+
     [Fact]
     public async Task Create_allocation_replays_by_business_idempotency_key_and_rejects_changed_payload()
     {
@@ -662,5 +756,10 @@ public sealed class FinancePaymentAllocationCommandServiceTests
             CompanyId = companyContext?.CompanyId;
             UserId = companyContext?.UserId;
         }
+    }
+
+    private sealed class FixedTimeProvider(DateTime nowUtc) : TimeProvider
+    {
+        public override DateTimeOffset GetUtcNow() => new(nowUtc, TimeSpan.Zero);
     }
 }

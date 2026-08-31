@@ -773,7 +773,35 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             allocation.UpdatedUtc,
             allocation.SourceSimulationEventRecordId,
             allocation.PaymentSourceSimulationEventRecordId,
-            allocation.TargetSourceSimulationEventRecordId);
+            allocation.TargetSourceSimulationEventRecordId,
+            allocation.IdempotencyKey,
+            false,
+            allocation.FeeAmount,
+            allocation.WriteOffAmount,
+            allocation.AllocatedPaymentAmount,
+            allocation.PaymentCurrency,
+            allocation.FunctionalCurrency,
+            allocation.AllocatedFunctionalAmount,
+            allocation.SettlementFunctionalAmount,
+            allocation.BankFunctionalAmount,
+            allocation.FeeFunctionalAmount,
+            allocation.WriteOffFunctionalAmount,
+            allocation.RealizedGainLossAmount,
+            allocation.RoundingFunctionalAmount,
+            allocation.DocumentOutstandingAfter,
+            allocation.FunctionalOutstandingAfter,
+            allocation.SettlementRateDate,
+            allocation.SettlementRate,
+            allocation.SettlementExchangeRateConversionId,
+            allocation.SettlementRateIdentity,
+            allocation.SettlementConversionRoundingResidual,
+            allocation.SettlementLedgerEntryId,
+            allocation.ReversalLedgerEntryId,
+            allocation.SettlementStatus,
+            allocation.ReversedUtc,
+            allocation.ReversedByUserId,
+            allocation.ReversalReason,
+            allocation.Version);
 
     private async Task<ContributionRule> LoadAccountContributionRuleAsync(
         Guid companyId,
@@ -1777,9 +1805,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         var rows = await _dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.InvoiceId.HasValue && invoiceIds.Contains(x.InvoiceId.Value))
+            .Where(x => x.CompanyId == companyId && x.InvoiceId.HasValue && invoiceIds.Contains(x.InvoiceId.Value) &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed)
             .GroupBy(x => x.InvoiceId!.Value)
-            .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount) })
+            .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount + allocation.WriteOffAmount) })
             .ToListAsync(cancellationToken);
 
         return rows.ToDictionary(
@@ -1800,9 +1829,10 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         var rows = await _dbContext.PaymentAllocations
             .IgnoreQueryFilters()
             .AsNoTracking()
-            .Where(x => x.CompanyId == companyId && x.BillId.HasValue && billIds.Contains(x.BillId.Value))
+            .Where(x => x.CompanyId == companyId && x.BillId.HasValue && billIds.Contains(x.BillId.Value) &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed)
             .GroupBy(x => x.BillId!.Value)
-            .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount) })
+            .Select(x => new { Id = x.Key, Amount = x.Sum(allocation => allocation.AllocatedAmount + allocation.WriteOffAmount) })
             .ToListAsync(cancellationToken);
 
         return rows.ToDictionary(
@@ -2017,6 +2047,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == paymentStatus &&
                 x.Payment.PaymentType == paymentType), companyId, sourceFilter);
 
@@ -2031,7 +2062,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         }
 
         return GroupAllocations(await rows
-            .Select(x => new DocumentAllocationRow(x.InvoiceId!.Value, x.Id, x.AllocatedAmount))
+            .Select(x => new DocumentAllocationRow(x.InvoiceId!.Value, x.Id, x.AllocatedAmount + x.WriteOffAmount))
             .ToListAsync(cancellationToken));
     }
 
@@ -2050,6 +2081,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.BillId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == paymentStatus &&
                 x.Payment.PaymentType == paymentType), companyId, sourceFilter);
 
@@ -2064,7 +2096,7 @@ public sealed partial class CompanyFinanceReadService : IFinanceReadService, IFi
         }
 
         return GroupAllocations(await rows
-            .Select(x => new DocumentAllocationRow(x.BillId!.Value, x.Id, x.AllocatedAmount))
+            .Select(x => new DocumentAllocationRow(x.BillId!.Value, x.Id, x.AllocatedAmount + x.WriteOffAmount))
             .ToListAsync(cancellationToken));
     }
 

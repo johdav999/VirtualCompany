@@ -182,6 +182,69 @@ public sealed partial class InternalFinanceController
                 cancellationToken));
 
     [Authorize(Policy = CompanyPolicies.AccountingView)]
+    [HttpPost("accounting/accounts/{accountId:guid}/lifecycle/preview")]
+    public async Task<ActionResult<AccountingAccountLifecyclePreviewDto>> PreviewAccountingAccountLifecycleAsync(
+        Guid companyId, Guid accountId, [FromBody] PreviewAccountingAccountLifecycleRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(() => _accountingAdministrationService.PreviewAccountLifecycleAsync(new(
+            companyId, accountId, request.EffectiveFrom, request.EffectiveTo, request.ReplacementAccountId,
+            request.AccountClass, request.NormalBalance, request.IsReportable, request.PostingRestriction), cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    [HttpPut("accounting/accounts/{accountId:guid}/lifecycle")]
+    public async Task<ActionResult<AccountingAccountDetailDto>> ApplyAccountingAccountLifecycleAsync(
+        Guid companyId, Guid accountId, [FromBody] ApplyAccountingAccountLifecycleRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(() => _accountingAdministrationService.ApplyAccountLifecycleAsync(new(
+            companyId, accountId, request.Name, request.AccountClass, request.NormalBalance,
+            request.IsReportable, request.PostingRestriction, request.EffectiveFrom, request.EffectiveTo,
+            request.ReplacementAccountId, request.Reason, request.ExpectedLifecycleVersion,
+            ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required for account lifecycle administration."),
+            ResolveCorrelationId()), cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingView)]
+    [HttpGet("accounting/series-policies")]
+    public async Task<ActionResult<IReadOnlyList<AccountingSeriesPolicyDto>>> GetAccountingSeriesPoliciesAsync(
+        Guid companyId, CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(() => _accountingAdministrationService.GetSeriesPoliciesAsync(companyId, cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    [HttpPut("accounting/series-policies")]
+    public async Task<ActionResult<AccountingSeriesPolicyDto>> SaveAccountingSeriesPolicyAsync(
+        Guid companyId, [FromBody] SaveAccountingSeriesPolicyRequest request, CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(() => _accountingAdministrationService.SaveSeriesPolicyAsync(new(
+            companyId, request.PolicyId, request.SeriesKind, request.SeriesId, request.SourceType,
+            request.TransactionType, request.FiscalYear, request.LocationDimensionMemberId, request.Jurisdiction,
+            request.ProviderKey, request.ProviderSeriesCode, request.IsActive, request.ExpectedVersion,
+            ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required for series administration."),
+            ResolveCorrelationId()), cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    [HttpPost("accounting/voucher-series/{seriesId:guid}/gaps")]
+    public async Task<ActionResult<AccountingSeriesPolicyDto>> RecordAccountingVoucherGapAsync(
+        Guid companyId, Guid seriesId, [FromBody] RecordVoucherGapEvidenceRequest request, CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(() => _accountingAdministrationService.RecordVoucherGapEvidenceAsync(new(
+            companyId, seriesId, request.FiscalYear, request.MissingNumber, request.Reason,
+            ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required for series administration."),
+            ResolveCorrelationId()), cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingView)]
+    [HttpGet("accounting/commerce/capability")]
+    public async Task<ActionResult<CommerceAccountingCapabilityDto>> GetCommerceAccountingCapabilityAsync(
+        Guid companyId, CancellationToken cancellationToken) =>
+        await ExecuteReadAsync(() => _accountingAdministrationService.GetCommerceCapabilityAsync(companyId, cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    [HttpPost("accounting/commerce/events")]
+    public async Task<ActionResult<CommerceAccountingEventResultDto>> SubmitCommerceAccountingEventAsync(
+        Guid companyId, [FromBody] SubmitCommerceAccountingEventRequest request, CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(() => _accountingAdministrationService.SubmitCommerceEventAsync(new(
+            companyId, request.EventId, request.EventVersion, request.ContractVersion, request.EventType,
+            request.SourceSystem, request.OccurredUtc, request.RequiresInventoryAccounting,
+            ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required for commerce accounting integration."),
+            ResolveCorrelationId()), cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingView)]
     [HttpGet("accounting/fiscal-years")]
     public async Task<ActionResult<IReadOnlyList<AccountingFiscalYearDto>>> GetAccountingFiscalYearsAsync(
         Guid companyId,
@@ -277,6 +340,58 @@ public sealed class DeactivateAccountingAccountRequest
 {
     public DateOnly EffectiveTo { get; set; }
     public DateTime ExpectedUpdatedUtc { get; set; }
+}
+
+public class PreviewAccountingAccountLifecycleRequest
+{
+    public string AccountClass { get; set; } = string.Empty;
+    public string NormalBalance { get; set; } = string.Empty;
+    public bool IsReportable { get; set; } = true;
+    public string PostingRestriction { get; set; } = "none";
+    public DateOnly EffectiveFrom { get; set; }
+    public DateOnly? EffectiveTo { get; set; }
+    public Guid? ReplacementAccountId { get; set; }
+}
+
+public sealed class ApplyAccountingAccountLifecycleRequest : PreviewAccountingAccountLifecycleRequest
+{
+    public string Name { get; set; } = string.Empty;
+    public string Reason { get; set; } = string.Empty;
+    public long ExpectedLifecycleVersion { get; set; }
+}
+
+public sealed class SaveAccountingSeriesPolicyRequest
+{
+    public Guid? PolicyId { get; set; }
+    public string SeriesKind { get; set; } = "voucher";
+    public Guid SeriesId { get; set; }
+    public string SourceType { get; set; } = "*";
+    public string TransactionType { get; set; } = "*";
+    public int? FiscalYear { get; set; }
+    public Guid? LocationDimensionMemberId { get; set; }
+    public string? Jurisdiction { get; set; }
+    public string? ProviderKey { get; set; }
+    public string? ProviderSeriesCode { get; set; }
+    public bool IsActive { get; set; } = true;
+    public long? ExpectedVersion { get; set; }
+}
+
+public sealed class RecordVoucherGapEvidenceRequest
+{
+    public int FiscalYear { get; set; }
+    public long MissingNumber { get; set; }
+    public string Reason { get; set; } = string.Empty;
+}
+
+public sealed class SubmitCommerceAccountingEventRequest
+{
+    public Guid EventId { get; set; }
+    public long EventVersion { get; set; }
+    public string ContractVersion { get; set; } = "finance-commerce.v1";
+    public string EventType { get; set; } = string.Empty;
+    public string SourceSystem { get; set; } = string.Empty;
+    public DateTime OccurredUtc { get; set; }
+    public bool RequiresInventoryAccounting { get; set; }
 }
 
 public class PreviewAccountingFiscalYearRequest

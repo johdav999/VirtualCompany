@@ -151,7 +151,7 @@ public sealed partial class FinanceApiClient
         {
             return new FinanceNotInitializedApiException(problem.ToFinanceInitializationProblemResponse());
         }
-        if (IsMailboxProviderConfigurationProblem(problem))
+        if (problem is not null && IsMailboxProviderConfigurationProblem(problem))
         {
             return new MailboxProviderNotConfiguredApiException(problem.Detail ?? problem.Title ?? "Mailbox provider OAuth client settings are not configured.");
         }
@@ -164,7 +164,8 @@ public sealed partial class FinanceApiClient
             return new ManualJournalConflictApiException(ResolveProblemMessage(problem, FormatProblemMessage(problem)), currentVersion);
         }
 
-        return new FinanceApiException(problem is null ? "The finance request failed." : ResolveProblemMessage(problem, FormatProblemMessage(problem)));
+        return new FinanceApiException(problem is null ? "The finance request failed." : ResolveProblemMessage(problem, FormatProblemMessage(problem)),
+            problem?.ReasonCode ?? problem?.Code);
     }
 
     private FinanceApiException CreateNetworkException(HttpRequestException ex)
@@ -246,6 +247,7 @@ public sealed partial class FinanceApiClient
     {
         public string? Title { get; set; }
         public string? Code { get; set; }
+        public string? ReasonCode { get; set; }
         public string? Detail { get; set; }
         public string? Message { get; set; }
         public Dictionary<string, string[]>? Errors { get; set; }
@@ -304,9 +306,12 @@ public sealed partial class FinanceApiClient
 
 public class FinanceApiException : Exception
 {
-    public FinanceApiException(string message) : base(message)
+    public FinanceApiException(string message, string? reasonCode = null) : base(message)
     {
+        ReasonCode = reasonCode;
     }
+
+    public string? ReasonCode { get; }
 }
 
 public sealed class ManualJournalConflictApiException : FinanceApiException
@@ -671,6 +676,11 @@ public sealed class CustomerInvoiceAccountingStateResponse
     public CustomerInvoiceAccountingApprovalResponse? Approval { get; set; }
     public List<CustomerInvoiceAccountingJournalLineResponse> JournalLines { get; set; } = [];
     public List<CustomerInvoiceAccountingIssueResponse> Issues { get; set; } = [];
+    public DateOnly? ExchangeRateDate { get; set; }
+    public Guid? ExchangeRateConversionId { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public decimal? ConversionRoundingResidual { get; set; }
+    public string? CurrencyProvenance { get; set; }
 }
 
 public sealed class CustomerInvoiceAccountingApprovalResponse
@@ -694,6 +704,9 @@ public sealed class CustomerInvoiceAccountingJournalLineResponse
     public string Currency { get; set; } = string.Empty;
     public string Description { get; set; } = string.Empty;
     public string? TaxRuleKey { get; set; }
+    public decimal? DocumentDebitAmount { get; set; }
+    public decimal? DocumentCreditAmount { get; set; }
+    public string? DocumentCurrency { get; set; }
 }
 
 public sealed class CustomerInvoiceAccountingIssueResponse
@@ -725,6 +738,9 @@ public sealed class CustomerInvoiceAccountingPreviewResponse
     public string PayloadHash { get; set; } = string.Empty;
     public List<CustomerInvoiceAccountingJournalLineResponse> JournalLines { get; set; } = [];
     public List<CustomerInvoiceAccountingIssueResponse> Issues { get; set; } = [];
+    public DateOnly? ExchangeRateDate { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public List<ExchangeRateLookupLegResponse> ExchangeRateLegs { get; set; } = [];
 }
 
 public sealed class CustomerInvoiceAccountingReferenceDataResponse
@@ -836,6 +852,7 @@ public sealed class CustomerInvoiceReceivableReconciliationResponse
     public decimal Difference { get; set; }
     public bool IsReconciled { get; set; }
     public DateTime AsOfUtc { get; set; }
+    public List<DocumentCurrencyOpenItemControlResponse> DocumentCurrencyBreakdown { get; set; } = [];
 }
 
 public sealed class FinanceInvoiceRelatedTransactionResponse

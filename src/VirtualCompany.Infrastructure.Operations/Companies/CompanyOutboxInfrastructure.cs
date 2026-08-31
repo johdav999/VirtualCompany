@@ -1225,6 +1225,7 @@ internal sealed class CompanyNotificationDispatcher : ICompanyNotificationDispat
             "escalation" => CompanyNotificationType.Escalation,
             "workflow_failure" => CompanyNotificationType.WorkflowFailure,
             "briefing_available" => CompanyNotificationType.BriefingAvailable,
+            "accountant_collaboration" => CompanyNotificationType.AccountantCollaboration,
             _ => throw new CompanyOutboxPermanentException($"Unsupported notification type '{value}'.")
         };
 }

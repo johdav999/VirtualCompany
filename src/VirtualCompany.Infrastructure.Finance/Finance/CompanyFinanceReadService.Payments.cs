@@ -311,7 +311,8 @@ public sealed partial class CompanyFinanceReadService
             targetDocument,
             MapSimulationEventReference(allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord),
             MapSimulationEventReference(allocation.TargetSourceSimulationEventRecord ?? allocation.Invoice?.SourceSimulationEventRecord ?? allocation.Bill?.SourceSimulationEventRecord),
-            MapSimulationEventReference(allocation.SourceSimulationEventRecord ?? allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord));
+            MapSimulationEventReference(allocation.SourceSimulationEventRecord ?? allocation.PaymentSourceSimulationEventRecord ?? allocation.Payment.SourceSimulationEventRecord),
+            MapPaymentAllocation(allocation));
     }
 
 }

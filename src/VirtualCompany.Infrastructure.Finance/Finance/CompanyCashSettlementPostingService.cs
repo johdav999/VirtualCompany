@@ -61,6 +61,15 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
         if (!string.Equals(payment.Status, PaymentStatuses.Completed, StringComparison.OrdinalIgnoreCase))
             throw Validation(nameof(command.PaymentId), "Only completed payments can be posted to the ledger.");
         if (amount > payment.Amount) throw Validation(nameof(command.SettledAmount), "Settled amount cannot exceed the payment amount.");
+        if (command.AccountingFacts is { } suppliedFacts)
+        {
+            if (suppliedFacts.AllocationId == Guid.Empty)
+                throw Validation(nameof(command.AccountingFacts), "Settlement accounting facts require an allocation id.");
+            if (NormalizeMoneyValue(suppliedFacts.AllocatedPaymentAmount) != amount)
+                throw Validation(nameof(command.SettledAmount), "The settled payment amount does not match the retained settlement facts.");
+            if (!string.Equals(suppliedFacts.DocumentCurrency, payment.Currency, StringComparison.OrdinalIgnoreCase))
+                throw Validation(nameof(command.AccountingFacts), "Settlement document currency must match the payment currency.");
+        }
         if (sourceType == FinanceCashPostingSourceTypes.BankTransaction)
             await EnsureMatchedBankTransactionSourceAsync(command.CompanyId, sourceId, cancellationToken);
 
@@ -68,9 +77,10 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
             .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.StartUtc <= postedAtUtc && x.EndUtc > postedAtUtc, cancellationToken)
             ?? throw new AccountingPostingException(AccountingPostingReasonCodes.PeriodNotFound, "No accounting period covers the settlement date.");
         var bank = await _accountRoleResolver.ResolveRequiredAsync(command.CompanyId, AccountingAccountRoleKeys.Bank, cancellationToken);
-        var settlementRole = string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase)
-            ? AccountingAccountRoleKeys.AccountsReceivable
-            : AccountingAccountRoleKeys.AccountsPayable;
+        var settlementRole = command.AccountingFacts?.ControlAccountRole ??
+            (string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase)
+                ? AccountingAccountRoleKeys.AccountsReceivable
+                : AccountingAccountRoleKeys.AccountsPayable);
         var settlement = await _accountRoleResolver.ResolveRequiredAsync(command.CompanyId, settlementRole, cancellationToken);
         var priorLedgerEntryIds = await _dbContext.PaymentCashLedgerLinks.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == command.CompanyId && x.PaymentId == payment.Id &&
@@ -78,7 +88,7 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
             .Select(x => x.LedgerEntryId)
             .Distinct()
             .ToArrayAsync(cancellationToken);
-        if (priorLedgerEntryIds.Length > 0)
+        if (priorLedgerEntryIds.Length > 0 && command.AccountingFacts is null)
         {
             var priorControlLines = await _dbContext.LedgerEntryLines.IgnoreQueryFilters().AsNoTracking()
                 .Where(x => x.CompanyId == command.CompanyId && priorLedgerEntryIds.Contains(x.LedgerEntryId) &&
@@ -94,19 +104,31 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
         var description = string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase)
             ? $"Customer cash settlement for {payment.CounterpartyReference}"
             : $"Supplier cash settlement for {payment.CounterpartyReference}";
-        IReadOnlyList<ProposedAccountingLine> lines = string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase)
-            ?
-            [
-                new(bank.FinanceAccountId, amount, 0m, payment.Currency, description),
-                new(settlement.FinanceAccountId, 0m, amount, payment.Currency, description)
-            ]
-            :
-            [
-                new(settlement.FinanceAccountId, amount, 0m, payment.Currency, description),
-                new(bank.FinanceAccountId, 0m, amount, payment.Currency, description)
-            ];
+        var lines = command.AccountingFacts is null
+            ? BuildLegacyLines(payment, bank.FinanceAccountId, settlement.FinanceAccountId, amount, description)
+            : await BuildGovernedLinesAsync(command.CompanyId, payment, command.AccountingFacts,
+                bank.FinanceAccountId, settlement.FinanceAccountId, description, cancellationToken);
         var idempotencyKey = $"cash-settlement:{command.CompanyId:N}:{sourceType}:{sourceId}:{payment.Id:N}:{postedAtUtc.Ticks}";
-        var sourceVersion = $"{payment.UpdatedUtc.Ticks}:{amount:0.00}";
+        var sourceVersion = command.AccountingFacts is null
+            ? $"{payment.UpdatedUtc.Ticks}:{amount:0.00}"
+            : $"{payment.UpdatedUtc.Ticks}:{command.AccountingFacts.AllocationId:N}:{command.AccountingFacts.JournalDocumentTotal:0.00}:{command.AccountingFacts.SettlementRateIdentity}";
+        var policyFacts = new Dictionary<string, string>
+        {
+            ["paymentId"] = payment.Id.ToString("N"),
+            ["settledAmount"] = amount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)
+        };
+        if (command.AccountingFacts is { } facts)
+        {
+            policyFacts["allocationId"] = facts.AllocationId.ToString("N");
+            policyFacts["documentCurrency"] = facts.DocumentCurrency;
+            policyFacts["functionalCurrency"] = facts.FunctionalCurrency;
+            policyFacts["allocatedDocumentAmount"] = facts.AllocatedDocumentAmount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+            policyFacts["allocatedFunctionalAmount"] = facts.AllocatedFunctionalAmount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+            policyFacts["settlementFunctionalAmount"] = facts.SettlementFunctionalAmount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+            policyFacts["realizedGainLossAmount"] = facts.RealizedGainLossAmount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture);
+            policyFacts["settlementRateIdentity"] = facts.SettlementRateIdentity;
+            policyFacts["isFinalSettlement"] = facts.IsFinalSettlement.ToString();
+        }
         var posted = await _postingService.PostAsync(new PostAccountingEntryCommand(
             new ProposedAccountingEntry(
                 command.CompanyId,
@@ -121,14 +143,10 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
                 sourceVersion,
                 idempotencyKey,
                 lines,
-                Guid.Empty,
-                PolicyFacts: new Dictionary<string, string>
-                {
-                    ["paymentId"] = payment.Id.ToString("N"),
-                    ["settledAmount"] = amount.ToString("0.00", System.Globalization.CultureInfo.InvariantCulture)
-                },
-                ActorType: AuditActorTypes.System,
-                EffectivePostedAtUtc: postedAtUtc)), cancellationToken);
+                command.ActorUserId,
+                PolicyFacts: policyFacts,
+                ActorType: command.ActorUserId == Guid.Empty ? AuditActorTypes.System : AuditActorTypes.User,
+                EffectivePostedAtUtc: postedAtUtc), command.CorrelationId), cancellationToken);
 
         var ledgerEntryId = posted.Journal.Id;
         var linkExists = await _dbContext.PaymentCashLedgerLinks.IgnoreQueryFilters().AsNoTracking()
@@ -142,7 +160,110 @@ public sealed class CompanyCashSettlementPostingService : IFinanceCashSettlement
         }
 
         return new CashSettlementPostingResultDto(command.CompanyId, ledgerEntryId, sourceType, sourceId, amount,
-            posted.Journal.PostedAtUtc ?? postedAtUtc, !posted.IsIdempotentReplay);
+            posted.Journal.PostedAtUtc ?? postedAtUtc, !posted.IsIdempotentReplay,
+            command.AccountingFacts?.RealizedGainLossAmount ?? 0m);
+    }
+
+    private static IReadOnlyList<ProposedAccountingLine> BuildLegacyLines(
+        Payment payment, Guid bankAccountId, Guid settlementAccountId, decimal amount, string description) =>
+        string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase)
+            ?
+            [
+                new(bankAccountId, amount, 0m, payment.Currency, description),
+                new(settlementAccountId, 0m, amount, payment.Currency, description)
+            ]
+            :
+            [
+                new(settlementAccountId, amount, 0m, payment.Currency, description),
+                new(bankAccountId, 0m, amount, payment.Currency, description)
+            ];
+
+    private async Task<IReadOnlyList<ProposedAccountingLine>> BuildGovernedLinesAsync(
+        Guid companyId,
+        Payment payment,
+        CashSettlementAccountingFacts facts,
+        Guid bankAccountId,
+        Guid settlementAccountId,
+        string description,
+        CancellationToken cancellationToken)
+    {
+        var incoming = string.Equals(payment.PaymentType, PaymentTypes.Incoming, StringComparison.OrdinalIgnoreCase);
+        var lines = new List<ProposedAccountingLine>(6);
+        if (incoming)
+        {
+            AddLine(lines, bankAccountId, facts.BankFunctionalAmount, 0m, facts.AllocatedPaymentAmount, 0m, facts, description);
+            if (facts.FeeFunctionalAmount > 0m)
+            {
+                var fee = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.BankFee, cancellationToken);
+                AddLine(lines, fee.FinanceAccountId, facts.FeeFunctionalAmount, 0m, facts.FeeDocumentAmount, 0m, facts, description);
+            }
+            if (facts.WriteOffFunctionalAmount > 0m)
+            {
+                var discount = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.SettlementDiscount, cancellationToken);
+                AddLine(lines, discount.FinanceAccountId, facts.WriteOffFunctionalAmount, 0m, facts.WriteOffDocumentAmount, 0m, facts, description);
+            }
+            AddLine(lines, settlementAccountId, 0m, facts.AllocatedFunctionalAmount, 0m,
+                facts.AllocatedDocumentAmount + facts.WriteOffDocumentAmount, facts, description);
+        }
+        else
+        {
+            AddLine(lines, settlementAccountId, facts.AllocatedFunctionalAmount, 0m,
+                facts.AllocatedDocumentAmount + facts.WriteOffDocumentAmount, 0m, facts, description);
+            if (facts.FeeFunctionalAmount > 0m)
+            {
+                var fee = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.BankFee, cancellationToken);
+                AddLine(lines, fee.FinanceAccountId, facts.FeeFunctionalAmount, 0m, facts.FeeDocumentAmount, 0m, facts, description);
+            }
+            AddLine(lines, bankAccountId, 0m, facts.BankFunctionalAmount, 0m, facts.AllocatedPaymentAmount, facts, description);
+            if (facts.WriteOffFunctionalAmount > 0m)
+            {
+                var discount = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.SettlementDiscount, cancellationToken);
+                AddLine(lines, discount.FinanceAccountId, 0m, facts.WriteOffFunctionalAmount, 0m,
+                    facts.WriteOffDocumentAmount, facts, description);
+            }
+        }
+
+        if (facts.RealizedGainLossAmount > 0m)
+        {
+            var gain = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.ExchangeGain, cancellationToken);
+            AddLine(lines, gain.FinanceAccountId, 0m, facts.RealizedGainLossAmount, 0m, 0m, facts, description);
+        }
+        else if (facts.RealizedGainLossAmount < 0m)
+        {
+            var loss = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.ExchangeLoss, cancellationToken);
+            AddLine(lines, loss.FinanceAccountId, Math.Abs(facts.RealizedGainLossAmount), 0m, 0m, 0m, facts, description);
+        }
+
+        if (facts.RoundingFunctionalAmount != 0m)
+        {
+            var rounding = await _accountRoleResolver.ResolveRequiredAsync(companyId, AccountingAccountRoleKeys.RoundingDifference, cancellationToken);
+            AddLine(lines, rounding.FinanceAccountId,
+                facts.RoundingFunctionalAmount < 0m ? Math.Abs(facts.RoundingFunctionalAmount) : 0m,
+                facts.RoundingFunctionalAmount > 0m ? facts.RoundingFunctionalAmount : 0m,
+                0m, 0m, facts, description);
+        }
+
+        var debit = NormalizeMoneyValue(lines.Sum(x => x.DebitAmount));
+        var credit = NormalizeMoneyValue(lines.Sum(x => x.CreditAmount));
+        if (debit != credit)
+            throw Validation(nameof(PostCashSettlementCommand.AccountingFacts), "Settlement accounting facts do not produce a balanced functional-currency journal.");
+        return lines;
+    }
+
+    private static void AddLine(List<ProposedAccountingLine> lines, Guid accountId,
+        decimal debit, decimal credit, decimal documentDebit, decimal documentCredit,
+        CashSettlementAccountingFacts facts, string description)
+    {
+        if (debit == 0m && credit == 0m) return;
+        var isForeign = !string.Equals(facts.DocumentCurrency, facts.FunctionalCurrency, StringComparison.OrdinalIgnoreCase);
+        lines.Add(new ProposedAccountingLine(accountId, debit, credit, facts.FunctionalCurrency, description,
+            DocumentDebitAmount: documentDebit, DocumentCreditAmount: documentCredit,
+            DocumentCurrency: facts.DocumentCurrency,
+            ExchangeRate: facts.SettlementRate,
+            ExchangeRateDate: facts.SettlementRateDate,
+            ExchangeRateConversionId: isForeign ? facts.SettlementExchangeRateConversionId : null,
+            ExchangeRateIdentity: facts.SettlementRateIdentity,
+            ConversionRoundingResidual: facts.SettlementConversionRoundingResidual));
     }
 
     private async Task EnsureMatchedBankTransactionSourceAsync(Guid companyId, string sourceId, CancellationToken cancellationToken)

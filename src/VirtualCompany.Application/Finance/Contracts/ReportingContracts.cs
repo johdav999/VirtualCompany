@@ -115,6 +115,17 @@ public static class ReportingPeriodBlockingIssueCodes
     public const string VatReturnStale = "vat_return_stale";
     public const string VatReturnBlocking = "vat_return_blocking";
     public const string VatReturnUnreviewed = "vat_return_unreviewed";
+    public const string CurrencyRevaluationMissing = "currency_revaluation_missing";
+    public const string CurrencyRevaluationStale = "currency_revaluation_stale";
+    public const string CurrencyRevaluationFailed = "currency_revaluation_failed";
+    public const string CurrencyRevaluationUnposted = "currency_revaluation_unposted";
+    public const string CurrencyRevaluationUnreconciled = "currency_revaluation_unreconciled";
+    public const string CurrencyRevaluationSuperseded = "currency_revaluation_superseded";
+    public const string AccountingSchedulesIncomplete = "accounting_schedules_incomplete";
+    public const string FixedAssetDepreciationIncomplete = "fixed_asset_depreciation_incomplete";
+    public const string FixedAssetSubledgerUnreconciled = "fixed_asset_subledger_unreconciled";
+    public const string FixedAssetMigrationConflicts = "fixed_asset_migration_conflicts";
+    public const string AccountingSchedulesUnreconciled = "accounting_schedules_unreconciled";
     public const string StoredReportsStale = "stored_reports_stale";
 }
 

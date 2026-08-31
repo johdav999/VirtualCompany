@@ -8,6 +8,7 @@ param(
     [switch]$RequireReady,
     [string]$ExpectedChecksum,
     [string]$WriteChecksumPath,
+    [string]$WriteManifestPath,
     [string]$AccessToken = $env:VC_ACCOUNTING_OPERATOR_TOKEN
 )
 
@@ -75,8 +76,24 @@ if (-not [string]::IsNullOrWhiteSpace($WriteChecksumPath))
     Set-Content -LiteralPath $WriteChecksumPath -Value $result.evidenceChecksum -Encoding utf8NoBOM
 }
 
+if (-not [string]::IsNullOrWhiteSpace($WriteManifestPath))
+{
+    $manifestParent = Split-Path -Parent $WriteManifestPath
+    if (-not [string]::IsNullOrWhiteSpace($manifestParent))
+    {
+        New-Item -ItemType Directory -Path $manifestParent -Force | Out-Null
+    }
+
+    $result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $WriteManifestPath -Encoding utf8NoBOM
+}
+
 Write-Host "Accounting recovery verification succeeded."
 Write-Host "Company: $($CompanyId.ToString('D'))"
 Write-Host "Journals: $($result.journalCount); Lines: $($result.lineCount); Evidence links: $($result.evidenceLinkCount)"
 Write-Host "Object content verified: $($result.objectContentVerified)"
 Write-Host "Evidence checksum: $($result.evidenceChecksum)"
+if ($result.advancedControls)
+{
+    Write-Host "Advanced controls:"
+    $result.advancedControls | Format-Table key, status, recordCount, debit, credit, difference, checksum -AutoSize
+}

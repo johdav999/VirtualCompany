@@ -101,4 +101,23 @@ public sealed class BankConnectionsAuthorizationTests
                 x => x.Policy == CompanyPolicies.FinanceApproval);
         }
     }
+
+    [Fact]
+    public void Exchange_rate_authority_requires_company_accounting_view_and_admin_for_mutations()
+    {
+        var type = typeof(ExchangeRatesController);
+        Assert.Contains(type.GetCustomAttributes<AuthorizeAttribute>(), x => x.Policy == CompanyPolicies.AccountingView);
+        Assert.NotNull(type.GetCustomAttribute<RequireCompanyContextAttribute>());
+
+        foreach (var methodName in new[]
+                 {
+                     "ConfigureCurrencyAsync", "ConfigureSourceAsync", "ImportManualAsync",
+                     "ReviewSetAsync", "QueueRefreshAsync", "ConvertAsync"
+                 })
+        {
+            var method = Assert.Single(type.GetMethods(), x => x.Name == methodName);
+            Assert.Contains(method.GetCustomAttributes<AuthorizeAttribute>(),
+                x => x.Policy == CompanyPolicies.AccountingAdmin);
+        }
+    }
 }

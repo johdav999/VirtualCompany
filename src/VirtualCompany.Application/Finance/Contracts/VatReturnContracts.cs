@@ -39,11 +39,12 @@ public static class VatReturnAllowedActions
 
 public sealed record CreateVatFilingPeriodCommand(
     Guid CompanyId, string PeriodCode, DateOnly StartDate, DateOnly EndDate,
-    string Currency, Guid? FiscalPeriodId, Guid ActorUserId);
+    string Currency, Guid? FiscalPeriodId, Guid ActorUserId, DateOnly? DueDate = null);
 
 public sealed record CalculateVatReturnCommand(
     Guid CompanyId, Guid FilingPeriodId, Guid? VatReturnId,
     string IdempotencyKey, Guid ActorUserId);
+public sealed record SetVatFilingPeriodDueDateCommand(Guid CompanyId,Guid FilingPeriodId,DateOnly DueDate,Guid ActorUserId);
 
 public sealed record RequestVatReturnApprovalCommand(
     Guid CompanyId, Guid VatReturnId, string ExpectedInputHash, Guid ActorUserId);
@@ -61,7 +62,7 @@ public sealed record GetVatReturnPackageQuery(Guid CompanyId, Guid VatReturnId);
 
 public sealed record VatFilingPeriodDto(
     Guid Id, Guid CompanyId, string PeriodCode, DateOnly StartDate, DateOnly EndDate,
-    string Currency, Guid? FiscalPeriodId, DateTime CreatedUtc);
+    string Currency, Guid? FiscalPeriodId, DateTime CreatedUtc, DateOnly? DueDate = null);
 
 public sealed record VatReturnBoxResultDto(
     string BoxCode, string FactType, decimal ExactAmount, long FilingAmount,
@@ -107,6 +108,7 @@ public interface IVatReturnService
 {
     Task<VatFilingPeriodDto> CreateFilingPeriodAsync(CreateVatFilingPeriodCommand command, CancellationToken cancellationToken);
     Task<IReadOnlyList<VatFilingPeriodDto>> ListFilingPeriodsAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<VatFilingPeriodDto> SetFilingPeriodDueDateAsync(SetVatFilingPeriodDueDateCommand command, CancellationToken cancellationToken);
     Task<VatReturnDto> CalculateAsync(CalculateVatReturnCommand command, CancellationToken cancellationToken);
     Task<VatReturnDto> GetAsync(GetVatReturnQuery query, CancellationToken cancellationToken);
     Task<IReadOnlyList<VatReturnDto>> ListAsync(ListVatReturnsQuery query, CancellationToken cancellationToken);

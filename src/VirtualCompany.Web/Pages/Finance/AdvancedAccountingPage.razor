@@ -1,0 +1,109 @@
+@page "/finance/accounting/advanced"
+@page "/finance/accounting/advanced/{Workspace}"
+@page "/finance/accounting/currency-rates"
+@page "/finance/accounting/dimensions"
+@page "/finance/accounting/schedules"
+@page "/finance/accounting/fixed-assets"
+@page "/finance/accounting/revaluation"
+@inherits FinancePageBase
+
+<PageTitle>@FinanceText["AdvancedAccountingTitle"]</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="@FinanceText["AdvancedAccountingTitle"]" Description="@FinanceText["AdvancedAccountingDescription"]"
+                   LoadingMessage="@FinanceText["LoadingAdvancedAccounting"]">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <header class="advanced-accounting-header">
+        <div>
+            <span class="dashboard-kicker">@FinanceText["NativeAccounting"]</span>
+            <h2>@FinanceText["AdvancedAccountingTitle"]</h2>
+            <p>@FinanceText["AdvancedAccountingHelp"]</p>
+        </div>
+        @if (Periods.Count > 0 && ActiveWorkspace is "currency-rates" or "fixed-assets" or "revaluation")
+        {
+            <label class="advanced-period-selector" for="advanced-period">
+                <span>@FinanceText["FiscalPeriod"]</span>
+                <select id="advanced-period" class="form-select" value="@SelectedPeriodId" @onchange="ChangePeriodAsync">
+                    @foreach (var period in Periods)
+                    {
+                        <option value="@period.Id">@period.Name · @period.StartDate.ToString("d")–@period.EndDate.ToString("d")</option>
+                    }
+                </select>
+            </label>
+        }
+    </header>
+
+    <div class="advanced-accounting-context" role="note">
+        <span aria-hidden="true">ⓘ</span>
+        <div><strong>@FinanceText["AdvancedAccountingDailyWork"]</strong><p>@FinanceText["AdvancedAccountingDailyWorkHelp"]</p></div>
+        <a href="@Href(FinanceRoutes.AccountingConnections)">@FinanceText["ProviderAdministration"]</a>
+    </div>
+
+    @if (!string.IsNullOrWhiteSpace(WorkspaceError))
+    {
+        <div class="alert alert-danger advanced-accounting-error" role="alert">
+            <span>@WorkspaceError</span>
+            <button class="btn btn-sm btn-outline-danger" type="button" @onclick="RetryContextAsync">@CommonText["TryAgain"]</button>
+        </div>
+    }
+
+    <nav class="advanced-accounting-tabs" aria-label="@FinanceText["AdvancedAccountingViews"]">
+        <a class="@(ActiveWorkspace == "currency-rates" ? "active" : null)" aria-current="@(ActiveWorkspace == "currency-rates" ? "page" : null)" href="@Href(FinanceRoutes.AccountingCurrencyRates)"><span aria-hidden="true">¤</span>@FinanceText["CurrencyRates"]</a>
+        <a class="@(ActiveWorkspace == "dimensions" ? "active" : null)" aria-current="@(ActiveWorkspace == "dimensions" ? "page" : null)" href="@Href(FinanceRoutes.AccountingDimensions)"><span aria-hidden="true">▦</span>@FinanceText["AccountingDimensions"]</a>
+        <a class="@(ActiveWorkspace == "schedules" ? "active" : null)" aria-current="@(ActiveWorkspace == "schedules" ? "page" : null)" href="@Href(FinanceRoutes.AccountingSchedules)"><span aria-hidden="true">↻</span>@FinanceText["AccountingSchedules"]</a>
+        <a class="@(ActiveWorkspace == "fixed-assets" ? "active" : null)" aria-current="@(ActiveWorkspace == "fixed-assets" ? "page" : null)" href="@Href(FinanceRoutes.AccountingFixedAssets)"><span aria-hidden="true">▤</span>@FinanceText["FixedAssets"]</a>
+        <a class="@(ActiveWorkspace == "revaluation" ? "active" : null)" aria-current="@(ActiveWorkspace == "revaluation" ? "page" : null)" href="@Href(FinanceRoutes.AccountingRevaluation)"><span aria-hidden="true">≈</span>@FinanceText["CurrencyRevaluation"]</a>
+    </nav>
+
+    @if (ActiveWorkspace == "currency-rates")
+    {
+        <CurrencyRatesWorkspace CompanyId="@AccessState.CompanyId" CanManage="@CanManageAccounting"
+                                RevaluationHref="@Href(FinanceRoutes.AccountingRevaluation)"
+                                ReportsHref="@Href(FinanceRoutes.AccountingReports)"
+                                JournalHref="@Href(FinanceRoutes.AccountingJournal)"
+                                ReconciliationHref="@Href(FinanceRoutes.AccountingReconciliation)" />
+    }
+    else if (ActiveWorkspace == "dimensions")
+    {
+        <AccountingDimensionsWorkspace CompanyId="@AccessState.CompanyId" CanManage="@CanManageAccounting" Currency="@FunctionalCurrency" />
+    }
+    else if (ActiveWorkspace == "schedules")
+    {
+        <AccountingSchedulesWorkspace CompanyId="@AccessState.CompanyId" CanManage="@CanManageAccounting" CanApprove="@CanApproveSchedules" />
+    }
+    else if (ActiveWorkspace == "fixed-assets")
+    {
+        @if (SelectedPeriod is null)
+        {
+            <div class="advanced-accounting-state"><span aria-hidden="true">▤</span><h3>@FinanceText["FiscalPeriodRequired"]</h3><p>@FinanceText["FiscalPeriodRequiredHelp"]</p></div>
+        }
+        else
+        {
+            <FixedAssetsWorkspace CompanyId="@AccessState.CompanyId" FiscalPeriodId="@SelectedPeriod.Id"
+                                  PeriodStart="@SelectedPeriod.StartDate" PeriodEnd="@SelectedPeriod.EndDate"
+                                  CanApprove="@CanApproveSchedules" JournalHref="@JournalEntryUrl" />
+        }
+    }
+    else if (SelectedPeriod is null)
+    {
+        <div class="advanced-accounting-state"><span aria-hidden="true">≈</span><h3>@FinanceText["FiscalPeriodRequired"]</h3><p>@FinanceText["FiscalPeriodRequiredHelp"]</p></div>
+    }
+    else
+    {
+        <CurrencyRevaluationWorkspace CompanyId="@AccessState.CompanyId" FiscalPeriodId="@SelectedPeriod.Id"
+                                      CanManage="@CanManageAccounting" IsPeriodClosed="@SelectedPeriod.IsClosed"
+                                      RequestedRunId="@RequestedRunId" />
+    }
+
+    @if (ActiveWorkspace != "currency-rates")
+    {
+        <nav class="advanced-accounting-crosslinks" aria-label="@FinanceText["AccountingDrilldown"]">
+            <div><span class="dashboard-kicker">@FinanceText["EvidencePath"]</span><strong>@FinanceText["AdvancedEvidenceChain"]</strong></div>
+            <a href="@Href(FinanceRoutes.AccountingCurrencyRates)">@FinanceText["CurrencyRates"] <span aria-hidden="true">→</span></a>
+            <a href="@Href(FinanceRoutes.AccountingJournal)">@FinanceText["ViewImmutableJournal"] <span aria-hidden="true">→</span></a>
+            <a href="@Href(FinanceRoutes.AccountingReports)">@FinanceText["ReportsCloseTitle"] <span aria-hidden="true">→</span></a>
+            <a href="@Href(FinanceRoutes.AccountingReconciliation)">@FinanceText["AccountingReconciliationNav"] <span aria-hidden="true">→</span></a>
+        </nav>
+    }
+</FinancePageLayout>

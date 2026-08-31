@@ -17,7 +17,11 @@ public sealed class FinancialStatementMapping : ICompanyOwnedEntity
         FinancialStatementLineClassification lineClassification,
         bool isActive = true,
         DateTime? createdUtc = null,
-        DateTime? updatedUtc = null)
+        DateTime? updatedUtc = null,
+        long versionNumber = 1,
+        DateOnly? effectiveFrom = null,
+        DateOnly? effectiveTo = null,
+        Guid? supersedesMappingId = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -40,6 +44,10 @@ public sealed class FinancialStatementMapping : ICompanyOwnedEntity
         {
             throw new ArgumentOutOfRangeException(nameof(updatedUtc), "UpdatedUtc cannot be earlier than CreatedUtc.");
         }
+        if (versionNumber < 1) throw new ArgumentOutOfRangeException(nameof(versionNumber));
+        if (effectiveTo.HasValue && effectiveTo.Value < (effectiveFrom ?? DateOnly.MinValue))
+            throw new ArgumentOutOfRangeException(nameof(effectiveTo), "EffectiveTo cannot be earlier than EffectiveFrom.");
+        if (supersedesMappingId == Guid.Empty) throw new ArgumentException("SupersedesMappingId cannot be empty.", nameof(supersedesMappingId));
 
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = companyId;
@@ -48,6 +56,10 @@ public sealed class FinancialStatementMapping : ICompanyOwnedEntity
         ReportSection = reportSection;
         LineClassification = lineClassification;
         IsActive = isActive;
+        VersionNumber = versionNumber;
+        EffectiveFrom = effectiveFrom ?? DateOnly.MinValue;
+        EffectiveTo = effectiveTo;
+        SupersedesMappingId = supersedesMappingId;
         CreatedUtc = normalizedCreatedUtc;
         UpdatedUtc = normalizedUpdatedUtc;
     }
@@ -59,10 +71,24 @@ public sealed class FinancialStatementMapping : ICompanyOwnedEntity
     public FinancialStatementReportSection ReportSection { get; private set; }
     public FinancialStatementLineClassification LineClassification { get; private set; }
     public bool IsActive { get; private set; }
+    public long VersionNumber { get; private set; }
+    public DateOnly EffectiveFrom { get; private set; }
+    public DateOnly? EffectiveTo { get; private set; }
+    public Guid? SupersedesMappingId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FinanceAccount FinanceAccount { get; private set; } = null!;
+
+    public bool IsEffectiveOn(DateOnly date) => EffectiveFrom <= date && (!EffectiveTo.HasValue || date < EffectiveTo.Value);
+
+    public void Retire(DateOnly effectiveTo, DateTime? updatedUtc = null)
+    {
+        if (effectiveTo < EffectiveFrom) throw new ArgumentOutOfRangeException(nameof(effectiveTo));
+        EffectiveTo = effectiveTo;
+        IsActive = false;
+        UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(updatedUtc ?? DateTime.UtcNow, nameof(updatedUtc));
+    }
 
     public void UpdateClassification(
         FinancialStatementReportSection reportSection,

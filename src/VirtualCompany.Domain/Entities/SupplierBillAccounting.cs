@@ -68,6 +68,12 @@ public sealed class SupplierBillAccountingProfile : ICompanyOwnedEntity
     public decimal RecoverableTaxBaseAmount { get; private set; }
     public decimal GrossBaseAmount { get; private set; }
     public decimal RoundingBaseAmount { get; private set; }
+    public Guid? ExchangeRateConversionId { get; private set; }
+    public DateOnly? ExchangeRateDate { get; private set; }
+    public string? ExchangeRatePurpose { get; private set; }
+    public string? ExchangeRateIdentity { get; private set; }
+    public decimal? ConversionRoundingResidual { get; private set; }
+    public string CurrencyProvenance { get; private set; } = "legacy_unverified_rate";
     public Guid PayableAccountId { get; private set; }
     public string TaxTreatment { get; private set; } = null!;
     public string PolicyPackKey { get; private set; } = null!;
@@ -90,6 +96,7 @@ public sealed class SupplierBillAccountingProfile : ICompanyOwnedEntity
     public FinanceBill? OriginalBill { get; private set; }
     public ApprovalRequest? ApprovalRequest { get; private set; }
     public LedgerEntry? LedgerEntry { get; private set; }
+    public ExchangeRateConversion? ExchangeRateConversion { get; private set; }
     public ICollection<SupplierBillAccountingLine> Lines { get; } = new List<SupplierBillAccountingLine>();
 
     public void ReplaceFacts(
@@ -108,6 +115,32 @@ public sealed class SupplierBillAccountingProfile : ICompanyOwnedEntity
 
     public void SetPayloadHash(string payloadHash) =>
         PayloadHash = NormalizeRequired(payloadHash, nameof(payloadHash), 64).ToLowerInvariant();
+
+    public void BindCurrencyFacts(Guid? exchangeRateConversionId, DateOnly exchangeRateDate,
+        string exchangeRatePurpose, string exchangeRateIdentity, decimal conversionRoundingResidual,
+        string currencyProvenance, Guid actorUserId, DateTime nowUtc)
+    {
+        var isForeign = !string.Equals(DocumentCurrency, BaseCurrency, StringComparison.OrdinalIgnoreCase);
+        if (isForeign && exchangeRateConversionId is null)
+            throw new ArgumentException("Foreign-currency accounting requires a retained conversion.", nameof(exchangeRateConversionId));
+        if (exchangeRateConversionId == Guid.Empty)
+            throw new ArgumentException("ExchangeRateConversionId cannot be empty.", nameof(exchangeRateConversionId));
+        if (!isForeign && ExchangeRate != 1m)
+            throw new InvalidOperationException("Base-currency accounting must use the identity rate of 1.");
+        ExchangeRateConversionId = exchangeRateConversionId;
+        ExchangeRateDate = exchangeRateDate;
+        ExchangeRatePurpose = NormalizeRequired(exchangeRatePurpose, nameof(exchangeRatePurpose), 32).ToLowerInvariant();
+        ExchangeRateIdentity = NormalizeRequired(exchangeRateIdentity, nameof(exchangeRateIdentity), 128).ToLowerInvariant();
+        ConversionRoundingResidual = decimal.Round(conversionRoundingResidual, 18, MidpointRounding.ToEven);
+        CurrencyProvenance = NormalizeRequired(currencyProvenance, nameof(currencyProvenance), 32).ToLowerInvariant();
+        Touch(actorUserId, nowUtc);
+    }
+
+    public bool HasAuthoritativeCurrencyFacts =>
+        string.Equals(DocumentCurrency, BaseCurrency, StringComparison.OrdinalIgnoreCase)
+            ? ExchangeRate == 1m
+            : ExchangeRateConversionId.HasValue && ExchangeRateDate.HasValue &&
+              !string.IsNullOrWhiteSpace(ExchangeRatePurpose) && !string.IsNullOrWhiteSpace(ExchangeRateIdentity);
 
     public void BindApproval(Guid approvalRequestId, Guid actorUserId, DateTime nowUtc)
     {
@@ -160,6 +193,13 @@ public sealed class SupplierBillAccountingProfile : ICompanyOwnedEntity
         RecoverableTaxBaseAmount = NormalizeAmount(recoverableTaxBaseAmount);
         GrossBaseAmount = NormalizePositive(grossBaseAmount);
         RoundingBaseAmount = decimal.Round(roundingBaseAmount, 6, MidpointRounding.ToEven);
+        ExchangeRateConversionId = null;
+        ExchangeRateDate = null;
+        ExchangeRatePurpose = null;
+        ExchangeRateIdentity = null;
+        ConversionRoundingResidual = null;
+        CurrencyProvenance = string.Equals(DocumentCurrency, BaseCurrency, StringComparison.OrdinalIgnoreCase)
+            ? "base_currency_identity" : "legacy_unverified_rate";
         PayableAccountId = payableAccountId == Guid.Empty ? throw new ArgumentException("PayableAccountId is required.", nameof(payableAccountId)) : payableAccountId;
         TaxTreatment = NormalizeRequired(taxTreatment, nameof(taxTreatment), 32).ToLowerInvariant();
         PolicyPackKey = NormalizeRequired(policyPackKey, nameof(policyPackKey), 96).ToLowerInvariant();

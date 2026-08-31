@@ -478,6 +478,7 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == paymentStatus &&
                 x.Payment.PaymentType == paymentType);
 
@@ -493,7 +494,7 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
 
         return await allocations
             .GroupBy(x => x.InvoiceId!.Value)
-            .Select(group => new AllocationLookupRow(group.Key, group.Sum(x => x.AllocatedAmount)))
+            .Select(group => new AllocationLookupRow(group.Key, group.Sum(x => x.AllocatedAmount + x.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
     }
 
@@ -511,6 +512,7 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.BillId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == paymentStatus &&
                 x.Payment.PaymentType == paymentType);
 
@@ -526,7 +528,7 @@ public sealed class CompanyDashboardFinanceSnapshotService : IDashboardFinanceSn
 
         return await allocations
             .GroupBy(x => x.BillId!.Value)
-            .Select(group => new AllocationLookupRow(group.Key, group.Sum(x => x.AllocatedAmount)))
+            .Select(group => new AllocationLookupRow(group.Key, group.Sum(x => x.AllocatedAmount + x.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
     }
 

@@ -68,10 +68,14 @@ public sealed partial class InternalFinanceController : ControllerBase
     private readonly IAccountingMigrationService _accountingMigrationService;
     private readonly IAccountingRecoveryVerificationService _accountingRecoveryVerificationService;
     private readonly IAccountingAdministrationService _accountingAdministrationService;
+    private readonly IAccountingDimensionService _accountingDimensionService;
+    private readonly IAccountingScheduleService _accountingScheduleService;
+    private readonly IFixedAssetService _fixedAssetService;
     private readonly IAccountingPostingService _accountingPostingService;
     private readonly IAccountingJournalReadService _accountingJournalReadService;
     private readonly IAccountingReportingService _accountingReportingService;
     private readonly IVatReturnService _vatReturnService;
+    private readonly ICurrencyRevaluationService _currencyRevaluationService;
     private readonly IManualJournalService _manualJournalService;
     private readonly ICustomerInvoiceDraftService _customerInvoiceDraftService;
     private readonly ICustomerInvoiceScheduleService _customerInvoiceScheduleService;
@@ -129,10 +133,14 @@ public sealed partial class InternalFinanceController : ControllerBase
         IAccountingMigrationService accountingMigrationService,
         IAccountingRecoveryVerificationService accountingRecoveryVerificationService,
         IAccountingAdministrationService accountingAdministrationService,
+        IAccountingDimensionService accountingDimensionService,
+        IAccountingScheduleService accountingScheduleService,
+        IFixedAssetService fixedAssetService,
         IAccountingPostingService accountingPostingService,
         IAccountingJournalReadService accountingJournalReadService,
         IAccountingReportingService accountingReportingService,
         IVatReturnService vatReturnService,
+        ICurrencyRevaluationService currencyRevaluationService,
         IManualJournalService manualJournalService,
         ICustomerInvoiceDraftService customerInvoiceDraftService,
         ICustomerInvoiceScheduleService customerInvoiceScheduleService,
@@ -191,10 +199,14 @@ public sealed partial class InternalFinanceController : ControllerBase
         _accountingMigrationService = accountingMigrationService;
         _accountingRecoveryVerificationService = accountingRecoveryVerificationService;
         _accountingAdministrationService = accountingAdministrationService;
+        _accountingDimensionService = accountingDimensionService;
+        _accountingScheduleService = accountingScheduleService;
+        _fixedAssetService = fixedAssetService;
         _accountingPostingService = accountingPostingService;
         _accountingJournalReadService = accountingJournalReadService;
         _accountingReportingService = accountingReportingService;
         _vatReturnService = vatReturnService;
+        _currencyRevaluationService = currencyRevaluationService;
         _manualJournalService = manualJournalService;
         _customerInvoiceDraftService = customerInvoiceDraftService;
         _customerInvoiceScheduleService = customerInvoiceScheduleService;
@@ -1882,6 +1894,33 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("read_vat_return", ex);
             return Conflict(CreateVatReturnProblemDetails(ex));
         }
+        catch (ComplianceObligationException ex)
+        {
+            return Conflict(StableProblemDetails.Create(HttpContext, StatusCodes.Status409Conflict, ex.Code,
+                "Compliance obligation request was rejected", ex.Message));
+        }
+        catch (AuditPackageException ex)
+        {
+            LogHandledFinanceException("read_audit_package", ex);
+            var status = ex.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+            return new ObjectResult(StableProblemDetails.Create(HttpContext, status, ex.ReasonCode,
+                "Audit package request was rejected", ex.Message)) { StatusCode = status };
+        }
+        catch (CurrencyRevaluationException ex)
+        {
+            LogHandledFinanceException("read_currency_revaluation", ex);
+            return CreateCurrencyRevaluationErrorResult<T>(ex);
+        }
+        catch (AccountingScheduleException ex)
+        {
+            LogHandledFinanceException("read_accounting_schedule", ex);
+            return CreateAccountingScheduleErrorResult<T>(ex);
+        }
+        catch (FixedAssetException ex)
+        {
+            LogHandledFinanceException("read_fixed_asset", ex);
+            return CreateFixedAssetErrorResult<T>(ex);
+        }
         catch (AccountingAuthorityException ex)
         {
             LogHandledFinanceException("read_accounting_authority", ex);
@@ -1891,6 +1930,11 @@ public sealed partial class InternalFinanceController : ControllerBase
         {
             LogHandledFinanceException("read_accounting_posting", ex);
             return CreateAccountingPostingErrorResult<T>(ex);
+        }
+        catch (AccountingDimensionException ex)
+        {
+            LogHandledFinanceException("read_accounting_dimension", ex);
+            return CreateAccountingDimensionErrorResult<T>(ex);
         }
         catch (ManualJournalException ex)
         {
@@ -2036,6 +2080,33 @@ public sealed partial class InternalFinanceController : ControllerBase
             LogHandledFinanceException("write_vat_return", ex);
             return Conflict(CreateVatReturnProblemDetails(ex));
         }
+        catch (ComplianceObligationException ex)
+        {
+            return Conflict(StableProblemDetails.Create(HttpContext, StatusCodes.Status409Conflict, ex.Code,
+                "Compliance obligation request was rejected", ex.Message));
+        }
+        catch (AuditPackageException ex)
+        {
+            LogHandledFinanceException("write_audit_package", ex);
+            var status = ex.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+            return new ObjectResult(StableProblemDetails.Create(HttpContext, status, ex.ReasonCode,
+                "Audit package request was rejected", ex.Message)) { StatusCode = status };
+        }
+        catch (CurrencyRevaluationException ex)
+        {
+            LogHandledFinanceException("write_currency_revaluation", ex);
+            return CreateCurrencyRevaluationErrorResult<T>(ex);
+        }
+        catch (AccountingScheduleException ex)
+        {
+            LogHandledFinanceException("write_accounting_schedule", ex);
+            return CreateAccountingScheduleErrorResult<T>(ex);
+        }
+        catch (FixedAssetException ex)
+        {
+            LogHandledFinanceException("write_fixed_asset", ex);
+            return CreateFixedAssetErrorResult<T>(ex);
+        }
         catch (AccountingAuthorityException ex)
         {
             LogHandledFinanceException("write_accounting_authority", ex);
@@ -2045,6 +2116,11 @@ public sealed partial class InternalFinanceController : ControllerBase
         {
             LogHandledFinanceException("write_accounting_posting", ex);
             return CreateAccountingPostingErrorResult<T>(ex);
+        }
+        catch (AccountingDimensionException ex)
+        {
+            LogHandledFinanceException("write_accounting_dimension", ex);
+            return CreateAccountingDimensionErrorResult<T>(ex);
         }
         catch (ManualJournalException ex)
         {
@@ -2417,6 +2493,56 @@ public sealed partial class InternalFinanceController : ControllerBase
             exception.Message);
         if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
         return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateAccountingDimensionErrorResult<T>(AccountingDimensionException exception)
+    {
+        var status = exception.ReasonCode == AccountingDimensionReasonCodes.NotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Accounting dimension conflict" :
+            status == StatusCodes.Status404NotFound ? "Accounting dimension record was not found" :
+            "Accounting dimension request was rejected", exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateCurrencyRevaluationErrorResult<T>(CurrencyRevaluationException exception)
+    {
+        var status = exception.ReasonCode == CurrencyRevaluationReasonCodes.NotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Currency revaluation conflict" :
+            status == StatusCodes.Status404NotFound ? "Currency revaluation run was not found" :
+            "Currency revaluation request was rejected", exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateAccountingScheduleErrorResult<T>(AccountingScheduleException exception)
+    {
+        var status = exception.ReasonCode == AccountingScheduleReasonCodes.NotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        var problem = StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Accounting schedule conflict" :
+            status == StatusCodes.Status404NotFound ? "Accounting schedule was not found" :
+            "Accounting schedule request was rejected", exception.Message);
+        if (exception.CurrentVersion.HasValue) problem.Extensions["currentVersion"] = exception.CurrentVersion.Value;
+        return new ObjectResult(problem) { StatusCode = status };
+    }
+
+    private ActionResult<T> CreateFixedAssetErrorResult<T>(FixedAssetException exception)
+    {
+        var status = exception.ReasonCode is FixedAssetReasonCodes.NotFound or FixedAssetReasonCodes.ClassNotFound
+            ? StatusCodes.Status404NotFound
+            : exception.IsConflict ? StatusCodes.Status409Conflict : StatusCodes.Status400BadRequest;
+        return new ObjectResult(StableProblemDetails.Create(HttpContext, status, exception.ReasonCode,
+            status == StatusCodes.Status409Conflict ? "Fixed-asset conflict" :
+            status == StatusCodes.Status404NotFound ? "Fixed-asset record was not found" :
+            "Fixed-asset request was rejected", exception.Message)) { StatusCode = status };
     }
 
     private ActionResult<T> CreateCustomerInvoiceScheduleErrorResult<T>(CustomerInvoiceScheduleException exception)

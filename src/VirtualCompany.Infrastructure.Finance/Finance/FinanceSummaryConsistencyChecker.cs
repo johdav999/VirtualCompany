@@ -86,10 +86,11 @@ public sealed class FinanceSummaryConsistencyChecker
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
                 x.Payment.PaymentDate <= asOfUtc), companyId, normalizedSourceFilter)
-            .Select(x => new AllocationRow(x.InvoiceId!.Value, x.AllocatedAmount))
+            .Select(x => new AllocationRow(x.InvoiceId!.Value, x.AllocatedAmount + x.WriteOffAmount))
             .ToListAsync(cancellationToken);
 
         var outgoingAllocationRows = await sourcePolicy.ApplyPaymentAllocationFilter(_dbContext.PaymentAllocations
@@ -98,10 +99,11 @@ public sealed class FinanceSummaryConsistencyChecker
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.BillId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
                 x.Payment.PaymentDate <= asOfUtc), companyId, normalizedSourceFilter)
-            .Select(x => new AllocationRow(x.BillId!.Value, x.AllocatedAmount))
+            .Select(x => new AllocationRow(x.BillId!.Value, x.AllocatedAmount + x.WriteOffAmount))
             .ToListAsync(cancellationToken);
 
         var completedIncomingByInvoice = incomingAllocationRows

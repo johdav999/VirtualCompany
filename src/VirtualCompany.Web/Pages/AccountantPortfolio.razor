@@ -1,0 +1,92 @@
+@page "/accountant/portfolio"
+@inject AccountantCollaborationApiClient CollaborationApi
+@inject OnboardingApiClient OnboardingApi
+@inject NavigationManager Navigation
+
+<PageTitle>Accountant portfolio</PageTitle>
+
+<main class="accountant-page" aria-labelledby="accountant-title">
+    <header class="accountant-heading">
+        <div><span class="accountant-kicker">External accountant</span><h1 id="accountant-title">Accountant portfolio</h1><p>Review only the companies and work covered by your explicit active engagements.</p></div>
+        <button class="btn btn-outline-secondary" type="button" @onclick="LoadAsync" disabled="@loading">Refresh</button>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(error)) { <div class="alert alert-danger" role="alert">@error</div> }
+    @if (loading) { <div class="accountant-state" role="status">Loading accountant engagements…</div> }
+    else
+    {
+        <section class="accountant-kpis" aria-label="Portfolio status">
+            <article><span>Active engagements</span><strong>@portfolio.ActiveCompanyCount</strong><small>Explicit grants only</small></article>
+            <article><span>Closing soon</span><strong>@portfolio.ClosingSoonCount</strong><small>Within 14 days</small></article>
+            <article class="@(portfolio.HighRiskCount > 0 ? "risk" : null)"><span>High risk</span><strong>@portfolio.HighRiskCount</strong><small>Needs attention</small></article>
+            <article><span>Evidence requests</span><strong>@portfolio.OpenEvidenceRequestCount</strong><small>Open across portfolio</small></article>
+        </section>
+
+        <div class="accountant-workspace">
+            <section class="accountant-card portfolio-card" aria-labelledby="companies-heading">
+                <div class="card-heading"><div><h2 id="companies-heading">Company engagements</h2><p>No implicit group access; revoked grants disappear immediately.</p></div></div>
+                @if (portfolio.Companies.Count == 0) { <div class="accountant-state">No active company engagement grants.</div> }
+                else
+                {
+                    <div class="table-responsive"><table class="table accountant-table"><thead><tr><th>Company</th><th>Close</th><th>Compliance</th><th>Unreconciled</th><th>Evidence</th><th>Next due</th></tr></thead><tbody>
+                    @foreach (var company in portfolio.Companies)
+                    {
+                        <tr class="@(selectedCompany?.CompanyId == company.CompanyId ? "selected" : null)" @onclick="() => SelectCompanyAsync(company)" tabindex="0">
+                            <td><strong>@company.CompanyName</strong><small>@company.GrantStatus · explicit grant</small></td><td>@Friendly(company.CloseStatus)</td>
+                            <td><span class="@(company.VatOrComplianceIssues > 0 ? "risk-pill" : "ok-pill")">@company.VatOrComplianceIssues</span></td>
+                            <td>@company.UnreconciledItems</td><td>@company.OpenEvidenceRequests</td><td>@(company.NextDueUtc?.ToLocalTime().ToString("d MMM") ?? "—")</td>
+                        </tr>
+                    }
+                    </tbody></table></div>
+                }
+            </section>
+
+            <aside class="accountant-card collaboration-card" aria-labelledby="collaboration-heading">
+                <div class="card-heading"><div><span class="accountant-kicker">Finance Manager</span><h2 id="collaboration-heading">Collaboration</h2></div></div>
+                @if (selectedEngagement is null) { <div class="accountant-state">Select a company and engagement to review notes, findings, evidence, and sign-off history.</div> }
+                else
+                {
+                    <div class="engagement-summary"><strong>@selectedEngagement.Title</strong><span>@selectedCompany?.CompanyName · @Friendly(selectedEngagement.Status) · due @selectedEngagement.DueUtc.ToLocalTime().ToString("d MMM yyyy")</span><a class="btn btn-sm btn-outline-secondary" href="@CloseWorkspaceHref()">Open the same close evidence</a></div>
+                    <label for="review-note">Add note or finding</label><textarea id="review-note" class="form-control" rows="3" @bind="draftText"></textarea>
+                    <div class="inline-actions"><button class="btn btn-outline-primary" @onclick="() => AddItemAsync(false)" disabled="@acting">Add note</button><button class="btn btn-outline-warning" @onclick="() => AddItemAsync(true)" disabled="@acting">Add finding</button></div>
+                    <label for="evidence-text">Request evidence</label><textarea id="evidence-text" class="form-control" rows="2" @bind="evidenceText"></textarea>
+                    <button class="btn btn-primary" @onclick="RequestEvidenceAsync" disabled="@acting">Send evidence request</button>
+                }
+            </aside>
+        </div>
+
+        @if (selectedCompany is not null)
+        {
+            <section class="accountant-card engagement-detail" aria-labelledby="engagement-heading">
+                <div class="card-heading"><div><span class="accountant-kicker">Selected company · isolated context</span><h2 id="engagement-heading">@selectedCompany.CompanyName</h2><p>Grant @selectedCompany.GrantId.ToString("N")[..10] · last access @(selectedCompany.LastAccessUtc?.ToLocalTime().ToString("g") ?? "first access")</p><a href="@CloseWorkspaceHref()">Open @selectedCompany.CompanyName close workspace</a></div>
+                    <select class="form-select" value="@selectedEngagement?.Id" @onchange="ChangeEngagement"><option value="">Choose engagement</option>@foreach (var engagement in engagements) { <option value="@engagement.Id">@engagement.Title</option> }</select></div>
+                @if (selectedEngagement is not null)
+                {
+                    <div class="detail-columns">
+                        <div><h3>Notes & findings</h3>@foreach (var item in selectedEngagement.ReviewItems) { <article class="timeline-item"><span class="@(item.IsFinding ? "finding-dot" : "note-dot")"></span><div><strong>@(item.IsFinding ? "Finding" : "Note") · @Friendly(item.Severity)</strong><p>@item.Content</p><small>@Friendly(item.TargetType) · @item.CreatedUtc.ToLocalTime().ToString("g") · @Friendly(item.Status)</small></div></article> }</div>
+                        <div><h3>Evidence requests</h3>@foreach (var item in selectedEngagement.EvidenceRequests) { <article class="timeline-item"><span class="evidence-dot"></span><div><strong>@item.RequestText</strong><p>Due @item.DueUtc.ToLocalTime().ToString("d MMM yyyy") · @Friendly(item.Status)</p><small>@item.Responses.Count response(s); inaccessible attachments remain hidden.</small></div></article> }</div>
+                        <div><h3>Immutable history</h3>@foreach (var item in selectedEngagement.History) { <article class="timeline-item"><span class="history-dot"></span><div><strong>@Friendly(item.Action)</strong><p>@item.SafeSummary</p><small>@item.OccurredUtc.ToLocalTime().ToString("g")</small></div></article> }</div>
+                    </div>
+                    <div class="signoff-bar"><div><strong>Independent sign-off</strong><span>Preparers cannot sign off their own work. Open findings or evidence block sign-off.</span></div><input class="form-control" aria-label="Sign-off conclusion" @bind="conclusion" placeholder="Conclusion"/><button class="btn btn-success" @onclick="SignOffAsync" disabled="@acting">Sign off</button></div>
+                }
+            </section>
+        }
+    }
+</main>
+
+@code {
+    [SupplyParameterFromQuery(Name = "companyId")] public Guid? RequestedCompanyId { get; set; }
+    private AccountantPortfolioViewModel portfolio = new(); private AccountantPortfolioCompanyViewModel? selectedCompany;
+    private List<AccountantEngagementViewModel> engagements = []; private AccountantEngagementViewModel? selectedEngagement;
+    private bool loading = true; private bool acting; private string? error; private string draftText = ""; private string evidenceText = ""; private string conclusion = "";
+    protected override async Task OnInitializedAsync() => await LoadAsync();
+    private async Task LoadAsync() { loading = true; error = null; try { portfolio = await CollaborationApi.GetPortfolioAsync(); var match = RequestedCompanyId.HasValue ? portfolio.Companies.FirstOrDefault(x => x.CompanyId == RequestedCompanyId) : null; if (match is not null) await SelectCompanyAsync(match); } catch (Exception ex) { error = ex.Message; } finally { loading = false; } }
+    private async Task SelectCompanyAsync(AccountantPortfolioCompanyViewModel company) { selectedCompany = company; selectedEngagement = null; error = null; try { await OnboardingApi.SelectCompanyAsync(company.CompanyId); engagements = await CollaborationApi.GetEngagementsAsync(company.CompanyId); selectedEngagement = engagements.FirstOrDefault(); Navigation.NavigateTo($"/accountant/portfolio?companyId={company.CompanyId}", false, true); } catch (Exception ex) { error = ex.Message; engagements = []; } }
+    private void ChangeEngagement(ChangeEventArgs args) { selectedEngagement = Guid.TryParse(args.Value?.ToString(), out var id) ? engagements.FirstOrDefault(x => x.Id == id) : null; }
+    private async Task AddItemAsync(bool finding) { if (selectedCompany is null || selectedEngagement is null || string.IsNullOrWhiteSpace(draftText)) return; await ActAsync(async () => { selectedEngagement = await CollaborationApi.AddReviewItemAsync(selectedCompany.CompanyId, selectedEngagement.Id, finding, finding ? "medium" : "informational", draftText, "engagement", selectedEngagement.Id); draftText = ""; }); }
+    private async Task RequestEvidenceAsync() { if (selectedCompany is null || selectedEngagement is null || string.IsNullOrWhiteSpace(evidenceText)) return; await ActAsync(async () => { selectedEngagement = await CollaborationApi.RequestEvidenceAsync(selectedCompany.CompanyId, selectedEngagement.Id, evidenceText, "engagement", selectedEngagement.Id, null, DateTime.UtcNow.AddDays(7)); evidenceText = ""; }); }
+    private async Task SignOffAsync() { if (selectedCompany is null || selectedEngagement is null || string.IsNullOrWhiteSpace(conclusion)) return; await ActAsync(async () => { selectedEngagement = await CollaborationApi.SignOffAsync(selectedCompany.CompanyId, selectedEngagement.Id, conclusion, selectedEngagement.Version); conclusion = ""; }); }
+    private async Task ActAsync(Func<Task> action) { acting = true; error = null; try { await action(); } catch (Exception ex) { error = ex.Message; } finally { acting = false; } }
+    private string CloseWorkspaceHref() { if (selectedCompany is null) return "/finance/accounting/close-workspace"; var period = selectedEngagement?.FiscalPeriodId is Guid id ? $"&periodId={id:D}" : string.Empty; return $"/finance/accounting/close-workspace?companyId={selectedCompany.CompanyId:D}{period}"; }
+    private static string Friendly(string value) => value.Replace('_', ' ').Replace('-', ' ');
+}

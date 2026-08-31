@@ -20,6 +20,7 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
     private readonly IAuditEventWriter _audit;
     private readonly TimeProvider _timeProvider;
     private readonly IAccountingPolicyPackResolver _packResolver;
+    private readonly IExchangeRateService? _exchangeRates;
 
     public CustomerInvoiceAccountingService(
         VirtualCompanyDbContext dbContext,
@@ -28,7 +29,8 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         IAccountingJournalReadService journalReadService,
         IAuditEventWriter audit,
         TimeProvider timeProvider,
-        IAccountingPolicyPackResolver packResolver)
+        IAccountingPolicyPackResolver packResolver,
+        IExchangeRateService? exchangeRates = null)
     {
         _dbContext = dbContext;
         _policy = policy;
@@ -37,6 +39,7 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         _audit = audit;
         _timeProvider = timeProvider;
         _packResolver = packResolver;
+        _exchangeRates = exchangeRates;
     }
 
     public Task<CustomerInvoiceAccountingPreviewDto> PreviewAsync(
@@ -103,6 +106,9 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         if (factsUnchanged && profile!.ApprovalRequestId.HasValue)
             return new(await MapStateAsync(profile, cancellationToken), profile.ApprovalRequestId.Value, true);
 
+        var retainedCurrency = await RetainCurrencyFactsAsync(plan, command.ActorUserId,
+            command.CorrelationId, cancellationToken);
+
         var now = _timeProvider.GetUtcNow().UtcDateTime;
         if (profile is null)
         {
@@ -138,6 +144,9 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                     line.NetAmount, line.TaxAmount, line.GrossAmount, line.NetBaseAmount, line.TaxBaseAmount,
                     line.TaxPayableAccountId, SerializeTaxFacts(line, plan, command.ActorUserId)));
         }
+        profile.BindCurrencyFacts(retainedCurrency.ConversionId, plan.ExchangeRateDate,
+            plan.ExchangeRatePurpose, plan.ExchangeRateIdentity, retainedCurrency.RoundingResidual,
+            retainedCurrency.Provenance, command.ActorUserId, now);
 
         var approval = ApprovalRequest.CreateForTarget(Guid.NewGuid(), command.CompanyId,
             ApprovalTargetEntityType.CustomerInvoiceAccounting, profile.Id, AuditActorTypes.User,
@@ -148,6 +157,8 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                 ["payloadHash"] = JsonValue.Create(profile.PayloadHash),
                 ["invoiceId"] = JsonValue.Create(command.InvoiceId.ToString("N")),
                 ["grossBaseAmount"] = JsonValue.Create(profile.GrossBaseAmount),
+                ["exchangeRateIdentity"] = JsonValue.Create(profile.ExchangeRateIdentity),
+                ["exchangeRateConversionId"] = JsonValue.Create(profile.ExchangeRateConversionId?.ToString("N")),
                 ["idempotencyKey"] = JsonValue.Create(command.IdempotencyKey.Trim())
             }, null, null,
             [new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "finance_approver")]);
@@ -163,6 +174,8 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                 ["invoiceId"] = command.InvoiceId.ToString("N"),
                 ["sourceVersion"] = profile.Version.ToString(CultureInfo.InvariantCulture),
                 ["payloadHash"] = profile.PayloadHash
+                , ["exchangeRateIdentity"] = profile.ExchangeRateIdentity
+                , ["exchangeRateConversionId"] = profile.ExchangeRateConversionId?.ToString("N")
             }, command.CorrelationId, now), cancellationToken);
         await _dbContext.SaveChangesAsync(cancellationToken);
         return new(await MapStateAsync(profile, cancellationToken), approval.Id, false);
@@ -238,7 +251,7 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
 
             var originalInput = ToInput(originalProfile);
             var creditInput = new CustomerInvoiceAccountingInput(command.Accounting.FiscalPeriodId,
-                command.Accounting.VoucherSeriesCode, command.Accounting.ExchangeRate ?? originalProfile.ExchangeRate,
+                command.Accounting.VoucherSeriesCode, command.Accounting.ExchangeRate,
                 originalInput.Lines);
             var plan = await _policy.BuildPlanAsync(new(command.CompanyId, credit.Id, creditInput, command.ActorUserId), cancellationToken);
             if (!plan.IsReady)
@@ -315,17 +328,62 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             .SumAsync(x => x.DebitAmount - x.CreditAmount, cancellationToken);
         var profileByInvoice = profiles.ToDictionary(x => x.InvoiceId);
         var allocations = await _dbContext.PaymentAllocations.IgnoreQueryFilters().AsNoTracking()
-            .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId != null && profileByInvoice.Keys.Contains(x.InvoiceId.Value))
+            .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId != null &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
+                profileByInvoice.Keys.Contains(x.InvoiceId.Value))
             .ToListAsync(cancellationToken);
-        var allocatedBase = allocations.Sum(x => x.AllocatedAmount * profileByInvoice[x.InvoiceId!.Value].ExchangeRate);
+        var allocatedBase = allocations.Sum(x => x.AllocatedFunctionalAmount ??
+            decimal.Round((x.AllocatedAmount + x.WriteOffAmount) * profileByInvoice[x.InvoiceId!.Value].ExchangeRate,
+                configuration.RoundingPrecision, MidpointRounding.ToEven));
         var difference = decimal.Round(postedDocuments - ledger, configuration.RoundingPrecision, MidpointRounding.ToEven);
+        var breakdown = profiles.GroupBy(x => x.DocumentCurrency, StringComparer.OrdinalIgnoreCase).Select(group =>
+        {
+            var ids = group.Select(x => x.InvoiceId).ToHashSet();
+            var documentPosted = group.Sum(x => x.Invoice.DocumentKind == FinanceDocumentKinds.CreditNote ? -x.GrossAmount : x.GrossAmount);
+            var functionalPosted = group.Sum(x => x.Invoice.DocumentKind == FinanceDocumentKinds.CreditNote ? -x.GrossBaseAmount : x.GrossBaseAmount);
+            var documentAllocated = allocations.Where(x => x.InvoiceId.HasValue && ids.Contains(x.InvoiceId.Value))
+                .Sum(x => x.AllocatedAmount + x.WriteOffAmount);
+            var functionalAllocated = allocations.Where(x => x.InvoiceId.HasValue && ids.Contains(x.InvoiceId.Value))
+                .Sum(x => x.AllocatedFunctionalAmount ??
+                    decimal.Round((x.AllocatedAmount + x.WriteOffAmount) * profileByInvoice[x.InvoiceId!.Value].ExchangeRate,
+                        configuration.RoundingPrecision, MidpointRounding.ToEven));
+            return new DocumentCurrencyOpenItemControlDto(group.Key, documentPosted, documentAllocated,
+                documentPosted - documentAllocated, functionalPosted, functionalAllocated,
+                functionalPosted - functionalAllocated, configuration.BaseCurrency);
+        }).OrderBy(x => x.DocumentCurrency, StringComparer.Ordinal).ToArray();
         return new(query.CompanyId, configuration.BaseCurrency, postedDocuments, ledger, allocatedBase,
-            postedDocuments - allocatedBase, difference, difference == 0m, _timeProvider.GetUtcNow().UtcDateTime);
+            postedDocuments - allocatedBase, difference, difference == 0m, _timeProvider.GetUtcNow().UtcDateTime,
+            breakdown);
+    }
+
+    private async Task<RetainedDocumentCurrencyFacts> RetainCurrencyFactsAsync(
+        CustomerInvoiceAccountingPlan plan, Guid actorUserId, string? correlationId,
+        CancellationToken cancellationToken)
+    {
+        if (string.Equals(plan.Invoice.Currency, plan.Configuration!.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+            return new(null, 0m, DocumentCurrencyFacts.BaseCurrencyIdentity);
+
+        if (_exchangeRates is null)
+            throw Error(CustomerInvoiceAccountingReasonCodes.CurrencyConversionMissing,
+                "The authoritative exchange-rate service is unavailable.");
+        var conversion = await _exchangeRates.ConvertAsync(new(plan.Invoice.CompanyId, actorUserId,
+            plan.GrossAmount, plan.Invoice.Currency, plan.Configuration.BaseCurrency,
+            plan.ExchangeRateDate, plan.ExchangeRatePurpose,
+            $"customer-invoice:{plan.Invoice.Id:N}:{plan.PayloadHash}:gross", correlationId), cancellationToken);
+        if (conversion.EffectiveRate != plan.ExchangeRate || conversion.RoundedAmount != plan.GrossBaseAmount ||
+            !string.Equals(DocumentCurrencyFacts.RateIdentity(conversion), plan.ExchangeRateIdentity,
+                StringComparison.OrdinalIgnoreCase))
+            throw Error(CustomerInvoiceAccountingReasonCodes.VersionConflict,
+                "The selected exchange rate changed while the invoice was being prepared. Refresh the preview before submitting.", true);
+        return new(conversion.Id, conversion.RoundingResidual, DocumentCurrencyFacts.AuthoritativeRate);
     }
 
     private async Task<ProposedAccountingEntry> BuildProposedAsync(
         CustomerInvoiceAccountingProfile profile, string idempotencyKey, Guid actorUserId, CancellationToken cancellationToken)
     {
+        if (!profile.HasAuthoritativeCurrencyFacts)
+            throw Error(CustomerInvoiceAccountingReasonCodes.CurrencyConversionMissing,
+                "This invoice has no authoritative currency conversion evidence. Prepare and approve a new accounting version before posting.", true);
         var invoice = await _dbContext.FinanceInvoices.IgnoreQueryFilters().AsNoTracking()
             .SingleAsync(x => x.CompanyId == profile.CompanyId && x.Id == profile.InvoiceId, cancellationToken);
         var isCredit = invoice.DocumentKind == FinanceDocumentKinds.CreditNote;
@@ -333,7 +391,13 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         {
             new(profile.ReceivableAccountId, isCredit ? 0m : profile.GrossBaseAmount,
                 isCredit ? profile.GrossBaseAmount : 0m, profile.BaseCurrency,
-                $"{invoice.InvoiceNumber} · accounts receivable")
+                $"{invoice.InvoiceNumber} · accounts receivable",
+                DocumentDebitAmount: isCredit ? 0m : profile.GrossAmount,
+                DocumentCreditAmount: isCredit ? profile.GrossAmount : 0m,
+                DocumentCurrency: profile.DocumentCurrency, ExchangeRate: profile.ExchangeRate,
+                ExchangeRateDate: profile.ExchangeRateDate, ExchangeRateConversionId: profile.ExchangeRateConversionId,
+                ExchangeRateIdentity: profile.ExchangeRateIdentity,
+                ConversionRoundingResidual: profile.ConversionRoundingResidual)
         };
         var ordered = profile.Lines.OrderBy(x => x.Sequence).ToArray();
         foreach (var line in ordered)
@@ -342,11 +406,21 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             var retainedTaxFacts = ParseTaxFacts(line.TaxFactsJson);
             retainedTaxFacts["documentCurrency"] = profile.DocumentCurrency;
             lines.Add(new(profile.RevenueAccountId, isCredit ? revenue : 0m, isCredit ? 0m : revenue,
-                profile.BaseCurrency, line.Description, TaxFacts: retainedTaxFacts));
+                profile.BaseCurrency, line.Description, TaxFacts: retainedTaxFacts,
+                DocumentDebitAmount: isCredit ? line.NetAmount : 0m,
+                DocumentCreditAmount: isCredit ? 0m : line.NetAmount,
+                DocumentCurrency: profile.DocumentCurrency, ExchangeRate: profile.ExchangeRate,
+                ExchangeRateDate: profile.ExchangeRateDate, ExchangeRateConversionId: profile.ExchangeRateConversionId,
+                ExchangeRateIdentity: profile.ExchangeRateIdentity));
             if (line.TaxBaseAmount > 0m && line.TaxPayableAccountId.HasValue)
                 lines.Add(new(line.TaxPayableAccountId.Value, isCredit ? line.TaxBaseAmount : 0m,
                     isCredit ? 0m : line.TaxBaseAmount, profile.BaseCurrency, $"Tax · {line.Description}",
-                    TaxFacts: retainedTaxFacts));
+                    TaxFacts: retainedTaxFacts,
+                    DocumentDebitAmount: isCredit ? line.TaxAmount : 0m,
+                    DocumentCreditAmount: isCredit ? 0m : line.TaxAmount,
+                    DocumentCurrency: profile.DocumentCurrency, ExchangeRate: profile.ExchangeRate,
+                    ExchangeRateDate: profile.ExchangeRateDate, ExchangeRateConversionId: profile.ExchangeRateConversionId,
+                    ExchangeRateIdentity: profile.ExchangeRateIdentity));
         }
 
         var evidence = new List<ProposedAccountingEvidence>();
@@ -363,21 +437,36 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                 .Where(x => x.CompanyId == profile.CompanyId && x.InvoiceId == profile.OriginalInvoiceId.Value)
                 .Select(x => x.LedgerEntryId).SingleAsync(cancellationToken);
 
+        var policyFacts = new Dictionary<string, string>
+        {
+            ["documentKind"] = invoice.DocumentKind,
+            ["documentCurrency"] = profile.DocumentCurrency,
+            ["exchangeRate"] = profile.ExchangeRate.ToString(CultureInfo.InvariantCulture),
+            ["netAmount"] = profile.NetAmount.ToString(CultureInfo.InvariantCulture),
+            ["taxAmount"] = profile.TaxAmount.ToString(CultureInfo.InvariantCulture),
+            ["grossAmount"] = profile.GrossAmount.ToString(CultureInfo.InvariantCulture),
+            ["currencyProvenance"] = profile.CurrencyProvenance,
+            ["policyDefinitionHash"] = profile.PolicyDefinitionHash
+        };
+        AddOptionalFact(policyFacts, "exchangeRateDate",
+            profile.ExchangeRateDate?.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        AddOptionalFact(policyFacts, "exchangeRateIdentity", profile.ExchangeRateIdentity);
+        AddOptionalFact(policyFacts, "exchangeRateConversionId", profile.ExchangeRateConversionId?.ToString("N"));
+        AddOptionalFact(policyFacts, "conversionRoundingResidual",
+            profile.ConversionRoundingResidual?.ToString(CultureInfo.InvariantCulture));
+
         return new(profile.CompanyId, profile.FiscalPeriodId, profile.VoucherSeriesCode,
             DateOnly.FromDateTime(invoice.IssuedUtc), DateOnly.FromDateTime(invoice.IssuedUtc),
             LedgerPostingTypeValues.SourceDocument, $"{(isCredit ? "Credit note" : "Customer invoice")} {invoice.InvoiceNumber}",
             "customer_invoice", invoice.Id.ToString("N"), profile.Version.ToString(CultureInfo.InvariantCulture),
             idempotencyKey.Trim(), lines, actorUserId, profile.ApprovalRequestId, true,
-            new Dictionary<string, string>
-            {
-                ["documentKind"] = invoice.DocumentKind, ["documentCurrency"] = profile.DocumentCurrency,
-                ["exchangeRate"] = profile.ExchangeRate.ToString(CultureInfo.InvariantCulture),
-                ["netAmount"] = profile.NetAmount.ToString(CultureInfo.InvariantCulture),
-                ["taxAmount"] = profile.TaxAmount.ToString(CultureInfo.InvariantCulture),
-                ["grossAmount"] = profile.GrossAmount.ToString(CultureInfo.InvariantCulture),
-                ["policyDefinitionHash"] = profile.PolicyDefinitionHash
-            }, isCredit ? "credit" : "post", profile.PayloadHash, evidence,
+            policyFacts, isCredit ? "credit" : "post", profile.PayloadHash, evidence,
             originalLedgerEntryId, isCredit ? $"Credit note {invoice.InvoiceNumber} corrects invoice {profile.OriginalInvoiceId:N}." : null);
+    }
+
+    private static void AddOptionalFact(IDictionary<string, string> facts, string key, string? value)
+    {
+        if (!string.IsNullOrWhiteSpace(value)) facts[key] = value;
     }
 
     private async Task<CustomerInvoiceAccountingProfile> LoadProfileAsync(Guid companyId, Guid invoiceId, CancellationToken cancellationToken) =>
@@ -412,7 +501,9 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             profile.ExchangeRate, profile.GrossBaseAmount, profile.BaseCurrency, profile.TaxMethod,
             profile.PolicyPackKey, profile.PolicyPackVersion, profile.LedgerEntryId, voucher,
             profile.OriginalInvoiceId, profile.BlockingReasonCode, profile.BlockingReason, approval,
-            journalLines, profile.BlockingReason is null ? [] : [new(profile.BlockingReasonCode ?? "blocked", profile.BlockingReason)]);
+            journalLines, profile.BlockingReason is null ? [] : [new(profile.BlockingReasonCode ?? "blocked", profile.BlockingReason)],
+            profile.ExchangeRateDate, profile.ExchangeRateConversionId, profile.ExchangeRateIdentity,
+            profile.ConversionRoundingResidual, profile.CurrencyProvenance);
     }
 
     private static IReadOnlyList<CustomerInvoiceAccountingJournalLineDto> BuildStateJournalLines(
@@ -423,7 +514,8 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         if (!accounts.TryGetValue(profile.ReceivableAccountId, out var receivable) || !accounts.TryGetValue(profile.RevenueAccountId, out var revenue)) return result;
         result.Add(new(receivable.Id, "accounts_receivable", receivable.Code, receivable.Name,
             isCredit ? 0m : profile.GrossBaseAmount, isCredit ? profile.GrossBaseAmount : 0m,
-            profile.BaseCurrency, "Accounts receivable"));
+            profile.BaseCurrency, "Accounts receivable", DocumentDebitAmount: isCredit ? 0m : profile.GrossAmount,
+            DocumentCreditAmount: isCredit ? profile.GrossAmount : 0m, DocumentCurrency: profile.DocumentCurrency));
         var ordered = profile.Lines.OrderBy(x => x.Sequence).ToArray();
         foreach (var line in ordered)
         {
@@ -433,13 +525,15 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
                 isCredit ? revenueAmount : 0m, isCredit ? 0m : revenueAmount,
                 profile.BaseCurrency, line.Description, line.TaxRuleKey,
                 taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
-                taxFacts.GetValueOrDefault("evidenceClassification")));
+                taxFacts.GetValueOrDefault("evidenceClassification"), isCredit ? line.NetAmount : 0m,
+                isCredit ? 0m : line.NetAmount, profile.DocumentCurrency));
             if (line.TaxBaseAmount > 0m && line.TaxPayableAccountId.HasValue && accounts.TryGetValue(line.TaxPayableAccountId.Value, out var tax))
                 result.Add(new(tax.Id, taxFacts.GetValueOrDefault("liabilityAccountRole") ?? "tax_payable", tax.Code, tax.Name,
                     isCredit ? line.TaxBaseAmount : 0m, isCredit ? 0m : line.TaxBaseAmount,
                     profile.BaseCurrency, "Tax payable", line.TaxRuleKey,
                     taxFacts.GetValueOrDefault("taxRuleVersion"), ParseList(taxFacts.GetValueOrDefault("vatBoxes")),
-                    taxFacts.GetValueOrDefault("evidenceClassification")));
+                    taxFacts.GetValueOrDefault("evidenceClassification"), isCredit ? line.TaxAmount : 0m,
+                    isCredit ? 0m : line.TaxAmount, profile.DocumentCurrency));
         }
         return result;
     }
@@ -454,9 +548,13 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
         var approval = profile.ApprovalRequest!;
         var version = approval.ThresholdContext.TryGetValue("sourceVersion", out var versionNode) ? versionNode?.ToString() : null;
         var hash = approval.ThresholdContext.TryGetValue("payloadHash", out var hashNode) ? hashNode?.ToString() : null;
+        var rateIdentity = approval.ThresholdContext.TryGetValue("exchangeRateIdentity", out var rateNode) ? rateNode?.ToString() : null;
+        var conversionId = approval.ThresholdContext.TryGetValue("exchangeRateConversionId", out var conversionNode) ? conversionNode?.ToString() : null;
         return approval.TargetEntityType == ApprovalTargetEntityType.CustomerInvoiceAccounting.ToStorageValue() &&
             approval.TargetEntityId == profile.Id && version == profile.Version.ToString(CultureInfo.InvariantCulture) &&
-            string.Equals(hash, profile.PayloadHash, StringComparison.OrdinalIgnoreCase);
+            string.Equals(hash, profile.PayloadHash, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(rateIdentity, profile.ExchangeRateIdentity, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(conversionId, profile.ExchangeRateConversionId?.ToString("N"), StringComparison.OrdinalIgnoreCase);
     }
 
     private static CustomerInvoiceAccountingInput ToInput(CustomerInvoiceAccountingProfile profile) => new(
@@ -559,4 +657,6 @@ public sealed class CustomerInvoiceAccountingService : ICustomerInvoiceAccountin
             ? []
             : value.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
     private static CustomerInvoiceAccountingException Error(string code, string message, bool conflict = false) => new(code, message, conflict);
+
+    private sealed record RetainedDocumentCurrencyFacts(Guid? ConversionId, decimal RoundingResidual, string Provenance);
 }

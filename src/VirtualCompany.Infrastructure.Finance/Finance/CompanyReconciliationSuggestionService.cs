@@ -288,13 +288,13 @@ public sealed class CompanyReconciliationSuggestionService :
 
         if (IsInvoicePaymentPair(suggestion.SourceRecordType, suggestion.TargetRecordType))
         {
-            await ApplyPaymentAllocationAcceptanceAsync(suggestion, isInvoice: true, cancellationToken);
+            await ApplyPaymentAllocationAcceptanceAsync(suggestion, isInvoice: true, actorUserId, cancellationToken);
             return;
         }
 
         if (IsBillPaymentPair(suggestion.SourceRecordType, suggestion.TargetRecordType))
         {
-            await ApplyPaymentAllocationAcceptanceAsync(suggestion, isInvoice: false, cancellationToken);
+            await ApplyPaymentAllocationAcceptanceAsync(suggestion, isInvoice: false, actorUserId, cancellationToken);
             return;
         }
 
@@ -357,6 +357,7 @@ public sealed class CompanyReconciliationSuggestionService :
     private async Task ApplyPaymentAllocationAcceptanceAsync(
         ReconciliationSuggestionRecord suggestion,
         bool isInvoice,
+        Guid actorUserId,
         CancellationToken cancellationToken)
     {
         var paymentId = suggestion.SourceRecordType == ReconciliationRecordTypes.Payment
@@ -417,7 +418,9 @@ public sealed class CompanyReconciliationSuggestionService :
                     isInvoice ? documentId : null,
                     isInvoice ? null : documentId,
                     allocatedAmount,
-                    payment.Currency)),
+                    payment.Currency,
+                    $"reconciliation-suggestion:{suggestion.Id:N}"),
+                actorUserId),
             cancellationToken);
     }
 

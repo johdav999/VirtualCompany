@@ -42,7 +42,11 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
                 x.LineClassification,
                 x.IsActive,
                 x.CreatedUtc,
-                x.UpdatedUtc))
+                x.UpdatedUtc,
+                x.VersionNumber,
+                x.EffectiveFrom,
+                x.EffectiveTo,
+                x.SupersedesMappingId))
             .ToListAsync(cancellationToken);
 
         return rows
@@ -76,7 +80,8 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
             validated.StatementType,
             validated.ReportSection,
             validated.LineClassification,
-            command.IsActive);
+            command.IsActive,
+            effectiveFrom: DateOnly.FromDateTime(DateTime.UtcNow));
 
         _dbContext.FinancialStatementMappings.Add(mapping);
 
@@ -100,7 +105,11 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
             mapping.LineClassification,
             mapping.IsActive,
             mapping.CreatedUtc,
-            mapping.UpdatedUtc));
+            mapping.UpdatedUtc,
+            mapping.VersionNumber,
+            mapping.EffectiveFrom,
+            mapping.EffectiveTo,
+            mapping.SupersedesMappingId));
     }
 
     public async Task<FinancialStatementMappingDto> UpdateAsync(
@@ -128,9 +137,13 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
             command.LineClassification,
             cancellationToken);
 
-        mapping.ReassignAccount(validated.Account.Id);
-        mapping.ReassignStatement(validated.StatementType, validated.ReportSection, validated.LineClassification);
-        mapping.SetActive(command.IsActive);
+        var now = DateTime.UtcNow;
+        var effectiveFrom = DateOnly.FromDateTime(now);
+        mapping.Retire(effectiveFrom, now);
+        var replacement = new FinancialStatementMapping(Guid.NewGuid(), command.CompanyId, validated.Account.Id,
+            validated.StatementType, validated.ReportSection, validated.LineClassification, command.IsActive,
+            now, now, mapping.VersionNumber + 1, effectiveFrom, null, mapping.Id);
+        _dbContext.FinancialStatementMappings.Add(replacement);
 
         try
         {
@@ -142,17 +155,21 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
         }
 
         return MapDto(new MappingRow(
-            mapping.Id,
-            mapping.CompanyId,
-            mapping.FinanceAccountId,
+            replacement.Id,
+            replacement.CompanyId,
+            replacement.FinanceAccountId,
             validated.Account.Code,
             validated.Account.Name,
-            mapping.StatementType,
-            mapping.ReportSection,
-            mapping.LineClassification,
-            mapping.IsActive,
-            mapping.CreatedUtc,
-            mapping.UpdatedUtc));
+            replacement.StatementType,
+            replacement.ReportSection,
+            replacement.LineClassification,
+            replacement.IsActive,
+            replacement.CreatedUtc,
+            replacement.UpdatedUtc,
+            replacement.VersionNumber,
+            replacement.EffectiveFrom,
+            replacement.EffectiveTo,
+            replacement.SupersedesMappingId));
     }
 
     public async Task<FinancialStatementMappingValidationResultDto> ValidateAsync(
@@ -183,7 +200,11 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
                 x.LineClassification,
                 x.IsActive,
                 x.CreatedUtc,
-                x.UpdatedUtc))
+                x.UpdatedUtc,
+                x.VersionNumber,
+                x.EffectiveFrom,
+                x.EffectiveTo,
+                x.SupersedesMappingId))
             .ToListAsync(cancellationToken);
 
         var activeMappings = mappings.Where(x => x.IsActive).ToList();
@@ -436,7 +457,11 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
             row.LineClassification.ToStorageValue(),
             row.IsActive,
             row.CreatedUtc,
-            row.UpdatedUtc);
+            row.UpdatedUtc,
+            row.VersionNumber,
+            row.EffectiveFrom,
+            row.EffectiveTo,
+            row.SupersedesMappingId);
 
     private sealed record AccountRow(
         Guid Id,
@@ -455,7 +480,11 @@ public sealed class CompanyFinancialStatementMappingService : IFinancialStatemen
         FinancialStatementLineClassification LineClassification,
         bool IsActive,
         DateTime CreatedUtc,
-        DateTime UpdatedUtc);
+        DateTime UpdatedUtc,
+        long VersionNumber,
+        DateOnly EffectiveFrom,
+        DateOnly? EffectiveTo,
+        Guid? SupersedesMappingId);
 
     private sealed record ValidatedCommand(
         AccountRow Account,

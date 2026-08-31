@@ -32,6 +32,13 @@ internal sealed class SupplierBillAccountingProfileConfiguration : IEntityTypeCo
         builder.Property(x => x.RecoverableTaxBaseAmount).HasColumnName("recoverable_tax_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.GrossBaseAmount).HasColumnName("gross_base_amount").HasColumnType("decimal(19,6)").IsRequired();
         builder.Property(x => x.RoundingBaseAmount).HasColumnName("rounding_base_amount").HasColumnType("decimal(19,6)").IsRequired();
+        builder.Property(x => x.ExchangeRateConversionId).HasColumnName("exchange_rate_conversion_id");
+        builder.Property(x => x.ExchangeRateDate).HasColumnName("exchange_rate_date");
+        builder.Property(x => x.ExchangeRatePurpose).HasColumnName("exchange_rate_purpose").HasMaxLength(32);
+        builder.Property(x => x.ExchangeRateIdentity).HasColumnName("exchange_rate_identity").HasMaxLength(128);
+        builder.Property(x => x.ConversionRoundingResidual).HasColumnName("conversion_rounding_residual").HasPrecision(38, 18);
+        builder.Property(x => x.CurrencyProvenance).HasColumnName("currency_provenance").HasMaxLength(32).IsRequired();
+        builder.Ignore(x => x.HasAuthoritativeCurrencyFacts);
         builder.Property(x => x.PayableAccountId).HasColumnName("payable_account_id").IsRequired();
         builder.Property(x => x.TaxTreatment).HasColumnName("tax_treatment").HasMaxLength(32).IsRequired();
         builder.Property(x => x.PolicyPackKey).HasColumnName("policy_pack_key").HasMaxLength(96).IsRequired();
@@ -53,6 +60,8 @@ internal sealed class SupplierBillAccountingProfileConfiguration : IEntityTypeCo
         builder.HasIndex(x => new { x.CompanyId, x.BillId }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.Status, x.UpdatedUtc });
         builder.HasIndex(x => new { x.CompanyId, x.LedgerEntryId }).IsUnique().HasFilter("[ledger_entry_id] IS NOT NULL");
+        builder.HasIndex(x => new { x.CompanyId, x.ExchangeRateConversionId });
+        builder.HasIndex(x => new { x.CompanyId, x.DocumentCurrency, x.ExchangeRateDate });
         builder.HasOne(x => x.Bill).WithOne().HasForeignKey<SupplierBillAccountingProfile>(x => new { x.CompanyId, x.BillId })
             .HasPrincipalKey<FinanceBill>(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.OriginalBill).WithMany().HasForeignKey(x => new { x.CompanyId, x.OriginalBillId })
@@ -60,6 +69,8 @@ internal sealed class SupplierBillAccountingProfileConfiguration : IEntityTypeCo
         builder.HasOne(x => x.ApprovalRequest).WithMany().HasForeignKey(x => new { x.CompanyId, x.ApprovalRequestId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne(x => x.LedgerEntry).WithMany().HasForeignKey(x => new { x.CompanyId, x.LedgerEntryId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.ExchangeRateConversion).WithMany().HasForeignKey(x => new { x.CompanyId, x.ExchangeRateConversionId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
         builder.HasOne<FinanceAccount>().WithMany().HasForeignKey(x => new { x.CompanyId, x.PayableAccountId })
             .HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);

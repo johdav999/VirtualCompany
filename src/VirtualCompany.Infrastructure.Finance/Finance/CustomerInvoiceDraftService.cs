@@ -26,13 +26,15 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
     private readonly TimeProvider _timeProvider;
     private readonly IStatutoryDocumentPolicy? _statutoryDocumentPolicy;
     private readonly IAccountingPostingService? _postingService;
+    private readonly IExchangeRateService? _exchangeRates;
 
     public CustomerInvoiceDraftService(VirtualCompanyDbContext dbContext,
         ICustomerInvoiceDraftCalculationPolicy calculationPolicy,
         ICustomerInvoiceDraftReadinessPolicy readinessPolicy, IAuditEventWriter auditWriter,
         CustomerInvoiceDraftTelemetry telemetry, TimeProvider timeProvider,
         IStatutoryDocumentPolicy? statutoryDocumentPolicy = null,
-        IAccountingPostingService? postingService = null)
+        IAccountingPostingService? postingService = null,
+        IExchangeRateService? exchangeRates = null)
     {
         _dbContext = dbContext;
         _calculationPolicy = calculationPolicy;
@@ -42,6 +44,7 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
         _timeProvider = timeProvider;
         _statutoryDocumentPolicy = statutoryDocumentPolicy;
         _postingService = postingService;
+        _exchangeRates = exchangeRates;
     }
 
     public async Task<CustomerInvoiceDraftDto> CreateAsync(CreateCustomerInvoiceDraftCommand command,
@@ -234,6 +237,8 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
         if (submissionBlocker is not null)
             throw new CustomerInvoiceDraftException(submissionBlocker.ReasonCode, submissionBlocker.Explanation);
 
+        var approvalCurrencyFacts = await LookupCurrencyFactsAsync(command.CompanyId, draft, cancellationToken);
+
         await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
         draft = await DraftQuery(true).SingleAsync(x => x.CompanyId == command.CompanyId && x.Id == command.DraftId, cancellationToken);
         EnsureVersion(draft, command.ExpectedVersion);
@@ -254,6 +259,11 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
                 ["resultHash"] = JsonValue.Create(draft.ResultHash),
                 ["grossTotal"] = JsonValue.Create(draft.GrossTotal),
                 ["currency"] = JsonValue.Create(draft.Currency),
+                ["functionalCurrency"] = JsonValue.Create(approvalCurrencyFacts.FunctionalCurrency),
+                ["exchangeRate"] = JsonValue.Create(approvalCurrencyFacts.ExchangeRate),
+                ["exchangeRateDate"] = JsonValue.Create(approvalCurrencyFacts.ExchangeRateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)),
+                ["exchangeRatePurpose"] = JsonValue.Create(approvalCurrencyFacts.ExchangeRatePurpose),
+                ["exchangeRateIdentity"] = JsonValue.Create(approvalCurrencyFacts.ExchangeRateIdentity),
                 ["approvalThreshold"] = JsonValue.Create(readiness.ApprovalThreshold),
                 ["policyPack"] = JsonValue.Create($"{draft.PolicyPackKey}@{draft.PolicyPackVersion}")
             }, null, null, [new ApprovalStepDefinition(1, ApprovalStepApproverType.Role, "finance_approver")]);
@@ -330,9 +340,6 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
                     .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId, cancellationToken)
                     ?? throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.AccountingConfigurationMissing,
                         "Accounting configuration is unavailable.");
-                if (!string.Equals(configuration.BaseCurrency, draft.Currency, StringComparison.OrdinalIgnoreCase))
-                    throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.UnsupportedCurrency,
-                        "Native invoice issue currently supports only the configured accounting currency.");
                 var period = await _dbContext.FiscalPeriods.AsNoTracking().SingleOrDefaultAsync(x =>
                     x.CompanyId == command.CompanyId && x.Id == command.FiscalPeriodId, cancellationToken);
                 if (period is null || period.IsClosed || period.IsReportingLocked ||
@@ -351,6 +358,12 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
                     draft.IssueDate < series.FiscalYearStart || draft.IssueDate > series.FiscalYearEnd)
                     throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.SeriesUnavailable,
                         "The selected document series does not apply to this invoice.");
+                if (!await AccountingSeriesPolicyEnforcement.IsStatutoryDocumentSeriesAllowedAsync(_dbContext,
+                        command.CompanyId, series.Id, "customer_invoice", draft.DocumentType, draft.IssueDate,
+                        profile.BillingCountryCode, configuration.PolicyPackKey, configuration.PolicyPackVersion,
+                        cancellationToken))
+                    throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.SeriesUnavailable,
+                        "The selected document series is not permitted by the active accounting series policy.");
 
                 Guid? originalIssuedDocumentId = null;
                 Guid? originalLedgerEntryId = null;
@@ -379,6 +392,9 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
                 if (!policy.IsAllowed)
                     throw new CustomerInvoiceDraftException(policy.Issues[0].ReasonCode, policy.Issues[0].Explanation);
 
+                var currencyFacts = await RetainCurrencyFactsAsync(command, draft, configuration, cancellationToken);
+                EnsureApprovedCurrencyFacts(draft.ApprovalRequest!, currencyFacts);
+
                 var now = UtcNow();
                 var number = series.Allocate(command.ActorUserId, now);
                 var documentNumber = series.Format(number);
@@ -400,22 +416,27 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
 
                 var accounts = ResolveAccounts(configuration, draft);
                 var accountingProfile = new CustomerInvoiceAccountingProfile(Guid.NewGuid(), command.CompanyId, invoice.Id,
-                    command.FiscalPeriodId, command.VoucherSeriesCode, draft.Currency, configuration.BaseCurrency, 1m,
-                    draft.NetTotal, draft.TaxTotal, draft.GrossTotal, draft.NetTotal, draft.TaxTotal, draft.GrossTotal,
-                    draft.RoundingAmount, accounts.Receivable.Id, accounts.Revenue.Id, "exclusive", draft.PolicyPackKey,
+                    command.FiscalPeriodId, command.VoucherSeriesCode, draft.Currency, configuration.BaseCurrency, currencyFacts.ExchangeRate,
+                    draft.NetTotal, draft.TaxTotal, draft.GrossTotal, currencyFacts.NetBaseAmount, currencyFacts.TaxBaseAmount,
+                    currencyFacts.GrossBaseAmount, currencyFacts.PostingRoundingAmount, accounts.Receivable.Id, accounts.Revenue.Id, "exclusive", draft.PolicyPackKey,
                     draft.PolicyPackVersion, draft.PolicyDefinitionHash, draft.OriginalInvoiceId, command.ActorUserId, now);
                 accountingProfile.SetPayloadHash(draft.ResultHash);
+                accountingProfile.BindCurrencyFacts(currencyFacts.ExchangeRateConversionId, currencyFacts.ExchangeRateDate,
+                    currencyFacts.ExchangeRatePurpose, currencyFacts.ExchangeRateIdentity, currencyFacts.ConversionRoundingResidual,
+                    currencyFacts.CurrencyProvenance, command.ActorUserId, now);
                 accountingProfile.BindApproval(draft.ApprovalRequestId!.Value, command.ActorUserId, now);
                 foreach (var line in draft.Lines.OrderBy(x => x.Sequence))
                     accountingProfile.Lines.Add(new CustomerInvoiceAccountingLine(Guid.NewGuid(), command.CompanyId,
                         accountingProfile.Id, line.Sequence, line.Description, line.TaxRuleKey, "exclusive", line.TaxRate,
-                        line.NetAmount, line.TaxAmount, line.GrossAmount, line.NetAmount, line.TaxAmount,
+                        line.NetAmount, line.TaxAmount, line.GrossAmount,
+                        DocumentCurrencyFacts.Round(line.NetAmount * currencyFacts.ExchangeRate, configuration.RoundingPrecision, configuration.RoundingMode),
+                        DocumentCurrencyFacts.Round(line.TaxAmount * currencyFacts.ExchangeRate, configuration.RoundingPrecision, configuration.RoundingMode),
                         line.TaxAmount == 0m ? null : accounts.Tax.Id, line.TaxEvidenceJson));
                 _dbContext.CustomerInvoiceAccountingProfiles.Add(accountingProfile);
                 await _dbContext.SaveChangesAsync(cancellationToken);
 
                 var posting = await _postingService.PostAsync(new(BuildPostingEntry(command, draft, invoice, accounts,
-                    originalLedgerEntryId), command.CorrelationId), cancellationToken);
+                    originalLedgerEntryId, configuration, currencyFacts), command.CorrelationId), cancellationToken);
                 draft.MarkIssued(invoice.Id, issued.Id, posting.Journal.Id, issued.SnapshotHash, command.ActorUserId, now);
                 _dbContext.CustomerInvoiceDraftOperations.Add(new CustomerInvoiceDraftOperation(Guid.NewGuid(), command.CompanyId,
                     draft.Id, "issue", command.IdempotencyKey, requestHash, draft.Version, draft.ApprovalRequestId, now));
@@ -426,7 +447,10 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
                     ["customer_invoice_draft", "statutory_document_series", "accounting_posting"],
                     new Dictionary<string, string?> { ["snapshotHash"] = issued.SnapshotHash,
                         ["documentNumber"] = documentNumber, ["seriesId"] = series.Id.ToString("N"),
-                        ["journalId"] = posting.Journal.Id.ToString("N"), ["approvalId"] = draft.ApprovalRequestId?.ToString("N") },
+                        ["journalId"] = posting.Journal.Id.ToString("N"), ["approvalId"] = draft.ApprovalRequestId?.ToString("N"),
+                        ["documentCurrency"] = draft.Currency, ["functionalCurrency"] = configuration.BaseCurrency,
+                        ["exchangeRateIdentity"] = currencyFacts.ExchangeRateIdentity,
+                        ["exchangeRateConversionId"] = currencyFacts.ExchangeRateConversionId?.ToString("N") },
                     command.CorrelationId, now), cancellationToken);
                 await _dbContext.SaveChangesAsync(cancellationToken);
                 await transaction.CommitAsync(cancellationToken);
@@ -590,36 +614,141 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
         return (Resolve("accounts_receivable"), Resolve("revenue"), Resolve("tax_payable"));
     }
 
+    private async Task<ApprovalCurrencyFacts> LookupCurrencyFactsAsync(Guid companyId,
+        CustomerInvoiceDraft draft, CancellationToken cancellationToken)
+    {
+        var configuration = await _dbContext.AccountingConfigurations.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken)
+            ?? throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.AccountingConfigurationMissing,
+                "Accounting configuration is unavailable.");
+        var purpose = ExchangeRateLookupPurposes.TransactionDate;
+        if (string.Equals(draft.Currency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+            return new(configuration.BaseCurrency, 1m, draft.IssueDate, purpose,
+                DocumentCurrencyFacts.BaseIdentity(draft.Currency, draft.IssueDate));
+        if (_exchangeRates is null)
+            throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.UnsupportedCurrency,
+                "The authoritative exchange-rate service is unavailable for this document currency.");
+        var lookup = await _exchangeRates.LookupAsync(new(companyId, draft.Currency, configuration.BaseCurrency,
+            draft.IssueDate, purpose), cancellationToken);
+        if (!lookup.IsReady || !lookup.EffectiveRate.HasValue)
+            throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.UnsupportedCurrency,
+                $"The document currency cannot be issued because no authoritative historical rate is available: {lookup.Explanation}");
+        return new(configuration.BaseCurrency, lookup.EffectiveRate.Value, draft.IssueDate, purpose,
+            DocumentCurrencyFacts.RateIdentity(lookup));
+    }
+
+    private async Task<NativeInvoiceCurrencyFacts> RetainCurrencyFactsAsync(IssueCustomerInvoiceDraftCommand command,
+        CustomerInvoiceDraft draft, AccountingConfiguration configuration, CancellationToken cancellationToken)
+    {
+        var approvalFacts = await LookupCurrencyFactsAsync(command.CompanyId, draft, cancellationToken);
+        if (string.Equals(draft.Currency, configuration.BaseCurrency, StringComparison.OrdinalIgnoreCase))
+            return BuildNativeCurrencyFacts(configuration, approvalFacts, null, 0m,
+                DocumentCurrencyFacts.BaseCurrencyIdentity, draft);
+
+        var conversion = await _exchangeRates!.ConvertAsync(new(command.CompanyId, command.ActorUserId,
+            draft.GrossTotal, draft.Currency, configuration.BaseCurrency, draft.IssueDate,
+            approvalFacts.ExchangeRatePurpose,
+            $"native-customer-invoice:{draft.Id:N}:{draft.ResultHash}:gross", command.CorrelationId), cancellationToken);
+        var identity = DocumentCurrencyFacts.RateIdentity(conversion);
+        if (conversion.EffectiveRate != approvalFacts.ExchangeRate ||
+            !string.Equals(identity, approvalFacts.ExchangeRateIdentity, StringComparison.OrdinalIgnoreCase))
+            throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.ApprovalStale,
+                "The authoritative exchange-rate evidence changed after approval. Submit the invoice for approval again.", true, draft.Version);
+        return BuildNativeCurrencyFacts(configuration, approvalFacts, conversion.Id, conversion.RoundingResidual,
+            DocumentCurrencyFacts.AuthoritativeRate, draft, conversion.RoundedAmount);
+    }
+
+    private static NativeInvoiceCurrencyFacts BuildNativeCurrencyFacts(AccountingConfiguration configuration,
+        ApprovalCurrencyFacts approvalFacts, Guid? conversionId, decimal conversionResidual, string provenance,
+        CustomerInvoiceDraft draft, decimal? convertedGross = null)
+    {
+        var netBase = DocumentCurrencyFacts.Round(draft.NetTotal * approvalFacts.ExchangeRate,
+            configuration.RoundingPrecision, configuration.RoundingMode);
+        var taxBase = DocumentCurrencyFacts.Round(draft.TaxTotal * approvalFacts.ExchangeRate,
+            configuration.RoundingPrecision, configuration.RoundingMode);
+        var grossBase = convertedGross ?? DocumentCurrencyFacts.Round(draft.GrossTotal * approvalFacts.ExchangeRate,
+            configuration.RoundingPrecision, configuration.RoundingMode);
+        var postingRounding = DocumentCurrencyFacts.Round(grossBase - netBase - taxBase,
+            configuration.RoundingPrecision, configuration.RoundingMode);
+        return new(conversionId, approvalFacts.ExchangeRate, approvalFacts.ExchangeRateDate,
+            approvalFacts.ExchangeRatePurpose, approvalFacts.ExchangeRateIdentity, conversionResidual, provenance,
+            netBase, taxBase, grossBase, postingRounding);
+    }
+
+    private static void EnsureApprovedCurrencyFacts(ApprovalRequest approval, NativeInvoiceCurrencyFacts facts)
+    {
+        static string? Read(ApprovalRequest request, string key) =>
+            request.ThresholdContext.TryGetValue(key, out var node) ? node?.ToString().Trim('"') : null;
+        var approvedRate = decimal.TryParse(Read(approval, "exchangeRate"), NumberStyles.Number,
+            CultureInfo.InvariantCulture, out var parsed) ? parsed : (decimal?)null;
+        if (approvedRate != facts.ExchangeRate ||
+            !string.Equals(Read(approval, "exchangeRateDate"), facts.ExchangeRateDate.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), StringComparison.Ordinal) ||
+            !string.Equals(Read(approval, "exchangeRatePurpose"), facts.ExchangeRatePurpose, StringComparison.OrdinalIgnoreCase) ||
+            !string.Equals(Read(approval, "exchangeRateIdentity"), facts.ExchangeRateIdentity, StringComparison.OrdinalIgnoreCase))
+            throw new CustomerInvoiceDraftException(CustomerInvoiceDraftReasonCodes.ApprovalStale,
+                "The issued currency conversion does not match the approved exchange-rate evidence. Submit the invoice for approval again.", true);
+    }
+
     private static ProposedAccountingEntry BuildPostingEntry(IssueCustomerInvoiceDraftCommand command,
         CustomerInvoiceDraft draft, FinanceInvoice invoice, (FinanceAccount Receivable, FinanceAccount Revenue,
-        FinanceAccount Tax) accounts, Guid? originalLedgerEntryId)
+        FinanceAccount Tax) accounts, Guid? originalLedgerEntryId, AccountingConfiguration configuration,
+        NativeInvoiceCurrencyFacts currencyFacts)
     {
         var isCredit = draft.DocumentType == CustomerInvoiceDraftDocumentTypes.CreditNote;
         var lines = new List<ProposedAccountingLine>
         {
-            new(accounts.Receivable.Id, isCredit ? 0m : draft.GrossTotal,
-                isCredit ? draft.GrossTotal : 0m, draft.Currency,
-                $"{invoice.InvoiceNumber} · accounts receivable")
+            new(accounts.Receivable.Id, isCredit ? 0m : currencyFacts.GrossBaseAmount,
+                isCredit ? currencyFacts.GrossBaseAmount : 0m, configuration.BaseCurrency,
+                $"{invoice.InvoiceNumber} · accounts receivable",
+                DocumentDebitAmount: isCredit ? 0m : draft.GrossTotal,
+                DocumentCreditAmount: isCredit ? draft.GrossTotal : 0m, DocumentCurrency: draft.Currency,
+                ExchangeRate: currencyFacts.ExchangeRate, ExchangeRateDate: currencyFacts.ExchangeRateDate,
+                ExchangeRateConversionId: currencyFacts.ExchangeRateConversionId,
+                ExchangeRateIdentity: currencyFacts.ExchangeRateIdentity,
+                ConversionRoundingResidual: currencyFacts.ConversionRoundingResidual)
         };
-        foreach (var line in draft.Lines.OrderBy(x => x.Sequence))
+        var ordered = draft.Lines.OrderBy(x => x.Sequence).ToArray();
+        foreach (var line in ordered)
         {
-            lines.Add(new(accounts.Revenue.Id, isCredit ? line.NetAmount : 0m,
-                isCredit ? 0m : line.NetAmount, draft.Currency, line.Description,
+            var functionalNet = DocumentCurrencyFacts.Round(line.NetAmount * currencyFacts.ExchangeRate,
+                configuration.RoundingPrecision, configuration.RoundingMode);
+            if (line.Sequence == ordered[^1].Sequence) functionalNet += currencyFacts.PostingRoundingAmount;
+            lines.Add(new(accounts.Revenue.Id, isCredit ? functionalNet : 0m,
+                isCredit ? 0m : functionalNet, configuration.BaseCurrency, line.Description,
                 TaxFacts: new Dictionary<string, string> { ["taxRuleKey"] = line.TaxRuleKey,
                     ["taxRuleVersion"] = line.TaxRuleVersion, ["taxClassification"] = line.TaxClassification },
-                DimensionFacts: Deserialize<Dictionary<string, string>>(line.DimensionFactsJson)));
+                DimensionFacts: Deserialize<Dictionary<string, string>>(line.DimensionFactsJson),
+                DocumentDebitAmount: isCredit ? line.NetAmount : 0m,
+                DocumentCreditAmount: isCredit ? 0m : line.NetAmount, DocumentCurrency: draft.Currency,
+                ExchangeRate: currencyFacts.ExchangeRate, ExchangeRateDate: currencyFacts.ExchangeRateDate,
+                ExchangeRateConversionId: currencyFacts.ExchangeRateConversionId,
+                ExchangeRateIdentity: currencyFacts.ExchangeRateIdentity,
+                ConversionRoundingResidual: currencyFacts.ConversionRoundingResidual));
             if (line.TaxAmount > 0m)
-                lines.Add(new(accounts.Tax.Id, isCredit ? line.TaxAmount : 0m,
-                    isCredit ? 0m : line.TaxAmount, draft.Currency, "Output VAT",
+            {
+                var functionalTax = DocumentCurrencyFacts.Round(line.TaxAmount * currencyFacts.ExchangeRate,
+                    configuration.RoundingPrecision, configuration.RoundingMode);
+                lines.Add(new(accounts.Tax.Id, isCredit ? functionalTax : 0m,
+                    isCredit ? 0m : functionalTax, configuration.BaseCurrency, "Output VAT",
                     TaxFacts: new Dictionary<string, string> { ["taxRuleKey"] = line.TaxRuleKey,
-                        ["taxRuleVersion"] = line.TaxRuleVersion, ["vatBoxes"] = line.VatBoxMappingsJson }));
+                        ["taxRuleVersion"] = line.TaxRuleVersion, ["vatBoxes"] = line.VatBoxMappingsJson },
+                    DocumentDebitAmount: isCredit ? line.TaxAmount : 0m,
+                    DocumentCreditAmount: isCredit ? 0m : line.TaxAmount, DocumentCurrency: draft.Currency,
+                    ExchangeRate: currencyFacts.ExchangeRate, ExchangeRateDate: currencyFacts.ExchangeRateDate,
+                    ExchangeRateConversionId: currencyFacts.ExchangeRateConversionId,
+                    ExchangeRateIdentity: currencyFacts.ExchangeRateIdentity,
+                    ConversionRoundingResidual: currencyFacts.ConversionRoundingResidual));
+            }
         }
         return new(command.CompanyId, command.FiscalPeriodId, command.VoucherSeriesCode.Trim().ToUpperInvariant(),
             draft.IssueDate, command.AccountingDate, LedgerPostingTypeValues.SourceDocument,
             $"Issued customer {(isCredit ? "credit note" : "invoice")} {invoice.InvoiceNumber}", "customer_invoice_draft", draft.Id.ToString("D"),
             draft.Version.ToString(CultureInfo.InvariantCulture), command.IdempotencyKey, lines, command.ActorUserId,
             draft.ApprovalRequestId, true, new Dictionary<string, string> { ["draftResultHash"] = draft.ResultHash,
-                ["invoiceNumber"] = invoice.InvoiceNumber, ["documentAuthority"] = "native" }, "issue",
+                ["invoiceNumber"] = invoice.InvoiceNumber, ["documentAuthority"] = "native",
+                ["documentCurrency"] = draft.Currency, ["functionalCurrency"] = configuration.BaseCurrency,
+                ["exchangeRateIdentity"] = currencyFacts.ExchangeRateIdentity,
+                ["exchangeRateConversionId"] = currencyFacts.ExchangeRateConversionId?.ToString("N") ?? "identity" }, "issue",
             draft.ResultHash, draft.EvidenceLinks.Select(x => new ProposedAccountingEvidence(x.DocumentId,
                 x.ContentHash, x.Title)).ToArray(),
             OriginalLedgerEntryId: originalLedgerEntryId,
@@ -776,7 +905,9 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
         approval.ThresholdContext.TryGetValue("sourceVersion", out var versionNode) &&
         long.TryParse(versionNode?.ToString().Trim('"'), CultureInfo.InvariantCulture, out var version) && version == draft.Version &&
         approval.ThresholdContext.TryGetValue("resultHash", out var hashNode) &&
-        string.Equals(hashNode?.ToString().Trim('"'), draft.ResultHash, StringComparison.OrdinalIgnoreCase);
+        string.Equals(hashNode?.ToString().Trim('"'), draft.ResultHash, StringComparison.OrdinalIgnoreCase) &&
+        approval.ThresholdContext.TryGetValue("exchangeRateIdentity", out var rateIdentityNode) &&
+        !string.IsNullOrWhiteSpace(rateIdentityNode?.ToString().Trim('"'));
 
     private async Task AuditAsync(Guid companyId, Guid actorId, string action, Guid draftId, string summary,
         string? correlationId, DateTime occurredUtc, CancellationToken cancellationToken, Guid? approvalId = null) =>
@@ -858,4 +989,10 @@ public sealed class CustomerInvoiceDraftService : ICustomerInvoiceDraftService
         "The customer invoice draft could not be found.");
     private sealed record Evidence(Guid DocumentId, string Title, string ContentHash);
     private sealed record Material(IReadOnlyList<Evidence> Evidence, CustomerInvoiceDraftCalculation Calculation);
+    private sealed record ApprovalCurrencyFacts(string FunctionalCurrency, decimal ExchangeRate,
+        DateOnly ExchangeRateDate, string ExchangeRatePurpose, string ExchangeRateIdentity);
+    private sealed record NativeInvoiceCurrencyFacts(Guid? ExchangeRateConversionId, decimal ExchangeRate,
+        DateOnly ExchangeRateDate, string ExchangeRatePurpose, string ExchangeRateIdentity,
+        decimal ConversionRoundingResidual, string CurrencyProvenance, decimal NetBaseAmount,
+        decimal TaxBaseAmount, decimal GrossBaseAmount, decimal PostingRoundingAmount);
 }

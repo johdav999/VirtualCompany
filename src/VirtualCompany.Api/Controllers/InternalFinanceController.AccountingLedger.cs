@@ -72,7 +72,10 @@ public sealed partial class InternalFinanceController
             request.IdempotencyKey,
             request.Lines.Select(line => new ProposedAccountingLine(
                 line.FinanceAccountId, line.DebitAmount, line.CreditAmount, line.Currency, line.Description,
-                line.CostCenterId, line.TaxFacts, line.DimensionFacts)).ToArray(),
+                line.CostCenterId, line.TaxFacts, line.DimensionFacts, line.DocumentDebitAmount,
+                line.DocumentCreditAmount, line.DocumentCurrency, line.ExchangeRate, line.ExchangeRateDate,
+                line.ExchangeRateConversionId, line.ExchangeRateIdentity, line.ConversionRoundingResidual,
+                line.DimensionMemberIds)).ToArray(),
             ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required to post a journal."),
             request.ApprovalRequestId,
             request.RequiresApproval,
@@ -109,6 +112,15 @@ public sealed class ProposedAccountingLineRequest
     public Guid? CostCenterId { get; set; }
     public Dictionary<string, string>? TaxFacts { get; set; }
     public Dictionary<string, string>? DimensionFacts { get; set; }
+    public decimal? DocumentDebitAmount { get; set; }
+    public decimal? DocumentCreditAmount { get; set; }
+    public string? DocumentCurrency { get; set; }
+    public decimal? ExchangeRate { get; set; }
+    public DateOnly? ExchangeRateDate { get; set; }
+    public Guid? ExchangeRateConversionId { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public decimal? ConversionRoundingResidual { get; set; }
+    public List<Guid>? DimensionMemberIds { get; set; }
 }
 
 public sealed class ReverseAccountingEntryRequest

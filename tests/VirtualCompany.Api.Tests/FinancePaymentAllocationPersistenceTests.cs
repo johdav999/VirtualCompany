@@ -25,7 +25,16 @@ public sealed class FinancePaymentAllocationPersistenceTests
         Assert.Contains("payment_source_simulation_event_record_id", allocationColumns);
         Assert.Contains("target_source_simulation_event_record_id", allocationColumns);
         Assert.Contains("allocated_amount", allocationColumns);
+        Assert.Contains("allocated_payment_amount", allocationColumns);
         Assert.Contains("currency", allocationColumns);
+        Assert.Contains("payment_currency", allocationColumns);
+        Assert.Contains("functional_currency", allocationColumns);
+        Assert.Contains("settlement_rate", allocationColumns);
+        Assert.Contains("settlement_exchange_rate_conversion_id", allocationColumns);
+        Assert.Contains("settlement_ledger_entry_id", allocationColumns);
+        Assert.Contains("reversal_ledger_entry_id", allocationColumns);
+        Assert.Contains("realized_gain_loss_amount", allocationColumns);
+        Assert.Contains("settlement_status", allocationColumns);
 
         var allocationIndexes = await ReadIndexesAsync(connection, "payment_allocations");
         Assert.Contains("IX_payment_allocations_company_id_payment_id", allocationIndexes);
@@ -115,10 +124,16 @@ public sealed class FinancePaymentAllocationPersistenceTests
                     invoice_id,
                     bill_id,
                     allocated_amount,
+                    allocated_payment_amount,
+                    fee_amount,
+                    write_off_amount,
                     currency,
+                    payment_currency,
+                    settlement_status,
+                    version,
                     created_at,
                     updated_at)
-                VALUES ($id, $companyId, $paymentId, $invoiceId, $billId, $amount, $currency, $createdAt, $updatedAt);
+                VALUES ($id, $companyId, $paymentId, $invoiceId, $billId, $amount, $amount, 0, 0, $currency, $currency, 'legacy_unavailable', 1, $createdAt, $updatedAt);
                 """;
             command.Parameters.AddWithValue("$id", Guid.NewGuid());
             command.Parameters.AddWithValue("$companyId", company.Id);

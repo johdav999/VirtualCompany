@@ -62,11 +62,22 @@ public static class FinanceRoutes
     public const string SandboxAdmin = "/simulation-lab";
     public const string Settings = "/finance/settings";
     public const string AccountingSetup = "/finance/accounting/setup";
+    public const string AccountingCloseWorkspace = "/finance/accounting/close-workspace";
     public const string AccountingAccounts = "/finance/accounting/accounts";
     public const string AccountingPeriods = "/finance/accounting/periods";
     public const string AccountingJournal = "/finance/accounting/journals";
     public const string AccountingReconciliation = "/finance/accounting/reconciliation";
     public const string AccountingReports = "/finance/accounting/reports";
+    public const string AccountingComplianceCalendar = "/finance/accounting/compliance-calendar";
+    public const string AccountingAuditPackages = "/finance/accounting/audit-packages";
+    public const string AccountingReportDefinitions = "/finance/accounting/report-definitions";
+    public const string AccountingYearEnd = "/finance/accounting/year-end";
+    public const string AccountingAdvanced = "/finance/accounting/advanced";
+    public const string AccountingCurrencyRates = "/finance/accounting/currency-rates";
+    public const string AccountingDimensions = "/finance/accounting/dimensions";
+    public const string AccountingSchedules = "/finance/accounting/schedules";
+    public const string AccountingFixedAssets = "/finance/accounting/fixed-assets";
+    public const string AccountingRevaluation = "/finance/accounting/revaluation";
     public const string AccountingConnections = "/finance/accounting/connections";
     public const string AccountingManualJournal = "/finance/accounting/journals/new";
     public const string AccountingManualJournalDraft = "/finance/accounting/journals/drafts/{DraftId:guid}";
@@ -95,7 +106,7 @@ public static class FinanceRoutes
             new("Subscriptions", SupplierSubscriptions, "Track recurring supplier agreements and bill matching."),
             new("Payments", Payments, "Track money coming in and going out.", ActivePathPrefixes: [Payments, PaymentBatches]),
             new("Transactions", Transactions, "Review account activity, categories, references, and reconciliation signals.", ActivePathPrefixes: [Transactions, Activity, StatementImports]),
-            new("Accounting", AccountingSetup, "Set up and administer native accounting.", ActivePathPrefixes: [AccountingSetup, AccountingAccounts, AccountingPeriods, AccountingJournal, AccountingReconciliation, AccountingReports, AccountingConnections]),
+            new("Accounting", AccountingSetup, "Set up and administer native accounting.", ActivePathPrefixes: [AccountingSetup, AccountingCloseWorkspace, AccountingAccounts, AccountingPeriods, AccountingJournal, AccountingReconciliation, AccountingReports, AccountingComplianceCalendar, AccountingAuditPackages, AccountingReportDefinitions, AccountingYearEnd, AccountingAdvanced, AccountingCurrencyRates, AccountingDimensions, AccountingSchedules, AccountingFixedAssets, AccountingRevaluation, AccountingConnections]),
             new("Issues", Issues, "Review finance items that need attention.", ActivePathPrefixes: [Issues, Anomalies])
         ];
 

@@ -9,6 +9,7 @@ public sealed class AccountingAdministrationSurfaceTests
         var setupCode = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingSetupPage.razor.cs");
         var setupCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingSetupPage.razor.css");
         var accounts = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingAccountsPage.razor");
+        var accountsClient = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.AccountingAdministration.cs");
         var accountsCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingAccountsPage.razor.css");
         var basCatalogue = Read("src", "VirtualCompany.Web", "Pages", "Finance", "BasAccountCatalogPage.razor");
         var basCatalogueCode = Read("src", "VirtualCompany.Web", "Pages", "Finance", "BasAccountCatalogPage.razor.cs");
@@ -39,8 +40,17 @@ public sealed class AccountingAdministrationSurfaceTests
         Assert.Contains("tabindex=\"0\"", accounts, StringComparison.Ordinal);
         Assert.Contains("aria-live=\"polite\"", accounts, StringComparison.Ordinal);
         Assert.Contains("Selected.IsProtected", accounts, StringComparison.Ordinal);
-        Assert.Contains("ConfirmDeactivate", accounts, StringComparison.Ordinal);
         Assert.Contains("/finance/accounting/accounts/bas", accounts, StringComparison.Ordinal);
+        Assert.Contains("DependencyImpact", accounts, StringComparison.Ordinal);
+        Assert.Contains("ReplacementAccount", accounts, StringComparison.Ordinal);
+        Assert.Contains("SeriesPolicies", accounts, StringComparison.Ordinal);
+        Assert.Contains("series-location", accounts, StringComparison.Ordinal);
+        Assert.Contains("LocationDimensionMemberId", accounts, StringComparison.Ordinal);
+        Assert.Contains("GetAccountingDimensionWorkspaceAsync", Read("src", "VirtualCompany.Web", "Pages", "Finance", "AccountingAccountsPage.razor.cs"), StringComparison.Ordinal);
+        Assert.Contains("InventoryAccountingNotSupported", accounts, StringComparison.Ordinal);
+        Assert.Contains("ContractVersion", accounts, StringComparison.Ordinal);
+        Assert.Contains("RecordVoucherGapAsync", accounts, StringComparison.Ordinal);
+        Assert.Contains("RecordAccountingVoucherGapAsync", accountsClient, StringComparison.Ordinal);
 
         Assert.Contains("@page \"/finance/accounting/accounts/bas\"", basCatalogue, StringComparison.Ordinal);
         Assert.Contains("FinanceDataState", basCatalogue, StringComparison.Ordinal);
@@ -75,6 +85,8 @@ public sealed class AccountingAdministrationSurfaceTests
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "bas-account-catalogue-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "swedish-accounting-setup-reference.png")));
         Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "swedish-vat-statutory-reporting-reference.png")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "finance-account-administration-reference.png")));
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot(), "docs", "design", "references", "finance-account-administration-reference-prompt.md")));
         var prompts = Read("docs", "design", "references", "accounting-administration-reference-prompts.md");
         Assert.Contains("Accounting setup", prompts, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("Chart of accounts", prompts, StringComparison.OrdinalIgnoreCase);

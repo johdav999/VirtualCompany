@@ -219,6 +219,7 @@ public sealed class ManualJournalDraftLine : ICompanyOwnedEntity
     public string? DimensionFactsJson { get; private set; }
     public ManualJournalDraft Draft { get; private set; } = null!;
     public FinanceAccount FinanceAccount { get; private set; } = null!;
+    public ICollection<ManualJournalDraftLineDimension> DimensionAssignments { get; } = new List<ManualJournalDraftLineDimension>();
 }
 
 public sealed class ManualJournalEvidenceLink : ICompanyOwnedEntity

@@ -1,0 +1,240 @@
+@inject FinanceApiClient FinanceApiClient
+
+<section class="currency-rates-workspace" aria-labelledby="currency-rates-title" aria-busy="@IsLoading">
+    <header class="currency-rates-header">
+        <div>
+            <span class="dashboard-kicker">@FinanceText["CurrencyRatesKicker"]</span>
+            <h2 id="currency-rates-title">@FinanceText["CurrencyRates"]</h2>
+            <p>@FinanceText["CurrencyRatesDescription"]</p>
+        </div>
+        <a class="btn btn-outline-primary" href="@RevaluationHref">@FinanceText["OpenRevaluation"]</a>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(Message))
+    {
+        <div class="alert alert-success" role="status">@Message</div>
+    }
+    @if (!string.IsNullOrWhiteSpace(Error))
+    {
+        <div class="alert alert-danger currency-rates-error" role="alert">
+            <div><strong>@FinanceText["CurrencyRatesUnavailable"]</strong><span>@Error</span></div>
+            <button class="btn btn-sm btn-outline-danger" type="button" @onclick="LoadAsync">@CommonText["TryAgain"]</button>
+        </div>
+    }
+
+    @if (IsLoading)
+    {
+        <div class="currency-rates-state" role="status">
+            <div class="spinner-border text-primary" aria-hidden="true"></div>
+            <h3>@FinanceText["LoadingCurrencyRates"]</h3>
+            <p>@FinanceText["LoadingCurrencyRatesHelp"]</p>
+        </div>
+    }
+    else if (Readiness is not null)
+    {
+        <section class="currency-rates-summary" aria-label="@FinanceText["CurrencyRatesSummary"]">
+            <article><small>@FinanceText["FunctionalCurrencyLabel"]</small><strong>@(Readiness.FunctionalCurrency ?? "—")</strong><span>@FinanceText["AuthoritativeAccountingCurrency"]</span></article>
+            <article><small>@FinanceText["RateReadiness"]</small><strong>@Friendly(Readiness.Status)</strong><span class="@ReadinessClass(Readiness.Status)">@FinanceText["SourcesEnabled", Readiness.EnabledSourceCount]</span></article>
+            <article><small>@FinanceText["EnabledCurrencies"]</small><strong>@Readiness.EnabledCurrencyCount</strong><span>@FinanceText["ConfiguredForAccounting"]</span></article>
+            <article><small>@FinanceText["PendingReview"]</small><strong>@Readiness.PendingReviewSetCount</strong><span class="@(Readiness.PendingReviewSetCount == 0 ? "ok" : "warn")">@FinanceText["FailedRefreshJobs", Readiness.FailedRefreshJobCount]</span></article>
+        </section>
+
+        @if (Readiness.Issues.Count > 0)
+        {
+            <section class="currency-rates-issues" aria-label="@FinanceText["RateReadinessIssues"]">
+                @foreach (var issue in Readiness.Issues)
+                {
+                    <article class="@IssueClass(issue.Severity)"><span aria-hidden="true">!</span><div><strong>@Friendly(issue.ReasonCode)</strong><p>@issue.Explanation</p></div></article>
+                }
+            </section>
+        }
+
+        <div class="currency-rates-layout">
+            <section class="currency-rates-card source-list-card" aria-labelledby="rate-sources-title">
+                <div class="currency-rates-card-header">
+                    <div><h3 id="rate-sources-title">@FinanceText["RateSourcesAndCurrencies"]</h3><p>@FinanceText["RateSourcesHelp"]</p></div>
+                    <button class="btn btn-sm btn-outline-secondary" type="button" @onclick="LoadAsync">@CommonText["Refresh"]</button>
+                </div>
+                @if (Sources.Count == 0)
+                {
+                    <div class="currency-rates-state compact"><span aria-hidden="true">¤</span><h3>@FinanceText["NoRateSources"]</h3><p>@FinanceText["NoRateSourcesHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table currency-rates-table">
+                            <thead><tr><th>@FinanceText["Source"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["Priority"]</th><th>@FinanceText["LastRefresh"]</th><th>@FinanceText["NextRefresh"]</th></tr></thead>
+                            <tbody>
+                            @foreach (var source in Sources)
+                            {
+                                <tr class="@(SelectedSource?.Id == source.Id ? "selected" : null)" role="button" tabindex="0" aria-selected="@(SelectedSource?.Id == source.Id)" @onclick="() => SelectSource(source)" @onkeydown="args => SelectSourceOnKey(args, source)">
+                                    <td><strong>@source.DisplayName</strong><span>@source.SourceKey · @Friendly(source.SourceKind)</span></td>
+                                    <td><span class="rate-status @SourceStatus(source)">@Friendly(SourceStatus(source))</span>@if (!string.IsNullOrWhiteSpace(source.LastFailureSummary)) { <small>@source.LastFailureSummary</small> }</td>
+                                    <td>@source.Priority</td>
+                                    <td>@DateTimeLabel(source.LastSuccessfulRefreshUtc)</td>
+                                    <td>@DateTimeLabel(source.NextRefreshUtc)</td>
+                                </tr>
+                            }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="currency-list" aria-label="@FinanceText["EnabledCurrencies"]">
+                        @foreach (var currency in Currencies.Where(x => x.IsEnabled))
+                        {
+                            <span><strong>@currency.Code</strong> @currency.Name <small>@FinanceText["MinorUnits", currency.MinorUnitPrecision]</small></span>
+                        }
+                    </div>
+                }
+            </section>
+
+            <aside class="currency-rates-card source-detail-card" aria-live="polite">
+                @if (SelectedSource is null)
+                {
+                    <div class="currency-rates-state compact"><span aria-hidden="true">⌕</span><h3>@FinanceText["SelectRateSource"]</h3><p>@FinanceText["SelectRateSourceHelp"]</p></div>
+                }
+                else
+                {
+                    <div class="currency-rates-card-header source-detail-heading">
+                        <div><span class="dashboard-kicker">@FinanceText["SourceDetail"]</span><h3>@SelectedSource.DisplayName</h3><p>@SelectedSource.SourceKey · @SelectedSource.SourceVersion</p></div>
+                        <span class="rate-status @SourceStatus(SelectedSource)">@Friendly(SourceStatus(SelectedSource))</span>
+                    </div>
+
+                    @if (!string.IsNullOrWhiteSpace(SelectedSource.LastFailureSummary))
+                    {
+                        <div class="rate-recovery" role="note">
+                            <div><strong>@Friendly(SelectedSource.LastFailureReasonCode ?? "source_attention")</strong><p>@SelectedSource.LastFailureSummary</p></div>
+                            @if (CanManage)
+                            {
+                                <button class="btn btn-warning" type="button" disabled="@IsActing" @onclick="RequestRefreshAsync">@FinanceText["RequestControlledRefresh"]</button>
+                            }
+                        </div>
+                    }
+
+                    <h4>@FinanceText["Governance"]</h4>
+                    <dl class="rate-governance">
+                        <div><dt>@FinanceText["Priority"]</dt><dd>@SelectedSource.Priority</dd></div>
+                        <div><dt>@FinanceText["RefreshInterval"]</dt><dd>@FinanceText["HoursValue", SelectedSource.RefreshIntervalHours]</dd></div>
+                        <div><dt>@FinanceText["AllowedWindow"]</dt><dd>@FinanceText["DaysValue", SelectedSource.MaxStalenessDays]</dd></div>
+                        <div><dt>@FinanceText["ApprovalRequired"]</dt><dd>@FinanceText[SelectedSource.RequiresApproval ? "Yes" : "No"]</dd></div>
+                        <div><dt>@FinanceText["LastRefresh"]</dt><dd>@DateTimeLabel(SelectedSource.LastSuccessfulRefreshUtc)</dd></div>
+                        <div><dt>@FinanceText["NextRefresh"]</dt><dd>@DateTimeLabel(SelectedSource.NextRefreshUtc)</dd></div>
+                    </dl>
+
+                    <section class="rate-lookup" aria-labelledby="lookup-title">
+                        <div><h4 id="lookup-title">@FinanceText["LookupEvidence"]</h4><p>@FinanceText["LookupEvidenceHelp"]</p></div>
+                        <div class="rate-lookup-fields">
+                            <label>@FinanceText["FromCurrency"]<select class="form-select" @bind="LookupFrom">@foreach (var currency in Currencies.Where(x => x.IsEnabled)) { <option value="@currency.Code">@currency.Code</option> }</select></label>
+                            <label>@FinanceText["ToCurrency"]<select class="form-select" @bind="LookupTo">@foreach (var currency in Currencies.Where(x => x.IsEnabled)) { <option value="@currency.Code">@currency.Code</option> }</select></label>
+                            <label>@FinanceText["RateDate"]<input class="form-control" type="date" @bind="LookupDate" /></label>
+                            <button class="btn btn-outline-primary" type="button" disabled="@IsActing" @onclick="LookupAsync">@FinanceText["InspectRateEvidence"]</button>
+                        </div>
+                        @if (Lookup is not null)
+                        {
+                            <div class="rate-lookup-result @ReadinessClass(Lookup.Status)">
+                                <div><strong>@Friendly(Lookup.Status)</strong><p>@Lookup.Explanation</p></div>
+                                <b>@(Lookup.EffectiveRate?.ToString("N6") ?? "—")</b>
+                            </div>
+                            @foreach (var leg in Lookup.Legs)
+                            {
+                                <button class="rate-evidence-leg" type="button" @onclick="() => LoadObservationAsync(leg.ObservationId)"><span><strong>@leg.FromCurrency → @leg.ToCurrency</strong><small>@leg.SourceKey · @leg.EffectiveDate.ToString("d")</small></span><span>@leg.Factor.ToString("N6")<small>@FinanceText["ViewObservation"]</small></span></button>
+                            }
+                        }
+                        @if (Observation is not null)
+                        {
+                            <dl class="rate-observation">
+                                <div><dt>@FinanceText["RateObservation"]</dt><dd>@Observation.BaseCurrency → @Observation.QuoteCurrency · @Observation.Rate.ToString("N6")</dd></div>
+                                <div><dt>@FinanceText["Approval"]</dt><dd>@Friendly(Observation.ApprovalStatus)</dd></div>
+                                <div><dt>@FinanceText["EvidenceChecksum"]</dt><dd>@Short(Observation.EvidenceChecksum)</dd></div>
+                            </dl>
+                        }
+                    </section>
+                }
+            </aside>
+        </div>
+
+        <section class="accounting-drilldown-links" aria-label="@FinanceText["AccountingDrilldown"]">
+            <div><span class="dashboard-kicker">@FinanceText["EvidencePath"]</span><strong>@FinanceText["AdvancedEvidenceChain"]</strong></div>
+            <a href="@RevaluationHref">@FinanceText["OpenRevaluation"] <span aria-hidden="true">→</span></a>
+            <a href="@JournalHref">@FinanceText["ViewImmutableJournal"] <span aria-hidden="true">→</span></a>
+            <a href="@ReportsHref">@FinanceText["ReportsCloseTitle"] <span aria-hidden="true">→</span></a>
+            <a href="@ReconciliationHref">@FinanceText["AccountingReconciliationNav"] <span aria-hidden="true">→</span></a>
+        </section>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid? CompanyId { get; set; }
+    [Parameter] public bool CanManage { get; set; }
+    [Parameter] public string RevaluationHref { get; set; } = "#";
+    [Parameter] public string ReportsHref { get; set; } = "#";
+    [Parameter] public string JournalHref { get; set; } = "#";
+    [Parameter] public string ReconciliationHref { get; set; } = "#";
+
+    private Guid? LoadedCompanyId { get; set; }
+    private IReadOnlyList<CurrencyDefinitionResponse> Currencies { get; set; } = [];
+    private IReadOnlyList<ExchangeRateSourceResponse> Sources { get; set; } = [];
+    private ExchangeRateReadinessResponse? Readiness { get; set; }
+    private ExchangeRateSourceResponse? SelectedSource { get; set; }
+    private ExchangeRateLookupResponse? Lookup { get; set; }
+    private ExchangeRateObservationResponse? Observation { get; set; }
+    private string LookupFrom { get; set; } = "EUR";
+    private string LookupTo { get; set; } = "SEK";
+    private DateOnly LookupDate { get; set; } = DateOnly.FromDateTime(DateTime.Today);
+    private bool IsLoading { get; set; }
+    private bool IsActing { get; set; }
+    private string? Error { get; set; }
+    private string? Message { get; set; }
+
+    protected override async Task OnParametersSetAsync()
+    {
+        if (CompanyId is not Guid companyId || companyId == LoadedCompanyId) return;
+        LoadedCompanyId = companyId;
+        await LoadAsync();
+    }
+
+    private async Task LoadAsync()
+    {
+        if (CompanyId is not Guid companyId) return;
+        IsLoading = true; Error = null;
+        try
+        {
+            var currencies = FinanceApiClient.GetExchangeRateCurrenciesAsync(companyId);
+            var sources = FinanceApiClient.GetExchangeRateSourcesAsync(companyId);
+            var readiness = FinanceApiClient.GetExchangeRateReadinessAsync(companyId);
+            await Task.WhenAll(currencies, sources, readiness);
+            Currencies = await currencies; Sources = await sources; Readiness = await readiness;
+            SelectedSource = SelectedSource is null ? Sources.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x.LastFailureReasonCode)) ?? Sources.FirstOrDefault() : Sources.FirstOrDefault(x => x.Id == SelectedSource.Id) ?? Sources.FirstOrDefault();
+            LookupTo = Readiness?.FunctionalCurrency ?? Currencies.FirstOrDefault(x => x.IsEnabled)?.Code ?? LookupTo;
+            if (string.Equals(LookupFrom, LookupTo, StringComparison.OrdinalIgnoreCase))
+                LookupFrom = Currencies.FirstOrDefault(x => x.IsEnabled && !string.Equals(x.Code, LookupTo, StringComparison.OrdinalIgnoreCase))?.Code ?? LookupFrom;
+        }
+        catch (FinanceApiException exception) { Error = exception.Message; Readiness = null; }
+        finally { IsLoading = false; }
+    }
+
+    private void SelectSource(ExchangeRateSourceResponse source) { SelectedSource = source; Message = null; Observation = null; }
+    private Task SelectSourceOnKey(KeyboardEventArgs args, ExchangeRateSourceResponse source) { if (args.Key is "Enter" or " ") SelectSource(source); return Task.CompletedTask; }
+    private async Task LookupAsync() => await ActAsync(async companyId => { Lookup = await FinanceApiClient.LookupExchangeRateAsync(companyId, LookupFrom, LookupTo, LookupDate, "accounting_investigation"); Observation = null; });
+    private async Task LoadObservationAsync(Guid observationId) => await ActAsync(async companyId => Observation = await FinanceApiClient.GetExchangeRateObservationAsync(companyId, observationId));
+    private async Task RequestRefreshAsync() => await ActAsync(async companyId =>
+    {
+        if (SelectedSource is null) return;
+        var requestedCurrencies = Currencies.Where(x => x.IsEnabled && !string.Equals(x.Code, Readiness?.FunctionalCurrency, StringComparison.OrdinalIgnoreCase)).Select(x => x.Code).ToList();
+        var job = await FinanceApiClient.QueueExchangeRateRefreshAsync(companyId, new()
+        {
+            ProviderKey = SelectedSource.SourceKey,
+            RequestedDate = DateOnly.FromDateTime(DateTime.Today),
+            Currencies = requestedCurrencies,
+            IdempotencyKey = $"exchange-rate-refresh:{companyId:N}:{SelectedSource.SourceKey}:{DateTime.Today:yyyyMMdd}"
+        });
+        Message = FinanceText["RateRefreshQueued", Friendly(job.Status)];
+        await LoadAsync();
+    });
+    private async Task ActAsync(Func<Guid, Task> action) { if (CompanyId is not Guid companyId) return; IsActing = true; Error = null; Message = null; try { await action(companyId); } catch (FinanceApiException exception) { Error = exception.Message; } finally { IsActing = false; } }
+    private string DateTimeLabel(DateTime? value) => value.HasValue ? LocalDateTime.DateTime(value.Value) : FinanceText["NotAvailable"];
+    private static string SourceStatus(ExchangeRateSourceResponse source) => !source.IsEnabled ? "disabled" : !string.IsNullOrWhiteSpace(source.LastFailureReasonCode) ? "needs_attention" : "ready";
+    private static string ReadinessClass(string value) => value.Trim().ToLowerInvariant() switch { "ready" or "healthy" or "approved" => "ok", "blocked" or "failed" or "error" => "danger", _ => "warn" };
+    private static string IssueClass(string value) => value.Trim().ToLowerInvariant() is "error" or "blocking" ? "danger" : "warning";
+    private string Friendly(string value) { var key = $"Value_{value.Replace('-', '_').Replace('.', '_')}"; var localized = FinanceText[key]; return localized.ResourceNotFound ? string.Join(' ', value.Replace('-', '_').Split('_', StringSplitOptions.RemoveEmptyEntries).Select((x, index) => index == 0 ? char.ToUpperInvariant(x[0]) + x[1..] : x)) : localized.Value; }
+    private static string Short(string value) => string.IsNullOrWhiteSpace(value) ? "—" : value[..Math.Min(12, value.Length)];
+}

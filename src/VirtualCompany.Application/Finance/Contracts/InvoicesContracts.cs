@@ -62,7 +62,12 @@ public sealed record FinanceOpenReceivableItemDto(
     decimal OutstandingAmount,
     string Currency,
     string Status,
-    Guid? CustomerId = null);
+    Guid? CustomerId = null,
+    decimal? FunctionalOutstandingAmount = null,
+    string? FunctionalCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null);
 
 public sealed record FinanceInvoiceDto(
     Guid Id,

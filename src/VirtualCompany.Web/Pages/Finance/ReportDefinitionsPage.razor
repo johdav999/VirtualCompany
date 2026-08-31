@@ -1,0 +1,136 @@
+@page "/finance/accounting/report-definitions"
+@inherits FinancePageBase
+
+<PageTitle>Report definition designer</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="Report definition designer" Description="Govern versioned financial report layouts without changing historical reports."
+                   LoadingMessage="Loading report definitions…">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <header class="definition-heading">
+        <div><span class="dashboard-kicker">Reporting governance</span><h2>Report definition designer</h2><p>Safe formulas, account coverage, independent approval, and prospective activation.</p></div>
+        <div class="definition-heading__actions">
+            @if (Selected?.CanEdit == true && CanManage) { <button class="btn btn-outline-primary" @onclick="SaveAsync" disabled="@IsBusy">Save draft</button> }
+            @if (Selected is not null) { <button class="btn btn-primary" @onclick="PreviewAsync" disabled="@(IsBusy || SelectedPeriodId == Guid.Empty)">Preview report</button> }
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(ActionMessage)) { <div class="alert alert-success" role="status">@ActionMessage</div> }
+    @if (!string.IsNullOrWhiteSpace(ActionError)) { <div class="alert alert-danger" role="alert">@ActionError</div> }
+
+    @if (Definitions.Count == 0)
+    {
+        <section class="template-start">
+            <div><span class="template-start__icon">▤</span><h3>Start from an immutable system template</h3><p>The copy becomes company-owned. System templates cannot be edited or activated directly.</p></div>
+            <div class="template-form">
+                <label>Template<select class="form-select" @bind="SelectedTemplateKey">@foreach (var template in Templates) { <option value="@template.Key">@template.Name · @template.ReportKind</option> }</select></label>
+                <label>Code<input class="form-control" @bind="NewDefinitionCode" /></label>
+                <label>Name<input class="form-control" @bind="NewDefinitionName" /></label>
+                <button class="btn btn-primary" @onclick="CopyTemplateAsync" disabled="@(!CanManage || IsBusy)">Copy as draft</button>
+            </div>
+        </section>
+    }
+    else
+    {
+        <div class="definition-shell">
+            <aside class="definition-tree" aria-label="Definition structure">
+                <div class="pane-title"><div><small>Definitions</small><strong>Company layouts</strong></div><span>@Definitions.Count</span></div>
+                <div class="definition-list">
+                    @foreach (var item in Definitions)
+                    {
+                        <button class="definition-item @(Selected?.VersionId == item.LatestVersionId ? "selected" : null)" @onclick="() => SelectVersionAsync(item.LatestVersionId)">
+                            <span><strong>@item.Name</strong><small>@item.Code · v@item.LatestVersionNumber</small></span><em class="@StatusClass(item.LatestStatus)">@item.LatestStatus</em>
+                        </button>
+                    }
+                </div>
+                @if (Selected is not null)
+                {
+                    <div class="tree-layout">
+                        <div class="tree-layout__heading"><strong>Layout</strong>@if (Selected.CanEdit && CanManage) { <button title="Add section" @onclick="AddSection">＋</button> }</div>
+                        @foreach (var reportSection in Selected.Sections.OrderBy(x => x.DisplayOrder))
+                        {
+                            <div class="tree-section">
+                                <span>⌄ <strong>@reportSection.Label</strong></span>
+                                @foreach (var line in reportSection.Lines.OrderBy(x => x.DisplayOrder))
+                                {
+                                    <button class="tree-line @(ReferenceEquals(line, SelectedLine) ? "selected" : null)" @onclick="() => SelectedLine = line"><span>@(line.Formula is null ? "▦" : "ƒ")</span>@line.Label<small>@line.Code</small></button>
+                                }
+                                @if (Selected.CanEdit && CanManage) { <button class="tree-add" @onclick="@(() => AddLine(reportSection))">＋ Add line</button> }
+                            </div>
+                        }
+                    </div>
+                }
+            </aside>
+
+            <main class="definition-editor">
+                @if (Selected is null) { <div class="empty-pane">Select a definition to begin.</div> }
+                else
+                {
+                    <div class="editor-toolbar">
+                        <div><span class="@StatusClass(Selected.Status)">@Selected.Status</span><h3>@Selected.Name</h3><small>@Selected.Code · version @Selected.VersionNumber · revision @Selected.Revision</small></div>
+                        <div><label>Preview period<select class="form-select form-select-sm" @bind="SelectedPeriodId">@foreach (var period in Periods) { <option value="@period.Id">@period.Name</option> }</select></label></div>
+                    </div>
+                    @if (SelectedLine is not null)
+                    {
+                        <section class="line-editor">
+                            <div class="line-editor__title"><div><small>Selected line</small><h4>@SelectedLine.Label</h4></div>@if (Selected.CanEdit && CanManage) { var parent = Selected.Sections.First(x => x.Lines.Contains(SelectedLine)); <button class="icon-danger" title="Remove line" @onclick="() => RemoveLine(parent, SelectedLine)">×</button> }</div>
+                            <div class="field-grid">
+                                <label>Line code<input class="form-control" @bind="SelectedLine.Code" disabled="@(!Selected.CanEdit)" /></label>
+                                <label>Display label<input class="form-control" @bind="SelectedLine.Label" disabled="@(!Selected.CanEdit)" /></label>
+                                <label>Line type<select class="form-select" @bind="SelectedLine.LineType" disabled="@(!Selected.CanEdit)"><option value="detail">Detail</option><option value="formula">Formula</option><option value="subtotal">Subtotal</option><option value="heading">Heading</option></select></label>
+                                <label>Sign<select class="form-select" @bind="SelectedLine.SignRule" disabled="@(!Selected.CanEdit)"><option value="normal">Natural</option><option value="invert">Invert</option></select></label>
+                                <label>Scale<select class="form-select" @bind="SelectedLine.Scale" disabled="@(!Selected.CanEdit)"><option value="1">Units</option><option value="1000">Thousands</option><option value="1000000">Millions</option></select></label>
+                                <label>Decimals<input class="form-control" type="number" min="0" max="4" @bind="SelectedLine.Decimals" disabled="@(!Selected.CanEdit)" /></label>
+                            </div>
+                            <label class="formula-field">Safe formula<textarea class="form-control" rows="2" placeholder="SUM([OPERATING], [INVESTING])" @bind="SelectedLine.Formula" disabled="@(!Selected.CanEdit)"></textarea><small>Allowed: decimal numbers, [LINE_CODE] references, + − × ÷, parentheses, and SUM().</small></label>
+                            <div class="account-mapping">
+                                <div><h5>Account coverage</h5><span>@(SelectedGroup?.FinanceAccountIds.Count ?? 0) mapped accounts</span></div>
+                                @if (SelectedGroup is not null)
+                                {
+                                    <div class="account-grid">
+                                        @foreach (var account in Accounts.Where(x => x.IsReportable).OrderBy(x => x.Code))
+                                        {
+                                            var mapped = SelectedGroup.FinanceAccountIds.Contains(account.Id);
+                                            <label class="account-chip @(mapped ? "mapped" : null)"><input type="checkbox" checked="@mapped" disabled="@(!Selected.CanEdit)" @onchange="e => ToggleAccount(account.Id, (bool)(e.Value ?? false))" /><span><strong>@account.Code</strong>@account.Name</span></label>
+                                        }
+                                    </div>
+                                }
+                            </div>
+                        </section>
+                    }
+                    @if (Preview is not null)
+                    {
+                        <section class="preview-card">
+                            <div><h4>Live preview</h4><span>Definition v@Preview.DefinitionVersionNumber · @(Preview.DefinitionHash is { Length: > 10 } hash ? hash[..10] : Preview.DefinitionHash)</span></div>
+                            <table class="table"><thead><tr><th>Line</th><th>Current</th><th>Comparative</th></tr></thead><tbody>@foreach (var line in Preview.Lines) { <tr><td><small>@line.Section</small>@line.Label</td><td>@line.Amount.ToString("N2") @line.Currency</td><td>@line.ComparativeAmount?.ToString("N2")</td></tr> }</tbody></table>
+                        </section>
+                    }
+                }
+            </main>
+
+            <aside class="governance-pane">
+                @if (Selected is not null)
+                {
+                    <section><div class="pane-title"><div><small>Governance</small><strong>Validation</strong></div><span class="@(Selected.LatestValidation?.IsValid == true ? "status-ok" : "status-warn")">@(Selected.LatestValidation?.IsValid == true ? "passed" : "required")</span></div>
+                        @if (Selected.LatestValidation is null) { <p class="muted">Validate the saved draft before submission. Validation checks formulas, cycles, coverage, signs, currency, dimensions, and tenant scope.</p> }
+                        else if (Selected.LatestValidation.Issues.Count == 0) { <div class="validation-ok">✓ No blocking definition issues</div> }
+                        else { @foreach (var issue in Selected.LatestValidation.Issues) { <div class="validation-issue"><strong>@issue.Code</strong><p>@issue.Explanation</p></div> } }
+                        @if (Selected.CanEdit && CanManage) { <button class="btn btn-outline-primary w-100" @onclick="ValidateAsync" disabled="@IsBusy">Run validation</button> }
+                    </section>
+                    <section><h4>Approval</h4>
+                        @if (Selected.LatestApproval is not null) { <div class="approval-card"><span class="@StatusClass(Selected.LatestApproval.Status)">@Selected.LatestApproval.Status</span><small>Submitted @Selected.LatestApproval.SubmittedUtc.ToLocalTime().ToString("g")</small></div> }
+                        @if (Selected.CanSubmit && CanManage) { <button class="btn btn-primary w-100" @onclick="SubmitAsync" disabled="@IsBusy">Submit for approval</button> }
+                        @if (Selected.CanApprove && CanApprove) { <label>Decision note<textarea class="form-control" rows="2" @bind="DecisionNote"></textarea></label><div class="decision-buttons"><button class="btn btn-outline-danger" @onclick="() => ApproveAsync(false)" disabled="@IsBusy">Reject</button><button class="btn btn-success" @onclick="() => ApproveAsync(true)" disabled="@IsBusy">Approve</button></div> }
+                    </section>
+                    <section><h4>Effective lifecycle</h4><label>Effective date<input class="form-control" type="date" @bind="EffectiveDate" /></label>
+                        @if (Selected.CanActivate && CanManage) { <button class="btn btn-primary w-100" @onclick="ActivateAsync" disabled="@IsBusy">Activate prospectively</button> }
+                        @if (Selected.CanRetire && CanManage) { <button class="btn btn-outline-danger w-100" @onclick="RetireAsync" disabled="@IsBusy">Retire version</button> }
+                        @if (!Selected.CanEdit && CanManage) { <button class="btn btn-outline-primary w-100" @onclick="CreateNextVersionAsync" disabled="@IsBusy">Create next draft version</button> }
+                        <p class="muted">Existing snapshots and exports remain bound to their exact version and hash.</p>
+                    </section>
+                }
+            </aside>
+        </div>
+    }
+</FinancePageLayout>

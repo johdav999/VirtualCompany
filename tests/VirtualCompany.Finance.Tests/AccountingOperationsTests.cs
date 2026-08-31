@@ -74,6 +74,16 @@ public sealed class AccountingOperationsTests
         Assert.Equal(2, recovery.LineCount);
         Assert.Equal(1, recovery.EvidenceLinkCount);
         Assert.Equal(recovery.TotalDebit, recovery.TotalCredit);
+        Assert.Equal(7, recovery.AdvancedControls.Count);
+        Assert.All(recovery.AdvancedControls, control => Assert.False(string.IsNullOrWhiteSpace(control.Checksum)));
+        Assert.Equal(AccountingReadinessStatuses.Ready,
+            Assert.Single(recovery.AdvancedControls, control => control.Key == "functional_currency").Status);
+
+        var replayedRecovery = await fixture.Recovery.VerifyAsync(new VerifyAccountingRecoveryCommand(
+            fixture.CompanyId, null, true, fixture.ActorId, "accounting-operations-test-replay"), CancellationToken.None);
+        Assert.Equal(recovery.EvidenceChecksum, replayedRecovery.EvidenceChecksum);
+        Assert.Equal(recovery.AdvancedControls.Select(control => control.Checksum),
+            replayedRecovery.AdvancedControls.Select(control => control.Checksum));
     }
 
     [Fact]

@@ -12,6 +12,7 @@ internal sealed class VatFilingPeriodConfiguration : IEntityTypeConfiguration<Va
         b.Property(x => x.Id).HasColumnName("id"); b.Property(x => x.CompanyId).HasColumnName("company_id");
         b.Property(x => x.PeriodCode).HasColumnName("period_code").HasMaxLength(40).IsRequired();
         b.Property(x => x.StartDate).HasColumnName("start_date"); b.Property(x => x.EndDate).HasColumnName("end_date");
+        b.Property(x => x.DueDate).HasColumnName("due_date");
         b.Property(x => x.Currency).HasColumnName("currency").HasMaxLength(3).IsRequired();
         b.Property(x => x.FiscalPeriodId).HasColumnName("fiscal_period_id"); b.Property(x => x.CreatedUtc).HasColumnName("created_at");
         b.HasIndex(x => new { x.CompanyId, x.PeriodCode }).IsUnique();

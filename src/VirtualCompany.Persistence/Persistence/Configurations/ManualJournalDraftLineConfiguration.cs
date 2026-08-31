@@ -10,6 +10,7 @@ public sealed class ManualJournalDraftLineConfiguration : IEntityTypeConfigurati
     {
         builder.ToTable("manual_journal_draft_lines");
         builder.HasKey(x => x.Id);
+        builder.HasAlternateKey(x => new { x.CompanyId, x.Id });
         builder.Property(x => x.Id).HasColumnName("id");
         builder.Property(x => x.CompanyId).HasColumnName("company_id").IsRequired();
         builder.Property(x => x.DraftId).HasColumnName("draft_id").IsRequired();

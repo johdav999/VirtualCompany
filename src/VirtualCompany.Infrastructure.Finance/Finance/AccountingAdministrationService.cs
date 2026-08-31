@@ -648,6 +648,8 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             isPostingEnabled: true);
         _dbContext.FinanceAccounts.Add(account);
         _dbContext.FinancialStatementMappings.Add(CreateDefaultStatementMapping(command.CompanyId, account, nowUtc));
+        _dbContext.AccountingAccountLifecycleHistory.Add(CreateLifecycleHistory(
+            account, AccountingAccountLifecycleChangeTypes.Created, "Account created for governed accounting use.", command.ActorUserId, nowUtc));
         await WriteAuditAsync(
             command.CompanyId,
             command.ActorUserId,
@@ -717,6 +719,8 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         EnsureExpectedVersion(account, command.ExpectedUpdatedUtc);
         var previousName = account.Name;
         account.Rename(command.Name, nowUtc);
+        _dbContext.AccountingAccountLifecycleHistory.Add(CreateLifecycleHistory(
+            account, AccountingAccountLifecycleChangeTypes.Renamed, $"Account renamed from {previousName}.", command.ActorUserId, nowUtc));
         await WriteAuditAsync(
             command.CompanyId,
             command.ActorUserId,
@@ -779,6 +783,221 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         await _dbContext.SaveChangesAsync(cancellationToken);
         await transaction.CommitAsync(cancellationToken);
         return await GetAccountAsync(new GetAccountingAccountQuery(command.CompanyId, account.Id), cancellationToken);
+    }
+
+    public async Task<AccountingAccountLifecyclePreviewDto> PreviewAccountLifecycleAsync(
+        PreviewAccountingAccountLifecycleQuery query, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(query.CompanyId);
+        var account = await _dbContext.FinanceAccounts.AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == query.AccountId, cancellationToken)
+            ?? throw MissingAccount();
+        var dependencies = await LoadAccountDependenciesAsync(query.CompanyId, query.AccountId, cancellationToken);
+        var hasPostedHistory = dependencies.Any(x => x.DependencyType == "posted_journals" && x.Count > 0);
+        var issues = new List<AccountingConfigurationIssueDto>();
+        var restriction = FinanceAccountPostingRestrictionValues.Normalize(query.PostingRestriction);
+        _ = FinanceAccountClassValues.NormalizeOptional(query.AccountClass)
+            ?? throw new ArgumentException("Account class is required.", nameof(query.AccountClass));
+        _ = FinanceNormalBalanceValues.NormalizeOptional(query.NormalBalance)
+            ?? throw new ArgumentException("Normal balance is required.", nameof(query.NormalBalance));
+
+        var retirementRequested = query.EffectiveTo.HasValue || restriction == FinanceAccountPostingRestrictionValues.All;
+        if (retirementRequested && hasPostedHistory && !query.ReplacementAccountId.HasValue)
+            issues.Add(new(AccountingGovernanceReasonCodes.ReplacementRequired,
+                "Choose a compatible replacement account before retiring an account with posted history.", account.Code));
+        if (query.ReplacementAccountId.HasValue)
+        {
+            var replacement = await _dbContext.FinanceAccounts.AsNoTracking().SingleOrDefaultAsync(x =>
+                x.CompanyId == query.CompanyId && x.Id == query.ReplacementAccountId.Value, cancellationToken);
+            if (replacement is null || replacement.Id == account.Id || !replacement.IsPostingEnabled ||
+                replacement.AccountClass != FinanceAccountClassValues.NormalizeOptional(query.AccountClass))
+                issues.Add(new(AccountingGovernanceReasonCodes.ReplacementInvalid,
+                    "The replacement must be a different active account in the same account class.", account.Code));
+        }
+        if (query.EffectiveTo.HasValue && query.EffectiveTo.Value < query.EffectiveFrom)
+            issues.Add(new(AccountingGovernanceReasonCodes.LifecycleConflict,
+                "The retirement date cannot be earlier than the lifecycle effective date.", account.Code));
+
+        return new AccountingAccountLifecyclePreviewDto(account.Id, account.Code, hasPostedHistory,
+            retirementRequested && hasPostedHistory, issues.Count == 0, dependencies, issues);
+    }
+
+    public async Task<AccountingAccountDetailDto> ApplyAccountLifecycleAsync(
+        ApplyAccountingAccountLifecycleCommand command, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(command.CompanyId); ValidateActor(command.ActorUserId);
+        var preview = await PreviewAccountLifecycleAsync(new(command.CompanyId, command.AccountId,
+            command.EffectiveFrom, command.EffectiveTo, command.ReplacementAccountId, command.AccountClass,
+            command.NormalBalance, command.IsReportable, command.PostingRestriction), cancellationToken);
+        if (!preview.CanApply)
+        {
+            var issue = preview.Issues[0];
+            throw new AccountingConfigurationException(issue.ReasonCode, issue.Explanation, isConflict: true);
+        }
+
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        await using var transaction = await _dbContext.Database.BeginTransactionAsync(IsolationLevel.Serializable, cancellationToken);
+        var account = await LoadAccountForMutationAsync(command.CompanyId, command.AccountId, cancellationToken);
+        if (account.LifecycleVersion != command.ExpectedLifecycleVersion)
+            throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.LifecycleConflict,
+                "This account lifecycle changed after it was loaded. Reload the impact preview and try again.", isConflict: true);
+        account.ApplyGovernedLifecycle(command.Name, command.AccountClass, command.NormalBalance,
+            command.IsReportable, command.PostingRestriction, command.EffectiveFrom, command.EffectiveTo,
+            command.ReplacementAccountId, command.Reason, nowUtc);
+        var changeType = command.EffectiveTo.HasValue || account.PostingRestriction == FinanceAccountPostingRestrictionValues.All
+            ? AccountingAccountLifecycleChangeTypes.Retired : AccountingAccountLifecycleChangeTypes.Governed;
+        _dbContext.AccountingAccountLifecycleHistory.Add(CreateLifecycleHistory(account, changeType, command.Reason, command.ActorUserId, nowUtc));
+        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "accounting.account.lifecycle_changed",
+            AuditTargetTypes.FinanceAccount, account.Id.ToString("D"), command.Reason, command.CorrelationId, nowUtc,
+            new Dictionary<string, string?> { ["effectiveFrom"] = command.EffectiveFrom.ToString("yyyy-MM-dd"),
+                ["effectiveTo"] = command.EffectiveTo?.ToString("yyyy-MM-dd"), ["replacementAccountId"] = command.ReplacementAccountId?.ToString("D"),
+                ["postingRestriction"] = account.PostingRestriction, ["isReportable"] = account.IsReportable.ToString().ToLowerInvariant() }, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken); await transaction.CommitAsync(cancellationToken);
+        AccountingGovernanceTelemetry.LifecycleChanged(changeType);
+        return await GetAccountAsync(new(command.CompanyId, account.Id), cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<AccountingSeriesPolicyDto>> GetSeriesPoliciesAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(companyId);
+        var policies = await _dbContext.AccountingSeriesPolicies.AsNoTracking().Where(x => x.CompanyId == companyId)
+            .OrderBy(x => x.SeriesKind).ThenBy(x => x.SourceType).ThenBy(x => x.TransactionType).ToListAsync(cancellationToken);
+        var voucherSeries = await _dbContext.VoucherSeries.AsNoTracking().Where(x => x.CompanyId == companyId).ToDictionaryAsync(x => x.Id, cancellationToken);
+        var documentSeries = await _dbContext.StatutoryDocumentSeries.AsNoTracking().Where(x => x.CompanyId == companyId).ToDictionaryAsync(x => x.Id, cancellationToken);
+        var results = new List<AccountingSeriesPolicyDto>(policies.Count);
+        foreach (var policy in policies)
+        {
+            var code = policy.SeriesKind == AccountingSeriesKinds.Voucher && voucherSeries.TryGetValue(policy.SeriesId, out var voucher) ? voucher.Code
+                : documentSeries.TryGetValue(policy.SeriesId, out var document) ? document.Code : "?";
+            var name = policy.SeriesKind == AccountingSeriesKinds.Voucher && voucherSeries.TryGetValue(policy.SeriesId, out voucher) ? voucher.DisplayName
+                : documentSeries.TryGetValue(policy.SeriesId, out document) ? document.DocumentType : "Missing series";
+            var gaps = policy.SeriesKind == AccountingSeriesKinds.Voucher
+                ? await CountUnexplainedVoucherGapsAsync(companyId, policy.SeriesId, policy.FiscalYear, cancellationToken) : 0;
+            results.Add(new(policy.Id, policy.SeriesKind, policy.SeriesId, code, name, policy.SourceType,
+                policy.TransactionType, policy.FiscalYear, policy.LocationDimensionMemberId, policy.Jurisdiction,
+                policy.PolicyPackKey, policy.PolicyPackVersion, policy.ProviderKey, policy.ProviderSeriesCode,
+                policy.IsActive, policy.Version, gaps));
+        }
+        var configuration = await RequireConfigurationAsync(companyId, cancellationToken);
+        foreach (var voucher in voucherSeries.Values.Where(x => policies.All(p => p.SeriesKind != AccountingSeriesKinds.Voucher || p.SeriesId != x.Id)))
+            results.Add(new(Guid.Empty, AccountingSeriesKinds.Voucher, voucher.Id, voucher.Code, voucher.DisplayName,
+                "*", "*", null, null, null, configuration.PolicyPackKey, configuration.PolicyPackVersion,
+                null, null, voucher.IsActive, 0, await CountUnexplainedVoucherGapsAsync(companyId, voucher.Id, null, cancellationToken)));
+        foreach (var document in documentSeries.Values.Where(x => policies.All(p => p.SeriesKind != AccountingSeriesKinds.StatutoryDocument || p.SeriesId != x.Id)))
+            results.Add(new(Guid.Empty, AccountingSeriesKinds.StatutoryDocument, document.Id, document.Code, document.DocumentType,
+                "*", document.DocumentType, document.FiscalYearStart.Year, null, null, configuration.PolicyPackKey,
+                configuration.PolicyPackVersion, null, null, document.IsActive, 0, 0));
+        return results;
+    }
+
+    public async Task<AccountingSeriesPolicyDto> SaveSeriesPolicyAsync(SaveAccountingSeriesPolicyCommand command, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(command.CompanyId); ValidateActor(command.ActorUserId);
+        var config = await RequireConfigurationAsync(command.CompanyId, cancellationToken);
+        if (command.LocationDimensionMemberId.HasValue && !await _dbContext.AccountingDimensionMembers.AsNoTracking()
+                .AnyAsync(x => x.CompanyId == command.CompanyId && x.Id == command.LocationDimensionMemberId.Value, cancellationToken))
+            throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.SeriesPolicyConflict, "The selected location dimension member was not found.");
+        var validSeries = command.SeriesKind switch
+        {
+            AccountingSeriesKinds.Voucher => await _dbContext.VoucherSeries.AsNoTracking().AnyAsync(x => x.CompanyId == command.CompanyId && x.Id == command.SeriesId, cancellationToken),
+            AccountingSeriesKinds.StatutoryDocument => await _dbContext.StatutoryDocumentSeries.AsNoTracking().AnyAsync(x => x.CompanyId == command.CompanyId && x.Id == command.SeriesId, cancellationToken),
+            _ => throw new ArgumentOutOfRangeException(nameof(command.SeriesKind), "Series kind is not supported.")
+        };
+        if (!validSeries) throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.SeriesPolicyConflict, "The selected accounting series was not found.");
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        AccountingSeriesPolicy policy;
+        if (command.PolicyId.HasValue)
+        {
+            policy = await _dbContext.AccountingSeriesPolicies.SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.Id == command.PolicyId.Value, cancellationToken)
+                ?? throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.SeriesPolicyConflict, "The series policy was not found.");
+            if (command.ExpectedVersion != policy.Version) throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.SeriesPolicyConflict, "The series policy changed after it was loaded.", isConflict: true);
+            if (policy.SeriesId != command.SeriesId || policy.SeriesKind != command.SeriesKind) throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.SeriesPolicyConflict, "A policy cannot be moved to another issued series.", isConflict: true);
+            policy.Update(command.SourceType, command.TransactionType, command.FiscalYear, command.LocationDimensionMemberId,
+                command.Jurisdiction, config.PolicyPackKey, config.PolicyPackVersion, command.ProviderKey,
+                command.ProviderSeriesCode, command.IsActive, command.ActorUserId, nowUtc);
+        }
+        else
+        {
+            policy = new AccountingSeriesPolicy(Guid.NewGuid(), command.CompanyId, command.SeriesKind, command.SeriesId,
+                command.SourceType, command.TransactionType, command.FiscalYear, command.LocationDimensionMemberId,
+                command.Jurisdiction, config.PolicyPackKey, config.PolicyPackVersion, command.ProviderKey,
+                command.ProviderSeriesCode, command.IsActive, command.ActorUserId, nowUtc);
+            _dbContext.AccountingSeriesPolicies.Add(policy);
+        }
+        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "accounting.series.policy_saved", "accounting_series_policy",
+            policy.Id.ToString("D"), "Accounting series policy saved.", command.CorrelationId, nowUtc,
+            new Dictionary<string, string?> { ["seriesKind"] = policy.SeriesKind, ["seriesId"] = policy.SeriesId.ToString("D"),
+                ["sourceType"] = policy.SourceType, ["transactionType"] = policy.TransactionType, ["fiscalYear"] = policy.FiscalYear?.ToString(CultureInfo.InvariantCulture) }, cancellationToken);
+        var operation = command.PolicyId.HasValue ? "updated" : "created";
+        try { await _dbContext.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateException) { throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.SeriesPolicyConflict, "Another policy already governs this source, transaction, fiscal year, and location.", isConflict: true); }
+        AccountingGovernanceTelemetry.SeriesPolicyChanged(policy.SeriesKind, operation);
+        return (await GetSeriesPoliciesAsync(command.CompanyId, cancellationToken)).Single(x => x.Id == policy.Id);
+    }
+
+    public async Task<AccountingSeriesPolicyDto> RecordVoucherGapEvidenceAsync(RecordVoucherGapEvidenceCommand command, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(command.CompanyId); ValidateActor(command.ActorUserId);
+        var sequence = await _dbContext.VoucherSequences.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.VoucherSeriesId == command.VoucherSeriesId && x.FiscalYear == command.FiscalYear, cancellationToken);
+        var issued = await _dbContext.LedgerEntries.AsNoTracking().AnyAsync(x => x.CompanyId == command.CompanyId && x.VoucherSeriesId == command.VoucherSeriesId && x.VoucherFiscalYear == command.FiscalYear && x.VoucherSequenceNumber == command.MissingNumber, cancellationToken);
+        if (sequence is null || command.MissingNumber > sequence.LastAllocatedNumber || issued)
+            throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.VoucherGapNotFound, "The requested voucher number is not an unexplained gap.");
+        var evidence = new AccountingVoucherGapEvidence(Guid.NewGuid(), command.CompanyId, command.VoucherSeriesId,
+            command.FiscalYear, command.MissingNumber, command.Reason, command.ActorUserId, _timeProvider.GetUtcNow().UtcDateTime);
+        _dbContext.AccountingVoucherGapEvidence.Add(evidence);
+        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "accounting.voucher.gap_explained",
+            "accounting_voucher_gap", evidence.Id.ToString("D"), command.Reason, command.CorrelationId,
+            evidence.RecordedUtc, new Dictionary<string, string?>
+            {
+                ["voucherSeriesId"] = command.VoucherSeriesId.ToString("D"),
+                ["fiscalYear"] = command.FiscalYear.ToString(CultureInfo.InvariantCulture),
+                ["missingNumber"] = command.MissingNumber.ToString(CultureInfo.InvariantCulture)
+            }, cancellationToken);
+        await _dbContext.SaveChangesAsync(cancellationToken);
+        AccountingGovernanceTelemetry.GapExplained();
+        return (await GetSeriesPoliciesAsync(command.CompanyId, cancellationToken)).First(x => x.SeriesKind == AccountingSeriesKinds.Voucher && x.SeriesId == command.VoucherSeriesId);
+    }
+
+    public Task<CommerceAccountingCapabilityDto> GetCommerceCapabilityAsync(Guid companyId, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(companyId); cancellationToken.ThrowIfCancellationRequested();
+        return Task.FromResult(new CommerceAccountingCapabilityDto("unsupported", "finance-commerce.v1", false, false, false,
+            ["sale.finalized", "sale.reversed", "purchase.received"],
+            "Finance accepts versioned commerce facts for integration traceability, but inventory quantity, valuation, and COGS accounting remain external and are blocked."));
+    }
+
+    public async Task<CommerceAccountingEventResultDto> SubmitCommerceEventAsync(SubmitCommerceAccountingEventCommand command, CancellationToken cancellationToken)
+    {
+        ValidateCompanyId(command.CompanyId); ValidateActor(command.ActorUserId);
+        if (command.RequiresInventoryAccounting)
+        {
+            AccountingGovernanceTelemetry.CommerceEvent("rejected", AccountingGovernanceReasonCodes.InventoryUnsupported);
+            throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.InventoryUnsupported,
+                "Inventory quantity, valuation, and COGS accounting are not supported by Finance. Keep quantity state in the commerce system and integrate only supported accounting documents.");
+        }
+        var capability = await GetCommerceCapabilityAsync(command.CompanyId, cancellationToken);
+        var eventType = command.EventType?.Trim().ToLowerInvariant();
+        if (!string.Equals(command.ContractVersion, capability.ContractVersion, StringComparison.Ordinal) || !capability.AcceptedEventTypes.Contains(eventType!, StringComparer.Ordinal))
+        {
+            AccountingGovernanceTelemetry.CommerceEvent("rejected", AccountingGovernanceReasonCodes.CommerceContractUnsupported);
+            throw new AccountingConfigurationException(AccountingGovernanceReasonCodes.CommerceContractUnsupported, "The commerce event contract version or event type is not supported.");
+        }
+        var existing = await _dbContext.AccountingCommerceEventReceipts.AsNoTracking().SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.EventId == command.EventId && x.EventVersion == command.EventVersion, cancellationToken);
+        if (existing is not null)
+        {
+            AccountingGovernanceTelemetry.CommerceEvent("replayed", "none");
+            return new(existing.EventId, existing.EventVersion, "accepted", "The versioned commerce event was already accepted; no inventory quantity state was created.");
+        }
+        var nowUtc = _timeProvider.GetUtcNow().UtcDateTime;
+        _dbContext.AccountingCommerceEventReceipts.Add(new(Guid.NewGuid(), command.CompanyId, command.EventId,
+            command.EventVersion, command.ContractVersion, eventType!, command.SourceSystem, command.OccurredUtc, "accepted", nowUtc));
+        await WriteAuditAsync(command.CompanyId, command.ActorUserId, "accounting.commerce.event_accepted", "accounting_commerce_event",
+            $"{command.EventId:D}:{command.EventVersion}", "Versioned commerce event accepted without creating inventory quantity state.", command.CorrelationId, nowUtc,
+            new Dictionary<string, string?> { ["eventType"] = eventType, ["sourceSystem"] = command.SourceSystem, ["contractVersion"] = command.ContractVersion }, cancellationToken);
+        try { await _dbContext.SaveChangesAsync(cancellationToken); }
+        catch (DbUpdateException) { _dbContext.ChangeTracker.Clear(); }
+        AccountingGovernanceTelemetry.CommerceEvent("accepted", "none");
+        return new(command.EventId, command.EventVersion, "accepted", "The commerce fact was accepted for integration traceability; inventory quantity and valuation remain external.");
     }
 
     public async Task<IReadOnlyList<AccountingFiscalYearDto>> GetFiscalYearsAsync(
@@ -984,12 +1203,12 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         CancellationToken cancellationToken)
     {
         var ids = accountIds.Distinct().ToArray();
-        var postedIds = await _dbContext.LedgerEntryLines
+        var postedCounts = await _dbContext.LedgerEntryLines
             .AsNoTracking()
             .Where(line => line.CompanyId == companyId && ids.Contains(line.FinanceAccountId) && line.LedgerEntry.Status == LedgerEntryStatuses.Posted)
-            .Select(line => line.FinanceAccountId)
-            .Distinct()
-            .ToListAsync(cancellationToken);
+            .GroupBy(line => line.FinanceAccountId)
+            .Select(group => new { AccountId = group.Key, Count = group.Count() })
+            .ToDictionaryAsync(x => x.AccountId, x => x.Count, cancellationToken);
         var roles = await _dbContext.AccountingConfigurationAccountRoles
             .AsNoTracking()
             .Where(role => role.CompanyId == companyId && ids.Contains(role.FinanceAccountId))
@@ -999,6 +1218,15 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             .Where(mapping => mapping.CompanyId == companyId && ids.Contains(mapping.FinanceAccountId) && mapping.IsActive)
             .ToListAsync(cancellationToken);
         var configuration = await _dbContext.AccountingConfigurations.AsNoTracking().SingleOrDefaultAsync(item => item.CompanyId == companyId, cancellationToken);
+        var histories = await _dbContext.AccountingAccountLifecycleHistory.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.FinanceAccountId))
+            .OrderByDescending(x => x.Version).ToListAsync(cancellationToken);
+        var replacementIds = await _dbContext.FinanceAccounts.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && ids.Contains(x.Id) && x.ReplacementAccountId.HasValue)
+            .Select(x => x.ReplacementAccountId!.Value).Distinct().ToArrayAsync(cancellationToken);
+        var replacementCodes = await _dbContext.FinanceAccounts.AsNoTracking()
+            .Where(x => x.CompanyId == companyId && replacementIds.Contains(x.Id))
+            .ToDictionaryAsync(x => x.Id, x => x.Code, cancellationToken);
         var roleNames = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         if (configuration is not null && _packResolver.TryResolve(configuration.PolicyPackKey, configuration.PolicyPackVersion, out var pack) && pack is not null)
         {
@@ -1008,7 +1236,10 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             }
         }
 
-        return new AccountPresentationContext(postedIds.ToHashSet(), roles, mappings, roleNames);
+        var dependencyCounts = ids.ToDictionary(id => id, id => postedCounts.GetValueOrDefault(id)
+            + roles.Count(x => x.FinanceAccountId == id) + mappings.Count(x => x.FinanceAccountId == id));
+        return new AccountPresentationContext(postedCounts.Keys.ToHashSet(), roles, mappings, roleNames,
+            histories, replacementCodes, dependencyCounts);
     }
 
     private static AccountingAccountListItemDto BuildAccountListItem(FinanceAccount account, AccountPresentationContext context)
@@ -1029,7 +1260,13 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             protection.Reason,
             ResolveRoleName(account, context),
             ResolveReportingPlacement(account.Id, context.Mappings),
-            account.UpdatedUtc);
+            account.UpdatedUtc,
+            account.IsReportable,
+            account.PostingRestriction,
+            account.ReplacementAccountId,
+            ResolveLifecycleStatus(account),
+            account.LifecycleVersion,
+            context.DependencyCounts.GetValueOrDefault(account.Id));
     }
 
     private static AccountingAccountDetailDto BuildAccountDetail(FinanceAccount account, AccountPresentationContext context)
@@ -1052,7 +1289,17 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
             ResolveRoleName(account, context),
             ResolveReportingPlacement(account.Id, context.Mappings),
             account.CreatedUtc,
-            account.UpdatedUtc);
+            account.UpdatedUtc,
+            account.IsReportable,
+            account.PostingRestriction,
+            account.ReplacementAccountId,
+            account.ReplacementAccountId.HasValue ? context.ReplacementCodes.GetValueOrDefault(account.ReplacementAccountId.Value) : null,
+            ResolveLifecycleStatus(account),
+            account.LifecycleVersion,
+            context.Histories.Where(x => x.FinanceAccountId == account.Id).Select(x => new AccountingAccountLifecycleHistoryDto(
+                x.Version, x.ChangeType, x.Name, x.AccountClass, x.NormalBalance, x.IsReportable,
+                x.PostingRestriction, x.EffectiveFrom, x.EffectiveTo, x.ReplacementAccountId, x.Reason,
+                x.ActorUserId, x.RecordedUtc)).ToArray());
     }
 
     private static (bool IsProtected, string? Reason) ResolveProtection(FinanceAccount account, AccountPresentationContext context)
@@ -1090,6 +1337,63 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         await _dbContext.LedgerEntryLines.AsNoTracking().AnyAsync(
             line => line.CompanyId == companyId && line.FinanceAccountId == accountId && line.LedgerEntry.Status == LedgerEntryStatuses.Posted,
             cancellationToken);
+
+    private async Task<IReadOnlyList<AccountingAccountDependencyDto>> LoadAccountDependenciesAsync(
+        Guid companyId, Guid accountId, CancellationToken cancellationToken)
+    {
+        var posted = await _dbContext.LedgerEntryLines.AsNoTracking().CountAsync(x => x.CompanyId == companyId &&
+            x.FinanceAccountId == accountId && x.LedgerEntry.Status == LedgerEntryStatuses.Posted, cancellationToken);
+        var mappings = await _dbContext.FinancialStatementMappings.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.FinanceAccountId == accountId && x.IsActive, cancellationToken);
+        var roles = await _dbContext.AccountingConfigurationAccountRoles.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.FinanceAccountId == accountId, cancellationToken);
+        var schedules = await _dbContext.AccountingScheduleLines.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.FinanceAccountId == accountId, cancellationToken);
+        var dimensionPolicies = await _dbContext.AccountingDimensionAccountPolicies.AsNoTracking().CountAsync(x => x.CompanyId == companyId && x.FinanceAccountId == accountId, cancellationToken);
+        var assets = await _dbContext.FixedAssetClasses.AsNoTracking().CountAsync(x => x.CompanyId == companyId &&
+            (x.CostAccountId == accountId || x.AccumulatedDepreciationAccountId == accountId || x.DepreciationExpenseAccountId == accountId ||
+             x.AccumulatedImpairmentAccountId == accountId || x.ImpairmentExpenseAccountId == accountId ||
+             x.DisposalGainAccountId == accountId || x.DisposalLossAccountId == accountId), cancellationToken);
+        return
+        [
+            new("posted_journals", "Posted journal lines", posted, false),
+            new("account_roles", "Accounting roles", roles, roles > 0),
+            new("reporting_mappings", "Reporting mappings", mappings, false),
+            new("accounting_schedules", "Recurring schedules", schedules, schedules > 0),
+            new("dimension_policies", "Dimension policies", dimensionPolicies, false),
+            new("fixed_asset_classes", "Fixed-asset classes", assets, assets > 0)
+        ];
+    }
+
+    private async Task<int> CountUnexplainedVoucherGapsAsync(Guid companyId, Guid seriesId, int? fiscalYear, CancellationToken cancellationToken)
+    {
+        var sequences = await _dbContext.VoucherSequences.AsNoTracking().Where(x => x.CompanyId == companyId &&
+            x.VoucherSeriesId == seriesId && (!fiscalYear.HasValue || x.FiscalYear == fiscalYear.Value)).ToListAsync(cancellationToken);
+        var total = 0L;
+        foreach (var sequence in sequences)
+        {
+            var issued = await _dbContext.LedgerEntries.AsNoTracking().LongCountAsync(x => x.CompanyId == companyId &&
+                x.VoucherSeriesId == seriesId && x.VoucherFiscalYear == sequence.FiscalYear && x.VoucherSequenceNumber <= sequence.LastAllocatedNumber, cancellationToken);
+            var explained = await _dbContext.AccountingVoucherGapEvidence.AsNoTracking().LongCountAsync(x => x.CompanyId == companyId &&
+                x.VoucherSeriesId == seriesId && x.FiscalYear == sequence.FiscalYear && x.MissingNumber <= sequence.LastAllocatedNumber, cancellationToken);
+            total += Math.Max(0L, sequence.LastAllocatedNumber - issued - explained);
+        }
+        return (int)Math.Min(int.MaxValue, total);
+    }
+
+    private static AccountingAccountLifecycleHistory CreateLifecycleHistory(FinanceAccount account, string changeType,
+        string reason, Guid? actorUserId, DateTime nowUtc) => new(Guid.NewGuid(), account.CompanyId, account.Id,
+        account.LifecycleVersion, changeType, account.Name, account.AccountClass ?? account.AccountType,
+        account.NormalBalance ?? (account.AccountClass is FinanceAccountClassValues.Liability or FinanceAccountClassValues.Equity or FinanceAccountClassValues.Income
+            ? FinanceNormalBalanceValues.Credit : FinanceNormalBalanceValues.Debit), account.IsReportable,
+        account.PostingRestriction, account.EffectiveFrom ?? DateOnly.FromDateTime(account.OpenedUtc), account.EffectiveTo,
+        account.ReplacementAccountId, reason, actorUserId, nowUtc);
+
+    private static string ResolveLifecycleStatus(FinanceAccount account)
+    {
+        var today = DateOnly.FromDateTime(DateTime.UtcNow);
+        if (!account.IsPostingEnabled || account.PostingRestriction == FinanceAccountPostingRestrictionValues.All || account.EffectiveTo < today) return "retired";
+        if (account.EffectiveTo.HasValue) return "retirement_scheduled";
+        if (account.PostingRestriction == FinanceAccountPostingRestrictionValues.Manual || account.RestrictManualPosting) return "restricted";
+        return "active";
+    }
 
     private static AccountingChartTemplateDefinition ResolveChart(IAccountingPolicyPack pack, string chartTemplateKey) =>
         pack.Definition.ChartTemplates.FirstOrDefault(template =>
@@ -1458,5 +1762,8 @@ public sealed class AccountingAdministrationService : IAccountingAdministrationS
         HashSet<Guid> PostedAccountIds,
         IReadOnlyList<AccountingConfigurationAccountRole> Roles,
         IReadOnlyList<FinancialStatementMapping> Mappings,
-        IReadOnlyDictionary<string, string> RoleNames);
+        IReadOnlyDictionary<string, string> RoleNames,
+        IReadOnlyList<AccountingAccountLifecycleHistory> Histories,
+        IReadOnlyDictionary<Guid, string> ReplacementCodes,
+        IReadOnlyDictionary<Guid, int> DependencyCounts);
 }

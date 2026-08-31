@@ -34,6 +34,10 @@ internal sealed class FinancialStatementMappingConfiguration : IEntityTypeConfig
             .HasMaxLength(64)
             .IsRequired();
         builder.Property(x => x.IsActive).HasColumnName("is_active").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.VersionNumber).HasColumnName("version_number").HasDefaultValue(1L).IsRequired();
+        builder.Property(x => x.EffectiveFrom).HasColumnName("effective_from").HasDefaultValue(new DateOnly(1, 1, 1)).IsRequired();
+        builder.Property(x => x.EffectiveTo).HasColumnName("effective_to");
+        builder.Property(x => x.SupersedesMappingId).HasColumnName("supersedes_mapping_id");
         builder.Property(x => x.CreatedUtc).HasColumnName("created_at").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_at").IsRequired();
 
@@ -49,6 +53,9 @@ internal sealed class FinancialStatementMappingConfiguration : IEntityTypeConfig
         builder.HasIndex(x => x.FinanceAccountId);
         builder.HasIndex(x => new { x.CompanyId, x.StatementType, x.IsActive });
         builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.StatementType }).HasFilter("is_active = 1").IsUnique();
+        builder.HasIndex(x => new { x.CompanyId, x.FinanceAccountId, x.StatementType, x.EffectiveFrom });
+        builder.HasOne<FinancialStatementMapping>().WithMany().HasForeignKey(x => x.SupersedesMappingId)
+            .OnDelete(DeleteBehavior.Restrict);
 
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasOne(x => x.FinanceAccount)

@@ -55,6 +55,85 @@ public static class FinanceModuleRegistration
         services.AddSingleton<PaymentBatchTelemetry>();
         services.AddSingleton<PaymentExecutionTelemetry>();
         services.AddSingleton<TreasuryWorkspaceTelemetry>();
+        services.AddSingleton<ExchangeRateTelemetry>();
+        services.AddSingleton<AccountingCloseTelemetry>();
+        services.AddSingleton<ForeignCurrencySettlementTelemetry>();
+        services.AddSingleton<CurrencyRevaluationTelemetry>();
+        services.AddSingleton<FixedAssetTelemetry>();
+        services.AddSingleton<FinancialReportSuiteTelemetry>();
+        services.AddSingleton<ReportDefinitionTelemetry>();
+        services.AddSingleton<AuditPackageTelemetry>();
+        services.AddOptions<AuditPackageOptions>()
+            .Bind(configuration.GetSection(AuditPackageOptions.SectionName))
+            .Validate(x => x.PollIntervalSeconds is >= 5 and <= 3600,
+                "Audit-package polling must be between 5 seconds and 1 hour.")
+            .Validate(x => x.ClaimBatchSize is >= 1 and <= 20 && x.MaximumAttempts is >= 1 and <= 20 && x.LeaseSeconds is >= 30 and <= 1800,
+                "Audit-package claim and retry bounds are invalid.")
+            .Validate(x => x.RetentionYears is >= 1 and <= 10 && x.DownloadAuthorizationMinutes is >= 1 and <= 60,
+                "Audit-package retention or download-authorization bounds are invalid.")
+            .Validate(x => x.MaximumGeneralLedgerPages is >= 1 and <= 500 && x.MaximumDocumentCount is >= 1 and <= 5000,
+                "Audit-package artifact-count bounds are invalid.")
+            .Validate(x => x.MaximumDocumentBytes is >= 1024 and <= 100 * 1024 * 1024 &&
+                           x.MaximumPackageBytes >= x.MaximumDocumentBytes && x.MaximumPackageBytes <= 2L * 1024 * 1024 * 1024,
+                "Audit-package object-size bounds are invalid.")
+            .ValidateOnStart();
+        services.AddOptions<FixedAssetMaintenanceOptions>()
+            .Bind(configuration.GetSection(FixedAssetMaintenanceOptions.SectionName))
+            .Validate(x => x.PollIntervalSeconds is >= 60 and <= 86400,
+                "Fixed-asset maintenance polling must be between 1 minute and 1 day.")
+            .Validate(x => x.CompanyBatchSize is >= 1 and <= 500,
+                "Fixed-asset maintenance company batch size is outside supported bounds.")
+            .ValidateOnStart();
+        services.AddOptions<CurrencyRevaluationWorkerOptions>()
+            .Bind(configuration.GetSection(CurrencyRevaluationWorkerOptions.SectionName))
+            .Validate(x => x.PollIntervalSeconds is >= 60 and <= 86400,
+                "Currency revaluation polling must be between 1 minute and 1 day.")
+            .ValidateOnStart();
+        services.AddOptions<ExchangeRateAuthorityOptions>()
+            .Bind(configuration.GetSection(ExchangeRateAuthorityOptions.SectionName))
+            .Validate(x => x.RawEvidenceRetentionDays is >= 365 and <= 3650,
+                "Exchange-rate raw evidence retention must be between 1 and 10 years.")
+            .Validate(x => x.MaximumManualObservations is >= 1 and <= 5000,
+                "Exchange-rate manual imports must allow between 1 and 5,000 observations.")
+            .Validate(x => x.MaximumLookupCandidates is >= 100 and <= 10000,
+                "Exchange-rate lookup bounds must be between 100 and 10,000 candidates.")
+            .ValidateOnStart();
+        services.AddOptions<ExchangeRateRefreshOptions>()
+            .Bind(configuration.GetSection(ExchangeRateRefreshOptions.SectionName))
+            .Validate(x => x.PollIntervalSeconds is >= 10 and <= 3600,
+                "Exchange-rate polling must be between 10 seconds and 1 hour.")
+            .Validate(x => x.ClaimBatchSize is >= 1 and <= 100 && x.LeaseSeconds is >= 30 and <= 900,
+                "Exchange-rate claim and lease bounds are invalid.")
+            .Validate(x => x.MaximumAttempts is >= 1 and <= 20 && x.BaseRetryDelaySeconds is >= 1 and <= 3600 &&
+                           x.MaximumRetryDelaySeconds >= x.BaseRetryDelaySeconds && x.MaximumRetryDelaySeconds <= 86400,
+                "Exchange-rate retry bounds are invalid.")
+            .ValidateOnStart();
+        services.AddOptions<RiksbankExchangeRateOptions>()
+            .Bind(configuration.GetSection(RiksbankExchangeRateOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.SubscriptionKey = configuration["RIKSBANK_API_SUBSCRIPTION_KEY"]
+                    ?? Environment.GetEnvironmentVariable("RIKSBANK_API_SUBSCRIPTION_KEY")
+                    ?? options.SubscriptionKey;
+                options.ApiBaseUrl = string.IsNullOrWhiteSpace(options.ApiBaseUrl)
+                    ? "https://api.riksbank.se/swea/v1/" : options.ApiBaseUrl.Trim();
+                options.RequestTimeoutSeconds = Math.Clamp(options.RequestTimeoutSeconds, 5, 120);
+            })
+            .Validate(x => Uri.TryCreate(x.ApiBaseUrl, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps,
+                "The Sveriges Riksbank API base URL must be an absolute HTTPS URL.")
+            .ValidateOnStart();
+        services.AddHttpClient(RiksbankExchangeRateOptions.HttpClientName, (provider, client) =>
+        {
+            var options = provider.GetRequiredService<IOptions<RiksbankExchangeRateOptions>>().Value;
+            client.BaseAddress = new Uri(options.ApiBaseUrl.EndsWith('/') ? options.ApiBaseUrl : options.ApiBaseUrl + "/", UriKind.Absolute);
+            client.Timeout = TimeSpan.FromSeconds(options.RequestTimeoutSeconds);
+        });
+        services.AddScoped<RiksbankExchangeRateProvider>();
+        services.AddScoped<IExchangeRateProvider>(provider => provider.GetRequiredService<RiksbankExchangeRateProvider>());
+        services.AddScoped<IExchangeRateProviderRegistry, ExchangeRateProviderRegistry>();
+        services.AddScoped<ExchangeRateService>();
+        services.AddScoped<IExchangeRateService>(provider => provider.GetRequiredService<ExchangeRateService>());
+        services.AddScoped<IExchangeRateRefreshRunner, ExchangeRateRefreshRunner>();
         services.AddOptions<ConnectedBankingReadinessOptions>()
             .Bind(configuration.GetSection(ConnectedBankingReadinessOptions.SectionName))
             .Validate(options => options.ConsentExpiryWarningDays is >= 1 and <= 90,
@@ -285,8 +364,23 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceAccountingActionService, FinanceAccountingActionService>();
         services.AddScoped<IAccountingAccountRoleResolver, AccountingAccountRoleResolver>();
         services.AddScoped<IAccountingAdministrationService, AccountingAdministrationService>();
+        services.AddSingleton<AccountingDimensionTelemetry>();
+        services.AddScoped<IAccountingDimensionPostingPolicy, AccountingDimensionPostingPolicy>();
+        services.AddScoped<IAccountingDimensionService, AccountingDimensionService>();
         services.AddScoped<IAccountingPostingService, AccountingPostingService>();
         services.AddScoped<IAccountingJournalReadService, AccountingJournalReadService>();
+        services.AddSingleton<AccountingScheduleTelemetry>();
+        services.AddScoped<IAccountingScheduleService, AccountingScheduleService>();
+        services.AddScoped<IAccountingCloseService, AccountingCloseService>();
+        services.AddScoped<IAccountingCloseGovernanceService, AccountingCloseGovernanceService>();
+        services.AddSingleton<AccountingCloseWorkspaceTelemetry>();
+        services.AddScoped<IAccountingCloseWorkspaceService, AccountingCloseWorkspaceService>();
+        services.AddSingleton<CloseComplianceReleaseReadinessTelemetry>();
+        services.AddScoped<ICloseComplianceReleaseReadinessService, CloseComplianceReleaseReadinessService>();
+        services.AddScoped<IYearEndRolloverService, YearEndRolloverService>();
+        services.AddScoped<IFixedAssetService, FixedAssetService>();
+        services.AddScoped<FixedAssetMaintenanceRunner>();
+        services.AddScoped<IAccountingScheduleGenerationRunner, AccountingScheduleGenerationRunner>();
         services.AddScoped<IManualJournalPolicy, ManualJournalPolicy>();
         services.AddScoped<IManualJournalService, ManualJournalService>();
         services.AddSingleton<CustomerInvoiceDraftTelemetry>();
@@ -478,6 +572,18 @@ public static class FinanceModuleRegistration
                     options.BaseRetryDelaySeconds,
                     86400);
             });
+        services.AddOptions<AccountingScheduleWorkerOptions>()
+            .Bind(configuration.GetSection(AccountingScheduleWorkerOptions.SectionName))
+            .PostConfigure(options =>
+            {
+                options.PollIntervalSeconds = Math.Clamp(options.PollIntervalSeconds, 5, 3600);
+                options.ClaimBatchSize = Math.Clamp(options.ClaimBatchSize, 1, 100);
+                options.LeaseSeconds = Math.Clamp(options.LeaseSeconds, 30, 900);
+                options.MaximumAttempts = Math.Clamp(options.MaximumAttempts, 1, 20);
+                options.BaseRetryDelaySeconds = Math.Clamp(options.BaseRetryDelaySeconds, 1, 3600);
+                options.MaximumRetryDelaySeconds = Math.Clamp(options.MaximumRetryDelaySeconds,
+                    options.BaseRetryDelaySeconds, 86400);
+            });
         services.AddOptions<FinanceAnalyticsStartupRefreshOptions>()
             .Bind(configuration.GetSection(FinanceAnalyticsStartupRefreshOptions.SectionName))
             .PostConfigure(options => options.CompanyBatchSize = Math.Clamp(options.CompanyBatchSize, 1, 5000));
@@ -559,7 +665,11 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceCashSettlementPostingService>(provider => provider.GetRequiredService<CompanyCashSettlementPostingService>());
         services.AddScoped<FinancePaymentAllocationService>(provider => new FinancePaymentAllocationService(
             provider.GetRequiredService<VirtualCompany.Infrastructure.Persistence.VirtualCompanyDbContext>(),
-            provider.GetRequiredService<IFinanceCashSettlementPostingService>()));
+            provider.GetRequiredService<IFinanceCashSettlementPostingService>(),
+            provider.GetRequiredService<IExchangeRateService>(),
+            provider.GetRequiredService<IAccountingPostingService>(),
+            provider.GetRequiredService<ForeignCurrencySettlementTelemetry>(),
+            provider.GetRequiredService<TimeProvider>()));
         services.AddScoped<IFinanceApprovalTaskService, CompanyFinanceApprovalTaskService>();
         services.AddScoped<ICashPostingTraceabilityBackfillService, CompanyCashPostingTraceabilityBackfillService>();
         services.AddScoped<CompanyBankTransactionService>();
@@ -585,8 +695,14 @@ public static class FinanceModuleRegistration
         services.AddScoped<IFinanceEntryService, CompanyFinanceEntryService>();
         services.AddScoped<IFinanceSeedJobRunner, CompanyFinanceSeedJobRunner>();
         services.AddScoped<IReportingPeriodCloseService, CompanyReportingPeriodCloseService>();
+        services.AddScoped<ICurrencyRevaluationService, CurrencyRevaluationService>();
         services.AddScoped<IAccountingReportingService, AccountingReportingService>();
+        services.AddScoped<IFinancialReportSuiteService, FinancialReportSuiteService>();
+        services.AddScoped<IReportDefinitionService, ReportDefinitionService>();
         services.AddScoped<IVatReturnService, VatReturnService>();
+        services.AddSingleton<ComplianceObligationTelemetry>();
+        services.AddScoped<IComplianceObligationService, ComplianceObligationService>();
+        services.AddScoped<IAuditPackageService, AuditPackageService>();
         services.AddScoped<IReportingPeriodRegenerationJobRunner, ReportingPeriodRegenerationJobRunner>();
         services.AddScoped<IFinanceApprovalTaskBackfillJobRunner, FinanceApprovalTaskBackfillJobRunner>();
         services.AddScoped<IFinanceInsightsSnapshotJobRunner, FinanceInsightsSnapshotJobRunner>();
@@ -661,11 +777,16 @@ public static class FinanceModuleRegistration
         services.AddHostedService<AccountingProviderSwitchMonitoringBackgroundService>();
         services.AddHostedService<FinanceApprovalTaskBackfillBackgroundService>();
         services.AddHostedService<CustomerInvoiceScheduleGenerationBackgroundService>();
+        services.AddHostedService<AccountingScheduleGenerationBackgroundService>();
         services.AddHostedService<FinanceInsightsSnapshotBackgroundService>();
         services.AddHostedService<FinanceAnalyticsStartupRefreshBackgroundService>();
         services.AddHostedService<FinanceIntegrationStartupSyncBackgroundService>();
         services.AddHostedService<BankConsentRevocationBackgroundService>();
         services.AddHostedService<BankFeedSynchronizationBackgroundService>();
+        services.AddHostedService<ExchangeRateRefreshBackgroundService>();
+        services.AddHostedService<CurrencyRevaluationBackgroundService>();
+        services.AddHostedService<FixedAssetMaintenanceBackgroundService>();
+        services.AddHostedService<AuditPackageBackgroundService>();
         services.AddHostedService<FinanceBillFortnoxRegistrationReconciliationBackgroundService>();
         services.AddHostedService<FinanceSeedBackgroundService>();
         return services;

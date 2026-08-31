@@ -14,13 +14,17 @@ public sealed partial class InternalFinanceController
         ExecuteWriteAsync(() => _vatReturnService.CreateFilingPeriodAsync(new CreateVatFilingPeriodCommand(
             companyId, request.PeriodCode, request.StartDate, request.EndDate, request.Currency,
             request.FiscalPeriodId, ResolveActorId() ?? throw new UnauthorizedAccessException(
-                "A resolved company user is required.")), cancellationToken));
+                "A resolved company user is required."), request.DueDate), cancellationToken));
 
     [Authorize(Policy = CompanyPolicies.AccountingView)]
     [HttpGet("accounting/vat/filing-periods")]
     public Task<ActionResult<IReadOnlyList<VatFilingPeriodDto>>> ListVatFilingPeriodsAsync(Guid companyId,
         CancellationToken cancellationToken) => ExecuteReadAsync(() =>
         _vatReturnService.ListFilingPeriodsAsync(companyId, cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
+    [HttpPut("accounting/vat/filing-periods/{filingPeriodId:guid}/due-date")]
+    public Task<ActionResult<VatFilingPeriodDto>> SetVatFilingPeriodDueDateAsync(Guid companyId,Guid filingPeriodId,[FromBody] SetVatFilingPeriodDueDateRequest request,CancellationToken cancellationToken)=>ExecuteWriteAsync(()=>_vatReturnService.SetFilingPeriodDueDateAsync(new(companyId,filingPeriodId,request.DueDate,ResolveActorId()??throw new UnauthorizedAccessException()),cancellationToken));
 
     [Authorize(Policy = CompanyPolicies.AccountingAdmin)]
     [HttpPost("accounting/vat/returns/calculate")]
@@ -96,6 +100,7 @@ public sealed class CreateVatFilingPeriodRequest
     public DateOnly EndDate { get; set; }
     public string Currency { get; set; } = "SEK";
     public Guid? FiscalPeriodId { get; set; }
+    public DateOnly? DueDate { get; set; }
 }
 
 public sealed class CalculateVatReturnRequest
@@ -104,6 +109,7 @@ public sealed class CalculateVatReturnRequest
     public Guid? VatReturnId { get; set; }
     public string IdempotencyKey { get; set; } = string.Empty;
 }
+public sealed class SetVatFilingPeriodDueDateRequest { public DateOnly DueDate {get;set;} }
 
 public sealed class VatReturnEvidenceRequest
 {

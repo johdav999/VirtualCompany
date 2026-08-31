@@ -121,59 +121,101 @@ public sealed partial class CompanyFinanceReadService
                 x.Currency))
             .ToListAsync(cancellationToken);
 
-        var invoiceRows = await _dbContext.FinanceInvoices
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == parameters.CompanyId && x.IssuedUtc <= parameters.AsOfUtc)
-            .Select(x => new InsightInvoiceRow(
-                x.Id,
-                x.CounterpartyId,
-                x.Counterparty.Name,
-                x.DueUtc,
-                x.Amount,
-                x.Currency,
-                x.Status,
-                x.SettlementStatus))
-            .ToListAsync(cancellationToken);
+        List<InsightInvoiceRow> invoiceRows;
+        List<InsightBillRow> billRows;
+        List<InsightAllocationRow> incomingAllocations;
+        List<InsightAllocationRow> outgoingAllocations;
+        try
+        {
+            invoiceRows = await _dbContext.FinanceInvoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == parameters.CompanyId && x.IssuedUtc <= parameters.AsOfUtc)
+                .Select(x => new InsightInvoiceRow(
+                    x.Id, x.CounterpartyId, x.Counterparty.Name, x.DueUtc, x.Amount, x.Currency,
+                    x.Status, x.SettlementStatus))
+                .ToListAsync(cancellationToken);
 
-        var billRows = await _dbContext.FinanceBills
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x => x.CompanyId == parameters.CompanyId && x.ReceivedUtc <= parameters.AsOfUtc)
-            .Select(x => new InsightBillRow(
-                x.Id,
-                x.CounterpartyId,
-                x.Counterparty.Name,
-                x.DueUtc,
-                x.Amount,
-                x.Currency,
-                x.Status,
-                x.SettlementStatus))
-            .ToListAsync(cancellationToken);
+            billRows = await _dbContext.FinanceBills
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == parameters.CompanyId && x.ReceivedUtc <= parameters.AsOfUtc)
+                .Select(x => new InsightBillRow(
+                    x.Id, x.CounterpartyId, x.Counterparty.Name, x.DueUtc, x.Amount, x.Currency,
+                    x.Status, x.SettlementStatus))
+                .ToListAsync(cancellationToken);
 
-        var incomingAllocations = await _dbContext.PaymentAllocations
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == parameters.CompanyId &&
-                x.InvoiceId.HasValue &&
-                x.Payment.Status == PaymentStatuses.Completed &&
-                x.Payment.PaymentType == PaymentTypes.Incoming &&
-                x.Payment.PaymentDate <= parameters.AsOfUtc)
-            .Select(x => new InsightAllocationRow(x.InvoiceId!.Value, x.AllocatedAmount))
-            .ToListAsync(cancellationToken);
+            incomingAllocations = await _dbContext.PaymentAllocations
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.CompanyId == parameters.CompanyId &&
+                    x.InvoiceId.HasValue &&
+                    x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
+                    x.Payment.Status == PaymentStatuses.Completed &&
+                    x.Payment.PaymentType == PaymentTypes.Incoming &&
+                    x.Payment.PaymentDate <= parameters.AsOfUtc)
+                .Select(x => new InsightAllocationRow(x.InvoiceId!.Value, x.AllocatedAmount + x.WriteOffAmount))
+                .ToListAsync(cancellationToken);
 
-        var outgoingAllocations = await _dbContext.PaymentAllocations
-            .IgnoreQueryFilters()
-            .AsNoTracking()
-            .Where(x =>
-                x.CompanyId == parameters.CompanyId &&
-                x.BillId.HasValue &&
-                x.Payment.Status == PaymentStatuses.Completed &&
-                x.Payment.PaymentType == PaymentTypes.Outgoing &&
-                x.Payment.PaymentDate <= parameters.AsOfUtc)
-            .Select(x => new InsightAllocationRow(x.BillId!.Value, x.AllocatedAmount))
-            .ToListAsync(cancellationToken);
+            outgoingAllocations = await _dbContext.PaymentAllocations
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.CompanyId == parameters.CompanyId &&
+                    x.BillId.HasValue &&
+                    x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
+                    x.Payment.Status == PaymentStatuses.Completed &&
+                    x.Payment.PaymentType == PaymentTypes.Outgoing &&
+                    x.Payment.PaymentDate <= parameters.AsOfUtc)
+                .Select(x => new InsightAllocationRow(x.BillId!.Value, x.AllocatedAmount + x.WriteOffAmount))
+                .ToListAsync(cancellationToken);
+        }
+        catch (Exception exception) when (IsLegacySettlementSchema(exception))
+        {
+            // During a rolling upgrade the insight surface can run before settlement facts are
+            // added. Preserve the legacy status/allocation interpretation until the additive
+            // migration lands; never manufacture write-offs or settlement state.
+            invoiceRows = await _dbContext.FinanceInvoices
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == parameters.CompanyId && x.IssuedUtc <= parameters.AsOfUtc)
+                .Select(x => new InsightInvoiceRow(
+                    x.Id, x.CounterpartyId, x.Counterparty.Name, x.DueUtc, x.Amount, x.Currency,
+                    x.Status, string.Empty))
+                .ToListAsync(cancellationToken);
+
+            billRows = await _dbContext.FinanceBills
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x => x.CompanyId == parameters.CompanyId && x.ReceivedUtc <= parameters.AsOfUtc)
+                .Select(x => new InsightBillRow(
+                    x.Id, x.CounterpartyId, x.Counterparty.Name, x.DueUtc, x.Amount, x.Currency,
+                    x.Status, string.Empty))
+                .ToListAsync(cancellationToken);
+
+            incomingAllocations = await _dbContext.PaymentAllocations
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.CompanyId == parameters.CompanyId && x.InvoiceId.HasValue &&
+                    x.Payment.Status == PaymentStatuses.Completed &&
+                    x.Payment.PaymentType == PaymentTypes.Incoming &&
+                    x.Payment.PaymentDate <= parameters.AsOfUtc)
+                .Select(x => new InsightAllocationRow(x.InvoiceId!.Value, x.AllocatedAmount))
+                .ToListAsync(cancellationToken);
+
+            outgoingAllocations = await _dbContext.PaymentAllocations
+                .IgnoreQueryFilters()
+                .AsNoTracking()
+                .Where(x =>
+                    x.CompanyId == parameters.CompanyId && x.BillId.HasValue &&
+                    x.Payment.Status == PaymentStatuses.Completed &&
+                    x.Payment.PaymentType == PaymentTypes.Outgoing &&
+                    x.Payment.PaymentDate <= parameters.AsOfUtc)
+                .Select(x => new InsightAllocationRow(x.BillId!.Value, x.AllocatedAmount))
+                .ToListAsync(cancellationToken);
+        }
 
         var completedIncomingByInvoice = incomingAllocations
             .GroupBy(x => x.DocumentId)
@@ -561,6 +603,21 @@ public sealed partial class CompanyFinanceReadService
                 (sqlException.Message.Contains("'source_type'", StringComparison.OrdinalIgnoreCase) ||
                  sqlException.Message.Contains("'due_status'", StringComparison.OrdinalIgnoreCase) ||
                  sqlException.Message.Contains("'settlement_status'", StringComparison.OrdinalIgnoreCase)))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsLegacySettlementSchema(Exception exception)
+    {
+        for (var current = exception; current is not null; current = current.InnerException!)
+        {
+            if (current is SqlException { Number: 207 } sqlException &&
+                (sqlException.Message.Contains("'settlement_status'", StringComparison.OrdinalIgnoreCase) ||
+                 sqlException.Message.Contains("'write_off_amount'", StringComparison.OrdinalIgnoreCase)))
             {
                 return true;
             }

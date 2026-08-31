@@ -34,6 +34,7 @@ public sealed class ReportingPeriodCloseIntegrationTests : IDisposable
         Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.UnpostedSourceDocuments && x.Count == 1);
         Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.UnbalancedJournalEntries && x.Count == 1);
         Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.MissingStatementMappings && x.Count == 1);
+        Assert.Contains(payload.BlockingIssues, x => x.Code == ReportingPeriodBlockingIssueCodes.CurrencyRevaluationMissing && x.Count == 1);
     }
 
     [Fact]
@@ -236,6 +237,15 @@ public sealed class ReportingPeriodCloseIntegrationTests : IDisposable
                 new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.CashAccountId, FinancialStatementType.BalanceSheet, FinancialStatementReportSection.BalanceSheetAssets, FinancialStatementLineClassification.CurrentAsset),
                 new FinancialStatementMapping(Guid.NewGuid(), seed.CompanyId, setup.RevenueAccountId, FinancialStatementType.ProfitAndLoss, FinancialStatementReportSection.ProfitAndLossRevenue, FinancialStatementLineClassification.Revenue));
 
+            var accountingConfigurationId = Guid.NewGuid();
+            var configuredUtc = new DateTime(2026, 1, 1, 0, 0, 0, DateTimeKind.Utc);
+            dbContext.AccountingConfigurations.Add(new AccountingConfiguration(accountingConfigurationId,
+                seed.CompanyId, "SEK", 1, 1, "core", "1", new DateOnly(2026, 1, 1), 2,
+                AccountingRoundingModeValues.MidpointToEven, seed.OwnerUserId, configuredUtc));
+            dbContext.AccountingConfigurationAccountRoles.Add(new AccountingConfigurationAccountRole(
+                Guid.NewGuid(), seed.CompanyId, accountingConfigurationId, AccountingAccountRoleKeys.Cash,
+                setup.CashAccountId, configuredUtc));
+
             var unposted = new LedgerEntry(
                 Guid.NewGuid(),
                 seed.CompanyId,
@@ -256,11 +266,19 @@ public sealed class ReportingPeriodCloseIntegrationTests : IDisposable
                 "JE-UNBALANCED",
                 new DateTime(2026, 3, 12, 0, 0, 0, DateTimeKind.Utc),
                 LedgerEntryStatuses.Posted,
-                "Unbalanced closing entry");
+                "Unbalanced closing entry",
+                documentDate: new DateOnly(2026, 3, 12),
+                postingDate: new DateOnly(2026, 3, 12),
+                baseCurrency: "SEK",
+                postingType: LedgerPostingTypeValues.SourceDocument);
             dbContext.LedgerEntries.Add(unbalanced);
             dbContext.LedgerEntryLines.AddRange(
                 new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unbalanced.Id, setup.ExpenseAccountId, 150m, 0m, "USD"),
-                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unbalanced.Id, setup.CashAccountId, 0m, 125m, "USD"));
+                new LedgerEntryLine(Guid.NewGuid(), seed.CompanyId, unbalanced.Id, setup.CashAccountId,
+                    0m, 125m, "SEK", description: "Foreign cash balance", createdUtc: configuredUtc,
+                    documentDebitAmount: 0m, documentCreditAmount: 12.5m, documentCurrency: "USD",
+                    exchangeRate: 10m, exchangeRateDate: new DateOnly(2026, 3, 12),
+                    exchangeRateIdentity: "close-test-rate"));
 
             return Task.CompletedTask;
         });

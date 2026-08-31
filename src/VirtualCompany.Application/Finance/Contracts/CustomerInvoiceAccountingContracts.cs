@@ -76,7 +76,10 @@ public sealed record CustomerInvoiceAccountingJournalLineDto(
     string? TaxRuleKey = null,
     string? TaxRuleVersion = null,
     IReadOnlyList<string>? VatBoxMappings = null,
-    string? EvidenceClassification = null);
+    string? EvidenceClassification = null,
+    decimal? DocumentDebitAmount = null,
+    decimal? DocumentCreditAmount = null,
+    string? DocumentCurrency = null);
 
 public sealed record CustomerInvoiceAccountingPreviewDto(
     Guid InvoiceId,
@@ -98,7 +101,10 @@ public sealed record CustomerInvoiceAccountingPreviewDto(
     long SourceVersion,
     string PayloadHash,
     IReadOnlyList<CustomerInvoiceAccountingJournalLineDto> JournalLines,
-    IReadOnlyList<CustomerInvoiceAccountingIssueDto> Issues);
+    IReadOnlyList<CustomerInvoiceAccountingIssueDto> Issues,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null,
+    IReadOnlyList<ExchangeRateLookupLeg>? ExchangeRateLegs = null);
 
 public sealed record CustomerInvoiceAccountingApprovalDto(
     Guid Id, string Status, long SourceVersion, string PayloadHash, DateTime CreatedUtc, DateTime? DecidedUtc);
@@ -130,7 +136,12 @@ public sealed record CustomerInvoiceAccountingStateDto(
     string? BlockingReason,
     CustomerInvoiceAccountingApprovalDto? Approval,
     IReadOnlyList<CustomerInvoiceAccountingJournalLineDto> JournalLines,
-    IReadOnlyList<CustomerInvoiceAccountingIssueDto> Issues);
+    IReadOnlyList<CustomerInvoiceAccountingIssueDto> Issues,
+    DateOnly? ExchangeRateDate = null,
+    Guid? ExchangeRateConversionId = null,
+    string? ExchangeRateIdentity = null,
+    decimal? ConversionRoundingResidual = null,
+    string? CurrencyProvenance = null);
 
 public sealed record CustomerInvoiceAccountingTaxRuleOptionDto(string Key, string DisplayName, decimal? Rate, string AmountMethod, DateOnly EffectiveFrom);
 public sealed record CustomerInvoiceAccountingPeriodOptionDto(Guid Id, string Name, DateOnly StartDate, DateOnly EndDate);
@@ -164,7 +175,8 @@ public sealed record CustomerInvoiceReceivableReconciliationDto(
     decimal OutstandingAmount,
     decimal Difference,
     bool IsReconciled,
-    DateTime AsOfUtc);
+    DateTime AsOfUtc,
+    IReadOnlyList<DocumentCurrencyOpenItemControlDto>? DocumentCurrencyBreakdown = null);
 
 public sealed record GetCustomerInvoiceReceivableReconciliationQuery(Guid CompanyId, DateOnly? ThroughDate = null);
 

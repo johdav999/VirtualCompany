@@ -43,7 +43,13 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
         _companyContextAccessor = companyContextAccessor;
         _serviceProvider = serviceProvider;
         _cashSettlementPostingService = serviceProvider?.GetService<IFinanceCashSettlementPostingService>() ?? new CompanyCashSettlementPostingService(dbContext, companyContextAccessor);
-        _paymentAllocationService = new FinancePaymentAllocationService(dbContext, _cashSettlementPostingService);
+        _paymentAllocationService = new FinancePaymentAllocationService(
+            dbContext,
+            _cashSettlementPostingService,
+            serviceProvider?.GetService<IExchangeRateService>(),
+            serviceProvider?.GetService<IAccountingPostingService>(),
+            serviceProvider?.GetService<ForeignCurrencySettlementTelemetry>(),
+            serviceProvider?.GetService<TimeProvider>() ?? TimeProvider.System);
         _outboxEnqueuer = serviceProvider?.GetService<ICompanyOutboxEnqueuer>();
         _approvalTaskService = serviceProvider?.GetService<IFinanceApprovalTaskService>() ??
             new CompanyFinanceApprovalTaskService(dbContext, companyContextAccessor, NullLogger<CompanyFinanceApprovalTaskService>.Instance);
@@ -105,6 +111,14 @@ public sealed partial class CompanyFinanceCommandService : IFinanceCommandServic
     {
         EnsureTenant(command.CompanyId);
         return _paymentAllocationService.DeleteAsync(command, cancellationToken);
+    }
+
+    public Task<FinancePaymentAllocationDto> ReverseAllocationAsync(
+        ReverseFinancePaymentAllocationCommand command,
+        CancellationToken cancellationToken)
+    {
+        EnsureTenant(command.CompanyId);
+        return _paymentAllocationService.ReverseAsync(command, cancellationToken);
     }
 
     public Task<FinancePaymentAllocationBackfillResultDto> BackfillAllocationsAsync(

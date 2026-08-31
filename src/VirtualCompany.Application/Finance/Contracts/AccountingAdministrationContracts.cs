@@ -106,7 +106,13 @@ public sealed record AccountingAccountListItemDto(
     string? ProtectedReason,
     string? RoleName,
     string? ReportingPlacement,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    bool IsReportable = true,
+    string PostingRestriction = "none",
+    Guid? ReplacementAccountId = null,
+    string LifecycleStatus = "active",
+    long LifecycleVersion = 1,
+    int DependencyCount = 0);
 
 public sealed record AccountingAccountDetailDto(
     Guid Id,
@@ -125,7 +131,61 @@ public sealed record AccountingAccountDetailDto(
     string? RoleName,
     string? ReportingPlacement,
     DateTime CreatedUtc,
-    DateTime UpdatedUtc);
+    DateTime UpdatedUtc,
+    bool IsReportable = true,
+    string PostingRestriction = "none",
+    Guid? ReplacementAccountId = null,
+    string? ReplacementAccountCode = null,
+    string LifecycleStatus = "active",
+    long LifecycleVersion = 1,
+    IReadOnlyList<AccountingAccountLifecycleHistoryDto>? LifecycleHistory = null);
+
+public static class AccountingGovernanceReasonCodes
+{
+    public const string ReplacementRequired = "accounting_account_replacement_required";
+    public const string ReplacementInvalid = "accounting_account_replacement_invalid";
+    public const string LifecycleConflict = "accounting_account_lifecycle_conflict";
+    public const string SeriesPolicyConflict = "accounting_series_policy_conflict";
+    public const string SeriesPolicyMismatch = "accounting_series_policy_mismatch";
+    public const string VoucherGapNotFound = "accounting_voucher_gap_not_found";
+    public const string InventoryUnsupported = "accounting_inventory_unsupported";
+    public const string CommerceContractUnsupported = "accounting_commerce_contract_unsupported";
+}
+
+public sealed record AccountingAccountDependencyDto(string DependencyType, string DisplayName, int Count, bool IsBlocking);
+public sealed record AccountingAccountLifecycleHistoryDto(long Version, string ChangeType, string Name,
+    string AccountClass, string NormalBalance, bool IsReportable, string PostingRestriction,
+    DateOnly EffectiveFrom, DateOnly? EffectiveTo, Guid? ReplacementAccountId, string Reason,
+    Guid? ActorUserId, DateTime RecordedUtc);
+public sealed record AccountingAccountLifecyclePreviewDto(Guid AccountId, string AccountCode,
+    bool HasPostedHistory, bool ReplacementRequired, bool CanApply, IReadOnlyList<AccountingAccountDependencyDto> Dependencies,
+    IReadOnlyList<AccountingConfigurationIssueDto> Issues);
+public sealed record PreviewAccountingAccountLifecycleQuery(Guid CompanyId, Guid AccountId, DateOnly EffectiveFrom,
+    DateOnly? EffectiveTo, Guid? ReplacementAccountId, string AccountClass, string NormalBalance,
+    bool IsReportable, string PostingRestriction);
+public sealed record ApplyAccountingAccountLifecycleCommand(Guid CompanyId, Guid AccountId, string Name,
+    string AccountClass, string NormalBalance, bool IsReportable, string PostingRestriction,
+    DateOnly EffectiveFrom, DateOnly? EffectiveTo, Guid? ReplacementAccountId, string Reason,
+    long ExpectedLifecycleVersion, Guid ActorUserId, string? CorrelationId = null);
+
+public sealed record AccountingSeriesPolicyDto(Guid Id, string SeriesKind, Guid SeriesId, string SeriesCode,
+    string SeriesName, string SourceType, string TransactionType, int? FiscalYear,
+    Guid? LocationDimensionMemberId, string? Jurisdiction, string PolicyPackKey, string PolicyPackVersion,
+    string? ProviderKey, string? ProviderSeriesCode, bool IsActive, long Version, int UnexplainedGapCount);
+public sealed record SaveAccountingSeriesPolicyCommand(Guid CompanyId, Guid? PolicyId, string SeriesKind,
+    Guid SeriesId, string SourceType, string TransactionType, int? FiscalYear, Guid? LocationDimensionMemberId,
+    string? Jurisdiction, string? ProviderKey, string? ProviderSeriesCode, bool IsActive,
+    long? ExpectedVersion, Guid ActorUserId, string? CorrelationId = null);
+public sealed record RecordVoucherGapEvidenceCommand(Guid CompanyId, Guid VoucherSeriesId, int FiscalYear,
+    long MissingNumber, string Reason, Guid ActorUserId, string? CorrelationId = null);
+
+public sealed record CommerceAccountingCapabilityDto(string CapabilityState, string ContractVersion,
+    bool SupportsInventoryQuantity, bool SupportsInventoryValuation, bool SupportsCogs,
+    IReadOnlyList<string> AcceptedEventTypes, string Explanation);
+public sealed record SubmitCommerceAccountingEventCommand(Guid CompanyId, Guid EventId, long EventVersion,
+    string ContractVersion, string EventType, string SourceSystem, DateTime OccurredUtc,
+    bool RequiresInventoryAccounting, Guid ActorUserId, string? CorrelationId = null);
+public sealed record CommerceAccountingEventResultDto(Guid EventId, long EventVersion, string Status, string Explanation);
 
 public sealed record GetAccountingAccountsQuery(
     Guid CompanyId,
@@ -223,6 +283,13 @@ public interface IAccountingAdministrationService
     Task<AccountingAccountDetailDto> CreateAccountFromCatalogAsync(CreateAccountingAccountFromCatalogCommand command, CancellationToken cancellationToken);
     Task<AccountingAccountDetailDto> RenameAccountAsync(RenameAccountingAccountCommand command, CancellationToken cancellationToken);
     Task<AccountingAccountDetailDto> DeactivateAccountAsync(DeactivateAccountingAccountCommand command, CancellationToken cancellationToken);
+    Task<AccountingAccountLifecyclePreviewDto> PreviewAccountLifecycleAsync(PreviewAccountingAccountLifecycleQuery query, CancellationToken cancellationToken);
+    Task<AccountingAccountDetailDto> ApplyAccountLifecycleAsync(ApplyAccountingAccountLifecycleCommand command, CancellationToken cancellationToken);
+    Task<IReadOnlyList<AccountingSeriesPolicyDto>> GetSeriesPoliciesAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<AccountingSeriesPolicyDto> SaveSeriesPolicyAsync(SaveAccountingSeriesPolicyCommand command, CancellationToken cancellationToken);
+    Task<AccountingSeriesPolicyDto> RecordVoucherGapEvidenceAsync(RecordVoucherGapEvidenceCommand command, CancellationToken cancellationToken);
+    Task<CommerceAccountingCapabilityDto> GetCommerceCapabilityAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<CommerceAccountingEventResultDto> SubmitCommerceEventAsync(SubmitCommerceAccountingEventCommand command, CancellationToken cancellationToken);
     Task<IReadOnlyList<AccountingFiscalYearDto>> GetFiscalYearsAsync(GetAccountingPeriodsQuery query, CancellationToken cancellationToken);
     Task<AccountingPeriodDto> GetPeriodAsync(GetAccountingPeriodQuery query, CancellationToken cancellationToken);
     Task<AccountingFiscalYearPreviewDto> PreviewFiscalYearAsync(PreviewAccountingFiscalYearQuery query, CancellationToken cancellationToken);

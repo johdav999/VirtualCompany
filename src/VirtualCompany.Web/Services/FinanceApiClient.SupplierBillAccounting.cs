@@ -33,6 +33,14 @@ public sealed partial class FinanceApiClient
         Guid companyId, Guid billId, CreateNativeSupplierCreditNoteApiRequest request, CancellationToken cancellationToken = default) =>
         SendCompanyScopedAsync<CreateNativeSupplierCreditNoteApiRequest, SupplierBillAccountingStateResponse>(companyId, HttpMethod.Post,
             $"internal/companies/{companyId}/finance/bills/{billId}/native-credit-notes", request, cancellationToken);
+
+    public Task<SupplierBillPayablesReconciliationResponse?> GetSupplierBillPayablesReconciliationAsync(
+        Guid companyId, DateOnly? throughDate = null, CancellationToken cancellationToken = default)
+    {
+        var query = throughDate.HasValue ? $"?throughDate={throughDate:yyyy-MM-dd}" : string.Empty;
+        return GetAsync<SupplierBillPayablesReconciliationResponse>(companyId,
+            $"internal/companies/{companyId}/finance/accounting/reconciliation/payables{query}", false, cancellationToken);
+    }
 }
 
 public sealed class SupplierBillAccountingStateResponse
@@ -67,6 +75,11 @@ public sealed class SupplierBillAccountingStateResponse
     public List<SupplierBillAccountingJournalLineResponse> JournalLines { get; set; } = [];
     public List<SupplierBillDuplicateEvidenceResponse> DuplicateEvidence { get; set; } = [];
     public List<SupplierBillAccountingIssueResponse> Issues { get; set; } = [];
+    public DateOnly? ExchangeRateDate { get; set; }
+    public Guid? ExchangeRateConversionId { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public decimal? ConversionRoundingResidual { get; set; }
+    public string? CurrencyProvenance { get; set; }
 }
 
 public sealed class SupplierBillAccountingApprovalResponse
@@ -91,6 +104,9 @@ public sealed class SupplierBillAccountingJournalLineResponse
     public string Description { get; set; } = string.Empty;
     public string? TaxRuleKey { get; set; }
     public string? TaxTreatment { get; set; }
+    public decimal? DocumentDebitAmount { get; set; }
+    public decimal? DocumentCreditAmount { get; set; }
+    public string? DocumentCurrency { get; set; }
 }
 
 public sealed class SupplierBillAccountingIssueResponse
@@ -136,6 +152,23 @@ public sealed class SupplierBillAccountingPreviewResponse
     public List<SupplierBillAccountingJournalLineResponse> JournalLines { get; set; } = [];
     public List<SupplierBillDuplicateEvidenceResponse> DuplicateEvidence { get; set; } = [];
     public List<SupplierBillAccountingIssueResponse> Issues { get; set; } = [];
+    public DateOnly? ExchangeRateDate { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public List<ExchangeRateLookupLegResponse> ExchangeRateLegs { get; set; } = [];
+}
+
+public sealed class SupplierBillPayablesReconciliationResponse
+{
+    public Guid CompanyId { get; set; }
+    public string BaseCurrency { get; set; } = string.Empty;
+    public decimal PostedDocumentPayables { get; set; }
+    public decimal PostedJournalPayables { get; set; }
+    public decimal AllocatedAmount { get; set; }
+    public decimal OutstandingAmount { get; set; }
+    public decimal Difference { get; set; }
+    public bool IsReconciled { get; set; }
+    public DateTime AsOfUtc { get; set; }
+    public List<DocumentCurrencyOpenItemControlResponse> DocumentCurrencyBreakdown { get; set; } = [];
 }
 
 public sealed class SupplierBillAccountingReferenceDataResponse

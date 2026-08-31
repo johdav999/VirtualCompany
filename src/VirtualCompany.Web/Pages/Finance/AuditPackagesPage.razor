@@ -1,0 +1,98 @@
+@page "/finance/accounting/audit-packages"
+@inherits FinancePageBase
+
+<PageTitle>Audit packages</PageTitle>
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="Audit packages" Description="Create and independently verify immutable evidence packages for closed periods."
+                   LoadingMessage="Loading audit packages…">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+    <header class="audit-packages__hero">
+        <div><span class="dashboard-kicker">Closed-period evidence</span><h2>Audit packages</h2><p>Trace reported balances to journals, sources, approvals, reconciliations, policy versions, and accessible documents without database access.</p></div>
+        <div class="audit-packages__period">
+            <label for="audit-period">Closed period</label>
+            <select id="audit-period" class="form-select" @bind="SelectedPeriodId" @bind:after="PeriodChangedAsync">
+                @foreach (var period in ClosedPeriods) { <option value="@period.Id">@period.Name</option> }
+            </select>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(WorkspaceMessage))
+    { <div class="alert @(HasError ? "alert-danger" : "alert-info")" role="status">@WorkspaceMessage</div> }
+
+    <section class="audit-packages__kpis" aria-label="Audit package readiness">
+        <article><span>Package readiness</span><strong class="@ReadinessClass">@ReadinessLabel</strong><small>@RequiredEvidenceSummary</small></article>
+        <article><span>Evidence completeness</span><strong>@EvidencePercentage%</strong><small>@IncludedCount of @ArtifactCount items included</small></article>
+        <article><span>Retention</span><strong>@RetentionLabel</strong><small>@RetentionDetail</small></article>
+        <article><span>Last verification</span><strong>@LastVerificationLabel</strong><small>@LastVerificationDetail</small></article>
+    </section>
+
+    <section class="audit-packages__action @(HasBlockingEvidence ? "blocked" : null)">
+        <div>
+            <strong>@ActionHeading</strong>
+            <p>@ActionExplanation</p>
+        </div>
+        <div class="audit-packages__action-buttons">
+            <button class="btn btn-outline-secondary" type="button" disabled="@IsWorking" @onclick="RefreshAsync">Refresh</button>
+            @if (CanManage && SelectedPeriodId != Guid.Empty)
+            { <button class="btn btn-primary" type="button" disabled="@(IsWorking || CurrentPackage is not null)" @onclick="RequestAsync">Request final package</button> }
+        </div>
+    </section>
+
+    <div class="audit-packages__workspace">
+        <main>
+            <section class="audit-packages__table-card">
+                <div class="section-heading"><div><span class="dashboard-kicker">Immutable results</span><h3>Audit packages</h3></div><span>@(Workspace?.Packages.Count ?? 0) package(s)</span></div>
+                @if (Workspace?.Packages.Count is null or 0)
+                { <div class="empty-state"><strong>No package has been requested</strong><p>Choose a closed period and request a package. A separate authorized reviewer must approve generation.</p></div> }
+                else
+                {
+                    <div class="table-scroll"><table><thead><tr><th>Period</th><th>Scope / version</th><th>Status</th><th>Checksum (SHA-256)</th><th>Retention</th><th>Actions</th></tr></thead>
+                    <tbody>@foreach (var package in Workspace!.Packages)
+                    {
+                        <tr class="@(Selected?.Id == package.Id ? "selected" : null)" @onclick="() => Select(package)">
+                            <td><strong>@package.FiscalPeriodName</strong><small>@package.RequestedUtc.ToLocalTime().ToString("g")</small></td>
+                            <td>@Label(package.ScopeKey)<small>@package.ScopeVersion</small></td>
+                            <td><span class="status-pill @StatusClass(package.Status)">@Label(package.Status)</span></td>
+                            <td><code>@ShortHash(package.PackageChecksum)</code></td>
+                            <td>@package.RetainUntilUtc.ToLocalTime().ToString("d")</td>
+                            <td><div class="row-actions" @onclick:stopPropagation="true">
+                                @if (CanApprove && package.Status == "pending_approval" && package.RequestedByUserId != CurrentUserId)
+                                { <button class="btn btn-sm btn-primary" disabled="@IsWorking" @onclick="() => ApproveAsync(package)">Approve</button> }
+                                @if (package.Status is "final" or "incomplete")
+                                { <button class="btn btn-sm btn-outline-primary" disabled="@IsWorking" @onclick="() => DownloadAsync(package)">Download</button><button class="btn btn-sm btn-outline-secondary" disabled="@IsWorking" @onclick="() => VerifyAsync(package)">Verify</button> }
+                                @if (CanManage && package.Status is "queued" or "retry_scheduled")
+                                { <button class="btn btn-sm btn-outline-danger" disabled="@IsWorking" @onclick="() => CancelAsync(package)">Cancel</button> }
+                            </div></td>
+                        </tr>
+                    }</tbody></table></div>
+                }
+            </section>
+
+            <section class="audit-packages__evidence">
+                <div class="section-heading"><div><span class="dashboard-kicker">Selected snapshot</span><h3>Evidence readiness</h3></div><code>@ShortHash(Selected?.ManifestChecksum)</code></div>
+                <div class="audit-packages__evidence-grid">
+                    <article class="included"><span>Included</span><strong>@IncludedCount</strong><small>Checksum-verifiable items</small></article>
+                    <article class="missing"><span>Missing</span><strong>@MissingCount</strong><small>Required source not found</small></article>
+                    <article class="inaccessible"><span>Inaccessible</span><strong>@InaccessibleCount</strong><small>Not copied beyond requester access</small></article>
+                    <article class="corrupt"><span>Corrupt</span><strong>@CorruptCount</strong><small>Hash mismatch or invalid object</small></article>
+                </div>
+                @if (Selected?.Artifacts.Count > 0)
+                {
+                    <div class="audit-packages__artifact-list">
+                        @foreach (var artifact in Selected.Artifacts.Where(x => x.Status != "included").OrderBy(x => x.Sequence))
+                        { <div><span class="status-dot @StatusClass(artifact.Status)"></span><strong>@Label(artifact.ArtifactType)</strong><code>@artifact.Path</code><small>@artifact.SafeDetail</small></div> }
+                    </div>
+                }
+            </section>
+        </main>
+
+        <aside class="audit-packages__insight">
+            <span class="dashboard-kicker">Finance Manager insight</span>
+            <h3>@InsightHeading</h3><p>@InsightText</p>
+            <dl><dt>Frozen scope</dt><dd>@(Selected?.ScopeVersion ?? "Not requested")</dd><dt>Package checksum</dt><dd><code>@ShortHash(Selected?.PackageChecksum)</code></dd><dt>Manifest checksum</dt><dd><code>@ShortHash(Selected?.ManifestChecksum)</code></dd><dt>Attempts</dt><dd>@(Selected?.AttemptCount ?? 0) / @(Selected?.MaxAttempts ?? 0)</dd></dl>
+            <div class="audit-packages__notice"><strong>Control boundary</strong><p>Package creation never broadens document access and never copies raw provider credentials. Technical verification is separate from human accountant approval.</p></div>
+            @if (Selected?.Verifications.FirstOrDefault() is { } verification)
+            { <div class="verification-result @(verification.IsValid ? "valid" : "invalid")"><strong>@(verification.IsValid ? "Integrity verified" : "Verification failed")</strong><p>@verification.SafeSummary</p><small>@verification.VerifiedUtc.ToLocalTime().ToString("g")</small></div> }
+        </aside>
+    </div>
+</FinancePageLayout>

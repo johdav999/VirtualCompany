@@ -25,7 +25,8 @@ public sealed record ManualJournalLineInput(
     string? Description = null,
     Guid? CostCenterId = null,
     IReadOnlyDictionary<string, string>? TaxFacts = null,
-    IReadOnlyDictionary<string, string>? DimensionFacts = null);
+    IReadOnlyDictionary<string, string>? DimensionFacts = null,
+    IReadOnlyList<Guid>? DimensionMemberIds = null);
 
 public sealed record ManualJournalDraftInput(
     Guid FiscalPeriodId,
@@ -61,10 +62,12 @@ public sealed record ManualJournalVoucherSeriesDto(string Code, string DisplayNa
 public sealed record ManualJournalEvidenceOptionDto(Guid DocumentId, string Title, string OriginalFileName, DateTime UploadedUtc);
 public sealed record ManualJournalReferenceDataDto(
     IReadOnlyList<ManualJournalVoucherSeriesDto> VoucherSeries,
-    IReadOnlyList<ManualJournalEvidenceOptionDto> EvidenceDocuments);
+    IReadOnlyList<ManualJournalEvidenceOptionDto> EvidenceDocuments,
+    IReadOnlyList<AccountingDimensionTypeDto>? DimensionTypes = null);
 public sealed record ManualJournalLineDto(Guid Id, int LineNumber, Guid FinanceAccountId, string AccountCode, string AccountName,
     decimal DebitAmount, decimal CreditAmount, string Currency, string? Description, Guid? CostCenterId,
-    IReadOnlyDictionary<string, string> TaxFacts, IReadOnlyDictionary<string, string> DimensionFacts);
+    IReadOnlyDictionary<string, string> TaxFacts, IReadOnlyDictionary<string, string> DimensionFacts,
+    IReadOnlyList<Guid>? DimensionMemberIds = null);
 public sealed record ManualJournalApprovalDto(Guid Id, string Status, string? DecisionSummary, long DraftVersion,
     string PayloadHash, DateTime CreatedUtc, DateTime? DecidedUtc);
 public sealed record ManualJournalPolicyDecisionDto(bool IsAllowed, bool RequiresApproval, decimal ApprovalThreshold,

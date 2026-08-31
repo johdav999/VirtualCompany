@@ -16,14 +16,17 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
     private readonly IAccountingPolicyPackResolver _packResolver;
     private readonly IAccountingTaxDecisionPolicy _taxPolicy;
     private readonly AccountingOperationsTelemetry? _telemetry;
+    private readonly IExchangeRateService? _exchangeRates;
 
     public SupplierBillAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver,
-        IAccountingTaxDecisionPolicy taxPolicy, AccountingOperationsTelemetry telemetry)
+        IAccountingTaxDecisionPolicy taxPolicy, AccountingOperationsTelemetry telemetry,
+        IExchangeRateService exchangeRates)
     {
         _dbContext = dbContext;
         _packResolver = packResolver;
         _taxPolicy = taxPolicy;
         _telemetry = telemetry;
+        _exchangeRates = exchangeRates;
     }
 
     public SupplierBillAccountingPolicy(VirtualCompanyDbContext dbContext, IAccountingPolicyPackResolver packResolver)
@@ -86,15 +89,30 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         if (!seriesAvailable) Add(issues, SupplierBillAccountingReasonCodes.VoucherSeriesUnavailable, "Select an active voucher series.");
 
         var baseCurrency = configuration?.BaseCurrency ?? bill.Currency;
-        var exchangeRate = string.Equals(bill.Currency, baseCurrency, StringComparison.OrdinalIgnoreCase)
-            ? 1m
-            : input.ExchangeRate.GetValueOrDefault();
-        if (exchangeRate <= 0m)
-        {
+        var ratePurpose = ExchangeRateLookupPurposes.TransactionDate;
+        var rateDate = billDate;
+        ExchangeRateLookupResult rateLookup;
+        if (string.Equals(bill.Currency, baseCurrency, StringComparison.OrdinalIgnoreCase))
+            rateLookup = new(ExchangeRateDecisionStatuses.Ready, ExchangeRateReasonCodes.IdentityConversion,
+                "Document and functional currency are identical.", bill.Currency, baseCurrency, rateDate,
+                ratePurpose, 1m, rateDate, []);
+        else if (_exchangeRates is null)
+            rateLookup = new(ExchangeRateDecisionStatuses.Blocked, ExchangeRateReasonCodes.ProviderUnavailable,
+                "The authoritative exchange-rate service is unavailable.", bill.Currency, baseCurrency,
+                rateDate, ratePurpose, null, null, []);
+        else
+            rateLookup = await _exchangeRates.LookupAsync(new(query.CompanyId, bill.Currency, baseCurrency,
+                rateDate, ratePurpose), cancellationToken);
+        var exchangeRate = rateLookup.IsReady && rateLookup.EffectiveRate.HasValue
+            ? rateLookup.EffectiveRate.Value : 1m;
+        if (!rateLookup.IsReady || !rateLookup.EffectiveRate.HasValue)
+            Add(issues, SupplierBillAccountingReasonCodes.CurrencyConversionMissing, rateLookup.Explanation);
+        if (input.ExchangeRate.HasValue && input.ExchangeRate.Value > 0m && input.ExchangeRate.Value != exchangeRate)
             Add(issues, SupplierBillAccountingReasonCodes.CurrencyConversionMissing,
-                $"Enter the {bill.Currency}-to-{baseCurrency} exchange rate used for this bill.");
-            exchangeRate = 1m;
-        }
+                "The supplied rate does not match the authoritative historical rate. Refresh the preview and use the retained rate evidence.");
+        var rateIdentity = rateLookup.IsReady
+            ? DocumentCurrencyFacts.RateIdentity(rateLookup)
+            : $"blocked:{rateLookup.ReasonCode}";
 
         var payable = FindRole(configuration, "accounts_payable", issues);
         var isCredit = string.Equals(bill.DocumentKind, FinanceDocumentKinds.SupplierCreditNote, StringComparison.OrdinalIgnoreCase);
@@ -217,14 +235,18 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         {
             journalLines.Add(new(payable.Id, "accounts_payable", payable.Code, payable.Name,
                 isCredit ? grossBase : 0m, isCredit ? 0m : grossBase, baseCurrency,
-                $"{bill.BillNumber} · {bill.Counterparty?.Name ?? "Supplier"}"));
+                $"{bill.BillNumber} · {bill.Counterparty?.Name ?? "Supplier"}",
+                DocumentDebitAmount: isCredit ? grossAmount : 0m,
+                DocumentCreditAmount: isCredit ? 0m : grossAmount, DocumentCurrency: bill.Currency));
             foreach (var line in calculated)
             {
                 var cost = line.CostBaseAmount + (line.Sequence == calculated[^1].Sequence ? rounding : 0m);
                 journalLines.Add(new(line.CostAccountId, line.AccountClassification, line.CostAccountCode,
                     line.CostAccountName, isCredit ? 0m : cost, isCredit ? cost : 0m, baseCurrency,
                     line.Description, line.TaxRuleKey, line.TaxTreatment, line.TaxRuleVersion,
-                    line.VatBoxMappings, line.EvidenceClassification));
+                    line.VatBoxMappings, line.EvidenceClassification,
+                    isCredit ? 0m : line.NetAmount + line.NonRecoverableTaxAmount,
+                    isCredit ? line.NetAmount + line.NonRecoverableTaxAmount : 0m, bill.Currency));
                 if (line.RecoverableTaxBaseAmount > 0m && line.RecoverableTaxAccountId.HasValue)
                 {
                     var taxAccount = configuration?.AccountRoles.FirstOrDefault(x =>
@@ -234,7 +256,9 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
                             isCredit ? 0m : line.RecoverableTaxBaseAmount,
                             isCredit ? line.RecoverableTaxBaseAmount : 0m, baseCurrency,
                             $"Tax · {line.Description}", line.TaxRuleKey, line.TaxTreatment,
-                            line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification));
+                            line.TaxRuleVersion, line.VatBoxMappings, line.EvidenceClassification,
+                            isCredit ? 0m : line.RecoverableTaxAmount,
+                            isCredit ? line.RecoverableTaxAmount : 0m, bill.Currency));
                 }
             }
         }
@@ -258,13 +282,15 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         var taxTreatment = calculated.Select(x => x.TaxTreatment).Distinct(StringComparer.OrdinalIgnoreCase).ToArray() is { Length: 1 } treatments
             ? treatments[0]
             : "mixed";
-        var payloadHash = ComputeHash(bill, input.FiscalPeriodId, seriesCode, exchangeRate, calculated,
+        var payloadHash = ComputeHash(bill, input.FiscalPeriodId, seriesCode, exchangeRate, rateDate,
+            ratePurpose, rateIdentity, calculated,
             configuration?.PolicyPackKey, configuration?.PolicyPackVersion, documentHash, existing?.OriginalBillId);
         var sourceVersion = existing is null ? 1 : string.Equals(existing.PayloadHash, payloadHash, StringComparison.OrdinalIgnoreCase)
             ? existing.Version
             : existing.Version + 1;
 
         return new(bill, configuration, pack, existing, input.FiscalPeriodId, seriesCode, exchangeRate,
+            rateDate, ratePurpose, rateIdentity, rateLookup.Legs,
             netAmount, recoverableTaxAmount, nonRecoverableTaxAmount, grossAmount, costBase,
             recoverableTaxBase, grossBase, rounding, payable?.Id ?? Guid.Empty, taxTreatment,
             sourceVersion, payloadHash, documentHash, calculated, journalLines, duplicates, evidence, issues);
@@ -279,7 +305,8 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         plan.Configuration?.BaseCurrency ?? plan.Bill.Currency,
         plan.Configuration?.PolicyPackKey ?? string.Empty, plan.Configuration?.PolicyPackVersion ?? string.Empty,
         plan.SourceVersion, plan.PayloadHash, plan.SourceDocumentHash, plan.JournalLines,
-        plan.DuplicateEvidence, plan.Issues);
+        plan.DuplicateEvidence, plan.Issues, plan.ExchangeRateDate, plan.ExchangeRateIdentity,
+        plan.ExchangeRateLegs);
 
     private async Task<IReadOnlyList<SupplierBillDuplicateEvidenceDto>> FindDuplicatesAsync(
         FinanceBill bill, CancellationToken cancellationToken)
@@ -354,6 +381,7 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
 
     private static string ComputeHash(
         FinanceBill bill, Guid periodId, string seriesCode, decimal exchangeRate,
+        DateOnly exchangeRateDate, string exchangeRatePurpose, string exchangeRateIdentity,
         IReadOnlyList<SupplierBillAccountingLinePlan> lines, string? packKey, string? packVersion,
         string? documentHash, Guid? originalBillId)
     {
@@ -361,7 +389,9 @@ public sealed class SupplierBillAccountingPolicy : ISupplierBillAccountingPolicy
         {
             bill.Id, bill.CounterpartyId, bill.BillNumber, bill.ReceivedUtc, bill.DueUtc, bill.Amount,
             bill.Currency, bill.Status, bill.DocumentKind, PeriodId = periodId, Series = seriesCode,
-            ExchangeRate = exchangeRate, PackKey = packKey, PackVersion = packVersion,
+            ExchangeRate = exchangeRate, ExchangeRateDate = exchangeRateDate,
+            ExchangeRatePurpose = exchangeRatePurpose, ExchangeRateIdentity = exchangeRateIdentity,
+            PackKey = packKey, PackVersion = packVersion,
             SourceDocumentHash = documentHash, OriginalBillId = originalBillId,
             Lines = lines.Select(x => new
             {
@@ -396,6 +426,10 @@ internal sealed record SupplierBillAccountingPlan(
     Guid FiscalPeriodId,
     string VoucherSeriesCode,
     decimal ExchangeRate,
+    DateOnly ExchangeRateDate,
+    string ExchangeRatePurpose,
+    string ExchangeRateIdentity,
+    IReadOnlyList<ExchangeRateLookupLeg> ExchangeRateLegs,
     decimal NetAmount,
     decimal RecoverableTaxAmount,
     decimal NonRecoverableTaxAmount,

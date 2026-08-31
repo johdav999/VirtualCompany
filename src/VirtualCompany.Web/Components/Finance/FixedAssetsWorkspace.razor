@@ -1,0 +1,58 @@
+@inject VirtualCompany.Web.Services.FinanceApiClient FinanceApiClient
+@inject Microsoft.Extensions.Localization.IStringLocalizer<VirtualCompany.Web.Localization.Finance.FinanceResources> FinanceText
+
+<section class="fixed-assets-workspace" aria-busy="@Loading">
+    <header class="fixed-assets-header">
+        <div><span class="dashboard-kicker">@FinanceText["FixedAssetRegister"]</span><h3>@FinanceText["FixedAssets"]</h3><p>@FinanceText["FixedAssetsDescription"]</p></div>
+        <span class="fixed-assets-reconcile @(Reconciliation?.IsReconciled == true ? "ok" : "warn")">@(Reconciliation?.IsReconciled == true ? FinanceText["ReconciledToLedger"] : FinanceText["NeedsReview"])</span>
+    </header>
+    @if (!string.IsNullOrWhiteSpace(Error)) { <div class="alert alert-danger" role="alert"><span>@Error</span><button class="btn btn-sm btn-outline-danger" type="button" @onclick="ReloadAsync">@CommonText["TryAgain"]</button></div> }
+    @if (!string.IsNullOrWhiteSpace(Message)) { <div class="alert alert-success" role="status">@Message</div> }
+    <div class="fixed-assets-kpis">
+        <article><small>@FinanceText["AcquisitionCost"]</small><strong>@Money(List?.AcquisitionCost)</strong><span>@FinanceText["AssetsRegistered", List?.TotalCount ?? 0]</span></article>
+        <article><small>@FinanceText["AccumulatedDepreciation"]</small><strong>@Money(List?.AccumulatedDepreciation)</strong><span>@FinanceText["PostedBookFacts"]</span></article>
+        <article><small>@FinanceText["Impairments"]</small><strong>@Money(List?.AccumulatedImpairment)</strong><span>@FinanceText["RetainedAdjustments"]</span></article>
+        <article><small>@FinanceText["NetBookValue"]</small><strong>@Money(List?.NetBookValue)</strong><span class="@(Reconciliation?.IsReconciled == true ? "ok" : "warn")">@(Reconciliation?.IsReconciled == true ? FinanceText["Reconciled"] : FinanceText["NeedsReview"])</span></article>
+    </div>
+    @if (List?.OpenMigrationConflictCount > 0) { <div class="fixed-assets-conflict" role="alert"><strong>@FinanceText["LegacyAssetsNeedReview"]</strong><span>@FinanceText["LegacyAssetsNeedReviewHelp", List.OpenMigrationConflictCount]</span></div> }
+    <div class="fixed-assets-grid">
+        <section class="fixed-assets-card register-card">
+            <div class="fixed-assets-card-title"><div><h4>@FinanceText["AssetRegister"]</h4><p>@FinanceText["AssetRegisterHelp"]</p></div><select class="form-select" @bind="StatusFilter" @bind:after="ReloadAsync"><option value="">@FinanceText["AllStatuses"]</option><option value="draft">@FinanceText["Value_draft"]</option><option value="in_service">@FinanceText["Value_in_service"]</option><option value="impaired">@FinanceText["Value_impaired"]</option><option value="disposed">@FinanceText["Value_disposed"]</option></select></div>
+            @if (Loading) { <div class="fixed-assets-state" role="status"><div class="spinner-border text-primary"></div><p>@FinanceText["LoadingFixedAssets"]</p></div> }
+            else if (List?.Items.Count == 0) { <div class="fixed-assets-state"><span>◇</span><h4>@FinanceText["NoFixedAssets"]</h4><p>@FinanceText["NoFixedAssetsHelp"]</p></div> }
+            else { <div class="table-responsive"><table class="table fixed-assets-table"><thead><tr><th>@FinanceText["Asset"]</th><th>@FinanceText["Class"]</th><th>@FinanceText["Status"]</th><th>@FinanceText["NetBookValue"]</th></tr></thead><tbody>@foreach (var asset in List?.Items ?? []) { <tr class="@(Selected?.Id == asset.Id ? "selected" : null)" tabindex="0" role="button" aria-selected="@(Selected?.Id == asset.Id)" @onclick="() => SelectAsync(asset.Id)" @onkeydown="e => HandleKeyAsync(e, asset.Id)"><td><strong>@asset.AssetNumber</strong><span>@asset.Name</span></td><td>@asset.AssetClassName</td><td><span class="asset-status @asset.Status">@Friendly(asset.Status)</span></td><td><strong>@Money(asset.NetBookValue, asset.Currency)</strong></td></tr> }</tbody></table></div> }
+        </section>
+        <aside class="fixed-assets-card detail-card">
+            @if (Selected is null) { <div class="fixed-assets-state"><span>▣</span><h4>@FinanceText["SelectAsset"]</h4><p>@FinanceText["SelectAssetHelp"]</p></div> }
+            else { <div class="asset-detail-heading"><div><span class="asset-status @Selected.Status">@Friendly(Selected.Status)</span><h4>@Selected.Name</h4><p>@Selected.AssetNumber · @Selected.AssetClassName</p></div><strong>@Money(Selected.NetBookValue, Selected.Currency)</strong></div>
+                <dl class="asset-facts"><div><dt>@FinanceText["BookMethod"]</dt><dd>@Friendly(Selected.BookMethod)</dd></div><div><dt>@FinanceText["UsefulLife"]</dt><dd>@FinanceText["Months", Selected.UsefulLifeMonths]</dd></div><div><dt>@FinanceText["PlacedInService"]</dt><dd>@(Selected.PlacedInServiceDate?.ToString("d") ?? "—")</dd></div><div><dt>@FinanceText["ResidualValue"]</dt><dd>@Money(Selected.ResidualValue, Selected.Currency)</dd></div><div><dt>@FinanceText["Custodian"]</dt><dd>@(Selected.Custodian ?? "—")</dd></div><div><dt>@FinanceText["Location"]</dt><dd>@(Selected.Location ?? "—")</dd></div></dl>
+                @if (Selected.Components.Count > 0) { <h5>@FinanceText["AssetComponents"]</h5><dl class="asset-facts">@foreach (var component in Selected.Components) { <div><dt>@component.Code · @component.Name</dt><dd>@Money(component.Cost, Selected.Currency)<br /><small>@FinanceText["ComponentDepreciation"] @Money(component.AccumulatedDepreciation, Selected.Currency) · @FinanceText["Months", component.UsefulLifeMonths]</small></dd></div> }</dl> }
+                <h5>@FinanceText["AssetTimeline"]</h5><ol class="asset-timeline">@foreach (var item in Selected.Events) { <li><span></span><div><strong>@Friendly(item.EventType)</strong><small>@item.EffectiveDate.ToString("d") · @Money(item.Amount, Selected.Currency)</small></div>@if (item.LedgerEntryId.HasValue) { <a href="@JournalHref(item.LedgerEntryId.Value)">@FinanceText["ViewJournal"]</a> }</li> }</ol> }
+        </aside>
+    </div>
+    <section class="fixed-assets-card depreciation-card">
+        <div class="fixed-assets-card-title"><div><h4>@FinanceText["DepreciationRun"]</h4><p>@FinanceText["DepreciationRunHelp"]</p></div>@if (CanApprove && Preview?.TotalAmount > 0m) { <button class="btn btn-primary" disabled="@Acting" @onclick="RunAsync">@FinanceText["ReviewDepreciation"]</button> }</div>
+        <div class="depreciation-summary"><div><small>@FinanceText["Period"]</small><strong>@PeriodStart.ToString("d") – @PeriodEnd.ToString("d")</strong></div><div><small>@FinanceText["ProposedExpense"]</small><strong>@Money(Preview?.TotalAmount)</strong></div><div><small>@FinanceText["Population"]</small><strong>@(Preview?.Items.Count ?? 0)</strong></div><div><small>@FinanceText["Exceptions"]</small><strong class="@(LastRun?.ExceptionCount > 0 ? "warn" : "ok")">@(LastRun?.ExceptionCount ?? 0)</strong></div></div>
+        @if (Preview?.Items.Count == 0) { <p class="fixed-assets-empty-line">@FinanceText["NoDepreciationDue"]</p> }
+        else { <div class="table-responsive"><table class="table fixed-assets-table"><thead><tr><th>@FinanceText["Asset"]</th><th>@FinanceText["Method"]</th><th>@FinanceText["Days"]</th><th>@FinanceText["ProposedExpense"]</th><th>@FinanceText["Status"]</th></tr></thead><tbody>@foreach (var item in Preview?.Items ?? []) { <tr><td><strong>@item.AssetNumber</strong><span>@item.AssetName</span></td><td>@Friendly(item.Method)</td><td>@item.EligibleDays / @item.DaysInPeriod</td><td>@Money(item.Amount)</td><td>@Friendly(item.Status)</td></tr> }</tbody></table></div> }
+    </section>
+</section>
+
+@code {
+    [Parameter, EditorRequired] public Guid? CompanyId { get; set; }
+    [Parameter] public Guid FiscalPeriodId { get; set; }
+    [Parameter] public DateOnly PeriodStart { get; set; }
+    [Parameter] public DateOnly PeriodEnd { get; set; }
+    [Parameter] public bool CanApprove { get; set; }
+    [Parameter] public Func<Guid, string> JournalHref { get; set; } = _ => "#";
+    private FixedAssetListResponse? List; private FixedAssetResponse? Selected; private FixedAssetReconciliationResponse? Reconciliation;
+    private FixedAssetDepreciationPreviewResponse? Preview; private FixedAssetDepreciationRunResponse? LastRun;
+    private bool Loading; private bool Acting; private string StatusFilter = string.Empty; private string? Error; private string? Message;
+    protected override async Task OnParametersSetAsync() { if (CompanyId.HasValue && FiscalPeriodId != Guid.Empty) await ReloadAsync(); }
+    private async Task ReloadAsync() { if (CompanyId is not Guid companyId) return; Loading = true; Error = null; try { var list = FinanceApiClient.ListFixedAssetsAsync(companyId, StatusFilter); var reconciliation = FinanceApiClient.ReconcileFixedAssetsAsync(companyId); var preview = FinanceApiClient.PreviewFixedAssetDepreciationAsync(companyId, PeriodStart, PeriodEnd); await Task.WhenAll(list, reconciliation, preview); List = await list; Reconciliation = await reconciliation; Preview = await preview; if (Selected is not null && List?.Items.All(x => x.Id != Selected.Id) == true) Selected = null; } catch (FinanceApiException ex) { Error = ex.Message; } finally { Loading = false; } }
+    private async Task SelectAsync(Guid id) { if (CompanyId is not Guid companyId) return; try { Selected = await FinanceApiClient.GetFixedAssetAsync(companyId, id); Error = null; } catch (FinanceApiException ex) { Error = ex.Message; } }
+    private Task HandleKeyAsync(Microsoft.AspNetCore.Components.Web.KeyboardEventArgs e, Guid id) => e.Key is "Enter" or " " ? SelectAsync(id) : Task.CompletedTask;
+    private async Task RunAsync() { if (CompanyId is not Guid companyId || FiscalPeriodId == Guid.Empty) return; Acting = true; Error = Message = null; try { LastRun = await FinanceApiClient.RunFixedAssetDepreciationAsync(companyId, FiscalPeriodId, PeriodStart, PeriodEnd, $"fixed-asset-depreciation:{companyId:N}:{FiscalPeriodId:N}:{Preview?.PopulationHash}"); Message = FinanceText[LastRun.ExceptionCount == 0 ? "DepreciationPosted" : "DepreciationPostedWithExceptions", LastRun.PostedItemCount, LastRun.ExceptionCount]; await ReloadAsync(); } catch (FinanceApiException ex) { Error = ex.Message; } finally { Acting = false; } }
+    private static string Money(decimal? value, string currency = "SEK") => value.HasValue ? $"{value.Value:N2} {currency}" : "—";
+    private string Friendly(string value) { var key = $"Value_{value.Replace('-', '_').Replace('.', '_')}"; var localized = FinanceText[key]; return localized.ResourceNotFound ? string.Join(' ', value.Replace('-', '_').Split('_').Select((x, i) => i == 0 ? char.ToUpperInvariant(x[0]) + x[1..] : x)) : localized.Value; }
+}

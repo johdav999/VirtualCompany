@@ -82,6 +82,7 @@ public sealed class AccountingJournalReadService : IAccountingJournalReadService
     private IQueryable<LedgerEntry> BaseQuery() => _dbContext.LedgerEntries.AsNoTracking()
         .Include(entry => entry.VoucherSeries)
         .Include(entry => entry.Lines).ThenInclude(line => line.FinanceAccount)
+        .Include(entry => entry.Lines).ThenInclude(line => line.DimensionAssignments)
         .Include(entry => entry.EvidenceLinks).ThenInclude(link => link.Document)
         .Include(entry => entry.ApprovalRequest)
         .Include(entry => entry.Corrections);
@@ -91,7 +92,13 @@ public sealed class AccountingJournalReadService : IAccountingJournalReadService
         var lines = entry.Lines.OrderBy(line => line.CreatedUtc).ThenBy(line => line.Id).Select(line => new AccountingJournalLineDto(
             line.Id, line.FinanceAccountId, line.FinanceAccount.Code, line.FinanceAccount.Name,
             line.DebitAmount, line.CreditAmount, line.Currency, line.CostCenterId, line.Description,
-            Parse(line.TaxFactsJson), Parse(line.DimensionFactsJson))).ToArray();
+            Parse(line.TaxFactsJson), Parse(line.DimensionFactsJson), line.DocumentDebitAmount,
+            line.DocumentCreditAmount, line.DocumentCurrency, line.ExchangeRate, line.ExchangeRateDate,
+            line.ExchangeRateConversionId, line.ExchangeRateIdentity, line.ConversionRoundingResidual,
+            line.DimensionAssignments.OrderBy(x => x.DimensionTypeCodeSnapshot).Select(x =>
+                new ResolvedAccountingDimensionAssignment(x.DimensionTypeId, x.DimensionTypeCodeSnapshot,
+                    x.DimensionTypeNameSnapshot, x.DimensionMemberId, x.MemberCodeSnapshot,
+                    x.MemberNameSnapshot, x.HierarchyPathSnapshot)).ToArray())).ToArray();
         var evidence = entry.EvidenceLinks.OrderBy(link => link.Title).Select(link =>
             new AccountingJournalEvidenceDto(link.DocumentId, link.Title, link.ContentHash, link.Document.OriginalFileName)).ToArray();
         var approval = entry.ApprovalRequest is null ? null : new AccountingJournalApprovalDto(entry.ApprovalRequest.Id,

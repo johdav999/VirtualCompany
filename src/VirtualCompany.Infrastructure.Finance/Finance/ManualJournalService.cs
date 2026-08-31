@@ -267,6 +267,7 @@ public sealed class ManualJournalService : IManualJournalService
 
     private IQueryable<ManualJournalDraft> DraftQuery(bool tracking) => (tracking ? _dbContext.ManualJournalDrafts : _dbContext.ManualJournalDrafts.AsNoTracking())
         .Include(x => x.Lines).ThenInclude(x => x.FinanceAccount)
+        .Include(x => x.Lines).ThenInclude(x => x.DimensionAssignments)
         .Include(x => x.EvidenceLinks).ThenInclude(x => x.Document)
         .Include(x => x.ApprovalRequest);
 
@@ -280,7 +281,8 @@ public sealed class ManualJournalService : IManualJournalService
         var lines = draft.Lines.OrderBy(x => x.LineNumber).Select(x => new ManualJournalLineDto(x.Id, x.LineNumber,
             x.FinanceAccountId, x.FinanceAccount.Code, x.FinanceAccount.Name, x.DebitAmount, x.CreditAmount, x.Currency,
             x.Description, x.CostCenterId, AccountingPostingService.ParseFacts(x.TaxFactsJson),
-            AccountingPostingService.ParseFacts(x.DimensionFactsJson))).ToArray();
+            AccountingPostingService.ParseFacts(x.DimensionFactsJson),
+            x.DimensionAssignments.Select(y => y.DimensionMemberId).OrderBy(y => y).ToArray())).ToArray();
         var evidence = draft.EvidenceLinks.OrderBy(x => x.Title).Select(x =>
             new ManualJournalEvidenceDto(x.DocumentId, x.Title, x.ContentHash, x.Document.OriginalFileName)).ToArray();
         ManualJournalApprovalDto? approval = null;
@@ -322,9 +324,15 @@ public sealed class ManualJournalService : IManualJournalService
     {
         var lineNo = 0;
         foreach (var line in input.Lines)
-            draft.Lines.Add(new ManualJournalDraftLine(Guid.NewGuid(), draft.CompanyId, draft.Id, line.FinanceAccountId,
+        {
+            var draftLine = new ManualJournalDraftLine(Guid.NewGuid(), draft.CompanyId, draft.Id, line.FinanceAccountId,
                 ++lineNo, line.DebitAmount, line.CreditAmount, draft.Currency, line.Description, line.CostCenterId,
-                Serialize(line.TaxFacts), Serialize(line.DimensionFacts)));
+                Serialize(line.TaxFacts), Serialize(line.DimensionFacts));
+            foreach (var memberId in (line.DimensionMemberIds ?? []).Distinct())
+                draftLine.DimensionAssignments.Add(new ManualJournalDraftLineDimension(Guid.NewGuid(), draft.CompanyId,
+                    draftLine.Id, memberId));
+            draft.Lines.Add(draftLine);
+        }
         foreach (var evidence in material.Evidence)
             draft.EvidenceLinks.Add(new ManualJournalEvidenceLink(Guid.NewGuid(), draft.CompanyId, draft.Id,
                 evidence.DocumentId, evidence.ContentHash, evidence.Title, now));
@@ -334,7 +342,8 @@ public sealed class ManualJournalService : IManualJournalService
         draft.VoucherSeriesCode, draft.DocumentDate, draft.PostingDate, draft.Explanation, draft.Currency,
         draft.Lines.OrderBy(x => x.LineNumber).Select(x => new ManualJournalLineInput(x.FinanceAccountId, x.DebitAmount,
             x.CreditAmount, x.Description, x.CostCenterId, AccountingPostingService.ParseFacts(x.TaxFactsJson),
-            AccountingPostingService.ParseFacts(x.DimensionFactsJson))).ToArray(),
+            AccountingPostingService.ParseFacts(x.DimensionFactsJson),
+            x.DimensionAssignments.Select(y => y.DimensionMemberId).OrderBy(y => y).ToArray())).ToArray(),
         draft.EvidenceLinks.Select(x => x.DocumentId).ToArray(), draft.OriginalLedgerEntryId, draft.CorrectionReason);
 
     private static ProposedAccountingEntry ToProposed(ManualJournalDraft draft, Guid actorUserId, string idempotencyKey, bool requiresApproval) =>
@@ -343,7 +352,8 @@ public sealed class ManualJournalService : IManualJournalService
             draft.Explanation, SourceType, draft.Id.ToString("N"), draft.Version.ToString(CultureInfo.InvariantCulture),
             idempotencyKey, draft.Lines.OrderBy(x => x.LineNumber).Select(x => new ProposedAccountingLine(
                 x.FinanceAccountId, x.DebitAmount, x.CreditAmount, x.Currency, x.Description, x.CostCenterId,
-                AccountingPostingService.ParseFacts(x.TaxFactsJson), AccountingPostingService.ParseFacts(x.DimensionFactsJson))).ToArray(),
+                AccountingPostingService.ParseFacts(x.TaxFactsJson), AccountingPostingService.ParseFacts(x.DimensionFactsJson),
+                DimensionMemberIds: x.DimensionAssignments.Select(y => y.DimensionMemberId).OrderBy(y => y).ToArray())).ToArray(),
             actorUserId, draft.ApprovalRequestId, requiresApproval,
             new Dictionary<string, string> { ["manualJournalDraftId"] = draft.Id.ToString("N"), ["draftPayloadHash"] = draft.PayloadHash },
             "post_manual_journal", draft.PayloadHash,
@@ -399,7 +409,8 @@ public sealed class ManualJournalService : IManualJournalService
     {
         input.FiscalPeriodId, input.VoucherSeriesCode, input.DocumentDate, input.PostingDate, input.Explanation, input.Currency,
         Lines = input.Lines.Select(x => new { x.FinanceAccountId, x.DebitAmount, x.CreditAmount, x.Description, x.CostCenterId,
-            TaxFacts = Sorted(x.TaxFacts), DimensionFacts = Sorted(x.DimensionFacts) }),
+            TaxFacts = Sorted(x.TaxFacts), DimensionFacts = Sorted(x.DimensionFacts),
+            DimensionMemberIds = (x.DimensionMemberIds ?? []).OrderBy(y => y) }),
         Evidence = input.EvidenceDocumentIds.OrderBy(x => x), input.OriginalLedgerEntryId, input.CorrectionReason
     }));
     private static string ComputeDraftHash(ManualJournalDraftInput input, IReadOnlyList<Evidence> evidence) => HashText(JsonSerializer.Serialize(new

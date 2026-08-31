@@ -49,7 +49,9 @@ public sealed record CreateFinancePaymentAllocationDto(
     Guid? BillId,
     decimal AllocatedAmount,
     string Currency,
-    string? IdempotencyKey = null);
+    string? IdempotencyKey = null,
+    decimal FeeAmount = 0m,
+    decimal WriteOffAmount = 0m);
 
 public sealed record UpdateFinancePaymentAllocationDto(
     Guid PaymentId,
@@ -60,7 +62,9 @@ public sealed record UpdateFinancePaymentAllocationDto(
 
 public sealed record CreateFinancePaymentAllocationCommand(
     Guid CompanyId,
-    CreateFinancePaymentAllocationDto Allocation);
+    CreateFinancePaymentAllocationDto Allocation,
+    Guid? ActorUserId = null,
+    string? CorrelationId = null);
 
 public sealed record UpdateFinancePaymentAllocationCommand(
     Guid CompanyId,
@@ -68,6 +72,15 @@ public sealed record UpdateFinancePaymentAllocationCommand(
     UpdateFinancePaymentAllocationDto Allocation);
 
 public sealed record DeleteFinancePaymentAllocationCommand(Guid CompanyId, Guid AllocationId);
+public sealed record ReverseFinancePaymentAllocationCommand(
+    Guid CompanyId,
+    Guid PaymentId,
+    Guid AllocationId,
+    DateOnly PostingDate,
+    string Reason,
+    string IdempotencyKey,
+    Guid ActorUserId,
+    string? CorrelationId = null);
 public sealed record BackfillFinancePaymentAllocationsCommand(Guid CompanyId, bool SynthesizeMissingPayments = true);
 
 public sealed record FinancePaymentDto(
@@ -99,7 +112,33 @@ public sealed record FinancePaymentAllocationDto(
     Guid? PaymentSourceSimulationEventRecordId,
     Guid? TargetSourceSimulationEventRecordId,
     string? IdempotencyKey = null,
-    bool IsIdempotentReplay = false);
+    bool IsIdempotentReplay = false,
+    decimal FeeAmount = 0m,
+    decimal WriteOffAmount = 0m,
+    decimal? AllocatedPaymentAmount = null,
+    string? PaymentCurrency = null,
+    string? FunctionalCurrency = null,
+    decimal? AllocatedFunctionalAmount = null,
+    decimal? SettlementFunctionalAmount = null,
+    decimal? BankFunctionalAmount = null,
+    decimal? FeeFunctionalAmount = null,
+    decimal? WriteOffFunctionalAmount = null,
+    decimal? RealizedGainLossAmount = null,
+    decimal? RoundingFunctionalAmount = null,
+    decimal? DocumentOutstandingAfter = null,
+    decimal? FunctionalOutstandingAfter = null,
+    DateOnly? SettlementRateDate = null,
+    decimal? SettlementRate = null,
+    Guid? SettlementExchangeRateConversionId = null,
+    string? SettlementRateIdentity = null,
+    decimal? SettlementConversionRoundingResidual = null,
+    Guid? SettlementLedgerEntryId = null,
+    Guid? ReversalLedgerEntryId = null,
+    string SettlementStatus = "legacy_unavailable",
+    DateTime? ReversedUtc = null,
+    Guid? ReversedByUserId = null,
+    string? ReversalReason = null,
+    long Version = 1);
 
 public sealed record FinanceSimulationEventReferenceDto(
     Guid Id,
@@ -129,7 +168,8 @@ public sealed record FinancePaymentAllocationTraceDto(
     FinanceAllocationTargetDocumentDto TargetDocument,
     FinanceSimulationEventReferenceDto? PaymentSourceEvent,
     FinanceSimulationEventReferenceDto? TargetSourceEvent,
-    FinanceSimulationEventReferenceDto? OriginatingSourceEvent);
+    FinanceSimulationEventReferenceDto? OriginatingSourceEvent,
+    FinancePaymentAllocationDto? Settlement = null);
 
 public sealed record FinancePaymentAllocationBackfillResultDto(
     Guid CompanyId,
@@ -154,5 +194,6 @@ public interface IFinancePaymentCommandService
     Task<FinancePaymentAllocationDto> CreateAllocationAsync(CreateFinancePaymentAllocationCommand command, CancellationToken cancellationToken);
     Task<FinancePaymentAllocationDto> UpdateAllocationAsync(UpdateFinancePaymentAllocationCommand command, CancellationToken cancellationToken);
     Task DeleteAllocationAsync(DeleteFinancePaymentAllocationCommand command, CancellationToken cancellationToken);
+    Task<FinancePaymentAllocationDto> ReverseAllocationAsync(ReverseFinancePaymentAllocationCommand command, CancellationToken cancellationToken);
     Task<FinancePaymentAllocationBackfillResultDto> BackfillAllocationsAsync(BackfillFinancePaymentAllocationsCommand command, CancellationToken cancellationToken);
 }

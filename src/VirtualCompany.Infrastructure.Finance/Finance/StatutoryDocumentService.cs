@@ -139,6 +139,12 @@ public sealed class StatutoryDocumentService : IStatutoryDocumentService
                     ?? throw NotFound(StatutoryDocumentReasonCodes.SourceNotFound, "The customer counterparty was not found.");
                 if (counterparty.CounterpartyType != "customer") throw new StatutoryDocumentException(StatutoryDocumentReasonCodes.RequiredFieldMissing, "Native customer documents require a customer counterparty.");
                 var context = await LoadContext(command.CompanyId, cancellationToken);
+                if (!await AccountingSeriesPolicyEnforcement.IsStatutoryDocumentSeriesAllowedAsync(_db,
+                        command.CompanyId, series.Id, "customer_invoice", command.Document.DocumentType,
+                        command.Document.IssueDate, command.Document.CounterpartyCountryCode, context.Pack.Definition.PackKey,
+                        context.Pack.Definition.Version, cancellationToken))
+                    throw new StatutoryDocumentException(StatutoryDocumentReasonCodes.SeriesConflict,
+                        "The selected document series is not permitted by the active accounting series policy.");
                 var original = await LoadAndValidateOriginal(command.CompanyId, command.Document, cancellationToken);
                 await EnsureApprovalsAsync(command.CompanyId, command.Document.ApprovalIds, cancellationToken);
                 var now = _time.GetUtcNow().UtcDateTime;

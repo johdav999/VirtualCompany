@@ -75,7 +75,12 @@ public sealed record FinanceOpenPayableItemDto(
     decimal OutstandingAmount,
     string Currency,
     string Status,
-    Guid? SupplierId = null);
+    Guid? SupplierId = null,
+    decimal? FunctionalOutstandingAmount = null,
+    string? FunctionalCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null);
 
 public sealed record FinanceBillDto(
     Guid Id,

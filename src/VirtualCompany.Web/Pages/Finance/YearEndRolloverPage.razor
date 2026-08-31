@@ -1,0 +1,125 @@
+@page "/finance/accounting/year-end"
+@inherits FinancePageBase
+
+<PageTitle>Year-end rollover</PageTitle>
+
+<FinancePageLayout IsLoading="@IsLoading" AccessState="@AccessState" ErrorMessage="@ErrorMessage"
+                   Title="Year-end rollover" Description="Close the fiscal year with retained evidence, independent sign-off, and verified opening balances."
+                   LoadingMessage="Loading year-end governance…">
+    <AccountingNavigation CompanyId="@AccessState.CompanyId" />
+
+    <header class="year-end-hero">
+        <div>
+            <span class="dashboard-kicker">Accounting governance · immutable prior year</span>
+            <h2>Year-end rollover</h2>
+            <p>Prepare, approve, post, and reconcile the next year without rewriting closed journals or snapshots.</p>
+        </div>
+        <div class="hero-actions">
+            @if (Runs.Count > 0)
+            {
+                <select class="form-select" aria-label="Year-end run" value="@(Selected?.Id.ToString() ?? string.Empty)" @onchange="SelectRunAsync">
+                    @foreach (var run in Runs)
+                    {
+                        <option value="@run.Id">@run.FiscalYearStart.Year · @Label(run.Status)</option>
+                    }
+                </select>
+            }
+            <button type="button" class="btn btn-outline-primary" disabled="@IsWorking" @onclick="BeginNewRun">New run</button>
+            <button type="button" class="btn btn-outline-secondary" disabled="@IsWorking" @onclick="ReloadAsync">Refresh evidence</button>
+        </div>
+    </header>
+
+    @if (!string.IsNullOrWhiteSpace(WorkspaceMessage))
+    {
+        <div class="alert @(HasError ? "alert-danger" : "alert-info")" role="status">@WorkspaceMessage</div>
+    }
+
+    @if (Selected is null)
+    {
+        <section class="year-end-create">
+            <div><span class="dashboard-kicker">New governed run</span><h3>Prepare a fiscal-year close</h3><p>The first snapshot is generated only from authoritative accounting, report, compliance, close, and audit-package evidence.</p></div>
+            <div class="create-grid">
+                <label>Fiscal year<select class="form-select" @bind="Draft.FiscalYearStart">@foreach (var year in FiscalYears){<option value="@year.StartDate">@year.StartDate.ToString("d") – @year.EndDate.ToString("d")</option>}</select></label>
+                <label>Next-year opening period<select class="form-select" @bind="Draft.TargetFiscalPeriodId">@foreach (var period in TargetPeriods){<option value="@period.Id">@period.Name · @period.StartDate.ToString("d")</option>}</select></label>
+                <label>Retained earnings account<select class="form-select" @bind="Draft.RetainedEarningsAccountId">@foreach (var account in EquityAccounts){<option value="@account.Id">@account.Code · @account.Name</option>}</select></label>
+                <label>Opening clearing account<select class="form-select" @bind="Draft.OpeningBalanceClearingAccountId">@foreach (var account in EquityAccounts){<option value="@account.Id">@account.Code · @account.Name</option>}</select></label>
+                <label>Voucher series<input class="form-control" maxlength="32" @bind="Draft.VoucherSeriesCode" /></label>
+            </div>
+            <button type="button" class="btn btn-primary" disabled="@(IsWorking || !CanPrepare)" @onclick="PrepareAsync">Prepare readiness snapshot</button>
+        </section>
+    }
+    else
+    {
+        <section class="year-end-kpis" aria-label="Year-end summary">
+            <article><span>Fiscal year</span><strong>@Selected.FiscalYearStart.Year</strong><small>@Selected.FiscalYearStart.ToString("d") – @Selected.FiscalYearEnd.ToString("d")</small></article>
+            <article class="@(BlockerCount > 0 ? "danger" : "ok")"><span>Blocking checks</span><strong>@BlockerCount</strong><small>@(BlockerCount == 0 ? "Ready for governed progression" : "Activation remains blocked")</small></article>
+            <article><span>Current result</span><strong>@Money(NetIncome)</strong><small>@Currency · transfer proposal</small></article>
+            <article><span>Opening difference</span><strong>@Money(OpeningDifference)</strong><small>Account · currency · dimension</small></article>
+        </section>
+
+        <section class="lifecycle-card">
+            <div class="section-heading"><div><span class="dashboard-kicker">Six controlled gates</span><h3>Year-end lifecycle</h3></div><span class="status-pill @StatusClass(Selected.Status)">@Label(Selected.Status)</span></div>
+            <ol class="lifecycle">
+                @foreach (var step in Lifecycle)
+                {
+                    <li class="@StepClass(step.Status)"><span>@step.Number</span><div><strong>@step.Label</strong><small>@step.Detail</small></div></li>
+                }
+            </ol>
+            <div class="workflow-actions">
+                @if (Selected.AllowedActions.Contains("refresh")){<button class="btn btn-outline-secondary" disabled="@IsWorking" @onclick="ReloadAsync">Refresh readiness</button>}
+                @if (Selected.AllowedActions.Contains("submit")){<button class="btn btn-primary" disabled="@IsWorking" @onclick="SubmitAsync">Submit exact snapshot</button>}
+                @if (Selected.AllowedActions.Contains("review")){<button class="btn btn-outline-secondary" disabled="@IsWorking" @onclick="()=>ReviewAsync(false)">Reject</button><button class="btn btn-primary" disabled="@IsWorking" @onclick="()=>ReviewAsync(true)">Approve independently</button>}
+                @if (Selected.AllowedActions.Contains("execute")){<button class="btn btn-primary" disabled="@IsWorking" @onclick="ExecuteAsync">Post journal chain</button>}
+                @if (Selected.AllowedActions.Contains("reconcile")){<button class="btn btn-primary" disabled="@IsWorking" @onclick="ReconcileAsync">Verify opening balances</button>}
+                @if (Selected.AllowedActions.Contains("finalize")){<button class="btn btn-primary" disabled="@IsWorking" @onclick="FinalizeAsync">Finalize rollover</button>}
+            </div>
+        </section>
+
+        <div class="year-end-grid">
+            <section class="evidence-card">
+                <div class="section-heading"><div><span class="dashboard-kicker">Snapshot #@(Selected.CurrentReadiness?.SnapshotNumber ?? 0)</span><h3>Readiness evidence</h3></div><code>@ShortHash(Selected.CurrentReadiness?.EvidenceHash)</code></div>
+                @if (Selected.CurrentReadiness is not null)
+                {
+                    <div class="check-list">@foreach (var check in Selected.CurrentReadiness.Checks){<article><span class="check-icon @(check.Passed ? "ok" : "blocked")">@(check.Passed ? "✓" : "!")</span><div><strong>@check.Label</strong><small>@check.Explanation</small></div><span class="check-count">@check.Count</span></article>}</div>
+                }
+            </section>
+            <section class="proposal-card">
+                <span class="dashboard-kicker">Retained-earnings proposal</span>
+                @if (Selected.RetainedEarningsProposal is { } proposal)
+                {
+                    <h3>@Money(proposal.NetIncome) @proposal.Currency</h3>
+                    <dl><dt>Destination</dt><dd>@proposal.RetainedEarningsAccountCode</dd><dt>Opening clearing</dt><dd>@proposal.OpeningBalanceClearingAccountCode</dd><dt>Proposal state</dt><dd>@Label(proposal.Status)</dd><dt>Evidence</dt><dd><code>@ShortHash(proposal.EvidenceHash)</code></dd></dl>
+                }
+                <div class="immutability-note"><strong>Prior year remains immutable</strong><p>Corrections require an approved reopen request or a separately linked post-forward journal.</p></div>
+            </section>
+        </div>
+
+        <section class="opening-card">
+            <div class="section-heading"><div><span class="dashboard-kicker">Verified carry-forward</span><h3>Opening balances by account, currency, and dimension</h3></div><span>@Selected.OpeningBalances.Count candidates</span></div>
+            <div class="table-scroll"><table><thead><tr><th>Account</th><th>Currency</th><th>Dimension evidence</th><th class="number">Closing</th><th class="number">Opening</th><th class="number">Difference</th><th>Status</th></tr></thead><tbody>
+                @foreach (var row in Selected.OpeningBalances.Take(100)){<tr><td><strong>@row.AccountCode</strong><small>@row.AccountName</small></td><td>@row.SourceCurrency</td><td><code>@ShortDimension(row.DimensionKey)</code></td><td class="number">@Money(row.ClosingFunctionalBalance)</td><td class="number">@Money(row.OpeningFunctionalBalance)</td><td class="number @(row.Difference != 0 ? "difference" : null)">@Money(row.Difference)</td><td><span class="status-pill @StatusClass(row.Status)">@Label(row.Status)</span></td></tr>}
+            </tbody></table></div>
+            @if (OpeningDifference != 0){<div class="blocked-callout"><strong>Opening activation is blocked</strong><span>The retained candidate set differs from the posted opening journal. Resolve through recovery; do not edit the prior-year ledger.</span></div>}
+        </section>
+
+        <div class="year-end-grid">
+            <section class="subsequent-card">
+                <div class="section-heading"><div><span class="dashboard-kicker">After reporting date</span><h3>Subsequent events</h3></div>@if(Selected.AllowedActions.Contains("record_subsequent_event")){<button class="btn btn-sm btn-outline-primary" type="button" @onclick="()=>ShowEventForm=!ShowEventForm">Record event</button>}</div>
+                @if (ShowEventForm)
+                {
+                    <div class="event-form"><input class="form-control" type="date" @bind="EventDraft.EventDate" /><input class="form-control" placeholder="Event title" @bind="EventDraft.Title" /><textarea class="form-control" placeholder="Describe the evidence and accounting assessment" @bind="EventDraft.Description"></textarea><select class="form-select" @bind="EventDraft.Decision"><option value="disclose_only">Disclose only</option><option value="post_forward">Post forward</option><option value="request_reopen">Request governed reopen</option></select><button class="btn btn-primary" disabled="@IsWorking" @onclick="RecordEventAsync">Retain event</button></div>
+                }
+                @if (Selected.SubsequentEvents.Count == 0){<div class="empty-state"><strong>No retained events</strong><p>Events after the reporting date stay separate from the immutable final snapshot.</p></div>}
+                else {<div class="event-list">@foreach(var item in Selected.SubsequentEvents){<article><div><strong>@item.Title</strong><small>@item.EventDate.ToString("d") · @Label(item.Decision)</small></div><span class="status-pill @StatusClass(item.Status)">@Label(item.Status)</span>@if(item.Status=="recorded"){<button class="btn btn-sm btn-outline-secondary" @onclick="()=>SubmitEventAsync(item)">Submit</button>}@if(item.Status=="under_review"){<button class="btn btn-sm btn-primary" @onclick="()=>ReviewEventAsync(item,true)">Approve</button>}@if(item.Status=="approved"){<button class="btn btn-sm btn-outline-primary" @onclick="()=>BeginResolution(item)">Link resolution</button>}</article>}</div>}
+                @if (ResolvingEvent is not null)
+                {
+                    <div class="event-form resolution-form"><strong>Resolve @ResolvingEvent.Title</strong>@if(ResolvingEvent.Decision=="post_forward"){<input class="form-control" placeholder="Posted forward journal ID" @bind="CorrectionJournalText" />}@if(ResolvingEvent.Decision=="request_reopen"){<input class="form-control" placeholder="Approved reopen request ID" @bind="ReopenRequestText" />}<input class="form-control" placeholder="Resolution reason" @bind="ResolutionReason" /><button class="btn btn-primary" disabled="@IsWorking" @onclick="ResolveEventAsync">Retain correction link</button></div>
+                }
+            </section>
+            <section class="history-card">
+                <span class="dashboard-kicker">Immutable audit trail</span><h3>Sign-offs and history</h3>
+                <ol class="history-list">@foreach(var item in Selected.History.OrderByDescending(x=>x.OccurredUtc).Take(10)){<li><span></span><div><strong>@Label(item.Action)</strong><small>@item.Summary</small><time>@item.OccurredUtc.ToLocalTime().ToString("g") · @Short(item.ActorUserId)</time></div></li>}</ol>
+            </section>
+        </div>
+    }
+</FinancePageLayout>

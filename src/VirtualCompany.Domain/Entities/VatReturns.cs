@@ -15,7 +15,7 @@ public sealed class VatFilingPeriod : ICompanyOwnedEntity
     private VatFilingPeriod() { }
 
     public VatFilingPeriod(Guid id, Guid companyId, string periodCode, DateOnly startDate,
-        DateOnly endDate, string currency, Guid? fiscalPeriodId, DateTime createdUtc)
+        DateOnly endDate, string currency, Guid? fiscalPeriodId, DateTime createdUtc, DateOnly? dueDate = null)
     {
         if (endDate < startDate) throw new ArgumentOutOfRangeException(nameof(endDate));
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
@@ -23,6 +23,8 @@ public sealed class VatFilingPeriod : ICompanyOwnedEntity
         PeriodCode = Text(periodCode, nameof(periodCode), 40).ToUpperInvariant();
         StartDate = startDate;
         EndDate = endDate;
+        if (dueDate.HasValue && dueDate.Value < endDate) throw new ArgumentOutOfRangeException(nameof(dueDate));
+        DueDate = dueDate;
         Currency = Text(currency, nameof(currency), 3).ToUpperInvariant();
         FiscalPeriodId = fiscalPeriodId == Guid.Empty ? null : fiscalPeriodId;
         CreatedUtc = Utc(createdUtc, nameof(createdUtc));
@@ -33,11 +35,18 @@ public sealed class VatFilingPeriod : ICompanyOwnedEntity
     public string PeriodCode { get; private set; } = null!;
     public DateOnly StartDate { get; private set; }
     public DateOnly EndDate { get; private set; }
+    public DateOnly? DueDate { get; private set; }
     public string Currency { get; private set; } = null!;
     public Guid? FiscalPeriodId { get; private set; }
     public DateTime CreatedUtc { get; private set; }
     public Company Company { get; private set; } = null!;
     public FiscalPeriod? FiscalPeriod { get; private set; }
+
+    public void SetDueDate(DateOnly dueDate)
+    {
+        if (dueDate < EndDate) throw new ArgumentOutOfRangeException(nameof(dueDate));
+        DueDate = dueDate;
+    }
     public ICollection<VatReturn> Returns { get; } = new List<VatReturn>();
 
     private static Guid Required(Guid value, string name) => value == Guid.Empty ? throw new ArgumentException($"{name} is required.", name) : value;

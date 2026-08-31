@@ -33,12 +33,22 @@ internal sealed class FinanceAccountConfiguration : IEntityTypeConfiguration<Fin
         builder.Property(x => x.IsPostingEnabled).HasColumnName("is_posting_enabled").HasDefaultValue(false).IsRequired();
         builder.Property(x => x.ControlAccountRole).HasColumnName("control_account_role").HasMaxLength(96);
         builder.Property(x => x.RestrictManualPosting).HasColumnName("restrict_manual_posting").HasDefaultValue(false).IsRequired();
+        builder.Property(x => x.IsReportable).HasColumnName("is_reportable").HasDefaultValue(true).IsRequired();
+        builder.Property(x => x.PostingRestriction).HasColumnName("posting_restriction").HasMaxLength(16).HasDefaultValue(FinanceAccountPostingRestrictionValues.None).IsRequired();
+        builder.Property(x => x.ReplacementAccountId).HasColumnName("replacement_account_id");
+        builder.Property(x => x.LifecycleReason).HasColumnName("lifecycle_reason").HasMaxLength(512);
+        builder.Property(x => x.LifecycleVersion).HasColumnName("lifecycle_version").HasDefaultValue(1L).IsRequired();
 
         builder.HasIndex(x => new { x.CompanyId, x.Code }).IsUnique();
         builder.HasIndex(x => new { x.CompanyId, x.AccountType });
         builder.HasIndex(x => new { x.CompanyId, x.AccountClass, x.IsPostingEnabled });
+        builder.HasIndex(x => new { x.CompanyId, x.ReplacementAccountId });
         builder.HasOne(x => x.Company).WithMany().HasForeignKey(x => x.CompanyId).OnDelete(DeleteBehavior.Cascade);
         builder.HasMany(x => x.Transactions).WithOne(x => x.Account).HasForeignKey(x => new { x.CompanyId, x.AccountId }).HasPrincipalKey(x => new { x.CompanyId, x.Id }).OnDelete(DeleteBehavior.Restrict);
+        builder.HasOne(x => x.ReplacementAccount).WithMany()
+            .HasForeignKey(x => new { x.CompanyId, x.ReplacementAccountId })
+            .HasPrincipalKey(x => new { x.CompanyId, x.Id })
+            .OnDelete(DeleteBehavior.Restrict);
     }
 }
 

@@ -22,7 +22,12 @@ public enum ApprovalTargetEntityType
     CustomerInvoiceSchedule = 18,
     CustomerCollectionReminder = 19,
     TreasurySource = 20,
-    PaymentBatch = 21
+    PaymentBatch = 21,
+    CurrencyRevaluationRun = 22,
+    AccountingAllocation = 23,
+    AccountingSchedule = 24,
+    AccountingCloseTask = 25,
+    AccountingCloseWaiver = 26
 }
 
 public static class ApprovalTargetEntityTypeValues
@@ -49,7 +54,12 @@ public static class ApprovalTargetEntityTypeValues
         [ApprovalTargetEntityType.CustomerInvoiceSchedule] = "customer_invoice_schedule",
         [ApprovalTargetEntityType.CustomerCollectionReminder] = "customer_collection_reminder",
         [ApprovalTargetEntityType.TreasurySource] = "treasury_source",
-        [ApprovalTargetEntityType.PaymentBatch] = "payment_batch"
+        [ApprovalTargetEntityType.PaymentBatch] = "payment_batch",
+        [ApprovalTargetEntityType.CurrencyRevaluationRun] = "currency_revaluation_run",
+        [ApprovalTargetEntityType.AccountingAllocation] = "accounting_allocation",
+        [ApprovalTargetEntityType.AccountingSchedule] = "accounting_schedule",
+        [ApprovalTargetEntityType.AccountingCloseTask] = "accounting_close_task",
+        [ApprovalTargetEntityType.AccountingCloseWaiver] = "accounting_close_waiver"
     };
 
     private static readonly IReadOnlyDictionary<string, ApprovalTargetEntityType> ReverseValues =

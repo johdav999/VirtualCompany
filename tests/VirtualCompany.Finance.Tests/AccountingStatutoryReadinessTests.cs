@@ -29,6 +29,8 @@ public sealed class AccountingStatutoryReadinessTests
         configuration.SetSetupState(AccountingSetupStateValues.Ready, actorId, nowUtc);
         context.Companies.Add(new Company(companyId, "Swedish readiness fixture"));
         context.AccountingConfigurations.Add(configuration);
+        context.CompanyCurrencyDefinitions.Add(new CompanyCurrencyDefinition(
+            Guid.NewGuid(), companyId, "EUR", "Euro", 2, true, nowUtc));
         await context.SaveChangesAsync();
 
         var service = new AccountingReadinessService(
@@ -50,6 +52,24 @@ public sealed class AccountingStatutoryReadinessTests
         Assert.Contains(result.Signals, signal => signal.Key == "stale_vat_returns");
         Assert.Contains(result.Signals, signal => signal.Key == "failed_or_expired_statutory_exports");
         Assert.Contains(result.Signals, signal => signal.Key == "unsupported_configured_capabilities");
+        var rates = Assert.Single(result.Signals, signal => signal.Key == "exchange_rate_coverage");
+        Assert.Equal(AccountingReadinessStatuses.Blocked, rates.Status);
+        Assert.Contains("EUR", rates.Explanation, StringComparison.Ordinal);
+        Assert.Contains(result.Signals, signal => signal.Key == "currency_revaluation_operations");
+        Assert.Contains(result.Signals, signal => signal.Key == "dimension_governance");
+        Assert.Contains(result.Signals, signal => signal.Key == "accounting_schedule_operations");
+        Assert.Contains(result.Signals, signal => signal.Key == "fixed_asset_operations");
+        Assert.Contains(result.Signals, signal => signal.Key == "accounting_series_governance");
+        var inventory = Assert.Single(result.Signals, signal => signal.Key == "inventory_accounting_capability");
+        Assert.Equal(AccountingReadinessStatuses.Ready, inventory.Status);
+        Assert.Contains("unsupported", inventory.Explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains(result.Signals, signal => signal.Key == "advanced_rate_coverage");
+        Assert.Contains(result.Signals, signal => signal.Key == "advanced_currency_controls");
+        Assert.Contains(result.Signals, signal => signal.Key == "advanced_dimension_controls");
+        Assert.Contains(result.Signals, signal => signal.Key == "advanced_schedule_controls");
+        Assert.Contains(result.Signals, signal => signal.Key == "advanced_asset_controls");
+        Assert.Contains(result.Signals, signal => signal.Key == "advanced_series_controls");
+        Assert.Contains(result.Signals, signal => signal.Key == "inventory_capability_boundary");
     }
 
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider

@@ -10,6 +10,7 @@ public partial class AccountingReportsPage : FinancePageBase
 {
     [Inject] private FinanceApiClient FinanceApiClient { get; set; } = default!;
     [SupplyParameterFromQuery(Name = "view")] public string? RequestedView { get; set; }
+    [SupplyParameterFromQuery(Name = "runId")] public Guid? RequestedRunId { get; set; }
     private List<AccountingPeriodResponse> Periods { get; set; } = [];
     private Guid SelectedPeriodId { get; set; }
     private AccountingPeriodResponse? SelectedPeriod => Periods.FirstOrDefault(x => x.Id == SelectedPeriodId);
@@ -40,6 +41,7 @@ public partial class AccountingReportsPage : FinancePageBase
     private string? ActionError { get; set; }
     private string? VatError { get; set; }
     private bool CanManageAccounting => FinanceAccess.CanManageAccounting(AccessState.MembershipRole);
+    private bool CanApproveSchedules => FinanceAccess.CanApproveInvoices(AccessState.MembershipRole);
     private bool CanReopen => AccessState.MembershipRole is "owner" or "admin";
     private string? Currency => TrialBalance?.Accounts.Select(x => x.Currency).Distinct().Count() == 1 ? TrialBalance.Accounts.FirstOrDefault()?.Currency : null;
     private string CloseSummary => CloseValidation is null ? FinanceText["NotReviewedYet"] : CloseValidation.IsReadyToClose ? FinanceText["ReadyToClose"] : FinanceText["CloseIssueTypes", CloseValidation.BlockingIssues.Count];
@@ -49,6 +51,10 @@ public partial class AccountingReportsPage : FinancePageBase
     {
         await base.OnParametersSetAsync();
         if (string.Equals(RequestedView, "vat", StringComparison.OrdinalIgnoreCase)) View = "vat";
+        else if (string.Equals(RequestedView, "revaluation", StringComparison.OrdinalIgnoreCase)) View = "revaluation";
+        else if (string.Equals(RequestedView, "dimensions", StringComparison.OrdinalIgnoreCase)) View = "dimensions";
+        else if (string.Equals(RequestedView, "schedules", StringComparison.OrdinalIgnoreCase)) View = "schedules";
+        else if (string.Equals(RequestedView, "assets", StringComparison.OrdinalIgnoreCase)) View = "assets";
         if (string.IsNullOrWhiteSpace(CloseReason)) CloseReason = FinanceText["DefaultCloseReason"];
         if (!AccessState.IsAllowed || AccessState.CompanyId is not Guid companyId) return;
         try

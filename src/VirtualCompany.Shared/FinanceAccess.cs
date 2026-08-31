@@ -19,7 +19,8 @@ public static class FinanceAccess
         "admin",
         "tester",
         "manager",
-        "finance_approver"
+        "finance_approver",
+        "accountant"
     };
 
     private static readonly HashSet<string> FinanceSandboxAdminRoleValues = new(StringComparer.OrdinalIgnoreCase)

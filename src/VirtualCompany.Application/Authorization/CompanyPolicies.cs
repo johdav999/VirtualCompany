@@ -13,6 +13,8 @@ public static class CompanyPolicies
     public const string FinanceSandboxAdmin = "FinanceSandboxAdmin";
     public const string AccountingView = "AccountingView";
     public const string AccountingAdmin = "AccountingAdmin";
+    public const string AccountantCollaboration = "AccountantCollaboration";
+    public const string YearEndGovernance = "YearEndGovernance";
     public const string PlatformAdministration = "PlatformAdministration";
 
     public const string CompanyMembership = CompanyMember;

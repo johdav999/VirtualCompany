@@ -100,4 +100,5 @@ public static class AccountingExportApiValues
     public const string GenericJson = "generic_json";
     public const string Sie4B = "sie_4b";
     public const string SwedishStatutoryArchive = "swedish_statutory_archive";
+    public const string FinancialReportSuiteJson = "financial_report_suite_json";
 }

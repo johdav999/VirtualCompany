@@ -149,6 +149,43 @@ public sealed partial class FinanceApiClient
             cancellationToken);
     }
 
+    public Task<AccountingAccountLifecyclePreviewResponse> PreviewAccountingAccountLifecycleAsync(Guid companyId,
+        Guid accountId, PreviewAccountingAccountLifecycleApiRequest request, CancellationToken cancellationToken = default) =>
+        SendCompanyScopedAsync<PreviewAccountingAccountLifecycleApiRequest, AccountingAccountLifecyclePreviewResponse>(companyId,
+            HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/accounts/{accountId:D}/lifecycle/preview", request, cancellationToken);
+
+    public Task<AccountingAccountDetailResponse> ApplyAccountingAccountLifecycleAsync(Guid companyId,
+        Guid accountId, ApplyAccountingAccountLifecycleApiRequest request, CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<ApplyAccountingAccountLifecycleApiRequest, AccountingAccountDetailResponse>(companyId,
+            HttpMethod.Put, $"internal/companies/{companyId}/finance/accounting/accounts/{accountId:D}/lifecycle", request, cancellationToken);
+    }
+
+    public async Task<IReadOnlyList<AccountingSeriesPolicyResponse>> GetAccountingSeriesPoliciesAsync(Guid companyId,
+        CancellationToken cancellationToken = default) => await GetAsync<List<AccountingSeriesPolicyResponse>>(companyId,
+            $"internal/companies/{companyId}/finance/accounting/series-policies", false, cancellationToken) ?? [];
+
+    public Task<AccountingSeriesPolicyResponse> SaveAccountingSeriesPolicyAsync(Guid companyId,
+        SaveAccountingSeriesPolicyApiRequest request, CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<SaveAccountingSeriesPolicyApiRequest, AccountingSeriesPolicyResponse>(companyId,
+            HttpMethod.Put, $"internal/companies/{companyId}/finance/accounting/series-policies", request, cancellationToken);
+    }
+
+    public Task<AccountingSeriesPolicyResponse> RecordAccountingVoucherGapAsync(Guid companyId, Guid seriesId,
+        RecordAccountingVoucherGapApiRequest request, CancellationToken cancellationToken = default)
+    {
+        EnsureOnlineMutation();
+        return SendCompanyScopedAsync<RecordAccountingVoucherGapApiRequest, AccountingSeriesPolicyResponse>(companyId,
+            HttpMethod.Post, $"internal/companies/{companyId}/finance/accounting/voucher-series/{seriesId:D}/gaps", request, cancellationToken);
+    }
+
+    public async Task<CommerceAccountingCapabilityResponse> GetCommerceAccountingCapabilityAsync(Guid companyId,
+        CancellationToken cancellationToken = default) => await GetAsync<CommerceAccountingCapabilityResponse>(companyId,
+            $"internal/companies/{companyId}/finance/accounting/commerce/capability", false, cancellationToken) ?? new();
+
     public async Task<IReadOnlyList<AccountingFiscalYearResponse>> GetAccountingFiscalYearsAsync(
         Guid companyId,
         CancellationToken cancellationToken = default) =>
@@ -320,6 +357,12 @@ public sealed class AccountingAccountListItemResponse
     public string? RoleName { get; set; }
     public string? ReportingPlacement { get; set; }
     public DateTime UpdatedUtc { get; set; }
+    public bool IsReportable { get; set; }
+    public string PostingRestriction { get; set; } = "none";
+    public Guid? ReplacementAccountId { get; set; }
+    public string LifecycleStatus { get; set; } = "active";
+    public long LifecycleVersion { get; set; }
+    public int DependencyCount { get; set; }
 }
 
 public sealed class AccountingAccountDetailResponse
@@ -341,6 +384,70 @@ public sealed class AccountingAccountDetailResponse
     public string? ReportingPlacement { get; set; }
     public DateTime CreatedUtc { get; set; }
     public DateTime UpdatedUtc { get; set; }
+    public bool IsReportable { get; set; }
+    public string PostingRestriction { get; set; } = "none";
+    public Guid? ReplacementAccountId { get; set; }
+    public string? ReplacementAccountCode { get; set; }
+    public string LifecycleStatus { get; set; } = "active";
+    public long LifecycleVersion { get; set; }
+    public List<AccountingAccountLifecycleHistoryResponse> LifecycleHistory { get; set; } = [];
+}
+
+public sealed class AccountingAccountLifecycleHistoryResponse
+{
+    public long Version { get; set; } public string ChangeType { get; set; } = string.Empty; public string Name { get; set; } = string.Empty;
+    public string AccountClass { get; set; } = string.Empty; public string NormalBalance { get; set; } = string.Empty;
+    public bool IsReportable { get; set; } public string PostingRestriction { get; set; } = "none";
+    public DateOnly EffectiveFrom { get; set; } public DateOnly? EffectiveTo { get; set; } public Guid? ReplacementAccountId { get; set; }
+    public string Reason { get; set; } = string.Empty; public Guid? ActorUserId { get; set; } public DateTime RecordedUtc { get; set; }
+}
+
+public class PreviewAccountingAccountLifecycleApiRequest
+{
+    public string AccountClass { get; set; } = string.Empty; public string NormalBalance { get; set; } = string.Empty;
+    public bool IsReportable { get; set; } = true; public string PostingRestriction { get; set; } = "none";
+    public DateOnly EffectiveFrom { get; set; } public DateOnly? EffectiveTo { get; set; } public Guid? ReplacementAccountId { get; set; }
+}
+public sealed class ApplyAccountingAccountLifecycleApiRequest : PreviewAccountingAccountLifecycleApiRequest
+{
+    public string Name { get; set; } = string.Empty; public string Reason { get; set; } = string.Empty; public long ExpectedLifecycleVersion { get; set; }
+}
+public sealed class AccountingAccountDependencyResponse { public string DependencyType { get; set; } = string.Empty; public string DisplayName { get; set; } = string.Empty; public int Count { get; set; } public bool IsBlocking { get; set; } }
+public sealed class AccountingAccountLifecyclePreviewResponse
+{
+    public Guid AccountId { get; set; } public string AccountCode { get; set; } = string.Empty; public bool HasPostedHistory { get; set; }
+    public bool ReplacementRequired { get; set; } public bool CanApply { get; set; }
+    public List<AccountingAccountDependencyResponse> Dependencies { get; set; } = []; public List<AccountingConfigurationIssueResponse> Issues { get; set; } = [];
+}
+
+public sealed class AccountingSeriesPolicyResponse
+{
+    public Guid Id { get; set; } public string SeriesKind { get; set; } = string.Empty; public Guid SeriesId { get; set; }
+    public string SeriesCode { get; set; } = string.Empty; public string SeriesName { get; set; } = string.Empty;
+    public string SourceType { get; set; } = string.Empty; public string TransactionType { get; set; } = string.Empty;
+    public int? FiscalYear { get; set; } public Guid? LocationDimensionMemberId { get; set; } public string? Jurisdiction { get; set; }
+    public string PolicyPackKey { get; set; } = string.Empty; public string PolicyPackVersion { get; set; } = string.Empty;
+    public string? ProviderKey { get; set; } public string? ProviderSeriesCode { get; set; } public bool IsActive { get; set; }
+    public long Version { get; set; } public int UnexplainedGapCount { get; set; }
+}
+public sealed class SaveAccountingSeriesPolicyApiRequest
+{
+    public Guid? PolicyId { get; set; } public string SeriesKind { get; set; } = "voucher"; public Guid SeriesId { get; set; }
+    public string SourceType { get; set; } = "*"; public string TransactionType { get; set; } = "*"; public int? FiscalYear { get; set; }
+    public Guid? LocationDimensionMemberId { get; set; } public string? Jurisdiction { get; set; } public string? ProviderKey { get; set; }
+    public string? ProviderSeriesCode { get; set; } public bool IsActive { get; set; } = true; public long? ExpectedVersion { get; set; }
+}
+public sealed class RecordAccountingVoucherGapApiRequest
+{
+    public int FiscalYear { get; set; }
+    public long MissingNumber { get; set; }
+    public string Reason { get; set; } = string.Empty;
+}
+public sealed class CommerceAccountingCapabilityResponse
+{
+    public string CapabilityState { get; set; } = string.Empty; public string ContractVersion { get; set; } = string.Empty;
+    public bool SupportsInventoryQuantity { get; set; } public bool SupportsInventoryValuation { get; set; } public bool SupportsCogs { get; set; }
+    public List<string> AcceptedEventTypes { get; set; } = []; public string Explanation { get; set; } = string.Empty;
 }
 
 public sealed class CreateAccountingAccountApiRequest

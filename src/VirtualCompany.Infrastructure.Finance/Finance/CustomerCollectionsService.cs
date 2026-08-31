@@ -41,16 +41,31 @@ public sealed class CustomerCollectionsService(
         var allocations = await EffectiveAllocationsAsync(query.CompanyId, invoiceIds, cutoffExclusive, ct);
         var cases = await db.CustomerCollectionCases.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && invoiceIds.Contains(x.InvoiceId)).ToDictionaryAsync(x => x.InvoiceId, ct);
-        var profiles = await db.CustomerBillingProfiles.IgnoreQueryFilters().AsNoTracking()
+        var billingProfiles = await db.CustomerBillingProfiles.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && invoices.Select(i => i.CounterpartyId).Contains(x.CounterpartyId))
             .ToDictionaryAsync(x => x.CounterpartyId, ct);
+        var accountingProfiles = await db.CustomerInvoiceAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && invoiceIds.Contains(x.InvoiceId) &&
+                x.Status == CustomerInvoiceAccountingStatuses.Posted)
+            .ToDictionaryAsync(x => x.InvoiceId, ct);
 
         var openRows = invoices.Select(invoice =>
         {
-            var allocated = allocations.GetValueOrDefault(invoice.Id);
+            var allocation = allocations.GetValueOrDefault(invoice.Id);
+            var allocated = allocation?.DocumentAmount ?? 0m;
             var open = Money(Math.Max(0m, invoice.Amount - allocated));
             cases.TryGetValue(invoice.Id, out var collectionCase);
-            return new AgingRow(invoice, allocated, open, collectionCase);
+            var accountingProfile = accountingProfiles.GetValueOrDefault(invoice.Id);
+            var hasAuthoritativeFunctionalFacts = accountingProfile?.HasAuthoritativeCurrencyFacts == true &&
+                (allocation?.HasAuthoritativeFunctionalFacts ?? true);
+            var functionalAllocated = hasAuthoritativeFunctionalFacts
+                ? allocation?.FunctionalAmount ?? 0m
+                : (decimal?)null;
+            var functionalOpen = hasAuthoritativeFunctionalFacts
+                ? Money(Math.Max(0m, accountingProfile!.GrossBaseAmount - functionalAllocated!.Value))
+                : (decimal?)null;
+            return new AgingRow(invoice, allocated, open, collectionCase, accountingProfile,
+                functionalAllocated, functionalOpen, hasAuthoritativeFunctionalFacts);
         }).Where(x => x.OpenAmount > 0m).ToArray();
         var currencies = openRows.Select(x => x.Invoice.Currency).Distinct(StringComparer.Ordinal).ToArray();
         if (currency is null && currencies.Length > 1)
@@ -60,14 +75,24 @@ public sealed class CustomerCollectionsService(
             .ToDictionary(x => x.Key, x => Money(x.Sum(y => y.OpenAmount)));
         var reconciliation = await accounting.ReconcileAsync(new(query.CompanyId, query.CutoffDate), ct);
         var items = openRows.Select(row => MapAging(row, query.CutoffDate, exposure,
-                profiles.GetValueOrDefault(row.Invoice.CounterpartyId)))
+                billingProfiles.GetValueOrDefault(row.Invoice.CounterpartyId)))
             .Skip(skip).Take(take).ToArray();
         decimal Bucket(string bucket) => openRows.Where(x => AgingBucket(DaysOverdue(x.Invoice.DueUtc, query.CutoffDate)) == bucket).Sum(x => x.OpenAmount);
+        var hasCompleteFunctionalFacts = openRows.All(x => x.HasAuthoritativeFunctionalFacts);
+        var functionalCurrencies = openRows.Where(x => x.AccountingProfile is not null)
+            .Select(x => x.AccountingProfile!.BaseCurrency).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        var functionalCurrency = hasCompleteFunctionalFacts && functionalCurrencies.Length == 1 ? functionalCurrencies[0] : null;
+        decimal? FunctionalBucket(string bucket) => functionalCurrency is null ? null : Money(openRows
+            .Where(x => AgingBucket(DaysOverdue(x.Invoice.DueUtc, query.CutoffDate)) == bucket)
+            .Sum(x => x.FunctionalOpenAmount!.Value));
         telemetry?.Operation("aging", "succeeded");
         return new(query.CompanyId, query.CutoffDate, cutoffExclusive, query.TimeZoneId, resultCurrency, openRows.Length,
             Money(Bucket("current")), Money(Bucket("1_30")), Money(Bucket("31_60")), Money(Bucket("61_90")),
             Money(Bucket("over_90")), Money(openRows.Sum(x => x.OpenAmount)), reconciliation.Difference,
-            reconciliation.IsReconciled, items);
+            reconciliation.IsReconciled, items, functionalCurrency, FunctionalBucket("current"),
+            FunctionalBucket("1_30"), FunctionalBucket("31_60"), FunctionalBucket("61_90"),
+            FunctionalBucket("over_90"), functionalCurrency is null ? null : Money(openRows.Sum(x =>
+                x.FunctionalOpenAmount!.Value)));
     }
 
     public async Task<CustomerStatementDto> GenerateStatementAsync(GenerateCustomerStatementCommand command, CancellationToken ct)
@@ -99,8 +124,12 @@ public sealed class CustomerCollectionsService(
         if (statementCandidateCount > MaximumProjectionItems)
             throw Error(CustomerCollectionReasonCodes.StaleEvidence, "The statement exceeds the supported item bound. Use a later start date.");
         var invoiceIds = invoices.Select(x => x.Id).ToArray();
+        var accountingProfiles = await db.CustomerInvoiceAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == command.CompanyId && invoiceIds.Contains(x.InvoiceId))
+            .ToDictionaryAsync(x => x.InvoiceId, ct);
         var allocationRows = await db.PaymentAllocations.IgnoreQueryFilters().AsNoTracking().Include(x => x.Payment)
             .Where(x => x.CompanyId == command.CompanyId && x.InvoiceId != null && invoiceIds.Contains(x.InvoiceId.Value) &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed && x.Payment.PaymentType == PaymentTypes.Incoming && x.Payment.PaymentDate < cutoffExclusive)
             .OrderBy(x => x.Payment.PaymentDate).ThenBy(x => x.Id).Take(MaximumProjectionItems).ToListAsync(ct);
         var released = await db.CustomerInvoiceCorrectionAllocationAdjustments.IgnoreQueryFilters().AsNoTracking()
@@ -110,14 +139,40 @@ public sealed class CustomerCollectionsService(
         foreach (var invoice in invoices)
         {
             var signed = invoice.DocumentKind == FinanceDocumentKinds.CreditNote || invoice.Amount < 0m ? -Math.Abs(invoice.Amount) : Math.Abs(invoice.Amount);
+            accountingProfiles.TryGetValue(invoice.Id, out var profile);
+            var evidenceReady = profile?.HasAuthoritativeCurrencyFacts == true;
+            var functionalAmount = evidenceReady ? Money(Math.Abs(signed) * profile!.ExchangeRate) : (decimal?)null;
             events.Add(new(invoice.IssuedUtc, signed >= 0 ? "invoice" : "credit", invoice.Id, null, invoice.InvoiceNumber,
-                signed >= 0 ? signed : 0m, signed < 0 ? Math.Abs(signed) : 0m, Hash($"invoice|{invoice.Id:N}|{invoice.UpdatedUtc:O}|{Money(signed)}")));
+                signed >= 0 ? signed : 0m, signed < 0 ? Math.Abs(signed) : 0m,
+                evidenceReady ? signed >= 0 ? functionalAmount : 0m : null,
+                evidenceReady ? signed < 0 ? functionalAmount : 0m : null,
+                evidenceReady ? profile!.BaseCurrency : null, evidenceReady ? profile!.ExchangeRate : null,
+                evidenceReady ? profile!.ExchangeRateDate : null, evidenceReady ? profile!.ExchangeRateIdentity : null,
+                evidenceReady ? profile!.CurrencyProvenance : null,
+                Hash($"invoice|{invoice.Id:N}|{invoice.UpdatedUtc:O}|{Money(signed)}|{profile?.ExchangeRateIdentity}")));
         }
         foreach (var allocation in allocationRows)
         {
-            var effective = Money(Math.Max(0m, allocation.AllocatedAmount - released.GetValueOrDefault(allocation.Id)));
-            if (effective > 0m) events.Add(new(allocation.Payment.PaymentDate, "payment", allocation.InvoiceId, allocation.Id,
-                $"Payment {allocation.PaymentId:N}", 0m, effective, Hash($"allocation|{allocation.Id:N}|{allocation.UpdatedUtc:O}|{effective}")));
+            var applied = allocation.AllocatedAmount + allocation.WriteOffAmount;
+            var effective = Money(Math.Max(0m, applied - released.GetValueOrDefault(allocation.Id)));
+            if (effective > 0m)
+            {
+                var profile = allocation.InvoiceId.HasValue ? accountingProfiles.GetValueOrDefault(allocation.InvoiceId.Value) : null;
+                var evidenceReady = allocation.AllocatedFunctionalAmount.HasValue &&
+                    !string.IsNullOrWhiteSpace(allocation.FunctionalCurrency) &&
+                    allocation.SettlementRate.HasValue && allocation.SettlementRateDate.HasValue &&
+                    !string.IsNullOrWhiteSpace(allocation.SettlementRateIdentity);
+                var functionalEffective = evidenceReady
+                    ? Money(allocation.AllocatedFunctionalAmount!.Value * (effective / applied))
+                    : (decimal?)null;
+                events.Add(new(allocation.Payment.PaymentDate, "payment", allocation.InvoiceId, allocation.Id,
+                    $"Payment {allocation.PaymentId:N}", 0m, effective,
+                    evidenceReady ? 0m : null, functionalEffective,
+                    evidenceReady ? allocation.FunctionalCurrency : null, evidenceReady ? allocation.SettlementRate : null,
+                    evidenceReady ? allocation.SettlementRateDate : null, evidenceReady ? allocation.SettlementRateIdentity : null,
+                    evidenceReady ? "authoritative_settlement" : profile?.CurrencyProvenance,
+                    Hash($"allocation|{allocation.Id:N}|{allocation.UpdatedUtc:O}|{effective}|{allocation.SettlementRateIdentity}")));
+            }
         }
         events = events.OrderBy(x => x.OccurredUtc).ThenBy(x => x.Reference, StringComparer.Ordinal).ToList();
         var opening = Money(events.Where(x => x.OccurredUtc < fromUtc).Sum(x => x.Debit - x.Credit));
@@ -126,27 +181,49 @@ public sealed class CustomerCollectionsService(
         var creditActivity = Money(period.Where(x => x.Type == "credit").Sum(x => x.Credit));
         var allocationActivity = Money(period.Where(x => x.Type == "payment").Sum(x => x.Credit));
         var closing = Money(opening + invoiceActivity - creditActivity - allocationActivity);
-        var manifest = JsonSerializer.Serialize(events.Select(x => new { x.Type, x.InvoiceId, x.PaymentAllocationId, x.SourceHash }), JsonOptions);
-        var manifestHash = Hash(manifest); var statementId = Guid.NewGuid(); var running = opening; var itemEntities = new List<CustomerStatementItem>(); var sequence = 0;
+        var functionalComplete = events.Count > 0 && events.All(x => x.FunctionalDebit.HasValue && x.FunctionalCredit.HasValue &&
+            !string.IsNullOrWhiteSpace(x.FunctionalCurrency) && !string.IsNullOrWhiteSpace(x.ExchangeRateIdentity));
+        var functionalCurrencies = events.Where(x => !string.IsNullOrWhiteSpace(x.FunctionalCurrency))
+            .Select(x => x.FunctionalCurrency!).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        functionalComplete = functionalComplete && functionalCurrencies.Length <= 1;
+        var functionalCurrency = functionalCurrencies.SingleOrDefault();
+        decimal? functionalOpening = functionalComplete ? Money(events.Where(x => x.OccurredUtc < fromUtc).Sum(x => x.FunctionalDebit!.Value - x.FunctionalCredit!.Value)) : null;
+        decimal? functionalInvoiceActivity = functionalComplete ? Money(period.Where(x => x.Type == "invoice").Sum(x => x.FunctionalDebit!.Value)) : null;
+        decimal? functionalCreditActivity = functionalComplete ? Money(period.Where(x => x.Type == "credit").Sum(x => x.FunctionalCredit!.Value)) : null;
+        decimal? functionalAllocationActivity = functionalComplete ? Money(period.Where(x => x.Type == "payment").Sum(x => x.FunctionalCredit!.Value)) : null;
+        decimal? functionalClosing = functionalComplete ? Money(functionalOpening!.Value + functionalInvoiceActivity!.Value - functionalCreditActivity!.Value - functionalAllocationActivity!.Value) : null;
+        var manifest = JsonSerializer.Serialize(events.Select(x => new { x.Type, x.InvoiceId, x.PaymentAllocationId, x.SourceHash,
+            x.FunctionalCurrency, x.ExchangeRateDate, x.ExchangeRateIdentity, x.CurrencyProvenance }), JsonOptions);
+        var manifestHash = Hash(manifest); var statementId = Guid.NewGuid(); var running = opening;
+        decimal? functionalRunning = functionalOpening; var itemEntities = new List<CustomerStatementItem>(); var sequence = 0;
         foreach (var item in period)
         {
             running = Money(running + item.Debit - item.Credit); sequence++;
+            if (functionalRunning.HasValue)
+                functionalRunning = Money(functionalRunning.Value + item.FunctionalDebit!.Value - item.FunctionalCredit!.Value);
             itemEntities.Add(new(Guid.NewGuid(), command.CompanyId, statementId, sequence, item.Type, item.InvoiceId,
-                item.PaymentAllocationId, LocalDate(item.OccurredUtc, command.TimeZoneId), item.Reference, item.Debit, item.Credit, running, item.SourceHash));
+                item.PaymentAllocationId, LocalDate(item.OccurredUtc, command.TimeZoneId), item.Reference, item.Debit, item.Credit, running, item.SourceHash,
+                item.FunctionalDebit, item.FunctionalCredit, functionalRunning, item.FunctionalCurrency, item.ExchangeRate,
+                item.ExchangeRateDate, item.ExchangeRateIdentity, item.CurrencyProvenance));
         }
-        var canonical = string.Join('\n', itemEntities.Select(x => $"{x.EffectiveDate:yyyy-MM-dd}|{x.ItemType}|{x.Reference}|{x.DebitAmount:0.00}|{x.CreditAmount:0.00}|{x.RunningBalance:0.00}|{x.SourceHash}"));
-        var checksum = Hash($"{command.CompanyId:N}|{command.CustomerId:N}|{command.FromDate:yyyy-MM-dd}|{command.CutoffDate:yyyy-MM-dd}|{currency}|{opening:0.00}|{closing:0.00}\n{canonical}");
-        var csv = RenderStatementCsv(locale, customer.Name, command.FromDate, command.CutoffDate, currency, opening, closing, itemEntities);
+        var canonical = string.Join('\n', itemEntities.Select(x => $"{x.EffectiveDate:yyyy-MM-dd}|{x.ItemType}|{x.Reference}|{x.DebitAmount:0.00}|{x.CreditAmount:0.00}|{x.RunningBalance:0.00}|{x.FunctionalDebitAmount:0.00}|{x.FunctionalCreditAmount:0.00}|{x.FunctionalRunningBalance:0.00}|{x.FunctionalCurrency}|{x.ExchangeRate}|{x.ExchangeRateDate:yyyy-MM-dd}|{x.ExchangeRateIdentity}|{x.CurrencyProvenance}|{x.SourceHash}"));
+        var checksum = Hash($"{command.CompanyId:N}|{command.CustomerId:N}|{command.FromDate:yyyy-MM-dd}|{command.CutoffDate:yyyy-MM-dd}|{currency}|{opening:0.00}|{closing:0.00}|{functionalCurrency}|{functionalOpening:0.00}|{functionalClosing:0.00}|{functionalComplete}\n{canonical}");
+        var csv = RenderStatementCsv(locale, customer.Name, command.FromDate, command.CutoffDate, currency, opening, closing,
+            functionalCurrency, functionalOpening, functionalClosing, functionalComplete, itemEntities);
         var fileName = $"statement-{SafeFile(customer.Name)}-{command.CutoffDate:yyyyMMdd}.csv";
         var snapshot = new CustomerStatementSnapshot(statementId, command.CompanyId, command.CustomerId, customer.Name,
             command.FromDate, command.CutoffDate, command.TimeZoneId, locale, currency, opening, invoiceActivity,
             allocationActivity, creditActivity, closing, checksum, manifest, manifestHash, fileName, csv, Hash(csv),
-            command.IdempotencyKey, command.ActorUserId, DateTime.UtcNow);
+            command.IdempotencyKey, command.ActorUserId, DateTime.UtcNow, functionalCurrency, functionalOpening,
+            functionalInvoiceActivity, functionalAllocationActivity, functionalCreditActivity, functionalClosing,
+            functionalComplete ? "authoritative" : "legacy_or_imported_unavailable");
         db.CustomerStatementSnapshots.Add(snapshot); db.CustomerStatementItems.AddRange(itemEntities);
         await audit.WriteAsync(new(command.CompanyId, AuditActorTypes.User, command.ActorUserId,
             "finance.customer_statement.generated", "customer_statement", statementId.ToString("N"), AuditEventOutcomes.Succeeded,
             "An immutable customer statement snapshot was generated.", ["finance", "receivables", "statement"],
-            new Dictionary<string, string?> { ["customerId"] = command.CustomerId.ToString("N"), ["checksum"] = checksum, ["sourceManifestHash"] = manifestHash }, command.CorrelationId), ct);
+            new Dictionary<string, string?> { ["customerId"] = command.CustomerId.ToString("N"), ["checksum"] = checksum,
+                ["sourceManifestHash"] = manifestHash, ["functionalCurrency"] = functionalCurrency,
+                ["functionalEvidenceStatus"] = functionalComplete ? "authoritative" : "legacy_or_imported_unavailable" }, command.CorrelationId), ct);
         await db.SaveChangesAsync(ct); telemetry?.Operation("statement", "succeeded"); return await GetStatementAsync(new(command.CompanyId, statementId), ct);
     }
 
@@ -367,7 +444,11 @@ public sealed class CustomerCollectionsService(
         if (metricsCurrency is null && metricCurrencies.Length > 1)
             throw Error(CustomerCollectionReasonCodes.UnsupportedCurrency, "Collection metrics cannot combine currencies. Request one currency at a time.");
         var allocations = await EffectiveAllocationsAsync(query.CompanyId, invoices.Select(x => x.Id).ToArray(), asOfExclusive, ct);
-        var open = invoices.Select(x => new { Invoice = x, Open = Money(Math.Max(0m, x.Amount - allocations.GetValueOrDefault(x.Id))) }).ToArray();
+        var open = invoices.Select(x => new
+        {
+            Invoice = x,
+            Open = Money(Math.Max(0m, x.Amount - (allocations.GetValueOrDefault(x.Id)?.DocumentAmount ?? 0m)))
+        }).ToArray();
         var openTotal = Money(open.Sum(x => x.Open)); var overdue = Money(open.Where(x => DateOnly.FromDateTime(x.Invoice.DueUtc) < query.AsOfDate).Sum(x => x.Open));
         var salesStart = asOfExclusive.AddDays(-lookback); var creditSales = Money(invoices.Where(x => x.IssuedUtc >= salesStart).Sum(x => x.Amount));
         decimal? dso = creditSales <= 0m ? null : decimal.Round(openTotal / creditSales * lookback, 2);
@@ -383,6 +464,7 @@ public sealed class CustomerCollectionsService(
         var draftInvoiceIds = acceptedAtByInvoice.Keys.ToArray();
         var reminderPaymentRows = await db.PaymentAllocations.IgnoreQueryFilters().AsNoTracking().Include(x => x.Payment)
             .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId != null && draftInvoiceIds.Contains(x.InvoiceId.Value) &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed && x.Payment.PaymentDate >= salesStart)
             .Select(x => new { InvoiceId = x.InvoiceId!.Value, x.Payment.PaymentDate }).ToListAsync(ct);
         var reminderPayments = reminderPaymentRows.Where(x => x.PaymentDate >= acceptedAtByInvoice[x.InvoiceId])
@@ -472,21 +554,44 @@ public sealed class CustomerCollectionsService(
     private async Task<LiveEvidence> LiveEvidenceAsync(FinanceInvoice invoice, DateTime cutoffExclusive, CancellationToken ct)
     {
         var allocations = await EffectiveAllocationsAsync(invoice.CompanyId, [invoice.Id], cutoffExclusive, ct);
-        return new(Money(allocations.GetValueOrDefault(invoice.Id)), Money(Math.Max(0m, invoice.Amount - allocations.GetValueOrDefault(invoice.Id))));
+        var allocated = allocations.GetValueOrDefault(invoice.Id)?.DocumentAmount ?? 0m;
+        return new(Money(allocated), Money(Math.Max(0m, invoice.Amount - allocated)));
     }
 
-    private async Task<Dictionary<Guid, decimal>> EffectiveAllocationsAsync(Guid companyId, Guid[] invoiceIds, DateTime cutoffExclusive, CancellationToken ct)
+    private async Task<Dictionary<Guid, EffectiveAllocation>> EffectiveAllocationsAsync(Guid companyId, Guid[] invoiceIds, DateTime cutoffExclusive, CancellationToken ct)
     {
         if (invoiceIds.Length == 0) return [];
         var rows = await db.PaymentAllocations.IgnoreQueryFilters().AsNoTracking().Include(x => x.Payment)
             .Where(x => x.CompanyId == companyId && x.InvoiceId != null && invoiceIds.Contains(x.InvoiceId.Value) &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed && x.Payment.PaymentType == PaymentTypes.Incoming && x.Payment.PaymentDate < cutoffExclusive)
-            .Select(x => new { x.Id, InvoiceId = x.InvoiceId!.Value, x.AllocatedAmount }).Take(MaximumProjectionItems).ToListAsync(ct);
+            .Select(x => new
+            {
+                x.Id,
+                InvoiceId = x.InvoiceId!.Value,
+                AppliedAmount = x.AllocatedAmount + x.WriteOffAmount,
+                x.AllocatedFunctionalAmount
+            }).Take(MaximumProjectionItems).ToListAsync(ct);
         var rowIds = rows.Select(x => x.Id).ToArray();
         var released = await db.CustomerInvoiceCorrectionAllocationAdjustments.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == companyId && rowIds.Contains(x.PaymentAllocationId)).GroupBy(x => x.PaymentAllocationId)
             .Select(x => new { Id = x.Key, Amount = x.Sum(y => y.ReleasedAmount) }).ToDictionaryAsync(x => x.Id, x => x.Amount, ct);
-        return rows.GroupBy(x => x.InvoiceId).ToDictionary(x => x.Key, x => Money(x.Sum(y => Math.Max(0m, y.AllocatedAmount - released.GetValueOrDefault(y.Id)))));
+        return rows.GroupBy(x => x.InvoiceId).ToDictionary(group => group.Key, group =>
+        {
+            var effectiveRows = group.Select(row =>
+            {
+                var effectiveDocument = Money(Math.Max(0m, row.AppliedAmount - released.GetValueOrDefault(row.Id)));
+                var effectiveFunctional = row.AllocatedFunctionalAmount.HasValue && row.AppliedAmount > 0m
+                    ? Money(row.AllocatedFunctionalAmount.Value * (effectiveDocument / row.AppliedAmount))
+                    : (decimal?)null;
+                return new { Document = effectiveDocument, Functional = effectiveFunctional };
+            }).ToArray();
+            var authoritative = effectiveRows.All(row => row.Functional.HasValue);
+            return new EffectiveAllocation(
+                Money(effectiveRows.Sum(row => row.Document)),
+                authoritative ? Money(effectiveRows.Sum(row => row.Functional!.Value)) : null,
+                authoritative);
+        });
     }
 
     private static void EnsureCaseAllowsContact(CustomerCollectionCase collectionCase)
@@ -509,7 +614,12 @@ public sealed class CustomerCollectionsService(
             row.Invoice.Currency, row.Invoice.Amount, row.AllocatedAmount, row.OpenAmount, row.Case?.DisputeStatus == "open",
             row.Case?.IsOnHold == true, row.Case?.PromiseStatus, row.Case?.PromiseDueDate, row.Case?.ReminderStage ?? 0,
             profile?.CreditLimit, customerExposure, action,
-            [$"Invoice {row.Invoice.InvoiceNumber}: due {DateOnly.FromDateTime(row.Invoice.DueUtc):yyyy-MM-dd}, open {row.OpenAmount:0.00} {row.Invoice.Currency}.", $"Recorded allocations through cutoff: {row.AllocatedAmount:0.00} {row.Invoice.Currency}."]);
+            [$"Invoice {row.Invoice.InvoiceNumber}: due {DateOnly.FromDateTime(row.Invoice.DueUtc):yyyy-MM-dd}, open {row.OpenAmount:0.00} {row.Invoice.Currency}.", $"Recorded allocations through cutoff: {row.AllocatedAmount:0.00} {row.Invoice.Currency}."],
+            row.AccountingProfile?.GrossBaseAmount,
+            row.FunctionalAllocatedAmount,
+            row.FunctionalOpenAmount,
+            row.AccountingProfile?.BaseCurrency, row.AccountingProfile?.ExchangeRate,
+            row.AccountingProfile?.ExchangeRateDate, row.AccountingProfile?.ExchangeRateIdentity);
     }
 
     private static CustomerStatementDto MapStatement(CustomerStatementSnapshot x, bool replay = false) => new(x.Id, x.CustomerId,
@@ -517,7 +627,10 @@ public sealed class CustomerCollectionsService(
         x.AllocationActivity, x.CreditActivity, x.ClosingBalance, x.Checksum, x.SourceManifestHash, x.MediaType, x.FileName,
         x.ContentHash, x.ContentLength, x.CreatedUtc, x.Items.OrderBy(y => y.Sequence).Select(y => new CustomerStatementItemDto(y.Id,
             y.ItemType, y.InvoiceId, y.PaymentAllocationId, y.EffectiveDate, y.Reference, y.DebitAmount, y.CreditAmount,
-            y.RunningBalance, y.SourceHash)).ToArray(), replay);
+            y.RunningBalance, y.SourceHash, y.FunctionalDebitAmount, y.FunctionalCreditAmount, y.FunctionalRunningBalance,
+            y.FunctionalCurrency, y.ExchangeRate, y.ExchangeRateDate, y.ExchangeRateIdentity, y.CurrencyProvenance)).ToArray(), replay,
+        x.FunctionalCurrency, x.FunctionalOpeningBalance, x.FunctionalInvoiceActivity, x.FunctionalAllocationActivity,
+        x.FunctionalCreditActivity, x.FunctionalClosingBalance, x.FunctionalEvidenceStatus);
     private static CustomerCollectionPolicyDto MapPolicy(CustomerCollectionPolicy x) => new(x.Id, x.GracePeriodDays,
         x.MaterialityThreshold, x.DefaultLocale, x.RequireApproval, x.FeesEnabled, x.InterestEnabled, x.Version, x.UpdatedUtc,
         x.Stages.OrderBy(y => y.Stage).Select(y => new CustomerCollectionPolicyStageDto(y.Stage, y.DaysAfterDue, y.Channel, y.TemplateKey, y.RequiresApproval)).ToArray(),
@@ -561,21 +674,31 @@ public sealed class CustomerCollectionsService(
     private static string Hash(byte[] bytes) => Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
     private static string SafeFile(string text) => string.Concat(text.Select(x => Path.GetInvalidFileNameChars().Contains(x) ? '_' : x)).Replace(' ', '-').ToLowerInvariant();
     private static byte[] RenderStatementCsv(string locale, string customer, DateOnly from, DateOnly cutoff, string currency,
-        decimal opening, decimal closing, IReadOnlyList<CustomerStatementItem> items)
+        decimal opening, decimal closing, string? functionalCurrency, decimal? functionalOpening, decimal? functionalClosing,
+        bool functionalComplete, IReadOnlyList<CustomerStatementItem> items)
     {
         var sb = new StringBuilder(); sb.Append('\uFEFF');
         sb.AppendLine(locale == "sv-SE" ? "Kundreskontra" : "Customer statement");
-        sb.AppendLine($"Customer,{Csv(customer)}"); sb.AppendLine($"Period,{from:yyyy-MM-dd} - {cutoff:yyyy-MM-dd}"); sb.AppendLine($"Currency,{currency}"); sb.AppendLine($"Opening balance,{opening:0.00}");
-        sb.AppendLine("Date,Type,Reference,Debit,Credit,Balance,Source checksum");
-        foreach (var x in items.OrderBy(x => x.Sequence)) sb.AppendLine($"{x.EffectiveDate:yyyy-MM-dd},{Csv(x.ItemType)},{Csv(x.Reference)},{x.DebitAmount:0.00},{x.CreditAmount:0.00},{x.RunningBalance:0.00},{x.SourceHash}");
-        sb.AppendLine($"Closing balance,,,,,{closing:0.00},"); return Encoding.UTF8.GetBytes(sb.ToString());
+        sb.AppendLine($"Customer,{Csv(customer)}"); sb.AppendLine($"Period,{from:yyyy-MM-dd} - {cutoff:yyyy-MM-dd}"); sb.AppendLine($"Document currency,{currency}");
+        sb.AppendLine($"Functional currency,{functionalCurrency}"); sb.AppendLine($"Functional evidence,{(functionalComplete ? "authoritative" : "legacy_or_imported_unavailable")}");
+        sb.AppendLine($"Opening balance,{opening:0.00},{functionalOpening:0.00}");
+        sb.AppendLine("Date,Type,Reference,Document debit,Document credit,Document balance,Functional debit,Functional credit,Functional balance,Functional currency,Exchange rate,Rate date,Rate identity,Currency provenance,Source checksum");
+        foreach (var x in items.OrderBy(x => x.Sequence)) sb.AppendLine($"{x.EffectiveDate:yyyy-MM-dd},{Csv(x.ItemType)},{Csv(x.Reference)},{x.DebitAmount:0.00},{x.CreditAmount:0.00},{x.RunningBalance:0.00},{x.FunctionalDebitAmount:0.00},{x.FunctionalCreditAmount:0.00},{x.FunctionalRunningBalance:0.00},{x.FunctionalCurrency},{x.ExchangeRate},{x.ExchangeRateDate:yyyy-MM-dd},{x.ExchangeRateIdentity},{x.CurrencyProvenance},{x.SourceHash}");
+        sb.AppendLine($"Closing balance,,,,,{closing:0.00},,,{functionalClosing:0.00},,,,,,"); return Encoding.UTF8.GetBytes(sb.ToString());
     }
     private static string Csv(string value) => $"\"{value.Replace("\"", "\"\"")}\"";
     private static CustomerCollectionException Error(string code, string message, bool conflict = false, long? version = null) => new(code, message, conflict, version);
 
-    private sealed record AgingRow(FinanceInvoice Invoice, decimal AllocatedAmount, decimal OpenAmount, CustomerCollectionCase? Case);
+    private sealed record AgingRow(FinanceInvoice Invoice, decimal AllocatedAmount, decimal OpenAmount,
+        CustomerCollectionCase? Case, CustomerInvoiceAccountingProfile? AccountingProfile,
+        decimal? FunctionalAllocatedAmount, decimal? FunctionalOpenAmount,
+        bool HasAuthoritativeFunctionalFacts);
+    private sealed record EffectiveAllocation(decimal DocumentAmount, decimal? FunctionalAmount,
+        bool HasAuthoritativeFunctionalFacts);
     private sealed record CustomerCurrencyKey(Guid CustomerId, string Currency);
     private sealed record LiveEvidence(decimal AllocatedAmount, decimal OpenAmount);
     private sealed record StatementEvent(DateTime OccurredUtc, string Type, Guid? InvoiceId, Guid? PaymentAllocationId,
-        string Reference, decimal Debit, decimal Credit, string SourceHash);
+        string Reference, decimal Debit, decimal Credit, decimal? FunctionalDebit, decimal? FunctionalCredit,
+        string? FunctionalCurrency, decimal? ExchangeRate, DateOnly? ExchangeRateDate, string? ExchangeRateIdentity,
+        string? CurrencyProvenance, string SourceHash);
 }

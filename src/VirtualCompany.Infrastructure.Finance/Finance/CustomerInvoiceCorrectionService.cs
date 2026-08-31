@@ -444,6 +444,7 @@ public sealed class CustomerInvoiceCorrectionService : ICustomerInvoiceCorrectio
     {
         var allocations = await db.PaymentAllocations.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == correction.CompanyId && x.InvoiceId == correction.InvoiceId &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed && x.Payment.PaymentType == PaymentTypes.Incoming)
             .OrderBy(x => x.CreatedUtc).ToListAsync(cancellationToken);
         var allocationIds = allocations.Select(x => x.Id).ToArray();
@@ -454,7 +455,8 @@ public sealed class CustomerInvoiceCorrectionService : ICustomerInvoiceCorrectio
         var remaining = correction.Amount;
         foreach (var allocation in allocations)
         {
-            var available = Math.Max(0m, allocation.AllocatedAmount - alreadyReleased.GetValueOrDefault(allocation.Id));
+            var available = Math.Max(0m, allocation.AllocatedAmount + allocation.WriteOffAmount -
+                alreadyReleased.GetValueOrDefault(allocation.Id));
             var release = Math.Min(remaining, available);
             if (release <= 0m) continue;
             db.CustomerInvoiceCorrectionAllocationAdjustments.Add(new(Guid.NewGuid(), correction.CompanyId,

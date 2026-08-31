@@ -77,6 +77,15 @@ public sealed class ProposedAccountingLineApiRequest
     public Guid? CostCenterId { get; set; }
     public Dictionary<string, string>? TaxFacts { get; set; }
     public Dictionary<string, string>? DimensionFacts { get; set; }
+    public decimal? DocumentDebitAmount { get; set; }
+    public decimal? DocumentCreditAmount { get; set; }
+    public string? DocumentCurrency { get; set; }
+    public decimal? ExchangeRate { get; set; }
+    public DateOnly? ExchangeRateDate { get; set; }
+    public Guid? ExchangeRateConversionId { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public decimal? ConversionRoundingResidual { get; set; }
+    public List<Guid>? DimensionMemberIds { get; set; }
 }
 
 public sealed class ReverseAccountingEntryApiRequest
@@ -98,6 +107,10 @@ public sealed class AccountingPostingPreviewResponse
     public decimal Difference { get; set; }
     public string BaseCurrency { get; set; } = string.Empty;
     public int RoundingPrecision { get; set; }
+    public string? DocumentCurrency { get; set; }
+    public decimal? DocumentDebitTotal { get; set; }
+    public decimal? DocumentCreditTotal { get; set; }
+    public decimal? DocumentDifference { get; set; }
     public List<AccountingPostingIssueResponse> Issues { get; set; } = [];
 }
 
@@ -169,6 +182,26 @@ public sealed class AccountingJournalLineResponse
     public string? Description { get; set; }
     public Dictionary<string, string> TaxFacts { get; set; } = [];
     public Dictionary<string, string> DimensionFacts { get; set; } = [];
+    public decimal? DocumentDebitAmount { get; set; }
+    public decimal? DocumentCreditAmount { get; set; }
+    public string? DocumentCurrency { get; set; }
+    public decimal? ExchangeRate { get; set; }
+    public DateOnly? ExchangeRateDate { get; set; }
+    public Guid? ExchangeRateConversionId { get; set; }
+    public string? ExchangeRateIdentity { get; set; }
+    public decimal? ConversionRoundingResidual { get; set; }
+    public List<ResolvedAccountingDimensionAssignmentResponse> DimensionAssignments { get; set; } = [];
+}
+
+public sealed class ResolvedAccountingDimensionAssignmentResponse
+{
+    public Guid DimensionTypeId { get; set; }
+    public string DimensionTypeCode { get; set; } = string.Empty;
+    public string DimensionTypeName { get; set; } = string.Empty;
+    public Guid DimensionMemberId { get; set; }
+    public string MemberCode { get; set; } = string.Empty;
+    public string MemberName { get; set; } = string.Empty;
+    public string HierarchyPath { get; set; } = string.Empty;
 }
 
 public sealed class AccountingJournalEvidenceResponse
@@ -208,4 +241,32 @@ public sealed class AccountingJournalAuditEventResponse
     public string Outcome { get; set; } = string.Empty;
     public string? Summary { get; set; }
     public DateTime OccurredUtc { get; set; }
+}
+
+public sealed class ExchangeRateLookupLegResponse
+{
+    public Guid ObservationId { get; set; }
+    public string SourceKey { get; set; } = string.Empty;
+    public long SourceSetVersion { get; set; }
+    public string FromCurrency { get; set; } = string.Empty;
+    public string ToCurrency { get; set; } = string.Empty;
+    public decimal SourceRate { get; set; }
+    public decimal Factor { get; set; }
+    public int RatePrecision { get; set; }
+    public DateOnly EffectiveDate { get; set; }
+    public int AgeDays { get; set; }
+    public string QuotationConvention { get; set; } = string.Empty;
+    public string EvidenceChecksum { get; set; } = string.Empty;
+}
+
+public sealed class DocumentCurrencyOpenItemControlResponse
+{
+    public string DocumentCurrency { get; set; } = string.Empty;
+    public decimal PostedDocumentAmount { get; set; }
+    public decimal AllocatedDocumentAmount { get; set; }
+    public decimal OutstandingDocumentAmount { get; set; }
+    public decimal PostedFunctionalAmount { get; set; }
+    public decimal AllocatedFunctionalAmount { get; set; }
+    public decimal OutstandingFunctionalAmount { get; set; }
+    public string FunctionalCurrency { get; set; } = string.Empty;
 }

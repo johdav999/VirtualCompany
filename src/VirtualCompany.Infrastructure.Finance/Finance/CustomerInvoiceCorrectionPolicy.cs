@@ -33,8 +33,9 @@ public sealed class CustomerInvoiceCorrectionPolicy : ICustomerInvoiceCorrection
             .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.InvoiceId == invoice.Id, cancellationToken);
         var allocatedGross = await _db.PaymentAllocations.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && x.InvoiceId == invoice.Id &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed && x.Payment.PaymentType == PaymentTypes.Incoming)
-            .SumAsync(x => (decimal?)x.AllocatedAmount, cancellationToken) ?? 0m;
+            .SumAsync(x => (decimal?)(x.AllocatedAmount + x.WriteOffAmount), cancellationToken) ?? 0m;
         var released = await _db.CustomerInvoiceCorrectionAllocationAdjustments.IgnoreQueryFilters().AsNoTracking()
             .Where(x => x.CompanyId == query.CompanyId && x.PaymentAllocation.InvoiceId == invoice.Id)
             .SumAsync(x => (decimal?)x.ReleasedAmount, cancellationToken) ?? 0m;

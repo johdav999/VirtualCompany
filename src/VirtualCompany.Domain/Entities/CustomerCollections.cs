@@ -127,7 +127,11 @@ public sealed class CustomerStatementSnapshot : ICompanyOwnedEntity
         DateOnly cutoffDate, string timeZoneId, string locale, string currency, decimal openingBalance,
         decimal invoiceActivity, decimal allocationActivity, decimal creditActivity, decimal closingBalance,
         string checksum, string sourceManifestJson, string sourceManifestHash, string fileName, byte[] renderedContent,
-        string contentHash, string idempotencyKey, Guid createdByUserId, DateTime createdUtc)
+        string contentHash, string idempotencyKey, Guid createdByUserId, DateTime createdUtc,
+        string? functionalCurrency = null, decimal? functionalOpeningBalance = null,
+        decimal? functionalInvoiceActivity = null, decimal? functionalAllocationActivity = null,
+        decimal? functionalCreditActivity = null, decimal? functionalClosingBalance = null,
+        string functionalEvidenceStatus = "legacy_unavailable")
     {
         if (cutoffDate < fromDate) throw new ArgumentException("Statement cutoff must not precede its start date.");
         Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = Req(companyId); CustomerId = Req(customerId);
@@ -139,6 +143,13 @@ public sealed class CustomerStatementSnapshot : ICompanyOwnedEntity
         MediaType = "text/csv"; FileName = Text(fileName, 255); RenderedContent = renderedContent?.ToArray() ?? throw new ArgumentNullException(nameof(renderedContent));
         ContentHash = Text(contentHash, 64); ContentLength = RenderedContent.LongLength; IdempotencyKey = Text(idempotencyKey, 200);
         CreatedUtc = CustomerCollectionPolicy.Utc(createdUtc);
+        FunctionalCurrency = string.IsNullOrWhiteSpace(functionalCurrency) ? null : Text(functionalCurrency, 3).ToUpperInvariant();
+        FunctionalOpeningBalance = FunctionalMoney(functionalOpeningBalance);
+        FunctionalInvoiceActivity = FunctionalMoney(functionalInvoiceActivity);
+        FunctionalAllocationActivity = FunctionalMoney(functionalAllocationActivity);
+        FunctionalCreditActivity = FunctionalMoney(functionalCreditActivity);
+        FunctionalClosingBalance = FunctionalMoney(functionalClosingBalance);
+        FunctionalEvidenceStatus = Text(functionalEvidenceStatus, 40);
     }
     public Guid Id { get; private set; } public Guid CompanyId { get; private set; } public Guid CustomerId { get; private set; }
     public string CustomerName { get; private set; } = null!; public DateOnly FromDate { get; private set; } public DateOnly CutoffDate { get; private set; }
@@ -149,9 +160,17 @@ public sealed class CustomerStatementSnapshot : ICompanyOwnedEntity
     public string MediaType { get; private set; } = null!; public string FileName { get; private set; } = null!; public byte[] RenderedContent { get; private set; } = [];
     public string ContentHash { get; private set; } = null!; public long ContentLength { get; private set; } public string IdempotencyKey { get; private set; } = null!;
     public Guid CreatedByUserId { get; private set; } public DateTime CreatedUtc { get; private set; } public IReadOnlyCollection<CustomerStatementItem> Items => _items;
+    public string? FunctionalCurrency { get; private set; }
+    public decimal? FunctionalOpeningBalance { get; private set; }
+    public decimal? FunctionalInvoiceActivity { get; private set; }
+    public decimal? FunctionalAllocationActivity { get; private set; }
+    public decimal? FunctionalCreditActivity { get; private set; }
+    public decimal? FunctionalClosingBalance { get; private set; }
+    public string FunctionalEvidenceStatus { get; private set; } = "legacy_unavailable";
     private static Guid Req(Guid v) => v == Guid.Empty ? throw new ArgumentException("A statement identity is required.") : v;
     private static string Text(string v, int max) { var x = v?.Trim(); return string.IsNullOrWhiteSpace(x) || x.Length > max ? throw new ArgumentException("A statement value is invalid.") : x; }
     private static decimal Money(decimal value) => decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+    private static decimal? FunctionalMoney(decimal? value) => value.HasValue ? Money(value.Value) : null;
 }
 
 public sealed class CustomerStatementItem : ICompanyOwnedEntity
@@ -159,21 +178,35 @@ public sealed class CustomerStatementItem : ICompanyOwnedEntity
     private CustomerStatementItem() { }
     public CustomerStatementItem(Guid id, Guid companyId, Guid statementId, int sequence, string itemType, Guid? invoiceId,
         Guid? paymentAllocationId, DateOnly effectiveDate, string reference, decimal debitAmount, decimal creditAmount,
-        decimal runningBalance, string sourceHash)
+        decimal runningBalance, string sourceHash, decimal? functionalDebitAmount = null,
+        decimal? functionalCreditAmount = null, decimal? functionalRunningBalance = null,
+        string? functionalCurrency = null, decimal? exchangeRate = null, DateOnly? exchangeRateDate = null,
+        string? exchangeRateIdentity = null, string? currencyProvenance = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id; CompanyId = Req(companyId); StatementId = Req(statementId);
         if (sequence <= 0) throw new ArgumentOutOfRangeException(nameof(sequence)); Sequence = sequence; ItemType = Text(itemType, 32);
         InvoiceId = invoiceId; PaymentAllocationId = paymentAllocationId; EffectiveDate = effectiveDate; Reference = Text(reference, 200);
         DebitAmount = Money(debitAmount); CreditAmount = Money(creditAmount); RunningBalance = Money(runningBalance); SourceHash = Text(sourceHash, 64);
+        FunctionalDebitAmount = FunctionalMoney(functionalDebitAmount); FunctionalCreditAmount = FunctionalMoney(functionalCreditAmount);
+        FunctionalRunningBalance = FunctionalMoney(functionalRunningBalance);
+        FunctionalCurrency = OptionalText(functionalCurrency, 3)?.ToUpperInvariant(); ExchangeRate = exchangeRate;
+        ExchangeRateDate = exchangeRateDate; ExchangeRateIdentity = OptionalText(exchangeRateIdentity, 64);
+        CurrencyProvenance = OptionalText(currencyProvenance, 40);
     }
     public Guid Id { get; private set; } public Guid CompanyId { get; private set; } public Guid StatementId { get; private set; } public int Sequence { get; private set; }
     public string ItemType { get; private set; } = null!; public Guid? InvoiceId { get; private set; } public Guid? PaymentAllocationId { get; private set; }
     public DateOnly EffectiveDate { get; private set; } public string Reference { get; private set; } = null!; public decimal DebitAmount { get; private set; }
     public decimal CreditAmount { get; private set; } public decimal RunningBalance { get; private set; } public string SourceHash { get; private set; } = null!;
+    public decimal? FunctionalDebitAmount { get; private set; } public decimal? FunctionalCreditAmount { get; private set; }
+    public decimal? FunctionalRunningBalance { get; private set; } public string? FunctionalCurrency { get; private set; }
+    public decimal? ExchangeRate { get; private set; } public DateOnly? ExchangeRateDate { get; private set; }
+    public string? ExchangeRateIdentity { get; private set; } public string? CurrencyProvenance { get; private set; }
     public CustomerStatementSnapshot Statement { get; private set; } = null!;
     private static Guid Req(Guid v) => v == Guid.Empty ? throw new ArgumentException("A statement item identity is required.") : v;
     private static string Text(string v, int max) { var x = v?.Trim(); return string.IsNullOrWhiteSpace(x) || x.Length > max ? throw new ArgumentException("A statement item value is invalid.") : x; }
     private static decimal Money(decimal value) => decimal.Round(value, 2, MidpointRounding.AwayFromZero);
+    private static decimal? FunctionalMoney(decimal? value) => value.HasValue ? Money(value.Value) : null;
+    private static string? OptionalText(string? value, int max) { var x = value?.Trim(); return string.IsNullOrWhiteSpace(x) ? null : x.Length > max ? throw new ArgumentException("A statement item value is invalid.") : x; }
 }
 
 public sealed class CustomerCollectionCase : ICompanyOwnedEntity

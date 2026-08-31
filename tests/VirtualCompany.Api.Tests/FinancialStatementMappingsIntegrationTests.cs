@@ -18,6 +18,29 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
     public void Dispose() => _factory.Dispose();
 
     [Fact]
+    public async Task Complete_report_suite_scopes_aged_ledger_and_period_lookup_to_the_requested_company()
+    {
+        var seed = await SeedAsync();
+        using var client = CreateAuthenticatedClient(seed);
+
+        var reportResponse = await client.GetAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/accounting/report-suite/aged_receivables?fiscalPeriodId={seed.PeriodId:D}&asOfDate=2026-01-31");
+        var responseContent = await reportResponse.Content.ReadAsStringAsync();
+        Assert.True(reportResponse.IsSuccessStatusCode, responseContent);
+        var report = JsonSerializer.Deserialize<CompleteFinancialReportResponse>(responseContent,
+            new JsonSerializerOptions(JsonSerializerDefaults.Web));
+
+        Assert.NotNull(report);
+        var line = Assert.Single(report!.Lines);
+        Assert.Contains("OWN-100", line.Label, StringComparison.Ordinal);
+        Assert.DoesNotContain(report.Lines, x => x.Label.Contains("OTHER-200", StringComparison.Ordinal));
+
+        var crossCompanyPeriod = await client.GetAsync(
+            $"/internal/companies/{seed.CompanyId}/finance/accounting/report-suite/aged_receivables?fiscalPeriodId={seed.OtherPeriodId:D}&asOfDate=2026-01-31");
+        Assert.Equal(HttpStatusCode.NotFound, crossCompanyPeriod.StatusCode);
+    }
+
+    [Fact]
     public async Task List_endpoint_returns_only_requested_company_mappings()
     {
         var seed = await SeedAsync();
@@ -90,7 +113,7 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
     }
 
     [Fact]
-    public async Task Update_endpoint_modifies_mapping_fields()
+    public async Task Update_endpoint_creates_a_prospective_mapping_version_and_retires_history()
     {
         var seed = await SeedAsync();
         var mappingId = Guid.NewGuid();
@@ -125,13 +148,22 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
         Assert.NotNull(payload);
         Assert.False(payload!.IsActive);
         Assert.Equal("non_current_liability", payload.LineClassification);
+        Assert.NotEqual(mappingId, payload.Id);
 
         var persisted = await _factory.ExecuteDbContextAsync(async dbContext =>
             await dbContext.FinancialStatementMappings.IgnoreQueryFilters()
-                .SingleAsync(x => x.Id == mappingId));
+                .Where(x => x.CompanyId == seed.CompanyId &&
+                    (x.Id == mappingId || x.SupersedesMappingId == mappingId))
+                .OrderBy(x => x.VersionNumber).ToArrayAsync());
 
-        Assert.False(persisted.IsActive);
-        Assert.Equal(FinancialStatementLineClassification.NonCurrentLiability, persisted.LineClassification);
+        Assert.Equal(2, persisted.Length);
+        Assert.False(persisted[0].IsActive);
+        Assert.NotNull(persisted[0].EffectiveTo);
+        Assert.Equal(FinancialStatementLineClassification.CurrentLiability, persisted[0].LineClassification);
+        Assert.False(persisted[1].IsActive);
+        Assert.Equal(2, persisted[1].VersionNumber);
+        Assert.Equal(mappingId, persisted[1].SupersedesMappingId);
+        Assert.Equal(FinancialStatementLineClassification.NonCurrentLiability, persisted[1].LineClassification);
     }
 
     [Fact]
@@ -310,6 +342,10 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
         var liabilityAccountId = Guid.NewGuid();
         var revenueAccountId = Guid.NewGuid();
         var otherCompanyAssetAccountId = Guid.NewGuid();
+        var periodId = Guid.NewGuid();
+        var otherPeriodId = Guid.NewGuid();
+        var customerId = Guid.NewGuid();
+        var otherCustomerId = Guid.NewGuid();
         var subject = $"mapping-user-{Guid.NewGuid():N}";
         var email = $"{subject}@example.com";
         const string displayName = "Mapping User";
@@ -329,6 +365,19 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
                 new FinanceAccount(liabilityAccountId, companyId, "2000", "Accounts Payable", "liability", "USD", 0m, openedUtc),
                 new FinanceAccount(revenueAccountId, companyId, "4000", "Product Revenue", "revenue", "USD", 0m, openedUtc),
                 new FinanceAccount(otherCompanyAssetAccountId, otherCompanyId, "1000", "Other Operating Cash", "asset", "USD", 0m, openedUtc));
+            dbContext.FiscalPeriods.AddRange(
+                new FiscalPeriod(periodId, companyId, "January 2026", openedUtc,
+                    new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)),
+                new FiscalPeriod(otherPeriodId, otherCompanyId, "January 2026", openedUtc,
+                    new DateTime(2026, 2, 1, 0, 0, 0, DateTimeKind.Utc)));
+            dbContext.FinanceCounterparties.AddRange(
+                new FinanceCounterparty(customerId, companyId, "Own Customer", "customer", createdUtc: openedUtc),
+                new FinanceCounterparty(otherCustomerId, otherCompanyId, "Other Customer", "customer", createdUtc: openedUtc));
+            dbContext.FinanceInvoices.AddRange(
+                new FinanceInvoice(Guid.NewGuid(), companyId, customerId, "OWN-100", openedUtc,
+                    new DateTime(2026, 1, 15, 0, 0, 0, DateTimeKind.Utc), 125m, "USD", "booked", createdUtc: openedUtc),
+                new FinanceInvoice(Guid.NewGuid(), otherCompanyId, otherCustomerId, "OTHER-200", openedUtc,
+                    new DateTime(2026, 1, 20, 0, 0, 0, DateTimeKind.Utc), 999m, "USD", "booked", createdUtc: openedUtc));
             return Task.CompletedTask;
         });
 
@@ -339,6 +388,8 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
             liabilityAccountId,
             revenueAccountId,
             otherCompanyAssetAccountId,
+            periodId,
+            otherPeriodId,
             subject,
             email,
             displayName);
@@ -360,6 +411,8 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
         Guid LiabilityAccountId,
         Guid RevenueAccountId,
         Guid OtherCompanyAssetAccountId,
+        Guid PeriodId,
+        Guid OtherPeriodId,
         string Subject,
         string Email,
         string DisplayName);
@@ -377,6 +430,16 @@ public sealed class FinancialStatementMappingsIntegrationTests : IDisposable
         public bool IsActive { get; set; }
         public DateTime CreatedUtc { get; set; }
         public DateTime UpdatedUtc { get; set; }
+    }
+
+    private sealed class CompleteFinancialReportResponse
+    {
+        public List<CompleteFinancialReportLineResponse> Lines { get; set; } = [];
+    }
+
+    private sealed class CompleteFinancialReportLineResponse
+    {
+        public string Label { get; set; } = string.Empty;
     }
 
     private sealed class FinancialStatementMappingValidationResponse

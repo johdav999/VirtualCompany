@@ -34,6 +34,8 @@ public static class LedgerPostingTypeValues
     public const string CashSettlement = "cash_settlement";
     public const string Reversal = "reversal";
     public const string Adjustment = "adjustment";
+    public const string CurrencyRevaluation = "currency_revaluation";
+    public const string YearEnd = "year_end";
 
     public static string Normalize(string value) =>
         string.IsNullOrWhiteSpace(value)
@@ -46,6 +48,8 @@ public static class LedgerPostingTypeValues
                 CashSettlement => CashSettlement,
                 Reversal => Reversal,
                 Adjustment => Adjustment,
+                CurrencyRevaluation => CurrencyRevaluation,
+                YearEnd => YearEnd,
                 _ => throw new ArgumentOutOfRangeException(nameof(value), "Posting type is not supported.")
             };
 }
@@ -505,7 +509,15 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
         string? description = null,
         DateTime? createdUtc = null,
         string? taxFactsJson = null,
-        string? dimensionFactsJson = null)
+        string? dimensionFactsJson = null,
+        decimal? documentDebitAmount = null,
+        decimal? documentCreditAmount = null,
+        string? documentCurrency = null,
+        decimal? exchangeRate = null,
+        DateOnly? exchangeRateDate = null,
+        Guid? exchangeRateConversionId = null,
+        string? exchangeRateIdentity = null,
+        decimal? conversionRoundingResidual = null)
     {
         if (companyId == Guid.Empty)
         {
@@ -559,6 +571,27 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc ?? DateTime.UtcNow, nameof(createdUtc));
         TaxFactsJson = NormalizeOptional(taxFactsJson, nameof(taxFactsJson), 8000);
         DimensionFactsJson = NormalizeOptional(dimensionFactsJson, nameof(dimensionFactsJson), 8000);
+        var hasDocumentFacts = documentDebitAmount.HasValue || documentCreditAmount.HasValue ||
+            !string.IsNullOrWhiteSpace(documentCurrency);
+        DocumentDebitAmount = documentDebitAmount ?? debitAmount;
+        DocumentCreditAmount = documentCreditAmount ?? creditAmount;
+        var isFunctionalOnlyAdjustment = documentDebitAmount == 0m && documentCreditAmount == 0m;
+        if (DocumentDebitAmount < 0m || DocumentCreditAmount < 0m ||
+            !isFunctionalOnlyAdjustment && DocumentDebitAmount == 0m && DocumentCreditAmount == 0m ||
+            DocumentDebitAmount > 0m && DocumentCreditAmount > 0m)
+            throw new ArgumentException("Document amounts must contain either one positive debit or one positive credit.");
+        DocumentCurrency = NormalizeRequired(documentCurrency ?? currency, nameof(documentCurrency), 3).ToUpperInvariant();
+        ExchangeRate = exchangeRate ?? (hasDocumentFacts ? null : 1m);
+        if (ExchangeRate is <= 0m) throw new ArgumentOutOfRangeException(nameof(exchangeRate));
+        if (exchangeRateConversionId == Guid.Empty)
+            throw new ArgumentException("ExchangeRateConversionId cannot be empty.", nameof(exchangeRateConversionId));
+        ExchangeRateDate = exchangeRateDate;
+        ExchangeRateConversionId = exchangeRateConversionId;
+        ExchangeRateIdentity = NormalizeOptional(exchangeRateIdentity, nameof(exchangeRateIdentity), 128)
+            ?? (hasDocumentFacts ? null : $"legacy-base:{Currency}");
+        ConversionRoundingResidual = conversionRoundingResidual.HasValue
+            ? decimal.Round(conversionRoundingResidual.Value, 18, MidpointRounding.ToEven)
+            : null;
     }
 
     public Guid Id { get; private set; }
@@ -573,9 +606,19 @@ public sealed class LedgerEntryLine : ICompanyOwnedEntity
     public DateTime CreatedUtc { get; private set; }
     public string? TaxFactsJson { get; private set; }
     public string? DimensionFactsJson { get; private set; }
+    public decimal DocumentDebitAmount { get; private set; }
+    public decimal DocumentCreditAmount { get; private set; }
+    public string DocumentCurrency { get; private set; } = null!;
+    public decimal? ExchangeRate { get; private set; }
+    public DateOnly? ExchangeRateDate { get; private set; }
+    public Guid? ExchangeRateConversionId { get; private set; }
+    public string? ExchangeRateIdentity { get; private set; }
+    public decimal? ConversionRoundingResidual { get; private set; }
     public Company Company { get; private set; } = null!;
     public LedgerEntry LedgerEntry { get; private set; } = null!;
     public FinanceAccount FinanceAccount { get; private set; } = null!;
+    public ExchangeRateConversion? ExchangeRateConversion { get; private set; }
+    public ICollection<LedgerEntryLineDimension> DimensionAssignments { get; } = new List<LedgerEntryLineDimension>();
 
     public decimal SignedAmount => DebitAmount - CreditAmount;
 

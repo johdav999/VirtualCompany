@@ -29,7 +29,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 InvoiceId = seed.InvoiceAId,
                 AllocatedAmount = 40.25m,
-                Currency = "usd"
+                Currency = "usd",
+                IdempotencyKey = "allocation-endpoint:invoice-a:partial"
             });
 
         Assert.True(invoiceAPartialResponse.StatusCode == HttpStatusCode.OK,
@@ -48,7 +49,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 InvoiceId = seed.InvoiceAId,
                 AllocatedAmount = 29.75m,
-                Currency = "USD"
+                Currency = "USD",
+                IdempotencyKey = "allocation-endpoint:invoice-a:remaining"
             });
 
         Assert.Equal(HttpStatusCode.OK, invoiceARemainingResponse.StatusCode);
@@ -61,7 +63,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 InvoiceId = seed.InvoiceBId,
                 AllocatedAmount = 30m,
-                Currency = "USD"
+                Currency = "USD",
+                IdempotencyKey = "allocation-endpoint:invoice-b:partial"
             });
 
         Assert.Equal(HttpStatusCode.OK, invoiceBResponse.StatusCode);
@@ -74,7 +77,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 BillId = seed.BillId,
                 AllocatedAmount = 50m,
-                Currency = "usd"
+                Currency = "usd",
+                IdempotencyKey = "allocation-endpoint:bill:full"
             });
 
         Assert.Equal(HttpStatusCode.OK, billResponse.StatusCode);
@@ -165,7 +169,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 InvoiceId = seed.InvoiceBId,
                 AllocatedAmount = 60m,
-                Currency = "USD"
+                Currency = "USD",
+                IdempotencyKey = "allocation-validation:invoice-b:full"
             });
 
         Assert.True(firstResponse.StatusCode == HttpStatusCode.OK,
@@ -177,7 +182,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 InvoiceId = seed.InvoiceAId,
                 AllocatedAmount = 50m,
-                Currency = "USD"
+                Currency = "USD",
+                IdempotencyKey = "allocation-validation:payment-over"
             });
 
         Assert.Equal(HttpStatusCode.BadRequest, overAllocationResponse.StatusCode);
@@ -191,7 +197,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 InvoiceId = seed.InvoiceBId,
                 AllocatedAmount = 0.50m,
-                Currency = "USD"
+                Currency = "USD",
+                IdempotencyKey = "allocation-validation:document-over"
             });
 
         Assert.Equal(HttpStatusCode.BadRequest, documentOverAllocationResponse.StatusCode);
@@ -205,7 +212,8 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
             {
                 BillId = seed.BillId,
                 AllocatedAmount = 10m,
-                Currency = "EUR"
+                Currency = "EUR",
+                IdempotencyKey = "allocation-validation:currency"
             });
 
         Assert.Equal(HttpStatusCode.BadRequest, currencyMismatchResponse.StatusCode);
@@ -446,5 +454,6 @@ public sealed class FinancePaymentAllocationsIntegrationTests : IDisposable
         public Guid? BillId { get; set; }
         public decimal AllocatedAmount { get; set; }
         public string Currency { get; set; } = string.Empty;
+        public string? IdempotencyKey { get; set; }
     }
 }

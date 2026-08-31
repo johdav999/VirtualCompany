@@ -197,10 +197,18 @@ public sealed partial class CompanyFinanceReadService
 
         foreach (var check in _financialChecks.OrderBy(x => x.CheckCode, StringComparer.OrdinalIgnoreCase))
         {
-            var checkResults = await check.ExecuteAsync(context, cancellationToken);
-            if (checkResults.Count > 0)
+            try
             {
-                currentResults.AddRange(checkResults);
+                var checkResults = await check.ExecuteAsync(context, cancellationToken);
+                if (checkResults.Count > 0)
+                {
+                    currentResults.AddRange(checkResults);
+                }
+            }
+            catch (Exception exception) when (IsLegacySettlementSchema(exception))
+            {
+                // Settlement-aware checks become available after their additive migration.
+                // Other legacy-compatible checks must remain available during the rollout.
             }
         }
 

@@ -18,6 +18,13 @@ public static class AccountingOperationsReasonCodes
     public const string RestoreStatutoryArchiveHashMismatch = "accounting_restore_statutory_archive_hash_mismatch";
     public const string RestoreVatPackageMissing = "accounting_restore_vat_package_missing";
     public const string RestoreVatPackageHashMismatch = "accounting_restore_vat_package_hash_mismatch";
+    public const string RestoreDocumentCurrencyUnbalanced = "accounting_restore_document_currency_unbalanced";
+    public const string RestoreAllocationUnbalanced = "accounting_restore_allocation_unbalanced";
+    public const string RestoreRevaluationUnreconciled = "accounting_restore_revaluation_unreconciled";
+    public const string RestoreRevaluationJournalMissing = "accounting_restore_revaluation_journal_missing";
+    public const string RestoreScheduleOccurrenceIncomplete = "accounting_restore_schedule_occurrence_incomplete";
+    public const string RestoreAssetPostingIncomplete = "accounting_restore_asset_posting_incomplete";
+    public const string RestoreAdvancedWorkerFailure = "accounting_restore_advanced_worker_failure";
 }
 
 public static class AccountingReadinessStatuses
@@ -108,6 +115,15 @@ public sealed record AccountingRecoveryIssueDto(
     string EntityId,
     bool IsBlocking);
 
+public sealed record AccountingRecoveryControlDto(
+    string Key,
+    string Status,
+    int RecordCount,
+    decimal Debit,
+    decimal Credit,
+    decimal Difference,
+    string Checksum);
+
 public sealed record AccountingRecoveryVerificationDto(
     Guid CompanyId,
     Guid? FiscalPeriodId,
@@ -125,7 +141,8 @@ public sealed record AccountingRecoveryVerificationDto(
     string EvidenceChecksum,
     bool IsValid,
     DateTime VerifiedUtc,
-    IReadOnlyList<AccountingRecoveryIssueDto> Issues);
+    IReadOnlyList<AccountingRecoveryIssueDto> Issues,
+    IReadOnlyList<AccountingRecoveryControlDto> AdvancedControls);
 
 public sealed record GetAccountingOperationsQuery(Guid CompanyId);
 public sealed record StartAccountingMigrationCommand(

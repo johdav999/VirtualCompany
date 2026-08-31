@@ -3504,6 +3504,8 @@ code {
 }
 
 .invoice-detail-card {
+    container-name: invoice-detail;
+    container-type: inline-size;
     min-height: 420px;
 }
 
@@ -10460,6 +10462,12 @@ body.vc-nav-open {
     margin-bottom: 5px;
 }
 
+.invoice-accounting-grid > *,
+.invoice-accounting-line > *,
+.invoice-credit-note__form > * {
+    min-width: 0;
+}
+
 .invoice-accounting-lines {
     display: grid;
     gap: 10px;
@@ -10513,6 +10521,14 @@ body.vc-nav-open {
     .invoice-credit-note__form,
     .invoice-accounting-line {
         grid-template-columns: 1fr;
+    }
+}
+
+@container invoice-detail (max-width: 560px) {
+    .invoice-accounting-grid,
+    .invoice-credit-note__form,
+    .invoice-accounting-line {
+        grid-template-columns: minmax(0, 1fr);
     }
 }
 

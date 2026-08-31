@@ -14,6 +14,8 @@ public sealed partial class CompanyFinanceCommandService
         ValidatePlanningEntry(command.Budget);
 
         var financeAccount = await LoadFinanceAccountAsync(command.CompanyId, command.Budget.FinanceAccountId, cancellationToken);
+        await ValidatePlanningDimensionAsync(command.CompanyId, financeAccount.Id, command.Budget.CostCenterId,
+            DateOnly.FromDateTime(command.Budget.PeriodStartUtc), cancellationToken);
         var budget = new Budget(
             Guid.NewGuid(),
             command.CompanyId,
@@ -47,6 +49,8 @@ public sealed partial class CompanyFinanceCommandService
         EnsureRecordTenant(budget, command.CompanyId, "budget");
 
         var financeAccount = await LoadFinanceAccountAsync(command.CompanyId, command.Budget.FinanceAccountId, cancellationToken);
+        await ValidatePlanningDimensionAsync(command.CompanyId, financeAccount.Id, command.Budget.CostCenterId,
+            DateOnly.FromDateTime(command.Budget.PeriodStartUtc), cancellationToken);
         budget!.Update(
             financeAccount.Id,
             command.Budget.PeriodStartUtc,
@@ -91,6 +95,40 @@ public sealed partial class CompanyFinanceCommandService
                 "Budget",
                 "A planning entry already exists for the selected company, period, account, version, and cost center.");
         }
+    }
+
+    private async Task ValidatePlanningDimensionAsync(Guid companyId, Guid financeAccountId, Guid? costCenterId,
+        DateOnly effectiveDate, CancellationToken cancellationToken)
+    {
+        var type = await _dbContext.AccountingDimensionTypes.AsNoTracking().SingleOrDefaultAsync(x =>
+            x.CompanyId == companyId && x.Code == AccountingDimensionCodes.CostCenter, cancellationToken);
+        if (type is null)
+        {
+            if (costCenterId.HasValue)
+                throw CreateValidationException(nameof(FinancePlanningEntryUpsertDto.CostCenterId),
+                    "The selected cost center is not mapped to the governed accounting catalogue.");
+            return;
+        }
+
+        var policy = await _dbContext.AccountingDimensionAccountPolicies.AsNoTracking().Where(x =>
+            x.CompanyId == companyId && x.FinanceAccountId == financeAccountId && x.DimensionTypeId == type.Id &&
+            x.EffectiveFrom <= effectiveDate && (!x.EffectiveTo.HasValue || x.EffectiveTo.Value >= effectiveDate))
+            .OrderByDescending(x => x.EffectiveFrom).FirstOrDefaultAsync(cancellationToken);
+        if (policy?.Requirement == VirtualCompany.Domain.Entities.AccountingDimensionRequirementValues.Required && !costCenterId.HasValue)
+            throw CreateValidationException(nameof(FinancePlanningEntryUpsertDto.CostCenterId),
+                "A cost center is required for this account and planning period.");
+        if (policy?.Requirement == VirtualCompany.Domain.Entities.AccountingDimensionRequirementValues.Prohibited && costCenterId.HasValue)
+            throw CreateValidationException(nameof(FinancePlanningEntryUpsertDto.CostCenterId),
+                "A cost center is not allowed for this account and planning period.");
+        if (!costCenterId.HasValue) return;
+
+        var memberIsValid = await _dbContext.AccountingDimensionMembers.AsNoTracking().AnyAsync(x =>
+            x.CompanyId == companyId && x.DimensionTypeId == type.Id && x.Id == costCenterId.Value &&
+            x.Status == AccountingDimensionStatusValues.Active && x.EffectiveFrom <= effectiveDate &&
+            (!x.EffectiveTo.HasValue || x.EffectiveTo.Value >= effectiveDate), cancellationToken);
+        if (!memberIsValid)
+            throw CreateValidationException(nameof(FinancePlanningEntryUpsertDto.CostCenterId),
+                "The selected cost center is not active for this planning period.");
     }
 
     private static bool IsDuplicatePlanningEntry(DbUpdateException exception)

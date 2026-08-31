@@ -129,6 +129,18 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             effectiveAsOfUtc,
             sourceFilter,
             cancellationToken);
+        var invoiceIds = invoiceRows.Select(x => x.Id).ToArray();
+        var invoiceCurrencyFacts = await _dbContext.CustomerInvoiceAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && invoiceIds.Contains(x.InvoiceId) &&
+                x.Status == CustomerInvoiceAccountingStatuses.Posted)
+            .Select(x => new { x.InvoiceId, x.ExchangeRate, x.BaseCurrency, x.ExchangeRateDate, x.ExchangeRateIdentity })
+            .ToDictionaryAsync(x => x.InvoiceId, cancellationToken);
+        var billIds = billRows.Select(x => x.Id).ToArray();
+        var billCurrencyFacts = await _dbContext.SupplierBillAccountingProfiles.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && billIds.Contains(x.BillId) &&
+                x.Status == SupplierBillAccountingStatuses.Posted)
+            .Select(x => new { x.BillId, x.ExchangeRate, x.BaseCurrency, x.ExchangeRateDate, x.ExchangeRateIdentity })
+            .ToDictionaryAsync(x => x.BillId, cancellationToken);
 
         var accountsReceivable = Round(invoiceRows
             .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
@@ -243,28 +255,28 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
                 currency,
                 invoiceRows
                     .Where(x => IsIncludedReceivable(x.Status, x.SettlementStatus))
-                    .Select(x => new FinanceOpenReceivableItemDto(
-                        x.Id,
-                        x.InvoiceNumber,
-                        x.CounterpartyName,
-                        x.DueUtc,
-                        CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id)),
-                        x.Currency,
-                        x.Status,
-                        x.CounterpartyId))
+                    .Select(x =>
+                    {
+                        var outstanding = CalculateRemainingBalance(x.Amount, completedIncomingByInvoice.GetValueOrDefault(x.Id));
+                        var facts = invoiceCurrencyFacts.GetValueOrDefault(x.Id);
+                        return new FinanceOpenReceivableItemDto(x.Id, x.InvoiceNumber, x.CounterpartyName,
+                            x.DueUtc, outstanding, x.Currency, x.Status, x.CounterpartyId,
+                            facts is null ? null : Round(outstanding * facts.ExchangeRate), facts?.BaseCurrency,
+                            facts?.ExchangeRate, facts?.ExchangeRateDate, facts?.ExchangeRateIdentity);
+                    })
                     .Where(x => x.OutstandingAmount > 0m)
                     .ToArray(),
                 billRows
                     .Where(x => IsIncludedPayable(x.Status, x.SettlementStatus))
-                    .Select(x => new FinanceOpenPayableItemDto(
-                        x.Id,
-                        x.BillNumber,
-                        x.CounterpartyName,
-                        x.DueUtc,
-                        CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id)),
-                        x.Currency,
-                        x.Status,
-                        x.CounterpartyId))
+                    .Select(x =>
+                    {
+                        var outstanding = CalculateRemainingBalance(x.Amount, completedOutgoingByBill.GetValueOrDefault(x.Id));
+                        var facts = billCurrencyFacts.GetValueOrDefault(x.Id);
+                        return new FinanceOpenPayableItemDto(x.Id, x.BillNumber, x.CounterpartyName,
+                            x.DueUtc, outstanding, x.Currency, x.Status, x.CounterpartyId,
+                            facts is null ? null : Round(outstanding * facts.ExchangeRate), facts?.BaseCurrency,
+                            facts?.ExchangeRate, facts?.ExchangeRateDate, facts?.ExchangeRateIdentity);
+                    })
                     .Where(x => x.OutstandingAmount > 0m)
                     .ToArray(),
                 [],
@@ -393,11 +405,12 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
                 x.Payment.PaymentDate <= asOfUtc), companyId, sourceFilter)
             .GroupBy(x => x.InvoiceId!.Value)
-            .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount)))
+            .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount + x.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
 
     private async Task<Dictionary<Guid, decimal>> LoadBillAllocationLookupAsync(
@@ -411,11 +424,12 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.BillId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Outgoing &&
                 x.Payment.PaymentDate <= asOfUtc), companyId, sourceFilter)
             .GroupBy(x => x.BillId!.Value)
-            .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount)))
+            .Select(group => new AllocationRow(group.Key, group.Sum(x => x.AllocatedAmount + x.WriteOffAmount)))
             .ToDictionaryAsync(x => x.DocumentId, x => x.Amount, cancellationToken);
 
     private async Task<IReadOnlyList<FinanceHistoricalReceivablePaymentDto>> LoadHistoricalReceivablePaymentsAsync(
@@ -431,13 +445,14 @@ public sealed class CompanyFinanceSummaryQueryService : IFinanceSummaryQueryServ
             .Where(x =>
                 x.CompanyId == companyId &&
                 x.InvoiceId.HasValue &&
+                x.SettlementStatus != PaymentAllocationSettlementStatuses.Reversed &&
                 x.Payment.Status == PaymentStatuses.Completed &&
                 x.Payment.PaymentType == PaymentTypes.Incoming &&
                 x.Payment.PaymentDate <= asOfUtc), companyId, sourceFilter)
             .Select(x => new InvoicePaymentHistoryAllocationRow(
                 x.InvoiceId!.Value,
                 x.Payment.PaymentDate,
-                x.AllocatedAmount))
+                x.AllocatedAmount + x.WriteOffAmount))
             .ToListAsync(cancellationToken);
 
         var paymentHistoryByInvoice = allocationRows

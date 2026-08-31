@@ -87,6 +87,17 @@ public sealed partial class InternalFinanceController
                 cancellationToken),
             "Finance payment was not found.");
 
+    [HttpGet("payment-allocations/{allocationId:guid}/trace")]
+    public async Task<ActionResult<FinancePaymentAllocationTraceDto>> GetPaymentAllocationTraceAsync(
+        Guid companyId,
+        Guid allocationId,
+        CancellationToken cancellationToken) =>
+        await ExecuteReadOptionalAsync(
+            () => _financePaymentReadService.GetAllocationTraceAsync(
+                new GetFinancePaymentAllocationTraceQuery(companyId, allocationId),
+                cancellationToken),
+            "Finance payment allocation was not found.");
+
     [Authorize(Policy = CompanyPolicies.FinanceEdit)]
     [HttpPost("payments")]
     public async Task<ActionResult<FinancePaymentDto>> CreatePaymentAsync(
@@ -107,8 +118,36 @@ public sealed partial class InternalFinanceController
         CancellationToken cancellationToken) =>
         await ExecuteWriteAsync(
             () => _financePaymentCommandService.CreateAllocationAsync(
-                new CreateFinancePaymentAllocationCommand(companyId, request.ToDto(paymentId)),
+                new CreateFinancePaymentAllocationCommand(
+                    companyId,
+                    request.ToDto(paymentId),
+                    ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required to allocate a payment."),
+                    ResolveCorrelationId()),
                 cancellationToken));
+
+    [Authorize(Policy = CompanyPolicies.FinanceEdit)]
+    [HttpPost("payments/{paymentId:guid}/allocations/{allocationId:guid}/reverse")]
+    public async Task<ActionResult<FinancePaymentAllocationDto>> ReversePaymentAllocationAsync(
+        Guid companyId,
+        Guid paymentId,
+        Guid allocationId,
+        [FromBody] ReverseFinancePaymentAllocationRequest request,
+        CancellationToken cancellationToken) =>
+        await ExecuteWriteAsync(async () =>
+        {
+            var allocation = await _financePaymentCommandService.ReverseAllocationAsync(
+                new ReverseFinancePaymentAllocationCommand(
+                    companyId,
+                    paymentId,
+                    allocationId,
+                    request.PostingDate,
+                    request.Reason,
+                    request.IdempotencyKey,
+                    ResolveActorId() ?? throw new UnauthorizedAccessException("A resolved company user is required to reverse a settlement."),
+                    ResolveCorrelationId()),
+                cancellationToken);
+            return allocation;
+        });
 
 }
 

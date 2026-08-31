@@ -1,0 +1,13 @@
+# Accountant portfolio and collaboration reference prompt
+
+Mode: Generate
+
+Create a polished desktop web-app screenshot for Virtual Company, a serious B2B financial operations product, showing an external accountant portfolio and a selected-company collaboration workspace. Use a restrained Nordic enterprise visual language: pale cool-grey page background, white cards, fine blue-grey borders, dark navy typography, compact density, subtle shadows, 12–14 px corner radii, accessible contrast, no gradients, no glassmorphism, no oversized marketing typography.
+
+Use a 1536 × 1024 desktop canvas. A narrow dark navy left sidebar should show the product mark, the label “External Accountant”, and navigation with “Accountant portfolio” selected; include Reviews, Evidence requests, Deadlines, and Settings below it. The main content header reads “Accountant portfolio” with a concise statement that only explicitly granted companies are shown, plus a refresh action and a small accountant identity control.
+
+The first row contains four compact KPI cards: Active engagements 6, Closing soon 3, High risk 2, Evidence requests 8. Below, use a wide two-column workspace. The left side is a company engagement table with columns Company, Grant, Close, VAT / compliance, Unreconciled, Evidence, Next due. Show realistic Swedish company names and varied states, including active explicit grants, risk chips, due dates, and one visibly revoked row that is disabled and clearly says access revoked. Do not expose data from any company without a grant.
+
+The right side is a “Finance Manager collaboration” card for the selected company. Show an engagement summary, an evidence request composer, assigned person, due date, and restrained primary/secondary actions. Below the table, show a selected-company review detail spanning the width with three columns: Notes & findings, Evidence requests & responses, and Immutable history / sign-off. Include targets linked to a close, report, package, or source; open and resolved findings; evidence availability and an inaccessible-document state; assignment and due dates; a blocked self-sign-off message; and one independent accountant sign-off entry. Include explicit grant metadata (scope, effective dates, inviter, approver, last access) in a compact footer strip.
+
+The screenshot must look implementation-ready, information-dense but calm, with clear focus states, status conveyed by text plus color, table headers, sensible empty/error affordances, and no decorative illustration. Avoid generic analytics charts, consumer banking imagery, fake browser chrome, and any claims of statutory approval.

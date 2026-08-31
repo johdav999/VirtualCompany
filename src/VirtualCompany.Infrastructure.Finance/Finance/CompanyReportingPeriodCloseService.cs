@@ -24,6 +24,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
     private readonly IAccountingReportingService _accountingReportingService;
     private readonly IAccountingPolicyPackResolver _packResolver;
     private readonly IVatReturnService _vatReturnService;
+    private readonly IFixedAssetService _fixedAssetService;
 
     public CompanyReportingPeriodCloseService(
         VirtualCompanyDbContext dbContext,
@@ -32,7 +33,8 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
         IAuditEventWriter auditEventWriter,
         IAccountingReportingService accountingReportingService,
         IAccountingPolicyPackResolver packResolver,
-        IVatReturnService vatReturnService)
+        IVatReturnService vatReturnService,
+        IFixedAssetService fixedAssetService)
     {
         _dbContext = dbContext;
         _membershipContextResolver = membershipContextResolver;
@@ -41,6 +43,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
         _accountingReportingService = accountingReportingService;
         _packResolver = packResolver;
         _vatReturnService = vatReturnService;
+        _fixedAssetService = fixedAssetService;
     }
 
     public async Task<ReportingPeriodCloseValidationResultDto> ValidateAsync(
@@ -216,7 +219,9 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
         var trialBalance = await _accountingReportingService.GetTrialBalanceAsync(
             new GetTrialBalanceQuery(command.CompanyId, period.Id), cancellationToken);
         var now = DateTime.UtcNow;
-        await using var transaction = await _dbContext.Database.BeginTransactionAsync(cancellationToken);
+        await using var transaction = _dbContext.Database.CurrentTransaction is null
+            ? await _dbContext.Database.BeginTransactionAsync(cancellationToken)
+            : null;
         await RegenerateSnapshotsAsync(period, now, cancellationToken);
         period.RecordCloseValidation(actor.ActorId, now);
         period.Close(now);
@@ -235,7 +240,7 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
                 ["membershipRole"] = membership.MembershipRole.ToStorageValue()
             }, OccurredUtc: now), cancellationToken);
         await SavePeriodChangesAsync(cancellationToken);
-        await transaction.CommitAsync(cancellationToken);
+        if (transaction is not null) await transaction.CommitAsync(cancellationToken);
         return MapLockState(period);
     }
 
@@ -1005,6 +1010,165 @@ public sealed class CompanyReportingPeriodCloseService : IReportingPeriodCloseSe
 
         var configuration = await _dbContext.AccountingConfigurations.IgnoreQueryFilters().AsNoTracking()
             .SingleOrDefaultAsync(x => x.CompanyId == companyId, cancellationToken);
+        if (configuration is not null)
+        {
+            var monetaryRoleKeys = new[]
+            {
+                AccountingAccountRoleKeys.Cash, AccountingAccountRoleKeys.Bank,
+                AccountingAccountRoleKeys.AccountsReceivable, AccountingAccountRoleKeys.AccountsPayable
+            };
+            var monetaryIds = (await _dbContext.AccountingConfigurationAccountRoles.IgnoreQueryFilters().AsNoTracking()
+                    .Where(x => x.CompanyId == companyId && monetaryRoleKeys.Contains(x.RoleKey))
+                    .Select(x => x.FinanceAccountId).ToListAsync(cancellationToken))
+                .ToHashSet();
+            var accountPolicies = await _dbContext.CurrencyRevaluationAccountPolicies.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == companyId).Select(x => new { x.FinanceAccountId, x.IsEnabled })
+                .ToListAsync(cancellationToken);
+            foreach (var policy in accountPolicies)
+            {
+                if (policy.IsEnabled) monetaryIds.Add(policy.FinanceAccountId);
+                else monetaryIds.Remove(policy.FinanceAccountId);
+            }
+
+            var monetaryAccountIds = monetaryIds.ToArray();
+            var foreignBalances = await _dbContext.LedgerEntryLines.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == companyId && monetaryAccountIds.Contains(x.FinanceAccountId) &&
+                    x.LedgerEntry.Status == LedgerEntryStatuses.Posted && x.LedgerEntry.PostingDate.HasValue &&
+                    x.LedgerEntry.PostingDate.Value < DateOnly.FromDateTime(period.EndUtc) &&
+                    x.DocumentCurrency != configuration.BaseCurrency)
+                .Select(x => new { x.FinanceAccountId, x.DocumentCurrency, x.DocumentDebitAmount,
+                    x.DocumentCreditAmount, x.DebitAmount, x.CreditAmount })
+                .ToListAsync(cancellationToken);
+            var requiresRevaluation = foreignBalances.GroupBy(x => new { x.FinanceAccountId, x.DocumentCurrency })
+                .Any(group => group.Sum(x => x.DocumentDebitAmount - x.DocumentCreditAmount) != 0m ||
+                              group.Sum(x => x.DebitAmount - x.CreditAmount) != 0m);
+            if (requiresRevaluation)
+            {
+                var run = await _dbContext.CurrencyRevaluationRuns.IgnoreQueryFilters().AsNoTracking()
+                    .Include(x => x.Reconciliations)
+                    .Where(x => x.CompanyId == companyId && x.FiscalPeriodId == fiscalPeriodId)
+                    .OrderByDescending(x => x.RunNumber).FirstOrDefaultAsync(cancellationToken);
+                var link = run is null
+                    ? $"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=revaluation"
+                    : $"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=revaluation&runId={run.Id:D}";
+                if (run is null)
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.CurrencyRevaluationMissing,
+                        "Foreign-currency monetary balances require a period-end revaluation run.", 1,
+                        [fiscalPeriodId.ToString("D")], RecordLinks: [link],
+                        Remediation: "Prepare the revaluation from authoritative period-end rates, review it, and post the approved journal."));
+                else if (run.Status == CurrencyRevaluationRunStatuses.Failed)
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.CurrencyRevaluationFailed,
+                        run.FailureSummary ?? "The required currency revaluation run failed.", 1, [run.Id.ToString("D")],
+                        run.ProposedAdjustmentTotal, run.FunctionalCurrency, [link],
+                        "Resolve the configuration or rate failure and regenerate the run."));
+                else if (run.Status == CurrencyRevaluationRunStatuses.Superseded)
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.CurrencyRevaluationSuperseded,
+                        "The latest retained revaluation evidence was superseded and cannot support close.", 1,
+                        [run.Id.ToString("D")], run.ProposedAdjustmentTotal, run.FunctionalCurrency, [link],
+                        "Open the replacement run and complete its review, approval, and posting."));
+                else if (run.Status is not CurrencyRevaluationRunStatuses.Posted and not CurrencyRevaluationRunStatuses.Reversed)
+                    issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.CurrencyRevaluationUnposted,
+                        "The current period-end revaluation proposal has not been posted.", 1, [run.Id.ToString("D")],
+                        run.ProposedAdjustmentTotal, run.FunctionalCurrency, [link],
+                        "Resolve review items, obtain separate approval, and post the exact approved proposal."));
+                else
+                {
+                    if (run.Reconciliations.Any(x => !x.IsReconciled))
+                        issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.CurrencyRevaluationUnreconciled,
+                            "The posted revaluation does not reconcile to its retained population and proposal totals.",
+                            run.Reconciliations.Count(x => !x.IsReconciled), [run.Id.ToString("D")],
+                            run.ProposedAdjustmentTotal, run.FunctionalCurrency, [link],
+                            "Reverse the posted run, correct the source or rates, and post an approved replacement."));
+                    var stale = run.PostedUtc.HasValue && await _dbContext.LedgerEntryLines.IgnoreQueryFilters().AsNoTracking()
+                        .AnyAsync(x => x.CompanyId == companyId && monetaryAccountIds.Contains(x.FinanceAccountId) &&
+                            x.LedgerEntry.FiscalPeriodId == fiscalPeriodId && x.LedgerEntry.Status == LedgerEntryStatuses.Posted &&
+                            x.LedgerEntry.PostingType != LedgerPostingTypeValues.CurrencyRevaluation &&
+                            x.LedgerEntry.PostedAtUtc > run.PostedUtc && x.DocumentCurrency != configuration.BaseCurrency,
+                            cancellationToken);
+                    if (stale)
+                        issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.CurrencyRevaluationStale,
+                            "Foreign-currency monetary postings changed after the revaluation was posted.", 1,
+                            [run.Id.ToString("D")], run.ProposedAdjustmentTotal, run.FunctionalCurrency, [link],
+                            "Reverse this run, regenerate against the current population and rate evidence, approve, and repost."));
+                }
+            }
+        }
+        var periodStartDate = DateOnly.FromDateTime(period.StartUtc);
+        var periodEndDate = DateOnly.FromDateTime(period.EndUtc.AddTicks(-1));
+        var scheduleExceptions = await _dbContext.AccountingScheduleOccurrences.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.PostingDate >= periodStartDate && x.PostingDate <= periodEndDate &&
+                (x.Status == AccountingScheduleOccurrenceStatuses.Blocked || x.Status == AccountingScheduleOccurrenceStatuses.Failed))
+            .Select(x => new { x.Id, x.ScheduledAmount, x.Currency }).ToListAsync(cancellationToken);
+        var schedulesStillDue = await _dbContext.AccountingSchedules.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status == AccountingScheduleStatuses.Active &&
+                x.NextOccurrenceDate >= periodStartDate && x.NextOccurrenceDate <= periodEndDate)
+            .Select(x => x.Id).ToListAsync(cancellationToken);
+        var scheduleReversalsStillDue = await _dbContext.AccountingScheduleOccurrences.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.Status == AccountingScheduleOccurrenceStatuses.Posted &&
+                x.ReversalDueDate >= periodStartDate && x.ReversalDueDate <= periodEndDate && x.ReversalLedgerEntryId == null)
+            .Select(x => new { x.Id, x.ScheduledAmount, x.Currency }).ToListAsync(cancellationToken);
+        if (scheduleExceptions.Count > 0 || schedulesStillDue.Count > 0 || scheduleReversalsStillDue.Count > 0)
+        {
+            var ids = scheduleExceptions.Select(x => x.Id).Concat(schedulesStillDue)
+                .Concat(scheduleReversalsStillDue.Select(x => x.Id)).Select(x => x.ToString("D")).ToArray();
+            issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.AccountingSchedulesIncomplete,
+                "Approved accounting schedule occurrences due in this period have not all posted successfully.",
+                ids.Length, ids, scheduleExceptions.Sum(x => x.ScheduledAmount) + scheduleReversalsStillDue.Sum(x => x.ScheduledAmount),
+                scheduleExceptions.Select(x => x.Currency).Concat(scheduleReversalsStillDue.Select(x => x.Currency)).Distinct().Count() == 1
+                    ? scheduleExceptions.Select(x => x.Currency).Concat(scheduleReversalsStillDue.Select(x => x.Currency)).FirstOrDefault() : null,
+                [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=schedules"],
+                "Resolve each schedule exception or generate the retained due occurrence, then run close validation again."));
+        }
+        var unreconciledScheduleOccurrences = await _dbContext.AccountingScheduleOccurrences.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == companyId && x.PostingDate >= periodStartDate && x.PostingDate <= periodEndDate &&
+                ((x.Status == AccountingScheduleOccurrenceStatuses.Posted && x.ReleasedAmount != x.ScheduledAmount) ||
+                 (x.Status == AccountingScheduleOccurrenceStatuses.Reversed &&
+                  (x.ReleasedAmount != x.ScheduledAmount || x.ReversedAmount != x.ReleasedAmount))))
+            .Select(x => new { x.Id, Difference = x.ScheduledAmount - x.ReleasedAmount + x.ReleasedAmount - x.ReversedAmount, x.Currency })
+            .ToListAsync(cancellationToken);
+        if (unreconciledScheduleOccurrences.Count > 0)
+            issues.Add(new ReportingPeriodBlockingIssueDto(ReportingPeriodBlockingIssueCodes.AccountingSchedulesUnreconciled,
+                "One or more scheduled journals do not reconcile to their retained release and reversal amounts.",
+                unreconciledScheduleOccurrences.Count, unreconciledScheduleOccurrences.Select(x => x.Id.ToString("D")).ToArray(),
+                unreconciledScheduleOccurrences.Sum(x => Math.Abs(x.Difference)),
+                unreconciledScheduleOccurrences.Select(x => x.Currency).Distinct().Count() == 1 ? unreconciledScheduleOccurrences[0].Currency : null,
+                [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=schedules"],
+                "Inspect the occurrence journals and retained version evidence before closing the period."));
+        var assetPreview = await _fixedAssetService.PreviewDepreciationAsync(
+            new(companyId, periodStartDate, periodEndDate), cancellationToken);
+        if (assetPreview.TotalAmount > 0m)
+        {
+            var retainedRun = await _dbContext.FixedAssetDepreciationRuns.IgnoreQueryFilters().AsNoTracking()
+                .Where(x => x.CompanyId == companyId && x.FiscalPeriodId == fiscalPeriodId &&
+                    x.PopulationHash == assetPreview.PopulationHash)
+                .OrderByDescending(x => x.CreatedUtc).FirstOrDefaultAsync(cancellationToken);
+            if (retainedRun is null || retainedRun.Status is not "posted")
+                issues.Add(new ReportingPeriodBlockingIssueDto(
+                    ReportingPeriodBlockingIssueCodes.FixedAssetDepreciationIncomplete,
+                    "Fixed assets have deterministic depreciation due that is not fully posted for this period.",
+                    assetPreview.Items.Count(x => x.Amount > 0m),
+                    assetPreview.Items.Where(x => x.Amount > 0m).Select(x => x.AssetId.ToString("D")).ToArray(),
+                    assetPreview.TotalAmount, configuration?.BaseCurrency,
+                    [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=assets"],
+                    "Review the retained depreciation population, resolve every exception, and post the approved run."));
+        }
+        var assetReconciliation = await _fixedAssetService.ReconcileAsync(companyId, cancellationToken);
+        if (!assetReconciliation.IsReconciled)
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.FixedAssetSubledgerUnreconciled,
+                "The fixed-asset register does not reconcile to its linked native-ledger control postings.",
+                assetReconciliation.Issues.Count, assetReconciliation.Issues,
+                Math.Abs(assetReconciliation.CostDifference) + Math.Abs(assetReconciliation.DepreciationDifference) +
+                Math.Abs(assetReconciliation.ImpairmentDifference), configuration?.BaseCurrency,
+                [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=assets"],
+                "Inspect cost, accumulated depreciation, impairment, disposal, and reversal journals before closing."));
+        if (assetReconciliation.OpenMigrationConflictCount > 0)
+            issues.Add(new ReportingPeriodBlockingIssueDto(
+                ReportingPeriodBlockingIssueCodes.FixedAssetMigrationConflicts,
+                "Legacy asset purchase records still require explicit fixed-asset migration review.",
+                assetReconciliation.OpenMigrationConflictCount, [], RecordLinks:
+                [$"/finance/accounting/reports?periodId={fiscalPeriodId:D}&view=assets"],
+                Remediation: "Map reviewed book facts or explicitly exclude each legacy record; never invent depreciation history."));
         var hasVatReturnPolicy = configuration is not null &&
             _packResolver.TryResolve(configuration.PolicyPackKey, configuration.PolicyPackVersion, out var configuredPack) &&
             configuredPack!.Definition.SupportedCapabilities.Contains(

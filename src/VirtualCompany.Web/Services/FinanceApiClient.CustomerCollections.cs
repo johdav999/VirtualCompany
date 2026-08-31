@@ -234,7 +234,15 @@ public sealed record CustomerStatementItemResponse(
     decimal DebitAmount,
     decimal CreditAmount,
     decimal RunningBalance,
-    string SourceHash);
+    string SourceHash,
+    decimal? FunctionalDebitAmount = null,
+    decimal? FunctionalCreditAmount = null,
+    decimal? FunctionalRunningBalance = null,
+    string? FunctionalCurrency = null,
+    decimal? ExchangeRate = null,
+    DateOnly? ExchangeRateDate = null,
+    string? ExchangeRateIdentity = null,
+    string? CurrencyProvenance = null);
 
 public sealed record CustomerStatementResponse(
     Guid Id,
@@ -258,7 +266,14 @@ public sealed record CustomerStatementResponse(
     long ContentLength,
     DateTime CreatedUtc,
     IReadOnlyList<CustomerStatementItemResponse> Items,
-    bool IsIdempotentReplay = false);
+    bool IsIdempotentReplay = false,
+    string? FunctionalCurrency = null,
+    decimal? FunctionalOpeningBalance = null,
+    decimal? FunctionalInvoiceActivity = null,
+    decimal? FunctionalAllocationActivity = null,
+    decimal? FunctionalCreditActivity = null,
+    decimal? FunctionalClosingBalance = null,
+    string FunctionalEvidenceStatus = "legacy_unavailable");
 
 public sealed record CustomerStatementListResponse(int TotalCount, IReadOnlyList<CustomerStatementResponse> Items);
 
