@@ -60,6 +60,37 @@ public sealed class FixedAssetService : IFixedAssetService
         await SaveAsync(ct); return MapClass(entity);
     }
 
+    public async Task<FixedAssetRegistrationPreviewDto> PreviewRegistrationAsync(
+        PreviewFixedAssetRegistrationQuery query, CancellationToken ct)
+    {
+        Required(query.CompanyId, nameof(query.CompanyId)); Required(query.ActorUserId, nameof(query.ActorUserId));
+        if (string.IsNullOrWhiteSpace(query.Asset.SourceType) || string.IsNullOrWhiteSpace(query.Asset.SourceId) ||
+            string.IsNullOrWhiteSpace(query.Asset.SourceVersion))
+            throw Error(FixedAssetReasonCodes.SourceConflict, "A source type, source identity, and source version are required.");
+        var existing = await _db.FixedAssetRegisterItems.AsNoTracking().Include(x => x.AssetClass)
+            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId &&
+                x.SourceType == query.Asset.SourceType.Trim().ToLower() && x.SourceId == query.Asset.SourceId.Trim() &&
+                x.SourceVersion == query.Asset.SourceVersion.Trim(), ct);
+        var assetClass = await ClassAsync(query.CompanyId, query.Asset.AssetClassId, ct);
+        if (!assetClass.IsActive) throw Error(FixedAssetReasonCodes.ClassInactive, "The selected asset class is inactive.");
+        var baseCurrency = await _db.AccountingConfigurations.AsNoTracking().Where(x => x.CompanyId == query.CompanyId)
+            .Select(x => x.BaseCurrency).SingleOrDefaultAsync(ct)
+            ?? throw Error(FixedAssetReasonCodes.InvalidState, "Accounting configuration is required.");
+        if (!string.Equals(baseCurrency, query.Asset.Currency, StringComparison.OrdinalIgnoreCase))
+            throw Error(FixedAssetReasonCodes.InvalidAmount, "Fixed-asset book accounting currently requires functional currency. Foreign-currency acquisition evidence remains on the source document.");
+        await ValidateSourceAsync(query.CompanyId, query.Asset.SourceDocumentId, query.Asset.LegacyFinanceAssetId, ct);
+        var residual = query.Asset.ResidualValue ?? Money(query.Asset.AcquisitionCost * assetClass.DefaultResidualPercent / 100m);
+        var usefulLife = query.Asset.UsefulLifeMonths ?? assetClass.UsefulLifeMonths;
+        _ = BuildTransientRegistration(query.CompanyId, query.Asset, assetClass, residual, usefulLife, query.ActorUserId);
+        var checksum = Hash(JsonSerializer.Serialize(new
+        {
+            query.CompanyId, Asset = query.Asset, AssetClassVersion = assetClass.Version,
+            assetClass.DefinitionHash, ResidualValue = residual, UsefulLifeMonths = usefulLife
+        }));
+        return new(query.Asset, MapClass(assetClass), residual, usefulLife, assetClass.BookMethod,
+            checksum, IsRegistered: existing is not null, assetClass.RequiresApproval, existing?.Id);
+    }
+
     public async Task<FixedAssetDto> RegisterAsync(RegisterFixedAssetCommand command, CancellationToken ct)
     {
         ValidateIdentity(command.CompanyId, command.ActorUserId, command.IdempotencyKey);
@@ -210,6 +241,52 @@ public sealed class FixedAssetService : IFixedAssetService
         await AuditAsync(command.CompanyId, command.ActorUserId, AuditEventActions.FixedAssetTransferred,
             AuditTargetTypes.FixedAsset, asset.Id, "Transferred asset custody, location, or dimension assignment without changing posted history.", command.CorrelationId, now, ct);
         await SaveAsync(ct); return Map(asset);
+    }
+
+    public async Task<FixedAssetDisposalPreviewDto> PreviewDisposalAsync(
+        PreviewFixedAssetDisposalQuery query, CancellationToken ct)
+    {
+        Required(query.CompanyId, nameof(query.CompanyId)); Required(query.ActorUserId, nameof(query.ActorUserId));
+        if (string.IsNullOrWhiteSpace(query.SourceVersion))
+            throw Error(FixedAssetReasonCodes.SourceConflict, "A current disposal source version is required.");
+        var asset = await AssetAsync(query.CompanyId, query.AssetId, ct);
+        EnsureVersion(asset.Version, query.ExpectedVersion);
+        if (asset.Status == FixedAssetStatuses.Disposed)
+            throw Error(FixedAssetReasonCodes.InvalidState, "The asset is already disposed.", true);
+        asset.EnsureCanDispose(query.DisposalDate, query.Proceeds);
+        await ValidateOffsetAsync(query.CompanyId, query.ProceedsAccountId, ct);
+        await ValidatePeriodAsync(query.CompanyId, query.FiscalPeriodId, query.DisposalDate, ct);
+        var nbv = asset.NetBookValue;
+        var gainLoss = Money(query.Proceeds - nbv);
+        var cls = asset.AssetClass;
+        var lines = new List<ProposedAccountingLine>();
+        if (query.Proceeds > 0m) lines.Add(Line(query.ProceedsAccountId, query.Proceeds, 0m, asset, "Disposal proceeds"));
+        if (asset.AccumulatedDepreciation > 0m) lines.Add(Line(cls.AccumulatedDepreciationAccountId, asset.AccumulatedDepreciation, 0m, asset, "Remove accumulated depreciation"));
+        if (asset.AccumulatedImpairment > 0m) lines.Add(Line(cls.AccumulatedImpairmentAccountId, asset.AccumulatedImpairment, 0m, asset, "Remove accumulated impairment"));
+        if (gainLoss < 0m) lines.Add(Line(cls.DisposalLossAccountId, -gainLoss, 0m, asset, "Loss on disposal"));
+        lines.Add(Line(cls.CostAccountId, 0m, asset.GrossBookValue, asset, "Remove fixed-asset cost"));
+        if (gainLoss > 0m) lines.Add(Line(cls.DisposalGainAccountId, 0m, gainLoss, asset, "Gain on disposal"));
+        var checksum = Hash(JsonSerializer.Serialize(new
+        {
+            query.CompanyId, query.AssetId, query.DisposalDate, query.FiscalPeriodId,
+            query.ProceedsAccountId, query.Proceeds, query.ExpectedVersion, query.SourceVersion,
+            AssetClassVersion = asset.AssetClassVersion, asset.AssetClassHash, Lines = lines
+        }));
+        var proposed = new ProposedAccountingEntry(query.CompanyId, query.FiscalPeriodId,
+            cls.VoucherSeriesCode, query.DisposalDate, query.DisposalDate, "fixed_asset_disposal",
+            "Dispose fixed asset", SourceType, asset.Id.ToString("D"), query.SourceVersion,
+            $"preview:fixed-asset-disposal:{checksum}", lines, query.ActorUserId,
+            RequiresApproval: cls.RequiresApproval,
+            PolicyFacts: new Dictionary<string, string>
+            {
+                ["assetId"] = asset.Id.ToString("D"), ["assetClassVersion"] = asset.AssetClassVersion.ToString(),
+                ["assetClassHash"] = asset.AssetClassHash, ["bookMethod"] = asset.BookMethod,
+                ["classRequiresApproval"] = cls.RequiresApproval.ToString().ToLowerInvariant(),
+                ["taxRegisterSupported"] = "false"
+            });
+        var postingPreview = await _posting.PreviewAsync(new(proposed), ct);
+        return new(Map(asset), query.DisposalDate, query.FiscalPeriodId, nbv, query.Proceeds,
+            gainLoss, postingPreview, checksum, IsPosted: false);
     }
 
     public async Task<FixedAssetDto> DisposeAsync(DisposeFixedAssetCommand command, CancellationToken ct)
@@ -477,6 +554,35 @@ public sealed class FixedAssetService : IFixedAssetService
     private static string Dimensions(IReadOnlyDictionary<string, string>? values) => JsonSerializer.Serialize(
         (values ?? new Dictionary<string, string>()).OrderBy(x => x.Key, StringComparer.Ordinal)
             .ToDictionary(x => x.Key.Trim(), x => x.Value.Trim(), StringComparer.Ordinal));
+
+    private static FixedAssetRegisterItem BuildTransientRegistration(Guid companyId,
+        RegisterFixedAssetInput input, FixedAssetClass assetClass, decimal residual, int usefulLife,
+        Guid actorUserId)
+    {
+        var item = new FixedAssetRegisterItem(Guid.NewGuid(), companyId, assetClass.Id,
+            assetClass.Version, assetClass.DefinitionHash, input.AssetNumber, input.Name, input.Currency,
+            input.AcquisitionCost, residual, usefulLife, assetClass.BookMethod, input.AcquisitionDate,
+            input.SourceType, input.SourceId, input.SourceVersion, input.SourceDocumentId,
+            input.LegacyFinanceAssetId, input.Custodian, input.Location, Dimensions(input.DimensionFacts),
+            actorUserId, DateTime.UtcNow);
+        var components = input.Components ?? [];
+        if (components.Count > 25)
+            throw Error(FixedAssetReasonCodes.InvalidAmount, "An asset can retain at most 25 book components.");
+        if (components.Select(x => x.Code.Trim()).Distinct(StringComparer.OrdinalIgnoreCase).Count() != components.Count)
+            throw Error(FixedAssetReasonCodes.InvalidAmount, "Component codes must be unique within an asset.");
+        if (Money(components.Sum(x => x.Cost)) > item.AcquisitionCost ||
+            Money(components.Sum(x => x.ResidualValue)) > item.ResidualValue)
+            throw Error(FixedAssetReasonCodes.InvalidAmount, "Component cost and residual totals must fit within the retained asset totals.");
+        foreach (var component in components)
+        {
+            if (component.PlacedInServiceDate < item.AcquisitionDate)
+                throw Error(FixedAssetReasonCodes.InvalidState, "A component cannot be placed in service before acquisition.");
+            item.Components.Add(new(Guid.NewGuid(), companyId, item.Id, component.Code, component.Name,
+                component.Cost, component.ResidualValue, component.UsefulLifeMonths,
+                component.PlacedInServiceDate));
+        }
+        return item;
+    }
 
     private void AddEvent(FixedAssetRegisterItem asset, string eventType, DateOnly date, decimal amount,
         decimal cost, decimal depreciation, decimal impairment, decimal proceeds, decimal gainLoss,

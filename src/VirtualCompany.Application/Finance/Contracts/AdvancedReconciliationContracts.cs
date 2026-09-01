@@ -8,6 +8,7 @@ public static class AdvancedReconciliationReasonCodes
     public const string UnbalancedGroup = "advanced_reconciliation_group_unbalanced";
     public const string ApprovalRequired = "advanced_reconciliation_approval_required";
     public const string UnsupportedGraph = "advanced_reconciliation_graph_unsupported";
+    public const string IdempotencyConflict = "advanced_reconciliation_idempotency_conflict";
 }
 
 public sealed record AdvancedReconciliationNodeInputDto(
@@ -39,7 +40,8 @@ public sealed record CreateAdvancedReconciliationGroupCommand(
     IReadOnlyList<AdvancedReconciliationNodeInputDto> Nodes,
     IReadOnlyList<AdvancedReconciliationEdgeInputDto> Edges,
     Guid ActorUserId,
-    string? CorrelationId = null);
+    string? CorrelationId = null,
+    string? IdempotencyKey = null);
 
 public sealed record AcceptAdvancedReconciliationGroupCommand(
     Guid CompanyId,
@@ -217,4 +219,3 @@ public interface IAdvancedReconciliationCommandService
     Task<AdvancedReconciliationGroupDetailDto> RejectAsync(RejectAdvancedReconciliationGroupCommand command, CancellationToken cancellationToken);
     Task<AdvancedReconciliationGroupDetailDto> ReverseAsync(ReverseAdvancedReconciliationGroupCommand command, CancellationToken cancellationToken);
 }
-

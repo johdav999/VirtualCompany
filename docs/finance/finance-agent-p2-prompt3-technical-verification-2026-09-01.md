@@ -8,12 +8,12 @@ confirmation.
 
 | Item | Identity |
 | --- | --- |
-| Repository base revision | `52b556f643e3473b843efcde9430b36e46119b34` |
+| Repository base revision | `ce2cf6a0fc449f1ea3f129b898db4ed93fbebdcd` |
 | Prompt pack | `finance-update-p2-prompts.md`; SHA-256 `391d1f42cb470a767634bd73393cd20227a3813fba8d78e80bc0490d6a44d5de` |
-| Agent contract | `FinanceCloseComplianceAgentContracts.cs`; SHA-256 `0cfb8f0562ebcd8328b54005fb18e5fad70f7a0cc3f43d498c0abcf7487fecfc` |
-| Read/recommendation service | `FinanceCloseComplianceAgentService.cs`; SHA-256 `01ed49bf57f1c5ce997bf7105c25e61f24ed8205ed69e2169be2f8a593601d11` |
-| Focused proof tests | `FinanceCloseComplianceAgentToolTests.cs`; SHA-256 `c4512b7e1b83a6230ee7226819e476abaafd587779a4573a880666480d9feef2` |
-| Tool guide | `finance-agent-close-compliance-tools.md`; SHA-256 `52ae4e8907b533c5a6e2d426bd9f44903db98cec38f3e590aa808ad32d8c6f3d` |
+| Agent contract | `FinanceCloseComplianceAgentContracts.cs`; SHA-256 `482ec71dcd8a59e2b59447c544881a9a41924b7631588a7e99d125d36945503d` |
+| Read/recommendation service | `FinanceCloseComplianceAgentService.cs`; SHA-256 `ef41a75a0812fbf62bf8c8bfdd66fd1b3f9c05bb363ab449679031c2686f8647` |
+| Focused proof tests | `FinanceCloseComplianceAgentToolTests.cs`; SHA-256 `e4f7c58e31d90b1e9bc6834f0ba6e99e5a274fca852471115a2a238d41e8893a` |
+| Tool guide | `finance-agent-close-compliance-tools.md`; SHA-256 `aa7f114b723f99f4ad255c7e558fa0d8c5fc3e4c25c961360ddc9c332a6ace95` |
 
 The repository contained other in-progress work. This review did not treat the dirty worktree as a signed release
 revision and did not attribute unrelated changes to Prompt 3.
@@ -26,11 +26,15 @@ revision and did not attribute unrelated changes to Prompt 3.
 | Close blocker explanation | Verified | Period-grounded request returns readiness hash, owners, evidence hash/age, and safe next action |
 | Compliance state separation | Verified | Manual evidence without acknowledgement returns `submittedOrAccepted=false` |
 | Audit-package protection | Verified | Metadata only; no content, token, authorization creation, or link renewal |
+| Current-version audit verification | Verified | Technical completeness requires a valid verification matching both current package and manifest checksums |
 | Accountant access scope | Verified | Existing company-scoped grant and engagement queries; absent scoped IDs return not found |
+| Bounded output and provenance | Verified | 100-item pages, 366-day compliance range, explicit truncation, and 2,000 returned source-ID cap with full source count |
 | Final authority boundary | Verified | Lock, reopen, filing, rollover, professional approval, and statutory sign-off remain human-only |
-| Focused Prompt 3 and catalogue tests | Verified | 16 passed, 0 failed, 0 skipped |
-| Prompt 4 Finance proof selection | Verified | 51 passed, 0 failed, 0 skipped |
-| Prompt 4 API/authorization/planner proof selection | Verified with external-lane limitation | 69 passed, 0 failed, 2 SQL Server migration tests skipped because the external SQL lane was not configured |
+| Focused Prompt 3 and catalogue tests | Verified | 26 passed, 0 failed, 0 skipped |
+| Owning close/compliance/audit/year-end domain proof selection | Verified | 48 passed, 0 failed, 0 skipped |
+| API authorization, tenant, surface, catalogue, and planner proof selection | Verified with external-lane limitation | 63 passed, 0 failed; 2 SQL Server migration tests skipped because the external SQL lane was not configured |
+| Close/compliance/audit/year-end web surface proof selection | Verified | 27 passed, 0 failed, 0 skipped |
+| Release builds | Verified | API and Web release builds completed with 0 errors; API retained 28 existing nullable/async warnings |
 
 ## Swedish accounting technical verification
 

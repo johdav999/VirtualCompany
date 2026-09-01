@@ -45,6 +45,11 @@ public sealed record ReverseFixedAssetEventCommand(Guid CompanyId, Guid AssetId,
     Guid FiscalPeriodId, DateOnly PostingDate, string Reason, string SourceVersion, string IdempotencyKey,
     long ExpectedVersion, Guid ActorUserId, string? CorrelationId = null);
 public sealed record PreviewFixedAssetDepreciationQuery(Guid CompanyId, DateOnly PeriodStart, DateOnly PeriodEnd);
+public sealed record PreviewFixedAssetRegistrationQuery(Guid CompanyId, RegisterFixedAssetInput Asset,
+    Guid ActorUserId);
+public sealed record PreviewFixedAssetDisposalQuery(Guid CompanyId, Guid AssetId, DateOnly DisposalDate,
+    Guid FiscalPeriodId, Guid ProceedsAccountId, decimal Proceeds, long ExpectedVersion,
+    string SourceVersion, Guid ActorUserId);
 public sealed record RunFixedAssetDepreciationCommand(Guid CompanyId, Guid FiscalPeriodId, DateOnly PeriodStart,
     DateOnly PeriodEnd, string IdempotencyKey, Guid ActorUserId, string? CorrelationId = null);
 public sealed record GetFixedAssetQuery(Guid CompanyId, Guid AssetId);
@@ -86,6 +91,13 @@ public sealed record FixedAssetDepreciationItemDto(Guid AssetId, string AssetNum
     Guid? LedgerEntryId = null, string? FailureCode = null, string? FailureSummary = null);
 public sealed record FixedAssetDepreciationPreviewDto(DateOnly PeriodStart, DateOnly PeriodEnd,
     decimal TotalAmount, string PopulationHash, IReadOnlyList<FixedAssetDepreciationItemDto> Items);
+public sealed record FixedAssetRegistrationPreviewDto(RegisterFixedAssetInput Asset,
+    FixedAssetClassDto AssetClass, decimal ResidualValue, int UsefulLifeMonths,
+    string BookMethod, string ProposalChecksum, bool IsRegistered, bool RequiresApproval,
+    Guid? ExistingAssetId = null);
+public sealed record FixedAssetDisposalPreviewDto(FixedAssetDto Asset, DateOnly DisposalDate,
+    Guid FiscalPeriodId, decimal NetBookValue, decimal Proceeds, decimal GainLoss,
+    AccountingPostingPreview PostingPreview, string ProposalChecksum, bool IsPosted);
 public sealed record FixedAssetDepreciationRunDto(Guid Id, Guid FiscalPeriodId, DateOnly PeriodStart,
     DateOnly PeriodEnd, string Status, decimal TotalAmount, int PostedItemCount, int ExceptionCount,
     string PopulationHash, long Version, IReadOnlyList<FixedAssetDepreciationItemDto> Items);
@@ -99,6 +111,7 @@ public interface IFixedAssetService
 {
     Task<IReadOnlyList<FixedAssetClassDto>> ListClassesAsync(Guid companyId, CancellationToken cancellationToken);
     Task<FixedAssetClassDto> SaveClassAsync(SaveFixedAssetClassCommand command, CancellationToken cancellationToken);
+    Task<FixedAssetRegistrationPreviewDto> PreviewRegistrationAsync(PreviewFixedAssetRegistrationQuery query, CancellationToken cancellationToken);
     Task<FixedAssetDto> RegisterAsync(RegisterFixedAssetCommand command, CancellationToken cancellationToken);
     Task<FixedAssetDto> GetAsync(GetFixedAssetQuery query, CancellationToken cancellationToken);
     Task<FixedAssetListDto> ListAsync(ListFixedAssetsQuery query, CancellationToken cancellationToken);
@@ -107,6 +120,7 @@ public interface IFixedAssetService
     Task<FixedAssetDto> ImproveAsync(FixedAssetLifecycleCommand command, CancellationToken cancellationToken);
     Task<FixedAssetDto> ImpairAsync(FixedAssetLifecycleCommand command, CancellationToken cancellationToken);
     Task<FixedAssetDto> TransferAsync(TransferFixedAssetCommand command, CancellationToken cancellationToken);
+    Task<FixedAssetDisposalPreviewDto> PreviewDisposalAsync(PreviewFixedAssetDisposalQuery query, CancellationToken cancellationToken);
     Task<FixedAssetDto> DisposeAsync(DisposeFixedAssetCommand command, CancellationToken cancellationToken);
     Task<FixedAssetDto> ReverseEventAsync(ReverseFixedAssetEventCommand command, CancellationToken cancellationToken);
     Task<FixedAssetDepreciationPreviewDto> PreviewDepreciationAsync(PreviewFixedAssetDepreciationQuery query, CancellationToken cancellationToken);

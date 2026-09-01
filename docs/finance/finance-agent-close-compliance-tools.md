@@ -15,7 +15,12 @@ do not acquire final accounting, filing, or professional authority.
 | Year-end | run summaries or one run with readiness, proposals, opening balances, sign-offs, subsequent events and history | prerequisite blockers and pending human approval |
 
 Every result retains native IDs, versions, hashes, owners, due dates, materiality, evidence references, approval
-state, and backend-computed allowed actions. Readiness output identifies its current evidence hash and stale state.
+state, and backend-computed allowed actions. Readiness output identifies its current evidence hash and stale state;
+stale readiness is labelled `authoritative_stale`. Close-template, compliance-calendar, audit-package, accountant,
+and recommendation lists are capped at 100 items. Paged results return applied paging/count fields and explicit
+truncation metadata; accountant grants and engagements report their counts separately. Compliance date ranges are
+limited to 366 days, and provenance reports its complete distinct count while capping the returned source-ID list
+at 2,000 entries.
 
 ## Authority states
 
@@ -29,7 +34,8 @@ The tools report these as distinct states:
 
 Manual-submission evidence without an acknowledgement is explicitly returned as not submitted or accepted. A
 technically complete audit package is not statutory approval. Pending human approval is never upgraded by a
-technical verification result.
+technical verification result. Audit-package completeness requires a valid verification whose package and manifest
+checksums match the current package; a valid verification of an older version is reported as stale evidence.
 
 Final lock, reopen, filing, rollover, professional approval, and statutory sign-off remain declared human-only
 operations in `FinanceAgentCoverageCatalogue`. Recommendations cannot waive a blocker, sign off, lock or reopen a
@@ -42,12 +48,16 @@ stream or token, and never renew an expired link. A protected package requires t
 one-time download flow outside the agent tool.
 
 All object queries include the active company ID. Accountant reads use the company-scoped grant and engagement
-queries; a requested grant or engagement absent from that set returns not found. Existing membership, accounting,
-object-access, and document-access policies remain authoritative at the called query boundary.
+queries; a requested grant returns only its engagements, a requested engagement returns only its owning grant, and
+inconsistent grant/engagement pairs return not found. Inaccessible evidence responses retain the access-denied state
+but omit the document identifier and document provenance. Existing membership, accounting, object-access, and
+document-access policies remain authoritative at the called query boundary.
 
 ## Verification
 
-`FinanceCloseComplianceAgentToolTests` covers registry ownership/action classes, manual evidence without authority
-acknowledgement, protected/expired package behavior, and recommendation action mismatch. Existing close workspace,
-release-readiness, compliance obligation, audit package, accountant collaboration, and year-end suites remain the
-authoritative domain and authorization proof suites.
+`FinanceCloseComplianceAgentToolTests` covers registry ownership/action classes, bounded compliance reads,
+provenance caps, manual evidence without authority acknowledgement, current-checksum package verification,
+protected/expired package behavior, grant-scoped accountant activity, inaccessible document identifiers, year-end
+authority separation, and negative action-class boundaries. Existing close workspace, release-readiness, compliance
+obligation, audit package, accountant collaboration, and year-end suites remain the authoritative domain and
+authorization proof suites.

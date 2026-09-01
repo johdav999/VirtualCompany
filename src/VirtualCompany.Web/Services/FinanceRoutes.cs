@@ -173,7 +173,11 @@ public static class FinanceRoutes
     public static string BuildAlertDetailPath(Guid alertId, Guid? companyId) =>
         WithCompanyContext($"/finance/alerts/{alertId:D}", companyId);
 
-    public static string BuildAgentWorkbenchPath(Guid companyId, Guid agentId, string? currentUri = null)
+    public static string BuildAgentWorkbenchPath(
+        Guid companyId,
+        Guid agentId,
+        string? currentUri = null,
+        string? workflow = null)
     {
         var parameters = new List<string>
         {
@@ -185,7 +189,46 @@ public static class FinanceRoutes
             parameters.Add($"referenceType={Uri.EscapeDataString(type)}");
             parameters.Add($"referenceValue={Uri.EscapeDataString(value)}");
         }
+        var resolvedWorkflow = !string.IsNullOrWhiteSpace(workflow) && SupportedAgentWorkflowCodes.Contains(workflow.Trim())
+            ? workflow.Trim()
+            : TryResolveVisibleWorkflow(currentUri, out var visibleWorkflow) ? visibleWorkflow : null;
+        if (resolvedWorkflow is not null)
+        {
+            parameters.Add($"workflow={Uri.EscapeDataString(resolvedWorkflow)}");
+        }
         return $"{AgentWorkbench}?{string.Join("&", parameters)}";
+    }
+
+    private static IReadOnlySet<string> SupportedAgentWorkflowCodes { get; } = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+    {
+        "finance", "coverage", "cash", "transactions", "receivables", "payables", "payments", "ledger",
+        "close", "compliance", "advanced-accounting", "banking", "approvals", "administration"
+    };
+
+    internal static bool TryResolveVisibleWorkflow(string? uri, out string workflow)
+    {
+        workflow = string.Empty;
+        if (!Uri.TryCreate(uri, UriKind.Absolute, out var parsed)) return false;
+        var path = parsed.AbsolutePath.Trim('/').ToLowerInvariant();
+        if (!path.StartsWith("finance", StringComparison.Ordinal)) return false;
+
+        workflow = path switch
+        {
+            var value when value.StartsWith("finance/cash-position", StringComparison.Ordinal) || value.StartsWith("finance/balances", StringComparison.Ordinal) || value.StartsWith("finance/monthly-summary", StringComparison.Ordinal) => "cash",
+            var value when value.StartsWith("finance/transactions", StringComparison.Ordinal) || value.StartsWith("finance/activity", StringComparison.Ordinal) || value.StartsWith("finance/issues", StringComparison.Ordinal) || value.StartsWith("finance/anomalies", StringComparison.Ordinal) => "transactions",
+            var value when value.StartsWith("finance/invoices", StringComparison.Ordinal) || value.StartsWith("finance/reviews", StringComparison.Ordinal) || value.StartsWith("finance/receivables", StringComparison.Ordinal) || value.StartsWith("finance/customers", StringComparison.Ordinal) => "receivables",
+            var value when value.StartsWith("finance/supplier-bills", StringComparison.Ordinal) || value.StartsWith("finance/bills", StringComparison.Ordinal) || value.StartsWith("finance/bill-inbox", StringComparison.Ordinal) || value.StartsWith("finance/supplier-subscriptions", StringComparison.Ordinal) => "payables",
+            var value when value.StartsWith("finance/payments", StringComparison.Ordinal) => "payments",
+            var value when value.StartsWith("finance/accounting/close", StringComparison.Ordinal) || value.StartsWith("finance/accounting/periods", StringComparison.Ordinal) || value.StartsWith("finance/accounting/year-end", StringComparison.Ordinal) => "close",
+            var value when value.StartsWith("finance/accounting/compliance", StringComparison.Ordinal) || value.StartsWith("finance/accounting/audit-packages", StringComparison.Ordinal) => "compliance",
+            var value when value.StartsWith("finance/accounting/advanced", StringComparison.Ordinal) || value.StartsWith("finance/accounting/currency-rates", StringComparison.Ordinal) || value.StartsWith("finance/accounting/dimensions", StringComparison.Ordinal) || value.StartsWith("finance/accounting/schedules", StringComparison.Ordinal) || value.StartsWith("finance/accounting/fixed-assets", StringComparison.Ordinal) || value.StartsWith("finance/accounting/revaluation", StringComparison.Ordinal) => "advanced-accounting",
+            var value when value.StartsWith("finance/accounting/reconciliation", StringComparison.Ordinal) || value.StartsWith("finance/transactions/imports", StringComparison.Ordinal) => "banking",
+            var value when value.StartsWith("finance/accounting", StringComparison.Ordinal) => "ledger",
+            var value when value.StartsWith("finance/settings", StringComparison.Ordinal) => "administration",
+            "finance" or "finance/workbench" => "finance",
+            _ => string.Empty
+        };
+        return workflow.Length > 0;
     }
 
     internal static bool TryResolveVisibleReference(string? uri, out string type, out string value)

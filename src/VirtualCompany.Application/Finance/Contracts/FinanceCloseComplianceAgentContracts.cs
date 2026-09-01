@@ -46,6 +46,8 @@ public static class FinanceCloseComplianceAgentContract
 {
     public const string Version = "finance-close-compliance-agent-v1";
     public const int MaximumPageSize = 100;
+    public const int MaximumCalendarRangeDays = 366;
+    public const int MaximumSourceIds = 2_000;
     public const string AuthorityNotice =
         "Technical readiness and recorded evidence are not filing, provider acknowledgement, human approval, professional approval, or statutory sign-off.";
 }

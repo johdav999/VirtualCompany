@@ -32,6 +32,22 @@ public sealed class AdvancedReconciliationServiceTests
     }
 
     [Fact]
+    public async Task Proposal_business_idempotency_replays_one_group_and_rejects_changed_content()
+    {
+        await using var fixture = await Fixture.CreateAsync();
+        var command = fixture.Command() with { IdempotencyKey = "reconciliation-draft:batch-15000:v4" };
+
+        var first = await fixture.Service.CreateGroupAsync(command, default);
+        var replay = await fixture.Service.CreateGroupAsync(command, default);
+        var conflict = await Assert.ThrowsAsync<FinanceValidationException>(() => fixture.Service.CreateGroupAsync(
+            command with { Reference = "CHANGED-REFERENCE" }, default));
+
+        Assert.Equal(first.Summary.Id, replay.Summary.Id);
+        Assert.Single(await fixture.Db.AdvancedReconciliationGroups.IgnoreQueryFilters().ToListAsync());
+        Assert.Contains(AdvancedReconciliationReasonCodes.IdempotencyConflict, conflict.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Changed_rule_version_rejects_acceptance_before_any_bank_or_allocation_write()
     {
         await using var fixture = await Fixture.CreateAsync();

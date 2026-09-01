@@ -1184,6 +1184,30 @@ public sealed class CompanyAgentToolExecutionService : IAgentToolExecutionServic
             return null;
         }
 
+        if (command.ToolName.Equals(FinanceGuardedCommandToolIds.CategorizeTransactions, StringComparison.OrdinalIgnoreCase))
+        {
+            var items = command.RequestPayload is not null && command.RequestPayload.TryGetValue("items", out var node)
+                ? node as JsonArray
+                : null;
+            var transactionIds = items?.OfType<JsonObject>()
+                .Select(item => ReadPayloadGuid(
+                    item.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+                    "transactionId"))
+                .Where(id => id.HasValue).Select(id => id!.Value).Distinct().ToArray() ?? [];
+            if (items is null || items.Count < 1 || items.Count > FinanceGuardedCommandContract.MaximumCategorizationBatchSize ||
+                transactionIds.Length != items.Count)
+                return new FinanceToolRiskEvaluationContext(null, items?.Count ?? 0, null, "categorization_batch", false,
+                    "finance_transaction_batch_not_resolved");
+
+            var transactions = await _dbContext.FinanceTransactions.IgnoreQueryFilters().AsNoTracking()
+                .Where(item => item.CompanyId == companyId && transactionIds.Contains(item.Id))
+                .Select(item => new { item.Id, item.Amount })
+                .ToArrayAsync(cancellationToken);
+            return new FinanceToolRiskEvaluationContext(
+                transactions.Sum(item => Math.Abs(item.Amount)), items.Count, "mixed_current_categories",
+                "categorization_batch", transactions.Length == transactionIds.Length, "finance_transactions");
+        }
+
         if (!command.ToolName.Equals("categorize_transaction", StringComparison.OrdinalIgnoreCase))
         {
             return new FinanceToolRiskEvaluationContext(

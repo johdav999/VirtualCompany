@@ -36,6 +36,8 @@ public static class FinanceLedgerAgentReadContract
     public const string Version = "finance-ledger-agent-read-v1";
     public const int MaximumPageSize = 200;
     public const int MaximumJournalPageSize = 100;
+    public const int MaximumLookupPageSize = 100;
+    public const int MaximumSourceIds = 2_000;
 }
 
 public interface IFinanceLedgerAgentReadService

@@ -234,6 +234,7 @@ The current consolidation references are stored in `docs/design/references/`:
 - `native-invoice-editor-issue-reference.png`
 - `native-receivables-collections-reference.png`
 - `native-receivables-operations-reference.png`
+- `finance-agent-coverage-reference.png`
 
 ---
 

@@ -371,6 +371,18 @@ else
             }
         </section>
 
+        @if (IsFinanceProfile(currentProfile))
+        {
+            <FinanceAgentCoverageWorkspace
+                CompanyId="@CompanyId.Value"
+                AgentId="@AgentId"
+                IsAuthorized="@currentProfile.Visibility.CanViewPermissions"
+                IsLoading="@isFinanceCoverageLoading"
+                ErrorMessage="@financeCoverageErrorMessage"
+                Coverage="@financeCoverage"
+                Retry="LoadFinanceCoverageAsync" />
+        }
+
         <section class="agent-profile-details">
             <nav class="agent-profile-tabs" aria-label="@AgentText["ProfileDetails"]">
                 @foreach (var tab in DetailTabs)
@@ -466,10 +478,13 @@ else
     private AgentProfileViewModel? profile;
     private AgentStatusDetailViewModel? statusDetail;
     private AgentCapabilityCatalogViewModel? capabilityCatalog;
+    private FinanceAgentEffectiveCoverageViewModel? financeCoverage;
     private AgentApprovalPreview? approvalPreview;
     private IReadOnlyList<AgentAuthorityCapabilityRow> capabilityRows = [];
     private bool isAuthorityLoading;
+    private bool isFinanceCoverageLoading;
     private string? authorityErrorMessage;
+    private string? financeCoverageErrorMessage;
 
     private CompanyMembershipViewModel? ActiveMembership =>
         CompanyId is Guid companyId
@@ -493,9 +508,11 @@ else
         currentUser = null;
         statusDetail = null;
         capabilityCatalog = null;
+        financeCoverage = null;
         approvalPreview = null;
         capabilityRows = [];
         authorityErrorMessage = null;
+        financeCoverageErrorMessage = null;
 
         try
         {
@@ -528,6 +545,7 @@ else
                 isLoading = false;
                 await InvokeAsync(StateHasChanged);
                 await LoadAuthorityWorkspaceAsync();
+                await LoadFinanceCoverageAsync();
             }
         }
         catch (InvalidOperationException)
@@ -542,6 +560,30 @@ else
         finally
         {
             isLoading = false;
+        }
+    }
+
+    private async Task LoadFinanceCoverageAsync()
+    {
+        if (CompanyId is not Guid companyId || profile?.Visibility.CanViewPermissions != true || !IsFinanceProfile(profile))
+        {
+            return;
+        }
+
+        isFinanceCoverageLoading = true;
+        financeCoverageErrorMessage = null;
+        try
+        {
+            financeCoverage = await AgentApiClient.GetFinanceCoverageAsync(companyId, AgentId);
+        }
+        catch (OnboardingApiException)
+        {
+            financeCoverage = null;
+            financeCoverageErrorMessage = AgentText["FinanceCoverageCouldNotLoad"];
+        }
+        finally
+        {
+            isFinanceCoverageLoading = false;
         }
     }
 

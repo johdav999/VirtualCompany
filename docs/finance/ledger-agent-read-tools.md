@@ -11,13 +11,13 @@ The tools are adapters over the existing accounting administration, immutable jo
 - Action class: `read` only.
 - Required role permission: `FinanceView` through the Prompt 0 authority projection.
 - Catalogue owner: `ledger_and_financial_reporting` in the Prompt 1 Finance coverage catalogue.
-- Journal pages are capped at 100 items. Ledger, statement, and drill-down pages are capped at 200 items. No agent export tool is registered.
+- Account and report-definition lookups are capped at 100 items. Journal pages are capped at 100 items. Ledger, statement, and drill-down pages are capped at 200 items. Applied `skip`, `take`, and `totalCount` values are returned in response metadata for every paged path. No agent export tool is registered.
 
-Every successful result carries authoritative DTO data plus contract version, generation time, freshness semantics, truncation state, source identifiers, and currently allowed follow-up actions. Native report DTOs preserve period and currency identity, dimensions and as-of parameters, report mapping/calculation versions, control totals, checksums, snapshot identity, and source provenance.
+Every successful result carries authoritative DTO data plus contract version, generation time, freshness semantics, truncation state, source identifiers, and currently allowed follow-up actions. Source metadata reports both the complete distinct-source count and whether the returned identifier list was capped at 2,000 entries. Native report DTOs preserve period and currency identity, dimensions and as-of parameters, report mapping/calculation versions, authoritative control totals, checksums, snapshot identity, and source provenance. Snapshot-backed native and suite reports are explicitly labelled `immutable_snapshot` rather than live.
 
 ## Failure semantics
 
-The adapter returns actionable non-success states for uninitialized accounting, invalid or unbounded requests, unsupported report variants, ambiguous account/period/report references, stale snapshot checksums or definition versions, and missing or cross-company source identifiers. Snapshot reads never regenerate the report: repeated reads return the persisted definition version and checksum.
+The adapter returns actionable non-success states for uninitialized accounting, non-read actions, invalid or unbounded requests, unsupported report variants, ambiguous account/period/report references, stale snapshot checksums or definition versions, and missing or cross-company source identifiers. Profit-and-loss and balance-sheet reads reject suite-only parameters such as as-of, comparison, rolling, dimension, or definition-version selectors instead of silently ignoring them. Snapshot reads never regenerate the report: repeated reads return the persisted definition version and checksum.
 
 ## Observability
 

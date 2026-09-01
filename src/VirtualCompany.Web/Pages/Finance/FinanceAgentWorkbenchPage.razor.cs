@@ -6,7 +6,9 @@ namespace VirtualCompany.Web.Pages.Finance;
 public partial class FinanceAgentWorkbenchPage : FinancePageBase
 {
     private static readonly HashSet<string> SupportedReferenceTypes = new(StringComparer.OrdinalIgnoreCase)
-    { "invoice", "bill", "customer", "supplier", "fiscal_period", "migration" };
+    { "invoice", "bill", "customer", "supplier", "fiscal_period", "migration", "account", "journal", "voucher_series", "report_definition", "report_line" };
+    private static readonly HashSet<string> SupportedWorkflowCodes = new(StringComparer.OrdinalIgnoreCase)
+    { "finance", "coverage", "cash", "transactions", "receivables", "payables", "payments", "ledger", "close", "compliance", "advanced-accounting", "banking", "approvals", "administration" };
 
     [Inject] private FinanceApiClient FinanceApi { get; set; } = default!;
     [Inject] private AgentApiClient AgentApi { get; set; } = default!;
@@ -17,6 +19,7 @@ public partial class FinanceAgentWorkbenchPage : FinancePageBase
     [SupplyParameterFromQuery(Name = "referenceType")] public string? ReferenceType { get; set; }
     [SupplyParameterFromQuery(Name = "referenceValue")] public string? ReferenceValue { get; set; }
     [SupplyParameterFromQuery(Name = "request")] public string? InitialRequest { get; set; }
+    [SupplyParameterFromQuery(Name = "workflow")] public string? Workflow { get; set; }
 
     protected CompanyAgentSummaryViewModel? CurrentAgent { get; private set; }
     protected FinanceConversationRunViewModel? CurrentRun { get; private set; }
@@ -46,6 +49,7 @@ public partial class FinanceAgentWorkbenchPage : FinancePageBase
     protected bool CanSubmit => !IsBusy && CurrentAgent is not null && !string.IsNullOrWhiteSpace(RequestText) && RequestText.Trim().Length <= 8000;
     protected bool HasVisibleReference => SupportedReferenceTypes.Contains(ReferenceType ?? string.Empty) &&
                                           !string.IsNullOrWhiteSpace(ReferenceValue) && ReferenceValue.Trim().Length <= 200;
+    protected bool HasVisibleWorkflow => SupportedWorkflowCodes.Contains(Workflow ?? string.Empty);
 
     protected override async Task OnParametersSetAsync()
     {
@@ -70,7 +74,8 @@ public partial class FinanceAgentWorkbenchPage : FinancePageBase
             {
                 RequestText = !string.IsNullOrWhiteSpace(InitialRequest) && InitialRequest.Length <= 8000
                     ? InitialRequest.Trim()
-                    : HasVisibleReference ? DefaultReferenceRequest() : string.Empty;
+                    : HasVisibleReference ? DefaultReferenceRequest()
+                    : HasVisibleWorkflow ? FinanceText["ReferenceRequestWorkflow", WorkflowLabel()] : string.Empty;
                 initializedRequest = true;
             }
             await LoadRunsAsync(companyId, CurrentAgent.Id, RunId);
@@ -168,7 +173,7 @@ public partial class FinanceAgentWorkbenchPage : FinancePageBase
     }
 
     protected void SelectIntent(string intent) => RequestText = intent;
-    protected void ClearReference() { ReferenceType = null; ReferenceValue = null; }
+    protected void ClearReference() { ReferenceType = null; ReferenceValue = null; Workflow = null; }
 
     private async Task LoadRunsAsync(Guid companyId, Guid agentId, Guid? selectedRunId)
     {
@@ -248,6 +253,14 @@ public partial class FinanceAgentWorkbenchPage : FinancePageBase
         "fiscal_period" => FinanceText["ReferenceRequestPeriod"], "migration" => FinanceText["ReferenceRequestMigration"],
         _ => string.Empty
     };
+    protected string WorkflowLabel() => FinanceText[Workflow?.ToLowerInvariant() switch
+    {
+        "coverage" => "ContextWorkflowCoverage", "cash" => "ContextWorkflowCash", "transactions" => "ContextWorkflowTransactions",
+        "receivables" => "ContextWorkflowReceivables", "payables" => "ContextWorkflowPayables", "payments" => "ContextWorkflowPayments",
+        "ledger" => "ContextWorkflowLedger", "close" => "ContextWorkflowClose", "compliance" => "ContextWorkflowCompliance",
+        "advanced-accounting" => "ContextWorkflowAdvancedAccounting", "banking" => "ContextWorkflowBanking", "approvals" => "ContextWorkflowApprovals",
+        "administration" => "ContextWorkflowAdministration", _ => "ContextWorkflowFinance"
+    }];
     private string NewIdempotencyKey() => $"finance-workbench-{Guid.NewGuid():N}";
     protected IReadOnlyList<FinancePlanningEvidenceViewModel> EvidenceForStep(FinanceConversationRunStepViewModel step) => Evidence;
     protected string? BuildEvidenceHref(FinancePlanningEvidenceViewModel evidence) => evidence.EntityType.ToLowerInvariant() switch

@@ -92,6 +92,9 @@ public sealed class FinanceLedgerAgentReadService(
             return Success("accounts", account, [Source("finance_account", account.Id)], false, ["read_general_ledger", "read_trial_balance"]);
         }
 
+        var skip = Integer(request, "skip", 0, 0, 10_000);
+        var take = Integer(request, "take", FinanceLedgerAgentReadContract.MaximumLookupPageSize, 1,
+            FinanceLedgerAgentReadContract.MaximumLookupPageSize);
         var catalogKey = Text(request, "catalogKey", 100);
         var catalogVersion = Text(request, "catalogVersion", 100);
         if (catalogKey is not null || catalogVersion is not null)
@@ -100,13 +103,12 @@ public sealed class FinanceLedgerAgentReadService(
             {
                 throw new ArgumentException("catalogKey and catalogVersion must be supplied together.");
             }
-            var skip = Integer(request, "skip", 0, 0, 10_000);
-            var take = Integer(request, "take", 100, 1, FinanceLedgerAgentReadContract.MaximumJournalPageSize);
             var page = await administration.GetChartCatalogAsync(new(
                 request.CompanyId, catalogKey, catalogVersion, Text(request, "search", 128),
                 Text(request, "groupCode", 50), Boolean(request, "k2Only"), Boolean(request, "excludeExisting"), skip, take), ct);
             return Success("accounts", page, ["accounting_chart_catalog:" + page.CatalogKey + ":" + page.CatalogVersion],
-                page.Skip + page.Accounts.Count < page.MatchedAccountCount, ["lookup_account"]);
+                page.Skip + page.Accounts.Count < page.MatchedAccountCount, ["lookup_account"],
+                page: new(page.Skip, page.Take, page.MatchedAccountCount));
         }
 
         await EnsureInitializedAsync(request.CompanyId, ct);
@@ -116,8 +118,10 @@ public sealed class FinanceLedgerAgentReadService(
         {
             return Clarify("account_reference_ambiguous", accounts.Select(x => new { x.Id, x.Code, x.Name }).Take(20));
         }
-        return Success("accounts", accounts, accounts.Select(x => Source("finance_account", x.Id)), false,
-            ["read_general_ledger", "read_trial_balance"]);
+        var bounded = accounts.Skip(skip).Take(take).ToArray();
+        return Success("accounts", bounded, bounded.Select(x => Source("finance_account", x.Id)),
+            skip + bounded.Length < accounts.Count, ["read_general_ledger", "read_trial_balance"],
+            page: new(skip, take, accounts.Count));
     }
 
     private async Task<InternalToolExecutionResponse> ReadPeriodsAsync(InternalToolExecutionRequest request, CancellationToken ct)
@@ -175,7 +179,7 @@ public sealed class FinanceLedgerAgentReadService(
         var result = await journals.ListAsync(new(request.CompanyId, Date(request, "from"), Date(request, "to"), skip, take,
             Text(request, "search", 128), sourceType, Text(request, "postingType", 80), Text(request, "voucherSeriesCode", 20)), ct);
         return Success("journals", result, result.Items.SelectMany(JournalSources), result.Skip + result.Items.Count < result.TotalCount,
-            ["read_journal", "read_source_drilldown"]);
+            ["read_journal", "read_source_drilldown"], page: new(result.Skip, result.Take, result.TotalCount));
     }
 
     private async Task<InternalToolExecutionResponse> ReadGeneralLedgerAsync(InternalToolExecutionRequest request, CancellationToken ct)
@@ -187,8 +191,10 @@ public sealed class FinanceLedgerAgentReadService(
             Integer(request, "pageSize", 200, 1, FinanceLedgerAgentReadContract.MaximumPageSize)), ct);
         var sources = report.Accounts.Select(x => Source("finance_account", x.AccountId))
             .Concat(report.Accounts.SelectMany(x => x.Lines).Select(x => Source("ledger_entry", x.LedgerEntryId)))
-            .Concat(report.Accounts.SelectMany(x => x.Lines).SelectMany(x => x.Evidence).Select(x => Source("document", x.DocumentId)));
-        return Success("generalLedger", report, sources, report.HasMore, ["read_journal", "read_source_drilldown"]);
+            .Concat(report.Accounts.SelectMany(x => x.Lines).SelectMany(x => x.Evidence).Select(x => Source("document", x.DocumentId)))
+            .Append(Source("fiscal_period", periodId));
+        return Success("generalLedger", report, sources, report.HasMore, ["read_journal", "read_source_drilldown"],
+            page: new((long)(report.Page - 1) * report.PageSize, report.PageSize, report.TotalLineCount));
     }
 
     private async Task<InternalToolExecutionResponse> ReadTrialBalanceAsync(InternalToolExecutionRequest request, CancellationToken ct)
@@ -208,15 +214,47 @@ public sealed class FinanceLedgerAgentReadService(
         await EnsureInitializedAsync(request.CompanyId, ct);
         if (kind == "profit_and_loss")
         {
+            RejectUnsupportedNativeStatementParameters(request);
             var report = await financeReads.GetProfitAndLossReportAsync(new(request.CompanyId, periodId), ct);
-            return Success("statement", report, StatementSources(report.RevenueLines.Concat(report.ExpenseLines), periodId), false,
-                ["read_source_drilldown"]);
+            var page = Integer(request, "page", 1, 1, 100_000);
+            var pageSize = Integer(request, "pageSize", FinanceLedgerAgentReadContract.MaximumPageSize, 1,
+                FinanceLedgerAgentReadContract.MaximumPageSize);
+            var offset = (page - 1) * pageSize;
+            var taggedLines = report.RevenueLines.Select(line => (Line: line, IsRevenue: true))
+                .Concat(report.ExpenseLines.Select(line => (Line: line, IsRevenue: false))).ToArray();
+            var selected = taggedLines.Skip(offset).Take(pageSize).ToArray();
+            var bounded = report with
+            {
+                RevenueLines = selected.Where(item => item.IsRevenue).Select(item => item.Line).ToArray(),
+                ExpenseLines = selected.Where(item => !item.IsRevenue).Select(item => item.Line).ToArray()
+            };
+            return Success("statement", bounded,
+                StatementSources(selected.Select(item => item.Line), periodId).Concat(StatementSnapshotSources(report.Snapshot)),
+                offset + selected.Length < taggedLines.Length, ["read_source_drilldown"],
+                page: new(offset, pageSize, taggedLines.Length));
         }
         if (kind == "balance_sheet")
         {
+            RejectUnsupportedNativeStatementParameters(request);
             var report = await financeReads.GetBalanceSheetReportAsync(new(request.CompanyId, periodId), ct);
-            return Success("statement", report, StatementSources(report.AssetLines.Concat(report.LiabilityLines).Concat(report.EquityLines), periodId), false,
-                ["read_source_drilldown"]);
+            var page = Integer(request, "page", 1, 1, 100_000);
+            var pageSize = Integer(request, "pageSize", FinanceLedgerAgentReadContract.MaximumPageSize, 1,
+                FinanceLedgerAgentReadContract.MaximumPageSize);
+            var offset = (page - 1) * pageSize;
+            var taggedLines = report.AssetLines.Select(line => (Line: line, Section: 0))
+                .Concat(report.LiabilityLines.Select(line => (Line: line, Section: 1)))
+                .Concat(report.EquityLines.Select(line => (Line: line, Section: 2))).ToArray();
+            var selected = taggedLines.Skip(offset).Take(pageSize).ToArray();
+            var bounded = report with
+            {
+                AssetLines = selected.Where(item => item.Section == 0).Select(item => item.Line).ToArray(),
+                LiabilityLines = selected.Where(item => item.Section == 1).Select(item => item.Line).ToArray(),
+                EquityLines = selected.Where(item => item.Section == 2).Select(item => item.Line).ToArray()
+            };
+            return Success("statement", bounded,
+                StatementSources(selected.Select(item => item.Line), periodId).Concat(StatementSnapshotSources(report.Snapshot)),
+                offset + selected.Length < taggedLines.Length, ["read_source_drilldown"],
+                page: new(offset, pageSize, taggedLines.Length));
         }
         if (!FinancialReportKinds.Supported.Contains(kind))
         {
@@ -229,11 +267,8 @@ public sealed class FinanceLedgerAgentReadService(
             Date(request, "asOfDate"), OptionalGuid(request, "dimensionTypeId"), OptionalGuid(request, "dimensionMemberId"),
             Integer(request, "page", 1, 1, 100_000), Integer(request, "pageSize", 200, 1, FinanceLedgerAgentReadContract.MaximumPageSize),
             OptionalGuid(request, "definitionVersionId"), false), ct);
-        return Success("statement", suiteReport,
-            suiteReport.Lines.SelectMany(x => x.Provenance.LedgerEntryIds).Select(x => Source("ledger_entry", x))
-                .Concat(suiteReport.Lines.SelectMany(x => x.Provenance.DocumentIds).Select(x => Source("document", x)))
-                .Concat(suiteReport.Lines.SelectMany(x => x.Provenance.SourceReferences).Select(x => "source_reference:" + x))
-                .Append(Source("fiscal_period", periodId)), suiteReport.HasMore, ["read_source_drilldown"]);
+        return Success("statement", suiteReport, CompleteReportSources(suiteReport), suiteReport.HasMore, ["read_source_drilldown"],
+            page: new((long)(suiteReport.Page - 1) * suiteReport.PageSize, suiteReport.PageSize, suiteReport.TotalLineCount));
     }
 
     private async Task<InternalToolExecutionResponse> ReadReportDefinitionsAsync(InternalToolExecutionRequest request, CancellationToken ct)
@@ -255,9 +290,14 @@ public sealed class FinanceLedgerAgentReadService(
             return Clarify(matches.Length == 0 ? "report_definition_not_found" : "report_definition_ambiguous",
                 matches.Select(x => new { x.Id, x.LatestVersionId, x.Code, x.Name, x.LatestVersionNumber }).Take(20));
         }
-        return Success("reportDefinitions", matches,
-            matches.SelectMany(x => new[] { Source("report_definition", x.Id), Source("report_definition_version", x.LatestVersionId) }),
-            false, ["read_report_definition", "read_statement"]);
+        var skip = Integer(request, "skip", 0, 0, 100_000);
+        var take = Integer(request, "take", FinanceLedgerAgentReadContract.MaximumLookupPageSize, 1,
+            FinanceLedgerAgentReadContract.MaximumLookupPageSize);
+        var bounded = matches.Skip(skip).Take(take).ToArray();
+        return Success("reportDefinitions", bounded,
+            bounded.SelectMany(x => new[] { Source("report_definition", x.Id), Source("report_definition_version", x.LatestVersionId) }),
+            skip + bounded.Length < matches.Length, ["read_report_definition", "read_statement"],
+            page: new(skip, take, matches.Length));
     }
 
     private async Task<InternalToolExecutionResponse> ReadSnapshotAsync(InternalToolExecutionRequest request, CancellationToken ct)
@@ -277,8 +317,15 @@ public sealed class FinanceLedgerAgentReadService(
             return Reject(request.ToolName, "stale_report_definition_version",
                 "The snapshot was produced from a different report definition version.");
         }
+        var sources = new[] { Source("financial_report_snapshot", snapshot.Id), Source("fiscal_period", snapshot.FiscalPeriodId) }
+            .Concat(snapshot.Report.ReportDefinitionVersionId.HasValue
+                ? [Source("report_definition_version", snapshot.Report.ReportDefinitionVersionId.Value)]
+                : [])
+            .Concat(snapshot.Report.Lines.SelectMany(line => line.Provenance.LedgerEntryIds).Select(id => Source("ledger_entry", id)))
+            .Concat(snapshot.Report.Lines.SelectMany(line => line.Provenance.DocumentIds).Select(id => Source("document", id)))
+            .Concat(snapshot.Report.Lines.SelectMany(line => line.Provenance.SourceReferences).Select(value => "source_reference:" + value));
         return Success("reportSnapshot", snapshot,
-            [Source("financial_report_snapshot", snapshot.Id), Source("fiscal_period", snapshot.FiscalPeriodId)], false,
+            sources, false,
             ["read_source_drilldown"], "immutable_snapshot");
     }
 
@@ -300,8 +347,9 @@ public sealed class FinanceLedgerAgentReadService(
             var entries = source.JournalEntries.Skip(offset).Take(pageSize).ToArray();
             var bounded = source with { JournalEntries = entries };
             return Success("drilldown", bounded,
-                entries.Select(x => Source("ledger_entry", x.LedgerEntryId)), offset + entries.Length < source.JournalEntries.Count,
-                ["read_journal", "read_evidence"]);
+                entries.Select(x => Source("ledger_entry", x.LedgerEntryId)).Concat(StatementSnapshotSources(source.Snapshot)),
+                offset + entries.Length < source.JournalEntries.Count,
+                ["read_journal", "read_evidence"], page: new(offset, pageSize, source.JournalEntries.Count));
         }
         if (!FinancialReportKinds.Supported.Contains(reportKind))
         {
@@ -314,7 +362,8 @@ public sealed class FinanceLedgerAgentReadService(
         return Success("drilldown", drilldown,
             drilldown.Items.Select(x => Source("ledger_entry", x.LedgerEntryId))
                 .Concat(drilldown.Items.SelectMany(x => x.DocumentIds).Select(x => Source("document", x))), drilldown.HasMore,
-            ["read_journal", "read_evidence"]);
+            ["read_journal", "read_evidence"],
+            page: new((long)(drilldown.Page - 1) * drilldown.PageSize, drilldown.PageSize, drilldown.TotalCount));
     }
 
     private async Task EnsureInitializedAsync(Guid companyId, CancellationToken ct)
@@ -327,9 +376,15 @@ public sealed class FinanceLedgerAgentReadService(
     }
 
     private static InternalToolExecutionResponse Success<T>(string property, T value, IEnumerable<string> sourceIds,
-        bool truncated, IEnumerable<string> allowedActions, string freshness = "authoritative_live")
+        bool truncated, IEnumerable<string> allowedActions, string freshness = "authoritative_live", PageMetadata? page = null)
     {
-        var metadata = Metadata(sourceIds, truncated, allowedActions, freshness);
+        var metadata = Metadata(sourceIds, truncated, allowedActions, ResolveFreshness(value, freshness));
+        if (page is not null)
+        {
+            metadata["skip"] = JsonValue.Create(page.Skip);
+            metadata["take"] = JsonValue.Create(page.Take);
+            metadata["totalCount"] = JsonValue.Create(page.TotalCount);
+        }
         AddNativeReportMetadata(metadata, value);
         return InternalToolExecutionResponse.Succeeded("Authoritative Finance read completed.",
             new Dictionary<string, JsonNode?> { [property] = JsonSerializer.SerializeToNode(value, JsonOptions) }, metadata);
@@ -339,6 +394,24 @@ public sealed class FinanceLedgerAgentReadService(
     {
         switch (value)
         {
+            case GeneralLedgerReportDto ledger:
+                metadata["fiscalPeriodId"] = JsonValue.Create(ledger.FiscalPeriodId);
+                metadata["sourceMode"] = JsonValue.Create(ledger.SourceMode);
+                metadata["controlTotals"] = JsonSerializer.SerializeToNode(new
+                {
+                    ledger.TotalLineCount,
+                    Accounts = ledger.Accounts.Select(account => new
+                    {
+                        account.AccountId,
+                        account.Currency,
+                        account.OpeningBalance,
+                        account.Debit,
+                        account.Credit,
+                        account.ClosingBalance,
+                        account.TotalLineCount
+                    })
+                }, JsonOptions);
+                break;
             case TrialBalanceReportDto trial:
                 metadata["checksum"] = JsonValue.Create(trial.Checksum);
                 metadata["sourceMode"] = JsonValue.Create(trial.SourceMode);
@@ -362,9 +435,17 @@ public sealed class FinanceLedgerAgentReadService(
                 break;
             case ProfitAndLossReportDto profitAndLoss:
                 AddStatementSnapshotMetadata(metadata, profitAndLoss.FiscalPeriodId, profitAndLoss.Currency, profitAndLoss.Snapshot);
+                metadata["controlTotals"] = JsonSerializer.SerializeToNode(new
+                {
+                    profitAndLoss.TotalRevenue, profitAndLoss.TotalExpenses, profitAndLoss.NetIncome
+                }, JsonOptions);
                 break;
             case BalanceSheetReportDto balanceSheet:
                 AddStatementSnapshotMetadata(metadata, balanceSheet.FiscalPeriodId, balanceSheet.Currency, balanceSheet.Snapshot);
+                metadata["controlTotals"] = JsonSerializer.SerializeToNode(new
+                {
+                    balanceSheet.TotalAssets, balanceSheet.TotalLiabilities, balanceSheet.TotalEquity, balanceSheet.IsBalanced
+                }, JsonOptions);
                 break;
             case FinancialStatementDrilldownDto statementDrilldown:
                 AddStatementSnapshotMetadata(metadata, statementDrilldown.FiscalPeriodId,
@@ -412,15 +493,23 @@ public sealed class FinanceLedgerAgentReadService(
     }
 
     private static Dictionary<string, JsonNode?> Metadata(IEnumerable<string> sourceIds, bool truncated,
-        IEnumerable<string> allowedActions, string freshness) => new(StringComparer.OrdinalIgnoreCase)
+        IEnumerable<string> allowedActions, string freshness)
+    {
+        var distinctSources = sourceIds.Where(value => !string.IsNullOrWhiteSpace(value))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        return new(StringComparer.OrdinalIgnoreCase)
         {
             ["contractVersion"] = JsonValue.Create(FinanceLedgerAgentReadContract.Version),
             ["generatedUtc"] = JsonValue.Create(DateTime.UtcNow),
             ["freshness"] = JsonValue.Create(freshness),
             ["truncated"] = JsonValue.Create(truncated),
-            ["sourceIds"] = new JsonArray(sourceIds.Distinct(StringComparer.OrdinalIgnoreCase).Take(2_000).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
+            ["sourceIdCount"] = JsonValue.Create(distinctSources.Length),
+            ["sourceIdsTruncated"] = JsonValue.Create(distinctSources.Length > FinanceLedgerAgentReadContract.MaximumSourceIds),
+            ["sourceIds"] = new JsonArray(distinctSources.Take(FinanceLedgerAgentReadContract.MaximumSourceIds)
+                .Select(x => (JsonNode?)JsonValue.Create(x)).ToArray()),
             ["allowedActions"] = new JsonArray(allowedActions.Distinct(StringComparer.OrdinalIgnoreCase).Select(x => (JsonNode?)JsonValue.Create(x)).ToArray())
         };
+    }
 
     private static InternalToolExecutionResponse Clarify<T>(string code, IEnumerable<T> candidates) =>
         InternalToolExecutionResponse.Failed("needs_clarification", code,
@@ -444,11 +533,30 @@ public sealed class FinanceLedgerAgentReadService(
 
     private static IEnumerable<string> JournalSources(AccountingJournalDto journal) =>
         new[] { Source("ledger_entry", journal.Id) }
-            .Concat(journal.Evidence?.Select(x => Source("document", x.DocumentId)) ?? []);
+            .Concat(journal.Evidence?.Select(x => Source("document", x.DocumentId)) ?? [])
+            .Concat(string.IsNullOrWhiteSpace(journal.SourceType) || string.IsNullOrWhiteSpace(journal.SourceId)
+                ? []
+                : ["source_reference:" + journal.SourceType + ":" + journal.SourceId +
+                   (string.IsNullOrWhiteSpace(journal.SourceVersion) ? string.Empty : ":" + journal.SourceVersion)]);
 
     private static IEnumerable<string> StatementSources(IEnumerable<FinanceStatementLineDto> lines, Guid periodId) =>
         lines.Where(x => x.FinanceAccountId.HasValue).Select(x => Source("finance_account", x.FinanceAccountId!.Value))
             .Append(Source("fiscal_period", periodId));
+
+    private static IEnumerable<string> StatementSnapshotSources(FinancialStatementSnapshotMetadataDto? snapshot) =>
+        snapshot is null ? [] : [Source("financial_statement_snapshot", snapshot.SnapshotId)];
+
+    private static IEnumerable<string> CompleteReportSources(CompleteFinancialReportDto report) =>
+        report.Lines.SelectMany(x => x.Provenance.LedgerEntryIds).Select(x => Source("ledger_entry", x))
+            .Concat(report.Lines.SelectMany(x => x.Provenance.DocumentIds).Select(x => Source("document", x)))
+            .Concat(report.Lines.SelectMany(x => x.Provenance.SourceReferences).Select(x => "source_reference:" + x))
+            .Append(Source("fiscal_period", report.FiscalPeriodId))
+            .Concat(report.ReportDefinitionVersionId.HasValue
+                ? [Source("report_definition_version", report.ReportDefinitionVersionId.Value)]
+                : [])
+            .Concat(report.SnapshotId.HasValue
+                ? [Source("financial_report_snapshot", report.SnapshotId.Value)]
+                : []);
 
     private static string Source(string type, Guid id) => type + ":" + id;
 
@@ -501,6 +609,33 @@ public sealed class FinanceLedgerAgentReadService(
 
     private static string SafeMessage(string message, string fallback) =>
         string.IsNullOrWhiteSpace(message) || message.Length > 500 ? fallback : message;
+
+    private static string ResolveFreshness<T>(T value, string declared) => value switch
+    {
+        CompleteFinancialReportDto { UsedSnapshot: true } => "immutable_snapshot",
+        ProfitAndLossReportDto { UsedSnapshot: true } => "immutable_snapshot",
+        BalanceSheetReportDto { UsedSnapshot: true } => "immutable_snapshot",
+        FinancialStatementDrilldownDto { Snapshot: not null } => "immutable_snapshot",
+        _ => declared
+    };
+
+    private static void RejectUnsupportedNativeStatementParameters(InternalToolExecutionRequest request)
+    {
+        string[] unsupported =
+        [
+            "cashFlowMethod", "comparisonFiscalPeriodId", "rollingPeriodCount", "asOfDate",
+            "dimensionTypeId", "dimensionMemberId", "definitionVersionId"
+        ];
+        var supplied = unsupported.Where(key => request.Payload.TryGetValue(key, out var value) && value is not null).ToArray();
+        if (supplied.Length > 0)
+        {
+            throw new FinancialReportException("unsupported_native_statement_parameters",
+                "The requested native statement does not support these parameters: " + string.Join(", ", supplied) +
+                ". Remove them or use a supported suite report variant.");
+        }
+    }
+
+    private sealed record PageMetadata(long Skip, int Take, long TotalCount);
 
     private sealed class AccountingNotInitializedException : ArgumentException
     {

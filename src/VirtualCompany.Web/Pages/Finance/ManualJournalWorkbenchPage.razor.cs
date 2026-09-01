@@ -157,6 +157,8 @@ public partial class ManualJournalWorkbenchPage : FinancePageBase
         VoucherSeriesCode = Model.VoucherSeriesCode, DocumentDate = Model.DocumentDate, PostingDate = Model.PostingDate,
         Explanation = Model.Explanation, Currency = Model.Currency, EvidenceDocumentIds = [.. Model.EvidenceDocumentIds],
         OriginalLedgerEntryId = Model.OriginalLedgerEntryId, CorrectionReason = Model.CorrectionReason,
+        SourceRecords = Model.SourceRecords.Select(source => new ManualJournalSourceReferenceApiRequest
+            { SourceType = source.SourceType, RecordId = source.RecordId, SourceVersion = source.SourceVersion }).ToList(),
         Lines = Model.Lines.Select(line => new ManualJournalLineApiRequest { FinanceAccountId = line.FinanceAccountId,
             DebitAmount = line.DebitAmount, CreditAmount = line.CreditAmount, Description = line.Description,
             TaxFacts = string.IsNullOrWhiteSpace(line.TaxCode) ? null : new Dictionary<string, string> { ["taxCode"] = line.TaxCode.Trim() },
@@ -171,9 +173,10 @@ public partial class ManualJournalWorkbenchPage : FinancePageBase
         public DateOnly DocumentDate { get; set; } public DateOnly PostingDate { get; set; } public string Explanation { get; set; } = string.Empty;
         public string Currency { get; set; } = "USD"; public List<ManualJournalLineModel> Lines { get; set; } = [];
         public List<Guid> EvidenceDocumentIds { get; set; } = []; public Guid? OriginalLedgerEntryId { get; set; }
+        public List<ManualJournalSourceReferenceResponse> SourceRecords { get; set; } = [];
         public string? CorrectionReason { get; set; } public string DimensionInput { get; set; } = string.Empty;
         public static ManualJournalModel CreateDefault() { var today = DateOnly.FromDateTime(DateTime.Today); return new() { DocumentDate = today, PostingDate = today, Lines = [new(), new()] }; }
-        public static ManualJournalModel From(ManualJournalDraftResponse draft) => new() { FiscalPeriodId = draft.FiscalPeriodId, VoucherSeriesCode = draft.VoucherSeriesCode, DocumentDate = draft.DocumentDate, PostingDate = draft.PostingDate, Explanation = draft.Explanation, Currency = draft.Currency, EvidenceDocumentIds = draft.Evidence.Select(item => item.DocumentId).ToList(), OriginalLedgerEntryId = draft.OriginalLedgerEntryId, CorrectionReason = draft.CorrectionReason, Lines = draft.Lines.Select(line => new ManualJournalLineModel { FinanceAccountId = line.FinanceAccountId, DebitAmount = line.DebitAmount, CreditAmount = line.CreditAmount, Description = line.Description, TaxCode = line.TaxFacts.GetValueOrDefault("taxCode") }).ToList(), DimensionInput = draft.Lines.SelectMany(line => line.DimensionFacts).Distinct().Select(pair => $"{pair.Key}={pair.Value}").Aggregate(string.Empty, (current, value) => string.IsNullOrEmpty(current) ? value : $"{current}; {value}") };
+        public static ManualJournalModel From(ManualJournalDraftResponse draft) => new() { FiscalPeriodId = draft.FiscalPeriodId, VoucherSeriesCode = draft.VoucherSeriesCode, DocumentDate = draft.DocumentDate, PostingDate = draft.PostingDate, Explanation = draft.Explanation, Currency = draft.Currency, EvidenceDocumentIds = draft.Evidence.Select(item => item.DocumentId).ToList(), SourceRecords = [.. draft.SourceRecords], OriginalLedgerEntryId = draft.OriginalLedgerEntryId, CorrectionReason = draft.CorrectionReason, Lines = draft.Lines.Select(line => new ManualJournalLineModel { FinanceAccountId = line.FinanceAccountId, DebitAmount = line.DebitAmount, CreditAmount = line.CreditAmount, Description = line.Description, TaxCode = line.TaxFacts.GetValueOrDefault("taxCode") }).ToList(), DimensionInput = draft.Lines.SelectMany(line => line.DimensionFacts).Distinct().Select(pair => $"{pair.Key}={pair.Value}").Aggregate(string.Empty, (current, value) => string.IsNullOrEmpty(current) ? value : $"{current}; {value}") };
     }
     private sealed class ManualJournalLineModel { public Guid FinanceAccountId { get; set; } public decimal DebitAmount { get; set; } public decimal CreditAmount { get; set; } public string? Description { get; set; } public string? TaxCode { get; set; } }
 }

@@ -7882,6 +7882,16 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                         .HasColumnType("decimal(19,4)")
                         .HasColumnName("expected_bank_total");
 
+                    b.Property<string>("IdempotencyKey")
+                        .HasMaxLength(200)
+                        .HasColumnType("nvarchar(200)")
+                        .HasColumnName("idempotency_key");
+
+                    b.Property<string>("ProposalHash")
+                        .HasMaxLength(64)
+                        .HasColumnType("nvarchar(64)")
+                        .HasColumnName("proposal_hash");
+
                     b.Property<string>("Reference")
                         .IsRequired()
                         .HasMaxLength(200)
@@ -7930,6 +7940,10 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("CompanyId", "CorrectionOfGroupId");
+
+                    b.HasIndex("CompanyId", "IdempotencyKey")
+                        .IsUnique()
+                        .HasFilter("idempotency_key IS NOT NULL");
 
                     b.HasIndex("CompanyId", "Reference");
 
@@ -29581,6 +29595,11 @@ namespace VirtualCompany.Persistence.Migrations.Persistence.Migrations
                     b.Property<DateOnly>("PostingDate")
                         .HasColumnType("date")
                         .HasColumnName("posting_date");
+
+                    b.Property<string>("SourceReferencesJson")
+                        .IsRequired()
+                        .HasColumnType("nvarchar(max)")
+                        .HasColumnName("source_references_json");
 
                     b.Property<string>("Status")
                         .IsRequired()

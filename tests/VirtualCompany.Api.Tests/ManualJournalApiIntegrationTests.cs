@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using Microsoft.EntityFrameworkCore;
+using VirtualCompany.Application.Auditing;
 using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
@@ -75,14 +76,25 @@ public sealed class ManualJournalApiIntegrationTests : IDisposable
         using var forbiddenEdit = await owner.PutAsJsonAsync($"/internal/companies/{seed.CompanyId:D}/finance/accounting/manual-journals/{draftId:D}", Request(seed, "edit-posted", 2, 160m));
         Assert.Equal(HttpStatusCode.BadRequest, forbiddenEdit.StatusCode);
 
-        var adjustmentRequest = Request(seed, "adjustment-1", 0, 140m, journalId, "Move the charge to the correct reporting category.");
+        var adjustmentRequest = Request(seed, "adjustment-1", 0, 140m, journalId,
+            "Move the charge to the correct reporting category.", journalId);
         using var adjustment = await owner.PostAsJsonAsync($"/internal/companies/{seed.CompanyId:D}/finance/accounting/journals/{journalId:D}/adjustments", adjustmentRequest);
         Assert.Equal(HttpStatusCode.OK, adjustment.StatusCode);
         using var adjustmentJson = JsonDocument.Parse(await adjustment.Content.ReadAsStringAsync());
         Assert.Equal(journalId, adjustmentJson.RootElement.GetProperty("originalLedgerEntryId").GetGuid());
+        var source = Assert.Single(adjustmentJson.RootElement.GetProperty("sourceRecords").EnumerateArray());
+        Assert.Equal("ledger_journal", source.GetProperty("sourceType").GetString());
+        Assert.Equal(journalId, source.GetProperty("recordId").GetGuid());
+        Assert.Equal("source-version-1", source.GetProperty("sourceVersion").GetString());
 
         var stored = await _factory.ExecuteDbContextAsync(db => db.LedgerEntries.IgnoreQueryFilters().AsNoTracking().SingleAsync(item => item.Id == journalId));
         Assert.Equal("Manual accrual correction", stored.Description);
+        var audit = await _factory.ExecuteDbContextAsync(db => db.AuditEvents.IgnoreQueryFilters().AsNoTracking()
+            .Where(item => item.CompanyId == seed.CompanyId && item.TargetId == draftId.ToString("N"))
+            .Select(item => new { item.Action, item.CorrelationId }).ToArrayAsync());
+        Assert.Contains(audit, item => item.Action == AuditEventActions.AccountingManualJournalDraftCreated);
+        Assert.Contains(audit, item => item.Action == AuditEventActions.AccountingManualJournalApprovalRequested);
+        Assert.All(audit, item => Assert.False(string.IsNullOrWhiteSpace(item.CorrelationId)));
     }
 
     [Fact]
@@ -133,12 +145,16 @@ public sealed class ManualJournalApiIntegrationTests : IDisposable
         return seed;
     }
 
-    private static object Request(Seed seed, string key, long expectedVersion, decimal amount, Guid? originalId = null, string? correctionReason = null) => new
+    private static object Request(Seed seed, string key, long expectedVersion, decimal amount, Guid? originalId = null,
+        string? correctionReason = null, Guid? sourceRecordId = null) => new
     {
         expectedVersion, idempotencyKey = key, fiscalPeriodId = seed.FiscalPeriodId, voucherSeriesCode = "G",
         documentDate = seed.PostingDate, postingDate = seed.PostingDate, explanation = "Manual accrual correction", currency = "USD",
         lines = new[] { new { financeAccountId = seed.DebitAccountId, debitAmount = amount, creditAmount = 0m, description = "Accrual expense" }, new { financeAccountId = seed.CreditAccountId, debitAmount = 0m, creditAmount = amount, description = "Accrued liability" } },
-        evidenceDocumentIds = new[] { seed.DocumentId }, originalLedgerEntryId = originalId, correctionReason
+        evidenceDocumentIds = new[] { seed.DocumentId }, originalLedgerEntryId = originalId, correctionReason,
+        sourceRecords = sourceRecordId.HasValue
+            ? new[] { new { sourceType = "ledger_journal", recordId = sourceRecordId.Value, sourceVersion = "source-version-1" } }
+            : []
     };
     private static FinanceAccount Account(Guid id, Guid companyId, string code, string accountClass, string normalBalance) => new(id, companyId, code, $"Account {code}", accountClass, "USD", 0m, DateTime.UtcNow, accountClass: accountClass, normalBalance: normalBalance, effectiveFrom: new DateOnly(2026, 1, 1), isPostingEnabled: true);
     private HttpClient Client(string subject, string email) { var client = _factory.CreateClient(); client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.SubjectHeader, subject); client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.EmailHeader, email); client.DefaultRequestHeaders.Add(DevAuthHeaderDefaults.DisplayNameHeader, subject); return client; }

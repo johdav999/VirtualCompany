@@ -84,6 +84,14 @@ public sealed class SaveManualJournalDraftApiRequest
     public List<Guid> EvidenceDocumentIds { get; set; } = [];
     public Guid? OriginalLedgerEntryId { get; set; }
     public string? CorrectionReason { get; set; }
+    public List<ManualJournalSourceReferenceApiRequest> SourceRecords { get; set; } = [];
+}
+
+public sealed class ManualJournalSourceReferenceApiRequest
+{
+    public string SourceType { get; set; } = string.Empty;
+    public Guid RecordId { get; set; }
+    public string SourceVersion { get; set; } = string.Empty;
 }
 
 public sealed class ManualJournalLineApiRequest
@@ -113,8 +121,10 @@ public sealed class ManualJournalDraftResponse
     public DateTime CreatedUtc { get; set; } public DateTime UpdatedUtc { get; set; } public DateTime? PostedUtc { get; set; }
     public decimal DebitTotal { get; set; } public decimal CreditTotal { get; set; } public decimal Difference { get; set; }
     public List<ManualJournalLineResponse> Lines { get; set; } = []; public List<ManualJournalEvidenceResponse> Evidence { get; set; } = [];
+    public List<ManualJournalSourceReferenceResponse> SourceRecords { get; set; } = [];
     public ManualJournalApprovalResponse? Approval { get; set; }
 }
+public sealed class ManualJournalSourceReferenceResponse { public string SourceType { get; set; } = string.Empty; public Guid RecordId { get; set; } public string SourceVersion { get; set; } = string.Empty; }
 public sealed class ManualJournalLineResponse { public Guid Id { get; set; } public int LineNumber { get; set; } public Guid FinanceAccountId { get; set; } public string AccountCode { get; set; } = string.Empty; public string AccountName { get; set; } = string.Empty; public decimal DebitAmount { get; set; } public decimal CreditAmount { get; set; } public string Currency { get; set; } = string.Empty; public string? Description { get; set; } public Guid? CostCenterId { get; set; } public Dictionary<string,string> TaxFacts { get; set; } = []; public Dictionary<string,string> DimensionFacts { get; set; } = []; }
 public sealed class ManualJournalEvidenceResponse { public Guid DocumentId { get; set; } public string Title { get; set; } = string.Empty; public string ContentHash { get; set; } = string.Empty; public string OriginalFileName { get; set; } = string.Empty; }
 public sealed class ManualJournalApprovalResponse { public Guid Id { get; set; } public string Status { get; set; } = string.Empty; public string? DecisionSummary { get; set; } public long DraftVersion { get; set; } public string PayloadHash { get; set; } = string.Empty; public DateTime CreatedUtc { get; set; } public DateTime? DecidedUtc { get; set; } }

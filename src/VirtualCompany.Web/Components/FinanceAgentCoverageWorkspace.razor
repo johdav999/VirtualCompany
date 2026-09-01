@@ -1,0 +1,254 @@
+@using VirtualCompany.Web.Localization.Agents
+@inject IStringLocalizer<AgentsResources> AgentText
+
+<section class="finance-agent-coverage" aria-labelledby="finance-agent-coverage-title">
+    <header class="finance-agent-coverage__header">
+        <div>
+            <span class="dashboard-kicker">@AgentText["FinanceCoverageKicker"]</span>
+            <h2 id="finance-agent-coverage-title">@AgentText["FinanceCoverageTitle"]</h2>
+            <p>@AgentText["FinanceCoverageDescription"]</p>
+        </div>
+        @if (Coverage is not null)
+        {
+            <div class="finance-agent-coverage__verification" role="status">
+                <span>@AgentText["FinanceCoverageCatalogueVersion"]</span>
+                <strong>@Coverage.CatalogueVersion</strong>
+                <small title="@LocalDateTime.DateTime(Coverage.GeneratedUtc)">
+                    @AgentText["FinanceCoverageVerified", LocalDateTime.Relative(Coverage.GeneratedUtc)]
+                </small>
+            </div>
+        }
+    </header>
+
+    @if (!IsAuthorized)
+    {
+        <div class="finance-agent-coverage__state is-empty">
+            <span class="bi bi-lock" aria-hidden="true"></span>
+            <div><strong>@AgentText["FinanceCoverageRestricted"]</strong><p>@AgentText["HiddenForMembershipRole"]</p></div>
+        </div>
+    }
+    else if (IsLoading)
+    {
+        <div class="finance-agent-coverage__state" role="status" aria-live="polite">
+            <span class="spinner-border spinner-border-sm" aria-hidden="true"></span>
+            <div><strong>@AgentText["FinanceCoverageLoading"]</strong><p>@AgentText["FinanceCoverageLoadingDescription"]</p></div>
+        </div>
+    }
+    else if (!string.IsNullOrWhiteSpace(ErrorMessage))
+    {
+        <div class="finance-agent-coverage__state is-error" role="alert">
+            <span class="bi bi-exclamation-triangle" aria-hidden="true"></span>
+            <div><strong>@AgentText["FinanceCoverageUnavailable"]</strong><p>@ErrorMessage</p></div>
+            <button type="button" class="btn btn-outline-secondary btn-sm" @onclick="Retry">@CommonText["Retry"]</button>
+        </div>
+    }
+    else if (Coverage is null || Coverage.Capabilities.Count == 0)
+    {
+        <div class="finance-agent-coverage__state is-empty">
+            <span class="bi bi-inbox" aria-hidden="true"></span>
+            <div><strong>@AgentText["FinanceCoverageEmpty"]</strong><p>@AgentText["FinanceCoverageEmptyDescription"]</p></div>
+        </div>
+    }
+    else
+    {
+        @if (IsStale)
+        {
+            <div class="finance-agent-coverage__stale" role="status">
+                <span class="bi bi-clock-history" aria-hidden="true"></span>
+                <div><strong>@AgentText["FinanceCoverageStale"]</strong><p>@AgentText["FinanceCoverageStaleDescription"]</p></div>
+                <button type="button" class="btn btn-outline-primary btn-sm" @onclick="Retry">@AgentText["FinanceCoverageVerifyAgain"]</button>
+            </div>
+        }
+
+        <div class="finance-agent-coverage__counts" aria-label="@AgentText["FinanceCoverageSummary"]">
+            <article><span class="is-read bi bi-search" aria-hidden="true"></span><strong>@Coverage.Counts.ImplementedRead</strong><p>@AgentText["FinanceCoverageRead"]</p></article>
+            <article><span class="is-recommend bi bi-file-earmark-check" aria-hidden="true"></span><strong>@Coverage.Counts.ImplementedRecommendDraft</strong><p>@AgentText["FinanceCoveragePrepare"]</p></article>
+            <article><span class="is-execute bi bi-play" aria-hidden="true"></span><strong>@Coverage.Counts.ImplementedExecute</strong><p>@AgentText["FinanceCoverageExecute"]</p></article>
+            <article><span class="is-human bi bi-person" aria-hidden="true"></span><strong>@Coverage.Counts.HumanOnly</strong><p>@AgentText["FinanceCoverageHumanOnly"]</p></article>
+            <article><span class="is-gap bi bi-exclamation-triangle" aria-hidden="true"></span><strong>@Coverage.Counts.EffectiveGaps</strong><p>@AgentText["FinanceCoverageNeedsAttention"]</p></article>
+        </div>
+
+        <div class="finance-agent-coverage__layout">
+            <div class="finance-agent-coverage__workflows">
+                @foreach (var capability in Coverage.Capabilities)
+                {
+                    var boundaries = BoundaryOperations(capability);
+                    <details class="finance-agent-coverage__workflow">
+                        <summary>
+                            <div>
+                                <strong>@WorkflowLabel(capability.Id)</strong>
+                                <small>@AgentText["FinanceCoverageWorkflowVersion", capability.Version]</small>
+                            </div>
+                            <div class="finance-agent-coverage__badges" aria-label="@AgentText["FinanceCoverageSupportedActions"]">
+                                @if (AvailableActionCount(capability, "read") > 0)
+                                {
+                                    <span class="is-read">@AgentText["FinanceCoverageActionCount", AvailableActionCount(capability, "read"), AgentText["FinanceCoverageRead"]]</span>
+                                }
+                                @if (AvailableActionCount(capability, "recommend") > 0)
+                                {
+                                    <span class="is-recommend">@AgentText["FinanceCoverageActionCount", AvailableActionCount(capability, "recommend"), AgentText["FinanceCoveragePrepare"]]</span>
+                                }
+                                @if (AvailableActionCount(capability, "execute") > 0)
+                                {
+                                    <span class="is-execute">@AgentText["FinanceCoverageActionCount", AvailableActionCount(capability, "execute"), AgentText["FinanceCoverageExecute"]]</span>
+                                }
+                                @if (boundaries.Count > 0)
+                                {
+                                    <span class="is-gap">@AgentText["FinanceCoverageBoundaryCount", boundaries.Count]</span>
+                                }
+                            </div>
+                        </summary>
+
+                        <div class="finance-agent-coverage__workflow-body">
+                            <div class="finance-agent-coverage__facts">
+                                <div><span>@AgentText["FinanceCoverageApprovalFacts"]</span><strong>@AgentText["FinanceCoverageApprovalCount", ApprovalActionCount(capability)]</strong></div>
+                                <div><span>@AgentText["FinanceCoverageEvidence"]</span><strong>@AgentText["FinanceCoverageEvidenceCount", EvidenceSourceCount(capability)]</strong></div>
+                                <div><span>@AgentText["FinanceCoverageCurrentAvailability"]</span><strong>@AgentText["FinanceCoverageAvailableCount", EffectiveAvailableCount(capability), capability.Operations.Count]</strong></div>
+                            </div>
+
+                            @if (boundaries.Count > 0)
+                            {
+                                <div class="finance-agent-coverage__boundaries">
+                                    @foreach (var operation in boundaries)
+                                    {
+                                        <article>
+                                            <span class="finance-agent-coverage__boundary-state @BoundaryCss(operation)">@BoundaryStateLabel(operation)</span>
+                                            <div>
+                                                <strong>@BoundaryTitle(operation)</strong>
+                                                <p>@BoundaryExplanation(operation)</p>
+                                            </div>
+                                            @if (BuildNavigationHref(operation.NavigationPath) is string href)
+                                            {
+                                                <a href="@href">@AgentText["FinanceCoverageOpenHumanWorkflow"]<span class="bi bi-box-arrow-up-right" aria-hidden="true"></span></a>
+                                            }
+                                        </article>
+                                    }
+                                </div>
+                            }
+
+                            <nav class="finance-agent-coverage__actions" aria-label="@AgentText["FinanceCoverageWorkflowActions"]">
+                                <a class="btn btn-primary btn-sm" href="@BuildAskHref(capability)"><span class="bi bi-chat-left-text" aria-hidden="true"></span>@AgentText["FinanceCoverageAskLaura"]</a>
+                                <a class="btn btn-outline-secondary btn-sm" href="@BuildAuditHref()"><span class="bi bi-clock-history" aria-hidden="true"></span>@AgentText["FinanceCoverageAuditHistory"]</a>
+                            </nav>
+                        </div>
+                    </details>
+                }
+            </div>
+
+            <aside class="finance-agent-coverage__guidance" aria-labelledby="finance-agent-coverage-guidance-title">
+                <div class="finance-agent-coverage__guidance-identity">
+                    <img src="/images/laura.png" alt="" />
+                    <div><strong id="finance-agent-coverage-guidance-title">@AgentText["FinanceCoverageLauraGuidance"]</strong><span>@AgentText["FinanceManager"]</span></div>
+                </div>
+                <p>@AgentText["FinanceCoverageGuidanceDescription"]</p>
+                <a class="btn btn-primary" href="@BuildAskHref(null)">@AgentText["FinanceCoverageAskLauraInContext"]</a>
+                <small><span class="bi bi-shield-check" aria-hidden="true"></span>@AgentText["FinanceCoverageDoesNotGrantAuthority"]</small>
+            </aside>
+        </div>
+    }
+</section>
+
+@code {
+    [Parameter] public Guid CompanyId { get; set; }
+    [Parameter] public Guid AgentId { get; set; }
+    [Parameter] public bool IsAuthorized { get; set; }
+    [Parameter] public bool IsLoading { get; set; }
+    [Parameter] public string? ErrorMessage { get; set; }
+    [Parameter] public FinanceAgentEffectiveCoverageViewModel? Coverage { get; set; }
+    [Parameter] public EventCallback Retry { get; set; }
+
+    private bool IsStale => Coverage is not null && DateTime.UtcNow - Coverage.GeneratedUtc.ToUniversalTime() > TimeSpan.FromHours(24);
+    private static bool IsEffective(FinanceAgentEffectiveCoverageOperationViewModel operation) =>
+        operation.EffectiveState is "available" or "approval_required";
+    private static int AvailableActionCount(FinanceAgentEffectiveCoverageCapabilityViewModel capability, string action) =>
+        capability.Operations.Count(operation => operation.ActionClass == action && IsEffective(operation));
+    private static int EffectiveAvailableCount(FinanceAgentEffectiveCoverageCapabilityViewModel capability) =>
+        capability.Operations.Count(IsEffective);
+    private static int ApprovalActionCount(FinanceAgentEffectiveCoverageCapabilityViewModel capability) =>
+        capability.Operations.Count(operation => operation.ApprovalBehavior is not ("none" or "not_required") && IsEffective(operation));
+    private static int EvidenceSourceCount(FinanceAgentEffectiveCoverageCapabilityViewModel capability) =>
+        capability.Operations.SelectMany(operation => operation.SourceTypes).Distinct(StringComparer.OrdinalIgnoreCase).Count();
+    private static IReadOnlyList<FinanceAgentEffectiveCoverageOperationViewModel> BoundaryOperations(FinanceAgentEffectiveCoverageCapabilityViewModel capability) =>
+        capability.Operations.Where(operation => !IsEffective(operation) || operation.SupportState is "human_only" or "unsupported" or "configuration_dependent").ToArray();
+
+    private string WorkflowLabel(string capabilityId) => AgentText[capabilityId switch
+    {
+        "finance.daily_cash" => "FinanceCoverageWorkflowDailyCash",
+        "finance.transaction_review" => "FinanceCoverageWorkflowTransactions",
+        "finance.invoice_review" => "FinanceCoverageWorkflowInvoiceReview",
+        "finance.management_reporting" => "FinanceCoverageWorkflowManagementReporting",
+        "finance.natural_language_queries" => "FinanceCoverageWorkflowQuestions",
+        "finance.role_analysis" => "FinanceCoverageWorkflowAnalysis",
+        "finance.paid_bill_accounting" => "FinanceCoverageWorkflowPaidBills",
+        "finance.accounting_provider_migration" => "FinanceCoverageWorkflowProviderMigration",
+        "finance.payables_operations" => "FinanceCoverageWorkflowPayables",
+        "finance.customer_billing_receivables" => "FinanceCoverageWorkflowReceivables",
+        "finance.ledger_financial_reporting" => "FinanceCoverageWorkflowLedger",
+        "finance.bank_reconciliation" => "FinanceCoverageWorkflowBanking",
+        "finance.advanced_accounting" => "FinanceCoverageWorkflowAdvancedAccounting",
+        "finance.close_year_end" => "FinanceCoverageWorkflowClose",
+        "finance.compliance_audit" => "FinanceCoverageWorkflowCompliance",
+        "finance.administration" => "FinanceCoverageWorkflowAdministration",
+        "finance.approval_governance" => "FinanceCoverageWorkflowApprovals",
+        "finance.provider_reconciliation" => "FinanceCoverageWorkflowProviderReconciliation",
+        _ => "FinanceCoverageWorkflowOther"
+    }];
+
+    private string BoundaryTitle(FinanceAgentEffectiveCoverageOperationViewModel operation) => AgentText[operation.Id switch
+    {
+        "payment_initiation" => "FinanceCoverageBoundaryPayments",
+        "credential_consent_changes" => "FinanceCoverageBoundaryCredentials",
+        "statutory_filing_signoff" => "FinanceCoverageBoundaryFiling",
+        "final_close_year_end_authority" => "FinanceCoverageBoundaryClose",
+        "self_approval" => "FinanceCoverageBoundarySelfApproval",
+        "ambiguous_provider_outcome_resolution" => "FinanceCoverageBoundaryProviderOutcome",
+        "inventory_accounting_boundary" => "FinanceCoverageBoundaryInventory",
+        "payables_full_lifecycle" => "FinanceCoverageBoundaryPayables",
+        "customer_billing_full_lifecycle" => "FinanceCoverageBoundaryReceivables",
+        _ => operation.SupportState == "configuration_dependent" ? "FinanceCoverageBoundaryConfiguration" : "FinanceCoverageBoundaryUnavailable"
+    }];
+
+    private string BoundaryExplanation(FinanceAgentEffectiveCoverageOperationViewModel operation) => AgentText[operation.AvailabilityReasonCode switch
+    {
+        "integration_configuration_required" => "FinanceCoverageReasonConfiguration",
+        "permanent_human_authority" => "FinanceCoverageReasonHumanAuthority",
+        "segregation_of_duties" => "FinanceCoverageReasonSegregation",
+        "ambiguous_external_outcome" => "FinanceCoverageReasonAmbiguousOutcome",
+        "future_agent_coverage" => "FinanceCoverageReasonFutureCoverage",
+        _ when operation.EffectiveState == "permission_denied" => "FinanceCoverageReasonPermission",
+        _ => "FinanceCoverageReasonUnavailable"
+    }];
+
+    private string BoundaryStateLabel(FinanceAgentEffectiveCoverageOperationViewModel operation) => AgentText[operation.SupportState switch
+    {
+        "human_only" => "FinanceCoverageHumanOnly",
+        "configuration_dependent" => "FinanceCoverageNeedsSetup",
+        "unsupported" => "FinanceCoverageNotSupported",
+        _ => "FinanceCoverageUnavailableForActor"
+    }];
+    private static string BoundaryCss(FinanceAgentEffectiveCoverageOperationViewModel operation) => operation.SupportState switch
+    {
+        "human_only" => "is-human",
+        "configuration_dependent" => "is-gap",
+        _ => "is-unavailable"
+    };
+
+    private string BuildAskHref(FinanceAgentEffectiveCoverageCapabilityViewModel? capability) =>
+        FinanceRoutes.BuildAgentWorkbenchPath(CompanyId, AgentId, workflow: capability is null ? "coverage" : WorkflowCode(capability.Id));
+    private string BuildAuditHref() => $"/history?companyId={CompanyId:D}&agentId={AgentId:D}";
+    private string? BuildNavigationHref(string? path) => string.IsNullOrWhiteSpace(path) || !path.StartsWith("/finance", StringComparison.OrdinalIgnoreCase)
+        ? null
+        : FinanceRoutes.WithCompanyContext(path, CompanyId);
+    private static string WorkflowCode(string capabilityId) => capabilityId switch
+    {
+        "finance.ledger_financial_reporting" or "finance.management_reporting" => "ledger",
+        "finance.close_year_end" => "close",
+        "finance.compliance_audit" => "compliance",
+        "finance.advanced_accounting" => "advanced-accounting",
+        "finance.customer_billing_receivables" or "finance.invoice_review" => "receivables",
+        "finance.payables_operations" or "finance.paid_bill_accounting" => "payables",
+        "finance.bank_reconciliation" => "banking",
+        "finance.approval_governance" => "approvals",
+        _ => "finance"
+    };
+}

@@ -1,4 +1,6 @@
 using System.Globalization;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using Microsoft.EntityFrameworkCore;
@@ -126,6 +128,21 @@ internal sealed class AdvancedReconciliationService : IAdvancedReconciliationRea
         ExecuteInTransactionAsync(async () =>
         {
             EnsureTenant(command.CompanyId); await EnsureActorAsync(command.CompanyId, command.ActorUserId, cancellationToken);
+            var idempotencyKey = string.IsNullOrWhiteSpace(command.IdempotencyKey) ? null : command.IdempotencyKey.Trim();
+            if (idempotencyKey is { Length: > 200 })
+                throw Validation(nameof(command.IdempotencyKey), "The reconciliation draft identity must be 200 characters or fewer.");
+            var proposalHash = ProposalHash(command);
+            if (idempotencyKey is not null)
+            {
+                var replay = await _dbContext.AdvancedReconciliationGroups.IgnoreQueryFilters().AsNoTracking()
+                    .SingleOrDefaultAsync(x => x.CompanyId == command.CompanyId && x.IdempotencyKey == idempotencyKey, cancellationToken);
+                if (replay is not null)
+                {
+                    if (!string.Equals(replay.ProposalHash, proposalHash, StringComparison.OrdinalIgnoreCase))
+                        throw Validation(nameof(command.IdempotencyKey), AdvancedReconciliationReasonCodes.IdempotencyConflict);
+                    return (await GetAsync(new(command.CompanyId, replay.Id), cancellationToken))!;
+                }
+            }
             if (command.Nodes is not { Count: > 0 }) throw Validation(nameof(command.Nodes), "At least one reconciliation node is required.");
             if (command.Edges is null) throw Validation(nameof(command.Edges), "Reconciliation edges are required.");
             if (command.Nodes.Select(x => x.NodeId).Any(x => x == Guid.Empty) || command.Nodes.GroupBy(x => x.NodeId).Any(x => x.Count() > 1))
@@ -157,7 +174,8 @@ internal sealed class AdvancedReconciliationService : IAdvancedReconciliationRea
             var now = UtcNow();
             var group = new AdvancedReconciliationGroup(Guid.NewGuid(), command.CompanyId, rule.Id, rule.Version,
                 command.CorrectionOfGroupId, command.Reference, command.Counterparty, command.Currency,
-                evaluation.ExpectedBankTotal, confidence, requiresApproval, command.ActorUserId, now);
+                evaluation.ExpectedBankTotal, confidence, requiresApproval, command.ActorUserId, now,
+                idempotencyKey, idempotencyKey is null ? null : proposalHash);
             _dbContext.AdvancedReconciliationGroups.Add(group);
             foreach (var node in hydrated.Nodes)
                 _dbContext.AdvancedReconciliationNodes.Add(new AdvancedReconciliationNode(node.Id, command.CompanyId, group.Id,
@@ -174,6 +192,28 @@ internal sealed class AdvancedReconciliationService : IAdvancedReconciliationRea
             await _dbContext.SaveChangesAsync(cancellationToken);
             return (await GetAsync(new(command.CompanyId, group.Id), cancellationToken))!;
         }, cancellationToken);
+
+    private static string ProposalHash(CreateAdvancedReconciliationGroupCommand command)
+    {
+        var canonical = JsonSerializer.Serialize(new
+        {
+            command.Reference,
+            command.Counterparty,
+            Currency = command.Currency.Trim().ToUpperInvariant(),
+            command.RuleVersion,
+            command.CorrectionOfGroupId,
+            Nodes = command.Nodes?.OrderBy(x => x.Sequence).ThenBy(x => x.NodeId).Select(x => new
+            {
+                x.NodeId, x.NodeType, x.RecordId, x.Amount, x.AdjustmentKind, x.DebitAmount, x.CreditAmount,
+                x.Label, x.Reference, x.Sequence
+            }),
+            Edges = command.Edges?.OrderBy(x => x.EdgeId).Select(x => new
+            {
+                x.EdgeId, x.SourceNodeId, x.TargetNodeId, x.EdgeType, x.Amount
+            })
+        });
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(canonical))).ToLowerInvariant();
+    }
 
     public Task<AdvancedReconciliationGroupDetailDto> AcceptAsync(AcceptAdvancedReconciliationGroupCommand command, CancellationToken cancellationToken) =>
         ExecuteInTransactionAsync(async () =>

@@ -11,6 +11,7 @@ public sealed class ManualJournalSurfaceTests
         var workbench = Read("src", "VirtualCompany.Web", "Pages", "Finance", "ManualJournalWorkbenchPage.razor");
         var workbenchCode = Read("src", "VirtualCompany.Web", "Pages", "Finance", "ManualJournalWorkbenchPage.razor.cs");
         var workbenchCss = Read("src", "VirtualCompany.Web", "Pages", "Finance", "ManualJournalWorkbenchPage.razor.css");
+        var client = Read("src", "VirtualCompany.Web", "Services", "FinanceApiClient.ManualJournals.cs");
 
         Assert.Contains("FinanceDataState", journal, StringComparison.Ordinal);
         Assert.Contains("tabindex=\"0\"", journal, StringComparison.Ordinal);
@@ -26,6 +27,8 @@ public sealed class ManualJournalSurfaceTests
         Assert.Contains("PostApprovedJournal", workbench, StringComparison.Ordinal);
         Assert.Contains("ManualJournalConflictApiException", workbenchCode, StringComparison.Ordinal);
         Assert.Contains("OriginalLedgerEntryId", workbenchCode, StringComparison.Ordinal);
+        Assert.Contains("SourceRecords = Model.SourceRecords", workbenchCode, StringComparison.Ordinal);
+        Assert.Contains("ManualJournalSourceReferenceResponse", client, StringComparison.Ordinal);
         Assert.Contains("@media", journalCss, StringComparison.Ordinal);
         Assert.Contains("@media", workbenchCss, StringComparison.Ordinal);
         Assert.DoesNotContain("tenant", journal + workbench, StringComparison.OrdinalIgnoreCase);

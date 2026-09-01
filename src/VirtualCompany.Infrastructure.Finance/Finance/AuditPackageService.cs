@@ -104,6 +104,28 @@ public sealed class AuditPackageService : IAuditPackageService
         return Map(await LoadAsync(companyId, packageId, tracked: false, cancellationToken));
     }
 
+    public async Task<AuditPackagePreviewDto> PreviewAsync(PreviewAuditPackageQuery query,
+        CancellationToken cancellationToken)
+    {
+        await RequireViewAsync(query.CompanyId, cancellationToken);
+        var scopeKey = Required(query.ScopeKey, nameof(query.ScopeKey), 100).ToLowerInvariant();
+        var scopeVersion = Required(query.ScopeVersion, nameof(query.ScopeVersion), 64);
+        var period = await _db.FiscalPeriods.IgnoreQueryFilters().AsNoTracking()
+            .SingleOrDefaultAsync(x => x.CompanyId == query.CompanyId && x.Id == query.FiscalPeriodId,
+                cancellationToken)
+            ?? throw Error("fiscal_period_not_found", "The fiscal period was not found in the requested company.");
+        var snapshots = await BuildSnapshotVersionsAsync(query.CompanyId, period, cancellationToken);
+        var scopeHash = Hash($"{query.CompanyId:N}|{period.Id:N}|{scopeKey}|{scopeVersion}|{snapshots}");
+        var existing = await _db.AuditPackages.IgnoreQueryFilters().AsNoTracking()
+            .Where(x => x.CompanyId == query.CompanyId && x.FiscalPeriodId == period.Id &&
+                x.ScopeKey == scopeKey && x.ScopeVersion == scopeVersion && x.ScopeHash == scopeHash)
+            .OrderByDescending(x => x.RequestedUtc).FirstOrDefaultAsync(cancellationToken);
+        var blockers = period.IsClosed ? Array.Empty<string>() : ["closed_period_required"];
+        return new(query.CompanyId, period.Id, period.Name, scopeKey, scopeVersion, scopeHash,
+            snapshots, blockers.Length == 0, blockers, existing?.Id, existing?.Status,
+            existing?.Version, ArtifactGenerated: false);
+    }
+
     public async Task<AuditPackageDto> RequestAsync(RequestAuditPackageCommand command, CancellationToken cancellationToken)
     {
         var role = await RequireManageAsync(command.CompanyId, command.ActorUserId, cancellationToken);

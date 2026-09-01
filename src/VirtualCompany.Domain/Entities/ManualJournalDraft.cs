@@ -37,7 +37,8 @@ public sealed class ManualJournalDraft : ICompanyOwnedEntity
         Guid createdByUserId,
         DateTime createdUtc,
         Guid? originalLedgerEntryId = null,
-        string? correctionReason = null)
+        string? correctionReason = null,
+        string sourceReferencesJson = "[]")
     {
         if (companyId == Guid.Empty) throw new ArgumentException("CompanyId is required.", nameof(companyId));
         if (fiscalPeriodId == Guid.Empty) throw new ArgumentException("FiscalPeriodId is required.", nameof(fiscalPeriodId));
@@ -57,6 +58,7 @@ public sealed class ManualJournalDraft : ICompanyOwnedEntity
         UpdatedByUserId = createdByUserId;
         OriginalLedgerEntryId = originalLedgerEntryId;
         CorrectionReason = Optional(correctionReason, nameof(correctionReason), 1000);
+        SourceReferencesJson = Required(sourceReferencesJson, nameof(sourceReferencesJson), 16000);
         Status = ManualJournalDraftStatusValues.Draft;
         Version = 1;
         CreatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
@@ -80,6 +82,7 @@ public sealed class ManualJournalDraft : ICompanyOwnedEntity
     public Guid? LedgerEntryId { get; private set; }
     public Guid? OriginalLedgerEntryId { get; private set; }
     public string? CorrectionReason { get; private set; }
+    public string SourceReferencesJson { get; private set; } = "[]";
     public DateTime CreatedUtc { get; private set; }
     public DateTime UpdatedUtc { get; private set; }
     public DateTime? PostedUtc { get; private set; }
@@ -101,6 +104,7 @@ public sealed class ManualJournalDraft : ICompanyOwnedEntity
         string currency,
         string payloadHash,
         string? correctionReason,
+        string sourceReferencesJson,
         Guid actorUserId,
         DateTime updatedUtc)
     {
@@ -117,6 +121,7 @@ public sealed class ManualJournalDraft : ICompanyOwnedEntity
         CorrectionReason = OriginalLedgerEntryId.HasValue
             ? Optional(correctionReason, nameof(correctionReason), 1000)
             : null;
+        SourceReferencesJson = Required(sourceReferencesJson, nameof(sourceReferencesJson), 16000);
         Status = ManualJournalDraftStatusValues.Draft;
         ApprovalRequestId = null;
         UpdatedByUserId = actorUserId;

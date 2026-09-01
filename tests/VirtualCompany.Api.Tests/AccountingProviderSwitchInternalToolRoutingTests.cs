@@ -99,6 +99,10 @@ public sealed class AccountingProviderSwitchInternalToolRoutingTests
             Proxy<IFinanceAgentAnalysisService>(),
             Proxy<IFinanceLedgerAgentReadService>(),
             Proxy<IFinanceCloseComplianceAgentService>(),
+            Proxy<IFinanceAdvancedAccountingAgentService>(),
+            Proxy<IFinanceAccountingDraftAgentService>(),
+            Proxy<IFinanceOperationalProposalAgentService>(),
+            Proxy<IFinanceGuardedCommandService>(),
             finance,
             Proxy<ILeadGenerationService>());
 

@@ -217,6 +217,7 @@ public sealed class CurrencyRevaluationServiceTests
         }
         public Task<IReadOnlyList<CurrencyDefinitionResult>> GetCurrenciesAsync(Guid companyId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<IReadOnlyList<ExchangeRateSourceResult>> GetSourcesAsync(Guid companyId, CancellationToken cancellationToken) => throw new NotSupportedException();
+        public Task<IReadOnlyList<ExchangeRateSetResult>> GetSetsAsync(Guid companyId, int skip, int take, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ExchangeRateObservationResult> GetObservationAsync(Guid companyId, Guid observationId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<ExchangeRateReadinessResult> GetReadinessAsync(Guid companyId, CancellationToken cancellationToken) => throw new NotSupportedException();
         public Task<CurrencyDefinitionResult> ConfigureCurrencyAsync(ConfigureCurrencyCommand command, CancellationToken cancellationToken) => throw new NotSupportedException();

@@ -38,8 +38,15 @@ public sealed class FinanceLedgerAgentReadToolTests
 
         var ledger = registry.ListToolDefinitions().Single(x => x.ToolName == FinanceLedgerAgentReadToolIds.ReadGeneralLedger);
         Assert.Equal(200, ledger.InputSchema["properties"]!["pageSize"]!["maximum"]!.GetValue<int>());
+        Assert.Contains(FinancePlanningReferenceTypes.Account, ledger.SelectionMetadata!.TargetEntityTypes);
+        Assert.Contains(FinancePlanningReferenceTypes.FiscalPeriod, ledger.SelectionMetadata.TargetEntityTypes);
+        Assert.Contains(ledger.SelectionMetadata.NaturalLanguageExamples,
+            example => example.Contains("6540", StringComparison.Ordinal) && example.Contains("August", StringComparison.Ordinal));
         var journals = registry.ListToolDefinitions().Single(x => x.ToolName == FinanceLedgerAgentReadToolIds.SearchJournals);
         Assert.Equal(100, journals.InputSchema["properties"]!["take"]!["maximum"]!.GetValue<int>());
+        var definitions = registry.ListToolDefinitions().Single(x => x.ToolName == FinanceLedgerAgentReadToolIds.ReadReportDefinitions);
+        Assert.Equal(FinanceLedgerAgentReadContract.MaximumLookupPageSize,
+            definitions.InputSchema["properties"]!["take"]!["maximum"]!.GetValue<int>());
         Assert.DoesNotContain(registry.ListToolDefinitions(), x => x.ToolName.Contains("export", StringComparison.OrdinalIgnoreCase) &&
                                                                   x.ToolName.StartsWith("finance.ledger", StringComparison.OrdinalIgnoreCase));
     }
@@ -83,6 +90,8 @@ public sealed class FinanceLedgerAgentReadToolTests
         var sources = response.Metadata["sourceIds"]!.AsArray().Select(x => x!.GetValue<string>()).ToArray();
         Assert.Contains("finance_account:" + accountId, sources);
         Assert.Contains("ledger_entry:" + entryId, sources);
+        Assert.Contains("fiscal_period:" + periodId, sources);
+        Assert.NotNull(response.Metadata["controlTotals"]);
     }
 
     [Fact]
@@ -127,6 +136,9 @@ public sealed class FinanceLedgerAgentReadToolTests
         Assert.Equal(definitionVersionId, first.Metadata["definitionVersionId"]!.GetValue<Guid>());
         Assert.Equal("checksum-closed-v1", first.Metadata["checksum"]!.GetValue<string>());
         Assert.NotNull(first.Metadata["controlTotals"]);
+        Assert.Contains("report_definition_version:" + definitionVersionId,
+            first.Metadata["sourceIds"]!.AsArray().Select(node => node!.GetValue<string>()));
+        Assert.False(first.Metadata["sourceIdsTruncated"]!.GetValue<bool>());
         Assert.False(stale.Success);
         Assert.Equal("stale_report_snapshot", stale.ErrorCode);
         Assert.Equal(3, reads);
@@ -162,6 +174,195 @@ public sealed class FinanceLedgerAgentReadToolTests
         Assert.Equal("finance_source_not_found", crossCompany.ErrorCode);
     }
 
+    [Fact]
+    public async Task Account_and_report_definition_searches_apply_declared_bounded_pages()
+    {
+        var companyId = Guid.NewGuid();
+        var periodId = Guid.NewGuid();
+        var accounts = new[] { Account("1000", "Cash"), Account("2000", "Payables"), Account("3000", "Revenue") };
+        var definitions = Enumerable.Range(1, 3).Select(index => new ReportDefinitionSummaryDto(
+            Guid.NewGuid(), $"REPORT_{index}", $"Report {index}", "cash_flow", "template", index, "active",
+            Guid.NewGuid(), null, null, index)).ToArray();
+        var administration = Proxy<IAccountingAdministrationService>((method, _) => method.Name switch
+        {
+            nameof(IAccountingAdministrationService.GetFiscalYearsAsync) =>
+                Task.FromResult<IReadOnlyList<AccountingFiscalYearDto>>([FiscalYear(periodId)]),
+            nameof(IAccountingAdministrationService.GetAccountsAsync) =>
+                Task.FromResult<IReadOnlyList<AccountingAccountListItemDto>>(accounts),
+            _ => Unexpected(method)
+        });
+        var reportDefinitions = Proxy<IReportDefinitionService>((method, _) => method.Name == nameof(IReportDefinitionService.ListAsync)
+            ? Task.FromResult<IReadOnlyList<ReportDefinitionSummaryDto>>(definitions)
+            : Unexpected(method));
+        var service = CreateService(administration: administration, reportDefinitions: reportDefinitions);
+
+        var accountPage = await service.ExecuteAsync(Request(FinanceLedgerAgentReadToolIds.LookupAccounts, companyId,
+            ("skip", JsonValue.Create(1)), ("take", JsonValue.Create(1))), default);
+        var definitionPage = await service.ExecuteAsync(Request(FinanceLedgerAgentReadToolIds.ReadReportDefinitions, companyId,
+            ("skip", JsonValue.Create(1)), ("take", JsonValue.Create(1))), default);
+
+        Assert.True(accountPage.Success);
+        Assert.Single(accountPage.Data["accounts"]!.AsArray());
+        Assert.Equal("2000", accountPage.Data["accounts"]![0]!["code"]!.GetValue<string>());
+        Assert.True(accountPage.Metadata["truncated"]!.GetValue<bool>());
+        Assert.Equal(3L, accountPage.Metadata["totalCount"]!.GetValue<long>());
+        Assert.Equal(1L, accountPage.Metadata["skip"]!.GetValue<long>());
+
+        Assert.True(definitionPage.Success);
+        Assert.Single(definitionPage.Data["reportDefinitions"]!.AsArray());
+        Assert.Equal("REPORT_2", definitionPage.Data["reportDefinitions"]![0]!["code"]!.GetValue<string>());
+        Assert.True(definitionPage.Metadata["truncated"]!.GetValue<bool>());
+        Assert.Equal(3L, definitionPage.Metadata["totalCount"]!.GetValue<long>());
+    }
+
+    [Fact]
+    public async Task Native_statement_pagination_preserves_totals_and_snapshot_freshness_and_rejects_ignored_parameters()
+    {
+        var companyId = Guid.NewGuid();
+        var periodId = Guid.NewGuid();
+        var snapshot = new FinancialStatementSnapshotMetadataDto(Guid.NewGuid(), 4, "balances-v4",
+            new DateTime(2026, 9, 1, 8, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc), "SEK");
+        var report = new ProfitAndLossReportDto(companyId, periodId, "August 2026",
+            new DateTime(2026, 8, 1, 0, 0, 0, DateTimeKind.Utc),
+            new DateTime(2026, 9, 1, 0, 0, 0, DateTimeKind.Utc), true, true, "SEK",
+            [StatementLine("3000", "Revenue", 1_000m), StatementLine("3010", "Services", 500m)],
+            [StatementLine("6540", "IT services", -300m)], 1_500m, 300m, 1_200m, snapshot);
+        var reads = 0;
+        var financeReads = Proxy<IFinanceReadService>((method, _) =>
+        {
+            if (method.Name == nameof(IFinanceReadService.GetProfitAndLossReportAsync))
+            {
+                reads++;
+                return Task.FromResult(report);
+            }
+            return Unexpected(method);
+        });
+        var service = CreateService(administration: InitializedAdministration(companyId, periodId), financeReads: financeReads);
+
+        var page = await service.ExecuteAsync(Request(FinanceLedgerAgentReadToolIds.ReadStatement, companyId,
+            ("fiscalPeriodId", JsonValue.Create(periodId.ToString())), ("reportKind", JsonValue.Create("profit_and_loss")),
+            ("page", JsonValue.Create(2)), ("pageSize", JsonValue.Create(1))), default);
+        var unsupported = await service.ExecuteAsync(Request(FinanceLedgerAgentReadToolIds.ReadStatement, companyId,
+            ("fiscalPeriodId", JsonValue.Create(periodId.ToString())), ("reportKind", JsonValue.Create("profit_and_loss")),
+            ("asOfDate", JsonValue.Create("2026-08-15"))), default);
+
+        Assert.True(page.Success);
+        Assert.Equal("immutable_snapshot", page.Metadata["freshness"]!.GetValue<string>());
+        Assert.Equal(3L, page.Metadata["totalCount"]!.GetValue<long>());
+        Assert.True(page.Metadata["truncated"]!.GetValue<bool>());
+        Assert.NotNull(page.Metadata["controlTotals"]);
+        Assert.Equal(1_200m, page.Metadata["controlTotals"]!["netIncome"]!.GetValue<decimal>());
+        Assert.Single(page.Data["statement"]!["revenueLines"]!.AsArray());
+        Assert.Empty(page.Data["statement"]!["expenseLines"]!.AsArray());
+        Assert.Equal("3010", page.Data["statement"]!["revenueLines"]![0]!["accountCode"]!.GetValue<string>());
+
+        Assert.False(unsupported.Success);
+        Assert.Equal("unsupported_native_statement_parameters", unsupported.ErrorCode);
+        Assert.Contains("asOfDate", unsupported.UserSafeSummary, StringComparison.Ordinal);
+        Assert.Equal(1, reads);
+    }
+
+    [Fact]
+    public async Task Suite_statement_forwards_versioned_parameters_and_bounds_provenance_metadata()
+    {
+        var companyId = Guid.NewGuid();
+        var periodId = Guid.NewGuid();
+        var comparisonPeriodId = Guid.NewGuid();
+        var dimensionTypeId = Guid.NewGuid();
+        var dimensionMemberId = Guid.NewGuid();
+        var definitionVersionId = Guid.NewGuid();
+        var snapshotId = Guid.NewGuid();
+        var ledgerEntryId = Guid.NewGuid();
+        var documentId = Guid.NewGuid();
+        var asOfDate = new DateOnly(2026, 8, 20);
+        var sourceReferences = Enumerable.Range(0, FinanceLedgerAgentReadContract.MaximumSourceIds + 5)
+            .Select(index => $"source-{index:0000}").ToArray();
+        var provenance = new FinancialReportProvenanceDto([ledgerEntryId], [], sourceReferences, [documentId], [], [], []);
+        var line = new FinancialReportLineDto("dimension:consulting", "dimensions", "Consulting", 250m, 200m, 1_200m,
+            "SEK", 1, provenance);
+        var report = CompleteReport(companyId, periodId, snapshotId, definitionVersionId, "dimension-v1") with
+        {
+            ReportKind = FinancialReportKinds.Dimension,
+            AsOfDate = asOfDate,
+            Lines = [line],
+            Page = 3,
+            PageSize = 25,
+            TotalLineCount = 51,
+            HasMore = true
+        };
+        GetFinancialReportSuiteQuery? captured = null;
+        var suite = Proxy<IFinancialReportSuiteService>((method, args) =>
+        {
+            if (method.Name == nameof(IFinancialReportSuiteService.GetAsync))
+            {
+                captured = (GetFinancialReportSuiteQuery)args![0]!;
+                return Task.FromResult(report);
+            }
+            return Unexpected(method);
+        });
+        var service = CreateService(administration: InitializedAdministration(companyId, periodId), reportSuite: suite);
+
+        var response = await service.ExecuteAsync(Request(FinanceLedgerAgentReadToolIds.ReadStatement, companyId,
+            ("fiscalPeriodId", JsonValue.Create(periodId.ToString())), ("reportKind", JsonValue.Create("dimension")),
+            ("cashFlowMethod", JsonValue.Create("direct")),
+            ("comparisonFiscalPeriodId", JsonValue.Create(comparisonPeriodId.ToString())),
+            ("rollingPeriodCount", JsonValue.Create(6)), ("asOfDate", JsonValue.Create("2026-08-20")),
+            ("dimensionTypeId", JsonValue.Create(dimensionTypeId.ToString())),
+            ("dimensionMemberId", JsonValue.Create(dimensionMemberId.ToString())),
+            ("definitionVersionId", JsonValue.Create(definitionVersionId.ToString())),
+            ("page", JsonValue.Create(3)), ("pageSize", JsonValue.Create(25))), default);
+
+        Assert.True(response.Success);
+        Assert.Equal(periodId, captured!.FiscalPeriodId);
+        Assert.Equal(FinancialReportKinds.Dimension, captured.ReportKind);
+        Assert.Equal(CashFlowMethods.Direct, captured.CashFlowMethod);
+        Assert.Equal(comparisonPeriodId, captured.ComparisonFiscalPeriodId);
+        Assert.Equal(6, captured.RollingPeriodCount);
+        Assert.Equal(asOfDate, captured.AsOfDate);
+        Assert.Equal(dimensionTypeId, captured.DimensionTypeId);
+        Assert.Equal(dimensionMemberId, captured.DimensionMemberId);
+        Assert.Equal(definitionVersionId, captured.DefinitionVersionId);
+        Assert.Equal(3, captured.Page);
+        Assert.Equal(25, captured.PageSize);
+        Assert.False(captured.PreviewDefinition);
+        Assert.True(response.Metadata["truncated"]!.GetValue<bool>());
+        Assert.Equal(50L, response.Metadata["skip"]!.GetValue<long>());
+        Assert.Equal(25, response.Metadata["take"]!.GetValue<int>());
+        Assert.Equal(51L, response.Metadata["totalCount"]!.GetValue<long>());
+        Assert.Equal(FinanceLedgerAgentReadContract.MaximumSourceIds,
+            response.Metadata["sourceIds"]!.AsArray().Count);
+        Assert.Equal(FinanceLedgerAgentReadContract.MaximumSourceIds + 10,
+            response.Metadata["sourceIdCount"]!.GetValue<int>());
+        Assert.True(response.Metadata["sourceIdsTruncated"]!.GetValue<bool>());
+        Assert.Equal("immutable_snapshot", response.Metadata["freshness"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public async Task Uninitialized_accounting_and_non_read_actions_are_rejected_before_authoritative_reads()
+    {
+        var companyId = Guid.NewGuid();
+        var periodId = Guid.NewGuid();
+        var administration = Proxy<IAccountingAdministrationService>((method, _) =>
+            method.Name == nameof(IAccountingAdministrationService.GetFiscalYearsAsync)
+                ? Task.FromResult<IReadOnlyList<AccountingFiscalYearDto>>([])
+                : Unexpected(method));
+        var service = CreateService(administration: administration);
+
+        var uninitialized = await service.ExecuteAsync(Request(FinanceLedgerAgentReadToolIds.ReadTrialBalance, companyId,
+            ("fiscalPeriodId", JsonValue.Create(periodId.ToString()))), default);
+        var nonRead = await service.ExecuteAsync(new InternalToolExecutionRequest(
+            FinanceLedgerAgentReadToolIds.ReadTrialBalance,
+            new(companyId, Guid.NewGuid(), Guid.NewGuid(), ToolActionType.Execute, "finance"),
+            new Dictionary<string, JsonNode?>()), default);
+
+        Assert.False(uninitialized.Success);
+        Assert.Equal("accounting_not_initialized", uninitialized.ErrorCode);
+        Assert.False(nonRead.Success);
+        Assert.Equal("finance_ledger_read_only", nonRead.ErrorCode);
+    }
+
     private static FinanceLedgerAgentReadService CreateService(
         IAccountingAdministrationService? administration = null,
         IAccountingJournalReadService? journals = null,
@@ -189,6 +390,9 @@ public sealed class FinanceLedgerAgentReadToolTests
 
     private static AccountingAccountListItemDto Account(string code, string name) => new(Guid.NewGuid(), code, name,
         "expense", "debit", "SEK", null, null, true, true, false, null, null, "profit_and_loss", DateTime.UtcNow);
+
+    private static FinanceStatementLineDto StatementLine(string code, string name, decimal amount) =>
+        new(Guid.NewGuid(), code, name, "operating", "account", amount, "SEK");
 
     private static CompleteFinancialReportDto CompleteReport(Guid companyId, Guid periodId, Guid snapshotId,
         Guid definitionVersionId, string checksum) => new(companyId, periodId, "August 2026", FinancialReportKinds.CashFlow,

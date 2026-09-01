@@ -22,6 +22,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
     private readonly IFinanceAgentAnalysisService _financeAgentAnalysisService;
     private readonly IFinanceLedgerAgentReadService _financeLedgerAgentReadService;
     private readonly IFinanceCloseComplianceAgentService _financeCloseComplianceAgentService;
+    private readonly IFinanceAdvancedAccountingAgentService _financeAdvancedAccountingAgentService;
+    private readonly IFinanceAccountingDraftAgentService _financeAccountingDraftAgentService;
+    private readonly IFinanceOperationalProposalAgentService _financeOperationalProposalAgentService;
+    private readonly IFinanceGuardedCommandService _financeGuardedCommandService;
     private readonly IAccountingProviderSwitchAgentService _accountingProviderSwitchAgentService;
     private readonly ILeadGenerationService _leadGenerationService;
 
@@ -36,6 +40,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         IFinanceAgentAnalysisService financeAgentAnalysisService,
         IFinanceLedgerAgentReadService financeLedgerAgentReadService,
         IFinanceCloseComplianceAgentService financeCloseComplianceAgentService,
+        IFinanceAdvancedAccountingAgentService financeAdvancedAccountingAgentService,
+        IFinanceAccountingDraftAgentService financeAccountingDraftAgentService,
+        IFinanceOperationalProposalAgentService financeOperationalProposalAgentService,
+        IFinanceGuardedCommandService financeGuardedCommandService,
         IAccountingProviderSwitchAgentService accountingProviderSwitchAgentService,
         ILeadGenerationService leadGenerationService)
     {
@@ -49,6 +57,10 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
         _financeAgentAnalysisService = financeAgentAnalysisService;
         _financeLedgerAgentReadService = financeLedgerAgentReadService;
         _financeCloseComplianceAgentService = financeCloseComplianceAgentService;
+        _financeAdvancedAccountingAgentService = financeAdvancedAccountingAgentService;
+        _financeAccountingDraftAgentService = financeAccountingDraftAgentService;
+        _financeOperationalProposalAgentService = financeOperationalProposalAgentService;
+        _financeGuardedCommandService = financeGuardedCommandService;
         _accountingProviderSwitchAgentService = accountingProviderSwitchAgentService;
         _leadGenerationService = leadGenerationService;
     }
@@ -74,7 +86,18 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
 
         try
         {
-            return request.ToolName.Trim().ToLowerInvariant() switch
+            FinanceExecuteToolReadinessContract? readiness = null;
+            if (request.ActionKind == ToolActionType.Execute &&
+                FinanceExecuteToolReadinessCatalog.TryGet(request.ToolName, out readiness))
+            {
+                var blockers = FinanceExecuteToolReadinessCatalog.ValidateRequest(readiness, request.Payload);
+                if (blockers.Count > 0)
+                    return DecorateFinanceCommandResponse(request, readiness,
+                        Failed("finance_command_not_ready",
+                            "The Finance command is missing current readiness evidence or exceeds its bounded batch contract."), blockers);
+            }
+
+            var response = request.ToolName.Trim().ToLowerInvariant() switch
             {
                 "tasks.get" => await ExecuteTaskGetAsync(request, cancellationToken),
                 "tasks.list" => await ExecuteTaskListAsync(request, cancellationToken),
@@ -112,7 +135,11 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 FinanceCloseComplianceAgentToolIds.ExplainCompliancePreparation => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
                 FinanceCloseComplianceAgentToolIds.ExplainAuditPackageCompleteness => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
                 FinanceCloseComplianceAgentToolIds.ExplainYearEndPrerequisites => await _financeCloseComplianceAgentService.ExecuteAsync(request, cancellationToken),
+                _ when FinanceAdvancedAccountingAgentToolIds.Contains(request.ToolName) => await _financeAdvancedAccountingAgentService.ExecuteAsync(request, cancellationToken),
+                _ when FinanceAccountingDraftAgentToolIds.Contains(request.ToolName) => await _financeAccountingDraftAgentService.ExecuteAsync(request, cancellationToken),
+                _ when FinanceOperationalProposalAgentToolIds.Contains(request.ToolName) => await _financeOperationalProposalAgentService.ExecuteAsync(request, cancellationToken),
                 "categorize_transaction" => await ExecuteCategorizeTransactionAsync(request, cancellationToken),
+                FinanceGuardedCommandToolIds.CategorizeTransactions => await ExecuteCategorizeTransactionsAsync(request, cancellationToken),
                 "approve_invoice" => await ExecuteApproveInvoiceAsync(request, cancellationToken),
                 "post_paid_supplier_bill_expense" => await ExecutePostPaidSupplierBillExpenseAsync(request, cancellationToken),
                 AccountingProviderSwitchAgentToolIds.ReadBriefing => await ExecuteMigrationReadAsync(request, cancellationToken),
@@ -152,6 +179,7 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
                 "sales.recommend_prospect_decision" => await ExecuteRecommendProspectDecisionAsync(request, cancellationToken),
                 _ => Failed("unsupported_internal_tool", "The requested internal tool is not available.")
             };
+            return readiness is null ? response : DecorateFinanceCommandResponse(request, readiness, response);
         }
         catch (TaskValidationException)
         {
@@ -799,6 +827,37 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
             Metadata(request, "finance_tool_provider"));
     }
 
+    private async Task<InternalToolExecutionResponse> ExecuteCategorizeTransactionsAsync(
+        InternalToolExecutionRequest request,
+        CancellationToken cancellationToken)
+    {
+        if (!EnsureAction(request, ToolActionType.Execute, out var actionFailure)) return actionFailure;
+        if (!request.ActorUserId.HasValue || request.ActorUserId == Guid.Empty)
+            return Failed("finance_actor_required", "A current Finance actor is required.");
+        if (!request.Payload.TryGetValue("items", out var node) || node is not JsonArray items)
+            return Failed("categorization_items_required", "At least one categorization item is required.");
+
+        var parsed = new List<GuardedTransactionCategorizationItem>(items.Count);
+        foreach (var item in items.OfType<JsonObject>())
+        {
+            var values = item.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase);
+            parsed.Add(new(
+                ReadGuid(values, "transactionId") ?? Guid.Empty,
+                ReadString(values, "expectedCategory") ?? string.Empty,
+                ReadString(values, "category") ?? string.Empty));
+        }
+        if (parsed.Count != items.Count)
+            return Failed("categorization_items_invalid", "Every categorization item must be a structured object.");
+
+        var result = await _financeGuardedCommandService.CategorizeTransactionsAsync(new(
+            request.CompanyId, request.ActorUserId.Value, request.AgentId,
+            ReadString(request.Payload, "idempotencyKey") ?? string.Empty, parsed,
+            request.CorrelationId ?? request.ExecutionId.ToString("N")), cancellationToken);
+        return InternalToolExecutionResponse.Succeeded(result.Summary,
+            new Dictionary<string, JsonNode?> { ["categorizationBatch"] = Serialize(result) },
+            Metadata(request, "finance_guarded_command_service"));
+    }
+
     private async Task<InternalToolExecutionResponse> ExecuteFinanceAnalysisAsync(
         InternalToolExecutionRequest request,
         CancellationToken cancellationToken)
@@ -1030,6 +1089,50 @@ public sealed class InternalCompanyToolContract : IInternalCompanyToolContract
             "unsupported_action_type",
             $"The {request.ToolName} tool does not support the requested action type.");
         return false;
+    }
+
+    private static InternalToolExecutionResponse DecorateFinanceCommandResponse(
+        InternalToolExecutionRequest request,
+        FinanceExecuteToolReadinessContract readiness,
+        InternalToolExecutionResponse response,
+        IReadOnlyList<string>? readinessBlockers = null)
+    {
+        var data = response.Data.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(),
+            StringComparer.OrdinalIgnoreCase);
+        var metadata = response.Metadata.ToDictionary(pair => pair.Key, pair => pair.Value?.DeepClone(),
+            StringComparer.OrdinalIgnoreCase);
+        var requested = new JsonObject(request.Payload.Select(pair =>
+            KeyValuePair.Create(pair.Key, pair.Value?.DeepClone())).ToArray());
+        var actual = new JsonObject(response.Data.Select(pair =>
+            KeyValuePair.Create(pair.Key, pair.Value?.DeepClone())).ToArray());
+        var blockers = new JsonArray((readinessBlockers ?? []).Select(value => (JsonNode?)JsonValue.Create(value)).ToArray());
+        var itemDecisions = response.Data.TryGetValue("categorizationBatch", out var batch) &&
+                            batch?["items"] is JsonArray batchItems
+            ? batchItems.DeepClone()
+            : new JsonArray(new JsonObject
+            {
+                ["index"] = 0,
+                ["outcome"] = response.Success ? "applied_or_accepted" : "rejected",
+                ["reasonCode"] = response.Success ? "authoritative_command_completed" : response.ErrorCode,
+                ["mutated"] = response.Success
+            });
+        data["commandEffect"] = new JsonObject
+        {
+            ["contractVersion"] = readiness.ContractVersion,
+            ["toolName"] = readiness.ToolName,
+            ["requested"] = requested,
+            ["actual"] = actual,
+            ["afterState"] = response.Success ? actual.DeepClone() : null,
+            ["itemDecisions"] = itemDecisions,
+            ["readinessBlockers"] = blockers,
+            ["externalEffectClassification"] = readiness.ExternalEffectClassification,
+            ["retryBehavior"] = readiness.RetryBehavior,
+            ["reconciliationBehavior"] = readiness.ReconciliationBehavior,
+            ["rollbackOrRecoveryBehavior"] = readiness.RollbackOrRecoveryBehavior
+        };
+        metadata["financeExecuteReadiness"] = Serialize(readiness);
+        metadata["requestedActualEffectRecorded"] = JsonValue.Create(true);
+        return response with { Data = data, Metadata = metadata };
     }
 
     private static InternalToolExecutionResponse Failed(string errorCode, string userSafeSummary) =>

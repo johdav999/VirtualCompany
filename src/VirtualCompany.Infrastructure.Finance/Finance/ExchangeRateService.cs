@@ -74,6 +74,28 @@ public sealed class ExchangeRateService : IExchangeRateService
             .Take(100).ToArrayAsync(cancellationToken)).Select(MapSource).ToArray();
     }
 
+    public async Task<IReadOnlyList<ExchangeRateSetResult>> GetSetsAsync(
+        Guid companyId, int skip, int take, CancellationToken cancellationToken)
+    {
+        Require(companyId, nameof(companyId));
+        if (skip < 0) throw new ArgumentOutOfRangeException(nameof(skip));
+        if (take is < 1 or > FinanceAdvancedAccountingAgentContract.MaximumPageSize)
+            throw new ArgumentOutOfRangeException(nameof(take));
+
+        var sets = await _db.ExchangeRateSets.IgnoreQueryFilters().AsNoTracking()
+            .Include(x => x.Source)
+            .Where(x => x.CompanyId == companyId)
+            .OrderByDescending(x => x.PublishedUtc)
+            .ThenByDescending(x => x.SetVersion)
+            .Skip(skip)
+            .Take(take)
+            .ToArrayAsync(cancellationToken);
+        var results = new List<ExchangeRateSetResult>(sets.Length);
+        foreach (var set in sets)
+            results.Add(await MapSetAsync(set, cancellationToken));
+        return results;
+    }
+
     public async Task<ExchangeRateObservationResult> GetObservationAsync(
         Guid companyId, Guid observationId, CancellationToken cancellationToken)
     {

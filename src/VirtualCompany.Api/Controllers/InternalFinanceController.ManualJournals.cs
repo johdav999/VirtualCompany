@@ -83,7 +83,9 @@ public sealed partial class InternalFinanceController
         request.Explanation, request.Currency,
         (request.Lines ?? []).Select(line => new ManualJournalLineInput(line.FinanceAccountId, line.DebitAmount,
             line.CreditAmount, line.Description, line.CostCenterId, line.TaxFacts, line.DimensionFacts)).ToArray(),
-        request.EvidenceDocumentIds ?? [], request.OriginalLedgerEntryId, request.CorrectionReason);
+        request.EvidenceDocumentIds ?? [], request.OriginalLedgerEntryId, request.CorrectionReason,
+        request.SourceRecords?.Select(source => new ManualJournalSourceReferenceInput(
+            source.SourceType, source.RecordId, source.SourceVersion)).ToArray());
 }
 
 public sealed class SaveManualJournalDraftRequest
@@ -100,6 +102,14 @@ public sealed class SaveManualJournalDraftRequest
     public List<Guid>? EvidenceDocumentIds { get; set; } = [];
     public Guid? OriginalLedgerEntryId { get; set; }
     public string? CorrectionReason { get; set; }
+    public List<ManualJournalSourceReferenceRequest>? SourceRecords { get; set; }
+}
+
+public sealed class ManualJournalSourceReferenceRequest
+{
+    public string SourceType { get; set; } = string.Empty;
+    public Guid RecordId { get; set; }
+    public string SourceVersion { get; set; } = string.Empty;
 }
 
 public sealed class ManualJournalLineRequest

@@ -701,6 +701,10 @@ public static class FinanceModuleRegistration
         services.AddScoped<IReportDefinitionService, ReportDefinitionService>();
         services.AddScoped<IFinanceLedgerAgentReadService, FinanceLedgerAgentReadService>();
         services.AddScoped<IFinanceCloseComplianceAgentService, FinanceCloseComplianceAgentService>();
+        services.AddScoped<IFinanceAdvancedAccountingAgentService, FinanceAdvancedAccountingAgentService>();
+        services.AddScoped<IFinanceAccountingDraftAgentService, FinanceAccountingDraftAgentService>();
+        services.AddScoped<IFinanceOperationalProposalAgentService, FinanceOperationalProposalAgentService>();
+        services.AddScoped<IFinanceGuardedCommandService, FinanceGuardedCommandService>();
         services.AddScoped<IVatReturnService, VatReturnService>();
         services.AddSingleton<ComplianceObligationTelemetry>();
         services.AddScoped<IComplianceObligationService, ComplianceObligationService>();

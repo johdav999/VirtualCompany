@@ -28,6 +28,11 @@ public sealed record ManualJournalLineInput(
     IReadOnlyDictionary<string, string>? DimensionFacts = null,
     IReadOnlyList<Guid>? DimensionMemberIds = null);
 
+public sealed record ManualJournalSourceReferenceInput(
+    string SourceType,
+    Guid RecordId,
+    string SourceVersion);
+
 public sealed record ManualJournalDraftInput(
     Guid FiscalPeriodId,
     string VoucherSeriesCode,
@@ -38,7 +43,8 @@ public sealed record ManualJournalDraftInput(
     IReadOnlyList<ManualJournalLineInput> Lines,
     IReadOnlyList<Guid> EvidenceDocumentIds,
     Guid? OriginalLedgerEntryId = null,
-    string? CorrectionReason = null);
+    string? CorrectionReason = null,
+    IReadOnlyList<ManualJournalSourceReferenceInput>? SourceRecords = null);
 
 public sealed record CreateManualJournalDraftCommand(Guid CompanyId, ManualJournalDraftInput Draft, string IdempotencyKey,
     Guid ActorUserId, string? CorrelationId = null);
@@ -58,6 +64,7 @@ public sealed record ListManualJournalDraftsQuery(Guid CompanyId, string? Status
 public sealed record GetManualJournalReferenceDataQuery(Guid CompanyId);
 
 public sealed record ManualJournalEvidenceDto(Guid DocumentId, string Title, string ContentHash, string OriginalFileName);
+public sealed record ManualJournalSourceReferenceDto(string SourceType, Guid RecordId, string SourceVersion);
 public sealed record ManualJournalVoucherSeriesDto(string Code, string DisplayName, string NumberPrefix);
 public sealed record ManualJournalEvidenceOptionDto(Guid DocumentId, string Title, string OriginalFileName, DateTime UploadedUtc);
 public sealed record ManualJournalReferenceDataDto(
@@ -77,7 +84,8 @@ public sealed record ManualJournalDraftDto(Guid Id, Guid CompanyId, Guid FiscalP
     string PayloadHash, Guid CreatedByUserId, Guid UpdatedByUserId, Guid? ApprovalRequestId, Guid? LedgerEntryId,
     Guid? OriginalLedgerEntryId, string? CorrectionReason, DateTime CreatedUtc, DateTime UpdatedUtc, DateTime? PostedUtc,
     decimal DebitTotal, decimal CreditTotal, decimal Difference, IReadOnlyList<ManualJournalLineDto> Lines,
-    IReadOnlyList<ManualJournalEvidenceDto> Evidence, ManualJournalApprovalDto? Approval);
+    IReadOnlyList<ManualJournalEvidenceDto> Evidence, ManualJournalApprovalDto? Approval,
+    IReadOnlyList<ManualJournalSourceReferenceDto>? SourceRecords = null);
 public sealed record ManualJournalPreviewDto(ManualJournalDraftDto Draft, AccountingPostingPreview PostingPreview,
     ManualJournalPolicyDecisionDto Policy);
 public sealed record ManualJournalDraftListResult(IReadOnlyList<ManualJournalDraftDto> Items, int TotalCount, int Skip, int Take);

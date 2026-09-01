@@ -78,6 +78,7 @@ public sealed class FinanceAgentWorkbenchSurfaceTests
         Assert.Contains($"agentId={agentId:D}", linked, StringComparison.Ordinal);
         Assert.Contains("referenceType=invoice", linked, StringComparison.Ordinal);
         Assert.Contains($"referenceValue={invoiceId:D}", linked, StringComparison.Ordinal);
+        Assert.Contains("workflow=receivables", linked, StringComparison.Ordinal);
 
         var unsupported = FinanceRoutes.BuildAgentWorkbenchPath(companyId, agentId,
             $"https://virtual.test/system/admin/tool-executions/{invoiceId:D}");

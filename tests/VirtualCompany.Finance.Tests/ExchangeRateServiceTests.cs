@@ -34,6 +34,13 @@ public sealed class ExchangeRateServiceTests
         Assert.Equal(ExchangeRateReasonCodes.PendingApproval, selfApproval.ReasonCode);
 
         var approved = await fixture.ApproveAsync(imported);
+        var visibleSets = await fixture.Service.GetSetsAsync(fixture.CompanyId, 0, 100, default);
+        Assert.Contains(visibleSets, set => set.Id == approved.Id && set.ContentHash == approved.ContentHash &&
+                                            set.SetVersion == approved.SetVersion);
+        Assert.Empty(await fixture.Service.GetSetsAsync(Guid.NewGuid(), 0, 100, default));
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() =>
+            fixture.Service.GetSetsAsync(fixture.CompanyId, 0,
+                FinanceAdvancedAccountingAgentContract.MaximumPageSize + 1, default));
         var staleReview = await Assert.ThrowsAsync<ExchangeRateOperationException>(() => fixture.Service.ReviewSetAsync(
             new(fixture.CompanyId, fixture.ReviewerId, imported.Id, imported.Version, true,
                 "Stale duplicate review", null), default));

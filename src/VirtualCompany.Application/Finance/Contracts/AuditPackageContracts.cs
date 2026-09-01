@@ -66,10 +66,21 @@ public sealed record AuditPackageDownloadDto(string FileName, string MediaType,
 
 public sealed record VerifyAuditPackageCommand(Guid CompanyId, Guid PackageId, Guid ActorUserId);
 
+public sealed record PreviewAuditPackageQuery(Guid CompanyId, Guid FiscalPeriodId,
+    string ScopeKey = AuditPackageScopeValues.PeriodClose,
+    string ScopeVersion = AuditPackageScopeValues.CurrentVersion);
+
+public sealed record AuditPackagePreviewDto(Guid CompanyId, Guid FiscalPeriodId, string FiscalPeriodName,
+    string ScopeKey, string ScopeVersion, string ScopeHash, string SnapshotVersionsJson,
+    bool IsEligible, IReadOnlyList<string> Blockers, Guid? ExistingPackageId,
+    string? ExistingPackageStatus, long? ExistingPackageVersion, bool ArtifactGenerated,
+    string IntegrityNotice = "This is a technical package definition preview, not an artifact or statutory approval.");
+
 public interface IAuditPackageService
 {
     Task<AuditPackageWorkspaceDto> ListAsync(ListAuditPackagesQuery query, CancellationToken cancellationToken);
     Task<AuditPackageDto> GetAsync(Guid companyId, Guid packageId, CancellationToken cancellationToken);
+    Task<AuditPackagePreviewDto> PreviewAsync(PreviewAuditPackageQuery query, CancellationToken cancellationToken);
     Task<AuditPackageDto> RequestAsync(RequestAuditPackageCommand command, CancellationToken cancellationToken);
     Task<AuditPackageDto> ApproveAsync(ApproveAuditPackageCommand command, CancellationToken cancellationToken);
     Task<AuditPackageDto> CancelAsync(CancelAuditPackageCommand command, CancellationToken cancellationToken);

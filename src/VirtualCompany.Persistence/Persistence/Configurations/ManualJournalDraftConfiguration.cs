@@ -28,6 +28,7 @@ public sealed class ManualJournalDraftConfiguration : IEntityTypeConfiguration<M
         builder.Property(x => x.LedgerEntryId).HasColumnName("ledger_entry_id");
         builder.Property(x => x.OriginalLedgerEntryId).HasColumnName("original_ledger_entry_id");
         builder.Property(x => x.CorrectionReason).HasColumnName("correction_reason").HasMaxLength(1000);
+        builder.Property(x => x.SourceReferencesJson).HasColumnName("source_references_json").HasColumnType("nvarchar(max)").IsRequired();
         builder.Property(x => x.CreatedUtc).HasColumnName("created_utc").IsRequired();
         builder.Property(x => x.UpdatedUtc).HasColumnName("updated_utc").IsRequired();
         builder.Property(x => x.PostedUtc).HasColumnName("posted_utc");

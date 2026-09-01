@@ -59,7 +59,7 @@ public sealed class AdvancedReconciliationGroup : ICompanyOwnedEntity
     public AdvancedReconciliationGroup(Guid id, Guid companyId, Guid ruleId, int ruleVersion,
         Guid? correctionOfGroupId, string reference, string counterparty, string currency,
         decimal expectedBankTotal, decimal confidenceScore, bool requiresApproval,
-        Guid createdByUserId, DateTime createdUtc)
+        Guid createdByUserId, DateTime createdUtc, string? idempotencyKey = null, string? proposalHash = null)
     {
         Id = id == Guid.Empty ? Guid.NewGuid() : id;
         CompanyId = Require(companyId, nameof(companyId));
@@ -72,6 +72,8 @@ public sealed class AdvancedReconciliationGroup : ICompanyOwnedEntity
         ExpectedBankTotal = Money(expectedBankTotal, nameof(expectedBankTotal));
         ConfidenceScore = Score(confidenceScore);
         RequiresApproval = requiresApproval;
+        IdempotencyKey = Optional(idempotencyKey, 200);
+        ProposalHash = Optional(proposalHash, 64);
         Status = AdvancedReconciliationGroupStatuses.Proposed;
         CreatedByUserId = UpdatedByUserId = Require(createdByUserId, nameof(createdByUserId));
         CreatedUtc = UpdatedUtc = EntityTimestampNormalizer.NormalizeUtc(createdUtc, nameof(createdUtc));
@@ -89,6 +91,8 @@ public sealed class AdvancedReconciliationGroup : ICompanyOwnedEntity
     public decimal ExpectedBankTotal { get; private set; }
     public decimal ConfidenceScore { get; private set; }
     public bool RequiresApproval { get; private set; }
+    public string? IdempotencyKey { get; private set; }
+    public string? ProposalHash { get; private set; }
     public string Status { get; private set; } = null!;
     public long Version { get; private set; }
     public Guid CreatedByUserId { get; private set; }
@@ -137,6 +141,7 @@ public sealed class AdvancedReconciliationGroup : ICompanyOwnedEntity
 
     private static Guid Require(Guid value, string name) => value == Guid.Empty ? throw new ArgumentException($"{name} is required.", name) : value;
     private static string Text(string value, string name, int maxLength) => string.IsNullOrWhiteSpace(value) ? throw new ArgumentException($"{name} is required.", name) : value.Trim().Length <= maxLength ? value.Trim() : throw new ArgumentOutOfRangeException(name);
+    private static string? Optional(string? value, int maxLength) => string.IsNullOrWhiteSpace(value) ? null : value.Trim().Length <= maxLength ? value.Trim() : throw new ArgumentOutOfRangeException(nameof(value));
     private static string CurrencyCode(string value) => string.IsNullOrWhiteSpace(value) || value.Trim().Length != 3 ? throw new ArgumentException("Currency must be a three-letter code.", nameof(value)) : value.Trim().ToUpperInvariant();
     private static decimal Money(decimal value, string name) => value <= 0m ? throw new ArgumentOutOfRangeException(name) : decimal.Round(value, 2, MidpointRounding.AwayFromZero);
     private static decimal Score(decimal value) => value is < 0m or > 1m ? throw new ArgumentOutOfRangeException(nameof(value)) : decimal.Round(value, 4, MidpointRounding.AwayFromZero);
@@ -210,4 +215,3 @@ public sealed class AdvancedReconciliationEvent : ICompanyOwnedEntity
     public Guid Id { get; private set; } public Guid CompanyId { get; private set; } public Guid GroupId { get; private set; } public string Action { get; private set; } = null!; public Guid ActorUserId { get; private set; } public string BeforeJson { get; private set; } = null!; public string AfterJson { get; private set; } = null!; public DateTime CreatedUtc { get; private set; } public AdvancedReconciliationGroup Group { get; private set; } = null!;
     private static Guid Required(Guid value) => value == Guid.Empty ? throw new ArgumentException("Identity is required.") : value;
 }
-

@@ -117,6 +117,15 @@ public static class FinanceToolRiskPolicyCatalog
             false,
             FinanceToolExternalSideEffects.InternalStateChange);
         yield return Risk(
+            FinanceGuardedCommandToolIds.CategorizeTransactions,
+            FinanceToolRiskTiers.Low,
+            FinanceToolReversibility.Reversible,
+            FinancePermissions.Edit,
+            FinanceToolApprovalBehaviors.ReviewUnlessBoundedCategorizationException,
+            "finance_categorization",
+            false,
+            FinanceToolExternalSideEffects.InternalStateChange);
+        yield return Risk(
             "approve_invoice",
             FinanceToolRiskTiers.High,
             FinanceToolReversibility.ConditionallyReversible,
@@ -134,6 +143,39 @@ public static class FinanceToolRiskPolicyCatalog
             "accounting_posting",
             true,
             FinanceToolExternalSideEffects.AccountingPosting);
+        yield return Risk(
+            FinanceAccountingDraftAgentToolIds.SubmitForApproval,
+            FinanceToolRiskTiers.High,
+            FinanceToolReversibility.Reversible,
+            FinancePermissions.AccountingAdmin,
+            FinanceToolApprovalBehaviors.AlwaysReview,
+            "accounting_draft_submission",
+            true,
+            FinanceToolExternalSideEffects.ApprovalStateChange);
+        yield return Risk(
+            FinanceOperationalProposalAgentToolIds.SubmitForApproval,
+            FinanceToolRiskTiers.High, FinanceToolReversibility.Reversible,
+            FinancePermissions.AccountingAdmin, FinanceToolApprovalBehaviors.AlwaysReview,
+            "operational_proposal_submission", true,
+            FinanceToolExternalSideEffects.ApprovalStateChange);
+        yield return Risk(
+            FinanceOperationalProposalAgentToolIds.AssignCloseTask,
+            FinanceToolRiskTiers.High, FinanceToolReversibility.Reversible,
+            FinancePermissions.AccountingAdmin, FinanceToolApprovalBehaviors.AlwaysReview,
+            "close_task_assignment", true,
+            FinanceToolExternalSideEffects.InternalStateChange);
+        yield return Risk(
+            FinanceOperationalProposalAgentToolIds.RequestEvidence,
+            FinanceToolRiskTiers.Low, FinanceToolReversibility.Reversible,
+            FinancePermissions.AccountingAdmin, FinanceToolApprovalBehaviors.AlwaysReview,
+            "finance_evidence_request", false,
+            FinanceToolExternalSideEffects.InternalStateChange);
+        yield return Risk(
+            FinanceOperationalProposalAgentToolIds.RequestAuditPackageGeneration,
+            FinanceToolRiskTiers.High, FinanceToolReversibility.ConditionallyReversible,
+            FinancePermissions.AccountingAdmin, FinanceToolApprovalBehaviors.AlwaysReview,
+            "audit_package_generation", true,
+            FinanceToolExternalSideEffects.ApprovalStateChange);
 
         foreach (var toolName in AccountingProviderSwitchAgentToolIds.ExecuteTools)
         {

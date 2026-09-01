@@ -95,6 +95,19 @@ public sealed class EffectiveFinanceAgentCoverageCatalogue : IFinanceAgentCovera
         if (duplicateCapability is not null)
             throw new InvalidOperationException($"Finance coverage capability '{duplicateCapability.Key}' is declared more than once.");
 
+        foreach (var capability in manifests)
+        {
+            if (string.IsNullOrWhiteSpace(capability.Id) ||
+                !capability.Id.StartsWith("finance.", StringComparison.Ordinal) ||
+                !Version.TryParse(capability.Version, out _) ||
+                string.IsNullOrWhiteSpace(capability.DomainWorkflow) ||
+                string.IsNullOrWhiteSpace(capability.Purpose) ||
+                capability.Operations.Count == 0)
+            {
+                throw new InvalidOperationException($"Finance coverage capability '{capability.Id}' has incomplete identity, version, purpose, or operations metadata.");
+            }
+        }
+
         var operations = manifests.SelectMany(capability => capability.Operations
             .Select(operation => (Capability: capability, Operation: operation))).ToArray();
         var duplicateOperation = operations.GroupBy(item => item.Operation.Id, StringComparer.OrdinalIgnoreCase)
@@ -128,6 +141,15 @@ public sealed class EffectiveFinanceAgentCoverageCatalogue : IFinanceAgentCovera
         {
             var definition = registeredFinanceTools[toolName];
             var operation = item.Operation;
+            if (!toolRegistry.TryGetTool(toolName, out var registration) ||
+                !registration.Supports(definition.ActionType, operation.RequiredScope) ||
+                !string.Equals(registration.Version, definition.Version, StringComparison.Ordinal) ||
+                definition.SelectionMetadata is null ||
+                !string.Equals(definition.SelectionMetadata.ActionClass, operation.ActionClass, StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException($"Finance tool '{toolName}' registry, planner, and coverage metadata are inconsistent.");
+            }
+
             var expectedSupport = definition.ActionType switch
             {
                 ToolActionType.Read => FinanceAgentCoverageSupportStates.ImplementedRead,
@@ -153,14 +175,26 @@ public sealed class EffectiveFinanceAgentCoverageCatalogue : IFinanceAgentCovera
         foreach (var item in operations)
         {
             var operation = item.Operation;
-            if (!FinanceAgentCoverageSupportStates.All.Contains(operation.SupportState) ||
+            var hasImplementedSupport = operation.SupportState is FinanceAgentCoverageSupportStates.ImplementedRead or
+                FinanceAgentCoverageSupportStates.ImplementedRecommendDraft or FinanceAgentCoverageSupportStates.ImplementedExecute;
+            if (string.IsNullOrWhiteSpace(operation.Id) ||
+                string.IsNullOrWhiteSpace(operation.Name) ||
+                !ToolActionTypeValues.TryParse(operation.ActionClass, out _) ||
+                !FinanceAgentCoverageSupportStates.All.Contains(operation.SupportState) ||
+                !FinanceAgentCoverageAvailabilityReasons.All.Contains(operation.AvailabilityReasonCode) ||
+                (hasImplementedSupport && operation.ToolName is null) ||
+                (!hasImplementedSupport && operation.ToolName is not null) ||
                 string.IsNullOrWhiteSpace(operation.RequiredPermission) ||
                 string.IsNullOrWhiteSpace(operation.RequiredScope) ||
                 string.IsNullOrWhiteSpace(operation.RiskTier) ||
                 string.IsNullOrWhiteSpace(operation.ApprovalBehavior) ||
                 string.IsNullOrWhiteSpace(operation.AvailabilityReasonCode) ||
                 string.IsNullOrWhiteSpace(operation.SafeExplanation) ||
-                string.IsNullOrWhiteSpace(operation.SafeAlternative))
+                string.IsNullOrWhiteSpace(operation.SafeAlternative) ||
+                operation.Integrations.Count == 0 ||
+                operation.Integrations.Any(string.IsNullOrWhiteSpace) ||
+                operation.SourceTypes.Count == 0 ||
+                operation.SourceTypes.Any(string.IsNullOrWhiteSpace))
             {
                 throw new InvalidOperationException($"Finance coverage operation '{operation.Id}' has incomplete support or safety metadata.");
             }

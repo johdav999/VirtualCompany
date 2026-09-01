@@ -36,6 +36,16 @@ public static class FinanceAgentCoverageAvailabilityReasons
     public const string PermanentHumanAuthority = "permanent_human_authority";
     public const string SegregationOfDuties = "segregation_of_duties";
     public const string AmbiguousExternalOutcome = "ambiguous_external_outcome";
+
+    public static IReadOnlySet<string> All { get; } = new HashSet<string>(StringComparer.Ordinal)
+    {
+        Implemented,
+        FutureCoverage,
+        IntegrationConfigurationRequired,
+        PermanentHumanAuthority,
+        SegregationOfDuties,
+        AmbiguousExternalOutcome
+    };
 }
 
 public static class FinanceAgentCoverageCapabilityIds
@@ -188,9 +198,43 @@ public static class FinanceAgentCoverageCatalogue
         return Manifests
             .SelectMany(capability => capability.Operations)
             .Where(operation => operation.SupportState == FinanceAgentCoverageSupportStates.HumanOnly)
-            .FirstOrDefault(operation => operation.PlannerKeywords?.Any(keyword =>
-                request.Contains(keyword, StringComparison.OrdinalIgnoreCase)) == true);
+            .FirstOrDefault(operation => MatchesHumanOnlyIntent(operation, request));
     }
+
+    private static bool MatchesHumanOnlyIntent(FinanceAgentCoverageOperationManifest operation, string request)
+    {
+        var matchedKeyword = operation.PlannerKeywords?.FirstOrDefault(keyword =>
+            request.Contains(keyword, StringComparison.OrdinalIgnoreCase));
+        if (matchedKeyword is null) return false;
+
+        // "Close period" is also ordinary Finance vocabulary for status/readiness reads. Keep the
+        // permanent boundary deterministic without shadowing those implemented read operations.
+        if (operation.Id == "final_close_year_end_authority" &&
+            matchedKeyword.Equals("close period", StringComparison.OrdinalIgnoreCase) &&
+            CloseReadIntentMarkers.Any(marker => request.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    private static IReadOnlyList<string> CloseReadIntentMarkers { get; } =
+    [
+        "status",
+        "readiness",
+        "ready",
+        "blocker",
+        "history",
+        "show",
+        "list",
+        "explain",
+        "what",
+        "why",
+        "when",
+        "is closed",
+        "was closed"
+    ];
 
     private static IReadOnlyList<FinanceAgentCoverageCapabilityManifest> Build()
     {
@@ -206,7 +250,9 @@ public static class FinanceAgentCoverageCatalogue
                 Read("list_uncategorized_transactions", "List uncategorized transactions", ["finance_transaction"]),
                 Recommend("recommend_transaction_category", "Recommend transaction category", ["finance_transaction", "accounting_policy"]),
                 Recommend("evaluate_transaction_anomaly", "Evaluate transaction anomaly", ["finance_transaction", "historical_transaction"]),
-                Execute("categorize_transaction", "Categorize transaction", ["finance_transaction"], "/finance/transactions")),
+                Execute("categorize_transaction", "Categorize transaction", ["finance_transaction"], "/finance/transactions"),
+                Execute(FinanceGuardedCommandToolIds.CategorizeTransactions, "Categorize a bounded transaction batch",
+                    ["finance_transaction", "expected_category", "per_item_decision"], "/finance/transactions")),
 
             Capability(FinanceAgentCoverageCapabilityIds.InvoiceReview, "Invoice review",
                 "Inspect invoice-review queues, prepare a decision, and invoke the governed approval-status command.",
@@ -268,22 +314,62 @@ public static class FinanceAgentCoverageCatalogue
 
             Capability(FinanceAgentCoverageCapabilityIds.BankAndReconciliation, "Banking, statement imports, and reconciliation",
                 "Inspect bank connectivity and reconcile imported statement evidence.",
-                Gap("banking_read", "Connected-bank inspection", FinanceAgentCoverageSupportStates.ConfigurationDependent,
-                    "Banking coverage depends on a configured, healthy bank connection and later agent tools.", "Configure and inspect bank connections in Finance settings.", "/finance/settings/bank-connections", ["bank connection", "bank feed"]),
-                Gap("reconciliation_read", "Statement and reconciliation inspection", FinanceAgentCoverageSupportStates.Unsupported,
-                    "Statement and reconciliation agent tools are not registered yet.", "Use Statement imports and Accounting reconciliation.", "/finance/accounting/reconciliation"),
-                HumanOnly("payment_initiation", "Initiate or release a payment",
-                    "Payment initiation and release remain a human Finance operation.",
-                    "Laura may prepare evidence or a proposal; continue in Payment batches for human review and release.",
-                    "/finance/payments/batches", ["initiate payment", "send payment", "pay supplier", "release payment", "transfer money"],
-                    FinancePermissions.Approve)),
+                FinanceAdvancedAccountingAgentToolIds.All
+                    .Where(tool => tool is FinanceAdvancedAccountingAgentToolIds.ReadStatementImports or
+                        FinanceAdvancedAccountingAgentToolIds.ReadReconciliation or
+                        FinanceAdvancedAccountingAgentToolIds.ReadSubledgerSettlement or
+                        FinanceAdvancedAccountingAgentToolIds.ReadPaymentBatches or
+                        FinanceAdvancedAccountingAgentToolIds.RecommendReconciliationReview or
+                        FinanceAdvancedAccountingAgentToolIds.PrioritizeSubledgerExceptions)
+                    .Select(tool => FinanceAdvancedAccountingAgentToolIds.RecommendationTools.Contains(tool)
+                        ? Recommend(tool, Humanize(tool), ["statement_row", "reconciliation_group", "payment_allocation", "settlement_evidence"])
+                        : Read(tool, Humanize(tool), ["statement_import", "reconciliation_group", "payment_allocation", "payment_batch"]))
+                    .Prepend(Gap("banking_read", "Connected-bank inspection", FinanceAgentCoverageSupportStates.ConfigurationDependent,
+                        "Banking coverage depends on a configured, healthy bank connection and later agent tools.", "Configure and inspect bank connections in Finance settings.", "/finance/settings/bank-connections", ["bank connection", "bank feed"]))
+                    .Append(HumanOnly("payment_initiation", "Initiate or release a payment",
+                        "Payment initiation and release remain a human Finance operation.",
+                        "Laura may prepare evidence or a proposal; continue in Payment batches for human review and release.",
+                        "/finance/payments/batches", ["initiate payment", "send payment", "pay supplier", "release payment", "transfer money"],
+                        FinancePermissions.Approve))
+                    .Append(AccountingDraftRecommend(FinanceAccountingDraftAgentToolIds.CreateReconciliationDecisionDraft,
+                        "Create reconciliation decision draft", ["reconciliation_record_version", "reconciliation_rule", "source_evidence"]))
+                    .ToArray()),
 
             Capability(FinanceAgentCoverageCapabilityIds.AdvancedAccounting, "Advanced accounting",
                 "Inspect and prepare dimensions, foreign currency, schedules, fixed assets, and manual accounting drafts.",
-                Gap("advanced_accounting_read", "Advanced accounting inspection", FinanceAgentCoverageSupportStates.Unsupported,
-                    "Advanced accounting agent tools are not registered yet.", "Use the Advanced accounting workspace.", "/finance/accounting/advanced"),
-                Gap("accounting_drafts", "Accounting draft preparation", FinanceAgentCoverageSupportStates.Unsupported,
-                    "Journal, reconciliation, correction, schedule, FX, and asset draft tools are not registered yet.", "Prepare the draft in the owning Accounting workspace.", "/finance/accounting/journals/new")),
+                FinanceAdvancedAccountingAgentToolIds.All
+                    .Where(tool => tool is not FinanceAdvancedAccountingAgentToolIds.ReadStatementImports and
+                        not FinanceAdvancedAccountingAgentToolIds.ReadReconciliation and
+                        not FinanceAdvancedAccountingAgentToolIds.ReadSubledgerSettlement and
+                        not FinanceAdvancedAccountingAgentToolIds.ReadPaymentBatches and
+                        not FinanceAdvancedAccountingAgentToolIds.RecommendReconciliationReview and
+                        not FinanceAdvancedAccountingAgentToolIds.PrioritizeSubledgerExceptions)
+                    .Select(tool => FinanceAdvancedAccountingAgentToolIds.RecommendationTools.Contains(tool)
+                        ? Recommend(tool, Humanize(tool), ["exchange_rate_evidence", "revaluation", "dimension", "schedule", "fixed_asset"])
+                        : Read(tool, Humanize(tool), tool == FinanceAdvancedAccountingAgentToolIds.ReadInventoryBoundary
+                            ? ["unsupported_inventory_accounting_boundary"]
+                            : ["exchange_rate_set", "revaluation", "dimension", "schedule", "fixed_asset"]))
+                    .Concat(FinanceAccountingDraftAgentToolIds.RecommendationTools
+                        .Where(tool => tool != FinanceAccountingDraftAgentToolIds.CreateReconciliationDecisionDraft)
+                        .Select(tool => AccountingDraftRecommend(tool, Humanize(tool),
+                            ["manual_journal_draft", "source_record_version", "accounting_policy", "evidence_document"])))
+                    .Append(Execute(FinanceAccountingDraftAgentToolIds.SubmitForApproval,
+                        "Submit reviewed accounting draft for approval",
+                        ["manual_journal_draft", "source_record_version", "approval_policy"],
+                        "/finance/accounting/manual-journals"))
+                    .Concat(FinanceOperationalProposalAgentToolIds.RecommendationTools
+                        .Where(tool => tool is FinanceOperationalProposalAgentToolIds.ProposeAccountingSchedule or
+                            FinanceOperationalProposalAgentToolIds.PreviewCurrencyRevaluation or
+                            FinanceOperationalProposalAgentToolIds.ProposeFixedAssetAddition or
+                            FinanceOperationalProposalAgentToolIds.ProposeFixedAssetDisposal or
+                            FinanceOperationalProposalAgentToolIds.PreviewFixedAssetDepreciation)
+                        .Select(tool => AccountingDraftRecommend(tool, Humanize(tool),
+                            ["target_version", "deterministic_calculation", "source_evidence", "proposal_checksum"])))
+                    .Append(Execute(FinanceOperationalProposalAgentToolIds.SubmitForApproval,
+                        "Submit current operational proposal for approval",
+                        ["target_version", "proposal_checksum", "approval_policy"],
+                        "/finance/accounting"))
+                    .ToArray()),
 
             Capability(FinanceAgentCoverageCapabilityIds.CloseAndYearEnd, "Close and year-end",
                 "Inspect close readiness and coordinate period and year-end work without acquiring final authority.",
@@ -292,6 +378,19 @@ public static class FinanceAgentCoverageCatalogue
                     .Select(tool => FinanceCloseComplianceAgentToolIds.RecommendationTools.Contains(tool)
                         ? Recommend(tool, Humanize(tool), ["close_readiness", "year_end_readiness", "evidence_hash"])
                         : Read(tool, Humanize(tool), ["close_instance", "close_task", "readiness_snapshot", "period_history", "year_end_run"]))
+                    .Concat(new[]
+                    {
+                        AccountingDraftRecommend(FinanceOperationalProposalAgentToolIds.ProposeCloseTaskAssignment,
+                            "Propose close task assignment", ["close_task", "target_version", "materiality_policy"]),
+                        AccountingDraftRecommend(FinanceOperationalProposalAgentToolIds.ProposeEvidenceRequest,
+                            "Propose evidence request", ["close_task", "compliance_obligation", "source_evidence"]),
+                        Execute(FinanceOperationalProposalAgentToolIds.AssignCloseTask,
+                            "Assign eligible close task", ["close_task", "target_version", "segregation_of_duties"],
+                            "/finance/accounting/close-workspace"),
+                        Execute(FinanceOperationalProposalAgentToolIds.RequestEvidence,
+                            "Create typed Finance evidence task", ["source_evidence", "responsible_owner", "proposal_checksum"],
+                            "/tasks")
+                    })
                     .Append(HumanOnly("final_close_year_end_authority", "Final close, lock, reopen, or year-end authority",
                         "Final period close, lock, reopen, and year-end rollover authority remains human-only.",
                         "Laura may prepare readiness evidence; an authorized human must continue in the Close or Year-end workspace.",
@@ -307,6 +406,16 @@ public static class FinanceAgentCoverageCatalogue
                     .Select(tool => FinanceCloseComplianceAgentToolIds.RecommendationTools.Contains(tool)
                         ? Recommend(tool, Humanize(tool), ["compliance_evidence", "audit_package_metadata", "accountant_grant"])
                         : Read(tool, Humanize(tool), ["compliance_obligation", "submission_evidence", "provider_acknowledgement", "audit_package", "accountant_grant"]))
+                    .Concat(new[]
+                    {
+                        AccountingDraftRecommend(FinanceOperationalProposalAgentToolIds.ProposeComplianceChecklist,
+                            "Prepare compliance evidence checklist", ["compliance_obligation", "policy_pack", "submission_evidence"]),
+                        AccountingDraftRecommend(FinanceOperationalProposalAgentToolIds.PreviewAuditPackage,
+                            "Preview audit package definition", ["frozen_scope", "snapshot_versions", "scope_checksum"]),
+                        Execute(FinanceOperationalProposalAgentToolIds.RequestAuditPackageGeneration,
+                            "Request audit package generation", ["frozen_scope", "approval_policy", "background_execution", "object_checksum"],
+                            "/finance/accounting/audit-packages")
+                    })
                     .Append(HumanOnly("final_statutory_filing", "Final statutory filing or sign-off",
                         "Final statutory filing, declaration, professional approval, and sign-off remain human-only.",
                         "Laura may prepare a checklist and evidence; an authorized human or qualified professional must file or sign off.",
@@ -365,6 +474,13 @@ public static class FinanceAgentCoverageCatalogue
         IReadOnlyList<string>? integrations = null) =>
         Implemented(toolName, name, ToolActionType.Recommend, FinancePermissions.View, "advisory", NotApplicable,
             sources, integrations ?? [InternalFinance, "shared_ai"]);
+
+    private static FinanceAgentCoverageOperationManifest AccountingDraftRecommend(
+        string toolName,
+        string name,
+        IReadOnlyList<string> sources) =>
+        Implemented(toolName, name, ToolActionType.Recommend, FinancePermissions.AccountingAdmin, "advisory", NotApplicable,
+            sources, [InternalFinance, "shared_ai"]);
 
     private static FinanceAgentCoverageOperationManifest Execute(
         string toolName,

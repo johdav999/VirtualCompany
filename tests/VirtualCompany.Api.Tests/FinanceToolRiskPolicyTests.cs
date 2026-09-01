@@ -113,6 +113,24 @@ public sealed class FinanceToolRiskPolicyTests
         Assert.Contains(decision.ThresholdEvaluations!, evaluation => evaluation.Exceeded);
     }
 
+    [Theory]
+    [InlineData(250, 2, "allow")]
+    [InlineData(250.01, 2, "require_approval")]
+    [InlineData(250, 3, "require_approval")]
+    public void Guarded_categorization_batch_uses_the_same_versioned_amount_and_count_policy(
+        double amount,
+        int count,
+        string expectedOutcome)
+    {
+        var decision = _engine.Evaluate(Request(
+            FinanceGuardedCommandToolIds.CategorizeTransactions,
+            CategorizationPolicy("category-policy-batch-v1", 250m, 2),
+            riskContext: CategoryContext((decimal)amount, count)));
+
+        Assert.Equal(expectedOutcome, decision.Outcome);
+        Assert.Equal("category-policy-batch-v1", decision.Metadata["financeApprovalPolicyVersion"]!.GetValue<string>());
+    }
+
     [Fact]
     public void Missing_categorization_exception_defaults_to_review_and_missing_route_denies()
     {

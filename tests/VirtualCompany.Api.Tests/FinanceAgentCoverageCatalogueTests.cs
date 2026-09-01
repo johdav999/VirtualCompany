@@ -31,8 +31,8 @@ public sealed class FinanceAgentCoverageCatalogueTests
             .ToArray();
 
         Assert.Equal(18, manifests.Count);
-        Assert.Equal(77, operations.Length);
-        Assert.Equal(64, toolOperations.Length);
+        Assert.Equal(107, operations.Length);
+        Assert.Equal(97, toolOperations.Length);
         Assert.Equal(registeredFinanceTools, toolOperations.Select(operation => operation.ToolName!)
             .OrderBy(value => value, StringComparer.OrdinalIgnoreCase));
         Assert.Equal(toolOperations.Length, toolOperations.Select(operation => operation.ToolName)
@@ -62,6 +62,17 @@ public sealed class FinanceAgentCoverageCatalogueTests
     }
 
     [Fact]
+    public void Planner_metadata_mismatch_fails_catalogue_validation()
+    {
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            EffectiveFinanceAgentCoverageCatalogue.Validate(
+                new RegistryWithPlannerActionMismatch("get_cash_balance"),
+                FinanceAgentCoverageCatalogue.Manifests));
+
+        Assert.Contains("registry, planner, and coverage metadata are inconsistent", error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Effective_projection_combines_support_baseline_with_P0_authority_without_granting_gaps()
     {
         var registry = new StaticCompanyToolRegistry();
@@ -74,17 +85,17 @@ public sealed class FinanceAgentCoverageCatalogueTests
         Assert.Equal(authority.AuthorityVersion, result.AuthorityVersion);
         Assert.Equal(authority.AuthorityHash, result.AuthorityHash);
         Assert.Equal(18, result.Counts.TotalCapabilities);
-        Assert.Equal(77, result.Counts.TotalOperations);
-        Assert.Equal(64, result.Counts.RegisteredTools);
-        Assert.Equal(35, result.Counts.ImplementedRead);
-        Assert.Equal(17, result.Counts.ImplementedRecommendDraft);
-        Assert.Equal(12, result.Counts.ImplementedExecute);
+        Assert.Equal(107, result.Counts.TotalOperations);
+        Assert.Equal(97, result.Counts.RegisteredTools);
+        Assert.Equal(45, result.Counts.ImplementedRead);
+        Assert.Equal(34, result.Counts.ImplementedRecommendDraft);
+        Assert.Equal(18, result.Counts.ImplementedExecute);
         Assert.Equal(2, result.Counts.ConfigurationDependent);
-        Assert.Equal(5, result.Counts.Unsupported);
+        Assert.Equal(2, result.Counts.Unsupported);
         Assert.Equal(6, result.Counts.HumanOnly);
-        Assert.Equal(52, result.Counts.EffectiveAvailable);
-        Assert.Equal(12, result.Counts.EffectiveApprovalRequired);
-        Assert.Equal(13, result.Counts.EffectiveGaps);
+        Assert.Equal(79, result.Counts.EffectiveAvailable);
+        Assert.Equal(18, result.Counts.EffectiveApprovalRequired);
+        Assert.Equal(10, result.Counts.EffectiveGaps);
 
         var selfApproval = result.Capabilities.SelectMany(capability => capability.Operations)
             .Single(operation => operation.Id == "self_approval");
@@ -135,6 +146,15 @@ public sealed class FinanceAgentCoverageCatalogueTests
         Assert.Equal(operationId, boundary!.Id);
         Assert.Equal(FinanceAgentCoverageSupportStates.HumanOnly, boundary.SupportState);
         Assert.False(string.IsNullOrWhiteSpace(boundary.SafeAlternative));
+    }
+
+    [Theory]
+    [InlineData("Show close period readiness for August")]
+    [InlineData("What is the close period status?")]
+    [InlineData("Explain the close period blockers")]
+    public void Close_read_requests_are_not_misclassified_as_final_human_authority(string request)
+    {
+        Assert.Null(FinanceAgentCoverageCatalogue.MatchHumanOnlyOperation(request));
     }
 
     private static Agent Laura() =>
@@ -191,5 +211,45 @@ public sealed class FinanceAgentCoverageCatalogueTests
         }
 
         public IReadOnlyList<ToolDefinitionManifest> ListToolDefinitions() => [.. _inner.ListToolDefinitions(), _definition];
+    }
+
+    private sealed class RegistryWithPlannerActionMismatch : ICompanyToolRegistry
+    {
+        private readonly StaticCompanyToolRegistry _inner = new();
+        private readonly string _toolName;
+        private readonly ToolDefinitionManifest _replacement;
+
+        public RegistryWithPlannerActionMismatch(string toolName)
+        {
+            _toolName = toolName;
+            Assert.True(_inner.TryGetToolDefinition(toolName, out var definition));
+            Assert.NotNull(definition.SelectionMetadata);
+            _replacement = definition with
+            {
+                SelectionMetadata = definition.SelectionMetadata! with { ActionClass = ToolActionType.Execute.ToStorageValue() }
+            };
+        }
+
+        public bool TryGetTool(string toolName, out TrustedToolRegistration registration) =>
+            _inner.TryGetTool(toolName, out registration!);
+
+        public IReadOnlyList<TrustedToolRegistration> ListTools() => _inner.ListTools();
+
+        public bool TryGetToolDefinition(string toolName, out ToolDefinitionManifest definition)
+        {
+            if (string.Equals(toolName, _toolName, StringComparison.OrdinalIgnoreCase))
+            {
+                definition = _replacement;
+                return true;
+            }
+
+            return _inner.TryGetToolDefinition(toolName, out definition!);
+        }
+
+        public IReadOnlyList<ToolDefinitionManifest> ListToolDefinitions() => _inner.ListToolDefinitions()
+            .Select(definition => string.Equals(definition.ToolName, _toolName, StringComparison.OrdinalIgnoreCase)
+                ? _replacement
+                : definition)
+            .ToArray();
     }
 }

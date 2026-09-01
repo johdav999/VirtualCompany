@@ -218,6 +218,7 @@ public interface IExchangeRateService
 {
     Task<IReadOnlyList<CurrencyDefinitionResult>> GetCurrenciesAsync(Guid companyId, CancellationToken cancellationToken);
     Task<IReadOnlyList<ExchangeRateSourceResult>> GetSourcesAsync(Guid companyId, CancellationToken cancellationToken);
+    Task<IReadOnlyList<ExchangeRateSetResult>> GetSetsAsync(Guid companyId, int skip, int take, CancellationToken cancellationToken);
     Task<ExchangeRateObservationResult> GetObservationAsync(Guid companyId, Guid observationId, CancellationToken cancellationToken);
     Task<ExchangeRateLookupResult> LookupAsync(ExchangeRateLookupQuery query, CancellationToken cancellationToken);
     Task<ExchangeRateReadinessResult> GetReadinessAsync(Guid companyId, CancellationToken cancellationToken);

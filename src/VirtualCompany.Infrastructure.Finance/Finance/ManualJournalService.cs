@@ -65,7 +65,7 @@ public sealed class ManualJournalService : IManualJournalService
         var draft = new ManualJournalDraft(Guid.NewGuid(), command.CompanyId, command.Draft.FiscalPeriodId,
             command.Draft.VoucherSeriesCode, command.Draft.DocumentDate, command.Draft.PostingDate,
             command.Draft.Explanation, command.Draft.Currency, material.PayloadHash, command.ActorUserId, now,
-            command.Draft.OriginalLedgerEntryId, command.Draft.CorrectionReason);
+            command.Draft.OriginalLedgerEntryId, command.Draft.CorrectionReason, SerializeSources(command.Draft.SourceRecords));
         AddMaterial(draft, command.Draft, material, now);
         _dbContext.ManualJournalDrafts.Add(draft);
         _dbContext.ManualJournalOperations.Add(new ManualJournalOperation(Guid.NewGuid(), command.CompanyId, draft.Id,
@@ -104,7 +104,7 @@ public sealed class ManualJournalService : IManualJournalService
         var now = UtcNow();
         draft.ReplaceContent(command.Draft.FiscalPeriodId, command.Draft.VoucherSeriesCode, command.Draft.DocumentDate,
             command.Draft.PostingDate, command.Draft.Explanation, command.Draft.Currency, material.PayloadHash,
-            command.Draft.CorrectionReason, command.ActorUserId, now);
+            command.Draft.CorrectionReason, SerializeSources(command.Draft.SourceRecords), command.ActorUserId, now);
         AddMaterial(draft, command.Draft, material, now);
         _dbContext.ManualJournalDraftLines.AddRange(draft.Lines);
         _dbContext.ManualJournalEvidenceLinks.AddRange(draft.EvidenceLinks);
@@ -305,7 +305,7 @@ public sealed class ManualJournalService : IManualJournalService
             draft.PostingDate, draft.Explanation, draft.Currency, status, draft.Version, draft.PayloadHash,
             draft.CreatedByUserId, draft.UpdatedByUserId, draft.ApprovalRequestId, draft.LedgerEntryId,
             draft.OriginalLedgerEntryId, draft.CorrectionReason, draft.CreatedUtc, draft.UpdatedUtc, draft.PostedUtc,
-            debit, credit, debit - credit, lines, evidence, approval);
+            debit, credit, debit - credit, lines, evidence, approval, DeserializeSources(draft.SourceReferencesJson));
     }
 
     private async Task<Material> MaterializeAsync(Guid companyId, ManualJournalDraftInput input, CancellationToken cancellationToken)
@@ -344,7 +344,8 @@ public sealed class ManualJournalService : IManualJournalService
             x.CreditAmount, x.Description, x.CostCenterId, AccountingPostingService.ParseFacts(x.TaxFactsJson),
             AccountingPostingService.ParseFacts(x.DimensionFactsJson),
             x.DimensionAssignments.Select(y => y.DimensionMemberId).OrderBy(y => y).ToArray())).ToArray(),
-        draft.EvidenceLinks.Select(x => x.DocumentId).ToArray(), draft.OriginalLedgerEntryId, draft.CorrectionReason);
+        draft.EvidenceLinks.Select(x => x.DocumentId).ToArray(), draft.OriginalLedgerEntryId, draft.CorrectionReason,
+        DeserializeSourceInputs(draft.SourceReferencesJson));
 
     private static ProposedAccountingEntry ToProposed(ManualJournalDraft draft, Guid actorUserId, string idempotencyKey, bool requiresApproval) =>
         new(draft.CompanyId, draft.FiscalPeriodId, draft.VoucherSeriesCode, draft.DocumentDate, draft.PostingDate,
@@ -411,7 +412,8 @@ public sealed class ManualJournalService : IManualJournalService
         Lines = input.Lines.Select(x => new { x.FinanceAccountId, x.DebitAmount, x.CreditAmount, x.Description, x.CostCenterId,
             TaxFacts = Sorted(x.TaxFacts), DimensionFacts = Sorted(x.DimensionFacts),
             DimensionMemberIds = (x.DimensionMemberIds ?? []).OrderBy(y => y) }),
-        Evidence = input.EvidenceDocumentIds.OrderBy(x => x), input.OriginalLedgerEntryId, input.CorrectionReason
+        Evidence = input.EvidenceDocumentIds.OrderBy(x => x), input.OriginalLedgerEntryId, input.CorrectionReason,
+        SourceRecords = NormalizeSources(input.SourceRecords)
     }));
     private static string ComputeDraftHash(ManualJournalDraftInput input, IReadOnlyList<Evidence> evidence) => HashText(JsonSerializer.Serialize(new
     {
@@ -421,6 +423,15 @@ public sealed class ManualJournalService : IManualJournalService
     private static SortedDictionary<string, string> Sorted(IReadOnlyDictionary<string, string>? value) =>
         new((value ?? new Dictionary<string, string>()).ToDictionary(pair => pair.Key, pair => pair.Value), StringComparer.Ordinal);
     private static string? Serialize(IReadOnlyDictionary<string, string>? facts) => facts is null || facts.Count == 0 ? null : JsonSerializer.Serialize(Sorted(facts));
+    private static string SerializeSources(IReadOnlyList<ManualJournalSourceReferenceInput>? sources) =>
+        JsonSerializer.Serialize(NormalizeSources(sources));
+    private static IReadOnlyList<ManualJournalSourceReferenceDto> DeserializeSources(string json) =>
+        string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<ManualJournalSourceReferenceDto[]>(json) ?? [];
+    private static IReadOnlyList<ManualJournalSourceReferenceInput> DeserializeSourceInputs(string json) =>
+        string.IsNullOrWhiteSpace(json) ? [] : JsonSerializer.Deserialize<ManualJournalSourceReferenceInput[]>(json) ?? [];
+    private static IReadOnlyList<ManualJournalSourceReferenceInput> NormalizeSources(IReadOnlyList<ManualJournalSourceReferenceInput>? sources) =>
+        (sources ?? []).OrderBy(x => x.SourceType, StringComparer.Ordinal).ThenBy(x => x.RecordId)
+            .Select(x => new ManualJournalSourceReferenceInput(x.SourceType.Trim().ToLowerInvariant(), x.RecordId, x.SourceVersion.Trim())).ToArray();
     private static string? Metadata(CompanyKnowledgeDocument document, string key) =>
         document.Metadata.TryGetValue(key, out var node) ? NodeText(node) : null;
     private DateTime UtcNow() => _timeProvider.GetUtcNow().UtcDateTime;

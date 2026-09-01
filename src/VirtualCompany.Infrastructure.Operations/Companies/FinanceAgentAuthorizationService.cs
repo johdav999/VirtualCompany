@@ -2,6 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using VirtualCompany.Application.Agents;
 using VirtualCompany.Application.Auth;
 using VirtualCompany.Application.Authorization;
+using VirtualCompany.Application.Finance;
 using VirtualCompany.Domain.Entities;
 using VirtualCompany.Domain.Enums;
 using VirtualCompany.Infrastructure.Persistence;
@@ -239,6 +240,13 @@ public sealed class FinanceAgentAuthorizationService : IFinanceAgentAuthorizatio
 
     public static FinancePermissionRequirements ResolveRequirements(string toolName, ToolActionType actionType)
     {
+        if (actionType == ToolActionType.Recommend &&
+            (FinanceAccountingDraftAgentToolIds.RecommendationTools.Contains(toolName) ||
+             FinanceOperationalProposalAgentToolIds.RecommendationTools.Contains(toolName)))
+        {
+            return new([CompanyPolicies.AccountingAdmin], [FinancePermissions.AccountingAdmin]);
+        }
+
         if (actionType is ToolActionType.Read or ToolActionType.Recommend)
         {
             return new([CompanyPolicies.FinanceView], [FinancePermissions.View]);
@@ -253,6 +261,16 @@ public sealed class FinanceAgentAuthorizationService : IFinanceAgentAuthorizatio
             permissions.Add(FinancePermissions.Approve);
         }
         else if (string.Equals(toolName, "post_paid_supplier_bill_expense", StringComparison.OrdinalIgnoreCase))
+        {
+            policies.Add(CompanyPolicies.AccountingAdmin);
+            permissions.Add(FinancePermissions.AccountingAdmin);
+        }
+        else if (string.Equals(toolName, FinanceAccountingDraftAgentToolIds.SubmitForApproval, StringComparison.OrdinalIgnoreCase))
+        {
+            policies.Add(CompanyPolicies.AccountingAdmin);
+            permissions.Add(FinancePermissions.AccountingAdmin);
+        }
+        else if (FinanceOperationalProposalAgentToolIds.ExecuteTools.Contains(toolName, StringComparer.OrdinalIgnoreCase))
         {
             policies.Add(CompanyPolicies.AccountingAdmin);
             permissions.Add(FinancePermissions.AccountingAdmin);

@@ -108,7 +108,8 @@ public sealed record TrustedToolRegistration(
     JsonObject? InputSchema = null,
     JsonObject? OutputSchema = null,
     bool SensitiveAction = false,
-    FinanceToolRiskClassification? FinanceRiskClassification = null)
+    FinanceToolRiskClassification? FinanceRiskClassification = null,
+    FinanceExecuteToolReadinessContract? FinanceExecuteReadiness = null)
 {
     private static readonly Regex SemanticVersionPattern = new(
         @"^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$",
